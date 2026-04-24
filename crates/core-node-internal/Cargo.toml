@@ -9,13 +9,13 @@ pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
 config = { path = "../config-internal" }
 node-stack = { path = "../node-stack-internal" }
 peppylib = { path = "../peppylib" }
+core-node-api = { path = "../core-node-api" }
 generator = { path = "../generator-internal" }
 containers = { path = "../containers-internal" }
 bytes = "1.10"
 chrono = "0.4"
 hostname = "0.4"
 machine-uid = "0.5"
-capnp = "0.25"
 futures = "0.3"
 names-generator2 = "0.2.1"
 rand = "0.10"
@@ -24,7 +24,7 @@ serde_json = "1.0"
 serde_json5 = "0.2"
 sysinfo = "0.38"
 thiserror = "2.0"
-tokio = { version = "1.47", features = [
+tokio = { version = "1", features = [
     "io-util",
     "macros",
     "process",
@@ -50,14 +50,13 @@ ignore = "0.4"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }
-capnpc = "0.25"
 
 [dev-dependencies]
 libc = "0.2"
 node-stack = { path = "../node-stack-internal" }
 config = { path = "../config-internal", features = ["test_helpers"] }
 tempfile = "3.10"
-tokio = { version = "1.47", features = ["full", "test-util"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 httptest = "0.16.3"
 
 [features]

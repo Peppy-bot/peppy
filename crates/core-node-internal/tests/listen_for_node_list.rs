@@ -4,7 +4,8 @@ use common::{
     CALLER_INSTANCE_ID, send_node_add_and_wait, start_core_node_with_mock_messenger,
     write_peppy_json5,
 };
-use core_node::encoding::StackListRequest;
+use core_node_api::encoding::StackListRequest;
+use peppylib::core_node::transport::poll_stack_list;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -51,16 +52,16 @@ async fn listen_for_node_list_returns_succeeds() {
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
-    let response = StackListRequest::new(false)
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_list request should complete");
+    let response = poll_stack_list(
+        &StackListRequest::new(false),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_list request should complete");
 
     assert!(
         response.dot_graph.is_none(),
@@ -143,16 +144,16 @@ async fn listen_for_node_list_returns_dot_graph() {
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
-    let response = StackListRequest::new(true)
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_list request should complete");
+    let response = poll_stack_list(
+        &StackListRequest::new(true),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_list request should complete");
 
     let dot_graph = response
         .dot_graph

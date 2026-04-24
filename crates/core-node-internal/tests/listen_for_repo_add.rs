@@ -1,27 +1,21 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
-use core_node::encoding::{RepoAddRequest, RepoAddResponse};
-use core_node::names;
-use peppylib::ServiceMessenger;
+use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
+use peppylib::core_node::transport::poll_repo_add;
 use std::time::Duration;
 
 async fn send_repo_add(started: &StartedCoreNode, request: &RepoAddRequest) -> RepoAddResponse {
-    let payload = request.encode().expect("encode should succeed");
-    let response = ServiceMessenger::poll(
+    poll_repo_add(
+        request,
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         &started.core_node_name,
-        names::REPO_ADD,
-        Some(&started.core_node_name),
-        None,
-        payload,
         Duration::from_secs(5),
     )
     .await
-    .expect("repo_add poll should succeed");
-    RepoAddResponse::decode(&response.payload()).expect("decode should succeed")
+    .expect("repo_add poll should succeed")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

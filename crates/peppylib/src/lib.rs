@@ -1,5 +1,6 @@
 mod error;
 
+pub mod core_node;
 pub mod encoding;
 pub mod messaging;
 pub mod runtime;
@@ -11,6 +12,12 @@ pub use error::{
 pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
 pub mod config;
 pub mod types;
+
+// Core node functions
+pub use core_node::{
+    info::info,
+    stack::{StackList, stack_list},
+};
 
 pub use types::{Message, Payload};
 

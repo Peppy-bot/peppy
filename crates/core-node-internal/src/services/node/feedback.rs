@@ -2,8 +2,10 @@
 //!
 //! `FeedbackLine`/`FeedbackStream` are re-exported from
 //! `node-stack-internal::build_io` so that `NodeEntity::build` can stream
-//! apptainer output without depending on core-node-internal. The
-//! forwarder consumes those lines from an in-process mpsc channel and
+//! apptainer output without depending on core-node-internal. `FeedbackStream`
+//! itself is owned by `core-node-api` and re-exported through node-stack — so
+//! producers, transports, and the wire types all share one enum.
+//! The forwarder consumes those lines from an in-process mpsc channel and
 //! republishes each one onto a peppylib topic.
 
 pub(crate) use node_stack::{FeedbackLine, FeedbackStream};
@@ -18,7 +20,7 @@ pub(crate) fn spawn_feedback_forwarder<F>(
     encode: F,
 ) -> tokio::task::JoinHandle<()>
 where
-    F: Fn(FeedbackLine) -> crate::Result<peppylib::types::Payload> + Send + 'static,
+    F: Fn(FeedbackLine) -> core_node_api::Result<peppylib::types::Payload> + Send + 'static,
 {
     tokio::spawn(async move {
         while let Some(line) = feedback_rx.recv().await {

@@ -2,10 +2,10 @@ mod templates;
 
 use self::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
-use crate::encoding::{NodeInitRequest, NodeInitResponse};
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Toolchain;
+use core_node_api::encoding::{NodeInitRequest, NodeInitResponse};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -75,12 +75,14 @@ fn handle_node_init_request_inner(
             "Node directory already exists: {}",
             node_dir.display()
         ))
-        .encode();
+        .encode()
+        .map_err(Into::into);
     }
 
     if let Err(e) = std::fs::create_dir_all(&node_dir) {
         return NodeInitResponse::failure(format!("Failed to create node directory: {}", e))
-            .encode();
+            .encode()
+            .map_err(Into::into);
     }
 
     // Create language-specific configuration (must be done before peppygen generation
@@ -94,7 +96,8 @@ fn handle_node_init_request_inner(
                     "Failed to create Rust configuration: {}",
                     e
                 ))
-                .encode();
+                .encode()
+                .map_err(Into::into);
             }
         }
         Toolchain::Uv => {
@@ -105,7 +108,8 @@ fn handle_node_init_request_inner(
                     "Failed to create Python configuration: {}",
                     e
                 ))
-                .encode();
+                .encode()
+                .map_err(Into::into);
             }
         }
     }
@@ -121,15 +125,19 @@ fn handle_node_init_request_inner(
         generator::CrateDeployMode::default(),
         None,
     ) {
-        return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode();
+        return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e))
+            .encode()
+            .map_err(Into::into);
     }
 
     // Create .gitignore
     if let Err(e) = create_gitignore(&node_dir, toolchain) {
-        return NodeInitResponse::failure(format!("Failed to create .gitignore: {}", e)).encode();
+        return NodeInitResponse::failure(format!("Failed to create .gitignore: {}", e))
+            .encode()
+            .map_err(Into::into);
     }
 
-    NodeInitResponse::success().encode()
+    NodeInitResponse::success().encode().map_err(Into::into)
 }
 
 fn create_gitignore(node_dir: &std::path::Path, build_system: Toolchain) -> std::io::Result<()> {

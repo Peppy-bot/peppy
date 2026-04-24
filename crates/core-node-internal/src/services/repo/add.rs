@@ -1,9 +1,9 @@
 use crate::Result;
-use crate::encoding::{RepoAddRequest, RepoAddResponse};
 use crate::names;
 use crate::services::repo::refresh::read_or_create_repos;
 use crate::services::repo::{json_entry_identity, repo_source_to_json};
 use config::consts::PeppyDirs;
+use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -65,7 +65,9 @@ fn handle_repo_add_request_inner(
 
     let identity = request.source.identity();
     if identity.trim().is_empty() {
-        return RepoAddResponse::failure("repository path/URL must not be empty").encode();
+        return RepoAddResponse::failure("repository path/URL must not be empty")
+            .encode()
+            .map_err(Into::into);
     }
 
     let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
@@ -74,7 +76,11 @@ fn handle_repo_add_request_inner(
 
     let mut repos = match read_or_create_repos(peppy_dirs) {
         Ok(repos) => repos,
-        Err(e) => return RepoAddResponse::failure(e.to_string()).encode(),
+        Err(e) => {
+            return RepoAddResponse::failure(e.to_string())
+                .encode()
+                .map_err(Into::into);
+        }
     };
 
     let new_identity = identity.trim();
@@ -84,7 +90,8 @@ fn handle_repo_add_request_inner(
 
     if is_duplicate {
         return RepoAddResponse::failure(format!("repository '{}' already exists", new_identity))
-            .encode();
+            .encode()
+            .map_err(Into::into);
     }
 
     let next_id = if request.top {
@@ -99,7 +106,7 @@ fn handle_repo_add_request_inner(
                     return RepoAddResponse::failure(
                         "cannot add repo with top priority: existing minimum id is 0 (would underflow)",
                     )
-                    .encode();
+                    .encode().map_err(Into::into);
                 }
             },
             None => 1000,
@@ -116,7 +123,8 @@ fn handle_repo_add_request_inner(
                     return RepoAddResponse::failure(
                         "cannot add repo: existing maximum id is u64::MAX (would overflow)",
                     )
-                    .encode();
+                    .encode()
+                    .map_err(Into::into);
                 }
             },
             None => 1000,
@@ -124,11 +132,12 @@ fn handle_repo_add_request_inner(
     };
 
     repos.push(repo_source_to_json(next_id, &request.source));
-    let content = serde_json::to_string_pretty(&repos)
-        .map_err(|e| crate::Error::Encoding(format!("failed to serialize repositories: {e}")))?;
+    let content = serde_json::to_string_pretty(&repos).map_err(|e| {
+        core_node_api::Error::Encoding(format!("failed to serialize repositories: {e}"))
+    })?;
     std::fs::write(&repos_path, content)?;
 
     drop(_guard);
 
-    RepoAddResponse::success().encode()
+    RepoAddResponse::success().encode().map_err(Into::into)
 }

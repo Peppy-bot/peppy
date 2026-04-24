@@ -1,7 +1,8 @@
 use config::AnyType;
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
-use core_node::encoding::{
+use core_node_api::NodeStage;
+use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult,
 };
@@ -21,6 +22,7 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
+use peppylib::core_node::transport::{poll_node_info, send_node_run};
 /// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
 /// Matches `node info`'s request timeout — this is a metadata lookup,
 /// not a long-running action, so it must fail fast if the daemon is down
@@ -82,21 +84,16 @@ fn remaining_timeouts(
 
 /// Classify a node's lifecycle stage into a `run -b` action.
 ///
-/// This is split out as a pure function so the stage-matching logic can be
-/// unit-tested directly. Documented stage values come from
-/// `core_node::encoding::NodeInfo::stage`: `Added | Building | Ready | Root`.
-fn classify_stage(stage: &str, node_name: &str, tag: &str) -> Result<BuildDecision> {
+/// Split out as a pure function so the stage-matching logic can be
+/// unit-tested directly.
+fn classify_stage(stage: NodeStage, node_name: &str, tag: &str) -> Result<BuildDecision> {
     match stage {
-        "Ready" => Ok(BuildDecision::Skip),
-        "Added" => Ok(BuildDecision::Build),
-        "Building" => Ok(BuildDecision::Wait),
-        "Root" => Err(Error::ExecutionFailed(format!(
+        NodeStage::Ready => Ok(BuildDecision::Skip),
+        NodeStage::Added => Ok(BuildDecision::Build),
+        NodeStage::Building => Ok(BuildDecision::Wait),
+        NodeStage::Root => Err(Error::ExecutionFailed(format!(
             "Node '{}:{}' is a root node and cannot be built or run via `node run`",
             node_name, tag
-        ))),
-        other => Err(Error::ExecutionFailed(format!(
-            "Node '{}:{}' is in unexpected stage '{}'; cannot safely proceed with `run -b`",
-            node_name, tag, other
         ))),
     }
 }
@@ -120,21 +117,21 @@ async fn wait_for_build_to_finish(
     let deadline = Instant::now() + Duration::from_secs(timeouts.max_secs);
 
     loop {
-        let response = NodeInfoRequest::new(node_name.to_string(), tag.to_string())
-            .poll(
-                messenger,
-                core_node_name,
-                CALLER_INSTANCE_ID,
-                core_node_name,
-                NODE_INFO_PREFLIGHT_TIMEOUT,
-            )
-            .await
-            .map_err(|e| {
-                Error::ExecutionFailed(format!(
-                    "Failed to poll node info while waiting for build: {}",
-                    e
-                ))
-            })?;
+        let response = poll_node_info(
+            &NodeInfoRequest::new(node_name.to_string(), tag.to_string()),
+            messenger,
+            core_node_name,
+            CALLER_INSTANCE_ID,
+            core_node_name,
+            NODE_INFO_PREFLIGHT_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            Error::ExecutionFailed(format!(
+                "Failed to poll node info while waiting for build: {}",
+                e
+            ))
+        })?;
 
         match response {
             NodeInfoResponse::NotInStack => {
@@ -143,9 +140,9 @@ async fn wait_for_build_to_finish(
                     node_name, tag
                 )));
             }
-            NodeInfoResponse::Found(info) => match info.stage.as_str() {
-                "Ready" => return Ok(()),
-                "Building" => { /* still in flight — keep polling */ }
+            NodeInfoResponse::Found(info) => match info.stage {
+                NodeStage::Ready => return Ok(()),
+                NodeStage::Building => { /* still in flight — keep polling */ }
                 other => {
                     return Err(Error::ExecutionFailed(format!(
                         "Node '{}:{}' transitioned to unexpected stage '{}' while waiting for build to finish",
@@ -326,17 +323,17 @@ pub async fn run_instance_async(
         timeouts.max_secs,
     )
     .with_env_vars(caller_env_overrides());
-    let mut action_handle = start_goal
-        .send_goal(
-            messenger_handle,
-            core_node_name,
-            CALLER_INSTANCE_ID,
-            Some(core_node_name),
-            None,
-            GOAL_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_run goal: {}", e)))?;
+    let mut action_handle = send_node_run(
+        &start_goal,
+        messenger_handle,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        Some(core_node_name),
+        None,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_run goal: {}", e)))?;
 
     let start_result = crate::commands::action_poll::run_action_with_feedback::<
         NodeRunGoalResponse,
@@ -396,18 +393,18 @@ async fn run_node_async(
         // Look up the node's current lifecycle stage so we only trigger a
         // build when the node is not yet built. The same `NodeInfoRequest`
         // is used by the `node add` preflight (see add.rs).
-        let response = NodeInfoRequest::new(node_name.clone(), tag.clone())
-            .poll(
-                conn.messenger,
-                &conn.core_node_name,
-                CALLER_INSTANCE_ID,
-                &conn.core_node_name,
-                NODE_INFO_PREFLIGHT_TIMEOUT,
-            )
-            .await
-            .map_err(|e| {
-                Error::ExecutionFailed(format!("Failed to check node info before run: {}", e))
-            })?;
+        let response = poll_node_info(
+            &NodeInfoRequest::new(node_name.clone(), tag.clone()),
+            conn.messenger,
+            &conn.core_node_name,
+            CALLER_INSTANCE_ID,
+            &conn.core_node_name,
+            NODE_INFO_PREFLIGHT_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            Error::ExecutionFailed(format!("Failed to check node info before run: {}", e))
+        })?;
 
         let info = match response {
             NodeInfoResponse::NotInStack => {
@@ -419,7 +416,7 @@ async fn run_node_async(
             NodeInfoResponse::Found(info) => info,
         };
 
-        match classify_stage(info.stage.as_str(), &node_name, &tag)? {
+        match classify_stage(info.stage, &node_name, &tag)? {
             BuildDecision::Skip => {
                 info!(
                     "Node {}:{} has already been built, skipping build",
@@ -584,7 +581,7 @@ mod tests {
     #[test]
     fn classify_stage_ready_skips() {
         assert_eq!(
-            classify_stage("Ready", "n", "t").expect("Ready should classify"),
+            classify_stage(NodeStage::Ready, "n", "t").expect("Ready should classify"),
             BuildDecision::Skip
         );
     }
@@ -592,7 +589,7 @@ mod tests {
     #[test]
     fn classify_stage_added_builds() {
         assert_eq!(
-            classify_stage("Added", "n", "t").expect("Added should classify"),
+            classify_stage(NodeStage::Added, "n", "t").expect("Added should classify"),
             BuildDecision::Build
         );
     }
@@ -605,15 +602,15 @@ mod tests {
         // waits for the in-flight build instead of trying to start a new
         // one.
         assert_eq!(
-            classify_stage("Building", "n", "t").expect("Building should classify"),
+            classify_stage(NodeStage::Building, "n", "t").expect("Building should classify"),
             BuildDecision::Wait
         );
     }
 
     #[test]
     fn classify_stage_root_fails_fast() {
-        let err =
-            classify_stage("Root", "my_node", "v1").expect_err("Root should fail to classify");
+        let err = classify_stage(NodeStage::Root, "my_node", "v1")
+            .expect_err("Root should fail to classify");
         let msg = format!("{err}");
         assert!(msg.contains("my_node"), "error should name node: {msg}");
         assert!(msg.contains("v1"), "error should name tag: {msg}");
@@ -645,17 +642,5 @@ mod tests {
 
         // Past budget — same error path.
         assert!(remaining_max_secs(30, 45, "run").is_err());
-    }
-
-    #[test]
-    fn classify_stage_unknown_fails_fast() {
-        let err = classify_stage("Mystery", "my_node", "v1")
-            .expect_err("unknown stage should fail to classify");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("Mystery"),
-            "error should quote unknown stage: {msg}"
-        );
-        assert!(msg.contains("my_node"), "error should name node: {msg}");
     }
 }

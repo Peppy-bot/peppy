@@ -1,4 +1,5 @@
-use core_node::encoding::{NodeInfoRequest, NodeInfoResponse};
+use core_node_api::NodeStage;
+use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, TimeoutConfig};
 use peppy::context::AppContext;
@@ -8,6 +9,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
+use peppylib::core_node::transport::poll_node_info;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 const DEFAULTS: TimeoutConfig = TimeoutConfig {
     idle_secs: 60,
@@ -130,14 +132,19 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
     }
 }
 
-fn fetch_info(added: &AddedNode, node_name: &str, node_tag: &str) -> core_node::encoding::NodeInfo {
+fn fetch_info(
+    added: &AddedNode,
+    node_name: &str,
+    node_tag: &str,
+) -> core_node_api::encoding::NodeInfo {
     let messenger_handle = added
         .node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
     let response = added
         .rt
-        .block_on(NodeInfoRequest::new(node_name, node_tag).poll(
+        .block_on(poll_node_info(
+            &NodeInfoRequest::new(node_name, node_tag),
             messenger_handle,
             &added.core_node_name,
             CALLER_INSTANCE_ID,
@@ -146,8 +153,8 @@ fn fetch_info(added: &AddedNode, node_name: &str, node_tag: &str) -> core_node::
         ))
         .expect("node_info request should succeed");
     match response {
-        core_node::encoding::NodeInfoResponse::Found(info) => *info,
-        core_node::encoding::NodeInfoResponse::NotInStack => panic!(
+        core_node_api::encoding::NodeInfoResponse::Found(info) => *info,
+        core_node_api::encoding::NodeInfoResponse::NotInStack => panic!(
             "node_info unexpectedly reported `{}:{}` as not in the stack",
             node_name, node_tag
         ),
@@ -251,7 +258,8 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     assert_eq!(info_response.config.manifest.name.as_str(), NODE_NAME);
     assert_eq!(info_response.config.manifest.tag, NODE_TAG);
     assert_eq!(
-        info_response.stage, "Added",
+        info_response.stage,
+        NodeStage::Added,
         "node added with build=false should be in Added stage, got {:?}",
         info_response.stage
     );
@@ -412,7 +420,8 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
     let _guard = tracing::subscriber::set_default(subscriber);
 
     let response = rt
-        .block_on(NodeInfoRequest::new("ghost_node", "9.9.9").poll(
+        .block_on(poll_node_info(
+            &NodeInfoRequest::new("ghost_node", "9.9.9"),
             &caller_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,

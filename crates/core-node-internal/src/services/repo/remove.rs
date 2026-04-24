@@ -1,8 +1,8 @@
 use crate::Result;
-use crate::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use crate::names;
 use crate::services::repo::refresh::{process_refresh, read_or_create_repos, write_cache};
 use config::consts::PeppyDirs;
+use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -91,7 +91,9 @@ fn handle_repo_remove_request_inner(
 
     let mut repos = match read_or_create_repos(peppy_dirs) {
         Ok(repos) => repos,
-        Err(e) => return Ok((RepoRemoveResponse::failure(e.to_string()).encode()?, false)),
+        Err(e) => {
+            return Ok((RepoRemoveResponse::failure(e.to_string()).encode()?, false));
+        }
     };
 
     let target_id = request.id;
@@ -109,8 +111,9 @@ fn handle_repo_remove_request_inner(
 
     repos.remove(pos);
 
-    let content = serde_json::to_string_pretty(&repos)
-        .map_err(|e| crate::Error::Encoding(format!("failed to serialize repositories: {e}")))?;
+    let content = serde_json::to_string_pretty(&repos).map_err(|e| {
+        core_node_api::Error::Encoding(format!("failed to serialize repositories: {e}"))
+    })?;
     std::fs::write(&repos_path, content)?;
 
     drop(_guard);

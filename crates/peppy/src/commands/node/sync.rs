@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use config::consts::NODE_CONFIG_FILE;
 use config::node::NodeConfigParser;
-use core_node::encoding::NodeSyncRequest;
+use core_node_api::encoding::NodeSyncRequest;
 use node_stack::VirtualDeptree;
 use tracing::{info, warn};
 use walkdir::WalkDir;
@@ -15,6 +15,7 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
+use peppylib::core_node::transport::poll_node_sync;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Directory names that should never be descended into while searching for
@@ -148,18 +149,16 @@ async fn sync_resolved_node(
         conn.git_hash,
         local_peers.to_vec(),
     );
-    let response = request
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to call node_generate service: {}", e))
-        })?;
+    let response = poll_node_sync(
+        &request,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_generate service: {}", e)))?;
 
     if !response.success {
         let msg = if response.error_message.trim().is_empty() {

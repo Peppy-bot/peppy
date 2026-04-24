@@ -1,9 +1,8 @@
-use bytes::Bytes;
 use colored::Colorize;
 use config::{consts::DEFAULT_MESSAGING_PORT, node::QoSProfile};
 use names_generator2::get_random;
 use peppylib::messaging::ActionGoalHandle;
-use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
+use peppylib::{ActionMessenger, MessengerHandle, Payload, PeppyError};
 use rand::rng;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
@@ -39,7 +38,7 @@ async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
 
     match feedback_result {
         Ok(message) => {
-            let feedback_bytes = message.payload().as_bytes();
+            let feedback_bytes = message.payload();
             let feedback_text = String::from_utf8_lossy(feedback_bytes.as_ref());
             let core_node = message.core_node();
             let instance_id = message.instance_id();
@@ -81,7 +80,7 @@ async fn main() {
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found
-        Bytes::from_static(b"Hello from the action client"),
+        Payload::from_static(b"Hello from the action client"),
         QoSProfile::Reliable,
         GOAL_TIMEOUT,
     )
@@ -90,7 +89,7 @@ async fn main() {
 
     let goal_core_node = goal_handle.goal_response().core_node();
     let goal_instance_id = goal_handle.goal_response().instance_id();
-    let goal_response_bytes = goal_handle.goal_response().payload().as_bytes();
+    let goal_response_bytes = goal_handle.goal_response().payload();
     let goal_response_text = String::from_utf8_lossy(goal_response_bytes.as_ref());
     println!(
         "{}",
@@ -111,7 +110,7 @@ async fn main() {
         ActionMessenger::request_result(&sender_handle, &goal_handle, GOAL_TIMEOUT)
             .await
             .expect("Action result should be available");
-    let result_bytes = result_payload.payload().as_bytes();
+    let result_bytes = result_payload.payload();
     let result_text = String::from_utf8_lossy(result_bytes.as_ref());
     println!(
         "{}",
@@ -132,14 +131,14 @@ async fn main() {
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found
-        Bytes::from_static(b"This goal will be cancelled"),
+        Payload::from_static(b"This goal will be cancelled"),
         QoSProfile::Reliable,
         GOAL_TIMEOUT,
     )
     .await
     .expect("Cancellable action goal should succeed");
 
-    let cancel_goal_response_bytes = goal_handle.goal_response().payload().as_bytes();
+    let cancel_goal_response_bytes = goal_handle.goal_response().payload();
     let cancel_goal_response = String::from_utf8_lossy(cancel_goal_response_bytes.as_ref());
     println!(
         "{}",
@@ -157,7 +156,7 @@ async fn main() {
         ActionMessenger::cancel_goal(&sender_handle, &goal_handle, CANCEL_TIMEOUT)
             .await
             .expect("Cancel request should succeed");
-    let cancel_bytes = cancel_response.payload().as_bytes();
+    let cancel_bytes = cancel_response.payload();
     let cancel_text = String::from_utf8_lossy(cancel_bytes.as_ref());
     println!(
         "{}",
@@ -175,7 +174,7 @@ async fn main() {
 
     match ActionMessenger::request_result(&sender_handle, &goal_handle, GOAL_TIMEOUT).await {
         Ok(result_payload) => {
-            let result_bytes = result_payload.payload().as_bytes();
+            let result_bytes = result_payload.payload();
             let result_text = String::from_utf8_lossy(result_bytes.as_ref());
             panic!(
                 "Received result `{result_text}` even though the goal was cancelled. \

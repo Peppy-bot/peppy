@@ -7,7 +7,8 @@ use config::consts::{
 };
 use config::node::Toolchain;
 use config::test_helpers::assert_contains_all;
-use core_node::encoding::NodeInitRequest;
+use core_node_api::encoding::NodeInitRequest;
+use peppylib::core_node::transport::poll_node_init;
 use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -20,14 +21,14 @@ async fn listen_for_node_init_rust_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = NodeInitRequest::new(
-        nodes_root.path(),
-        NODE_NAME,
-        "abc123",
-        false,
-        Toolchain::Cargo,
-    )
-    .poll(
+    let response = poll_node_init(
+        &NodeInitRequest::new(
+            nodes_root.path(),
+            NODE_NAME,
+            "abc123",
+            false,
+            Toolchain::Cargo,
+        ),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -119,14 +120,14 @@ async fn listen_for_node_init_rust_container_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = NodeInitRequest::new(
-        nodes_root.path(),
-        NODE_NAME,
-        "abc123",
-        true,
-        Toolchain::Cargo,
-    )
-    .poll(
+    let response = poll_node_init(
+        &NodeInitRequest::new(
+            nodes_root.path(),
+            NODE_NAME,
+            "abc123",
+            true,
+            Toolchain::Cargo,
+        ),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -238,17 +239,16 @@ async fn listen_for_node_init_python_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response =
-        NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", false, Toolchain::Uv)
-            .poll(
-                &started_core_node.caller_handle,
-                &started_core_node.core_node_name,
-                CALLER_INSTANCE_ID,
-                &started_core_node.core_node_name,
-                None::<Duration>,
-            )
-            .await
-            .expect("node_init request should complete");
+    let response = poll_node_init(
+        &NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", false, Toolchain::Uv),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_init request should complete");
 
     assert!(
         response.success,
@@ -341,17 +341,16 @@ async fn listen_for_node_init_python_container_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response =
-        NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", true, Toolchain::Uv)
-            .poll(
-                &started_core_node.caller_handle,
-                &started_core_node.core_node_name,
-                CALLER_INSTANCE_ID,
-                &started_core_node.core_node_name,
-                None::<Duration>,
-            )
-            .await
-            .expect("node_init request should complete");
+    let response = poll_node_init(
+        &NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", true, Toolchain::Uv),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_init request should complete");
 
     assert!(
         response.success,
@@ -482,14 +481,14 @@ async fn listen_for_node_init_fails_if_directory_exists() {
         "precondition: peppygen output should not exist"
     );
 
-    let response = NodeInitRequest::new(
-        nodes_root.path(),
-        NODE_NAME,
-        "abc123",
-        false,
-        Toolchain::Cargo,
-    )
-    .poll(
+    let response = poll_node_init(
+        &NodeInitRequest::new(
+            nodes_root.path(),
+            NODE_NAME,
+            "abc123",
+            false,
+            Toolchain::Cargo,
+        ),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,

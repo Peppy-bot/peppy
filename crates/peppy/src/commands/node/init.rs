@@ -3,13 +3,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::node::Toolchain;
-use core_node::encoding::NodeInitRequest;
+use core_node_api::encoding::NodeInitRequest;
 use tracing::info;
 
 use super::types::NodeName;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use peppylib::core_node::transport::poll_node_init;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -72,18 +73,16 @@ impl NodeInitBuilder {
             self.toolchain,
         );
 
-        let response = request
-            .poll(
-                conn.messenger,
-                &conn.core_node_name,
-                CALLER_INSTANCE_ID,
-                &conn.core_node_name,
-                self.timeout,
-            )
-            .await
-            .map_err(|e| {
-                Error::ExecutionFailed(format!("Failed to call node_init service: {}", e))
-            })?;
+        let response = poll_node_init(
+            &request,
+            conn.messenger,
+            &conn.core_node_name,
+            CALLER_INSTANCE_ID,
+            &conn.core_node_name,
+            self.timeout,
+        )
+        .await
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_init service: {}", e)))?;
 
         if response.success {
             info!(

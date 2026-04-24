@@ -1,10 +1,9 @@
-use bytes::Bytes;
 use chrono::Local;
 use colored::Colorize;
 use config::consts::DEFAULT_MESSAGING_PORT;
 use names_generator2::get_random;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
-use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
+use peppylib::{ActionMessenger, MessengerHandle, Payload, PeppyResult};
 use rand::rng;
 use std::sync::Arc;
 use tokio::signal;
@@ -30,13 +29,13 @@ fn current_timestamp() -> String {
 
 fn payload_as_text(request: &ServiceRequestContext) -> String {
     let payload = request.message().payload();
-    String::from_utf8_lossy(payload.as_bytes().as_ref()).to_string()
+    String::from_utf8_lossy(payload.as_ref()).to_string()
 }
 
 async fn handle_goal_request(
     request: ServiceRequestContext,
     feedback_publisher: &TopicPublisher,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let request_id = request.request_id();
     let core_node = request.message().core_node();
     let instance_id = request.message().instance_id();
@@ -52,7 +51,7 @@ async fn handle_goal_request(
 
     let feedback_text = format!("feedback: working on `{payload_text}`");
     feedback_publisher
-        .publish(Bytes::from(feedback_text.clone()))
+        .publish(Payload::from(feedback_text.clone().into_bytes()))
         .await?;
 
     let timestamp = current_timestamp();
@@ -75,10 +74,10 @@ async fn handle_goal_request(
             .green()
     );
 
-    Ok(Bytes::from(response_text))
+    Ok(Payload::from(response_text.into_bytes()))
 }
 
-async fn handle_cancel_request(request: ServiceRequestContext) -> PeppyResult<Bytes> {
+async fn handle_cancel_request(request: ServiceRequestContext) -> PeppyResult<Payload> {
     let request_id = request.request_id();
     let timestamp = current_timestamp();
     println!(
@@ -110,10 +109,10 @@ async fn handle_cancel_request(request: ServiceRequestContext) -> PeppyResult<By
             .magenta()
     );
 
-    Ok(Bytes::from(response_text))
+    Ok(Payload::from(response_text.into_bytes()))
 }
 
-async fn handle_result_request(request: ServiceRequestContext) -> PeppyResult<Bytes> {
+async fn handle_result_request(request: ServiceRequestContext) -> PeppyResult<Payload> {
     let request_id = request.request_id();
     let instance_id = request.message().instance_id();
     let payload_text = payload_as_text(&request);
@@ -139,7 +138,7 @@ async fn handle_result_request(request: ServiceRequestContext) -> PeppyResult<By
         .cyan()
     );
 
-    Ok(Bytes::from(response_text))
+    Ok(Payload::from(response_text.into_bytes()))
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -261,7 +260,7 @@ async fn handle_followups(
                                         .bold()
                                         .magenta()
                                 );
-                                return Ok(Bytes::from_static(
+                                return Ok(Payload::from_static(
                                     b"cancel ignored: no active goal for caller",
                                 ));
                             }
@@ -299,7 +298,7 @@ async fn handle_followups(
                                         .bold()
                                         .cyan()
                                 );
-                                return Ok(Bytes::from_static(
+                                return Ok(Payload::from_static(
                                     b"result ignored: no active goal for caller",
                                 ));
                             }

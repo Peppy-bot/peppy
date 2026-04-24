@@ -2,7 +2,8 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
-use core_node::encoding::NodeSyncRequest;
+use core_node_api::encoding::NodeSyncRequest;
+use peppylib::core_node::transport::poll_node_sync;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -46,16 +47,16 @@ async fn listen_for_node_sync_success() {
     );
 
     let expected_git_hash = "deadbeef";
-    let response = NodeSyncRequest::new(node_dir.path(), expected_git_hash, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), expected_git_hash, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         response.success,
@@ -112,16 +113,16 @@ async fn listen_for_node_sync_success() {
 async fn listen_for_node_sync_missing_node_root_dir_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    let response = NodeSyncRequest::new("", common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new("", common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -143,16 +144,16 @@ async fn listen_for_node_sync_node_root_dir_does_not_exist_fails() {
         missing_dir.display()
     );
 
-    let response = NodeSyncRequest::new(missing_dir, common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(missing_dir, common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -172,16 +173,16 @@ async fn listen_for_node_sync_node_root_dir_is_not_a_directory_fails() {
     let file_path = tmp.path().join("not_a_directory");
     fs::write(&file_path, "not a dir").expect("failed to write temp file");
 
-    let response = NodeSyncRequest::new(file_path, common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(file_path, common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -201,16 +202,16 @@ async fn listen_for_node_sync_missing_peppy_json5_fails() {
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     let cargo_toml_path = node_dir.path().join("Cargo.toml");
 
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -242,16 +243,16 @@ async fn listen_for_node_sync_invalid_peppy_json5_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -363,12 +364,12 @@ async fn listen_for_node_sync_resolves_dependency_via_local_peers() {
         "#,
     );
 
-    let response = NodeSyncRequest::new(
-        brain_dir.path(),
-        common::TEST_GIT_HASH,
-        vec![camera_dir.path().to_path_buf()],
-    )
-    .poll(
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(
+            brain_dir.path(),
+            common::TEST_GIT_HASH,
+            vec![camera_dir.path().to_path_buf()],
+        ),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -454,16 +455,16 @@ async fn listen_for_node_sync_missing_dependency_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -518,16 +519,16 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(!response.success, "node_sync should fail");
     // The error message should contain all three unique missing dependencies
@@ -622,17 +623,16 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     );
 
     // Generate peppygen for the uvc_camera node first
-    let uvc_camera_response =
-        NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, vec![])
-            .poll(
-                &started_core_node.caller_handle,
-                &started_core_node.core_node_name,
-                CALLER_INSTANCE_ID,
-                &started_core_node.core_node_name,
-                Duration::from_secs(5),
-            )
-            .await
-            .expect("node_sync request should complete");
+    let uvc_camera_response = poll_node_sync(
+        &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         uvc_camera_response.success,
@@ -707,16 +707,16 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     );
 
     // Generate the brain node - this should succeed now that uvc_camera is in the stack
-    let brain_response = NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let brain_response = poll_node_sync(
+        &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         brain_response.success,
@@ -822,17 +822,16 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
         "#,
     );
 
-    let uvc_camera_response =
-        NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, vec![])
-            .poll(
-                &started_core_node.caller_handle,
-                &started_core_node.core_node_name,
-                CALLER_INSTANCE_ID,
-                &started_core_node.core_node_name,
-                Duration::from_secs(5),
-            )
-            .await
-            .expect("node_sync request should complete");
+    let uvc_camera_response = poll_node_sync(
+        &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         uvc_camera_response.success,
@@ -904,16 +903,16 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
         "#,
     );
 
-    let brain_response = NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let brain_response = poll_node_sync(
+        &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         brain_response.success,
@@ -983,17 +982,16 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
         "#,
     );
 
-    let uvc_camera_response =
-        NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, vec![])
-            .poll(
-                &started_core_node.caller_handle,
-                &started_core_node.core_node_name,
-                CALLER_INSTANCE_ID,
-                &started_core_node.core_node_name,
-                Duration::from_secs(5),
-            )
-            .await
-            .expect("node_sync request should complete");
+    let uvc_camera_response = poll_node_sync(
+        &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         uvc_camera_response.success,
@@ -1065,16 +1063,16 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
         "#,
     );
 
-    let brain_response = NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let brain_response = poll_node_sync(
+        &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         brain_response.success,
@@ -1150,17 +1148,16 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
         "#,
     );
 
-    let action_server_response =
-        NodeSyncRequest::new(action_server_node_dir.path(), common::TEST_GIT_HASH, vec![])
-            .poll(
-                &started_core_node.caller_handle,
-                &started_core_node.core_node_name,
-                CALLER_INSTANCE_ID,
-                &started_core_node.core_node_name,
-                Duration::from_secs(5),
-            )
-            .await
-            .expect("node_sync request should complete");
+    let action_server_response = poll_node_sync(
+        &NodeSyncRequest::new(action_server_node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         action_server_response.success,
@@ -1232,17 +1229,16 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
         "#,
     );
 
-    let controller_response =
-        NodeSyncRequest::new(controller_node_dir.path(), common::TEST_GIT_HASH, vec![])
-            .poll(
-                &started_core_node.caller_handle,
-                &started_core_node.core_node_name,
-                CALLER_INSTANCE_ID,
-                &started_core_node.core_node_name,
-                Duration::from_secs(5),
-            )
-            .await
-            .expect("node_sync request should complete");
+    let controller_response = poll_node_sync(
+        &NodeSyncRequest::new(controller_node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         controller_response.success,
@@ -1308,16 +1304,16 @@ async fn listen_for_node_sync_generates_rust_parameters() {
     );
 
     // Generate peppygen for the uvc_camera node first
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         response.success,
@@ -1404,16 +1400,16 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     );
 
     // First generation - creates the .peppy folder
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         response.success,
@@ -1438,16 +1434,16 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     );
 
     // Second generation - should delete the .peppy folder and recreate it
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         response.success,
@@ -1536,16 +1532,16 @@ async fn listen_for_node_sync_with_variant_succeeds() {
     );
 
     let expected_git_hash = "deadbeef";
-    let response = NodeSyncRequest::new(node_dir.path(), expected_git_hash, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), expected_git_hash, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         response.success,
@@ -1689,16 +1685,16 @@ async fn listen_for_node_sync_variant_missing_directory_fails() {
         }"#,
     );
 
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -1744,16 +1740,16 @@ async fn listen_for_node_sync_variant_invalid_config_fails() {
         }"#,
     );
 
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -1818,16 +1814,16 @@ async fn listen_for_node_sync_default_variant_skips_root_codegen() {
     );
 
     let expected_git_hash = "abc12345";
-    let response = NodeSyncRequest::new(node_dir.path(), expected_git_hash, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), expected_git_hash, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         response.success,
@@ -1921,16 +1917,16 @@ async fn listen_for_node_sync_default_variant_cleans_stale_root_peppy_dir() {
         }"#,
     );
 
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("first node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("first node_sync request should complete");
 
     assert!(
         response.success,
@@ -1972,16 +1968,16 @@ async fn listen_for_node_sync_default_variant_cleans_stale_root_peppy_dir() {
     );
 
     // Second sync: language is None at root — should clean up stale root .peppy
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("second node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("second node_sync request should complete");
 
     assert!(
         response.success,
@@ -2059,16 +2055,16 @@ async fn listen_for_node_sync_undeclared_local_node_id_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let response = poll_node_sync(
+        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(!response.success, "node_sync should fail");
     assert!(

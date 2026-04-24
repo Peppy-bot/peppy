@@ -1,30 +1,24 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
-use core_node::encoding::{RepoExcludeRequest, RepoExcludeResponse};
-use core_node::names;
-use peppylib::ServiceMessenger;
+use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse};
+use peppylib::core_node::transport::poll_repo_exclude;
 use std::time::Duration;
 
 async fn send_repo_exclude(
     started: &StartedCoreNode,
     request: &RepoExcludeRequest,
 ) -> RepoExcludeResponse {
-    let payload = request.encode().expect("encode should succeed");
-    let response = ServiceMessenger::poll(
+    poll_repo_exclude(
+        request,
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         &started.core_node_name,
-        names::REPO_EXCLUDE,
-        Some(&started.core_node_name),
-        None,
-        payload,
         Duration::from_secs(5),
     )
     .await
-    .expect("repo_exclude poll should succeed");
-    RepoExcludeResponse::decode(&response.payload()).expect("decode should succeed")
+    .expect("repo_exclude poll should succeed")
 }
 
 fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {

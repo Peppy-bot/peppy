@@ -5,13 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
-use core_node::encoding::StackListRequest;
-use node_stack::SerializedNodeGraph;
+use core_node_api::SerializedNodeGraph;
+use core_node_api::encoding::StackListRequest;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::service::{ServiceCommand, ServiceCommands};
 use peppy::context::AppContext;
 
+use peppylib::core_node::transport::poll_stack_list;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 fn write_node_config(
@@ -122,16 +123,16 @@ async fn service_reset_command_resets_node_stack() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = StackListRequest::new(false)
-        .poll(
-            messenger_handle,
-            &core_node_name,
-            CALLER_INSTANCE_ID,
-            &core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("stack_list request should complete");
+    let response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger_handle,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -151,16 +152,16 @@ async fn service_reset_command_resets_node_stack() {
     .execute(&ctx)
     .expect("service reset command should succeed");
 
-    let response = StackListRequest::new(false)
-        .poll(
-            messenger_handle,
-            &core_node_name,
-            CALLER_INSTANCE_ID,
-            &core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("stack_list request should complete after reset");
+    let response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger_handle,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack_list request should complete after reset");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse after reset");

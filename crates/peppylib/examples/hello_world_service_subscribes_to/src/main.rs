@@ -1,7 +1,6 @@
-use bytes::Bytes;
 use config::consts::DEFAULT_MESSAGING_PORT;
 use names_generator2::get_random;
-use peppylib::{MessengerHandle, ServiceMessenger};
+use peppylib::{MessengerHandle, Payload, ServiceMessenger};
 use rand::rng;
 use std::time::Duration;
 
@@ -25,7 +24,7 @@ async fn main() {
     let core_node = format!("{}_core", get_random(rng()));
     let as_instance_id = format!("{}_caller", get_random(rng()));
 
-    let request_payload = Bytes::from_static(b"Hello service");
+    let request_payload = Payload::from_static(b"Hello service");
 
     println!(
         "Sending service request as instance_id {as_instance_id} and core node {core_node}..."
@@ -44,8 +43,8 @@ async fn main() {
     .await
     .expect("Service call should succeed");
 
-    let response_bytes = response.payload().as_bytes();
-    let response_text = String::from_utf8_lossy(response_bytes.as_ref());
+    let response_payload = response.payload();
+    let response_text = String::from_utf8_lossy(response_payload.as_ref());
     let from_service_instance_id = response.instance_id();
     println!("Received response from {from_service_instance_id} instance_id: `{response_text}`");
 }

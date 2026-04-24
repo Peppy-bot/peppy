@@ -17,9 +17,9 @@ mod stop;
 mod sync;
 pub(crate) mod variant;
 
-use crate::encoding::NodeSource;
 use config::consts::PeppyDirs;
 use config::node::NodeConfig;
+use core_node_api::encoding::NodeSource;
 
 // Crate-external re-exports (paths that other crates / other `services::`
 // submodules reference as `crate::services::node::X`).

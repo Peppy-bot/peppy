@@ -21,7 +21,7 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// accepted-response encoding site in the add/build/start handlers.
 pub(crate) fn encode_response_or_err(
     identifier: &'static str,
-    result: crate::Result<peppylib::types::Payload>,
+    result: core_node_api::Result<peppylib::types::Payload>,
 ) -> peppylib::PeppyResult<peppylib::types::Payload> {
     result.map_err(|e| peppylib::PeppyError::InternalEncodingError {
         identifier: identifier.to_string(),

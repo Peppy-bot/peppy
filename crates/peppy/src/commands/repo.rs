@@ -7,7 +7,7 @@ mod remove;
 use std::sync::Arc;
 
 use clap::Subcommand;
-use core_node::encoding::RepoSource;
+use core_node_api::encoding::RepoSource;
 
 use super::Command;
 use crate::{context::AppContext, error::Result};

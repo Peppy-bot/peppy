@@ -1,14 +1,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::{NodeRemoveRequest, StackListRequest};
-use node_stack::SerializedNodeGraph;
+use core_node_api::SerializedNodeGraph;
+use core_node_api::encoding::{NodeRemoveRequest, StackListRequest};
 use tracing::info;
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
+use peppylib::core_node::transport::{poll_node_remove, poll_stack_list};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn remove_node(
@@ -62,18 +63,16 @@ async fn remove_node_async(
 
     let remove_request =
         NodeRemoveRequest::new(&node_name, &tag).with_stop_instances(stop_instances);
-    let remove_response = remove_request
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to call node_remove service: {}", e))
-        })?;
+    let remove_response = poll_node_remove(
+        &remove_request,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_remove service: {}", e)))?;
 
     if !remove_response.success {
         return Err(Error::ExecutionFailed(
@@ -93,30 +92,29 @@ async fn fetch_instance_ids(
     node_name: &str,
     tag: &str,
 ) -> Result<Vec<String>> {
-    let response = StackListRequest::new(false)
-        .poll(
-            messenger,
-            core_node_name,
-            CALLER_INSTANCE_ID,
-            core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "Failed to check running instances before removal: {}",
-                e
-            ))
-        })?;
+    let response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await?;
 
     let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;
+        .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))?;
 
     Ok(graph
         .nodes
-        .into_iter()
+        .iter()
         .find(|node| node.name == node_name && node.tag == tag)
-        .map(|node| node.instance_ids)
+        .map(|node| {
+            node.running_instance_ids()
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default())
 }
 

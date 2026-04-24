@@ -1,7 +1,7 @@
 use crate::Result;
-use crate::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use crate::names;
 use config::node::Name;
+use core_node_api::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
 use peppylib::types::Payload;
@@ -100,7 +100,8 @@ async fn handle_node_remove_request_inner(
     };
     if request.node_name == root_node_name && request.tag == root_node_tag {
         return NodeRemoveResponse::failure("Cannot remove the core node from the node stack")
-            .encode();
+            .encode()
+            .map_err(Into::into);
     }
 
     let matching_entity = node_stack.snapshot().into_iter().find(|handle| {
@@ -113,7 +114,8 @@ async fn handle_node_remove_request_inner(
             "Node '{}:{}' not found in node stack",
             request.node_name, request.tag
         ))
-        .encode();
+        .encode()
+        .map_err(Into::into);
     };
 
     let matching_entities = vec![matching_entity];
@@ -188,7 +190,8 @@ async fn handle_node_remove_request_inner(
                     target.instance_id.as_str(),
                     e
                 ))
-                .encode();
+                .encode()
+                .map_err(Into::into);
             }
         };
         if reachable {
@@ -212,7 +215,7 @@ async fn handle_node_remove_request_inner(
             request.node_name,
             example.instance_id.as_str(),
         ))
-        .encode();
+        .encode().map_err(Into::into);
     }
 
     // With `stop_instances=true`, we proceed despite unreachable instances —
@@ -262,7 +265,8 @@ async fn handle_node_remove_request_inner(
                     target.instance_id.as_str(),
                     e
                 ))
-                .encode();
+                .encode()
+                .map_err(Into::into);
             }
         }
     }
@@ -302,10 +306,11 @@ async fn handle_node_remove_request_inner(
                     "Failed to remove node config '{}:{}': {}",
                     target.node_name, target.node_tag, e
                 ))
-                .encode();
+                .encode()
+                .map_err(Into::into);
             }
         }
     }
 
-    NodeRemoveResponse::success().encode()
+    NodeRemoveResponse::success().encode().map_err(Into::into)
 }

@@ -1,11 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::InfoRequest;
+use core_node_api::encoding::InfoRequest;
 
 use super::{CALLER_INSTANCE_ID, Command};
 use crate::context::AppContext;
 use crate::error::Result;
+use peppylib::core_node::transport::poll_info;
 
 #[cfg(target_os = "linux")]
 fn print_container_setup_status() {
@@ -54,15 +55,15 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     let request = InfoRequest::new();
-    match request
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
+    match poll_info(
+        &request,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
     {
         Ok(response) => {
             println!();
@@ -72,6 +73,7 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
             println!("Core node name: {}", response.core_node_name);
             println!("Core node instance ID: {}", response.core_node_instance_id);
             println!("Host name: {}", response.host_name);
+            println!("Messaging port: {}", response.messaging_port);
             println!("Uptime: {}s", response.uptime_secs);
             println!("Node count: {}", response.node_count);
             println!();

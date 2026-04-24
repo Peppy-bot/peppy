@@ -6,7 +6,9 @@ use common::{
     write_peppy_json5,
 };
 use config::node::Name;
-use core_node::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
+use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
+use core_node_api::{InstanceState, NodeStage};
+use peppylib::core_node::transport::poll_node_info as transport_poll_node_info;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -21,16 +23,16 @@ async fn poll_node_info_raw(
     started_core_node: &common::StartedCoreNode,
     request: &NodeInfoRequest,
     timeout: Duration,
-) -> core_node::Result<NodeInfoResponse> {
-    request
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            timeout,
-        )
-        .await
+) -> peppylib::PeppyResult<NodeInfoResponse> {
+    transport_poll_node_info(
+        request,
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        timeout,
+    )
+    .await
 }
 
 /// Sends a `NODE_INFO` poll request and unwraps the `Found` body. Panics
@@ -40,7 +42,7 @@ async fn poll_node_info(
     started_core_node: &common::StartedCoreNode,
     request: &NodeInfoRequest,
     timeout: Duration,
-) -> core_node::Result<NodeInfo> {
+) -> peppylib::PeppyResult<NodeInfo> {
     match poll_node_info_raw(started_core_node, request, timeout).await? {
         NodeInfoResponse::Found(info) => Ok(*info),
         NodeInfoResponse::NotInStack => panic!(
@@ -112,12 +114,13 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         "config_integrity should be a 64-character hex SHA256 hash"
     );
     assert_eq!(
-        info_response.stage, "Ready",
+        info_response.stage,
+        NodeStage::Ready,
         "stage should be Ready after build + spawn"
     );
     assert_eq!(info_response.instances.len(), 1);
     assert_eq!(info_response.instances[0].instance_id, TARGET_INSTANCE_ID);
-    assert_eq!(info_response.instances[0].state, "running");
+    assert_eq!(info_response.instances[0].state, InstanceState::Running);
     assert_eq!(info_response.run_log_paths.len(), 1);
     let expected_run_log = started_core_node
         .peppy_dirs
@@ -312,7 +315,8 @@ async fn node_info_has_instance_ids() {
     );
     for inst in &info_response.instances {
         assert_eq!(
-            inst.state, "running",
+            inst.state,
+            InstanceState::Running,
             "instance {} should be running",
             inst.instance_id
         );

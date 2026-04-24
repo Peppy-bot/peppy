@@ -1,8 +1,7 @@
-use bytes::Bytes;
 use config::consts::DEFAULT_MESSAGING_PORT;
 use config::node::QoSProfile;
 use names_generator2::get_random;
-use peppylib::{MessengerHandle, TopicMessenger};
+use peppylib::{MessengerHandle, Payload, TopicMessenger};
 use rand::rng;
 
 #[tokio::main]
@@ -26,7 +25,7 @@ async fn main() {
             )
         });
 
-    let payload = Bytes::from_static(b"Hello world");
+    let payload = Payload::from_static(b"Hello world");
 
     println!("Sending payload as {instance_id} with core node {core_node}...");
     TopicMessenger::emit(

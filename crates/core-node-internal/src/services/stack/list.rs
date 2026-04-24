@@ -1,6 +1,6 @@
 use crate::Result;
-use crate::encoding::{StackListRequest, StackListResponse};
 use crate::names;
+use core_node_api::encoding::{StackListRequest, StackListResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -66,5 +66,7 @@ fn handle_node_list_request_inner(
     };
     let serialized_graph = node_stack.to_serialized_graph();
     let graph_json = serde_json::to_string(&serialized_graph).unwrap_or_else(|_| "{}".to_string());
-    StackListResponse::new(dot_graph, graph_json).encode()
+    StackListResponse::new(dot_graph, graph_json)
+        .encode()
+        .map_err(Into::into)
 }

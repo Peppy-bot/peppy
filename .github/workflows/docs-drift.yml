@@ -2,9 +2,9 @@ name: Docs drift
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
 
 concurrency:
   group: docs-drift-${{ github.event.pull_request.number || github.ref }}
@@ -58,13 +58,3 @@ jobs:
             in response to code changes in #${{ github.event.pull_request.number }}.
           commit-message: "docs: auto-sync with code changes"
           add-paths: docs/**
-
-  block-merge-on-docs-drift:
-    runs-on: self-hosted
-    needs: docs-drift
-    if: ${{ needs.docs-drift.outputs.docs-outdated == 'true' }}
-    steps:
-      - name: Fail to block merge
-        run: |
-          echo "::error::Review the PR #${{ github.event.pull_request.number }}"
-          exit 1

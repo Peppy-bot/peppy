@@ -1,11 +1,11 @@
 use crate::Result;
-use crate::encoding::{
-    RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource, RepoSourceKind,
-};
 use crate::names;
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos, walk_directory};
 use config::consts::PeppyDirs;
+use core_node_api::encoding::{
+    RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource, RepoSourceKind,
+};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -62,7 +62,11 @@ fn handle_repo_list_request_inner(
 
     let repos = match read_or_create_repos(peppy_dirs) {
         Ok(repos) => repos,
-        Err(e) => return RepoListResponse::failure(e.to_string()).encode(),
+        Err(e) => {
+            return RepoListResponse::failure(e.to_string())
+                .encode()
+                .map_err(Into::into);
+        }
     };
 
     let exclusions = ExclusionSet::load(peppy_dirs);
@@ -193,7 +197,9 @@ fn handle_repo_list_request_inner(
         }
     }
 
-    RepoListResponse::success(all_entries).encode()
+    RepoListResponse::success(all_entries)
+        .encode()
+        .map_err(Into::into)
 }
 
 /// Read cached node entries from packages.json5 in the cache directory.

@@ -2,9 +2,8 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
-use core_node::encoding::{RepoListRequest, RepoListResponse, RepoSourceKind};
-use core_node::names;
-use peppylib::ServiceMessenger;
+use core_node_api::encoding::{RepoListRequest, RepoListResponse, RepoSourceKind};
+use peppylib::core_node::transport::poll_repo_list;
 use std::time::Duration;
 
 /// Minimal valid peppy.json5 content for a node with the given name and tag.
@@ -50,22 +49,16 @@ fn create_node_dir(base: &std::path::Path, name: &str, tag: &str) -> std::path::
 }
 
 async fn send_repo_list(started: &StartedCoreNode) -> RepoListResponse {
-    let request = RepoListRequest;
-    let payload = request.encode().expect("encode should succeed");
-    let response = ServiceMessenger::poll(
+    poll_repo_list(
+        &RepoListRequest,
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         &started.core_node_name,
-        names::REPO_LIST,
-        Some(&started.core_node_name),
-        None,
-        payload,
         Duration::from_secs(5),
     )
     .await
-    .expect("repo_list poll should succeed");
-    RepoListResponse::decode(&response.payload()).expect("decode should succeed")
+    .expect("repo_list poll should succeed")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
