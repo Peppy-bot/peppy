@@ -36,6 +36,7 @@ The response carries:
 - `node_count` — how many nodes are currently in the stack.
 - `git_version` — the peppy build the core node was compiled from.
 - `container_info.apptainer_version`, `container_info.lima_version` — container runtime versions.
+- `messaging_port` — the port the messaging layer is listening on.
 
 The second argument is a timeout. Rust accepts anything that converts to `Option<Duration>`; Python accepts a `float` in seconds. Pass `None` (or omit it in Python) to use the default of 10 seconds.
 
