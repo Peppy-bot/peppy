@@ -22,6 +22,7 @@ from . import _peppylib  # type: ignore[import-not-found]
 sys.modules["peppylib.messaging"] = _peppylib.messaging
 sys.modules["peppylib.messaging.services"] = _peppylib.messaging.services
 sys.modules["peppylib.messaging.actions"] = _peppylib.messaging.actions
+sys.modules["peppylib.core_node"] = _peppylib.core_node
 
 # Internal/native module aliases
 sys.modules["peppylib._peppylib.messaging"] = _peppylib.messaging
@@ -31,6 +32,7 @@ sys.modules["peppylib._peppylib.runtime"] = _peppylib.runtime
 sys.modules["peppylib._peppylib.messaging.services"] = _peppylib.messaging.services
 sys.modules["peppylib._peppylib.messaging.actions"] = _peppylib.messaging.actions
 sys.modules["peppylib._peppylib.services"] = _peppylib.services
+sys.modules["peppylib._peppylib.core_node"] = _peppylib.core_node
 
 # Expose as attribute for `from peppylib import messaging`
 messaging = _peppylib.messaging
@@ -46,6 +48,11 @@ from ._peppylib.runtime import (  # noqa: E402  # type: ignore[import-not-found]
     NodeRunner,
     CancellationToken,
 )
+from ._peppylib.core_node import (  # noqa: E402  # type: ignore[import-not-found]
+    StackList,
+    info,
+    stack_list,
+)
 
 __all__ = [
     "MessengerHandle",
@@ -58,6 +65,9 @@ __all__ = [
     "StandaloneConfig",
     "NodeRunner",
     "CancellationToken",
+    "StackList",
+    "info",
+    "stack_list",
     "messaging",
     "encoding",
     "__version__",

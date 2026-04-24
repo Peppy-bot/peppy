@@ -1,6 +1,6 @@
 use crate::messaging::PyMessengerHandle;
 use peppylib::runtime::CancellationToken;
-use peppylib::runtime::{NodeBuilder, NodeRunner, StandaloneConfig};
+use peppylib::runtime::{NodeBuilder, NodeRunner, Processor, StandaloneConfig};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyCFunction, PyDict};
@@ -234,7 +234,7 @@ impl PyCancellationToken {
 /// Python wrapper for NodeRunner.
 #[pyclass(name = "NodeRunner")]
 pub struct PyNodeRunner {
-    inner: Arc<NodeRunner>,
+    pub(crate) inner: Arc<NodeRunner>,
     /// Cached messenger handle — cloning `MessengerHandle` is a cheap `Arc`
     /// bump, but we avoid re-wrapping it on every `messenger()` call.
     cached_messenger: PyMessengerHandle,
@@ -254,6 +254,28 @@ impl PyNodeRunner {
 
 #[pymethods]
 impl PyNodeRunner {
+    /// Build a `NodeRunner` in standalone mode from a peppy.json5 path and a
+    /// `StandaloneConfig`. Mirrors the Rust-side
+    /// `Processor::new_standalone(...)` + `NodeRunner::new(...)` flow used by
+    /// `crates/peppylib/tests/core_node/common.rs` so Python integration tests
+    /// can stand up a runner without going through `NodeBuilder::run`.
+    #[staticmethod]
+    fn new_standalone<'py>(
+        py: Python<'py>,
+        peppy_config_path: String,
+        standalone_config: &PyStandaloneConfig,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let config = standalone_config.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let processor = Processor::new_standalone(PathBuf::from(peppy_config_path), &config)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let runner = NodeRunner::new(processor)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            Ok(PyNodeRunner::new(Arc::new(runner)))
+        })
+    }
+
     /// Get the cancellation token for graceful shutdown coordination.
     fn cancellation_token(&self) -> PyCancellationToken {
         PyCancellationToken {

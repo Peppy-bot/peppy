@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 mod config;
+mod core_node;
 mod messaging;
 mod names;
 mod runtime;
@@ -15,6 +16,7 @@ fn _peppylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         option_env!("PEPPY_GIT_TAG").unwrap_or("0.0.1"),
     )?;
     config::register(m)?;
+    core_node::register(m)?;
     messaging::register(m)?;
     names::register(m)?;
     runtime::register(m)?;

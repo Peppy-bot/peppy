@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 config = { path = "../config-internal" }
+core-node-api = { path = "../core-node-api" }
 peppylib = { path = "../peppylib" }
 pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
 pythonize = { version = "0.28" }
