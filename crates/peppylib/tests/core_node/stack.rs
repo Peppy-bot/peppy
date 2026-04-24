@@ -145,6 +145,16 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
     .expect("stack_list should succeed");
 
     assert_eq!(result.graph, graph);
+    let brain = result
+        .graph
+        .nodes
+        .iter()
+        .find(|n| n.name == "brain")
+        .expect("brain node should be present in the returned stack");
+    assert_eq!(brain.stage, Some(NodeStage::Ready));
+    assert_eq!(brain.instances.len(), 1);
+    assert_eq!(brain.instances[0].instance_id, "i1");
+    assert_eq!(brain.instances[0].state, InstanceState::Running);
     assert_eq!(result.dot_graph.as_deref(), Some("digraph {}"));
 }
 
@@ -164,5 +174,15 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
     .expect("stack_list should succeed");
 
     assert_eq!(result.graph, graph);
+    let brain = result
+        .graph
+        .nodes
+        .iter()
+        .find(|n| n.name == "brain")
+        .expect("brain node should be present in the returned stack");
+    assert_eq!(brain.stage, Some(NodeStage::Ready));
+    assert_eq!(brain.instances.len(), 1);
+    assert_eq!(brain.instances[0].instance_id, "i1");
+    assert_eq!(brain.instances[0].state, InstanceState::Running);
     assert!(result.dot_graph.is_none());
 }
