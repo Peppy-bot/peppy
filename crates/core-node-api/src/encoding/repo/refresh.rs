@@ -1,7 +1,7 @@
 use capnp::message::Builder;
 
 use crate::encoding::repo::add::RepoSourceKind;
-use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
 use crate::repo_capnp;
 use crate::{Payload, Result};
 
@@ -144,7 +144,9 @@ impl RepoRefreshFeedback {
             feedback.set_path(&self.path);
             feedback.set_excluded(self.excluded);
             feedback.set_status_message(&self.status_message);
-            let mut variants_builder = feedback.init_variants(self.variants.len() as u32);
+            let variant_count =
+                capnp_list_len(self.variants.len(), "RepoRefreshFeedback.variants")?;
+            let mut variants_builder = feedback.init_variants(variant_count);
             for (i, v) in self.variants.iter().enumerate() {
                 variants_builder.set(i as u32, v);
             }

@@ -10,7 +10,7 @@ use crate::graph::{InstanceState, NodeStage};
 use crate::node_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
 
 /// Request payload for the `node_info` service.
 ///
@@ -113,8 +113,9 @@ impl NodeInfoResponse {
                     found.set_config_sha256(&info.config_integrity);
                     found.set_stage(info.stage.as_str());
                     {
-                        let mut instances_builder =
-                            found.reborrow().init_instances(info.instances.len() as u32);
+                        let instance_count =
+                            capnp_list_len(info.instances.len(), "NodeInfo.instances")?;
+                        let mut instances_builder = found.reborrow().init_instances(instance_count);
                         for (i, inst) in info.instances.iter().enumerate() {
                             let mut entry = instances_builder.reborrow().get(i as u32);
                             entry.set_instance_id(&inst.instance_id);
@@ -129,9 +130,10 @@ impl NodeInfoResponse {
                             .as_str(),
                     );
                     {
-                        let mut paths_builder = found
-                            .reborrow()
-                            .init_run_log_paths(info.run_log_paths.len() as u32);
+                        let run_log_path_count =
+                            capnp_list_len(info.run_log_paths.len(), "NodeInfo.run_log_paths")?;
+                        let mut paths_builder =
+                            found.reborrow().init_run_log_paths(run_log_path_count);
                         for (i, path) in info.run_log_paths.iter().enumerate() {
                             paths_builder.set(i as u32, path.to_string_lossy().as_ref());
                         }

@@ -7,7 +7,7 @@ use capnp::message::Builder;
 use crate::launch_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
 
 /// Default idle timeout in seconds for the add/build/run phases (used as fallback when 0 is
 /// received on the wire — Cap'n Proto defaults unset `UInt64` to 0).
@@ -60,7 +60,8 @@ impl LaunchGoal {
             let mut goal = builder.init_root::<launch_capnp::launch_goal::Builder>();
             goal.set_peppy_launch_file_path(self.peppy_launch_file_path.to_string_lossy());
 
-            let mut env_vars = goal.reborrow().init_env_vars(self.env_vars.len() as u32);
+            let env_var_count = capnp_list_len(self.env_vars.len(), "LaunchGoal.env_vars")?;
+            let mut env_vars = goal.reborrow().init_env_vars(env_var_count);
             for (idx, (key, value)) in self.env_vars.iter().enumerate() {
                 let mut env_var = env_vars.reborrow().get(idx as u32);
                 env_var.set_key(key);
@@ -335,9 +336,9 @@ impl LaunchResult {
                 result.set_error_message(error_message);
             }
 
-            let mut add_logs = result
-                .reborrow()
-                .init_node_add_logs(self.node_add_logs.len() as u32);
+            let add_log_count =
+                capnp_list_len(self.node_add_logs.len(), "LaunchResult.node_add_logs")?;
+            let mut add_logs = result.reborrow().init_node_add_logs(add_log_count);
             for (i, entry) in self.node_add_logs.iter().enumerate() {
                 let mut e = add_logs.reborrow().get(i as u32);
                 e.set_node_label(&entry.node_label);
@@ -345,9 +346,9 @@ impl LaunchResult {
                 e.set_failed(entry.failed);
             }
 
-            let mut build_logs = result
-                .reborrow()
-                .init_node_build_logs(self.node_build_logs.len() as u32);
+            let build_log_count =
+                capnp_list_len(self.node_build_logs.len(), "LaunchResult.node_build_logs")?;
+            let mut build_logs = result.reborrow().init_node_build_logs(build_log_count);
             for (i, entry) in self.node_build_logs.iter().enumerate() {
                 let mut e = build_logs.reborrow().get(i as u32);
                 e.set_node_label(&entry.node_label);
@@ -355,9 +356,9 @@ impl LaunchResult {
                 e.set_failed(entry.failed);
             }
 
-            let mut run_logs = result
-                .reborrow()
-                .init_node_run_logs(self.node_run_logs.len() as u32);
+            let run_log_count =
+                capnp_list_len(self.node_run_logs.len(), "LaunchResult.node_run_logs")?;
+            let mut run_logs = result.reborrow().init_node_run_logs(run_log_count);
             for (i, entry) in self.node_run_logs.iter().enumerate() {
                 let mut e = run_logs.reborrow().get(i as u32);
                 e.set_instance_id(&entry.instance_id);

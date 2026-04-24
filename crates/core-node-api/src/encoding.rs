@@ -50,6 +50,14 @@ pub(crate) fn optional_text(s: &str) -> Option<String> {
     }
 }
 
+pub(crate) fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
+    len.try_into().map_err(|_| {
+        crate::Error::Encoding(format!(
+            "{field} length {len} exceeds Cap'n Proto u32 list limit"
+        ))
+    })
+}
+
 /// Encode a Cap'n Proto message builder into a `Payload`.
 pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
     let mut buffer = Vec::new();

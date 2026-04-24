@@ -5,7 +5,7 @@ use capnp::message::Builder;
 use crate::node_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message};
+use crate::encoding::{capnp_list_len, decode_message, encode_message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeSyncRequest {
@@ -37,11 +37,7 @@ impl NodeSyncRequest {
             let mut request = builder.init_root::<node_capnp::node_generate_request::Builder>();
             request.set_node_root_dir(self.node_root_dir.to_string_lossy());
             request.set_git_hash(&self.git_hash);
-            let peer_count: u32 = self
-                .local_peers
-                .len()
-                .try_into()
-                .expect("local_peers count exceeds u32::MAX");
+            let peer_count = capnp_list_len(self.local_peers.len(), "NodeSyncRequest.local_peers")?;
             let mut peers = request.init_local_peers(peer_count);
             for (i, peer) in self.local_peers.iter().enumerate() {
                 peers.set(i as u32, peer.to_string_lossy());

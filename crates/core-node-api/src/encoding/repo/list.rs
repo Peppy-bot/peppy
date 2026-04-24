@@ -1,7 +1,7 @@
 use capnp::message::Builder;
 
 use crate::encoding::repo::add::RepoSourceKind;
-use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
 use crate::repo_capnp;
 use crate::{Payload, Result};
 
@@ -77,7 +77,8 @@ impl RepoListResponse {
             if let Some(ref msg) = self.error_message {
                 response.set_error_message(msg);
             }
-            let mut nodes_builder = response.init_nodes(self.nodes.len() as u32);
+            let node_count = capnp_list_len(self.nodes.len(), "RepoListResponse.nodes")?;
+            let mut nodes_builder = response.init_nodes(node_count);
             for (i, node) in self.nodes.iter().enumerate() {
                 let mut entry = nodes_builder.reborrow().get(i as u32);
                 entry.set_node_name(&node.node_name);
@@ -87,7 +88,9 @@ impl RepoListResponse {
                 entry.reborrow().set_duplicate(node.duplicate);
                 entry.reborrow().set_repo_id(node.repo_id);
                 entry.reborrow().set_repo_label(&node.repo_label);
-                let mut variants_builder = entry.init_variants(node.variants.len() as u32);
+                let variant_count =
+                    capnp_list_len(node.variants.len(), "RepoListNodeEntry.variants")?;
+                let mut variants_builder = entry.init_variants(variant_count);
                 for (j, v) in node.variants.iter().enumerate() {
                     variants_builder.set(j as u32, v);
                 }

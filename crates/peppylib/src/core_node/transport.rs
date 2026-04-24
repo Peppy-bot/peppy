@@ -7,12 +7,64 @@
 use std::time::Duration;
 
 use config::node::QoSProfile;
+use core_node_api::Payload;
 use core_node_api::encoding::*;
 use core_node_api::names;
 
 use crate::error::Result;
 use crate::messaging::ActionGoalHandle;
 use crate::{ActionMessenger, MessengerHandle, ServiceMessenger};
+
+async fn poll_core_node_service<Response>(
+    request_payload: Payload,
+    decode_response: fn(&[u8]) -> core_node_api::Result<Response>,
+    messenger: &MessengerHandle,
+    bound_core_node: &str,
+    as_instance_id: &str,
+    service_target_node: &str,
+    service_name: &str,
+    target_core_node: &str,
+    response_timeout: impl Into<Option<Duration>> + Send,
+) -> Result<Response> {
+    let response = ServiceMessenger::poll(
+        messenger,
+        bound_core_node,
+        as_instance_id,
+        service_target_node,
+        service_name,
+        Some(target_core_node),
+        None,
+        request_payload,
+        response_timeout,
+    )
+    .await?;
+    Ok(decode_response(response.payload().as_ref())?)
+}
+
+async fn send_core_node_goal(
+    goal_payload: Payload,
+    messenger: &MessengerHandle,
+    as_core_node: &str,
+    as_instance_id: &str,
+    action_name: &str,
+    target_core_node: Option<&str>,
+    target_instance_id: Option<&str>,
+    goal_timeout: Duration,
+) -> Result<ActionGoalHandle> {
+    Ok(ActionMessenger::send_goal(
+        messenger,
+        as_core_node,
+        as_instance_id,
+        target_core_node.unwrap_or(as_core_node),
+        action_name,
+        target_core_node,
+        target_instance_id,
+        goal_payload,
+        QoSProfile::default(),
+        goal_timeout,
+    )
+    .await?)
+}
 
 pub async fn poll_info(
     request: &InfoRequest,
@@ -22,20 +74,18 @@ pub async fn poll_info(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<InfoResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        InfoResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_core_node,
         names::INFO,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(InfoResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn poll_stack_list(
@@ -46,20 +96,18 @@ pub async fn poll_stack_list(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<StackListResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        StackListResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_core_node,
         names::STACK_LIST,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(StackListResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn poll_node_reset(
@@ -70,20 +118,18 @@ pub async fn poll_node_reset(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeResetResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        NodeResetResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_core_node,
         names::STACK_RESET,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(NodeResetResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn send_launch(
@@ -95,21 +141,17 @@ pub async fn send_launch(
     target_instance_id: Option<&str>,
     goal_timeout: Duration,
 ) -> Result<ActionGoalHandle> {
-    let goal_payload = goal.encode()?;
-    let handle = ActionMessenger::send_goal(
+    send_core_node_goal(
+        goal.encode()?,
         messenger,
         as_core_node,
         as_instance_id,
-        target_core_node.unwrap_or(as_core_node),
         names::STACK_LAUNCH_ACTION,
         target_core_node,
         target_instance_id,
-        goal_payload,
-        QoSProfile::default(),
         goal_timeout,
     )
-    .await?;
-    Ok(handle)
+    .await
 }
 
 pub async fn poll_node_init(
@@ -120,20 +162,18 @@ pub async fn poll_node_init(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeInitResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        NodeInitResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_core_node,
         names::NODE_INIT,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(NodeInitResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn poll_node_remove(
@@ -144,20 +184,18 @@ pub async fn poll_node_remove(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeRemoveResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        NodeRemoveResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_core_node,
         names::NODE_REMOVE,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(NodeRemoveResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn poll_node_stop(
@@ -169,20 +207,18 @@ pub async fn poll_node_stop(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeStopResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        NodeStopResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_node_name,
         names::NODE_STOP,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(NodeStopResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn poll_node_sync(
@@ -193,20 +229,18 @@ pub async fn poll_node_sync(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeSyncResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        NodeSyncResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_core_node,
         names::NODE_SYNC,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(NodeSyncResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn poll_node_info(
@@ -217,20 +251,18 @@ pub async fn poll_node_info(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeInfoResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        NodeInfoResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_core_node,
         names::NODE_INFO,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(NodeInfoResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn send_node_add(
@@ -242,21 +274,17 @@ pub async fn send_node_add(
     target_instance_id: Option<&str>,
     goal_timeout: Duration,
 ) -> Result<ActionGoalHandle> {
-    let goal_payload = goal.encode()?;
-    let handle = ActionMessenger::send_goal(
+    send_core_node_goal(
+        goal.encode()?,
         messenger,
         as_core_node,
         as_instance_id,
-        target_core_node.unwrap_or(as_core_node),
         names::NODE_ADD_ACTION,
         target_core_node,
         target_instance_id,
-        goal_payload,
-        QoSProfile::default(),
         goal_timeout,
     )
-    .await?;
-    Ok(handle)
+    .await
 }
 
 pub async fn send_node_run(
@@ -268,21 +296,17 @@ pub async fn send_node_run(
     target_instance_id: Option<&str>,
     goal_timeout: Duration,
 ) -> Result<ActionGoalHandle> {
-    let goal_payload = goal.encode()?;
-    let handle = ActionMessenger::send_goal(
+    send_core_node_goal(
+        goal.encode()?,
         messenger,
         as_core_node,
         as_instance_id,
-        target_core_node.unwrap_or(as_core_node),
         names::NODE_RUN_ACTION,
         target_core_node,
         target_instance_id,
-        goal_payload,
-        QoSProfile::default(),
         goal_timeout,
     )
-    .await?;
-    Ok(handle)
+    .await
 }
 
 pub async fn send_node_build(
@@ -294,21 +318,17 @@ pub async fn send_node_build(
     target_instance_id: Option<&str>,
     goal_timeout: Duration,
 ) -> Result<ActionGoalHandle> {
-    let goal_payload = goal.encode()?;
-    let handle = ActionMessenger::send_goal(
+    send_core_node_goal(
+        goal.encode()?,
         messenger,
         as_core_node,
         as_instance_id,
-        target_core_node.unwrap_or(as_core_node),
         names::NODE_BUILD_ACTION,
         target_core_node,
         target_instance_id,
-        goal_payload,
-        QoSProfile::default(),
         goal_timeout,
     )
-    .await?;
-    Ok(handle)
+    .await
 }
 
 pub async fn poll_repo_list(
@@ -319,20 +339,18 @@ pub async fn poll_repo_list(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RepoListResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        RepoListResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_core_node,
         names::REPO_LIST,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(RepoListResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn poll_repo_add(
@@ -343,20 +361,18 @@ pub async fn poll_repo_add(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RepoAddResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        RepoAddResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_core_node,
         names::REPO_ADD,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(RepoAddResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn poll_repo_exclude(
@@ -367,20 +383,18 @@ pub async fn poll_repo_exclude(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RepoExcludeResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        RepoExcludeResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_core_node,
         names::REPO_EXCLUDE,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(RepoExcludeResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn poll_repo_remove(
@@ -391,20 +405,18 @@ pub async fn poll_repo_remove(
     target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RepoRemoveResponse> {
-    let request_payload = request.encode()?;
-    let response = ServiceMessenger::poll(
+    poll_core_node_service(
+        request.encode()?,
+        RepoRemoveResponse::decode,
         messenger,
         bound_core_node,
         as_instance_id,
         target_core_node,
         names::REPO_REMOVE,
-        Some(target_core_node),
-        None,
-        request_payload,
+        target_core_node,
         response_timeout,
     )
-    .await?;
-    Ok(RepoRemoveResponse::decode(response.payload().as_ref())?)
+    .await
 }
 
 pub async fn send_repo_refresh(
@@ -416,19 +428,15 @@ pub async fn send_repo_refresh(
     target_instance_id: Option<&str>,
     goal_timeout: Duration,
 ) -> Result<ActionGoalHandle> {
-    let goal_payload = goal.encode()?;
-    let handle = ActionMessenger::send_goal(
+    send_core_node_goal(
+        goal.encode()?,
         messenger,
         as_core_node,
         as_instance_id,
-        target_core_node.unwrap_or(as_core_node),
         names::REPO_REFRESH_ACTION,
         target_core_node,
         target_instance_id,
-        goal_payload,
-        QoSProfile::default(),
         goal_timeout,
     )
-    .await?;
-    Ok(handle)
+    .await
 }
