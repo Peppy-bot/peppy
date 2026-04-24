@@ -1,7 +1,7 @@
 use config::consts::{PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::Toolchain;
+use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
-use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{
     AddNodeParams, NodeCommand, NodeCommands, NodeName, TimeoutConfig, add_node,

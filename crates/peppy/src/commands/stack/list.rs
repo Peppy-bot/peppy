@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use core_node_api::encoding::StackListRequest;
-use node_stack::{SerializedEdge, SerializedNode, SerializedNodeGraph};
+use core_node_api::{SerializedEdge, SerializedNode, SerializedNodeGraph};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
@@ -206,7 +206,7 @@ fn display_path(node: &SerializedNode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use node_stack::SerializedInstance;
+    use core_node_api::SerializedInstance;
 
     fn node(
         name: &str,

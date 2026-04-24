@@ -2457,6 +2457,7 @@ dependencies = [
  "chrono",
  "config",
  "containers",
+ "core-node-api",
  "names-generator2",
  "parking_lot",
  "petgraph",

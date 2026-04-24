@@ -1,2 +1,2 @@
-mod stack;
+pub mod stack;
 pub mod transport;

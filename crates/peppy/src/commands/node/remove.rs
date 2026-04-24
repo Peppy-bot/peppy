@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::{NodeRemoveRequest, StackListRequest};
-use node_stack::SerializedNodeGraph;
 use tracing::info;
 
 use crate::commands::CALLER_INSTANCE_ID;
