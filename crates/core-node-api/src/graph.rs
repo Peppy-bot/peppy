@@ -146,19 +146,20 @@ impl SerializedNode {
     /// hidden: the externally-visible meaning is "currently running and
     /// reachable via messenger services".
     pub fn running_instance_ids(&self) -> Vec<&str> {
-        self.instances
-            .iter()
-            .filter(|i| i.state == InstanceState::Running)
+        self.running_instances()
             .map(|i| i.instance_id.as_str())
             .collect()
     }
 
     /// Count of `Running` instances. Matches `running_instance_ids().len()`.
     pub fn instance_count(&self) -> usize {
+        self.running_instances().count()
+    }
+
+    fn running_instances(&self) -> impl Iterator<Item = &SerializedInstance> {
         self.instances
             .iter()
             .filter(|i| i.state == InstanceState::Running)
-            .count()
     }
 
     /// Returns the lifecycle stage label, or "Unknown" for legacy payloads
