@@ -5,6 +5,7 @@ use std::time::Duration;
 use config::launcher::Name;
 use config::node::NodeConfigParser;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
+use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
 use names_generator2::get_random;
 use rand::rng;
@@ -15,7 +16,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 use super::run::args_to_node_arguments;
-use peppylib::core_node::stack::stack_list;
+use peppylib::core_node::transport::poll_stack_list;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -54,7 +55,7 @@ async fn print_runtime_config_async(
     let conn = ctx.connect_to_daemon().await?;
 
     // Validate that the node is present in the node stack so the output corresponds to a runnable node.
-    let list = stack_list(
+    let response = poll_stack_list(
         &StackListRequest::new(false),
         conn.messenger,
         &conn.core_node_name,
@@ -64,12 +65,10 @@ async fn print_runtime_config_async(
     )
     .await?;
 
-    let matching_nodes: Vec<_> = list
-        .graph
-        .nodes
-        .iter()
-        .filter(|n| n.name == node_name)
-        .collect();
+    let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
+        .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))?;
+
+    let matching_nodes: Vec<_> = graph.nodes.iter().filter(|n| n.name == node_name).collect();
     if matching_nodes.is_empty() {
         return Err(Error::ExecutionFailed(format!(
             "Node '{}' not found in node stack",
