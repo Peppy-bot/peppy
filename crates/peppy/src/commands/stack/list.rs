@@ -3,13 +3,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use core_node_api::encoding::StackListRequest;
-use core_node_api::{SerializedEdge, SerializedNode, SerializedNodeGraph};
+use core_node_api::{SerializedEdge, SerializedNode};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use peppylib::core_node::transport::poll_stack_list;
+use peppylib::core_node::stack::stack_list;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn list_nodes(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Result<()> {
@@ -27,7 +27,7 @@ pub async fn list_nodes_collecting(
 ) -> Result<String> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let response = poll_stack_list(
+    let list = stack_list(
         &StackListRequest::new(dot_graph_path.is_some()),
         conn.messenger,
         &conn.core_node_name,
@@ -35,14 +35,10 @@ pub async fn list_nodes_collecting(
         &conn.core_node_name,
         REQUEST_TIMEOUT,
     )
-    .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to call stack_list service: {}", e)))?;
-
-    let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;
+    .await?;
 
     // Sort nodes by label for consistent output, with the daemon root first.
-    let mut nodes = graph.nodes.clone();
+    let mut nodes = list.graph.nodes;
     nodes.sort_by(|a, b| {
         let a_is_daemon = a.label().starts_with(&conn.core_node_name);
         let b_is_daemon = b.label().starts_with(&conn.core_node_name);
@@ -54,7 +50,7 @@ pub async fn list_nodes_collecting(
     });
 
     // Sort edges by (from_label, to_label) for consistent output.
-    let mut edges = graph.edges.clone();
+    let mut edges = list.graph.edges;
     edges.sort_by(|a, b| {
         let a_key = (a.from.label(), a.to.label());
         let b_key = (b.from.label(), b.to.label());
@@ -63,7 +59,7 @@ pub async fn list_nodes_collecting(
 
     let mut out = format_stack_list(&nodes, &edges);
 
-    if let (Some(path), Some(dot_graph)) = (dot_graph_path, response.dot_graph) {
+    if let (Some(path), Some(dot_graph)) = (dot_graph_path, list.dot_graph) {
         std::fs::write(&path, dot_graph).map_err(|e| {
             Error::ExecutionFailed(format!(
                 "Failed to write DOT graph to {}: {}",

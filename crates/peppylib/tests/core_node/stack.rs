@@ -5,7 +5,7 @@ use core_node_api::names;
 use core_node_api::{SerializedEdge, SerializedInstance, SerializedNode, SerializedNodeGraph};
 use peppylib::core_node::stack::stack_list;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
-use pmi::ZenohAdapter;
+use pmi::{ZenohAdapter, ZenohdInstance};
 
 const CORE_NODE: &str = "test_core";
 const CLIENT_INSTANCE: &str = "test_caller";
@@ -83,8 +83,10 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
     tokio::time::sleep(Duration::from_millis(50)).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
+/// Starts a router, spawns the stub listener, and returns the client handle
+/// and the fixture graph. The router is returned so callers hold it for the
+/// duration of the test — dropping it tears down the messaging fabric.
+async fn setup_stub(dot_graph: &str) -> (ZenohdInstance, MessengerHandle, SerializedNodeGraph) {
     let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("start zenoh router");
@@ -96,7 +98,13 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
         .expect("client handle");
 
     let graph = fixture_graph();
-    spawn_stub_listener(server, graph.clone(), "digraph {}").await;
+    spawn_stub_listener(server, graph.clone(), dot_graph).await;
+    (router, client, graph)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
+    let (_router, client, graph) = setup_stub("digraph {}").await;
 
     let result = stack_list(
         &StackListRequest::new(true),
@@ -115,18 +123,7 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_list_returns_none_dot_graph_when_not_requested() {
-    let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("start zenoh router");
-    let server = MessengerHandle::from_host_port(&router.host, router.port)
-        .await
-        .expect("server handle");
-    let client = MessengerHandle::from_host_port(&router.host, router.port)
-        .await
-        .expect("client handle");
-
-    let graph = fixture_graph();
-    spawn_stub_listener(server, graph.clone(), "digraph {}").await;
+    let (_router, client, graph) = setup_stub("digraph {}").await;
 
     let result = stack_list(
         &StackListRequest::new(false),

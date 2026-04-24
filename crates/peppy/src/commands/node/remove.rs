@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::{NodeRemoveRequest, StackListRequest};
 use tracing::info;
 
@@ -9,7 +8,8 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use peppylib::core_node::transport::{poll_node_remove, poll_stack_list};
+use peppylib::core_node::stack::stack_list;
+use peppylib::core_node::transport::poll_node_remove;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn remove_node(
@@ -92,7 +92,7 @@ async fn fetch_instance_ids(
     node_name: &str,
     tag: &str,
 ) -> Result<Vec<String>> {
-    let response = poll_stack_list(
+    let list = stack_list(
         &StackListRequest::new(false),
         messenger,
         core_node_name,
@@ -100,18 +100,10 @@ async fn fetch_instance_ids(
         core_node_name,
         REQUEST_TIMEOUT,
     )
-    .await
-    .map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to check running instances before removal: {}",
-            e
-        ))
-    })?;
+    .await?;
 
-    let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;
-
-    Ok(graph
+    Ok(list
+        .graph
         .nodes
         .into_iter()
         .find(|node| node.name == node_name && node.tag == tag)
