@@ -6,44 +6,15 @@ use core_node_api::{
     InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
     SerializedNodeGraph,
 };
-use peppylib::core_node::stack::stack_list;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
+use peppylib::stack_list;
 use pmi::{ZenohAdapter, ZenohdInstance};
+use tempfile::TempDir;
 
-const CORE_NODE: &str = "test_core";
+const CORE_NODE: &str = "standalone-core";
 const CLIENT_INSTANCE: &str = "test_caller";
 const SERVER_INSTANCE: &str = "test_server";
-
-fn fixture_graph() -> SerializedNodeGraph {
-    let brain = SerializedNode {
-        name: "brain".to_string(),
-        tag: "0.1.0".to_string(),
-        config_path: "/tmp/brain.json5".to_string(),
-        artifact_path: None,
-        stage: Some(NodeStage::Ready),
-        instances: vec![SerializedInstance {
-            instance_id: "i1".to_string(),
-            state: InstanceState::Running,
-        }],
-        variant_name: Some("default".to_string()),
-    };
-    let sensor = SerializedNode {
-        name: "sensor".to_string(),
-        tag: "0.1.0".to_string(),
-        config_path: "/tmp/sensor.json5".to_string(),
-        artifact_path: None,
-        stage: Some(NodeStage::Added),
-        instances: vec![],
-        variant_name: None,
-    };
-    SerializedNodeGraph {
-        nodes: vec![brain.clone(), sensor.clone()],
-        edges: vec![SerializedEdge {
-            from: brain,
-            to: sensor,
-        }],
-    }
-}
 
 /// Spins up a single-shot `STACK_LIST` listener that returns `graph` serialized
 /// as JSON, and `dot_graph` only when the inbound request asked for it.
@@ -108,41 +79,87 @@ async fn wait_until_reachable(client: &MessengerHandle) {
     }
 }
 
-/// Starts a router, spawns the stub listener, waits for it to become
-/// reachable, and returns the client handle and the fixture graph. The
-/// router is returned so callers hold it for the duration of the test —
-/// dropping it tears down the messaging fabric.
-async fn setup_stub(dot_graph: &str) -> (ZenohdInstance, MessengerHandle, SerializedNodeGraph) {
+/// Writes a minimal `peppy.json5` into `dir` suitable for
+/// `Processor::new_standalone`.
+fn write_standalone_peppy_config(dir: &TempDir) -> std::path::PathBuf {
+    let path = dir.path().join("peppy.json5");
+    std::fs::write(
+        &path,
+        r#"{
+            schema_version: 1,
+            manifest: { name: "test_node", tag: "0.1.0" },
+            execution: { language: "rust", run_cmd: ["./target/debug/test_node"] },
+        }"#,
+    )
+    .expect("peppy config should be written");
+    path
+}
+
+/// Starts a router, spawns the stub listener for `graph`, builds a
+/// `NodeRunner` pointed at the router, and waits for reachability. The router
+/// and temp dir are returned so callers hold them for the duration of the
+/// test — dropping them tears down the messaging fabric / config file.
+async fn setup_stub(
+    graph: SerializedNodeGraph,
+    dot_graph: &str,
+) -> (ZenohdInstance, TempDir, NodeRunner) {
     let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("start zenoh router");
     let server = MessengerHandle::from_host_port(&router.host, router.port)
         .await
         .expect("server handle");
-    let client = MessengerHandle::from_host_port(&router.host, router.port)
-        .await
-        .expect("client handle");
 
-    let graph = fixture_graph();
-    spawn_stub_listener(server, graph.clone(), dot_graph).await;
-    wait_until_reachable(&client).await;
-    (router, client, graph)
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let peppy_config_path = write_standalone_peppy_config(&temp_dir);
+    let standalone_config = StandaloneConfig::new()
+        .with_messaging(&router.host, router.port)
+        .with_instance_id(CLIENT_INSTANCE);
+    let processor = Processor::new_standalone(&peppy_config_path, &standalone_config)
+        .expect("standalone processor");
+    let node_runner = NodeRunner::new(processor).await.expect("node runner");
+
+    spawn_stub_listener(server, graph, dot_graph).await;
+    wait_until_reachable(node_runner.messenger()).await;
+    (router, temp_dir, node_runner)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
-    let (_router, client, graph) = setup_stub("digraph {}").await;
+    let brain = SerializedNode {
+        name: "brain".to_string(),
+        tag: "0.1.0".to_string(),
+        config_path: "/tmp/brain.json5".to_string(),
+        artifact_path: None,
+        stage: Some(NodeStage::Ready),
+        instances: vec![SerializedInstance {
+            instance_id: "i1".to_string(),
+            state: InstanceState::Running,
+        }],
+        variant_name: Some("default".to_string()),
+    };
+    let sensor = SerializedNode {
+        name: "sensor".to_string(),
+        tag: "0.1.0".to_string(),
+        config_path: "/tmp/sensor.json5".to_string(),
+        artifact_path: None,
+        stage: Some(NodeStage::Added),
+        instances: vec![],
+        variant_name: None,
+    };
+    let graph = SerializedNodeGraph {
+        nodes: vec![brain.clone(), sensor.clone()],
+        edges: vec![SerializedEdge {
+            from: brain,
+            to: sensor,
+        }],
+    };
 
-    let result = stack_list(
-        &StackListRequest::new(true),
-        &client,
-        CORE_NODE,
-        CLIENT_INSTANCE,
-        CORE_NODE,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("stack_list should succeed");
+    let (_router, _temp_dir, node_runner) = setup_stub(graph.clone(), "digraph {}").await;
+
+    let result = stack_list(&node_runner, true, Duration::from_secs(3))
+        .await
+        .expect("stack_list should succeed");
 
     assert_eq!(result.graph, graph);
     let brain = result
@@ -160,18 +177,40 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_list_returns_none_dot_graph_when_not_requested() {
-    let (_router, client, graph) = setup_stub("digraph {}").await;
+    let brain = SerializedNode {
+        name: "brain".to_string(),
+        tag: "0.1.0".to_string(),
+        config_path: "/tmp/brain.json5".to_string(),
+        artifact_path: None,
+        stage: Some(NodeStage::Ready),
+        instances: vec![SerializedInstance {
+            instance_id: "i1".to_string(),
+            state: InstanceState::Running,
+        }],
+        variant_name: Some("default".to_string()),
+    };
+    let sensor = SerializedNode {
+        name: "sensor".to_string(),
+        tag: "0.1.0".to_string(),
+        config_path: "/tmp/sensor.json5".to_string(),
+        artifact_path: None,
+        stage: Some(NodeStage::Added),
+        instances: vec![],
+        variant_name: None,
+    };
+    let graph = SerializedNodeGraph {
+        nodes: vec![brain.clone(), sensor.clone()],
+        edges: vec![SerializedEdge {
+            from: brain,
+            to: sensor,
+        }],
+    };
 
-    let result = stack_list(
-        &StackListRequest::new(false),
-        &client,
-        CORE_NODE,
-        CLIENT_INSTANCE,
-        CORE_NODE,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("stack_list should succeed");
+    let (_router, _temp_dir, node_runner) = setup_stub(graph.clone(), "digraph {}").await;
+
+    let result = stack_list(&node_runner, false, Duration::from_secs(3))
+        .await
+        .expect("stack_list should succeed");
 
     assert_eq!(result.graph, graph);
     let brain = result
