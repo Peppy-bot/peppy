@@ -45,7 +45,7 @@ async fn handle_request(request: ServiceRequestContext) -> PeppyResult<Payload> 
         current_timestamp()
     );
 
-    Ok(Payload::from(response_text))
+    Ok(Payload::from(response_text.into_bytes()))
 }
 
 fn handle_service_result(result: PeppyResult<bool>) -> bool {
