@@ -23,10 +23,6 @@ build-backend = "maturin"
 [tool.maturin]
 module-name = "peppylib._peppylib"
 
-[tool.maturin.version]
-provider = "file"
-path = "peppylib/_version.py"
-
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
