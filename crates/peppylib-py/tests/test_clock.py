@@ -47,6 +47,11 @@ def test_clock_response_round_trip_preserves_all_fields() -> None:
     assert decoded.clock_source == ClockSource.Wall
 
 
+def test_clock_response_decode_rejects_garbage() -> None:
+    with pytest.raises(ValueError):
+        ClockResponse.decode(b"not a capnp message")
+
+
 def test_clock_tick_round_trip_preserves_all_fields() -> None:
     tick = ClockTick(time=42, clock_source=ClockSource.Wall)
     decoded = ClockTick.decode(tick.encode())

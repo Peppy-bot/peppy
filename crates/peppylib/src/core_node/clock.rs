@@ -119,9 +119,14 @@ pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
 fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
     // i128 widening: subtracting two u64s can underflow, and the standard NTP
     // formula sums two such differences before halving — we need headroom.
+    // Saturating narrow on the way back down: t1/t2 come from an unauthenticated
+    // peer, so a misbehaving server could otherwise wrap us silently.
     let offset = ((t1 as i128 - t0 as i128) + (t2 as i128 - t3 as i128)) / 2;
     let delay = (t3 as i128 - t0 as i128) - (t2 as i128 - t1 as i128);
-    (offset as i64, delay.max(0) as u64)
+
+    let offset = offset.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+    let delay = delay.clamp(0, u64::MAX as i128) as u64;
+    (offset, delay)
 }
 
 fn now_ns() -> u64 {
@@ -171,5 +176,22 @@ mod tests {
         // t1 = t2 = 100, t3 = 200. offset = ((100-200)+(100-200))/2 = -100.
         let (offset, _) = compute_sync(200, 100, 100, 200);
         assert_eq!(offset, -100);
+    }
+
+    #[test]
+    fn compute_sync_clamps_offset_overflow() {
+        // Adversarial peer returns t1 = t2 = u64::MAX with a normal local clock.
+        // Raw offset is ~u64::MAX (≈1.8e19), well above i64::MAX (≈9.2e18) —
+        // narrowing without clamping would wrap to a negative value.
+        let (offset, _) = compute_sync(0, u64::MAX, u64::MAX, 0);
+        assert_eq!(offset, i64::MAX);
+    }
+
+    #[test]
+    fn compute_sync_clamps_delay_overflow() {
+        // delay = (t3 - t0) - (t2 - t1) = u64::MAX - (-u64::MAX) = 2*u64::MAX
+        // in i128 — exceeds u64::MAX, so saturate rather than wrap.
+        let (_, delay) = compute_sync(0, u64::MAX, 0, u64::MAX);
+        assert_eq!(delay, u64::MAX);
     }
 }
