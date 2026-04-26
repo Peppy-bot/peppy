@@ -7,7 +7,8 @@
 use std::sync::Arc;
 
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
-use peppylib::core_node::clock::{ClockSubscription, ClockSync, subscribe, synchronize};
+use peppylib::core_node::clock::{ClockSync, subscribe, synchronize};
+use peppylib::messaging::Subscription;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use tokio::sync::Mutex;
@@ -227,15 +228,12 @@ fn synchronize_clock<'py>(
 
 /// Long-lived subscription to the periodic `/clock` topic.
 ///
-/// Wraps [`ClockSubscription`] so Python users get the same NodeRunner-level
-/// ergonomics that [`peppylib.subscribe_clock`] is built around.
+/// Wraps the raw [`Subscription`] (not the Rust `ClockSubscription` adapter)
+/// so the Python lock guards the same inner state as
+/// [`crate::messaging::PySubscription`] — no double-mutex layering.
 #[pyclass(name = "ClockSubscription")]
 pub struct PyClockSubscription {
-    // Async-mutable: `on_next_tick` is `&mut self`, but Python only sees a
-    // `&PyRef`-style borrow — so we keep the inner subscription behind an
-    // `Arc<Mutex<_>>` and lock it across the await. Mirrors how PySubscription
-    // is structured in messaging/topics.rs.
-    inner: Arc<Mutex<ClockSubscription>>,
+    inner: Arc<Mutex<Subscription>>,
 }
 
 #[pymethods]
@@ -245,8 +243,14 @@ impl PyClockSubscription {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mut guard = inner.lock().await;
-            let tick = guard.on_next_tick().await.map_err(to_py_err)?;
-            Ok(tick.map(PyClockTick::from))
+            match guard.on_next_message().await {
+                Some(message) => {
+                    let tick = ClockTick::decode(message.payload().as_ref())
+                        .map_err(|e| decode_err("ClockTick", e))?;
+                    Ok(Some(PyClockTick::from(tick)))
+                }
+                None => Ok(None),
+            }
         })
     }
 }
@@ -263,7 +267,7 @@ fn subscribe_clock_py<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let sub = subscribe(&runner).await.map_err(to_py_err)?;
+        let sub = subscribe(&runner).await.map_err(to_py_err)?.into_inner();
         Ok(PyClockSubscription {
             inner: Arc::new(Mutex::new(sub)),
         })

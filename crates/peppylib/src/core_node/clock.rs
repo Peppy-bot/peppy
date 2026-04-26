@@ -84,6 +84,13 @@ impl ClockSubscription {
             None => Ok(None),
         }
     }
+
+    /// Unwrap the typed wrapper to get the raw `Subscription` underneath.
+    /// Used by the Python bindings so they can lock the subscription directly
+    /// instead of stacking a second `Arc<Mutex<_>>` over this thin wrapper.
+    pub fn into_inner(self) -> Subscription {
+        self.inner
+    }
 }
 
 /// Subscribe to the periodic `clock` topic on `node_runner`'s bound core node.
