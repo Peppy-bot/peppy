@@ -15,6 +15,7 @@ use config::{
     launcher::CURRENT_SCHEMA_VERSION,
     node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage},
 };
+use futures::future::{BoxFuture, FutureExt, try_join_all};
 use names_generator2::get_random;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
@@ -28,6 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, oneshot};
+use tokio::task::JoinHandle;
 use tracing::info;
 
 const CORE_NODE_TAG: &str = match option_env!("PEPPY_GIT_TAG") {
@@ -225,28 +227,24 @@ impl CoreNode {
             self.node_name(),
             self.instance_id(),
         );
-        let handles = vec![
+        // Set up all listeners concurrently so startup latency is bounded by
+        // the slowest single listener, not the sum of all 19. They're
+        // independent — no listener depends on another being registered first.
+        let setup: Vec<BoxFuture<'_, Result<JoinHandle<Result<()>>>>> = vec![
             ping::listen_for_ping(
                 &self.messenger,
                 core_node_name,
                 self.instance_id(),
                 self.node_name(),
             )
-            .await?,
+            .boxed(),
             clock::listen_for_clock(
                 &self.messenger,
                 core_node_name,
                 self.instance_id(),
                 self.node_name(),
             )
-            .await?,
-            clock::publish_clock(
-                self.messenger.clone(),
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                self.clock_publish_interval,
-            ),
+            .boxed(),
             info::listen_for_info(
                 &self.messenger,
                 core_node_name,
@@ -255,7 +253,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.start_time,
             )
-            .await?,
+            .boxed(),
             stack::listen_for_stack_launch(
                 &self.messenger,
                 core_node_name,
@@ -271,7 +269,7 @@ impl CoreNode {
                     health_monitor_max_failures: self.health_monitor_max_failures,
                 },
             )
-            .await?,
+            .boxed(),
             stack::listen_for_stack_list(
                 &self.messenger,
                 core_node_name,
@@ -279,7 +277,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
             )
-            .await?,
+            .boxed(),
             stack::listen_for_stack_reset(
                 &self.messenger,
                 core_node_name,
@@ -287,7 +285,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_add(
                 &self.messenger,
                 core_node_name,
@@ -296,7 +294,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_build(
                 &self.messenger,
                 core_node_name,
@@ -305,7 +303,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_info(
                 &self.messenger,
                 core_node_name,
@@ -315,7 +313,7 @@ impl CoreNode {
                 self.peppy_dirs.clone(),
                 self.node_startup_timeout,
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_remove(
                 &self.messenger,
                 core_node_name,
@@ -323,7 +321,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_run(
                 &self.messenger,
                 core_node_name,
@@ -339,7 +337,7 @@ impl CoreNode {
                     health_monitor_max_failures: self.health_monitor_max_failures,
                 },
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_stop(
                 &self.messenger,
                 core_node_name,
@@ -347,7 +345,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_init(
                 &self.messenger,
                 core_node_name,
@@ -355,7 +353,7 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_sync(
                 &self.messenger,
                 core_node_name,
@@ -364,7 +362,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             repo::listen_for_repo_add(
                 &self.messenger,
                 core_node_name,
@@ -372,7 +370,7 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             repo::listen_for_repo_refresh(
                 &self.messenger,
                 core_node_name,
@@ -380,7 +378,7 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             repo::listen_for_repo_list(
                 &self.messenger,
                 core_node_name,
@@ -388,7 +386,7 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             repo::listen_for_repo_remove(
                 &self.messenger,
                 core_node_name,
@@ -396,7 +394,7 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             repo::listen_for_repo_exclude(
                 &self.messenger,
                 core_node_name,
@@ -404,15 +402,27 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
         ];
+
+        let mut handles = try_join_all(setup).await?;
+        // publish_clock returns its JoinHandle synchronously (it spawns its own
+        // loop task internally), so it doesn't go through the parallel-setup
+        // join — append it once everything else is wired up.
+        handles.push(clock::publish_clock(
+            self.messenger.clone(),
+            core_node_name,
+            self.instance_id(),
+            self.node_name(),
+            self.clock_publish_interval,
+        ));
 
         if let Some(ready) = ready {
             let _ = ready.send(());
         }
 
         // Wait for all service handlers
-        futures::future::try_join_all(handles)
+        try_join_all(handles)
             .await?
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
