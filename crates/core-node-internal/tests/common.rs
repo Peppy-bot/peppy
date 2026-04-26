@@ -1198,6 +1198,9 @@ fn default_node_arguments() -> CoreNodeArguments {
         health_monitor_interval: Duration::from_secs(5),
         health_monitor_timeout: Duration::from_secs(3),
         health_monitor_max_failures: 3,
+        // Faster than the production default (100 ms) so publish_clock tests
+        // observe several ticks within a small fixed budget without flaking.
+        clock_publish_interval: Duration::from_millis(50),
     }
 }
 

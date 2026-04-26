@@ -26,6 +26,7 @@ async fn core_node_execution_has_no_run_cmd_and_no_container() {
         health_monitor_interval: Duration::from_secs(5),
         health_monitor_timeout: Duration::from_secs(3),
         health_monitor_max_failures: 3,
+        clock_publish_interval: Duration::from_millis(100),
     };
     let core_node = CoreNode::new(
         messenger,
@@ -58,6 +59,7 @@ async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
         health_monitor_interval: Duration::from_secs(5),
         health_monitor_timeout: Duration::from_secs(3),
         health_monitor_max_failures: 3,
+        clock_publish_interval: Duration::from_millis(100),
     };
 
     let a = CoreNode::new(
@@ -102,6 +104,7 @@ async fn core_node_explicit_name_overrides_machine_uid() {
         health_monitor_interval: Duration::from_secs(5),
         health_monitor_timeout: Duration::from_secs(3),
         health_monitor_max_failures: 3,
+        clock_publish_interval: Duration::from_millis(100),
     };
     let core_node = CoreNode::new(
         messenger,

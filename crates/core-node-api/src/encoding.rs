@@ -12,7 +12,7 @@ mod stack;
 // Note: there used to be a top-level `builder` module here. Build encoding
 // now lives at `node::builder` alongside `node::add`.
 
-pub use clock::{ClockRequest, ClockResponse, ClockSource};
+pub use clock::{ClockRequest, ClockResponse, ClockSource, ClockTick};
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
 pub use node::builder::FeedbackStream;
 pub use node::{

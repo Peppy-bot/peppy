@@ -29,3 +29,12 @@ struct ClockResponse {
     serverSendTime @2 :UInt64;
     clockSource    @3 :ClockSource;
 }
+
+# A one-way snapshot published periodically on the `clock` topic. Subscribers
+# treat each tick as "the core node says it's now `time`". Unlike the request/
+# response service, no NTP exchange happens here — the value is stale by one
+# one-way network delay on read.
+struct ClockTick {
+    time        @0 :UInt64;
+    clockSource @1 :ClockSource;
+}

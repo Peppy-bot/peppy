@@ -54,6 +54,7 @@ pub struct CoreNodeArguments {
     pub health_monitor_interval: Duration,
     pub health_monitor_timeout: Duration,
     pub health_monitor_max_failures: u32,
+    pub clock_publish_interval: Duration,
 }
 
 impl CoreNodeArguments {
@@ -83,6 +84,7 @@ pub struct CoreNode {
     health_monitor_interval: Duration,
     health_monitor_timeout: Duration,
     health_monitor_max_failures: u32,
+    clock_publish_interval: Duration,
 }
 
 /// Pre-flight checks that run once at daemon startup. Exits with a
@@ -146,6 +148,7 @@ impl CoreNode {
         let health_monitor_interval = node_arguments.health_monitor_interval;
         let health_monitor_timeout = node_arguments.health_monitor_timeout;
         let health_monitor_max_failures = node_arguments.health_monitor_max_failures;
+        let clock_publish_interval = node_arguments.clock_publish_interval;
 
         let node_config = NodeConfig {
             schema_version: CURRENT_SCHEMA_VERSION,
@@ -185,6 +188,7 @@ impl CoreNode {
             health_monitor_interval,
             health_monitor_timeout,
             health_monitor_max_failures,
+            clock_publish_interval,
         }
     }
 
@@ -236,6 +240,13 @@ impl CoreNode {
                 self.node_name(),
             )
             .await?,
+            clock::publish_clock(
+                self.messenger.clone(),
+                core_node_name.to_string(),
+                self.instance_id().to_string(),
+                self.node_name().to_string(),
+                self.clock_publish_interval,
+            ),
             info::listen_for_info(
                 &self.messenger,
                 core_node_name,

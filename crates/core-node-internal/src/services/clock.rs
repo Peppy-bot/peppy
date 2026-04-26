@@ -1,12 +1,13 @@
 use crate::Result;
 use crate::names;
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource};
+use config::node::QoSProfile;
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
-use std::time::{SystemTime, UNIX_EPOCH};
+use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger, TopicMessenger};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::task::JoinHandle;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub async fn listen_for_clock(
     messenger: &MessengerHandle,
@@ -77,4 +78,50 @@ fn now_ns() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
+}
+
+/// Spawns a task that emits a `ClockTick` on the `clock` topic at every
+/// `interval`. `SensorData` QoS so a slow subscriber gets newer ticks dropped
+/// rather than back-pressuring the publisher — stale clock values are useless.
+pub fn publish_clock(
+    messenger: MessengerHandle,
+    core_node_name: String,
+    instance_id: String,
+    node_name: String,
+    interval: Duration,
+) -> JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        // Skip catch-up bursts after a backlog (e.g. test pause / GC stall).
+        // A clock-tick ten ticks late is uninteresting — we want fresh time.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            ticker.tick().await;
+            let payload = match ClockTick::new(now_ns(), ClockSource::Wall).encode() {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("clock tick encode failed: {e}");
+                    continue;
+                }
+            };
+            if let Err(e) = TopicMessenger::emit(
+                &messenger,
+                &core_node_name,
+                &instance_id,
+                &node_name,
+                names::CLOCK,
+                QoSProfile::SensorData,
+                payload,
+            )
+            .await
+            {
+                warn!("clock tick emit failed: {e}");
+            }
+        }
+        // Pin the closure's output type to Result<()> so this handle unifies
+        // with the listener handles in CoreNode::start_with_ready.
+        #[allow(unreachable_code)]
+        Ok(())
+    })
 }

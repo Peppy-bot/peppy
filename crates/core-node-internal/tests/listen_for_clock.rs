@@ -37,8 +37,7 @@ async fn listen_for_clock_roundtrip_succeed() {
     .expect("clock request should succeed");
 
     let t3 = now_ns();
-    let clock_response =
-        ClockResponse::decode(&response.payload()).expect("decode should succeed");
+    let clock_response = ClockResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert_eq!(
         clock_response.client_send_time, t0,

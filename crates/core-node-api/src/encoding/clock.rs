@@ -104,3 +104,37 @@ impl ClockResponse {
         })
     }
 }
+
+/// One-way snapshot tick published on the `clock` topic. Use [`ClockResponse`]
+/// (the request/response service) when you need to bound the staleness with an
+/// NTP-style round-trip exchange.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockTick {
+    pub time: u64,
+    pub clock_source: ClockSource,
+}
+
+impl ClockTick {
+    pub fn new(time: u64, clock_source: ClockSource) -> Self {
+        Self { time, clock_source }
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut tick = builder.init_root::<clock_capnp::clock_tick::Builder>();
+            tick.set_time(self.time);
+            tick.set_clock_source(self.clock_source.to_capnp());
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let tick = reader.get_root::<clock_capnp::clock_tick::Reader>()?;
+        Ok(Self {
+            time: tick.get_time(),
+            clock_source: ClockSource::from_capnp(tick.get_clock_source()?),
+        })
+    }
+}

@@ -55,12 +55,8 @@ pub async fn synchronize(
     .await?;
     let t3 = now_ns();
 
-    let (offset_ns, round_trip_delay_ns) = compute_sync(
-        t0,
-        response.server_recv_time,
-        response.server_send_time,
-        t3,
-    );
+    let (offset_ns, round_trip_delay_ns) =
+        compute_sync(t0, response.server_recv_time, response.server_send_time, t3);
 
     Ok(ClockSync {
         offset_ns,
