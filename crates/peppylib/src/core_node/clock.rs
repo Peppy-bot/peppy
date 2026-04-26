@@ -44,7 +44,7 @@ pub async fn synchronize(
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
 
-    let t0 = wall_now_ns();
+    let t0 = wall_now_ns()?;
     let response = poll_clock(
         &ClockRequest::new(t0),
         node_runner.messenger(),
@@ -54,7 +54,7 @@ pub async fn synchronize(
         timeout,
     )
     .await?;
-    let t3 = wall_now_ns();
+    let t3 = wall_now_ns()?;
 
     let (offset_ns, round_trip_delay_ns) =
         compute_sync(t0, response.server_recv_time, response.server_send_time, t3);

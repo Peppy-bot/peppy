@@ -92,7 +92,7 @@ pub async fn wait_until_service_reachable(
 /// chain `t0 ≤ t1 ≤ t2 ≤ t3` holds. Shared between the mock-messenger and
 /// real-zenoh round-trip tests.
 pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
-    let t0 = wall_now_ns();
+    let t0 = wall_now_ns().expect("system clock should be available");
     let request_payload = ClockRequest::new(t0)
         .encode()
         .expect("encode should succeed");
@@ -111,7 +111,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
     .await
     .expect("clock service poll should succeed");
 
-    let t3 = wall_now_ns();
+    let t3 = wall_now_ns().expect("system clock should be available");
     let clock_response = ClockResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert_eq!(

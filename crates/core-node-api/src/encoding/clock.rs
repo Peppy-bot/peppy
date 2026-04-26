@@ -13,13 +13,12 @@ use crate::{Payload, Result};
 use super::{decode_message, encode_message};
 
 /// Wall-clock "now" in nanoseconds since the UNIX epoch — the canonical reader
-/// on the publish/poll paths and in tests. Saturates to `0` if the system clock
-/// is set before the epoch (rare; never panics).
-pub fn wall_now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
+/// on the publish/poll paths and in tests. Returns an error if the system
+/// clock is set before the epoch; saturates to `u64::MAX` if the timestamp
+/// would overflow `u64` (post-year-2554, unreachable in practice).
+pub fn wall_now_ns() -> Result<u64> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    Ok(u64::try_from(nanos).unwrap_or(u64::MAX))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

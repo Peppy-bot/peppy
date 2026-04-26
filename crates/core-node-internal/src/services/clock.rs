@@ -37,7 +37,10 @@ pub async fn listen_for_clock(
 async fn handle_clock_request(context: ServiceRequestContext) -> PeppyResult<Payload> {
     // Stamp t1 first — every line after this point inflates server processing
     // time and corrupts the offset estimate the client computes.
-    let server_recv_time = wall_now_ns();
+    let server_recv_time = wall_now_ns().map_err(|e| PeppyError::InvalidServiceRequest {
+        identifier: context.message().instance_id().to_string(),
+        reason: format!("server clock unavailable: {e}"),
+    })?;
     let instance_id = context.message().instance_id().to_string();
     handle_clock_request_inner(&context, server_recv_time).map_err(|e| {
         PeppyError::InvalidServiceRequest {
@@ -61,7 +64,7 @@ fn handle_clock_request_inner(
 
     // Stamp t2 last — the response encode + send happens after this point and
     // is part of the round-trip delay the client measures, not server time.
-    let server_send_time = wall_now_ns();
+    let server_send_time = wall_now_ns()?;
 
     ClockResponse::new(request.client_send_time, server_recv_time, server_send_time)
         .encode()
@@ -101,7 +104,14 @@ async fn run_clock_publisher(publisher: TopicPublisher, interval: Duration) -> R
 
     loop {
         ticker.tick().await;
-        let payload = match ClockTick::new(wall_now_ns()).encode() {
+        let now_ns = match wall_now_ns() {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("clock tick skipped, system clock unavailable: {e}");
+                continue;
+            }
+        };
+        let payload = match ClockTick::new(now_ns).encode() {
             Ok(p) => p,
             Err(e) => {
                 warn!("clock tick encode failed: {e}");
