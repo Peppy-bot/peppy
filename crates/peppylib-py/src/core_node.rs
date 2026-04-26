@@ -267,6 +267,7 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyStackList>()?;
     module.add_function(wrap_pyfunction!(info, &module)?)?;
     module.add_function(wrap_pyfunction!(stack_list, &module)?)?;
+    crate::clock::register_into(&module)?;
     parent_module.add_submodule(&module)?;
     Ok(())
 }
