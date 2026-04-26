@@ -13,10 +13,13 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource};
+use config::node::QoSProfile;
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick};
+use core_node_api::names;
 
 use crate::core_node::transport::poll_clock;
 use crate::error::Result;
+use crate::messaging::{Subscription, TopicMessenger};
 use crate::runtime::NodeRunner;
 
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -64,6 +67,53 @@ pub async fn synchronize(
         clock_source: response.clock_source,
         raw: response,
     })
+}
+
+/// Subscription handle returned by [`subscribe`]. Each call to
+/// [`ClockSubscription::on_next_tick`] yields the next decoded [`ClockTick`].
+pub struct ClockSubscription {
+    inner: Subscription,
+}
+
+impl ClockSubscription {
+    /// Wait for the next tick from the core node's `clock` topic. Returns
+    /// `Ok(None)` if the underlying subscription closes.
+    pub async fn on_next_tick(&mut self) -> Result<Option<ClockTick>> {
+        match self.inner.on_next_message().await {
+            Some(message) => {
+                let tick = ClockTick::decode(message.payload().as_ref())?;
+                Ok(Some(tick))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+/// Subscribe to the periodic `clock` topic on `node_runner`'s bound core node.
+///
+/// Mirrors the shape of [`info`](super::info::info) and
+/// [`stack_list`](super::stack::stack_list): the helper takes a [`NodeRunner`]
+/// and threads the routing parameters and `SensorData` QoS profile through
+/// itself, so callers don't see them.
+pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
+    let processor = node_runner.processor();
+    let core_node = processor.bound_core_node();
+    let inner = TopicMessenger::subscribe(
+        node_runner.messenger(),
+        // The publisher's wire key hard-codes `*` into the caller-identity
+        // slots (see `emit_topic_message`); the mock matcher is unidirectional,
+        // so subscribers must mirror the wildcards on their side. Real Zenoh
+        // would accept either form.
+        "*",
+        "*",
+        core_node,
+        names::CLOCK,
+        Some(core_node),
+        None,
+        QoSProfile::SensorData,
+    )
+    .await?;
+    Ok(ClockSubscription { inner })
 }
 
 fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {

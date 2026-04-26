@@ -5,11 +5,14 @@
 //! ClockSource, ClockTick}` and `peppylib::core_node::clock::{ClockSync,
 //! synchronize}`.
 
+use std::sync::Arc;
+
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick};
-use peppylib::core_node::clock::{ClockSync, synchronize};
+use peppylib::core_node::clock::{ClockSubscription, ClockSync, subscribe, synchronize};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use tokio::sync::Mutex;
 
 use crate::messaging::{duration_from_secs_f64, to_py_err};
 use crate::runtime::PyNodeRunner;
@@ -283,6 +286,51 @@ fn synchronize_clock<'py>(
     })
 }
 
+/// Long-lived subscription to the periodic `/clock` topic.
+///
+/// Wraps [`ClockSubscription`] so Python users get the same NodeRunner-level
+/// ergonomics that [`peppylib.subscribe_clock`] is built around.
+#[pyclass(name = "ClockSubscription")]
+pub struct PyClockSubscription {
+    // Async-mutable: `on_next_tick` is `&mut self`, but Python only sees a
+    // `&PyRef`-style borrow — so we keep the inner subscription behind an
+    // `Arc<Mutex<_>>` and lock it across the await. Mirrors how PySubscription
+    // is structured in messaging/topics.rs.
+    inner: Arc<Mutex<ClockSubscription>>,
+}
+
+#[pymethods]
+impl PyClockSubscription {
+    /// Wait for the next tick. Returns `None` if the subscription closes.
+    fn on_next_tick<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = inner.lock().await;
+            let tick = guard.on_next_tick().await.map_err(to_py_err)?;
+            Ok(tick.map(PyClockTick::from))
+        })
+    }
+}
+
+/// Subscribe to the periodic `/clock` topic on `node_runner`'s bound core
+/// node.
+///
+/// Python equivalent of `peppylib::core_node::clock::subscribe`.
+#[pyfunction]
+#[pyo3(name = "subscribe_clock")]
+fn subscribe_clock_py<'py>(
+    py: Python<'py>,
+    node_runner: &PyNodeRunner,
+) -> PyResult<Bound<'py, PyAny>> {
+    let runner = node_runner.inner.clone();
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let sub = subscribe(&runner).await.map_err(to_py_err)?;
+        Ok(PyClockSubscription {
+            inner: Arc::new(Mutex::new(sub)),
+        })
+    })
+}
+
 /// Add the clock wire-type wrappers and `synchronize` to the parent
 /// `core_node` Python submodule.
 pub(crate) fn register_into(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -291,6 +339,8 @@ pub(crate) fn register_into(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyClockResponse>()?;
     module.add_class::<PyClockTick>()?;
     module.add_class::<PyClockSync>()?;
+    module.add_class::<PyClockSubscription>()?;
     module.add_function(wrap_pyfunction!(synchronize_clock, module)?)?;
+    module.add_function(wrap_pyfunction!(subscribe_clock_py, module)?)?;
     Ok(())
 }

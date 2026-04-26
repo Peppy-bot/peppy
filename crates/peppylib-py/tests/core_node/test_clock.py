@@ -1,14 +1,30 @@
-"""Integration test for `peppylib.synchronize`.
+"""Integration tests for `peppylib.synchronize` and `peppylib.subscribe_clock`.
 
-Python equivalent of `crates/core-node-internal/tests/listen_for_clock.rs`,
-exercised through the high-level Python helper.
+Python equivalent of `crates/peppylib/tests/core_node/clock.rs`, exercised
+through the high-level Python helpers.
 """
+
+import asyncio
 
 import pytest
 
-from peppylib import ClockResponse, ClockSource, synchronize
+from peppylib import (
+    ClockResponse,
+    ClockSource,
+    ClockTick,
+    QoSProfile,
+    TopicMessenger,
+    subscribe_clock,
+    synchronize,
+)
 
-from .common import spawn_stub_listener, start_router_and_runner, wait_until_reachable
+from .common import (
+    CORE_NODE,
+    SERVER_INSTANCE,
+    spawn_stub_listener,
+    start_router_and_runner,
+    wait_until_reachable,
+)
 
 
 @pytest.mark.asyncio
@@ -55,3 +71,37 @@ async def test_synchronize_computes_offset_and_delay(tmp_path):
     # SystemTime::now() (UNIX nanoseconds, ~1.7e18 today) and t1=2e12, the
     # offset is large and negative — local clock leads the canned server time.
     assert sync.offset_ns < 0
+
+
+@pytest.mark.asyncio
+async def test_subscribe_clock_yields_typed_ticks(tmp_path):
+    """`subscribe_clock(node_runner)` decodes published ClockTicks for the caller.
+
+    Mirrors `subscribe_clock_yields_typed_ticks` from the Rust integration
+    test. Subscribes via the helper *before* publishing so the subscription is
+    in place by the time the tick is emitted.
+    """
+    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
+    try:
+        sub = await subscribe_clock(node_runner)
+        # Brief settle for zenoh discovery — same idiom as test_topics.py.
+        await asyncio.sleep(0.05)
+
+        canned = ClockTick(time=1_700_000_000_123_456_789, clock_source=ClockSource.Wall)
+        await TopicMessenger.emit(
+            server_handle,
+            CORE_NODE,
+            SERVER_INSTANCE,
+            CORE_NODE,
+            "clock",
+            QoSProfile.SensorData,
+            canned.encode(),
+        )
+
+        tick = await asyncio.wait_for(sub.on_next_tick(), timeout=2.0)
+    finally:
+        await router.stop()
+
+    assert tick is not None, "subscription closed before tick arrived"
+    assert tick.time == 1_700_000_000_123_456_789
+    assert tick.clock_source == ClockSource.Wall
