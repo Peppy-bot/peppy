@@ -2,7 +2,7 @@ use crate::Result;
 use crate::names;
 use config::node::QoSProfile;
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
-use peppylib::messaging::ServiceRequestContext;
+use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger, TopicMessenger};
 use std::time::Duration;
@@ -71,29 +71,28 @@ fn handle_clock_request_inner(
 /// Spawns a task that emits a `ClockTick` on the `clock` topic at every
 /// `interval`. `SensorData` QoS so a slow subscriber gets newer ticks dropped
 /// rather than back-pressuring the publisher — stale clock values are useless.
+///
+/// Pre-binds a [`TopicPublisher`] outside the loop so the wire key is
+/// formatted once at startup, not on every tick.
 pub fn publish_clock(
     messenger: MessengerHandle,
-    core_node_name: String,
-    instance_id: String,
-    node_name: String,
+    core_node_name: &str,
+    instance_id: &str,
+    node_name: &str,
     interval: Duration,
 ) -> JoinHandle<Result<()>> {
-    tokio::spawn(run_clock_publisher(
-        messenger,
+    let publisher = TopicMessenger::declare_publisher(
+        &messenger,
         core_node_name,
         instance_id,
         node_name,
-        interval,
-    ))
+        names::CLOCK,
+        QoSProfile::SensorData,
+    );
+    tokio::spawn(run_clock_publisher(publisher, interval))
 }
 
-async fn run_clock_publisher(
-    messenger: MessengerHandle,
-    core_node_name: String,
-    instance_id: String,
-    node_name: String,
-    interval: Duration,
-) -> Result<()> {
+async fn run_clock_publisher(publisher: TopicPublisher, interval: Duration) -> Result<()> {
     let mut ticker = tokio::time::interval(interval);
     // Skip catch-up bursts after a backlog (e.g. test pause / GC stall).
     // A clock-tick ten ticks late is uninteresting — we want fresh time.
@@ -108,17 +107,7 @@ async fn run_clock_publisher(
                 continue;
             }
         };
-        if let Err(e) = TopicMessenger::emit(
-            &messenger,
-            &core_node_name,
-            &instance_id,
-            &node_name,
-            names::CLOCK,
-            QoSProfile::SensorData,
-            payload,
-        )
-        .await
-        {
+        if let Err(e) = publisher.publish(payload).await {
             warn!("clock tick emit failed: {e}");
         }
     }

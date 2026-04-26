@@ -107,6 +107,27 @@ impl TopicMessenger {
             )
             .await
     }
+
+    /// Pre-binds a topic publisher to a fixed key + QoS so callers in a
+    /// per-tick / per-frame loop don't reformat the wire key on every emit.
+    /// Use this in publish loops; use [`emit`] for one-shot publishes where
+    /// the per-call `format!` is in the noise.
+    ///
+    /// The key follows the same `*/<core_node>/*/<instance>/topic/<node>/<topic>`
+    /// shape as [`MessengerHandle::emit_topic_message`] — keep this in sync if
+    /// that format changes.
+    pub fn declare_publisher(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_node_name: &str,
+        as_topic_name: &str,
+        qos: QoSProfile,
+    ) -> TopicPublisher {
+        let topic =
+            format!("*/{as_core_node}/*/{as_instance_id}/topic/{as_node_name}/{as_topic_name}");
+        TopicPublisher::new(Arc::clone(messenger.shared()), topic, qos.into())
+    }
 }
 
 #[derive(Clone)]

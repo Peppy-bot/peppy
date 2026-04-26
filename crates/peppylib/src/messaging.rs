@@ -123,6 +123,10 @@ impl MessengerHandle {
         Self { messenger }
     }
 
+    pub(crate) fn shared(&self) -> &Arc<Mutex<Messenger>> {
+        &self.messenger
+    }
+
     pub async fn messaging_port(&self) -> u16 {
         let messenger = self.messenger.lock().await;
         messenger.get_host().port()

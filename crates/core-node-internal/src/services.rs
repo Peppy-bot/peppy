@@ -242,9 +242,9 @@ impl CoreNode {
             .await?,
             clock::publish_clock(
                 self.messenger.clone(),
-                core_node_name.to_string(),
-                self.instance_id().to_string(),
-                self.node_name().to_string(),
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
                 self.clock_publish_interval,
             ),
             info::listen_for_info(
