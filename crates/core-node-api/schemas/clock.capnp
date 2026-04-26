@@ -12,13 +12,6 @@
 # offset = ((t1 - t0) + (t2 - t3)) / 2
 # delay  = (t3 - t0) - (t2 - t1)
 
-enum ClockSource {
-    wall @0;
-    # Reserved for future use; encoders MUST NOT emit these today.
-    # sim    @1;
-    # replay @2;
-}
-
 struct ClockRequest {
     clientSendTime @0 :UInt64;
 }
@@ -27,7 +20,6 @@ struct ClockResponse {
     clientSendTime @0 :UInt64;
     serverRecvTime @1 :UInt64;
     serverSendTime @2 :UInt64;
-    clockSource    @3 :ClockSource;
 }
 
 # A one-way snapshot published periodically on the `clock` topic. Subscribers
@@ -35,6 +27,5 @@ struct ClockResponse {
 # response service, no NTP exchange happens here — the value is stale by one
 # one-way network delay on read.
 struct ClockTick {
-    time        @0 :UInt64;
-    clockSource @1 :ClockSource;
+    time @0 :UInt64;
 }

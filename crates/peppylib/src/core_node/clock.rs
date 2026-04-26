@@ -14,7 +14,7 @@
 use std::time::Duration;
 
 use config::node::QoSProfile;
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick, wall_now_ns};
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
 use core_node_api::names;
 
 use crate::core_node::transport::poll_clock;
@@ -32,8 +32,6 @@ pub struct ClockSync {
     pub offset_ns: i64,
     /// Round-trip network delay observed during the exchange.
     pub round_trip_delay_ns: u64,
-    /// Which clock source the core node served the response from.
-    pub clock_source: ClockSource,
     /// Raw wire response, exposed for callers that want the individual t0/t1/t2.
     pub raw: ClockResponse,
 }
@@ -64,7 +62,6 @@ pub async fn synchronize(
     Ok(ClockSync {
         offset_ns,
         round_trip_delay_ns,
-        clock_source: response.clock_source,
         raw: response,
     })
 }

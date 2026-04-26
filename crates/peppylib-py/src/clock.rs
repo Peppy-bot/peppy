@@ -2,12 +2,11 @@
 //! `synchronize` helper.
 //!
 //! Mirrors `core_node_api::encoding::clock::{ClockRequest, ClockResponse,
-//! ClockSource, ClockTick}` and `peppylib::core_node::clock::{ClockSync,
-//! synchronize}`.
+//! ClockTick}` and `peppylib::core_node::clock::{ClockSync, synchronize}`.
 
 use std::sync::Arc;
 
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick};
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
 use peppylib::core_node::clock::{ClockSubscription, ClockSync, subscribe, synchronize};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -15,32 +14,6 @@ use tokio::sync::Mutex;
 
 use crate::messaging::{decode_err, duration_from_secs_f64, encode_err, to_py_err};
 use crate::runtime::PyNodeRunner;
-
-/// Which clock source the core node served a tick or response from.
-///
-/// Today only `Wall` is emitted; `Sim` and `Replay` are reserved for a future
-/// `use_sim_time`-equivalent and are not constructable on the wire.
-#[pyclass(name = "ClockSource", eq, eq_int, from_py_object)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum PyClockSource {
-    Wall,
-}
-
-impl From<PyClockSource> for ClockSource {
-    fn from(py: PyClockSource) -> Self {
-        match py {
-            PyClockSource::Wall => ClockSource::Wall,
-        }
-    }
-}
-
-impl From<ClockSource> for PyClockSource {
-    fn from(src: ClockSource) -> Self {
-        match src {
-            ClockSource::Wall => PyClockSource::Wall,
-        }
-    }
-}
 
 /// Request side of the NTP-style 4-timestamp exchange.
 ///
@@ -92,8 +65,8 @@ impl PyClockRequest {
 /// Response side of the NTP-style 4-timestamp exchange.
 ///
 /// Carries the echoed `client_send_time` (`t0`), `server_recv_time` (`t1`),
-/// `server_send_time` (`t2`), and the `clock_source` the server stamped from.
-/// `t3` is the client's local time on receive — never on the wire.
+/// and `server_send_time` (`t2`). `t3` is the client's local time on receive —
+/// never on the wire.
 #[pyclass(name = "ClockResponse", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyClockResponse {
@@ -109,19 +82,9 @@ impl From<ClockResponse> for PyClockResponse {
 #[pymethods]
 impl PyClockResponse {
     #[new]
-    fn new(
-        client_send_time: u64,
-        server_recv_time: u64,
-        server_send_time: u64,
-        clock_source: PyClockSource,
-    ) -> Self {
+    fn new(client_send_time: u64, server_recv_time: u64, server_send_time: u64) -> Self {
         Self {
-            inner: ClockResponse::new(
-                client_send_time,
-                server_recv_time,
-                server_send_time,
-                clock_source.into(),
-            ),
+            inner: ClockResponse::new(client_send_time, server_recv_time, server_send_time),
         }
     }
 
@@ -138,11 +101,6 @@ impl PyClockResponse {
     #[getter]
     fn server_send_time(&self) -> u64 {
         self.inner.server_send_time
-    }
-
-    #[getter]
-    fn clock_source(&self) -> PyClockSource {
-        self.inner.clock_source.into()
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
@@ -181,20 +139,15 @@ impl From<ClockTick> for PyClockTick {
 #[pymethods]
 impl PyClockTick {
     #[new]
-    fn new(time: u64, clock_source: PyClockSource) -> Self {
+    fn new(time: u64) -> Self {
         Self {
-            inner: ClockTick::new(time, clock_source.into()),
+            inner: ClockTick::new(time),
         }
     }
 
     #[getter]
     fn time(&self) -> u64 {
         self.inner.time
-    }
-
-    #[getter]
-    fn clock_source(&self) -> PyClockSource {
-        self.inner.clock_source.into()
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
@@ -242,11 +195,6 @@ impl PyClockSync {
     #[getter]
     fn round_trip_delay_ns(&self) -> u64 {
         self.inner.round_trip_delay_ns
-    }
-
-    #[getter]
-    fn clock_source(&self) -> PyClockSource {
-        self.inner.clock_source.into()
     }
 
     /// Raw wire response, exposed for callers that want the individual t0/t1/t2.
@@ -325,7 +273,6 @@ fn subscribe_clock_py<'py>(
 /// Add the clock wire-type wrappers and `synchronize` to the parent
 /// `core_node` Python submodule.
 pub(crate) fn register_into(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyClockSource>()?;
     module.add_class::<PyClockRequest>()?;
     module.add_class::<PyClockResponse>()?;
     module.add_class::<PyClockTick>()?;

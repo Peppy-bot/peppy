@@ -10,7 +10,6 @@ import pytest
 
 from peppylib import (
     ClockResponse,
-    ClockSource,
     ClockTick,
     QoSProfile,
     TopicMessenger,
@@ -43,7 +42,6 @@ async def test_synchronize_computes_offset_and_delay(tmp_path):
         client_send_time=0,  # echoed t0 — ignored by `synchronize`, which uses the live one
         server_recv_time=2_000_000_000_000,
         server_send_time=2_000_000_000_005,
-        clock_source=ClockSource.Wall,
     )
 
     router, node_runner, server_handle = await start_router_and_runner(tmp_path)
@@ -59,7 +57,6 @@ async def test_synchronize_computes_offset_and_delay(tmp_path):
     finally:
         await router.stop()
 
-    assert sync.clock_source == ClockSource.Wall
     # The raw response is exposed; t1/t2 must be exactly the canned values.
     assert sync.raw.server_recv_time == 2_000_000_000_000
     assert sync.raw.server_send_time == 2_000_000_000_005
@@ -87,7 +84,7 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
         # Brief settle for zenoh discovery — same idiom as test_topics.py.
         await asyncio.sleep(0.05)
 
-        canned = ClockTick(time=1_700_000_000_123_456_789, clock_source=ClockSource.Wall)
+        canned = ClockTick(time=1_700_000_000_123_456_789)
         await TopicMessenger.emit(
             server_handle,
             CORE_NODE,
@@ -104,4 +101,3 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
 
     assert tick is not None, "subscription closed before tick arrived"
     assert tick.time == 1_700_000_000_123_456_789
-    assert tick.clock_source == ClockSource.Wall

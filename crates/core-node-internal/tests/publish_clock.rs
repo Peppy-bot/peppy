@@ -3,7 +3,7 @@ mod common;
 use common::start_core_node_with_mock_messenger;
 use config::node::QoSProfile;
 use core_node::names;
-use core_node_api::encoding::{ClockSource, ClockTick};
+use core_node_api::encoding::ClockTick;
 use peppylib::messaging::TopicMessenger;
 use std::time::Duration;
 
@@ -37,7 +37,6 @@ async fn publish_clock_emits_monotonic_ticks() {
 
         let tick = ClockTick::decode(message.payload().as_ref())
             .expect("clock tick decode should succeed");
-        assert_eq!(tick.clock_source, ClockSource::Wall);
         times.push(tick.time);
     }
 

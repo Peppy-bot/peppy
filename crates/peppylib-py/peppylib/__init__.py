@@ -51,7 +51,6 @@ from ._peppylib.runtime import (  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.core_node import (  # noqa: E402  # type: ignore[import-not-found]
     ClockRequest,
     ClockResponse,
-    ClockSource,
     ClockSubscription,
     ClockSync,
     ClockTick,
@@ -78,7 +77,6 @@ __all__ = [
     "stack_list",
     "ClockRequest",
     "ClockResponse",
-    "ClockSource",
     "ClockSubscription",
     "ClockSync",
     "ClockTick",

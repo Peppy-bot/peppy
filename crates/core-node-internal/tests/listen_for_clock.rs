@@ -2,7 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
 use core_node::names;
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, wall_now_ns};
+use core_node_api::encoding::{ClockRequest, ClockResponse, wall_now_ns};
 use peppylib::ServiceMessenger;
 use std::time::Duration;
 
@@ -48,5 +48,4 @@ async fn listen_for_clock_roundtrip_succeed() {
         clock_response.server_send_time,
         t3,
     );
-    assert_eq!(clock_response.clock_source, ClockSource::Wall);
 }

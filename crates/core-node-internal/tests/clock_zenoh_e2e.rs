@@ -15,7 +15,7 @@ mod common;
 use common::{CALLER_INSTANCE_ID, start_core_node_with_real_messenger};
 use config::node::QoSProfile;
 use core_node::names;
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick, wall_now_ns};
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
 use peppylib::ServiceMessenger;
 use peppylib::messaging::TopicMessenger;
 use std::time::Duration;
@@ -60,7 +60,6 @@ async fn clock_service_round_trip_over_real_zenoh() {
         clock_response.server_send_time,
         t3,
     );
-    assert_eq!(clock_response.clock_source, ClockSource::Wall);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -93,7 +92,6 @@ async fn clock_topic_publishes_ticks_over_real_zenoh() {
 
         let tick = ClockTick::decode(message.payload().as_ref())
             .expect("clock tick decode should succeed");
-        assert_eq!(tick.clock_source, ClockSource::Wall);
         times.push(tick.time);
     }
 

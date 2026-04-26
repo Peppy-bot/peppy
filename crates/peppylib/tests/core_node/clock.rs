@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use config::node::QoSProfile;
-use core_node_api::encoding::{ClockResponse, ClockSource, ClockTick};
+use core_node_api::encoding::{ClockResponse, ClockTick};
 use core_node_api::names;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger, TopicMessenger};
 use peppylib::{subscribe_clock, synchronize};
@@ -45,7 +45,7 @@ async fn setup_synchronize_stub(
 async fn synchronize_returns_typed_clock_sync() {
     // Canned t1/t2 are far smaller than the live `t0` from SystemTime::now(),
     // so the local clock leads the server and the offset must come out negative.
-    let response = ClockResponse::new(0, 2_000_000_000_000, 2_000_000_000_005, ClockSource::Wall);
+    let response = ClockResponse::new(0, 2_000_000_000_000, 2_000_000_000_005);
 
     let (_router, _temp_dir, node_runner) = setup_synchronize_stub(response.clone()).await;
 
@@ -53,7 +53,6 @@ async fn synchronize_returns_typed_clock_sync() {
         .await
         .expect("synchronize should succeed");
 
-    assert_eq!(sync.clock_source, ClockSource::Wall);
     assert_eq!(sync.raw.server_recv_time, 2_000_000_000_000);
     assert_eq!(sync.raw.server_send_time, 2_000_000_000_005);
     assert!(
@@ -78,7 +77,7 @@ async fn subscribe_clock_yields_typed_ticks() {
     // Brief settle for zenoh discovery; same idiom as topic_messenger_communication.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let canned = ClockTick::new(1_700_000_000_123_456_789, ClockSource::Wall);
+    let canned = ClockTick::new(1_700_000_000_123_456_789);
     TopicMessenger::emit(
         &server,
         CORE_NODE,

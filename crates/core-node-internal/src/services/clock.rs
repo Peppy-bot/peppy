@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::names;
 use config::node::QoSProfile;
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick, wall_now_ns};
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger, TopicMessenger};
@@ -63,14 +63,9 @@ fn handle_clock_request_inner(
     // is part of the round-trip delay the client measures, not server time.
     let server_send_time = wall_now_ns();
 
-    ClockResponse::new(
-        request.client_send_time,
-        server_recv_time,
-        server_send_time,
-        ClockSource::Wall,
-    )
-    .encode()
-    .map_err(Into::into)
+    ClockResponse::new(request.client_send_time, server_recv_time, server_send_time)
+        .encode()
+        .map_err(Into::into)
 }
 
 /// Spawns a task that emits a `ClockTick` on the `clock` topic at every
@@ -106,7 +101,7 @@ async fn run_clock_publisher(
 
     loop {
         ticker.tick().await;
-        let payload = match ClockTick::new(wall_now_ns(), ClockSource::Wall).encode() {
+        let payload = match ClockTick::new(wall_now_ns()).encode() {
             Ok(p) => p,
             Err(e) => {
                 warn!("clock tick encode failed: {e}");
