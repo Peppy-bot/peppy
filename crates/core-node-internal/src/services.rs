@@ -1,4 +1,5 @@
 mod action_loop;
+mod clock;
 mod info;
 mod node;
 mod ping;
@@ -222,6 +223,13 @@ impl CoreNode {
         );
         let handles = vec![
             ping::listen_for_ping(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+            )
+            .await?,
+            clock::listen_for_clock(
                 &self.messenger,
                 core_node_name,
                 self.instance_id(),

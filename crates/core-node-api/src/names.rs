@@ -2,6 +2,7 @@
 ///
 /// These constants define the service identifiers used when registering
 /// and communicating with core node services.
+pub const CLOCK: &str = "clock";
 pub const INFO: &str = "info";
 pub const PING: &str = "ping";
 

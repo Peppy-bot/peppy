@@ -1,0 +1,80 @@
+use crate::Result;
+use crate::names;
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource};
+use peppylib::messaging::ServiceRequestContext;
+use peppylib::types::Payload;
+use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::task::JoinHandle;
+use tracing::debug;
+
+pub async fn listen_for_clock(
+    messenger: &MessengerHandle,
+    core_node_node: &str,
+    instance_id: &str,
+    node_name: &str,
+) -> Result<JoinHandle<Result<()>>> {
+    let mut endpoint = ServiceMessenger::listen(
+        messenger,
+        core_node_node,
+        instance_id,
+        node_name,
+        names::CLOCK,
+    )
+    .await?;
+
+    let handle = tokio::spawn(async move {
+        endpoint
+            .handle_requests(handle_clock_request)
+            .await
+            .map_err(Into::into)
+    });
+
+    Ok(handle)
+}
+
+async fn handle_clock_request(context: ServiceRequestContext) -> PeppyResult<Payload> {
+    // Stamp t1 first — every line after this point inflates server processing
+    // time and corrupts the offset estimate the client computes.
+    let server_recv_time = now_ns();
+    let instance_id = context.message().instance_id().to_string();
+    handle_clock_request_inner(&context, server_recv_time).map_err(|e| {
+        PeppyError::InvalidServiceRequest {
+            identifier: instance_id,
+            reason: e.to_string(),
+        }
+    })
+}
+
+fn handle_clock_request_inner(
+    context: &ServiceRequestContext,
+    server_recv_time: u64,
+) -> Result<Payload> {
+    let request = ClockRequest::decode(context.message().payload().as_ref())?;
+
+    debug!(
+        "Received clock request from {}, t0={}",
+        context.message().instance_id(),
+        request.client_send_time,
+    );
+
+    // Stamp t2 last — the response encode + send happens after this point and
+    // is part of the round-trip delay the client measures, not server time.
+    let server_send_time = now_ns();
+
+    ClockResponse::new(
+        request.client_send_time,
+        server_recv_time,
+        server_send_time,
+        ClockSource::Wall,
+    )
+    .encode()
+    .map_err(Into::into)
+}
+
+fn now_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
