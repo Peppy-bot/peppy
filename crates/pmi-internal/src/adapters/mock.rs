@@ -248,6 +248,62 @@ impl MockAdapter {
         let identifier = message.identifier();
         TopicMessage::new(identifier, message.payload().clone())
     }
+
+    /// Pre-bind a publisher to `topic` + `qos`. Clones the adapter's
+    /// `subscriptions` and `messages` `Arc`s so the resulting publisher's
+    /// `publish` skips the central `Messenger` mutex — only the per-map
+    /// locks (which the original `publish` was already taking).
+    pub fn declare_publisher(&self, topic: String, _qos: PublisherQoS) -> MockPublisher {
+        MockPublisher {
+            topic,
+            subscriptions: Arc::clone(&self.subscriptions),
+            messages: Arc::clone(&self.messages),
+        }
+    }
+}
+
+/// Mock-side per-topic publisher returned by [`MockAdapter::declare_publisher`].
+/// Holds `Arc`s into the adapter's in-process matcher state, so `publish` is
+/// independent of the `Arc<Mutex<Messenger>>` global lock that everyone shares.
+pub struct MockPublisher {
+    topic: String,
+    subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<TopicMessage>>>>>,
+    messages: Arc<Mutex<HashMap<String, Vec<Message>>>>,
+}
+
+impl MockPublisher {
+    pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
+        let message = Message::new(&self.topic, payload);
+        // Same routing logic as `MockAdapter::publish`, but on cloned Arcs.
+        MockAdapter::to_response_message(&message)?;
+
+        {
+            let mut messages = self.messages.lock().unwrap();
+            messages
+                .entry(self.topic.clone())
+                .or_default()
+                .push(message.clone());
+        }
+
+        let senders = {
+            let subs = self.subscriptions.lock().unwrap();
+            let mut matched = Vec::new();
+            for (pattern, senders) in subs.iter() {
+                if MockAdapter::topic_matches(pattern, &self.topic) {
+                    matched.extend(senders.iter().cloned());
+                }
+            }
+            matched
+        };
+
+        for sender in senders {
+            let _ = sender
+                .send(MockAdapter::to_response_message(&message)?)
+                .await;
+        }
+
+        Ok(())
+    }
 }
 
 // Those tests purpose is to test the behaviour of a real messaging system and check if they map to the behaviour of the mock

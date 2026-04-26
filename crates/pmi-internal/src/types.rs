@@ -1,4 +1,4 @@
-use super::adapters::mock::MockAdapter;
+use super::adapters::mock::{MockAdapter, MockPublisher};
 use super::error::{Error, Result};
 use config::node::QoSProfile;
 use std::borrow::Cow;
@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use zenoh::bytes::ZBytes;
 
 #[cfg(feature = "zenoh")]
-use super::adapters::zenoh::ZenohAdapter;
+use super::adapters::zenoh::{ZenohAdapter, ZenohPublisher};
 
 /// QoS settings for publishing messages
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,6 +392,44 @@ impl Messenger {
 
     pub fn messaging_port(&self) -> u16 {
         self.get_host().port()
+    }
+
+    /// Pre-bind a per-topic publisher to the active adapter. Returns a handle
+    /// whose `publish` skips the central `Arc<Mutex<Messenger>>` lock that all
+    /// other operations contend on — useful for periodic / per-frame publish
+    /// loops where the per-call mutex acquisition becomes a bottleneck.
+    pub fn declare_publisher(
+        &self,
+        topic: String,
+        qos: PublisherQoS,
+    ) -> Result<MessengerPublisher> {
+        match &self.adapter {
+            #[cfg(feature = "zenoh")]
+            MessengerAdapter::Zenoh(adapter) => Ok(MessengerPublisher::Zenoh(
+                adapter.declare_publisher(topic, qos)?,
+            )),
+            MessengerAdapter::Mock(adapter) => Ok(MessengerPublisher::Mock(
+                adapter.declare_publisher(topic, qos),
+            )),
+        }
+    }
+}
+
+/// Per-topic publisher handle that bypasses the central `Messenger` mutex.
+/// Construct via [`Messenger::declare_publisher`].
+pub enum MessengerPublisher {
+    #[cfg(feature = "zenoh")]
+    Zenoh(ZenohPublisher),
+    Mock(MockPublisher),
+}
+
+impl MessengerPublisher {
+    pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
+        match self {
+            #[cfg(feature = "zenoh")]
+            MessengerPublisher::Zenoh(p) => p.publish(payload).await,
+            MessengerPublisher::Mock(p) => p.publish(payload).await,
+        }
     }
 }
 

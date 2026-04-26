@@ -245,6 +245,14 @@ impl CoreNode {
                 self.node_name(),
             )
             .boxed(),
+            clock::publish_clock(
+                self.messenger.clone(),
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.clock_publish_interval,
+            )
+            .boxed(),
             info::listen_for_info(
                 &self.messenger,
                 core_node_name,
@@ -405,17 +413,7 @@ impl CoreNode {
             .boxed(),
         ];
 
-        let mut handles = try_join_all(setup).await?;
-        // publish_clock returns its JoinHandle synchronously (it spawns its own
-        // loop task internally), so it doesn't go through the parallel-setup
-        // join — append it once everything else is wired up.
-        handles.push(clock::publish_clock(
-            self.messenger.clone(),
-            core_node_name,
-            self.instance_id(),
-            self.node_name(),
-            self.clock_publish_interval,
-        ));
+        let handles = try_join_all(setup).await?;
 
         if let Some(ready) = ready {
             let _ = ready.send(());

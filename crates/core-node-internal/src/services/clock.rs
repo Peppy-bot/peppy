@@ -72,15 +72,15 @@ fn handle_clock_request_inner(
 /// `interval`. `SensorData` QoS so a slow subscriber gets newer ticks dropped
 /// rather than back-pressuring the publisher — stale clock values are useless.
 ///
-/// Pre-binds a [`TopicPublisher`] outside the loop so the wire key is
-/// formatted once at startup, not on every tick.
-pub fn publish_clock(
+/// Pre-binds a [`TopicPublisher`] outside the loop: the wire key is formatted
+/// once at startup, and per-tick `publish` skips the central messenger mutex.
+pub async fn publish_clock(
     messenger: MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
     node_name: &str,
     interval: Duration,
-) -> JoinHandle<Result<()>> {
+) -> Result<JoinHandle<Result<()>>> {
     let publisher = TopicMessenger::declare_publisher(
         &messenger,
         core_node_name,
@@ -88,8 +88,9 @@ pub fn publish_clock(
         node_name,
         names::CLOCK,
         QoSProfile::SensorData,
-    );
-    tokio::spawn(run_clock_publisher(publisher, interval))
+    )
+    .await?;
+    Ok(tokio::spawn(run_clock_publisher(publisher, interval)))
 }
 
 async fn run_clock_publisher(publisher: TopicPublisher, interval: Duration) -> Result<()> {
