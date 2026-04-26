@@ -15,23 +15,16 @@ mod common;
 use common::{CALLER_INSTANCE_ID, start_core_node_with_real_messenger};
 use config::node::QoSProfile;
 use core_node::names;
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick};
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick, wall_now_ns};
 use peppylib::ServiceMessenger;
 use peppylib::messaging::TopicMessenger;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-}
+use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clock_service_round_trip_over_real_zenoh() {
     let started = start_core_node_with_real_messenger().await;
 
-    let t0 = now_ns();
+    let t0 = wall_now_ns();
     let request_payload = ClockRequest::new(t0)
         .encode()
         .expect("encode should succeed");
@@ -50,7 +43,7 @@ async fn clock_service_round_trip_over_real_zenoh() {
     .await
     .expect("clock service poll should succeed over zenoh");
 
-    let t3 = now_ns();
+    let t3 = wall_now_ns();
     let clock_response = ClockResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert_eq!(

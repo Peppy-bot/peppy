@@ -11,10 +11,10 @@
 //! timestamp stamping through by hand, this layer takes a [`NodeRunner`]
 //! directly and performs the t0/t3 stamping itself.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use config::node::QoSProfile;
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick};
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick, wall_now_ns};
 use core_node_api::names;
 
 use crate::core_node::transport::poll_clock;
@@ -40,13 +40,13 @@ pub struct ClockSync {
 
 pub async fn synchronize(
     node_runner: &NodeRunner,
-    response_timeout: impl Into<Option<Duration>> + Send,
+    response_timeout: Option<Duration>,
 ) -> Result<ClockSync> {
-    let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
+    let timeout = response_timeout.unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
 
-    let t0 = now_ns();
+    let t0 = wall_now_ns();
     let response = poll_clock(
         &ClockRequest::new(t0),
         node_runner.messenger(),
@@ -56,7 +56,7 @@ pub async fn synchronize(
         timeout,
     )
     .await?;
-    let t3 = now_ns();
+    let t3 = wall_now_ns();
 
     let (offset_ns, round_trip_delay_ns) =
         compute_sync(t0, response.server_recv_time, response.server_send_time, t3);
@@ -119,21 +119,15 @@ pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
 fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
     // i128 widening: subtracting two u64s can underflow, and the standard NTP
     // formula sums two such differences before halving — we need headroom.
-    // Saturating narrow on the way back down: t1/t2 come from an unauthenticated
-    // peer, so a misbehaving server could otherwise wrap us silently.
-    let offset = ((t1 as i128 - t0 as i128) + (t2 as i128 - t3 as i128)) / 2;
-    let delay = (t3 as i128 - t0 as i128) - (t2 as i128 - t1 as i128);
+    // t1/t2 come from an unauthenticated peer, so saturate (don't wrap) on the
+    // narrow back to i64/u64 — a misbehaving server could otherwise flip signs.
+    let i = |x: u64| x as i128;
+    let offset = ((i(t1) - i(t0)) + (i(t2) - i(t3))) / 2;
+    let delay = (i(t3) - i(t0)) - (i(t2) - i(t1));
 
-    let offset = offset.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
-    let delay = delay.clamp(0, u64::MAX as i128) as u64;
+    let offset = i64::try_from(offset).unwrap_or(if offset > 0 { i64::MAX } else { i64::MIN });
+    let delay = u64::try_from(delay.max(0)).unwrap_or(u64::MAX);
     (offset, delay)
-}
-
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

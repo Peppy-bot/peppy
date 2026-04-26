@@ -43,15 +43,13 @@ async fn setup_synchronize_stub(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn synchronize_returns_typed_clock_sync() {
-    // Hand-picked t1/t2 with t2 = t1 + 5 ns, far smaller than `t0` stamped from
-    // SystemTime::now() — so the offset should come out large and negative
-    // (local clock leads the canned server time). The exact values are validated
-    // by compute_sync's unit tests; here we just check the wire boundary.
+    // Canned t1/t2 are far smaller than the live `t0` from SystemTime::now(),
+    // so the local clock leads the server and the offset must come out negative.
     let response = ClockResponse::new(0, 2_000_000_000_000, 2_000_000_000_005, ClockSource::Wall);
 
     let (_router, _temp_dir, node_runner) = setup_synchronize_stub(response.clone()).await;
 
-    let sync = synchronize(&node_runner, Duration::from_secs(3))
+    let sync = synchronize(&node_runner, Some(Duration::from_secs(3)))
         .await
         .expect("synchronize should succeed");
 

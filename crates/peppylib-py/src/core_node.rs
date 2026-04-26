@@ -13,16 +13,12 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pythonize::pythonize;
 
-use crate::messaging::{duration_from_secs_f64, to_py_err};
+use crate::messaging::{duration_from_secs_f64, encode_err, to_py_err};
 use crate::runtime::PyNodeRunner;
 
 fn optional_timeout(arg_name: &str, secs: Option<f64>) -> PyResult<Option<Duration>> {
     secs.map(|s| duration_from_secs_f64(arg_name, s))
         .transpose()
-}
-
-fn encode_err(what: &str, err: core_node_api::Error) -> PyErr {
-    PyRuntimeError::new_err(format!("failed to encode {what}: {err}"))
 }
 
 /// Python wrapper for `core_node_api::encoding::ContainerInfo`.

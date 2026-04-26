@@ -9,21 +9,12 @@ use std::sync::Arc;
 
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockSource, ClockTick};
 use peppylib::core_node::clock::{ClockSubscription, ClockSync, subscribe, synchronize};
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use tokio::sync::Mutex;
 
-use crate::messaging::{duration_from_secs_f64, to_py_err};
+use crate::messaging::{decode_err, duration_from_secs_f64, encode_err, to_py_err};
 use crate::runtime::PyNodeRunner;
-
-fn encode_err(what: &str, err: core_node_api::Error) -> PyErr {
-    PyRuntimeError::new_err(format!("failed to encode {what}: {err}"))
-}
-
-fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
-    PyValueError::new_err(format!("failed to decode {what}: {err}"))
-}
 
 /// Which clock source the core node served a tick or response from.
 ///

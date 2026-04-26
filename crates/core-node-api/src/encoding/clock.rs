@@ -4,12 +4,24 @@
 //! 4-timestamp exchange. Encoders here MUST emit only [`ClockSource::Wall`];
 //! the other variants are reserved.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use capnp::message::Builder;
 
 use crate::clock_capnp;
 use crate::{Payload, Result};
 
 use super::{decode_message, encode_message};
+
+/// Wall-clock "now" in nanoseconds since the UNIX epoch — the canonical reader
+/// for [`ClockSource::Wall`] on the publish/poll paths and in tests. Saturates
+/// to `0` if the system clock is set before the epoch (rare; never panics).
+pub fn wall_now_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClockSource {
