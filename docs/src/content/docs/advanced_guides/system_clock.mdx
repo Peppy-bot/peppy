@@ -13,7 +13,7 @@ On a single host that's fine; the moment two nodes correlate timestamps — to a
 `peppylib` exposes two helpers that let any node measure the offset between its local clock and the core node's clock:
 
 - `synchronize` — a one-shot NTP-style request/response. Returns the offset and the observed round-trip delay.
-- `subscribe_clock` — a long-lived subscription to the periodic `clock` topic the core node publishes. Each `ClockTick` carries the core node's wall clock at emission.
+- `subscribe_clock` — a long-lived subscription to the periodic `clock` topic the core node publishes. Each `ClockTick` carries the core node's clock at emission.
 
 Both are available from Rust as `peppylib::synchronize`, `peppylib::subscribe_clock`, `peppylib::ClockSync`, and `peppylib::ClockSubscription`, and from Python as `from peppylib import synchronize, subscribe_clock`. They are not re-exported by `peppygen` — import them from `peppylib` directly.
 
@@ -28,7 +28,7 @@ Neither helper adjusts the local OS clock. They measure and report; aligning a t
 | | `synchronize` | `subscribe_clock` |
 |---|---|---|
 | Pattern | Request/response | Topic subscription |
-| Result | Offset **and** observed RTT | Snapshot of the core node's wall clock |
+| Result | Offset **and** observed RTT | Snapshot of the core node's clock |
 | Staleness | Bounded by the RTT you just measured | ~one one-way network delay (uncorrected) |
 | Cost per use | One round trip | Passive — ticks arrive at 10 Hz |
 | Use when | You need a precise offset before stamping a recorded artifact | You want continuous correlation, e.g. driving a status display |
