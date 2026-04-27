@@ -8,16 +8,13 @@ sidebar:
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 Every node in a peppy stack runs against its own OS wall clock.
-On a single host that's fine; the moment two nodes correlate timestamps — to align a sensor reading with a controller command, or to stitch logs together across machines — those independent clocks drift, and "1.7 s ago" on one node is not the same instant as "1.7 s ago" on another.
+That's fine on a single host. The trouble starts when two nodes need to compare timestamps. For example, matching a sensor reading to the controller command that triggered it, or merging logs from multiple machines into a single timeline. 
+Their clocks drift independently, so "1.7 s ago" on one node no longer points to the same instant as "1.7 s ago" on another.
 
 `peppylib` exposes two helpers that let any node measure the offset between its local clock and the core node's clock:
 
 - `synchronize` — a one-shot NTP-style request/response. Returns the offset and the observed round-trip delay.
 - `subscribe_clock` — a long-lived subscription to the periodic `clock` topic the core node publishes. Each `ClockTick` carries the core node's clock at emission.
-
-Both are available from Rust as `peppylib::synchronize`, `peppylib::subscribe_clock`, `peppylib::ClockSync`, and `peppylib::ClockSubscription`, and from Python as `from peppylib import synchronize, subscribe_clock`. They are not re-exported by `peppygen` — import them from `peppylib` directly.
-
-Both take a `NodeRunner` — the same handle your node receives from `NodeBuilder::new().run(...)`.
 
 :::note
 Neither helper adjusts the local OS clock. They measure and report; aligning a timestamp is left to the caller (`local_now() + sync.offset_ns`).
