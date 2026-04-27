@@ -416,3 +416,48 @@ impl MessengerBackend for ZenohAdapter {
         SocketAddr::new(ip, port)
     }
 }
+
+impl ZenohAdapter {
+    /// Pre-bind a publisher to `topic` + `qos`. Clones the `Arc<Session>` so
+    /// the resulting publisher's `publish` skips the `Arc<Mutex<Messenger>>`
+    /// global lock — zenoh's session is internally lock-free for `put`.
+    pub fn declare_publisher(&self, topic: String, qos: PublisherQoS) -> Result<ZenohPublisher> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        Ok(ZenohPublisher {
+            session: Arc::clone(session),
+            topic,
+            qos: ZenohQoS::from(qos),
+        })
+    }
+}
+
+/// Zenoh-side per-topic publisher returned by [`ZenohAdapter::declare_publisher`].
+///
+/// Mirrors [`ZenohAdapter::publish`]'s `session.put()` path (NOT a long-lived
+/// `zenoh::pubsub::Publisher`) — see the comment there about routing
+/// interference between successive service polls. The win here is bypassing
+/// the central `Messenger` mutex; zenoh's session itself is lock-free for
+/// `put`.
+pub struct ZenohPublisher {
+    session: Arc<zenoh::Session>,
+    topic: String,
+    qos: ZenohQoS,
+}
+
+impl ZenohPublisher {
+    pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
+        self.session
+            .put(&self.topic, payload.as_ref())
+            .congestion_control(self.qos.congestion_control)
+            .priority(self.qos.priority)
+            .express(self.qos.express)
+            .await
+            .map_err(|e| Error::PublishError {
+                topic: e.to_string(),
+            })?;
+        Ok(())
+    }
+}

@@ -29,6 +29,9 @@ impl CoreNodeRunner {
             health_monitor_interval: Duration::from_secs(5),
             health_monitor_timeout: Duration::from_secs(3),
             health_monitor_max_failures: 3,
+            // 10 Hz: high enough to correlate logs across nodes, low enough to
+            // avoid flooding the bus.
+            clock_publish_interval: Duration::from_millis(100),
         };
         let peppy_dirs = PeppyDirs::default();
         let core_node = CoreNode::new(

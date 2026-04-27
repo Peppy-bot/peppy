@@ -36,6 +36,20 @@ pub(crate) fn duration_from_secs_f64(arg_name: &str, secs: f64) -> PyResult<Dura
     })
 }
 
+/// Wrap a `core_node_api::Error` from an `encode()` call as a Python
+/// `RuntimeError` — encode failures indicate an internal/wire-shape bug, not
+/// caller misuse.
+pub(crate) fn encode_err(what: &str, err: core_node_api::Error) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("failed to encode {what}: {err}"))
+}
+
+/// Wrap a `core_node_api::Error` from a `decode()` call as a Python
+/// `ValueError` — decode failures usually mean the bytes the caller passed in
+/// don't match the expected wire schema.
+pub(crate) fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
+    PyValueError::new_err(format!("failed to decode {what}: {err}"))
+}
+
 /// Python wrapper for ZenohdInstance - an ephemeral zenohd router for testing.
 ///
 /// Use as an async context manager (`async with`) or call `stop()` explicitly

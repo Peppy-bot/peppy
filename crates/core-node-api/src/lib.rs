@@ -24,6 +24,11 @@ pub(crate) mod ping_capnp {
 }
 
 #[allow(clippy::all)]
+pub(crate) mod clock_capnp {
+    include!(concat!(env!("OUT_DIR"), "/clock_capnp.rs"));
+}
+
+#[allow(clippy::all)]
 pub(crate) mod info_capnp {
     include!(concat!(env!("OUT_DIR"), "/info_capnp.rs"));
 }

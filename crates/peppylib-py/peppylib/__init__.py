@@ -49,9 +49,16 @@ from ._peppylib.runtime import (  # noqa: E402  # type: ignore[import-not-found]
     CancellationToken,
 )
 from ._peppylib.core_node import (  # noqa: E402  # type: ignore[import-not-found]
+    ClockRequest,
+    ClockResponse,
+    ClockSubscription,
+    ClockSync,
+    ClockTick,
     StackList,
     info,
     stack_list,
+    subscribe_clock,
+    synchronize,
 )
 
 __all__ = [
@@ -68,6 +75,13 @@ __all__ = [
     "StackList",
     "info",
     "stack_list",
+    "ClockRequest",
+    "ClockResponse",
+    "ClockSubscription",
+    "ClockSync",
+    "ClockTick",
+    "subscribe_clock",
+    "synchronize",
     "messaging",
     "encoding",
     "__version__",
