@@ -135,11 +135,6 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
 /// Subscribes to the `clock` topic, collects three consecutive `ClockTick`s,
 /// and asserts they are strictly monotonic. Shared between the mock-messenger
 /// and real-zenoh publish tests.
-///
-/// Mock callers must pass `("*", "*")` for caller identity — the mock matcher
-/// is unidirectional and `emit_topic_message` hard-codes `*` into the
-/// caller-identity slots of the wire key. Real zenoh has bidirectional
-/// matching and accepts a real caller identity.
 pub async fn assert_clock_topic_emits_monotonic_ticks(
     started: &StartedCoreNode,
     caller_core_node: &str,

@@ -94,22 +94,13 @@ impl ClockSubscription {
 }
 
 /// Subscribe to the periodic `clock` topic on `node_runner`'s bound core node.
-///
-/// Mirrors the shape of [`info`](super::info::info) and
-/// [`stack_list`](super::stack::stack_list): the helper takes a [`NodeRunner`]
-/// and threads the routing parameters and `SensorData` QoS profile through
-/// itself, so callers don't see them.
 pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
     let inner = TopicMessenger::subscribe(
         node_runner.messenger(),
-        // The publisher's wire key hard-codes `*` into the caller-identity
-        // slots (see `emit_topic_message`); the mock matcher is unidirectional,
-        // so subscribers must mirror the wildcards on their side. Real Zenoh
-        // would accept either form.
-        "*",
-        "*",
+        processor.bound_core_node(),
+        processor.bound_instance_id(),
         core_node,
         names::CLOCK,
         Some(core_node),

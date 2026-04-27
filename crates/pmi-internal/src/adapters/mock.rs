@@ -104,12 +104,14 @@ impl MessengerBackend for MockAdapter {
                 .push(message.clone());
         }
 
-        // Send to all matching subscribers (supports simple prefix wildcard ending with "/**")
+        // Send to all matching subscribers. Matching is a bidirectional
+        // key-expression intersection — both the subscriber pattern and the
+        // published key may contain wildcards. Mirrors Zenoh's `keyexpr` API.
         let senders = {
             let subscriptions = self.subscriptions.lock().unwrap();
             let mut matched = Vec::new();
             for (pattern, senders) in subscriptions.iter() {
-                if Self::topic_matches(pattern, &topic) {
+                if Self::key_exprs_intersect(pattern, &topic) {
                     matched.extend(senders.iter().cloned());
                 }
             }
@@ -182,66 +184,46 @@ impl MockAdapter {
         })
     }
 
-    /// Matches a topic against a pattern using Zenoh key expression semantics.
+    /// Returns `true` when two key expressions intersect — that is, when there
+    /// exists at least one concrete key matched by both. Wildcards on either
+    /// side are honored, mirroring Zenoh's bidirectional `keyexpr` matching:
     ///
-    /// Zenoh wildcards:
-    /// - `*` matches exactly one chunk (non-empty sequence not containing `/`)
-    /// - `**` matches any number of chunks (including zero)
-    fn topic_matches(pattern: &str, topic: &str) -> bool {
-        let pattern_chunks: Vec<&str> = pattern.split('/').collect();
-        let topic_chunks: Vec<&str> = topic.split('/').collect();
-
-        Self::match_chunks(&pattern_chunks, &topic_chunks)
+    /// - `*` matches exactly one non-empty chunk.
+    /// - `**` matches zero or more non-empty chunks.
+    ///
+    /// Symmetric in its arguments.
+    fn key_exprs_intersect(a: &str, b: &str) -> bool {
+        let a_chunks: Vec<&str> = a.split('/').collect();
+        let b_chunks: Vec<&str> = b.split('/').collect();
+        Self::intersect_chunks(&a_chunks, &b_chunks)
     }
 
-    fn match_chunks(pattern: &[&str], topic: &[&str]) -> bool {
-        let mut p_idx = 0;
-        let mut t_idx = 0;
-
-        while p_idx < pattern.len() {
-            let p_chunk = pattern[p_idx];
-
-            if p_chunk == "**" {
-                // ** matches zero or more chunks
-                // Try matching the rest of the pattern against all possible positions
-                if p_idx == pattern.len() - 1 {
-                    // ** at the end matches everything remaining
-                    return true;
-                }
-
-                // Try matching the rest of the pattern at each position
-                for try_t_idx in t_idx..=topic.len() {
-                    if Self::match_chunks(&pattern[p_idx + 1..], &topic[try_t_idx..]) {
-                        return true;
-                    }
-                }
-                return false;
+    fn intersect_chunks(a: &[&str], b: &[&str]) -> bool {
+        match (a.first().copied(), b.first().copied()) {
+            (None, None) => true,
+            // The non-empty side can still intersect if every remaining chunk
+            // is `**` (each can collapse to zero chunks).
+            (None, Some(_)) => b.iter().all(|c| *c == "**"),
+            (Some(_), None) => a.iter().all(|c| *c == "**"),
+            // `**` either consumes zero chunks (skip it) or one chunk from the
+            // other side (stay put). Standard regex-style branching.
+            (Some("**"), _) => {
+                Self::intersect_chunks(&a[1..], b) || Self::intersect_chunks(a, &b[1..])
             }
-
-            // No more topic chunks but pattern has more non-** chunks
-            if t_idx >= topic.len() {
-                return false;
+            (_, Some("**")) => {
+                Self::intersect_chunks(a, &b[1..]) || Self::intersect_chunks(&a[1..], b)
             }
-
-            let t_chunk = topic[t_idx];
-
-            if p_chunk == "*" {
-                // * matches exactly one non-empty chunk
-                if t_chunk.is_empty() {
-                    return false;
-                }
-                // Match succeeds, advance both
-            } else if p_chunk != t_chunk {
-                // Literal chunks must match exactly
-                return false;
+            (Some(a0), Some(b0)) => {
+                Self::single_chunk_intersect(a0, b0) && Self::intersect_chunks(&a[1..], &b[1..])
             }
-
-            p_idx += 1;
-            t_idx += 1;
         }
+    }
 
-        // Pattern exhausted - topic must also be exhausted
-        t_idx == topic.len()
+    fn single_chunk_intersect(a: &str, b: &str) -> bool {
+        match (a, b) {
+            ("*", x) | (x, "*") => !x.is_empty(),
+            (x, y) => x == y,
+        }
     }
 
     fn to_response_message(message: &Message) -> Result<TopicMessage> {
@@ -289,7 +271,7 @@ impl MockPublisher {
             let subs = self.subscriptions.lock().unwrap();
             let mut matched = Vec::new();
             for (pattern, senders) in subs.iter() {
-                if MockAdapter::topic_matches(pattern, &self.topic) {
+                if MockAdapter::key_exprs_intersect(pattern, &self.topic) {
                     matched.extend(senders.iter().cloned());
                 }
             }
@@ -550,53 +532,53 @@ mod tests {
     }
 
     #[test]
-    fn test_topic_matches_exact() {
-        assert!(MockAdapter::topic_matches("a/b/c", "a/b/c"));
-        assert!(!MockAdapter::topic_matches("a/b/c", "a/b/d"));
-        assert!(!MockAdapter::topic_matches("a/b/c", "a/b"));
-        assert!(!MockAdapter::topic_matches("a/b", "a/b/c"));
+    fn test_key_exprs_intersect_exact() {
+        assert!(MockAdapter::key_exprs_intersect("a/b/c", "a/b/c"));
+        assert!(!MockAdapter::key_exprs_intersect("a/b/c", "a/b/d"));
+        assert!(!MockAdapter::key_exprs_intersect("a/b/c", "a/b"));
+        assert!(!MockAdapter::key_exprs_intersect("a/b", "a/b/c"));
     }
 
     #[test]
-    fn test_topic_matches_single_wildcard() {
+    fn test_key_exprs_intersect_single_wildcard() {
         // * matches exactly one chunk
-        assert!(MockAdapter::topic_matches("a/*/c", "a/b/c"));
-        assert!(MockAdapter::topic_matches("a/*/c", "a/xyz/c"));
-        assert!(!MockAdapter::topic_matches("a/*/c", "a/b/d"));
-        assert!(!MockAdapter::topic_matches("a/*/c", "a/b/c/d"));
-        assert!(MockAdapter::topic_matches("*/b/c", "a/b/c"));
-        assert!(MockAdapter::topic_matches("a/b/*", "a/b/c"));
-        assert!(MockAdapter::topic_matches("*/*/*/*", "a/b/c/d"));
+        assert!(MockAdapter::key_exprs_intersect("a/*/c", "a/b/c"));
+        assert!(MockAdapter::key_exprs_intersect("a/*/c", "a/xyz/c"));
+        assert!(!MockAdapter::key_exprs_intersect("a/*/c", "a/b/d"));
+        assert!(!MockAdapter::key_exprs_intersect("a/*/c", "a/b/c/d"));
+        assert!(MockAdapter::key_exprs_intersect("*/b/c", "a/b/c"));
+        assert!(MockAdapter::key_exprs_intersect("a/b/*", "a/b/c"));
+        assert!(MockAdapter::key_exprs_intersect("*/*/*/*", "a/b/c/d"));
     }
 
     #[test]
-    fn test_topic_matches_double_wildcard() {
+    fn test_key_exprs_intersect_double_wildcard() {
         // ** matches zero or more chunks
-        assert!(MockAdapter::topic_matches("a/**", "a"));
-        assert!(MockAdapter::topic_matches("a/**", "a/b"));
-        assert!(MockAdapter::topic_matches("a/**", "a/b/c"));
-        assert!(MockAdapter::topic_matches("a/**", "a/b/c/d"));
-        assert!(!MockAdapter::topic_matches("a/**", "b"));
-        assert!(!MockAdapter::topic_matches("a/**", "b/a"));
-        assert!(MockAdapter::topic_matches("**", "a"));
-        assert!(MockAdapter::topic_matches("**", "a/b/c"));
+        assert!(MockAdapter::key_exprs_intersect("a/**", "a"));
+        assert!(MockAdapter::key_exprs_intersect("a/**", "a/b"));
+        assert!(MockAdapter::key_exprs_intersect("a/**", "a/b/c"));
+        assert!(MockAdapter::key_exprs_intersect("a/**", "a/b/c/d"));
+        assert!(!MockAdapter::key_exprs_intersect("a/**", "b"));
+        assert!(!MockAdapter::key_exprs_intersect("a/**", "b/a"));
+        assert!(MockAdapter::key_exprs_intersect("**", "a"));
+        assert!(MockAdapter::key_exprs_intersect("**", "a/b/c"));
     }
 
     #[test]
-    fn test_topic_matches_mixed_wildcards() {
+    fn test_key_exprs_intersect_mixed_wildcards() {
         // Combination of * and **
-        assert!(MockAdapter::topic_matches("a/*/c/**", "a/b/c"));
-        assert!(MockAdapter::topic_matches("a/*/c/**", "a/b/c/d"));
-        assert!(MockAdapter::topic_matches("a/*/c/**", "a/b/c/d/e"));
-        assert!(!MockAdapter::topic_matches("a/*/c/**", "a/b/d"));
-        assert!(MockAdapter::topic_matches(
+        assert!(MockAdapter::key_exprs_intersect("a/*/c/**", "a/b/c"));
+        assert!(MockAdapter::key_exprs_intersect("a/*/c/**", "a/b/c/d"));
+        assert!(MockAdapter::key_exprs_intersect("a/*/c/**", "a/b/c/d/e"));
+        assert!(!MockAdapter::key_exprs_intersect("a/*/c/**", "a/b/d"));
+        assert!(MockAdapter::key_exprs_intersect(
             "*/*/service/**",
             "core_node/caller/service/ping/request/123"
         ));
     }
 
     #[test]
-    fn test_topic_matches_service_patterns() {
+    fn test_key_exprs_intersect_service_patterns() {
         // Real patterns from the service messenger
         // Subscription pattern: {bound_core_node}/*/{as_instance_id}/*/{service_root}/request/**
         // Request topic: {target_core_node}/{caller_core_node}/{target_instance}/{caller_instance}/{service_root}/request/{request_id}
@@ -606,22 +588,45 @@ mod tests {
         let pattern = "listener_core_node/*/listener_instance/*/service/node/ping/request/**";
         // Request targeting the specific instance
         let topic = "listener_core_node/caller_core_node/listener_instance/caller_instance/service/node/ping/request/12345";
-        assert!(MockAdapter::topic_matches(pattern, topic));
+        assert!(MockAdapter::key_exprs_intersect(pattern, topic));
 
         // Pattern 3: Broadcast core node (_any_), specific instance
         let pattern = "_any_/*/listener_instance/*/service/node/ping/request/**";
         let topic = "_any_/caller_core_node/listener_instance/caller_instance/service/node/ping/request/12345";
-        assert!(MockAdapter::topic_matches(pattern, topic));
+        assert!(MockAdapter::key_exprs_intersect(pattern, topic));
 
         // Pattern 4: Broadcast core node, broadcast instance
         let pattern = "_any_/*/_any_/*/service/node/ping/request/**";
         let topic = "_any_/caller_core_node/_any_/caller_instance/service/node/ping/request/12345";
-        assert!(MockAdapter::topic_matches(pattern, topic));
+        assert!(MockAdapter::key_exprs_intersect(pattern, topic));
 
         // CoreNode uses its own name as the bound core node (e.g., "core_node")
         // This allows targeted requests to reach the core node specifically
         let pattern = "core_node/*/listener_instance/*/service/node/ping/request/**";
         let topic = "core_node/caller_core_node/listener_instance/caller_instance/service/node/ping/request/12345";
-        assert!(MockAdapter::topic_matches(pattern, topic));
+        assert!(MockAdapter::key_exprs_intersect(pattern, topic));
+    }
+
+    #[test]
+    fn test_key_exprs_intersect_is_symmetric() {
+        // Wildcards on either side intersect; order of arguments must not matter.
+        assert!(MockAdapter::key_exprs_intersect("a/*/c", "*/b/c"));
+        assert!(MockAdapter::key_exprs_intersect("*/b/c", "a/*/c"));
+        assert!(MockAdapter::key_exprs_intersect("a/**", "**/c"));
+        assert!(MockAdapter::key_exprs_intersect("**/c", "a/**"));
+        // Two `**` on the same side never share a key when their literal anchors differ.
+        assert!(!MockAdapter::key_exprs_intersect("**/a", "**/b"));
+    }
+
+    #[test]
+    fn test_key_exprs_intersect_topic_publisher_vs_subscriber() {
+        // The exact wire shape that motivated bidirectional matching:
+        // `emit_topic_message` hard-codes `*` into caller-identity slots, while a
+        // subscriber identifies itself with concrete core/instance values. Both
+        // sides must intersect or topic delivery against the mock breaks.
+        let publisher = "*/core_node/*/responder_inst/topic/clock/clock";
+        let subscriber = "caller_core/core_node/caller_inst/responder_inst/topic/clock/clock";
+        assert!(MockAdapter::key_exprs_intersect(subscriber, publisher));
+        assert!(MockAdapter::key_exprs_intersect(publisher, subscriber));
     }
 }
