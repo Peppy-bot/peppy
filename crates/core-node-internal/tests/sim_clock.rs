@@ -66,10 +66,14 @@ async fn sim_clock_service_serves_external_tick_after_publish() {
     // The daemon's subscriber needs a beat to update its cache before the
     // service handler picks up the new value. Poll until success, but bound
     // the loop so a stuck cache fails the test with diagnostics instead of
-    // hanging the test runner.
-    let mut last_err = None;
+    // hanging the test runner. Each attempt's timeout is capped by the
+    // remaining budget so a stuck poll cannot push wall time past the
+    // deadline.
     let deadline = Instant::now() + Duration::from_secs(5);
     let response = loop {
+        let attempt_timeout = deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_secs(2));
         let request_payload = ClockRequest::new(0).encode().expect("encode request");
         let attempt = ServiceMessenger::poll(
             &started.caller_handle,
@@ -80,21 +84,18 @@ async fn sim_clock_service_serves_external_tick_after_publish() {
             Some(&started.core_node_name),
             None,
             request_payload,
-            Duration::from_secs(2),
+            attempt_timeout,
         )
         .await;
         match attempt {
             Ok(resp) => break resp,
             Err(e) => {
-                last_err = Some(e);
                 if Instant::now() >= deadline {
                     panic!(
-                        "sim clock service did not return a cached tick within 5s; last error: {:?}",
-                        last_err
+                        "sim clock service did not return a cached tick within 5s; last error: {e:?}"
                     );
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
             }
         }
     };

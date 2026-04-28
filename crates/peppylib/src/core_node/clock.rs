@@ -112,19 +112,17 @@ enum PeppyClockInner {
     Wall,
     Sim {
         cache: Arc<AtomicU64>,
-        // Held to keep the background subscriber alive for as long as the
-        // clock handle exists. The `Drop` impl on `PeppyClock` aborts this
-        // handle so the feeder exits when the clock is released; tokio's
-        // `JoinHandle` only detaches on drop, so an explicit abort is
-        // required to actually cancel the task.
+        // tokio's `JoinHandle` only detaches on drop, so the `Drop` impl
+        // below must `abort()` to actually cancel the subscriber task.
         feeder: TaskHandle<Result<()>>,
     },
 }
 
-impl Drop for PeppyClock {
+impl Drop for PeppyClockInner {
     fn drop(&mut self) {
-        if let PeppyClockInner::Sim { feeder, .. } = &self.inner {
-            feeder.abort();
+        match self {
+            PeppyClockInner::Wall => {}
+            PeppyClockInner::Sim { feeder, .. } => feeder.abort(),
         }
     }
 }
