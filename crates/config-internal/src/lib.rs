@@ -77,16 +77,18 @@ pub mod node {
 
 // -- runtime --
 pub mod runtime {
-    pub use crate::internal::runtime::{LauncherRuntimeConfig, NodeInstanceConfig, RuntimeConfig};
+    pub use crate::internal::runtime::{
+        LauncherRuntimeConfig, NodeInstanceConfig, ResolvedFramework, RuntimeConfig,
+    };
 }
 
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
         CURRENT_SCHEMA_VERSION, Deployment, DeploymentGitSource, DeploymentInstance,
-        DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, Name,
-        PeppyLauncher, PeppyLauncherParser, SchemaVersion, VariantGitSource, VariantNameSource,
-        VariantSource, VariantUrlSource,
+        DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
+        FrameworkOverrides, Name, PeppyLauncher, PeppyLauncherParser, SchemaVersion,
+        VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
     };
 }
 

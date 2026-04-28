@@ -130,6 +130,7 @@ async fn daemon_runner_succeed() {
             instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
+            framework: Default::default(),
         },
         TEST_NODE_NAME,
         TEST_CORE_NODE,
@@ -333,6 +334,7 @@ async fn node_ready_but_not_healthy() {
             instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
+            framework: Default::default(),
         },
         TEST_NODE_NAME,
         TEST_CORE_NODE,
@@ -585,6 +587,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
             instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
+            framework: Default::default(),
         },
         TEST_NODE_NAME,
         TEST_CORE_NODE,

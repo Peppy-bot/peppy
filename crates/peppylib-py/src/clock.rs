@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
-use peppylib::core_node::clock::{ClockSync, subscribe, synchronize};
+use peppylib::core_node::clock::{ClockSync, PeppyClock, clock_for_node, subscribe, synchronize};
 use peppylib::messaging::Subscription;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -274,6 +274,43 @@ fn subscribe_clock_py<'py>(
     })
 }
 
+/// User-facing clock handle. Mirrors
+/// [`peppylib::core_node::clock::PeppyClock`]: hides whether the node was
+/// launched in wall or sim mode and exposes a sync `now_ns()` for hot paths.
+///
+/// Build via [`clock_for_node_py`]. In sim mode the constructor opens the
+/// `clock` subscription up front so subsequent `now_ns()` reads from the
+/// in-memory cache.
+#[pyclass(name = "PeppyClock")]
+pub struct PyPeppyClock {
+    inner: PeppyClock,
+}
+
+#[pymethods]
+impl PyPeppyClock {
+    /// Read the current core-node-aligned time in nanoseconds since the
+    /// Unix epoch. Raises `RuntimeError` in sim mode if no `ClockTick` has
+    /// been observed yet.
+    fn now_ns(&self) -> PyResult<u64> {
+        self.inner.now_ns().map_err(to_py_err)
+    }
+}
+
+/// Build a [`PyPeppyClock`] for `node_runner`. Reads the daemon-resolved
+/// `framework.use_sim_time` flag and installs the matching backend.
+#[pyfunction]
+#[pyo3(name = "clock_for_node")]
+fn clock_for_node_py<'py>(
+    py: Python<'py>,
+    node_runner: &PyNodeRunner,
+) -> PyResult<Bound<'py, PyAny>> {
+    let runner = node_runner.inner.clone();
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let clock = clock_for_node(&runner).await.map_err(to_py_err)?;
+        Ok(PyPeppyClock { inner: clock })
+    })
+}
+
 /// Add the clock wire-type wrappers and `synchronize` to the parent
 /// `core_node` Python submodule.
 pub(crate) fn register_into(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -282,7 +319,9 @@ pub(crate) fn register_into(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyClockTick>()?;
     module.add_class::<PyClockSync>()?;
     module.add_class::<PyClockSubscription>()?;
+    module.add_class::<PyPeppyClock>()?;
     module.add_function(wrap_pyfunction!(synchronize_clock, module)?)?;
     module.add_function(wrap_pyfunction!(subscribe_clock_py, module)?)?;
+    module.add_function(wrap_pyfunction!(clock_for_node_py, module)?)?;
     Ok(())
 }

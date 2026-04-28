@@ -111,6 +111,7 @@ impl Processor {
             NodeInstanceConfig {
                 instance_id: instance_id_name,
                 arguments: BTreeMap::new(),
+                framework: Default::default(),
             },
             &node_name,
             "standalone-core",
@@ -168,6 +169,13 @@ impl Processor {
 
     pub fn messaging_port(&self) -> u16 {
         self.runtime_config.messaging_port
+    }
+
+    /// Daemon-resolved framework `use_sim_time` flag for this instance.
+    /// Read by [`crate::core_node::clock::clock_for_node`] to pick between
+    /// the wall-time and sim-time `PeppyClock` implementations.
+    pub fn use_sim_time(&self) -> bool {
+        self.runtime_config.node_instance.framework.use_sim_time
     }
 }
 

@@ -26,6 +26,7 @@ pub struct ServeCommandBuilder {
     messaging_ready: Option<watch::Receiver<bool>>,
     core_node_requested: bool,
     core_node_name: Option<String>,
+    clock_source: super::ClockSource,
     shutdown_token: Option<CancellationToken>,
     root_dir: PathBuf,
 }
@@ -38,6 +39,7 @@ impl ServeCommandBuilder {
             messaging_ready: None,
             core_node_requested: false,
             core_node_name: None,
+            clock_source: super::ClockSource::default(),
             shutdown_token: None,
             root_dir: root_dir.into(),
         })
@@ -77,9 +79,14 @@ impl ServeCommandBuilder {
         Ok(self)
     }
 
-    pub fn with_core_node(mut self, core_node_name: Option<String>) -> Result<Self> {
+    pub fn with_core_node(
+        mut self,
+        core_node_name: Option<String>,
+        clock_source: super::ClockSource,
+    ) -> Result<Self> {
         self.core_node_requested = true;
         self.core_node_name = core_node_name;
+        self.clock_source = clock_source;
         Ok(self)
     }
 
@@ -93,6 +100,7 @@ impl ServeCommandBuilder {
                     DEFAULT_NODE_START_HEALTH_TIMEOUT,
                     self.root_dir.clone(),
                     self.messaging_ready.clone(),
+                    self.clock_source,
                 );
 
                 // Write the daemon state file with the core node name

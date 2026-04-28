@@ -174,3 +174,89 @@ Each `ClockTick` carries a single field, `time` (`u64`): nanoseconds since the U
 - **`synchronize` is hardened against a misbehaving server.** Offset and delay are computed in widened arithmetic and saturated when narrowed back to `i64` / `u64`, so a peer returning extreme `t1`/`t2` cannot wrap the result or flip its sign.
 - **`on_next_tick` returning `None` is terminal.** Treat it as "core node went away" and rebuild the subscription if you need to keep listening.
 - **Default timeout for `synchronize` is 10 seconds.** Pass an explicit timeout from latency-sensitive paths so a slow or unreachable core node does not stall your node.
+
+## Sim and replay clocks
+
+Most of the time the core node feeds these helpers from its own OS wall time. For simulators and bag replay you usually want the same node binaries to read a virtual clock instead, without rebuilding. peppy makes this a deployment-time choice through two knobs:
+
+- A typed `framework` block on each per-instance launcher entry, sibling to `arguments` and `env_vars`.
+- A daemon-wide CLI flag `--clock-source=wall|sim` that decides the default for instances that omit the override.
+
+Resolution order, applied once in the daemon before each spawned node receives its runtime config:
+
+1. The instance's `framework.use_sim_time` if it is set.
+2. The daemon's `--clock-source` flag (`wall` is the default).
+
+The wire format does not change. `ClockTick` and `ClockResponse` carry only timestamps; the daemon decides internally which source feeds them. In wall mode the daemon stamps every `t1`/`t2` and every published tick from its own OS clock. In sim mode the daemon stops publishing, subscribes to the `clock` topic, and answers `synchronize` from a cache populated by an external publisher (the simulator or a bag player). Subscribers see the same shape either way.
+
+### Launcher syntax
+
+```json5 title="peppy_launcher.json5"
+{
+  deployments: [
+    {
+      source: { local: "./uvc_camera" },
+      instances: [
+        {
+          instance_id: "camera_front",
+          arguments: { device: "/dev/video0" },
+          framework: { use_sim_time: true },
+        },
+      ],
+    },
+  ],
+}
+```
+
+Omit `framework` (or omit `use_sim_time` inside it) to fall through to the daemon default. Setting `use_sim_time: false` on an instance forces wall mode even when the daemon flag is `--clock-source=sim`.
+
+### `PeppyClock` and `peppygen::clock`
+
+For hot-path code that just wants "what time is it now" without caring whether the node was launched in wall or sim mode, peppylib exposes `PeppyClock` and the generator emits a pre-bound `peppygen::clock` module:
+
+- `init(node_runner)` — async; opens a `clock` subscription in sim mode (a no-op in wall mode) so the first `now_ns` after a tick lands returns immediately. Idempotent. Call it once at the top of your setup function.
+- `now_ns()` — sync; reads the current core-node-aligned time. Returns `Err(PeppyError::ClockNotReady)` (Rust) or raises `RuntimeError` (Python) before `init`, and in sim mode before any `ClockTick` has been observed.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python title="src/my_node/__main__.py"
+    from peppygen import NodeBuilder, NodeRunner, clock
+    from peppygen.parameters import Parameters
+
+
+    async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
+        await clock.init(node_runner)
+        try:
+            now = clock.now_ns()
+            print(f"core-node-aligned time: {now} ns")
+        except RuntimeError:
+            print("clock not ready yet")
+
+
+    def main():
+        NodeBuilder().run(setup)
+
+
+    if __name__ == "__main__":
+        main()
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust title="src/main.rs"
+    use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
+
+    fn main() -> Result<()> {
+        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+            peppygen::clock::init(&node_runner).await?;
+            match peppygen::clock::now_ns() {
+                Ok(t) => println!("core-node-aligned time: {t} ns"),
+                Err(e) => println!("clock not ready yet: {e}"),
+            }
+            Ok(())
+        })
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Use `synchronize` instead of `PeppyClock` when you need a bounded-staleness offset (it observes a round trip and reports the RTT). Use `subscribe_clock` when you want every raw tick. Use `peppygen::clock::now_ns` for everything else.

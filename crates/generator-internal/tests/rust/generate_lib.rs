@@ -207,6 +207,38 @@ fn generate_peppygen_lib_cargo() {
     );
 }
 
+/// The clock helper is part of the generated library: `peppygen::clock`
+/// must be a real module exposing both `init` and `now_ns`, and the
+/// crate root must declare it so user code can call `peppygen::clock::*`.
+#[test]
+fn generate_peppygen_lib_emits_clock_module() {
+    let (_temp_dir, peppygen_dir) =
+        helpers::run_generate_peppygen_lib_test(PeppygenLanguage::Rust, PEPPY_JSON5_CONFIG);
+
+    let clock_rs = peppygen_dir.join("src/clock.rs");
+    assert!(
+        clock_rs.exists(),
+        "src/clock.rs should be emitted at {}",
+        clock_rs.display()
+    );
+    let clock_contents = fs::read_to_string(&clock_rs).expect("failed to read clock.rs");
+    assert!(
+        clock_contents.contains("pub async fn init"),
+        "clock.rs must expose `init`"
+    );
+    assert!(
+        clock_contents.contains("pub fn now_ns"),
+        "clock.rs must expose `now_ns`"
+    );
+
+    let lib_rs = peppygen_dir.join("src/lib.rs");
+    let lib_contents = fs::read_to_string(&lib_rs).expect("failed to read lib.rs");
+    assert!(
+        lib_contents.contains("pub mod clock"),
+        "lib.rs must declare the clock module"
+    );
+}
+
 #[test]
 fn generate_peppygen_lib_missing_config() {
     let temp_dir = TempDir::new().expect("failed to create temp directory");

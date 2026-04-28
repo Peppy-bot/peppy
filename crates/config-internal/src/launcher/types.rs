@@ -41,6 +41,20 @@ pub struct DeploymentInstance {
     pub arguments: BTreeMap<String, AnyType>,
     #[serde(default)]
     pub env_vars: BTreeMap<String, String>,
+    #[serde(default)]
+    pub framework: FrameworkOverrides,
+}
+
+/// Per-instance framework knobs. Distinct from `arguments`: those are
+/// declared by the node author and validated against a per-node parameter
+/// schema; framework knobs are owned by peppylib, fixed-shape, and applied
+/// uniformly to every node. Each field is optional so the daemon can fall
+/// through to its own default when the instance omits the override.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrameworkOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_sim_time: Option<bool>,
 }
 
 fn deserialize_instances<'de, D>(deserializer: D) -> Result<Vec<DeploymentInstance>, D::Error>
@@ -204,8 +218,9 @@ mod tests {
         assert_eq!(duplicate, "camera_front");
     }
 
-    /// Verifies that optional fields (`arguments`, `env_vars`) default to empty
-    /// when omitted, and that partially specified instances deserialize correctly.
+    /// Verifies that optional fields (`arguments`, `env_vars`, `framework`)
+    /// default to empty when omitted, and that partially specified instances
+    /// deserialize correctly.
     #[test]
     fn deployment_instance_defaults() {
         let instance: DeploymentInstance =
@@ -213,6 +228,7 @@ mod tests {
         assert_eq!(instance.instance_id, "camera_front");
         assert!(instance.arguments.is_empty());
         assert!(instance.env_vars.is_empty());
+        assert_eq!(instance.framework.use_sim_time, None);
 
         let with_env: DeploymentInstance = serde_json5::from_str(
             "{ instance_id: \"esp32_1\", env_vars: { ESP32_DEVICE: \"/dev/ttyUSB0\" } }",
@@ -223,5 +239,39 @@ mod tests {
             with_env.env_vars.get("ESP32_DEVICE").map(String::as_str),
             Some("/dev/ttyUSB0")
         );
+    }
+
+    /// Per-instance framework overrides parse cleanly and round-trip back
+    /// to JSON5. Both the explicit-true and explicit-false cases must be
+    /// distinguishable from "absent" so the daemon's precedence (per-instance
+    /// > daemon CLI flag > default) has a value to gate on.
+    #[test]
+    fn deployment_instance_framework_overrides_round_trip() {
+        let with_sim: DeploymentInstance = serde_json5::from_str(
+            "{ instance_id: \"camera_front\", framework: { use_sim_time: true } }",
+        )
+        .unwrap();
+        assert_eq!(with_sim.framework.use_sim_time, Some(true));
+
+        let with_wall: DeploymentInstance = serde_json5::from_str(
+            "{ instance_id: \"camera_front\", framework: { use_sim_time: false } }",
+        )
+        .unwrap();
+        assert_eq!(with_wall.framework.use_sim_time, Some(false));
+
+        let serialized = serde_json5::to_string(&with_sim).unwrap();
+        let reparsed: DeploymentInstance = serde_json5::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.framework.use_sim_time, Some(true));
+    }
+
+    /// The launcher rejects unknown framework keys so a typo (e.g.
+    /// `use_simulation_time`) does not silently fall through to wall mode.
+    #[test]
+    fn deployment_instance_framework_rejects_unknown_keys() {
+        let err = serde_json5::from_str::<DeploymentInstance>(
+            "{ instance_id: \"camera_front\", framework: { unknown_knob: true } }",
+        )
+        .expect_err("unknown framework key should be rejected");
+        assert!(err.to_string().contains("unknown_knob"));
     }
 }
