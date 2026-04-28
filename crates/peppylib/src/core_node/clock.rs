@@ -113,10 +113,20 @@ enum PeppyClockInner {
     Sim {
         cache: Arc<AtomicU64>,
         // Held to keep the background subscriber alive for as long as the
-        // clock handle exists. Aborted on drop so the task exits cleanly
-        // when the user cancels their node.
-        _feeder: TaskHandle<Result<()>>,
+        // clock handle exists. The `Drop` impl on `PeppyClock` aborts this
+        // handle so the feeder exits when the clock is released; tokio's
+        // `JoinHandle` only detaches on drop, so an explicit abort is
+        // required to actually cancel the task.
+        feeder: TaskHandle<Result<()>>,
     },
+}
+
+impl Drop for PeppyClock {
+    fn drop(&mut self) {
+        if let PeppyClockInner::Sim { feeder, .. } = &self.inner {
+            feeder.abort();
+        }
+    }
 }
 
 impl PeppyClock {
@@ -172,10 +182,7 @@ pub async fn clock_for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
     });
 
     Ok(PeppyClock {
-        inner: PeppyClockInner::Sim {
-            cache,
-            _feeder: feeder,
-        },
+        inner: PeppyClockInner::Sim { cache, feeder },
     })
 }
 
@@ -226,9 +233,9 @@ mod tests {
 
     #[tokio::test]
     async fn peppy_clock_sim_reports_not_ready_until_first_tick() {
-        // Construct a sim clock without spawning a feeder by skipping
-        // `clock_for_node`. The `_feeder` slot is filled with a parked
-        // task that keeps the type signature consistent.
+        // Construct a sim clock without spawning a real subscriber by
+        // skipping `clock_for_node`. The feeder slot is filled with a
+        // parked task that keeps the type signature consistent.
         let cache = Arc::new(AtomicU64::new(0));
         let cache_clone = Arc::clone(&cache);
         let feeder = spawn(async move {
@@ -238,7 +245,7 @@ mod tests {
         let clock = PeppyClock {
             inner: PeppyClockInner::Sim {
                 cache: cache_clone,
-                _feeder: feeder,
+                feeder,
             },
         };
 

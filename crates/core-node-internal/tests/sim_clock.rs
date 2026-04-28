@@ -13,7 +13,7 @@ use config::node::QoSProfile;
 use core_node::names;
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
 use peppylib::{ServiceMessenger, TopicMessenger};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sim_clock_service_returns_not_ready_until_first_tick() {
@@ -64,8 +64,11 @@ async fn sim_clock_service_serves_external_tick_after_publish() {
         .expect("publish external tick");
 
     // The daemon's subscriber needs a beat to update its cache before the
-    // service handler picks up the new value. Wait briefly, then poll.
+    // service handler picks up the new value. Poll until success, but bound
+    // the loop so a stuck cache fails the test with diagnostics instead of
+    // hanging the test runner.
     let mut last_err = None;
+    let deadline = Instant::now() + Duration::from_secs(5);
     let response = loop {
         let request_payload = ClockRequest::new(0).encode().expect("encode request");
         let attempt = ServiceMessenger::poll(
@@ -84,12 +87,17 @@ async fn sim_clock_service_serves_external_tick_after_publish() {
             Ok(resp) => break resp,
             Err(e) => {
                 last_err = Some(e);
+                if Instant::now() >= deadline {
+                    panic!(
+                        "sim clock service did not return a cached tick within 5s; last error: {:?}",
+                        last_err
+                    );
+                }
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 continue;
             }
         }
     };
-    drop(last_err);
 
     let decoded = ClockResponse::decode(&response.payload()).expect("decode response");
     assert_eq!(

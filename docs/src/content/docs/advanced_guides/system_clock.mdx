@@ -259,4 +259,4 @@ For hot-path code that just wants "what time is it now" without caring whether t
   </TabItem>
 </Tabs>
 
-Use `synchronize` instead of `PeppyClock` when you need a bounded-staleness offset (it observes a round trip and reports the RTT). Use `subscribe_clock` when you want every raw tick. Use `peppygen::clock::now_ns` for everything else.
+Prefer `synchronize` over `PeppyClock` when you need a bounded-staleness offset, since it observes a round trip and reports the RTT. `subscribe_clock` is the right pick if you want every raw tick. For everything else, reach for `peppygen::clock::now_ns`.
