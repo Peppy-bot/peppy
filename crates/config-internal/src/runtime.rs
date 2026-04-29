@@ -16,6 +16,19 @@ pub struct NodeInstanceConfig {
     pub instance_id: Name,
     #[serde(default)]
     pub arguments: BTreeMap<String, AnyType>,
+    #[serde(default)]
+    pub framework: ResolvedFramework,
+}
+
+/// Framework knobs already resolved by the daemon. Distinct from
+/// `launcher::FrameworkOverrides` so the type system enforces "resolution
+/// happens once": the launcher form carries optional overrides; this form
+/// carries concrete values the spawned node reads without further fallback.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedFramework {
+    #[serde(default)]
+    pub use_sim_time: bool,
 }
 
 /// Configuration for the launcher to know how to configure spawned nodes' messaging.
@@ -124,6 +137,34 @@ mod tests {
             .replace("$MESSAGING_HOST", "127.0.0.1")
             .replace("$MESSAGING_PORT", "7448");
         serde_json5::from_str(&populated).map_err(|err| Error::Parsing(err.into()))
+    }
+
+    /// `use_sim_time` round-trips through serialize/deserialize, and a
+    /// runtime config written before this field existed (no `framework` key)
+    /// still parses cleanly with `use_sim_time = false`.
+    #[test]
+    fn resolved_framework_round_trip_and_back_compat() {
+        let with_sim: RuntimeConfig = serde_json5::from_str(
+            r#"{
+                messaging_host: "127.0.0.1",
+                messaging_port: 7448,
+                node_instance: {
+                    instance_id: "camera_front",
+                    framework: { use_sim_time: true }
+                },
+                node_name: "camera",
+                bound_core_node: "core_node"
+            }"#,
+        )
+        .unwrap();
+        assert!(with_sim.node_instance.framework.use_sim_time);
+
+        let serialized = serde_json5::to_string(&with_sim).unwrap();
+        let reparsed: RuntimeConfig = serde_json5::from_str(&serialized).unwrap();
+        assert!(reparsed.node_instance.framework.use_sim_time);
+
+        let legacy = runtime_config_from_json("camera_front").unwrap();
+        assert!(!legacy.node_instance.framework.use_sim_time);
     }
 
     #[test]

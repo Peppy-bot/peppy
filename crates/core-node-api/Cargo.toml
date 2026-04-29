@@ -15,7 +15,7 @@ serde_json = "1.0"
 serde_json5 = "0.2"
 thiserror = "2.0"
 url = "2"
-gix-url = "0.35"
+gix-url = "0.36"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }

@@ -96,6 +96,9 @@ pub enum Error {
     #[error("invalid service request '{identifier}': {reason}")]
     InvalidServiceRequest { identifier: String, reason: String },
 
+    #[error("clock not ready: no external tick observed yet on the `clock` topic (sim mode)")]
+    ClockNotReady,
+
     #[error("internal encoding error for '{identifier}': {reason}")]
     InternalEncodingError { identifier: String, reason: String },
 

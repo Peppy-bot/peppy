@@ -13,6 +13,9 @@ pub enum Error {
     #[error("invalid UTF-8 in message: {0}")]
     Utf8(#[from] std::str::Utf8Error),
 
+    #[error("system clock unavailable: {0}")]
+    SystemTime(#[from] std::time::SystemTimeError),
+
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 

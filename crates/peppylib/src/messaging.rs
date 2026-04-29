@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{
-    Message as PmiMessage, Messenger, MessengerAdapter, MessengerBackend,
+    Message as PmiMessage, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
     PeppyMessagingInterfaceError, PublisherQoS, SubscriberQoS, Subscription as PmiSubscription,
     ZenohAdapter, ZenohNetProtocol,
 };
@@ -121,6 +121,22 @@ fn format_instance_segment(instance_id: &str) -> Option<String> {
 impl MessengerHandle {
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
         Self { messenger }
+    }
+
+    /// Pre-bind a per-topic publisher. Locks the messenger once at
+    /// declaration to extract the per-adapter handle, then never again — the
+    /// returned [`pmi::MessengerPublisher`] holds its own state (an
+    /// `Arc<zenoh::Session>` clone or `Arc<Mutex<HashMap>>` clones for the
+    /// mock) and `publish` skips the central messenger mutex.
+    pub(crate) async fn declare_publisher(
+        &self,
+        topic: String,
+        qos: PublisherQoS,
+    ) -> Result<MessengerPublisher> {
+        let messenger = self.messenger.lock().await;
+        messenger
+            .declare_publisher(topic, qos)
+            .map_err(Error::PeppyMessagingInterface)
     }
 
     pub async fn messaging_port(&self) -> u16 {
@@ -469,11 +485,11 @@ impl MessengerHandle {
             .create_service_endpoint(bound_core_node, result_service_root, as_instance_id)
             .await?;
 
-        let feedback_publisher = TopicPublisher::new(
-            Arc::clone(&self.messenger),
-            feedback_topic_suffix,
-            PublisherQoS::Standard,
-        );
+        let feedback_inner = self
+            .declare_publisher(feedback_topic_suffix.clone(), PublisherQoS::Standard)
+            .await?;
+        let feedback_publisher =
+            TopicPublisher::new(Arc::new(feedback_inner), feedback_topic_suffix);
 
         Ok(ActionCreation {
             goal_service,

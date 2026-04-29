@@ -2,9 +2,8 @@ use super::MessengerHandle;
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
-use pmi::{Message as PmiMessage, Messenger, MessengerBackend, PublisherQoS};
+use pmi::MessengerPublisher;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 pub struct Subscription {
     inner: pmi::Subscription,
@@ -107,22 +106,50 @@ impl TopicMessenger {
             )
             .await
     }
+
+    /// Pre-binds a topic publisher to a fixed key + QoS, bypassing the
+    /// central `Messenger` mutex on every subsequent publish. Use this in
+    /// publish loops (per-tick clock ticks, action feedback streams); use
+    /// [`emit`] for one-shot publishes where the per-call setup is in the
+    /// noise.
+    ///
+    /// The key follows the same `*/<core_node>/*/<instance>/topic/<node>/<topic>`
+    /// shape as [`MessengerHandle::emit_topic_message`] — keep this in sync if
+    /// that format changes.
+    pub async fn declare_publisher(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_node_name: &str,
+        as_topic_name: &str,
+        qos: QoSProfile,
+    ) -> Result<TopicPublisher> {
+        let topic =
+            format!("*/{as_core_node}/*/{as_instance_id}/topic/{as_node_name}/{as_topic_name}");
+        let inner = messenger
+            .declare_publisher(topic.clone(), qos.into())
+            .await?;
+        Ok(TopicPublisher::new(Arc::new(inner), topic))
+    }
 }
 
+/// Lock-free per-topic publisher returned by
+/// [`TopicMessenger::declare_publisher`]. Wraps a [`pmi::MessengerPublisher`]
+/// so `publish` skips the central `Arc<Mutex<Messenger>>` lock — callers in a
+/// publish loop don't contend with all other messenger operations.
+///
+/// Cloneable so action handlers (e.g. feedback streams) can hand the same
+/// publisher to multiple background tasks; clones share the same underlying
+/// adapter handle (`Arc<zenoh::Session>` or mock `Arc<Mutex<HashMap>>`).
 #[derive(Clone)]
 pub struct TopicPublisher {
-    messenger: Arc<Mutex<Messenger>>,
+    inner: Arc<MessengerPublisher>,
     topic: String,
-    qos: PublisherQoS,
 }
 
 impl TopicPublisher {
-    pub(crate) fn new(messenger: Arc<Mutex<Messenger>>, topic: String, qos: PublisherQoS) -> Self {
-        Self {
-            messenger,
-            topic,
-            qos,
-        }
+    pub(crate) fn new(inner: Arc<MessengerPublisher>, topic: String) -> Self {
+        Self { inner, topic }
     }
 
     pub fn topic(&self) -> &str {
@@ -130,14 +157,8 @@ impl TopicPublisher {
     }
 
     pub async fn publish(&self, payload: Payload) -> Result<()> {
-        self.publish_on(&self.topic, payload).await
-    }
-
-    async fn publish_on(&self, topic: &str, payload: Payload) -> Result<()> {
-        let message = PmiMessage::new(topic, payload.into_inner());
-        let mut messenger = self.messenger.lock().await;
-        messenger
-            .publish(message, self.qos)
+        self.inner
+            .publish(payload.into_inner())
             .await
             .map_err(Error::PeppyMessagingInterface)
     }

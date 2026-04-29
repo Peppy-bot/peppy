@@ -163,6 +163,7 @@ async fn actions_communication() {
         NodeInstanceConfig {
             instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
@@ -242,6 +243,7 @@ fn main() -> Result<()> {
         NodeInstanceConfig {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         TEST_CORE_NODE,
@@ -480,6 +482,7 @@ async fn actions_communication_cancel_goal() {
         NodeInstanceConfig {
             instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
@@ -555,6 +558,7 @@ fn main() -> Result<()> {
         NodeInstanceConfig {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         TEST_CORE_NODE,

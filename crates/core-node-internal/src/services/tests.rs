@@ -14,19 +14,25 @@ async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     Arc::new(Mutex::new(messenger))
 }
 
+fn test_node_arguments() -> CoreNodeArguments {
+    CoreNodeArguments {
+        node_startup_timeout: Duration::from_secs(5),
+        node_start_health_timeout: Duration::from_secs(5),
+        health_monitor_interval: Duration::from_secs(5),
+        health_monitor_timeout: Duration::from_secs(3),
+        health_monitor_max_failures: 3,
+        clock_publish_interval: Duration::from_millis(100),
+        daemon_use_sim_time: false,
+    }
+}
+
 /// Verifies that the core node is configured to run in-process, not as a spawned
 /// subprocess or inside a container.
 #[tokio::test]
 async fn core_node_execution_has_no_run_cmd_and_no_container() {
     let messenger = create_mock_messenger().await;
     let peppy_dirs = PeppyDirs::new(std::env::temp_dir());
-    let node_arguments = CoreNodeArguments {
-        node_startup_timeout: Duration::from_secs(5),
-        node_start_health_timeout: Duration::from_secs(5),
-        health_monitor_interval: Duration::from_secs(5),
-        health_monitor_timeout: Duration::from_secs(3),
-        health_monitor_max_failures: 3,
-    };
+    let node_arguments = test_node_arguments();
     let core_node = CoreNode::new(
         messenger,
         Some("test_core_node"),
@@ -52,25 +58,18 @@ async fn core_node_execution_has_no_run_cmd_and_no_container() {
 #[tokio::test]
 async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
     let peppy_dirs = PeppyDirs::new(std::env::temp_dir());
-    let mk = || CoreNodeArguments {
-        node_startup_timeout: Duration::from_secs(5),
-        node_start_health_timeout: Duration::from_secs(5),
-        health_monitor_interval: Duration::from_secs(5),
-        health_monitor_timeout: Duration::from_secs(3),
-        health_monitor_max_failures: 3,
-    };
 
     let a = CoreNode::new(
         create_mock_messenger().await,
         None,
-        mk(),
+        test_node_arguments(),
         std::env::temp_dir(),
         peppy_dirs.clone(),
     );
     let b = CoreNode::new(
         create_mock_messenger().await,
         None,
-        mk(),
+        test_node_arguments(),
         std::env::temp_dir(),
         peppy_dirs,
     );
@@ -96,13 +95,7 @@ async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
 async fn core_node_explicit_name_overrides_machine_uid() {
     let messenger = create_mock_messenger().await;
     let peppy_dirs = PeppyDirs::new(std::env::temp_dir());
-    let node_arguments = CoreNodeArguments {
-        node_startup_timeout: Duration::from_secs(5),
-        node_start_health_timeout: Duration::from_secs(5),
-        health_monitor_interval: Duration::from_secs(5),
-        health_monitor_timeout: Duration::from_secs(3),
-        health_monitor_max_failures: 3,
-    };
+    let node_arguments = test_node_arguments();
     let core_node = CoreNode::new(
         messenger,
         Some("custom_name"),

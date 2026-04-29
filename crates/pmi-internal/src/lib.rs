@@ -8,8 +8,8 @@ mod zenohd;
 
 pub use error::Error as PeppyMessagingInterfaceError;
 pub use types::{
-    Message, Messenger, MessengerAdapter, MessengerBackend, PublisherQoS, SubscriberQoS,
-    Subscription, TopicMessage,
+    Message, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher, PublisherQoS,
+    SubscriberQoS, Subscription, TopicMessage,
 };
 
 pub use adapters::mock::{MockAdapter, MockInstance};

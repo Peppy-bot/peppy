@@ -1,9 +1,12 @@
 mod action_loop;
+mod clock;
 mod info;
 mod node;
 mod ping;
 mod repo;
 mod stack;
+
+use clock::{ClockSource, SimClockSource, WallClockSource};
 
 pub use node::FORBIDDEN_ENV_KEYS;
 
@@ -14,6 +17,7 @@ use config::{
     launcher::CURRENT_SCHEMA_VERSION,
     node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage},
 };
+use futures::future::{BoxFuture, FutureExt, try_join_all};
 use names_generator2::get_random;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
@@ -25,8 +29,10 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, oneshot};
+use tokio::task::JoinHandle;
 use tracing::info;
 
 const CORE_NODE_TAG: &str = match option_env!("PEPPY_GIT_TAG") {
@@ -53,6 +59,11 @@ pub struct CoreNodeArguments {
     pub health_monitor_interval: Duration,
     pub health_monitor_timeout: Duration,
     pub health_monitor_max_failures: u32,
+    pub clock_publish_interval: Duration,
+    /// Daemon-wide default for the framework `use_sim_time` flag. Per-instance
+    /// launcher overrides win over this; when an instance omits the override,
+    /// the spawned node's `framework.use_sim_time` is set to this value.
+    pub daemon_use_sim_time: bool,
 }
 
 impl CoreNodeArguments {
@@ -82,6 +93,8 @@ pub struct CoreNode {
     health_monitor_interval: Duration,
     health_monitor_timeout: Duration,
     health_monitor_max_failures: u32,
+    clock_publish_interval: Duration,
+    daemon_use_sim_time: bool,
 }
 
 /// Pre-flight checks that run once at daemon startup. Exits with a
@@ -145,6 +158,8 @@ impl CoreNode {
         let health_monitor_interval = node_arguments.health_monitor_interval;
         let health_monitor_timeout = node_arguments.health_monitor_timeout;
         let health_monitor_max_failures = node_arguments.health_monitor_max_failures;
+        let clock_publish_interval = node_arguments.clock_publish_interval;
+        let daemon_use_sim_time = node_arguments.daemon_use_sim_time;
 
         let node_config = NodeConfig {
             schema_version: CURRENT_SCHEMA_VERSION,
@@ -184,6 +199,8 @@ impl CoreNode {
             health_monitor_interval,
             health_monitor_timeout,
             health_monitor_max_failures,
+            clock_publish_interval,
+            daemon_use_sim_time,
         }
     }
 
@@ -220,14 +237,55 @@ impl CoreNode {
             self.node_name(),
             self.instance_id(),
         );
-        let handles = vec![
+        // Build the clock source up front so the service handler and the
+        // tick feeder share a single cache in sim mode. The cache is unused
+        // (and the WallClockSource ignores it) in wall mode, but allocating
+        // it unconditionally keeps the branch below readable.
+        let clock_cache = Arc::new(AtomicU64::new(0));
+        let clock_source: Arc<dyn ClockSource> = if self.daemon_use_sim_time {
+            Arc::new(SimClockSource::new(Arc::clone(&clock_cache)))
+        } else {
+            Arc::new(WallClockSource)
+        };
+        // Set up all listeners concurrently so startup latency is bounded by
+        // the slowest single listener, not the sum of all 19. They're
+        // independent — no listener depends on another being registered first.
+        let setup: Vec<BoxFuture<'_, Result<JoinHandle<Result<()>>>>> = vec![
             ping::listen_for_ping(
                 &self.messenger,
                 core_node_name,
                 self.instance_id(),
                 self.node_name(),
             )
-            .await?,
+            .boxed(),
+            clock::listen_for_clock(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&clock_source),
+            )
+            .boxed(),
+            if self.daemon_use_sim_time {
+                clock::subscribe_external_clock(
+                    self.messenger.clone(),
+                    core_node_name,
+                    self.instance_id(),
+                    self.node_name(),
+                    Arc::clone(&clock_cache),
+                )
+                .boxed()
+            } else {
+                clock::publish_clock(
+                    self.messenger.clone(),
+                    core_node_name,
+                    self.instance_id(),
+                    self.node_name(),
+                    self.clock_publish_interval,
+                    Arc::clone(&clock_source),
+                )
+                .boxed()
+            },
             info::listen_for_info(
                 &self.messenger,
                 core_node_name,
@@ -236,7 +294,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.start_time,
             )
-            .await?,
+            .boxed(),
             stack::listen_for_stack_launch(
                 &self.messenger,
                 core_node_name,
@@ -244,15 +302,18 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
-                stack::StackLaunchTimeouts {
-                    node_startup: self.node_startup_timeout,
-                    node_start_health: self.node_start_health_timeout,
-                    health_monitor_interval: self.health_monitor_interval,
-                    health_monitor_timeout: self.health_monitor_timeout,
-                    health_monitor_max_failures: self.health_monitor_max_failures,
+                stack::StackLaunchDefaults {
+                    timeouts: stack::StackLaunchTimeouts {
+                        node_startup: self.node_startup_timeout,
+                        node_start_health: self.node_start_health_timeout,
+                        health_monitor_interval: self.health_monitor_interval,
+                        health_monitor_timeout: self.health_monitor_timeout,
+                        health_monitor_max_failures: self.health_monitor_max_failures,
+                    },
+                    use_sim_time: self.daemon_use_sim_time,
                 },
             )
-            .await?,
+            .boxed(),
             stack::listen_for_stack_list(
                 &self.messenger,
                 core_node_name,
@@ -260,7 +321,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
             )
-            .await?,
+            .boxed(),
             stack::listen_for_stack_reset(
                 &self.messenger,
                 core_node_name,
@@ -268,7 +329,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_add(
                 &self.messenger,
                 core_node_name,
@@ -277,7 +338,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_build(
                 &self.messenger,
                 core_node_name,
@@ -286,7 +347,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_info(
                 &self.messenger,
                 core_node_name,
@@ -296,7 +357,7 @@ impl CoreNode {
                 self.peppy_dirs.clone(),
                 self.node_startup_timeout,
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_remove(
                 &self.messenger,
                 core_node_name,
@@ -304,7 +365,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_run(
                 &self.messenger,
                 core_node_name,
@@ -320,7 +381,7 @@ impl CoreNode {
                     health_monitor_max_failures: self.health_monitor_max_failures,
                 },
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_stop(
                 &self.messenger,
                 core_node_name,
@@ -328,7 +389,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_init(
                 &self.messenger,
                 core_node_name,
@@ -336,7 +397,7 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             node::listen_for_node_sync(
                 &self.messenger,
                 core_node_name,
@@ -345,7 +406,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             repo::listen_for_repo_add(
                 &self.messenger,
                 core_node_name,
@@ -353,7 +414,7 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             repo::listen_for_repo_refresh(
                 &self.messenger,
                 core_node_name,
@@ -361,7 +422,7 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             repo::listen_for_repo_list(
                 &self.messenger,
                 core_node_name,
@@ -369,7 +430,7 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             repo::listen_for_repo_remove(
                 &self.messenger,
                 core_node_name,
@@ -377,7 +438,7 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
             repo::listen_for_repo_exclude(
                 &self.messenger,
                 core_node_name,
@@ -385,15 +446,17 @@ impl CoreNode {
                 self.node_name(),
                 self.peppy_dirs.clone(),
             )
-            .await?,
+            .boxed(),
         ];
+
+        let handles = try_join_all(setup).await?;
 
         if let Some(ready) = ready {
             let _ = ready.send(());
         }
 
         // Wait for all service handlers
-        futures::future::try_join_all(handles)
+        try_join_all(handles)
             .await?
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
