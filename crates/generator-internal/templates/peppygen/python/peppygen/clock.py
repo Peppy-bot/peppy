@@ -15,11 +15,13 @@ subscription to the ``clock`` topic so the first ``now_ns`` after a tick
 is delivered returns immediately.
 """
 
+import asyncio
 from typing import Optional
 
 import peppylib
 
 _clock: Optional["peppylib.PeppyClock"] = None
+_clock_lock = asyncio.Lock()
 
 
 async def init(node_runner: "peppylib.NodeRunner") -> None:
@@ -27,7 +29,10 @@ async def init(node_runner: "peppylib.NodeRunner") -> None:
     global _clock
     if _clock is not None:
         return
-    _clock = await peppylib.clock_for_node(node_runner)
+    async with _clock_lock:
+        if _clock is not None:
+            return
+        _clock = await peppylib.clock_for_node(node_runner)
 
 
 def now_ns() -> int:
