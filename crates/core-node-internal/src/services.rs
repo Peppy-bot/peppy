@@ -6,6 +6,8 @@ mod ping;
 mod repo;
 mod stack;
 
+use clock::{ClockSource, SimClockSource, WallClockSource};
+
 pub use node::FORBIDDEN_ENV_KEYS;
 
 use crate::Result;
@@ -27,6 +29,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
@@ -57,6 +60,10 @@ pub struct CoreNodeArguments {
     pub health_monitor_timeout: Duration,
     pub health_monitor_max_failures: u32,
     pub clock_publish_interval: Duration,
+    /// Daemon-wide default for the framework `use_sim_time` flag. Per-instance
+    /// launcher overrides win over this; when an instance omits the override,
+    /// the spawned node's `framework.use_sim_time` is set to this value.
+    pub daemon_use_sim_time: bool,
 }
 
 impl CoreNodeArguments {
@@ -87,6 +94,7 @@ pub struct CoreNode {
     health_monitor_timeout: Duration,
     health_monitor_max_failures: u32,
     clock_publish_interval: Duration,
+    daemon_use_sim_time: bool,
 }
 
 /// Pre-flight checks that run once at daemon startup. Exits with a
@@ -151,6 +159,7 @@ impl CoreNode {
         let health_monitor_timeout = node_arguments.health_monitor_timeout;
         let health_monitor_max_failures = node_arguments.health_monitor_max_failures;
         let clock_publish_interval = node_arguments.clock_publish_interval;
+        let daemon_use_sim_time = node_arguments.daemon_use_sim_time;
 
         let node_config = NodeConfig {
             schema_version: CURRENT_SCHEMA_VERSION,
@@ -191,6 +200,7 @@ impl CoreNode {
             health_monitor_timeout,
             health_monitor_max_failures,
             clock_publish_interval,
+            daemon_use_sim_time,
         }
     }
 
@@ -227,6 +237,16 @@ impl CoreNode {
             self.node_name(),
             self.instance_id(),
         );
+        // Build the clock source up front so the service handler and the
+        // tick feeder share a single cache in sim mode. The cache is unused
+        // (and the WallClockSource ignores it) in wall mode, but allocating
+        // it unconditionally keeps the branch below readable.
+        let clock_cache = Arc::new(AtomicU64::new(0));
+        let clock_source: Arc<dyn ClockSource> = if self.daemon_use_sim_time {
+            Arc::new(SimClockSource::new(Arc::clone(&clock_cache)))
+        } else {
+            Arc::new(WallClockSource)
+        };
         // Set up all listeners concurrently so startup latency is bounded by
         // the slowest single listener, not the sum of all 19. They're
         // independent — no listener depends on another being registered first.
@@ -243,16 +263,29 @@ impl CoreNode {
                 core_node_name,
                 self.instance_id(),
                 self.node_name(),
+                Arc::clone(&clock_source),
             )
             .boxed(),
-            clock::publish_clock(
-                self.messenger.clone(),
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                self.clock_publish_interval,
-            )
-            .boxed(),
+            if self.daemon_use_sim_time {
+                clock::subscribe_external_clock(
+                    self.messenger.clone(),
+                    core_node_name,
+                    self.instance_id(),
+                    self.node_name(),
+                    Arc::clone(&clock_cache),
+                )
+                .boxed()
+            } else {
+                clock::publish_clock(
+                    self.messenger.clone(),
+                    core_node_name,
+                    self.instance_id(),
+                    self.node_name(),
+                    self.clock_publish_interval,
+                    Arc::clone(&clock_source),
+                )
+                .boxed()
+            },
             info::listen_for_info(
                 &self.messenger,
                 core_node_name,
@@ -269,12 +302,15 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
-                stack::StackLaunchTimeouts {
-                    node_startup: self.node_startup_timeout,
-                    node_start_health: self.node_start_health_timeout,
-                    health_monitor_interval: self.health_monitor_interval,
-                    health_monitor_timeout: self.health_monitor_timeout,
-                    health_monitor_max_failures: self.health_monitor_max_failures,
+                stack::StackLaunchDefaults {
+                    timeouts: stack::StackLaunchTimeouts {
+                        node_startup: self.node_startup_timeout,
+                        node_start_health: self.node_start_health_timeout,
+                        health_monitor_interval: self.health_monitor_interval,
+                        health_monitor_timeout: self.health_monitor_timeout,
+                        health_monitor_max_failures: self.health_monitor_max_failures,
+                    },
+                    use_sim_time: self.daemon_use_sim_time,
                 },
             )
             .boxed(),

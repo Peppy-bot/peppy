@@ -104,6 +104,7 @@ async fn topics_communication() {
         NodeInstanceConfig {
             instance_id: Name::new(receiver_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         RECEIVER_NODE_NAME,
         TEST_CORE_NODE,
@@ -171,6 +172,7 @@ fn main() -> Result<()> {
         NodeInstanceConfig {
             instance_id: Name::new(emitter_instance_id).unwrap(),
             arguments: serde_json5::from_str(r#"{ frequency: 10.0 }"#).unwrap(),
+            framework: Default::default(),
         },
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the receiver
         TEST_CORE_NODE,

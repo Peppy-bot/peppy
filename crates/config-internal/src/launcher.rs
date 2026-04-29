@@ -5,7 +5,7 @@ mod types;
 pub use parse::PeppyLauncherParser;
 pub use types::{
     CURRENT_SCHEMA_VERSION, Deployment, DeploymentGitSource, DeploymentInstance,
-    DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, Name,
-    PeppyLauncher, SchemaVersion, VariantGitSource, VariantNameSource, VariantSource,
-    VariantUrlSource,
+    DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
+    FrameworkOverrides, Name, PeppyLauncher, SchemaVersion, VariantGitSource, VariantNameSource,
+    VariantSource, VariantUrlSource,
 };

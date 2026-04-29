@@ -130,6 +130,7 @@ async fn services_communication_no_target_instance_id() {
         NodeInstanceConfig {
             instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
@@ -190,6 +191,7 @@ if __name__ == "__main__":
         NodeInstanceConfig {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
         TEST_CORE_NODE,
@@ -418,6 +420,7 @@ async fn services_communication_exposed_service_without_request_body() {
         NodeInstanceConfig {
             instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
@@ -477,6 +480,7 @@ if __name__ == "__main__":
         NodeInstanceConfig {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
         TEST_CORE_NODE,
@@ -687,6 +691,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
         NodeInstanceConfig {
             instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
@@ -747,6 +752,7 @@ if __name__ == "__main__":
         NodeInstanceConfig {
             instance_id: Name::new(exposer1_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
         TEST_CORE_NODE,
@@ -811,6 +817,7 @@ if __name__ == "__main__":
         NodeInstanceConfig {
             instance_id: Name::new(exposer2_instance_id).unwrap(),
             arguments: Default::default(),
+            framework: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
         TEST_CORE_NODE,

@@ -249,6 +249,7 @@ pub fn build_runtime_config_json5(
         config::runtime::NodeInstanceConfig {
             instance_id: config::launcher::Name::new(instance_id).expect("valid instance id"),
             arguments,
+            framework: Default::default(),
         },
         node_name,
         core_node_name,
@@ -1288,6 +1289,7 @@ fn default_node_arguments() -> CoreNodeArguments {
         // Faster than the production default (100 ms) so publish_clock tests
         // observe several ticks within a small fixed budget without flaking.
         clock_publish_interval: Duration::from_millis(50),
+        daemon_use_sim_time: false,
     }
 }
 
@@ -1301,6 +1303,18 @@ pub async fn start_core_node_with_mock_messenger() -> StartedCoreNode {
         peppy_dirs,
     )
     .await
+}
+
+/// Boots the core node with `daemon_use_sim_time: true`. The daemon stops
+/// publishing wall ticks and instead subscribes to the `clock` topic to fill
+/// its internal cache, mirroring the production flow where an external
+/// simulator drives the clock.
+pub async fn start_core_node_with_sim_clock() -> StartedCoreNode {
+    let (data_dir, peppy_dirs) = init_test_data_dir();
+    let shared_messenger = create_mock_messenger().await;
+    let mut args = default_node_arguments();
+    args.daemon_use_sim_time = true;
+    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
 }
 
 pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {

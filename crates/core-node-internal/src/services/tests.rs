@@ -22,6 +22,7 @@ fn test_node_arguments() -> CoreNodeArguments {
         health_monitor_timeout: Duration::from_secs(3),
         health_monitor_max_failures: 3,
         clock_publish_interval: Duration::from_millis(100),
+        daemon_use_sim_time: false,
     }
 }
 

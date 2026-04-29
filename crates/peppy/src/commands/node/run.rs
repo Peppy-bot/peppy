@@ -302,6 +302,7 @@ pub async fn run_instance_async(
             instance_id: Name::new(instance_id.clone())
                 .map_err(|e| Error::PeppyConfig(e.into()))?,
             arguments,
+            framework: Default::default(),
         },
         node_name,
         core_node_name,

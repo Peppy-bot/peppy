@@ -1,3 +1,4 @@
+pub mod clock;
 pub mod parameters;
 
 pub mod capnp;

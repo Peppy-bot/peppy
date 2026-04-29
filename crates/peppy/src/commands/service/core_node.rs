@@ -22,6 +22,7 @@ impl CoreNodeRunner {
         node_start_health_timeout: Duration,
         root_dir: PathBuf,
         messaging_ready: Option<watch::Receiver<bool>>,
+        clock_source: super::ClockSource,
     ) -> Self {
         let node_arguments = CoreNodeArguments {
             node_startup_timeout,
@@ -32,6 +33,7 @@ impl CoreNodeRunner {
             // 10 Hz: high enough to correlate logs across nodes, low enough to
             // avoid flooding the bus.
             clock_publish_interval: Duration::from_millis(100),
+            daemon_use_sim_time: clock_source.use_sim_time(),
         };
         let peppy_dirs = PeppyDirs::default();
         let core_node = CoreNode::new(

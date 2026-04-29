@@ -73,6 +73,15 @@ pub struct StackLaunchTimeouts {
     pub health_monitor_max_failures: u32,
 }
 
+/// Daemon-wide defaults the stack launcher applies to every spawned
+/// instance. Pairs with launcher overrides (`FrameworkOverrides`) and the
+/// per-instance resolved values (`ResolvedFramework`); this struct is the
+/// "what the daemon would pick when the instance omits the override" half.
+pub struct StackLaunchDefaults {
+    pub timeouts: StackLaunchTimeouts,
+    pub use_sim_time: bool,
+}
+
 pub async fn listen_for_stack_launch(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -80,7 +89,7 @@ pub async fn listen_for_stack_launch(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
-    timeouts: StackLaunchTimeouts,
+    defaults: StackLaunchDefaults,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ActionMessenger::expose(
         messenger,
@@ -91,6 +100,10 @@ pub async fn listen_for_stack_launch(
     )
     .await?;
 
+    let StackLaunchDefaults {
+        timeouts,
+        use_sim_time: daemon_use_sim_time,
+    } = defaults;
     let handler = LaunchGoalHandler {
         context: LaunchActionContext {
             node_stack,
@@ -99,6 +112,7 @@ pub async fn listen_for_stack_launch(
             core_instance_id: instance_id.to_string(),
             peppy_dirs,
             timeouts,
+            daemon_use_sim_time,
         },
     };
 
@@ -150,6 +164,9 @@ struct ProcessLaunchContext {
     /// are enforced.
     launch_deadline: Option<Instant>,
     idle_timeouts: IdleTimeouts,
+    /// Daemon-wide default for `framework.use_sim_time` applied to instances
+    /// that omit the per-instance override.
+    daemon_use_sim_time: bool,
 }
 
 #[derive(Clone)]
@@ -160,6 +177,7 @@ struct LaunchActionContext {
     core_instance_id: String,
     peppy_dirs: PeppyDirs,
     timeouts: StackLaunchTimeouts,
+    daemon_use_sim_time: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -285,6 +303,21 @@ fn variant_source_to_node_source(
 /// and generates fresh peppygen files. This allows stack_launch to work with
 /// local filesystem sources without requiring `peppy node sync` beforehand.
 pub const STACK_LAUNCH_GIT_HASH: &str = "stack-launch";
+
+/// Collapse a per-instance launcher override and the daemon-wide default
+/// into a single resolved framework block. Centralizes the "per-instance
+/// value > daemon default > wall" precedence so the spawned node receives
+/// one concrete value and never has to re-implement the fallback.
+fn resolve_framework(
+    overrides: &config::launcher::FrameworkOverrides,
+    daemon_default_use_sim_time: bool,
+) -> config::runtime::ResolvedFramework {
+    config::runtime::ResolvedFramework {
+        use_sim_time: overrides
+            .use_sim_time
+            .unwrap_or(daemon_default_use_sim_time),
+    }
+}
 
 async fn publish_feedback(ctx: &ProcessLaunchContext, feedback: LaunchFeedback) {
     {
@@ -1248,6 +1281,7 @@ async fn start_node_instances(
             let node_instance = config::runtime::NodeInstanceConfig {
                 instance_id: instance.instance_id.clone(),
                 arguments: instance.arguments.clone(),
+                framework: resolve_framework(&instance.framework, ctx.daemon_use_sim_time),
             };
             let runtime_config = match RuntimeConfig::new(
                 messaging_host.as_str(),
@@ -1435,6 +1469,7 @@ async fn handle_goal_request(
             node_stack,
             peppy_dirs,
             timeouts,
+            daemon_use_sim_time,
         } = action_context;
         let env_vars = goal.env_vars.clone();
         // Compute the launch deadline once. `None` => no overall deadline (idle-only).
@@ -1458,6 +1493,7 @@ async fn handle_goal_request(
                 build: Duration::from_secs(goal.node_build_idle_timeout_secs),
                 run: Duration::from_secs(goal.node_run_idle_timeout_secs),
             },
+            daemon_use_sim_time,
         };
         let result = process_launch(goal, ctx).await;
         let mut state_guard = state_clone.lock().await;
@@ -1678,5 +1714,29 @@ mod tests {
             !token.is_cancelled(),
             "happy path must not cancel the token",
         );
+    }
+
+    /// Per-instance override beats the daemon default in either direction.
+    /// `Some(true)` forces sim even when the daemon default is wall;
+    /// `Some(false)` forces wall even when the daemon default is sim.
+    #[test]
+    fn resolve_framework_per_instance_wins() {
+        let force_sim = config::launcher::FrameworkOverrides {
+            use_sim_time: Some(true),
+        };
+        assert!(resolve_framework(&force_sim, false).use_sim_time);
+
+        let force_wall = config::launcher::FrameworkOverrides {
+            use_sim_time: Some(false),
+        };
+        assert!(!resolve_framework(&force_wall, true).use_sim_time);
+    }
+
+    /// When the instance omits the override, the daemon default decides.
+    #[test]
+    fn resolve_framework_falls_through_to_daemon_default() {
+        let none = config::launcher::FrameworkOverrides::default();
+        assert!(!resolve_framework(&none, false).use_sim_time);
+        assert!(resolve_framework(&none, true).use_sim_time);
     }
 }
