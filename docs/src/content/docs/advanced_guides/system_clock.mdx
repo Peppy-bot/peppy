@@ -187,7 +187,8 @@ Resolution order, applied once in the daemon before each spawned node receives i
 1. The instance's `framework.use_sim_time` if it is set.
 2. The daemon's `--clock-source` flag (`wall` is the default).
 
-The wire format does not change. `ClockTick` and `ClockResponse` carry only timestamps; the daemon decides internally which source feeds them. In wall mode the daemon stamps every `t1`/`t2` and every published tick from its own OS clock. In sim mode the daemon stops publishing, subscribes to the `clock` topic, and answers `synchronize` from a cache populated by an external publisher (the simulator or a bag player). Subscribers see the same shape either way.
+The wire format does not change. `ClockTick` and `ClockResponse` carry only timestamps; the daemon decides internally which source feeds them. In wall mode the daemon stamps every `t1`/`t2` and every published tick from its own OS clock. In sim mode the daemon stops publishing, subscribes to the `clock` topic, and answers `synchronize` from a cache populated by an external publisher. 
+Subscribers see the same shape either way.
 
 ### Launcher syntax
 
@@ -225,11 +226,19 @@ For hot-path code that just wants "what time is it now" without caring whether t
 
 
     async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
+        # Idempotent. No-op in wall mode; in sim mode this opens a
+        # `clock` subscription so the background feeder is already
+        # running before `now_ns()` is called below.
         await clock.init(node_runner)
         try:
+            # Wall mode always returns the local OS time. Sim mode
+            # raises RuntimeError until the feeder has cached at least
+            # one ClockTick from the topic.
             now = clock.now_ns()
             print(f"core-node-aligned time: {now} ns")
         except RuntimeError:
+            # Only reachable in sim mode, and only before the first
+            # tick lands. Real apps would retry or wait on a tick.
             print("clock not ready yet")
 
 
@@ -247,9 +256,17 @@ For hot-path code that just wants "what time is it now" without caring whether t
 
     fn main() -> Result<()> {
         NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+            // Idempotent. No-op in wall mode; in sim mode this opens a
+            // `clock` subscription so the background feeder is already
+            // running before `now_ns()` is called below.
             peppygen::clock::init(&node_runner).await?;
             match peppygen::clock::now_ns() {
+                // Wall mode always lands here. Sim mode reaches this
+                // arm once at least one ClockTick has been observed.
                 Ok(t) => println!("core-node-aligned time: {t} ns"),
+                // Only reachable in sim mode, and only before the
+                // first tick lands. Real apps would retry or wait on
+                // a tick.
                 Err(e) => println!("clock not ready yet: {e}"),
             }
             Ok(())
