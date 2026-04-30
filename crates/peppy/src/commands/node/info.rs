@@ -432,7 +432,16 @@ fn describe_parameter_spec_inline(spec: &ParameterSpec) -> String {
 fn format_default_value_inline(d: &DefaultValue) -> String {
     match d {
         DefaultValue::Bool(b) => b.to_string(),
-        DefaultValue::String(s) => format!("\"{}\"", s),
+        // Use serde_json to escape quotes, backslashes, control chars, etc.
+        // so the rendered output is a valid quoted string for any input.
+        DefaultValue::String(s) => serde_json::to_string(s).unwrap_or_else(|_| {
+            format!(
+                "\"{}\"",
+                s.replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\n', "\\n")
+            )
+        }),
         DefaultValue::Int(i) => i.to_string(),
         DefaultValue::UInt(u) => u.to_string(),
         DefaultValue::Float(f) => f.to_string(),
@@ -670,6 +679,29 @@ mod tests {
             out.contains("  frame_rate: u16 = 30"),
             "primitive with int default missing:\n{out}"
         );
+    }
+
+    #[test]
+    fn format_default_value_inline_escapes_special_characters() {
+        let cases = [
+            (DefaultValue::String("plain".into()), r#""plain""#),
+            (
+                DefaultValue::String("with\"quote".into()),
+                r#""with\"quote""#,
+            ),
+            (
+                DefaultValue::String("back\\slash".into()),
+                r#""back\\slash""#,
+            ),
+            (
+                DefaultValue::String("line\nbreak".into()),
+                r#""line\nbreak""#,
+            ),
+        ];
+        for (input, expected) in cases {
+            let actual = format_default_value_inline(&input);
+            assert_eq!(actual, expected, "input was {input:?}");
+        }
     }
 
     #[test]

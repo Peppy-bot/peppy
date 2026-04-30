@@ -434,7 +434,6 @@ async fn process_node_run(
 ) -> NodeRunResult {
     let sender_instance_id = ctx.sender_instance_id.as_str();
     let NodeRunGoal {
-        runtime_config_json5,
         node_name,
         tag,
         env_vars,
@@ -515,6 +514,18 @@ async fn process_node_run(
         write_error_to_log(&ctx.log_file, &msg);
         return NodeRunResult::failure(msg);
     }
+
+    // Re-serialize so the spawned process receives the synthesized defaults;
+    // the inbound `runtime_config_json5` from the goal still reflects the
+    // pre-defaulting state.
+    let runtime_config_json5 = match serde_json5::to_string(&runtime_config) {
+        Ok(json) => json,
+        Err(e) => {
+            let msg = format!("Failed to serialize runtime config: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeRunResult::failure(msg);
+        }
+    };
 
     let is_container = node_config.execution.container.is_some();
 

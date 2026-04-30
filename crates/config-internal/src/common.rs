@@ -722,6 +722,8 @@ impl RawNodeArguments {
     /// 1. For every schema key missing from the arguments, synthesize from
     ///    `$default` if the entire subtree has defaults; otherwise collect a
     ///    missing-parameter error naming the leaf path that has no default.
+    ///    Partially supplied groups have their missing children synthesized
+    ///    from `$default` recursively.
     /// 2. Validate every supplied value against its declared type, with strict
     ///    per-width range checks for integer types.
     /// 3. Reject any argument key not declared in the schema.
@@ -729,14 +731,17 @@ impl RawNodeArguments {
         mut self,
         schema: &ParameterSchema,
     ) -> Result<NodeArguments, NodeArgumentsError> {
-        // 1. Fill defaults for any keys missing from the supplied arguments.
+        // 1. Fill defaults for any keys missing from the supplied arguments,
+        //    recursing into supplied groups to fill their missing children too.
         let mut missing: Vec<String> = Vec::new();
         for (key, spec) in schema {
-            if self.0.contains_key(key) {
-                continue;
-            }
-            if let Some(default_value) = spec.synthesize_default(key, &mut missing) {
-                self.0.insert(key.clone(), default_value);
+            match self.0.get_mut(key) {
+                Some(value) => merge_defaults(value, spec, key, &mut missing),
+                None => {
+                    if let Some(default_value) = spec.synthesize_default(key, &mut missing) {
+                        self.0.insert(key.clone(), default_value);
+                    }
+                }
             }
         }
         if !missing.is_empty() {
@@ -753,6 +758,47 @@ impl RawNodeArguments {
         }
 
         Ok(NodeArguments(self.0))
+    }
+}
+
+/// Walk an existing actual value alongside its spec, filling any missing
+/// children of group-typed values with their `$default` synthesizations.
+///
+/// This is the merge counterpart to [`ParameterSpec::synthesize_default`]:
+/// that one builds a value from defaults alone for a fully missing subtree;
+/// this one fills the gaps inside a partially supplied subtree. Required
+/// leaves (no `$default`) that remain missing are appended to `missing` as
+/// dot-paths so the caller can surface a [`NodeArgumentsError::MissingParameters`].
+///
+/// No-ops when the spec is not a [`ParameterSpec::Group`] or the value is not
+/// an [`AnyType::Object`]; type-mismatch reporting is left to
+/// [`validate_value_against_spec`].
+fn merge_defaults(
+    value: &mut AnyType,
+    spec: &ParameterSpec,
+    path: &str,
+    missing: &mut Vec<String>,
+) {
+    let ParameterSpec::Group(fields) = spec else {
+        return;
+    };
+    let AnyType::Object(map) = value else {
+        return;
+    };
+    for (key, sub_spec) in fields {
+        let sub_path = if path.is_empty() {
+            key.clone()
+        } else {
+            format!("{path}.{key}")
+        };
+        match map.get_mut(key) {
+            Some(child) => merge_defaults(child, sub_spec, &sub_path, missing),
+            None => {
+                if let Some(synthesized) = sub_spec.synthesize_default(&sub_path, missing) {
+                    map.insert(key.clone(), synthesized);
+                }
+            }
+        }
     }
 }
 
@@ -921,18 +967,22 @@ pub fn apply_parameter_defaults(
     arguments: &mut BTreeMap<String, AnyType>,
     schema: &ParameterSchema,
 ) -> Vec<String> {
+    // Stage mutations on a clone so partially synthesized values are not
+    // visible to the caller when we end up returning a non-empty `missing`.
+    let mut staged = arguments.clone();
     let mut missing = Vec::new();
-    let mut filled = BTreeMap::new();
     for (key, spec) in schema {
-        if arguments.contains_key(key) {
-            continue;
-        }
-        if let Some(value) = spec.synthesize_default(key, &mut missing) {
-            filled.insert(key.clone(), value);
+        match staged.get_mut(key) {
+            Some(value) => merge_defaults(value, spec, key, &mut missing),
+            None => {
+                if let Some(value) = spec.synthesize_default(key, &mut missing) {
+                    staged.insert(key.clone(), value);
+                }
+            }
         }
     }
     if missing.is_empty() {
-        arguments.extend(filled);
+        *arguments = staged;
     }
     missing
 }
@@ -1396,6 +1446,150 @@ mod tests {
             device.get("priority"),
             Some(&AnyType::String("physical".into()))
         );
+    }
+
+    #[test]
+    fn partial_group_synthesizes_missing_child_with_default() {
+        // User supplies `device: {}` with the `path` child missing; the
+        // schema's `$default` should still be filled in.
+        let s = schema(
+            r#"{
+                device: {
+                    path: { $type: "string", $default: "/dev/video0" }
+                }
+            }"#,
+        );
+        let raw =
+            RawNodeArguments::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
+        let args = raw.into_resolved(&s).unwrap();
+        let AnyType::Object(device) = args.0.get("device").unwrap() else {
+            panic!("expected device object");
+        };
+        assert_eq!(
+            device.get("path"),
+            Some(&AnyType::String("/dev/video0".into()))
+        );
+    }
+
+    #[test]
+    fn partial_group_preserves_user_supplied_child_value() {
+        let s = schema(
+            r#"{
+                device: {
+                    path: { $type: "string", $default: "/dev/video0" },
+                    priority: { $type: "string", $default: "low" }
+                }
+            }"#,
+        );
+        let raw = RawNodeArguments::from([(
+            "device".to_string(),
+            AnyType::Object(BTreeMap::from([(
+                "path".to_string(),
+                AnyType::String("/dev/video1".into()),
+            )])),
+        )]);
+        let args = raw.into_resolved(&s).unwrap();
+        let AnyType::Object(device) = args.0.get("device").unwrap() else {
+            panic!("expected device object");
+        };
+        assert_eq!(
+            device.get("path"),
+            Some(&AnyType::String("/dev/video1".into()))
+        );
+        assert_eq!(device.get("priority"), Some(&AnyType::String("low".into())));
+    }
+
+    #[test]
+    fn partial_group_reports_missing_required_child() {
+        // User supplies an empty group; the required (no-default) child must
+        // be reported with its dot-path.
+        let s = schema(
+            r#"{
+                device: {
+                    path: { $type: "string", $default: "/dev/video0" },
+                    priority: "string"
+                }
+            }"#,
+        );
+        let raw =
+            RawNodeArguments::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
+        let err = raw.into_resolved(&s).unwrap_err();
+        match err {
+            NodeArgumentsError::MissingParameters(keys) => {
+                assert_eq!(keys, vec!["device.priority".to_string()]);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nested_partial_groups_are_merged_recursively() {
+        let s = schema(
+            r#"{
+                video: {
+                    resolution: {
+                        width: { $type: "u16", $default: 1920 },
+                        height: { $type: "u16", $default: 1080 }
+                    }
+                }
+            }"#,
+        );
+        let raw = RawNodeArguments::from([(
+            "video".to_string(),
+            AnyType::Object(BTreeMap::from([(
+                "resolution".to_string(),
+                AnyType::Object(BTreeMap::from([("width".to_string(), AnyType::UInt(640))])),
+            )])),
+        )]);
+        let args = raw.into_resolved(&s).unwrap();
+        let AnyType::Object(video) = args.0.get("video").unwrap() else {
+            panic!("expected video object");
+        };
+        let AnyType::Object(resolution) = video.get("resolution").unwrap() else {
+            panic!("expected resolution object");
+        };
+        assert_eq!(resolution.get("width"), Some(&AnyType::UInt(640)));
+        assert_eq!(resolution.get("height"), Some(&AnyType::UInt(1080)));
+    }
+
+    #[test]
+    fn apply_parameter_defaults_fills_partial_group() {
+        let s = schema(
+            r#"{
+                device: {
+                    path: { $type: "string", $default: "/dev/video0" }
+                }
+            }"#,
+        );
+        let mut args: BTreeMap<String, AnyType> =
+            BTreeMap::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
+        let missing = apply_parameter_defaults(&mut args, &s);
+        assert!(missing.is_empty(), "got missing: {missing:?}");
+        let AnyType::Object(device) = args.get("device").unwrap() else {
+            panic!("expected device object");
+        };
+        assert_eq!(
+            device.get("path"),
+            Some(&AnyType::String("/dev/video0".into()))
+        );
+    }
+
+    #[test]
+    fn apply_parameter_defaults_leaves_arguments_untouched_on_missing() {
+        let s = schema(
+            r#"{
+                device: {
+                    path: { $type: "string", $default: "/dev/video0" },
+                    priority: "string"
+                }
+            }"#,
+        );
+        let original_device = AnyType::Object(BTreeMap::new());
+        let mut args: BTreeMap<String, AnyType> =
+            BTreeMap::from([("device".to_string(), original_device.clone())]);
+        let missing = apply_parameter_defaults(&mut args, &s);
+        assert_eq!(missing, vec!["device.priority".to_string()]);
+        assert_eq!(args.get("device"), Some(&original_device));
     }
 
     #[test]
