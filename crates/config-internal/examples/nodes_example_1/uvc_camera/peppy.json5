@@ -61,8 +61,7 @@
     parameters: {
       device: {
         // Can be USB IDs/serial or udev rule
-        physical: "string", // values like `/dev/video4` or `/dev/video_front`
-        sim: "string", // values like `mujoco:camera_front` or `isaac_sim:camera_rear`
+        path: "string",
         priority: "string" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
       },
       video: {
