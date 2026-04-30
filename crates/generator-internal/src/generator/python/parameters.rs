@@ -1,10 +1,10 @@
 use super::code_builder::PythonCodeBuilder;
 use super::identifiers::sanitize_python_identifier;
-use super::type_mapping::type_name_to_python;
+use super::type_mapping::primitive_type_str;
 use crate::error::{Error, Result};
 use crate::generator::naming::to_camel_case;
 use crate::generator::rust::validate_parameter_schema as validate_parameters;
-use config::AnyType;
+use config::ParameterSpec;
 
 /// A parameter field with enough metadata to generate both the dataclass field
 /// declaration and the `from_dict` conversion line.
@@ -28,13 +28,11 @@ pub fn generate_python_parameters(parameters: &config::ParameterSchema) -> Resul
     validate_parameters(parameters)?;
 
     let mut builder = PythonCodeBuilder::new();
-
-    // Emit nested classes in dependency order, then collect main fields
     let mut main_fields: Vec<ParameterField> = Vec::new();
 
-    for (field_name, type_spec) in parameters {
-        match type_spec {
-            AnyType::Object(_) => {
+    for (field_name, spec) in parameters {
+        match spec {
+            ParameterSpec::Group(_) => {
                 let struct_name = to_camel_case(field_name);
                 let field_ident = sanitize_python_identifier(field_name);
                 main_fields.push(ParameterField {
@@ -43,28 +41,25 @@ pub fn generate_python_parameters(parameters: &config::ParameterSchema) -> Resul
                     type_name: struct_name.clone(),
                     is_nested: true,
                 });
-                emit_nested_parameter_class(&mut builder, type_spec, &struct_name, field_name)?;
+                emit_nested_parameter_class(&mut builder, spec, &struct_name, field_name)?;
             }
-            AnyType::String(type_name) => {
+            ParameterSpec::Primitive { kind, .. } => {
                 let field_ident = sanitize_python_identifier(field_name);
-                let python_type = type_name_to_python(type_name, field_name)?;
                 main_fields.push(ParameterField {
                     original_key: field_name.clone(),
                     field_name: field_ident,
-                    type_name: python_type.to_string(),
+                    type_name: primitive_type_str(kind).to_string(),
                     is_nested: false,
                 });
             }
-            _ => {
-                return Err(Error::UnsupportedParameterSpecType {
+            ParameterSpec::Array { .. } => {
+                return Err(Error::UnsupportedArrayParameter {
                     path: field_name.clone(),
-                    kind: type_spec.type_name(),
                 });
             }
         }
     }
 
-    // Emit main Parameters class
     emit_parameter_dataclass(&mut builder, "Parameters", &main_fields);
 
     Ok(builder.build())
@@ -72,20 +67,19 @@ pub fn generate_python_parameters(parameters: &config::ParameterSchema) -> Resul
 
 fn emit_nested_parameter_class(
     builder: &mut PythonCodeBuilder,
-    type_spec: &AnyType,
+    spec: &ParameterSpec,
     class_name: &str,
     path: &str,
 ) -> Result<()> {
-    let AnyType::Object(fields) = type_spec else {
-        return Err(Error::UnsupportedParameterSpecType {
-            path: path.to_string(),
-            kind: type_spec.type_name(),
+    let ParameterSpec::Group(fields) = spec else {
+        return Err(Error::InvariantViolation {
+            context: format!("expected parameter group at `{path}`"),
         });
     };
 
-    // Recurse into nested objects first (so they're defined before referenced)
+    // Recurse into nested groups first (so they're defined before referenced)
     for (field_name, field_spec) in fields {
-        if let AnyType::Object(_) = field_spec {
+        if let ParameterSpec::Group(_) = field_spec {
             let nested_name = nested_class_name(class_name, field_name);
             let nested_path = format!("{path}.{field_name}");
             emit_nested_parameter_class(builder, field_spec, &nested_name, &nested_path)?;
@@ -95,18 +89,16 @@ fn emit_nested_parameter_class(
     let mut class_fields: Vec<ParameterField> = Vec::new();
     for (field_name, field_spec) in fields {
         let field_ident = sanitize_python_identifier(field_name);
-        let field_path = format!("{path}.{field_name}");
         match field_spec {
-            AnyType::String(type_name) => {
-                let py_type = type_name_to_python(type_name, &field_path)?;
+            ParameterSpec::Primitive { kind, .. } => {
                 class_fields.push(ParameterField {
                     original_key: field_name.clone(),
                     field_name: field_ident,
-                    type_name: py_type.to_string(),
+                    type_name: primitive_type_str(kind).to_string(),
                     is_nested: false,
                 });
             }
-            AnyType::Object(_) => {
+            ParameterSpec::Group(_) => {
                 let nested_name = nested_class_name(class_name, field_name);
                 class_fields.push(ParameterField {
                     original_key: field_name.clone(),
@@ -115,10 +107,9 @@ fn emit_nested_parameter_class(
                     is_nested: true,
                 });
             }
-            _ => {
-                return Err(Error::UnsupportedParameterSpecType {
-                    path: field_path,
-                    kind: field_spec.type_name(),
+            ParameterSpec::Array { .. } => {
+                return Err(Error::UnsupportedArrayParameter {
+                    path: format!("{path}.{field_name}"),
                 });
             }
         }

@@ -66,6 +66,10 @@ error_msg: {
 In practice, this is used on **service and action response fields** where a value may or may not be present depending on the outcome — for example, an `error_msg` that is only set when the operation fails.
 :::
 
+:::caution
+`$optional` belongs to message formats only. Node parameters use [`$default`](/guides/parameters/#default-values) instead, which is a separate concept: a default value to fall back on when the runtime doesn't supply one.
+:::
+
 ---
 
 ## Object

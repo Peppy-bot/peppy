@@ -53,6 +53,30 @@ Then modify the `peppy.json5` configuration to look like this:
 
 Notice the new `parameters` key inside the `execution` section, which declares the parameter schema the node accepts at runtime.
 
+## Default values
+
+A parameter can declare a `$default` value, which is used when the runtime doesn't supply one. Defaults are useful for optional knobs whose typical value is the same across most deployments.
+
+The shorthand form `name: "string"` declares a required parameter. Switch to the long form to attach a default:
+
+```json5
+parameters: {
+  device: {
+    path: { $type: "string", $default: "/dev/video0" },
+    priority: "string"   // still required; no default
+  },
+  frame_rate: { $type: "u16", $default: 30 }
+}
+```
+
+The `$default` value is type-checked **at parse time**, when `peppy.json5` is loaded — typos and out-of-range values (`{ $type: "u8", $default: 300 }`) surface immediately, not later at runtime. See [Message Format](/reference/message_format/) for the list of primitive type names.
+
+`$default` is allowed only on primitive types; objects (parameter groups) and arrays cannot have a default. If every leaf inside a group has a default, the group itself can be omitted at runtime and the entire subtree will be filled in. If any leaf is required, omitting the group produces a `MissingParameters` error naming the specific leaf path (e.g. `device.priority`).
+
+:::note
+`$default` is for **node parameters**. The similar-looking `$optional` modifier is for [interface message formats](/reference/message_format/#optional-modifier) and is **not** valid on parameters — they are different concepts.
+:::
+
 ## Synchronizing the interfaces
 
 Now let's try to create a new snapshot of our node in the node stack:

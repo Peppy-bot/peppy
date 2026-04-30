@@ -61,11 +61,11 @@
     parameters: {
       device: {
         // Can be USB IDs/serial or udev rule
-        path: "string",
+        path: { $type: "string", $default: "/dev/video0" },
         priority: "string" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
       },
       video: {
-        frame_rate: "u16",
+        frame_rate: { $type: "u16", $default: 30 },
         resolution: {
           width: "u16",
           height: "u16",

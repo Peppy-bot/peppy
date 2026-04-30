@@ -48,38 +48,17 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    labels: [
-      "uvc",
-      "camera",
-      "usb",
-    ],
   },
   interfaces: {},
   execution: {
     language: "python",
     parameters: {
-      device: {
-        $type: "object",
-        physical: "string",
-        sim: "string",
-        priority: "string"
-      },
       video: {
-        "*type": "object",
+        "*invalid": "string",
         frame_rate: "u16",
-        resolution: {
-          "%type": "object",
-          width: "u16",
-          height: "u16",
-        },
-        encoding: "string",
       },
     },
-    run_cmd: [
-      "python",
-      "-m",
-      "uvc_camera"
-    ],
+    run_cmd: ["python", "-m", "uvc_camera"],
   }
 }
 "#;
@@ -402,94 +381,30 @@ fn reject_parameters_with_invalid_field_names() {
 }
 
 #[test]
-fn reject_python_parameters_with_unsupported_spec_type() {
-    use crate::error::Error;
-
-    let temp_dir = TempDir::new().unwrap();
-    let output_dir = temp_dir.path().join("output");
-    fs::create_dir_all(&output_dir).unwrap();
-
-    let node_config: NodeConfig =
-        serde_json5::from_str(UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE)
-            .expect("failed to parse UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE into NodeConfig");
-
-    let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.execution.parameters);
-    let err = generator
-        .build(
-            &output_dir,
-            &config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap_err();
-
-    match err {
-        Error::UnsupportedParameterSpecType { path, kind } => {
-            assert_eq!(path, "device.enabled");
-            assert_eq!(kind, "bool");
-        }
-        other => panic!("Expected UnsupportedParameterSpecType error, got: {other:?}"),
-    }
+fn reject_python_parameters_with_unsupported_spec_type_at_parse() {
+    let result = serde_json5::from_str::<NodeConfig>(UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE);
+    assert!(
+        result.is_err(),
+        "expected parse-time rejection of bool literal in parameter group"
+    );
 }
 
 #[test]
-fn reject_python_parameters_with_top_level_unsupported_spec_type() {
-    use crate::error::Error;
-
-    let temp_dir = TempDir::new().unwrap();
-    let output_dir = temp_dir.path().join("output");
-    fs::create_dir_all(&output_dir).unwrap();
-
-    let node_config: NodeConfig = serde_json5::from_str(
-        UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE,
-    )
-    .expect("failed to parse UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE into NodeConfig");
-
-    let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.execution.parameters);
-    let err = generator
-        .build(
-            &output_dir,
-            &config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap_err();
-
-    match err {
-        Error::UnsupportedParameterSpecType { path, kind } => {
-            assert_eq!(path, "enabled");
-            assert_eq!(kind, "bool");
-        }
-        other => panic!("Expected UnsupportedParameterSpecType error, got: {other:?}"),
-    }
+fn reject_python_parameters_with_top_level_unsupported_spec_type_at_parse() {
+    let result =
+        serde_json5::from_str::<NodeConfig>(UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE);
+    assert!(
+        result.is_err(),
+        "expected parse-time rejection of bool literal at top level"
+    );
 }
 
 #[test]
-fn reject_python_parameters_with_unknown_type_name() {
-    use crate::error::Error;
-
-    let temp_dir = TempDir::new().unwrap();
-    let output_dir = temp_dir.path().join("output");
-    fs::create_dir_all(&output_dir).unwrap();
-
-    let node_config: NodeConfig = serde_json5::from_str(UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE)
-        .expect("failed to parse UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE into NodeConfig");
-
-    let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.execution.parameters);
-    let err = generator
-        .build(
-            &output_dir,
-            &config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap_err();
-
-    match err {
-        Error::UnsupportedParameterTypeName { path, type_name } => {
-            assert_eq!(path, "device");
-            assert_eq!(type_name, "uuid");
-        }
-        other => panic!("Expected UnsupportedParameterTypeName error, got: {other:?}"),
-    }
+fn reject_python_parameters_with_unknown_type_name_at_parse() {
+    let result = serde_json5::from_str::<NodeConfig>(UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE);
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("uuid"),
+        "expected error mentioning unknown type name, got: {err}"
+    );
 }

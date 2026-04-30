@@ -12,10 +12,10 @@ pub use node::FORBIDDEN_ENV_KEYS;
 
 use crate::Result;
 use config::{
-    AnyType,
+    DefaultValue, ParameterSpec,
     consts::PeppyDirs,
     launcher::CURRENT_SCHEMA_VERSION,
-    node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage},
+    node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage, TypeToken},
 };
 use futures::future::{BoxFuture, FutureExt, try_join_all};
 use names_generator2::get_random;
@@ -67,15 +67,27 @@ pub struct CoreNodeArguments {
 }
 
 impl CoreNodeArguments {
-    fn into_parameters(self) -> BTreeMap<String, AnyType> {
+    /// Build the core node's parameter schema, baking the runtime values in
+    /// as `$default` so the schema is self-contained.
+    fn into_parameters(self) -> config::ParameterSchema {
         let mut params = BTreeMap::new();
         params.insert(
             "node_startup_timeout_ms".to_string(),
-            AnyType::UInt(self.node_startup_timeout.as_millis() as u64),
+            ParameterSpec::Primitive {
+                kind: TypeToken::U64,
+                default: Some(DefaultValue::UInt(
+                    self.node_startup_timeout.as_millis() as u64
+                )),
+            },
         );
         params.insert(
             "node_start_health_timeout_ms".to_string(),
-            AnyType::UInt(self.node_start_health_timeout.as_millis() as u64),
+            ParameterSpec::Primitive {
+                kind: TypeToken::U64,
+                default: Some(DefaultValue::UInt(
+                    self.node_start_health_timeout.as_millis() as u64,
+                )),
+            },
         );
         params
     }

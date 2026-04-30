@@ -184,7 +184,10 @@ mod tests {
     use super::{PEPPYGEN_OUTPUT_PATH, Processor, RUNTIME_CONFIG_VAR_NAME};
     use crate::runtime::builder::StandaloneConfig;
     use crate::runtime::test_utils::EnvVarGuard;
-    use config::{AnyType, ParameterSchema, runtime::RuntimeConfig, validate_node_arguments};
+    use config::node::TypeToken;
+    use config::{
+        AnyType, ParameterSchema, ParameterSpec, runtime::RuntimeConfig, validate_node_arguments,
+    };
     use std::{collections::BTreeMap, path::Path};
     use tempfile::TempDir;
 
@@ -899,12 +902,121 @@ mod tests {
     }
 
     #[test]
+    fn standalone_mode_fills_defaults_for_omitted_parameters() {
+        // Partial config: user omits `frame_rate`, runtime fills it from $default.
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "my_node", tag: "0.1.0" },
+
+            execution: {
+                language: "rust",
+                parameters: {
+                    name: "string",
+                    frame_rate: { $type: "u16", $default: 30 }
+                },
+                run_cmd: ["./target/debug/my_node"]
+            },
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        let config =
+            StandaloneConfig::new().with_parameters_json(serde_json::json!({ "name": "front" }));
+        let processor = Processor::new_standalone(&peppy_config_path, &config)
+            .expect("standalone with partial parameters should succeed");
+
+        let args_json = serde_json::to_value(processor.input_arguments()).unwrap();
+        assert_eq!(args_json.get("name"), Some(&serde_json::json!("front")));
+        assert_eq!(args_json.get("frame_rate"), Some(&serde_json::json!(30)));
+    }
+
+    #[test]
+    fn standalone_mode_synthesizes_fully_defaulted_group() {
+        // The whole `device` group is omitted; every leaf has a default,
+        // so the runtime synthesizes the group from defaults.
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "my_node", tag: "0.1.0" },
+
+            execution: {
+                language: "rust",
+                parameters: {
+                    device: {
+                        path: { $type: "string", $default: "/dev/video0" },
+                        priority: { $type: "string", $default: "physical" }
+                    }
+                },
+                run_cmd: ["./target/debug/my_node"]
+            },
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        let config = StandaloneConfig::new();
+        let processor = Processor::new_standalone(&peppy_config_path, &config)
+            .expect("fully-defaulted group should be synthesized");
+
+        let args_json = serde_json::to_value(processor.input_arguments()).unwrap();
+        assert_eq!(
+            args_json.get("device"),
+            Some(&serde_json::json!({ "path": "/dev/video0", "priority": "physical" }))
+        );
+    }
+
+    #[test]
+    fn standalone_mode_partial_default_group_reports_missing_leaf() {
+        // `device.priority` has no default; the error must name that leaf
+        // by full dot-path so users know what to supply.
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "my_node", tag: "0.1.0" },
+
+            execution: {
+                language: "rust",
+                parameters: {
+                    device: {
+                        path: { $type: "string", $default: "/dev/video0" },
+                        priority: "string"
+                    }
+                },
+                run_cmd: ["./target/debug/my_node"]
+            },
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        let config = StandaloneConfig::new();
+        let result = Processor::new_standalone(&peppy_config_path, &config);
+        let err = result.err().expect("missing required leaf should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("device.priority"),
+            "error should name the missing leaf path, got: {msg}"
+        );
+    }
+
+    #[test]
     fn validated_arguments_cannot_be_serialized_back_to_raw() {
         // NodeArguments derives Serialize but does not expose the inner
         // data — the only way to consume it is through
         // deserialize_parameters, which parses into a typed struct.
         let arguments = BTreeMap::from([("x".to_string(), AnyType::Int(1))]);
-        let schema = ParameterSchema::from([("x".to_string(), AnyType::String("i64".to_string()))]);
+        let schema = ParameterSchema::from([(
+            "x".to_string(),
+            ParameterSpec::Primitive {
+                kind: TypeToken::I64,
+                default: None,
+            },
+        )]);
         let validated =
             validate_node_arguments(arguments, &schema).expect("validation should pass");
 
