@@ -53,11 +53,7 @@
     ],
     // Those are fake parameters supposed to emulate a real camera
     parameters: {
-      device: {
-        physical: "string",
-        sim: "string",
-        priority: "string"
-      },
+      device_path: "string",
       video: {
         frame_rate: "u16",
         resolution: {

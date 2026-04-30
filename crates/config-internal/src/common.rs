@@ -899,7 +899,7 @@ pub enum NodeArgumentsError {
     TypeMismatch(TypeMismatch),
     /// One or more parameters declared in the schema are missing from the
     /// arguments and have no `$default` to fall back on. Each entry is a full
-    /// dot-path (e.g. `device.priority`).
+    /// dot-path (e.g. `device.serial`).
     MissingParameters(Vec<String>),
     /// An argument key is not declared in the schema.
     UnknownParameter { key: String },
@@ -1156,7 +1156,7 @@ mod tests {
             r#"{
                 device: {
                     path: { $type: "string", $default: "/dev/video0" },
-                    priority: "string"
+                    serial: "string"
                 }
             }"#,
         );
@@ -1171,7 +1171,7 @@ mod tests {
             })
         ));
         assert!(matches!(
-            fields.get("priority"),
+            fields.get("serial"),
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::String,
                 default: None
@@ -1429,7 +1429,7 @@ mod tests {
             r#"{
                 device: {
                     path: { $type: "string", $default: "/dev/video0" },
-                    priority: { $type: "string", $default: "physical" }
+                    auto_detect: { $type: "bool", $default: true }
                 }
             }"#,
         );
@@ -1442,10 +1442,7 @@ mod tests {
             device.get("path"),
             Some(&AnyType::String("/dev/video0".into()))
         );
-        assert_eq!(
-            device.get("priority"),
-            Some(&AnyType::String("physical".into()))
-        );
+        assert_eq!(device.get("auto_detect"), Some(&AnyType::Bool(true)));
     }
 
     #[test]
@@ -1477,7 +1474,7 @@ mod tests {
             r#"{
                 device: {
                     path: { $type: "string", $default: "/dev/video0" },
-                    priority: { $type: "string", $default: "low" }
+                    auto_detect: { $type: "bool", $default: true }
                 }
             }"#,
         );
@@ -1496,18 +1493,19 @@ mod tests {
             device.get("path"),
             Some(&AnyType::String("/dev/video1".into()))
         );
-        assert_eq!(device.get("priority"), Some(&AnyType::String("low".into())));
+        assert_eq!(device.get("auto_detect"), Some(&AnyType::Bool(true)));
     }
 
     #[test]
     fn partial_group_reports_missing_required_child() {
         // User supplies an empty group; the required (no-default) child must
-        // be reported with its dot-path.
+        // be reported with its dot-path. `serial` is a USB serial number that
+        // varies per unit and has no sensible default.
         let s = schema(
             r#"{
                 device: {
                     path: { $type: "string", $default: "/dev/video0" },
-                    priority: "string"
+                    serial: "string"
                 }
             }"#,
         );
@@ -1516,7 +1514,7 @@ mod tests {
         let err = raw.into_resolved(&s).unwrap_err();
         match err {
             NodeArgumentsError::MissingParameters(keys) => {
-                assert_eq!(keys, vec!["device.priority".to_string()]);
+                assert_eq!(keys, vec!["device.serial".to_string()]);
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -1580,7 +1578,7 @@ mod tests {
             r#"{
                 device: {
                     path: { $type: "string", $default: "/dev/video0" },
-                    priority: "string"
+                    serial: "string"
                 }
             }"#,
         );
@@ -1588,7 +1586,7 @@ mod tests {
         let mut args: BTreeMap<String, AnyType> =
             BTreeMap::from([("device".to_string(), original_device.clone())]);
         let missing = apply_parameter_defaults(&mut args, &s);
-        assert_eq!(missing, vec!["device.priority".to_string()]);
+        assert_eq!(missing, vec!["device.serial".to_string()]);
         assert_eq!(args.get("device"), Some(&original_device));
     }
 
@@ -1598,7 +1596,7 @@ mod tests {
             r#"{
                 device: {
                     path: { $type: "string", $default: "/dev/video0" },
-                    priority: "string"
+                    serial: "string"
                 }
             }"#,
         );
@@ -1606,7 +1604,7 @@ mod tests {
         let err = raw.into_resolved(&s).unwrap_err();
         match err {
             NodeArgumentsError::MissingParameters(keys) => {
-                assert_eq!(keys, vec!["device.priority".to_string()]);
+                assert_eq!(keys, vec!["device.serial".to_string()]);
             }
             other => panic!("unexpected error: {other:?}"),
         }

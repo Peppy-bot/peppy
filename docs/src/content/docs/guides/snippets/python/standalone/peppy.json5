@@ -9,11 +9,7 @@
     language: "python",
     // A bunch of fake parameters required to start our node
     parameters: {
-      device: {
-        physical: "string",
-        sim: "string",
-        priority: "string"
-      },
+      device_path: "string",
       video: {
         frame_rate: "u16",
         resolution: {

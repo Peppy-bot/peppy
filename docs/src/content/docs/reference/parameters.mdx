@@ -62,7 +62,7 @@ A primitive parameter can declare a `$default` that the runtime uses when the la
 parameters: {
   device: {
     path: { $type: "string", $default: "/dev/video0" },
-    priority: "string"   // still required
+    serial: "string"   // still required (varies per unit)
   },
   frame_rate: { $type: "u16", $default: 30 }
 }
@@ -83,15 +83,15 @@ parameters: {
 
 ### Group fill-in
 
-`$default` is allowed only on primitives. If every leaf reachable from a group has a default, the group itself can be omitted at runtime and the entire subtree will be filled in. If any leaf inside the group is required, omitting the group produces a `MissingParameters` error naming the specific leaf path (e.g. `device.priority`).
+`$default` is allowed only on primitives. If every leaf reachable from a group has a default, the group itself can be omitted at runtime and the entire subtree will be filled in. The same applies to partially supplied groups: any missing child whose spec declares a `$default` is filled in, while children declared without a default still produce a `MissingParameters` error naming the specific leaf path (e.g. `device.serial`).
 
 For example, given this schema:
 
 ```json5
 parameters: {
   device: {
-    path:     { $type: "string", $default: "/dev/video0" },
-    priority: "string"
+    path:   { $type: "string", $default: "/dev/video0" },
+    serial: "string"
   },
   video: {
     frame_rate: { $type: "u16", $default: 30 },
@@ -104,7 +104,7 @@ A launcher that supplies only the required fields:
 
 ```json5
 arguments: {
-  device: { priority: "physical" },
+  device: { serial: "0001A2B3" },
   video:  { encoding: "yuyv" }
 }
 ```
@@ -113,7 +113,7 @@ Reaches the spawned node as a complete arg set with defaults filled in:
 
 ```json5
 {
-  device: { path: "/dev/video0", priority: "physical" },
+  device: { path: "/dev/video0", serial: "0001A2B3" },
   video:  { frame_rate: 30, encoding: "yuyv" }
 }
 ```

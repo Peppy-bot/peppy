@@ -949,7 +949,7 @@ mod tests {
                 parameters: {
                     device: {
                         path: { $type: "string", $default: "/dev/video0" },
-                        priority: { $type: "string", $default: "physical" }
+                        auto_detect: { $type: "bool", $default: true }
                     }
                 },
                 run_cmd: ["./target/debug/my_node"]
@@ -965,14 +965,15 @@ mod tests {
         let args_json = serde_json::to_value(processor.input_arguments()).unwrap();
         assert_eq!(
             args_json.get("device"),
-            Some(&serde_json::json!({ "path": "/dev/video0", "priority": "physical" }))
+            Some(&serde_json::json!({ "path": "/dev/video0", "auto_detect": true }))
         );
     }
 
     #[test]
     fn standalone_mode_partial_default_group_reports_missing_leaf() {
-        // `device.priority` has no default; the error must name that leaf
-        // by full dot-path so users know what to supply.
+        // `device.serial` has no default (USB serials vary per unit); the
+        // error must name that leaf by full dot-path so users know what to
+        // supply.
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
@@ -985,7 +986,7 @@ mod tests {
                 parameters: {
                     device: {
                         path: { $type: "string", $default: "/dev/video0" },
-                        priority: "string"
+                        serial: "string"
                     }
                 },
                 run_cmd: ["./target/debug/my_node"]
@@ -999,7 +1000,7 @@ mod tests {
         let err = result.err().expect("missing required leaf should error");
         let msg = err.to_string();
         assert!(
-            msg.contains("device.priority"),
+            msg.contains("device.serial"),
             "error should name the missing leaf path, got: {msg}"
         );
     }
