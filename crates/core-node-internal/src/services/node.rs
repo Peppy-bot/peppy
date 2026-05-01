@@ -87,11 +87,7 @@ mod tests {
   execution: {
     language: "rust",
     parameters: {
-      device: {
-        physical: "string",
-        sim: "string",
-        priority: "string",
-      },
+      device_path: "string",
       video: {
         frame_rate: "u16",
         resolution: {

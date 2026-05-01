@@ -1,9 +1,5 @@
 {
-  "device": {
-    "physical": "/dev/video0",
-    "sim": "virtual_camera",
-    "priority": "high"
-  },
+  "device_path": "/dev/video0",
   "video": {
     "frame_rate": 30,
     "resolution": {

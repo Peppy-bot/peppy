@@ -11,14 +11,10 @@ async def setup(params: Parameters, node_runner: NodeRunner):
 def main():
     # Parameters can also be defined directly in code:
     #
-    # from peppygen.parameters import Device, Video, VideoResolution
+    # from peppygen.parameters import Video, VideoResolution
     #
     # params = Parameters(
-    #     device=Device(
-    #         physical="/dev/video0",
-    #         sim="virtual_camera",
-    #         priority="high",
-    #     ),
+    #     device_path="/dev/video0",
     #     video=Video(
     #         frame_rate=30,
     #         resolution=VideoResolution(

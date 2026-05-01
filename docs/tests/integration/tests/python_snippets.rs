@@ -13,9 +13,7 @@ fn standalone_node() {
         SNIPPETS_ROOT,
         "standalone",
         &[
-            "device.physical=/dev/device1",
-            "device.sim=the_camera",
-            "device.priority=physical",
+            "device_path=/dev/device1",
             "video.encoding=rgb",
             "video.frame_rate=30",
             "video.resolution.width=1280",

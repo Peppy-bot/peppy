@@ -30,11 +30,7 @@
         {
           instance_id: "camera_front",
           arguments: {
-            device: {
-              physical: "/dev/video_right",
-              sim: "mujoco:camera_right",
-              priority: "physical"
-            },
+            device_path: "/dev/video_right",
             video: {
               frame_rate: 30,
               resolution: {
@@ -48,11 +44,7 @@
         {
           instance_id: "camera_rear",
           arguments: {
-            device: {
-              physical: "/dev/video_left",
-              sim: "mujoco:camera_left",
-              priority: "physical"
-            },
+            device_path: "/dev/video_left",
             video: {
               frame_rate: 30,
               resolution: {

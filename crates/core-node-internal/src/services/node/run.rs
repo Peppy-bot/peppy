@@ -6,7 +6,7 @@ use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Name;
 use config::runtime::RuntimeConfig;
-use config::{AnyType, resolve_parameter_path};
+use config::{AnyType, apply_parameter_defaults, resolve_argument_path};
 use core_node_api::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use futures::FutureExt;
 use node_stack::{self, NodeStack};
@@ -138,62 +138,6 @@ impl GoalHandler for NodeRunGoalHandler {
             self.gate.clone(),
         )
         .await
-    }
-}
-
-/// Validates that all required parameters from the schema are present in the provided arguments.
-/// Returns a list of all missing parameter paths (e.g., ["device.physical", "video.frame_rate"]).
-fn validate_parameters(
-    schema: &std::collections::BTreeMap<String, AnyType>,
-    arguments: &std::collections::BTreeMap<String, AnyType>,
-    prefix: &str,
-) -> Vec<String> {
-    let mut missing = Vec::new();
-
-    for (key, schema_value) in schema {
-        let path = if prefix.is_empty() {
-            key.clone()
-        } else {
-            format!("{}.{}", prefix, key)
-        };
-
-        match arguments.get(key) {
-            None => {
-                // Parameter is missing - collect all nested paths if it's an object schema
-                collect_all_required_paths(schema_value, &path, &mut missing);
-            }
-            Some(arg_value) => {
-                // Parameter exists - check nested objects recursively
-                if let AnyType::Object(schema_fields) = schema_value {
-                    if let AnyType::Object(arg_fields) = arg_value {
-                        missing.extend(validate_parameters(schema_fields, arg_fields, &path));
-                    } else {
-                        // Schema expects an object but argument is not an object
-                        collect_all_required_paths(schema_value, &path, &mut missing);
-                    }
-                }
-            }
-        }
-    }
-
-    missing
-}
-
-/// Recursively collects all required parameter paths from a schema value.
-/// Used when a parameter is completely missing to report all its nested fields.
-fn collect_all_required_paths(schema_value: &AnyType, path: &str, missing: &mut Vec<String>) {
-    match schema_value {
-        AnyType::Object(fields) => {
-            // For object schemas, recursively collect all nested paths
-            for (key, nested_value) in fields {
-                let nested_path = format!("{}.{}", path, key);
-                collect_all_required_paths(nested_value, &nested_path, missing);
-            }
-        }
-        _ => {
-            // Leaf value (type specification like "string", "u16", etc.)
-            missing.push(path.to_string());
-        }
     }
 }
 
@@ -484,13 +428,12 @@ fn encode_rejected_start_goal(reason: impl Into<String>) -> PeppyResult<Payload>
 
 async fn process_node_run(
     goal: NodeRunGoal,
-    runtime_config: RuntimeConfig,
+    mut runtime_config: RuntimeConfig,
     ctx: ProcessNodeRunContext,
     cancel_token: CancellationToken,
 ) -> NodeRunResult {
     let sender_instance_id = ctx.sender_instance_id.as_str();
     let NodeRunGoal {
-        runtime_config_json5,
         node_name,
         tag,
         env_vars,
@@ -557,17 +500,32 @@ async fn process_node_run(
         node_config.manifest.tag.as_str(),
     );
 
-    // Validate that all required parameters are provided before starting the node
-    let missing_params = validate_parameters(
+    // Apply any `$default` fallbacks from the schema before spawning, so the
+    // spawned node sees a complete arg set and mount path resolution below
+    // can find every referenced value. Type checks and unknown-key checks
+    // are deferred to peppylib's `Processor::new_daemon` inside the spawned
+    // node, where errors surface alongside any other startup failures.
+    let missing = apply_parameter_defaults(
+        &mut runtime_config.node_instance.arguments,
         &node_config.execution.parameters,
-        &runtime_config.node_instance.arguments,
-        "",
     );
-    if !missing_params.is_empty() {
-        let msg = format!("Missing required parameters: {}", missing_params.join(", "));
+    if !missing.is_empty() {
+        let msg = format!("Missing required parameters: {}", missing.join(", "));
         write_error_to_log(&ctx.log_file, &msg);
         return NodeRunResult::failure(msg);
     }
+
+    // Re-serialize so the spawned process receives the synthesized defaults;
+    // the inbound `runtime_config_json5` from the goal still reflects the
+    // pre-defaulting state.
+    let runtime_config_json5 = match serde_json5::to_string(&runtime_config) {
+        Ok(json) => json,
+        Err(e) => {
+            let msg = format!("Failed to serialize runtime config: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeRunResult::failure(msg);
+        }
+    };
 
     let is_container = node_config.execution.container.is_some();
 
@@ -883,7 +841,7 @@ fn resolve_mount_path_parameters(
                 .ok_or_else(|| format!("Unclosed parameter reference in mount path: {mount}"))?;
             let dot_path = &after_prefix[..end];
 
-            match resolve_parameter_path(arguments, dot_path) {
+            match resolve_argument_path(arguments, dot_path) {
                 Some(AnyType::String(value)) => {
                     result.push_str(value);
                 }
