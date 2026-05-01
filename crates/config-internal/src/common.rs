@@ -75,7 +75,16 @@ impl AnyType {
                 check_signed_range(self, i32::MIN as i64, i32::MAX as i64, path, token)
             }
             TypeToken::I64 => check_signed_range(self, i64::MIN, i64::MAX, path, token),
-            TypeToken::F32 | TypeToken::F64 => match self {
+            TypeToken::F32 => match check_f32(self) {
+                F32Check::Ok(_) => Ok(()),
+                F32Check::NotNumeric => Err(mismatch(self.type_name())),
+                F32Check::NonFinite => Err(mismatch("non-finite float")),
+                F32Check::FloatOutOfRange => Err(mismatch("float outside f32 range")),
+                F32Check::IntPrecisionLoss => Err(mismatch(
+                    "integer outside f32 lossless range (\u{00b1}2^24)",
+                )),
+            },
+            TypeToken::F64 => match self {
                 AnyType::Float(_) | AnyType::Int(_) | AnyType::UInt(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
@@ -612,12 +621,28 @@ fn parse_default_value(kind: &TypeToken, raw: AnyType, path: &str) -> Result<Def
             bounded_int_default(raw, i32::MIN as i64, i32::MAX as i64, "i32", display)
         }
         TypeToken::I64 => bounded_int_default(raw, i64::MIN, i64::MAX, "i64", display),
-        TypeToken::F32 | TypeToken::F64 => match raw {
+        TypeToken::F32 => match check_f32(&raw) {
+            F32Check::Ok(f) => Ok(DefaultValue::Float(f)),
+            F32Check::NotNumeric => Err(format!(
+                "at `{display}`: `$default` for type `f32` must be numeric, got {}",
+                raw.type_name()
+            )),
+            F32Check::NonFinite => Err(format!(
+                "at `{display}`: `$default` for type `f32` must be finite"
+            )),
+            F32Check::FloatOutOfRange => Err(format!(
+                "at `{display}`: `$default` value is outside the range of `f32`"
+            )),
+            F32Check::IntPrecisionLoss => Err(format!(
+                "at `{display}`: `$default` integer value exceeds f32 lossless range (\u{00b1}2^24)"
+            )),
+        },
+        TypeToken::F64 => match raw {
             AnyType::Float(f) => Ok(DefaultValue::Float(f)),
             AnyType::Int(i) => Ok(DefaultValue::Float(i as f64)),
             AnyType::UInt(u) => Ok(DefaultValue::Float(u as f64)),
             other => Err(format!(
-                "at `{display}`: `$default` for float type must be numeric, got {}",
+                "at `{display}`: `$default` for type `f64` must be numeric, got {}",
                 other.type_name()
             )),
         },
@@ -682,6 +707,35 @@ fn bounded_int_default(
         ));
     }
     Ok(DefaultValue::Int(v))
+}
+
+/// Largest absolute integer that round-trips through f32 without precision
+/// loss. f32 has a 24-bit mantissa, so values in `±2^24` are representable
+/// exactly; `2^24 + 1` is not.
+const F32_LOSSLESS_INT_LIMIT: u64 = 1 << f32::MANTISSA_DIGITS;
+
+/// Outcome of checking whether a numeric `AnyType` can be safely stored as
+/// f32. Variants distinguish failure modes so each caller can format an error
+/// in its own idiom while sharing the underlying range logic.
+enum F32Check {
+    Ok(f64),
+    NotNumeric,
+    NonFinite,
+    FloatOutOfRange,
+    IntPrecisionLoss,
+}
+
+fn check_f32(value: &AnyType) -> F32Check {
+    match value {
+        AnyType::Float(f) if !f.is_finite() => F32Check::NonFinite,
+        AnyType::Float(f) if f.abs() > f32::MAX as f64 => F32Check::FloatOutOfRange,
+        AnyType::Float(f) => F32Check::Ok(*f),
+        AnyType::Int(i) if i.unsigned_abs() > F32_LOSSLESS_INT_LIMIT => F32Check::IntPrecisionLoss,
+        AnyType::Int(i) => F32Check::Ok(*i as f64),
+        AnyType::UInt(u) if *u > F32_LOSSLESS_INT_LIMIT => F32Check::IntPrecisionLoss,
+        AnyType::UInt(u) => F32Check::Ok(*u as f64),
+        _ => F32Check::NotNumeric,
+    }
 }
 
 /// Parse a primitive type-token name (with aliases). Returns `None` for unknown
@@ -1293,6 +1347,125 @@ mod tests {
                 default: Some(DefaultValue::Float(1.0))
             }
         );
+    }
+
+    // ---- F32 lossless representation checks ----
+
+    #[test]
+    fn f32_default_accepts_max_lossless_int() {
+        let parsed: ParameterSpec = json5(r#"{ $type: "f32", $default: 16777216 }"#);
+        assert_eq!(
+            parsed,
+            ParameterSpec::Primitive {
+                kind: TypeToken::F32,
+                default: Some(DefaultValue::Float(16777216.0))
+            }
+        );
+    }
+
+    #[test]
+    fn f32_default_rejects_int_above_lossless_range() {
+        let result: Result<ParameterSpec, _> =
+            serde_json5::from_str(r#"{ $type: "f32", $default: 16777217 }"#);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("f32"), "got: {err}");
+        assert!(err.contains("lossless"), "got: {err}");
+    }
+
+    #[test]
+    fn f32_default_rejects_negative_int_below_lossless_range() {
+        let result: Result<ParameterSpec, _> =
+            serde_json5::from_str(r#"{ $type: "f32", $default: -16777217 }"#);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("f32"), "got: {err}");
+    }
+
+    #[test]
+    fn f32_default_rejects_float_overflow() {
+        let result: Result<ParameterSpec, _> =
+            serde_json5::from_str(r#"{ $type: "f32", $default: 1e100 }"#);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("f32"), "got: {err}");
+        assert!(err.contains("range"), "got: {err}");
+    }
+
+    #[test]
+    fn f64_default_accepts_int_above_f32_range() {
+        let parsed: ParameterSpec = json5(r#"{ $type: "f64", $default: 16777217 }"#);
+        assert!(matches!(
+            parsed,
+            ParameterSpec::Primitive {
+                kind: TypeToken::F64,
+                default: Some(DefaultValue::Float(_))
+            }
+        ));
+    }
+
+    #[test]
+    fn f64_default_accepts_large_float() {
+        let parsed: ParameterSpec = json5(r#"{ $type: "f64", $default: 1e100 }"#);
+        assert!(matches!(
+            parsed,
+            ParameterSpec::Primitive {
+                kind: TypeToken::F64,
+                default: Some(DefaultValue::Float(_))
+            }
+        ));
+    }
+
+    #[test]
+    fn runtime_f32_rejects_int_above_lossless_range() {
+        let s = schema(r#"{ gain: "f32" }"#);
+        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Int(16777217))]);
+        let err = raw.into_resolved(&s).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("f32"), "got: {msg}");
+    }
+
+    #[test]
+    fn runtime_f32_rejects_float_overflow() {
+        let s = schema(r#"{ gain: "f32" }"#);
+        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Float(1e100))]);
+        let err = raw.into_resolved(&s).unwrap_err();
+        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+    }
+
+    #[test]
+    fn runtime_f32_rejects_non_finite_float() {
+        let s = schema(r#"{ gain: "f32" }"#);
+        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Float(f64::INFINITY))]);
+        let err = raw.into_resolved(&s).unwrap_err();
+        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+
+        let raw_nan = RawNodeArguments::from([("gain".to_string(), AnyType::Float(f64::NAN))]);
+        assert!(raw_nan.into_resolved(&s).is_err());
+    }
+
+    #[test]
+    fn runtime_f32_accepts_lossless_values() {
+        let s = schema(r#"{ gain: "f32" }"#);
+        for value in [
+            AnyType::Float(0.0),
+            AnyType::Float(1.5),
+            AnyType::Float(-1.5),
+            AnyType::Int(16777216),
+            AnyType::Int(-16777216),
+            AnyType::UInt(16777216),
+            AnyType::UInt(0),
+        ] {
+            let raw = RawNodeArguments::from([("gain".to_string(), value.clone())]);
+            assert!(
+                raw.into_resolved(&s).is_ok(),
+                "expected {value:?} to validate against f32"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_f64_accepts_value_above_f32_range() {
+        let s = schema(r#"{ gain: "f64" }"#);
+        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Float(1e100))]);
+        assert!(raw.into_resolved(&s).is_ok());
     }
 
     // ---- Array parameter parsing ----
