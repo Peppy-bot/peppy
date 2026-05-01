@@ -207,20 +207,8 @@ fn generate_parameters_struct() {
         &generated,
         &[
             "pub struct Parameters",
-            "pub device: device::Device",
+            "pub device_path: String",
             "pub video: video::Video",
-        ],
-    );
-
-    // Verify the device module with Device struct
-    assert_contains_all(
-        &generated,
-        &[
-            "pub mod device",
-            "pub struct Device",
-            "pub physical: String",
-            "pub sim: String",
-            "pub priority: String",
         ],
     );
 

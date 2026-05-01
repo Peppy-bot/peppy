@@ -1417,12 +1417,10 @@ mod tests {
         let s = schema(r#"{ name: "string" }"#);
         let raw = RawNodeArguments::from(BTreeMap::new());
         let err = raw.into_resolved(&s).unwrap_err();
-        match err {
-            NodeArgumentsError::MissingParameters(keys) => {
-                assert_eq!(keys, vec!["name".to_string()]);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let NodeArgumentsError::MissingParameters(keys) = err else {
+            panic!("unexpected error: {err:?}");
+        };
+        assert_eq!(keys, vec!["name".to_string()]);
     }
 
     #[test]
@@ -1526,12 +1524,10 @@ mod tests {
         let raw =
             RawNodeArguments::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
         let err = raw.into_resolved(&s).unwrap_err();
-        match err {
-            NodeArgumentsError::MissingParameters(keys) => {
-                assert_eq!(keys, vec!["device.serial".to_string()]);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let NodeArgumentsError::MissingParameters(keys) = err else {
+            panic!("unexpected error: {err:?}");
+        };
+        assert_eq!(keys, vec!["device.serial".to_string()]);
     }
 
     #[test]
@@ -1616,12 +1612,10 @@ mod tests {
         );
         let raw = RawNodeArguments::from(BTreeMap::new());
         let err = raw.into_resolved(&s).unwrap_err();
-        match err {
-            NodeArgumentsError::MissingParameters(keys) => {
-                assert_eq!(keys, vec!["device.serial".to_string()]);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let NodeArgumentsError::MissingParameters(keys) = err else {
+            panic!("unexpected error: {err:?}");
+        };
+        assert_eq!(keys, vec!["device.serial".to_string()]);
     }
 
     #[test]

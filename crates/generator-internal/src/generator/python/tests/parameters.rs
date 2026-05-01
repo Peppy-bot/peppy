@@ -210,19 +210,8 @@ fn generate_parameters_struct() {
         &[
             "@dataclass",
             "class Parameters:",
-            "device: Device",
+            "device_path: str",
             "video: Video",
-        ],
-    );
-
-    // Verify the Device dataclass
-    assert_contains_all(
-        &generated,
-        &[
-            "class Device:",
-            "physical: str",
-            "sim: str",
-            "priority: str",
         ],
     );
 
@@ -248,10 +237,8 @@ fn generate_parameters_struct() {
         &generated,
         &[
             "def from_dict(cls, data: dict) -> \"Parameters\":",
-            "device=Device.from_dict(data[\"device\"])",
+            "device_path=data[\"device_path\"]",
             "video=Video.from_dict(data[\"video\"])",
-            "def from_dict(cls, data: dict) -> \"Device\":",
-            "physical=data[\"physical\"]",
             "def from_dict(cls, data: dict) -> \"Video\":",
             "resolution=VideoResolution.from_dict(data[\"resolution\"])",
             "def from_dict(cls, data: dict) -> \"VideoResolution\":",
