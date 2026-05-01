@@ -1,5 +1,5 @@
 use crate::{
-    common::{AnyType, ParameterSchema, resolve_parameter_path},
+    common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
     launcher::SchemaVersion,
     source::DeploymentSource,
@@ -1001,15 +1001,18 @@ impl ContainerConfig {
                             "parameter not found in schema".to_owned(),
                         ));
                     }
-                    Some(AnyType::String(type_name)) if type_name == "string" => {
+                    Some(ParameterSpec::Primitive {
+                        kind: TypeToken::String,
+                        ..
+                    }) => {
                         // Valid — string-typed parameter.
                     }
-                    Some(type_spec) => {
+                    Some(spec) => {
                         return Err((
                             ref_path.to_owned(),
                             format!(
                                 "parameter must be of type \"string\", found \"{}\"",
-                                type_spec_display(type_spec)
+                                parameter_spec_display(spec)
                             ),
                         ));
                     }
@@ -1020,13 +1023,12 @@ impl ContainerConfig {
     }
 }
 
-/// Human-readable display for a parameter type spec.
-fn type_spec_display(spec: &AnyType) -> &str {
+/// Human-readable display for a [`ParameterSpec`] used in mount-path error messages.
+fn parameter_spec_display(spec: &ParameterSpec) -> &'static str {
     match spec {
-        AnyType::String(s) => s.as_str(),
-        AnyType::Object(_) => "object",
-        AnyType::Array(_) => "array",
-        _ => "unknown",
+        ParameterSpec::Primitive { kind, .. } => type_token_name(kind),
+        ParameterSpec::Array { .. } => "array",
+        ParameterSpec::Group(_) => "object",
     }
 }
 

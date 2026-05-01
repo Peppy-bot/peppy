@@ -4,14 +4,10 @@ use peppylib::runtime::StandaloneConfig;
 fn main() -> Result<()> {
     // Parameters can also be defined directly in code:
     //
-    // use peppygen::parameters::{device::Device, video::{Video, VideoResolution}};
+    // use peppygen::parameters::video::{Video, VideoResolution};
     //
     // let params = Parameters {
-    //     device: Device {
-    //         physical: "/dev/video0".to_string(),
-    //         sim: "virtual_camera".to_string(),
-    //         priority: "high".to_string(),
-    //     },
+    //     device_path: "/dev/video0".to_string(),
     //     video: Video {
     //         frame_rate: 30,
     //         resolution: VideoResolution {

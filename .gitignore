@@ -28,6 +28,7 @@ target
 .astro
 .claude/settings.local.json
 .claude/plans
+.claude/scheduled_tasks.lock
 scripts/uv.lock
 
 # Peppy stuff, anywhere

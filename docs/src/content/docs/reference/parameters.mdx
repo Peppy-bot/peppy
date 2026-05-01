@@ -1,0 +1,172 @@
+---
+title: Parameters
+description: Reference for the node parameter schema syntax declared in peppy.json5
+sidebar:
+  order: 3
+---
+
+The `parameters` block inside `execution` declares the schema of arguments a node accepts at runtime. Each entry is a parameter name mapped to a typed declaration.
+
+```json5
+execution: {
+  language: "rust",
+  parameters: {
+    name: "string",
+    fps:  "u16"
+  }
+}
+```
+
+For an introductory walkthrough see the [Node parameters guide](/guides/parameters/). This page is the reference for the schema syntax itself.
+
+---
+
+## Primitive types
+
+Each leaf parameter declares a primitive type. The shorthand form is a bare type token:
+
+```json5
+parameters: {
+  fps: "u16"
+}
+```
+
+The available type tokens (and their language mappings) are documented in [Message Format → Primitive types](/reference/message_format/#primitive-types). Note that `bytes` and `time` cannot have a `$default` (see [Default values](#default-values) below).
+
+---
+
+## Long-form primitive
+
+The long form is an object with `$type` and optionally `$default`:
+
+```json5
+parameters: {
+  fps: { $type: "u16", $default: 30 }
+}
+```
+
+| Field      | Required | Description                                                  |
+|------------|----------|--------------------------------------------------------------|
+| `$type`    | Yes      | A primitive type token (same set as message formats)         |
+| `$default` | No       | A value used when the runtime omits this parameter           |
+
+The shorthand `"u16"` is equivalent to `{ $type: "u16" }` with no default.
+
+---
+
+## Default values
+
+A primitive parameter can declare a `$default` that the runtime uses when the launcher omits the value.
+
+```json5
+parameters: {
+  device: {
+    path: { $type: "string", $default: "/dev/video0" },
+    serial: "string"   // still required (varies per unit)
+  },
+  frame_rate: { $type: "u16", $default: 30 }
+}
+```
+
+### Parse-time validation
+
+`$default` is type- and range-checked when `peppy.json5` is loaded, so typos and out-of-range values surface immediately rather than at runtime:
+
+| Declaration                                  | Result                                                          |
+|----------------------------------------------|-----------------------------------------------------------------|
+| `{ $type: "u8", $default: 300 }`             | Rejected: `300` is outside `u8` range `[0, 255]`                |
+| `{ $type: "u16", $default: "thirty" }`       | Rejected: string not assignable to `u16`                        |
+| `{ $type: "u32", $default: -1 }`             | Rejected: negative value for unsigned type                      |
+| `{ width: "u16", $default: 5 }`              | Rejected: `$default` not allowed on a parameter group           |
+| `{ $type: "string", $optional: true }`       | Rejected: `$optional` is for message formats, not parameters    |
+| `{ $type: "bytes", $default: ... }`          | Rejected: `$default` not supported for `bytes`/`time`           |
+
+### Group fill-in
+
+`$default` is allowed only on primitives. If every leaf reachable from a group has a default, the group itself can be omitted at runtime and the entire subtree will be filled in. The same applies to partially supplied groups: any missing child whose spec declares a `$default` is filled in, while children declared without a default still produce a `MissingParameters` error naming the specific leaf path (e.g. `device.serial`).
+
+For example, given this schema:
+
+```json5
+parameters: {
+  device: {
+    path:   { $type: "string", $default: "/dev/video0" },
+    serial: "string"
+  },
+  video: {
+    frame_rate: { $type: "u16", $default: 30 },
+    encoding:   "string"
+  }
+}
+```
+
+A launcher that supplies only the required fields:
+
+```json5
+arguments: {
+  device: { serial: "0001A2B3" },
+  video:  { encoding: "yuyv" }
+}
+```
+
+Reaches the spawned node as a complete arg set with defaults filled in:
+
+```json5
+{
+  device: { path: "/dev/video0", serial: "0001A2B3" },
+  video:  { frame_rate: 30, encoding: "yuyv" }
+}
+```
+
+:::note
+`$default` is for **node parameters** only. The similar-looking `$optional` modifier is for [interface message formats](/reference/message_format/#optional-modifier) and is **not** valid on parameters; they are different concepts.
+:::
+
+---
+
+## Groups
+
+Nest parameters by writing a naked object:
+
+```json5
+parameters: {
+  video: {
+    width:  "u16",
+    height: "u16"
+  }
+}
+```
+
+Groups can also be written with an explicit `$type: "object"`, which is equivalent:
+
+```json5
+parameters: {
+  video: {
+    $type: "object",
+    width:  "u16",
+    height: "u16"
+  }
+}
+```
+
+Both forms generate the same nested struct in Rust and dataclass in Python. Groups can nest arbitrarily deep, and every leaf inside is reachable by a dot-path (e.g. `video.width`).
+
+---
+
+## Arrays
+
+A parameter can declare an array of items:
+
+```json5
+parameters: {
+  flags: { $type: "array", $items: "string" }
+}
+```
+
+| Field      | Required | Description                                                |
+|------------|----------|------------------------------------------------------------|
+| `$type`    | Yes      | Must be `"array"`                                          |
+| `$items`   | Yes      | A primitive type or a nested schema for each element       |
+| `$length`  | No       | Fixed number of elements; omit for variable-length arrays  |
+
+Arrays cannot have `$default`. Generated code for array parameters is not yet emitted by the Rust and Python generators, so declare arrays only if your node consumes them via a custom path.

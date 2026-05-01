@@ -1,4 +1,4 @@
-use config::AnyType;
+use config::{DefaultValue, ParameterSpec, type_token_name};
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -361,123 +361,90 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
         let _ = writeln!(out);
         let _ = writeln!(out, "Parameters");
         let _ = writeln!(out, "{}", "-".repeat(50));
-        for (key, value) in &config.execution.parameters {
-            write_any_type(out, key, value, 1);
+        for (key, spec) in &config.execution.parameters {
+            write_parameter_spec(out, key, spec, 1);
         }
     }
 
     let _ = writeln!(out);
 }
 
-/// Render a primitive/leaf `AnyType` (or an empty container) as a single
-/// inline string. Used for same-line key/value output and for arrays whose
-/// elements are all primitives.
-fn format_any_type_inline(value: &AnyType) -> String {
-    match value {
-        AnyType::Null => "null".to_string(),
-        AnyType::Bool(b) => b.to_string(),
-        AnyType::String(s) => format!("\"{}\"", s),
-        AnyType::Int(i) => i.to_string(),
-        AnyType::UInt(u) => u.to_string(),
-        AnyType::Float(f) => f.to_string(),
-        AnyType::Array(arr) => {
-            let items: Vec<String> = arr.iter().map(format_any_type_inline).collect();
-            format!("[{}]", items.join(", "))
+/// Render a parameter declaration: a primitive shows its type and optional
+/// `$default`; a group shows its name and recurses on its leaves; an array
+/// shows its item type and optional fixed length.
+fn write_parameter_spec(out: &mut String, key: &str, spec: &ParameterSpec, indent: usize) {
+    use std::fmt::Write as _;
+    let pad = "  ".repeat(indent);
+    match spec {
+        ParameterSpec::Primitive { kind, default } => {
+            let type_name = type_token_name(kind);
+            match default {
+                Some(d) => {
+                    let _ = writeln!(
+                        out,
+                        "{}{}: {} = {}",
+                        pad,
+                        key,
+                        type_name,
+                        format_default_value_inline(d)
+                    );
+                }
+                None => {
+                    let _ = writeln!(out, "{}{}: {}", pad, key, type_name);
+                }
+            }
         }
-        AnyType::Object(obj) => {
-            let items: Vec<String> = obj
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, format_any_type_inline(v)))
-                .collect();
-            format!("{{{}}}", items.join(", "))
+        ParameterSpec::Array { items, length } => {
+            let item_type = describe_parameter_spec_inline(items);
+            match length {
+                Some(l) => {
+                    let _ = writeln!(out, "{}{}: array[{}; {}]", pad, key, item_type, l);
+                }
+                None => {
+                    let _ = writeln!(out, "{}{}: array[{}]", pad, key, item_type);
+                }
+            }
+        }
+        ParameterSpec::Group(map) => {
+            let _ = writeln!(out, "{}{}:", pad, key);
+            for (child_key, child_spec) in map {
+                write_parameter_spec(out, child_key, child_spec, indent + 1);
+            }
         }
     }
 }
 
-/// True when every element of `arr` is a primitive (and not a nested
-/// container). Primitive-only arrays stay inline for readability.
-fn is_primitive_array(arr: &[AnyType]) -> bool {
-    arr.iter()
-        .all(|v| !matches!(v, AnyType::Array(_) | AnyType::Object(_),))
+/// One-line description used for array `$items`: just the type, no key.
+fn describe_parameter_spec_inline(spec: &ParameterSpec) -> String {
+    match spec {
+        ParameterSpec::Primitive { kind, .. } => type_token_name(kind).to_string(),
+        ParameterSpec::Array { items, length } => {
+            let inner = describe_parameter_spec_inline(items);
+            match length {
+                Some(l) => format!("array[{inner}; {l}]"),
+                None => format!("array[{inner}]"),
+            }
+        }
+        ParameterSpec::Group(_) => "object".to_string(),
+    }
 }
 
-/// Recursively render `value` under `key` into `out` using a YAML-ish
-/// indented tree layout. `indent` is measured in 2-space units.
-fn write_any_type(out: &mut String, key: &str, value: &AnyType, indent: usize) {
-    use std::fmt::Write as _;
-    let pad = "  ".repeat(indent);
-    match value {
-        // Objects expand onto multiple lines unless empty.
-        AnyType::Object(obj) if !obj.is_empty() => {
-            let _ = writeln!(out, "{}{}:", pad, key);
-            for (child_key, child_value) in obj {
-                write_any_type(out, child_key, child_value, indent + 1);
-            }
-        }
-        // Arrays of objects/arrays expand onto multiple lines with `- ` bullets.
-        AnyType::Array(arr) if !arr.is_empty() && !is_primitive_array(arr) => {
-            let _ = writeln!(out, "{}{}:", pad, key);
-            let bullet_pad = "  ".repeat(indent + 1);
-            for item in arr {
-                match item {
-                    AnyType::Object(obj) if !obj.is_empty() => {
-                        // First field sits on the `- ` line; the rest align
-                        // underneath at the same column.
-                        let mut first = true;
-                        for (child_key, child_value) in obj {
-                            if first {
-                                first = false;
-                                match child_value {
-                                    AnyType::Object(_) | AnyType::Array(_) => {
-                                        let _ = writeln!(out, "{}- {}:", bullet_pad, child_key);
-                                        // Nested contents indent two more levels
-                                        // past the bullet (one for `- `, one for
-                                        // the child's own body).
-                                        match child_value {
-                                            AnyType::Object(inner) => {
-                                                for (k, v) in inner {
-                                                    write_any_type(out, k, v, indent + 3);
-                                                }
-                                            }
-                                            AnyType::Array(_) => {
-                                                // Recurse via a synthetic key — rare
-                                                // enough that we keep it simple.
-                                                write_any_type(
-                                                    out,
-                                                    child_key,
-                                                    child_value,
-                                                    indent + 2,
-                                                );
-                                            }
-                                            _ => unreachable!(),
-                                        }
-                                    }
-                                    _ => {
-                                        let _ = writeln!(
-                                            out,
-                                            "{}- {}: {}",
-                                            bullet_pad,
-                                            child_key,
-                                            format_any_type_inline(child_value)
-                                        );
-                                    }
-                                }
-                            } else {
-                                write_any_type(out, child_key, child_value, indent + 2);
-                            }
-                        }
-                    }
-                    _ => {
-                        let _ = writeln!(out, "{}- {}", bullet_pad, format_any_type_inline(item));
-                    }
-                }
-            }
-        }
-        // Everything else (primitives, empty containers, primitive-only arrays)
-        // stays on a single line.
-        _ => {
-            let _ = writeln!(out, "{}{}: {}", pad, key, format_any_type_inline(value));
-        }
+fn format_default_value_inline(d: &DefaultValue) -> String {
+    match d {
+        DefaultValue::Bool(b) => b.to_string(),
+        // Use serde_json to escape quotes, backslashes, control chars, etc.
+        // so the rendered output is a valid quoted string for any input.
+        DefaultValue::String(s) => serde_json::to_string(s).unwrap_or_else(|_| {
+            format!(
+                "\"{}\"",
+                s.replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\n', "\\n")
+            )
+        }),
+        DefaultValue::Int(i) => i.to_string(),
+        DefaultValue::UInt(u) => u.to_string(),
+        DefaultValue::Float(f) => f.to_string(),
     }
 }
 
@@ -662,46 +629,41 @@ mod tests {
         let mut out = String::new();
         format_node_info(&mut out, &response);
 
-        // Primitive parameters still render inline.
+        // Primitive parameters render as `name: type`.
         assert!(
-            out.contains("  device_path: \"string\""),
+            out.contains("  device_path: string"),
             "primitive parameter missing:\n{out}"
         );
 
-        // Nested object parameters must NOT render as an inline `{...}` blob.
+        // Parent group renders as a bare key with its children on subsequent lines.
         assert!(
-            !out.contains("video: {"),
-            "nested parameter should not be rendered inline:\n{out}"
-        );
-
-        // Parent object renders as a bare key with its children on subsequent lines.
-        assert!(
-            out.contains("  video:\n    camera_encoding: \"string\""),
+            out.contains("  video:\n    camera_encoding: string"),
             "nested parameter not rendered as indented tree:\n{out}"
         );
         assert!(
-            out.contains("    frame_rate: \"u16\""),
+            out.contains("    frame_rate: u16"),
             "second-level child missing:\n{out}"
         );
         // Deeply nested (resolution) indented one more level.
         assert!(
-            out.contains("    resolution:\n      height: \"u32\""),
+            out.contains("    resolution:\n      height: u32"),
             "third-level child missing:\n{out}"
         );
         assert!(
-            out.contains("      width: \"u32\""),
+            out.contains("      width: u32"),
             "third-level child missing:\n{out}"
         );
     }
 
     #[test]
-    fn print_node_info_renders_primitive_array_parameter_inline() {
+    fn print_node_info_renders_primitive_with_default() {
         let response = sample_response_with_execution(
             r#"{
                 language: "rust",
                 run_cmd: ["sleep", "10"],
                 parameters: {
-                    tags: ["a", "b", "c"],
+                    device_path: { $type: "string", $default: "/dev/video0" },
+                    frame_rate: { $type: "u16", $default: 30 },
                 }
             }"#,
         );
@@ -710,8 +672,56 @@ mod tests {
         format_node_info(&mut out, &response);
 
         assert!(
-            out.contains("  tags: [\"a\", \"b\", \"c\"]"),
-            "primitive array should stay inline:\n{out}"
+            out.contains("  device_path: string = \"/dev/video0\""),
+            "primitive with string default missing:\n{out}"
+        );
+        assert!(
+            out.contains("  frame_rate: u16 = 30"),
+            "primitive with int default missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_default_value_inline_escapes_special_characters() {
+        let cases = [
+            (DefaultValue::String("plain".into()), r#""plain""#),
+            (
+                DefaultValue::String("with\"quote".into()),
+                r#""with\"quote""#,
+            ),
+            (
+                DefaultValue::String("back\\slash".into()),
+                r#""back\\slash""#,
+            ),
+            (
+                DefaultValue::String("line\nbreak".into()),
+                r#""line\nbreak""#,
+            ),
+        ];
+        for (input, expected) in cases {
+            let actual = format_default_value_inline(&input);
+            assert_eq!(actual, expected, "input was {input:?}");
+        }
+    }
+
+    #[test]
+    fn print_node_info_renders_array_parameter_with_item_type() {
+        let response = sample_response_with_execution(
+            r#"{
+                language: "rust",
+                run_cmd: ["sleep", "10"],
+                parameters: {
+                    tags: { $type: "array", $items: "string" },
+                }
+            }"#,
+        );
+
+        let mut out = String::new();
+        format_node_info(&mut out, &response);
+
+        assert!(
+            out.contains("  tags: array[string]"),
+            "array parameter should render with item type:\n{out}"
         );
     }
 }
