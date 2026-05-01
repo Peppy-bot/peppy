@@ -449,8 +449,18 @@ fn parse_array_spec(map: BTreeMap<String, AnyType>, path: &str) -> Result<Parame
             }
             "$length" => {
                 let len = match value {
-                    AnyType::UInt(u) => u as usize,
-                    AnyType::Int(i) if i >= 0 => i as usize,
+                    AnyType::UInt(u) => usize::try_from(u).map_err(|_| {
+                        format!(
+                            "at `{}`: `$length` value {u} does not fit in usize on this target",
+                            display_path(path)
+                        )
+                    })?,
+                    AnyType::Int(i) if i >= 0 => usize::try_from(i).map_err(|_| {
+                        format!(
+                            "at `{}`: `$length` value {i} does not fit in usize on this target",
+                            display_path(path)
+                        )
+                    })?,
                     other => {
                         return Err(format!(
                             "at `{}`: `$length` must be a non-negative integer, got {}",
@@ -770,35 +780,39 @@ impl RawNodeArguments {
 /// leaves (no `$default`) that remain missing are appended to `missing` as
 /// dot-paths so the caller can surface a [`NodeArgumentsError::MissingParameters`].
 ///
-/// No-ops when the spec is not a [`ParameterSpec::Group`] or the value is not
-/// an [`AnyType::Object`]; type-mismatch reporting is left to
-/// [`validate_value_against_spec`].
+/// No-ops when the spec/value pair isn't `Group`/`Object` or `Array`/`Array`;
+/// type-mismatch reporting is left to [`validate_value_against_spec`].
 fn merge_defaults(
     value: &mut AnyType,
     spec: &ParameterSpec,
     path: &str,
     missing: &mut Vec<String>,
 ) {
-    let ParameterSpec::Group(fields) = spec else {
-        return;
-    };
-    let AnyType::Object(map) = value else {
-        return;
-    };
-    for (key, sub_spec) in fields {
-        let sub_path = if path.is_empty() {
-            key.clone()
-        } else {
-            format!("{path}.{key}")
-        };
-        match map.get_mut(key) {
-            Some(child) => merge_defaults(child, sub_spec, &sub_path, missing),
-            None => {
-                if let Some(synthesized) = sub_spec.synthesize_default(&sub_path, missing) {
-                    map.insert(key.clone(), synthesized);
+    match (spec, value) {
+        (ParameterSpec::Group(fields), AnyType::Object(map)) => {
+            for (key, sub_spec) in fields {
+                let sub_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                match map.get_mut(key) {
+                    Some(child) => merge_defaults(child, sub_spec, &sub_path, missing),
+                    None => {
+                        if let Some(synthesized) = sub_spec.synthesize_default(&sub_path, missing) {
+                            map.insert(key.clone(), synthesized);
+                        }
+                    }
                 }
             }
         }
+        (ParameterSpec::Array { items, .. }, AnyType::Array(arr)) => {
+            for (i, elem) in arr.iter_mut().enumerate() {
+                let sub_path = format!("{path}[{i}]");
+                merge_defaults(elem, items, &sub_path, missing);
+            }
+        }
+        _ => {}
     }
 }
 
