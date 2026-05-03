@@ -135,6 +135,53 @@ Two constraints apply to this source shape:
 
 If the node you want to add lives in a repository that is **not** in `repositories.json5`, keep using the full git URL or HTTP archive form shown in [Sharing nodes](/guides/sharing_nodes/).
 
+## Syncing against repositories
+
+`peppy node sync` regenerates a node's interface code (peppygen) from its `peppy.json5`. By default, every dependency the node declares must already be in the [node stack](/guides/node_stack/) — otherwise the sync fails with an "X does not exist in the stack" error.
+
+Pass `-r` (or `--include-repositories`) to let peppy fall back to the repository cache when a dependency is missing from the stack:
+
+```sh
+peppy node sync -r
+```
+
+The lookup order is:
+
+1. **Node stack** — wins whenever the dependency is already in the stack. Stack-resolved deps are listed under `Synchronized from node stack:` in the command output.
+2. **Repository cache** (`~/.peppy/cache/packages.json5`) — consulted only when the stack does not have the dependency. Repo-resolved deps are listed under `Synchronized from repositories:`, each tagged with its source kind (`fs`, `git`, or `http`).
+
+Repository-resolved git dependencies reuse the same persistent checkout cache as `peppy node add`, so the same repository is never cloned more than once during a single sync run.
+
+Example output when both layers contribute:
+
+```text
+Syncing node from /workspace/my_robot_brain via daemon 'core-node-...'
+Synced node interfaces at /workspace/my_robot_brain
+Synchronized from node stack:
+  - already_added_dep:0.1.0
+Synchronized from repositories:
+  - uvc_camera:0.1.0 (git)
+  - lidar_sensor:1.0.0 (fs)
+```
+
+A dependency that is missing from **both** the node stack and every configured repository is a hard failure:
+
+```text
+dep `gps_module:2.0.0` not found in node stack or repository cache; run `peppy repo refresh`
+```
+
+### Tip: register your local workspace as a repository
+
+When a node depends on another node you maintain locally, registering your workspace directory as a `fs` repository removes the need to `peppy node add` every dependency just to regenerate peppygen for a downstream node:
+
+```sh
+peppy repo add ~/code/my-nodes
+peppy repo refresh
+peppy node sync -r       # picks up uvc_camera, lidar_sensor, ... from ~/code/my-nodes
+```
+
+Particularly useful during the early phase of a multi-node project, when the dependency graph is still in flux and you don't want to re-add nodes after every interface change.
+
 ## Directory pruning
 
 When scanning local and git repositories, peppy automatically skips the following directories:

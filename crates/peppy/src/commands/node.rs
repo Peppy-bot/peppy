@@ -184,11 +184,14 @@ pub enum NodeCommands {
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
     Sync {
         /// Optional path to the node directory. Defaults to the current directory.
-        /// When combined with `--all`, this is the root of the recursive search.
         path: Option<PathBuf>,
-        /// Recursively find every `peppy.json5` under `path` and sync each one.
-        #[arg(short = 'a', long)]
-        all: bool,
+        /// Resolve dependencies missing from the node stack by fetching them
+        /// from the configured repositories (`~/.peppy/cache/packages.json5`).
+        /// Stack lookups still win; the repo cache is consulted only as a
+        /// fallback. Output also reports which deps came from the stack vs.
+        /// the repositories.
+        #[arg(short = 'r', long = "include-repositories")]
+        include_repositories: bool,
     },
     /// Runs an instance from a node added to the node stack
     ///
@@ -349,13 +352,12 @@ impl Command for NodeCommand {
                     },
                 )
             }
-            NodeCommands::Sync { path, all } => {
-                if all {
-                    sync::sync_all_nodes(ctx, path)
-                } else {
-                    info!("Syncing node interfaces...");
-                    sync::sync_node(ctx, path)
-                }
+            NodeCommands::Sync {
+                path,
+                include_repositories,
+            } => {
+                info!("Syncing node interfaces...");
+                sync::sync_node(ctx, path, include_repositories)
             }
             NodeCommands::Run {
                 node_ref,

@@ -23,6 +23,7 @@ pub use node::{
     init::NodeInitResponse, remove::NodeRemoveRequest, remove::NodeRemoveResponse,
     run::NodeRunFeedback, run::NodeRunGoal, run::NodeRunGoalResponse, run::NodeRunResult,
     stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest, sync::NodeSyncResponse,
+    sync::RepoResolvedEntry,
 };
 pub use ping::{PingRequest, PingResponse};
 pub use repo::{

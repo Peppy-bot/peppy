@@ -1,15 +1,17 @@
 use crate::Result;
 use crate::names;
+use crate::services::node::cache as node_cache;
+use crate::services::repo::cache as repo_cache;
 use config::consts::PeppyDirs;
 use config::node::{NodeConfigParser, VariantConfigParser};
 use config::source::DeploymentSource;
-use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse};
+use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse, RepoResolvedEntry};
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -186,58 +188,59 @@ async fn handle_node_sync_request_inner(
         .map_err(Into::into);
     }
 
-    // Parse any local peer node configs supplied by the caller (`node sync -a`).
-    // These are checked first when resolving dependencies, before falling back
-    // to the persistent node stack. The peer map lives only for this request.
-    let mut local_peers: std::collections::HashMap<(String, String), config::node::NodeConfig> =
-        std::collections::HashMap::new();
-    for peer_dir in &request.local_peers {
-        let peer_config_path = peer_dir.join(config::consts::NODE_CONFIG_FILE);
-        if !peer_config_path.is_file() {
+    // Optional repository fallback. When `include_repositories` is set, walk
+    // the dependency tree, fetch every dep absent from the node stack through
+    // the repository cache (FS / git / HTTP), and stash the resolved configs
+    // so the resolver closure can use them as a second tier. Stack lookups
+    // still win.
+    let node_config_path = request.node_root_dir.join(config::consts::NODE_CONFIG_FILE);
+    let (repo_resolved, repo_resolved_provenance): (
+        HashMap<(String, String), config::node::NodeConfig>,
+        Vec<RepoResolvedEntry>,
+    ) = if request.include_repositories {
+        if !node_config_path.exists() {
             return NodeSyncResponse::failure(format!(
-                "Local peer config does not exist: {}",
-                peer_config_path.display()
+                "Node config file does not exist: {}",
+                node_config_path.display()
             ))
             .encode()
             .map_err(Into::into);
         }
-        match NodeConfigParser::from_path(&peer_config_path) {
-            Ok(parsed) => {
-                let peer_name = parsed.manifest_name().to_owned();
-                let peer_tag = parsed.manifest_tag().to_owned();
-                // `into_resolved_or_default` keeps the manifest+interfaces
-                // intact while substituting a default execution for
-                // variant-only roots — execution is irrelevant for dependency
-                // resolution since only `interfaces` is read downstream.
-                let cfg = parsed.into_resolved_or_default();
-                local_peers.insert((peer_name, peer_tag), cfg);
-            }
+        let parsed = match NodeConfigParser::from_path(&node_config_path) {
+            Ok(p) => p,
             Err(e) => {
-                return NodeSyncResponse::failure(format!(
-                    "Failed to parse local peer config at {}: {}",
-                    peer_config_path.display(),
-                    e
-                ))
-                .encode()
-                .map_err(Into::into);
+                return NodeSyncResponse::failure(format!("Failed to parse node config: {}", e))
+                    .encode()
+                    .map_err(Into::into);
+            }
+        };
+        match materialize_repo_deps(parsed.manifest(), node_stack, &peppy_dirs).await {
+            Ok(pair) => pair,
+            Err(reason) => {
+                return NodeSyncResponse::failure(reason)
+                    .encode()
+                    .map_err(Into::into);
             }
         }
-    }
+    } else {
+        (HashMap::new(), Vec::new())
+    };
 
-    // Resolver closure: peers first, then the persistent node stack.
+    // Resolver closure: node stack first, then any repository-materialized
+    // deps. Stack always wins — the repo cache is a fallback opt-in via
+    // the request's `include_repositories` flag.
     let resolve_dep = |name: &str, tag: &str| -> Option<config::node::NodeConfig> {
-        local_peers
-            .get(&(name.to_owned(), tag.to_owned()))
-            .cloned()
+        node_stack
+            .find(name, tag)
+            .map(|e| e.read().config().clone())
             .or_else(|| {
-                node_stack
-                    .find(name, tag)
-                    .map(|e| e.read().config().clone())
+                repo_resolved
+                    .get(&(name.to_owned(), tag.to_owned()))
+                    .cloned()
             })
     };
 
     // Validate dependencies before generation and collect consumed interfaces
-    let node_config_path = request.node_root_dir.join(config::consts::NODE_CONFIG_FILE);
     let (
         consumed_interfaces,
         language,
@@ -379,8 +382,33 @@ async fn handle_node_sync_request_inner(
     let NodeSyncRequest {
         node_root_dir,
         git_hash,
-        local_peers: _,
+        include_repositories: _,
     } = request;
+
+    // Provenance pre-pass: record every dep that resolves through the
+    // stack so the response can list them under "Synchronized from node
+    // stack:" in the CLI's verbose output. The closure above stays pure;
+    // doing this here also avoids surfacing repo-only resolved deps as
+    // "from stack" by accident.
+    let resolved_from_stack: Vec<String> = root_manifest
+        .depends_on
+        .as_ref()
+        .map(|d| {
+            let mut acc: Vec<String> = Vec::new();
+            let mut seen: HashSet<(String, String)> = HashSet::new();
+            for dep in &d.nodes {
+                let name = dep.name.as_str().to_owned();
+                let tag = dep.tag.clone();
+                if !seen.insert((name.clone(), tag.clone())) {
+                    continue;
+                }
+                if node_stack.find(&name, &tag).is_some() {
+                    acc.push(format!("{}:{}", name, tag));
+                }
+            }
+            acc
+        })
+        .unwrap_or_default();
 
     let node_root_dir_for_variants = node_root_dir.clone();
     let git_hash_for_variants = git_hash.clone();
@@ -598,7 +626,100 @@ async fn handle_node_sync_request_inner(
         }
     }
 
-    NodeSyncResponse::success().encode().map_err(Into::into)
+    NodeSyncResponse::success_with_provenance(resolved_from_stack, repo_resolved_provenance)
+        .encode()
+        .map_err(Into::into)
+}
+
+/// Walks `manifest.depends_on.nodes` and BFS-fetches every dependency
+/// missing from `node_stack` through the repository cache. Returns
+/// `(name, tag) -> NodeConfig` for every materialized dep along with a
+/// provenance vec for the response.
+///
+/// A dep that resolves through `node_stack` is skipped (the existing
+/// resolver tier handles it). A dep that resolves through neither the
+/// stack nor any configured repository is a hard failure: the returned
+/// `Err` becomes the request's `NodeSyncResponse::failure(...)` payload.
+async fn materialize_repo_deps(
+    manifest: &config::node::Manifest,
+    node_stack: &NodeStack,
+    peppy_dirs: &PeppyDirs,
+) -> std::result::Result<
+    (
+        HashMap<(String, String), config::node::NodeConfig>,
+        Vec<RepoResolvedEntry>,
+    ),
+    String,
+> {
+    let mut resolved: HashMap<(String, String), config::node::NodeConfig> = HashMap::new();
+    let mut provenance: Vec<RepoResolvedEntry> = Vec::new();
+
+    let Some(deps) = manifest.depends_on.as_ref() else {
+        return Ok((resolved, provenance));
+    };
+    if deps.nodes.is_empty() {
+        return Ok((resolved, provenance));
+    }
+
+    // Load the package cache once for the whole BFS so the `mtime`-keyed
+    // memo + checkout dedup can amortize across deps.
+    let (entries, cache_generation) = repo_cache::load_with_generation(peppy_dirs)
+        .map_err(|e| format!("failed to load packages cache: {e}"))?;
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut pending: Vec<(String, String)> = deps
+        .nodes
+        .iter()
+        .map(|n| (n.name.as_str().to_owned(), n.tag.clone()))
+        .collect();
+
+    while let Some((name, tag)) = pending.pop() {
+        if !seen.insert((name.clone(), tag.clone())) {
+            continue;
+        }
+        // Stack tier wins — skip materialization for anything already
+        // pushed onto the persistent NodeStack.
+        if node_stack.find(&name, &tag).is_some() {
+            continue;
+        }
+        let Some(entry) = repo_cache::lookup(&entries, &name, &tag) else {
+            return Err(format!(
+                "dep `{name}:{tag}` not found in node stack or repository cache; \
+                 run `peppy repo refresh`"
+            ));
+        };
+        let entry = entry.clone();
+        let source_kind = entry.source_type;
+        let (_root_dir, parsed) = node_cache::materialize_entry(
+            &entry,
+            peppy_dirs,
+            cache_generation,
+            node_cache::silent_feedback(),
+        )
+        .await
+        .map_err(|e| format!("failed to materialize {name}:{tag} from repo cache: {e}"))?;
+
+        // Push transitive deps onto the BFS queue, skipping anything we
+        // already plan to visit. Stack-tier shadowing happens at pop time.
+        if let Some(child_deps) = parsed.manifest().depends_on.as_ref() {
+            for child in &child_deps.nodes {
+                let key = (child.name.as_str().to_owned(), child.tag.clone());
+                if !seen.contains(&key) {
+                    pending.push(key);
+                }
+            }
+        }
+
+        let cfg = parsed.into_resolved_or_default();
+        resolved.insert((name.clone(), tag.clone()), cfg);
+        provenance.push(RepoResolvedEntry {
+            name,
+            tag,
+            source_kind,
+        });
+    }
+
+    Ok((resolved, provenance))
 }
 
 /// Builds a lookup from `local_id` → `(dep_name, dep_tag)` using the node's `depends_on.nodes`.

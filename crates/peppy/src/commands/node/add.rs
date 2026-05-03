@@ -125,7 +125,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     if sync {
         match &node_source {
             NodeSource::Fs(p) => {
-                super::sync::sync_node_async(ctx, Some(p.clone())).await?;
+                super::sync::sync_node_async(ctx, Some(p.clone()), false).await?;
             }
             _ => {
                 return Err(Error::ExecutionFailed(

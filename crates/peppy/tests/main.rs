@@ -9,7 +9,6 @@ mod node_run;
 mod node_runtime_config;
 mod node_stop;
 mod node_sync;
-mod node_sync_all_dependency_order;
 mod repo_add;
 mod repo_exclude;
 mod repo_list;

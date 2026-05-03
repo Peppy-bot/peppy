@@ -187,12 +187,12 @@ struct NodeGenerateRequest {
     nodeRootDir @0 :Text;
     # Git commit hash of the node being synced
     gitHash @1 :Text;
-    # Optional peer node root directories that should also be considered
-    # when resolving this node's dependencies. Used by `node sync -a` so the
-    # daemon can find sibling nodes that have not been added to the persistent
-    # node stack yet. The list is consumed only for this single request and
-    # never persisted.
-    localPeers @2 :List(Text);
+    # When true, dependencies missing from the persistent node stack are
+    # looked up in `~/.peppy/cache/packages.json5` and materialized through
+    # the existing FS / git / HTTP repository cache before peppygen
+    # generation proceeds. Resolution still prefers the node stack; the
+    # repository cache is consulted only as a fallback.
+    includeRepositories @2 :Bool;
 }
 
 struct NodeSyncResponse {
@@ -200,6 +200,19 @@ struct NodeSyncResponse {
     success @0 :Bool;
     # Error message if failed
     errorMessage @1 :Text;
+    # `name:tag` of every dependency the daemon resolved through the
+    # persistent node stack. Always populated on success; empty on failure.
+    resolvedFromStack @2 :List(Text);
+    # Every dependency the daemon resolved by fetching from the repository
+    # cache. Only populated when the request set `includeRepositories`.
+    resolvedFromRepositories @3 :List(RepoResolvedEntry);
+}
+
+struct RepoResolvedEntry {
+    name @0 :Text;
+    tag @1 :Text;
+    # "fs" | "git" | "http"
+    sourceKind @2 :Text;
 }
 
 struct NodeRunGoal {
