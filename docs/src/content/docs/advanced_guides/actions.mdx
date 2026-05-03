@@ -235,7 +235,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
 ```
 
 :::note
-By default, the `node add` and `node sync` commands require the target node to already be in the node stack so the proper interfaces can be generated. Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back to the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) for dependencies that aren't in the stack.
+By default, the `node add` and `node sync` commands require every dependency node to already be in the node stack so the proper interfaces can be generated. When a dependency node is not present in the stack, pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back to the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) for dependencies that aren't in the stack.
 :::
 
 ### Firing a goal

@@ -211,7 +211,7 @@ struct NodeSyncResponse {
 struct RepoResolvedEntry {
     name @0 :Text;
     tag @1 :Text;
-    # "fs" | "git" | "http"
+    # "fs" | "git" | "url"
     sourceKind @2 :Text;
 }
 

@@ -194,10 +194,8 @@ async fn handle_node_sync_request_inner(
     // so the resolver closure can use them as a second tier. Stack lookups
     // still win.
     let node_config_path = request.node_root_dir.join(config::consts::NODE_CONFIG_FILE);
-    let (repo_resolved, repo_resolved_provenance): (
-        HashMap<(String, String), config::node::NodeConfig>,
-        Vec<RepoResolvedEntry>,
-    ) = if request.include_repositories {
+    let (repo_resolved, repo_resolved_provenance, bfs_stack_hits) = if request.include_repositories
+    {
         if !node_config_path.exists() {
             return NodeSyncResponse::failure(format!(
                 "Node config file does not exist: {}",
@@ -215,7 +213,7 @@ async fn handle_node_sync_request_inner(
             }
         };
         match materialize_repo_deps(parsed.manifest(), node_stack, &peppy_dirs).await {
-            Ok(pair) => pair,
+            Ok((resolved, provenance, stack_hits)) => (resolved, provenance, Some(stack_hits)),
             Err(reason) => {
                 return NodeSyncResponse::failure(reason)
                     .encode()
@@ -223,7 +221,7 @@ async fn handle_node_sync_request_inner(
             }
         }
     } else {
-        (HashMap::new(), Vec::new())
+        (HashMap::new(), Vec::new(), None)
     };
 
     // Resolver closure: node stack first, then any repository-materialized
@@ -385,30 +383,35 @@ async fn handle_node_sync_request_inner(
         include_repositories: _,
     } = request;
 
-    // Provenance pre-pass: record every dep that resolves through the
-    // stack so the response can list them under "Synchronized from node
-    // stack:" in the CLI's verbose output. The closure above stays pure;
-    // doing this here also avoids surfacing repo-only resolved deps as
-    // "from stack" by accident.
-    let resolved_from_stack: Vec<String> = root_manifest
-        .depends_on
-        .as_ref()
-        .map(|d| {
-            let mut acc: Vec<String> = Vec::new();
-            let mut seen: HashSet<(String, String)> = HashSet::new();
-            for dep in &d.nodes {
-                let name = dep.name.as_str().to_owned();
-                let tag = dep.tag.clone();
-                if !seen.insert((name.clone(), tag.clone())) {
-                    continue;
+    // Provenance: record every dep that resolves through the stack so the
+    // response can list them under "Synchronized from node stack:" in the
+    // CLI's verbose output. When `include_repositories` is on, the BFS in
+    // `materialize_repo_deps` already surfaces direct + transitive stack
+    // hits (transitive ones reached through repo-cache-materialized
+    // parents); we use that result directly. When the flag is off we
+    // can't walk repo-cache nodes, so we fall back to a direct-deps pass
+    // over the root manifest.
+    let resolved_from_stack: Vec<String> = bfs_stack_hits.unwrap_or_else(|| {
+        root_manifest
+            .depends_on
+            .as_ref()
+            .map(|d| {
+                let mut acc: Vec<String> = Vec::new();
+                let mut seen: HashSet<(String, String)> = HashSet::new();
+                for dep in &d.nodes {
+                    let name = dep.name.as_str().to_owned();
+                    let tag = dep.tag.clone();
+                    if !seen.insert((name.clone(), tag.clone())) {
+                        continue;
+                    }
+                    if node_stack.find(&name, &tag).is_some() {
+                        acc.push(format!("{}:{}", name, tag));
+                    }
                 }
-                if node_stack.find(&name, &tag).is_some() {
-                    acc.push(format!("{}:{}", name, tag));
-                }
-            }
-            acc
-        })
-        .unwrap_or_default();
+                acc
+            })
+            .unwrap_or_default()
+    });
 
     let node_root_dir_for_variants = node_root_dir.clone();
     let git_hash_for_variants = git_hash.clone();
@@ -633,13 +636,18 @@ async fn handle_node_sync_request_inner(
 
 /// Walks `manifest.depends_on.nodes` and BFS-fetches every dependency
 /// missing from `node_stack` through the repository cache. Returns
-/// `(name, tag) -> NodeConfig` for every materialized dep along with a
-/// provenance vec for the response.
+/// `(name, tag) -> NodeConfig` for every materialized dep, a provenance
+/// vec for repo-resolved entries, and a `name:tag` list of every dep
+/// the BFS found in the node stack (direct or transitive via a
+/// repo-cache-materialized parent) so the response can surface them
+/// under "Synchronized from node stack:".
 ///
-/// A dep that resolves through `node_stack` is skipped (the existing
-/// resolver tier handles it). A dep that resolves through neither the
-/// stack nor any configured repository is a hard failure: the returned
-/// `Err` becomes the request's `NodeSyncResponse::failure(...)` payload.
+/// A dep that resolves through `node_stack` is recorded as a stack hit
+/// and BFS expansion stops there (the existing resolver tier handles
+/// transitive walking via stack entries). A dep that resolves through
+/// neither the stack nor any configured repository is a hard failure:
+/// the returned `Err` becomes the request's `NodeSyncResponse::failure(...)`
+/// payload.
 async fn materialize_repo_deps(
     manifest: &config::node::Manifest,
     node_stack: &NodeStack,
@@ -648,17 +656,19 @@ async fn materialize_repo_deps(
     (
         HashMap<(String, String), config::node::NodeConfig>,
         Vec<RepoResolvedEntry>,
+        Vec<String>,
     ),
     String,
 > {
     let mut resolved: HashMap<(String, String), config::node::NodeConfig> = HashMap::new();
     let mut provenance: Vec<RepoResolvedEntry> = Vec::new();
+    let mut stack_hits: Vec<String> = Vec::new();
 
     let Some(deps) = manifest.depends_on.as_ref() else {
-        return Ok((resolved, provenance));
+        return Ok((resolved, provenance, stack_hits));
     };
     if deps.nodes.is_empty() {
-        return Ok((resolved, provenance));
+        return Ok((resolved, provenance, stack_hits));
     }
 
     // Load the package cache once for the whole BFS so the `mtime`-keyed
@@ -677,9 +687,11 @@ async fn materialize_repo_deps(
         if !seen.insert((name.clone(), tag.clone())) {
             continue;
         }
-        // Stack tier wins — skip materialization for anything already
-        // pushed onto the persistent NodeStack.
+        // Stack tier wins — record the hit (de-duped via `seen` above)
+        // and skip materialization for anything already pushed onto the
+        // persistent NodeStack.
         if node_stack.find(&name, &tag).is_some() {
+            stack_hits.push(format!("{}:{}", name, tag));
             continue;
         }
         let Some(entry) = repo_cache::lookup(&entries, &name, &tag) else {
@@ -719,7 +731,7 @@ async fn materialize_repo_deps(
         });
     }
 
-    Ok((resolved, provenance))
+    Ok((resolved, provenance, stack_hits))
 }
 
 /// Builds a lookup from `local_id` → `(dep_name, dep_tag)` using the node's `depends_on.nodes`.
