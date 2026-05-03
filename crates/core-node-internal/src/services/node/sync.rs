@@ -671,10 +671,12 @@ async fn materialize_repo_deps(
         return Ok((resolved, provenance, stack_hits));
     }
 
-    // Load the package cache once for the whole BFS so the `mtime`-keyed
-    // memo + checkout dedup can amortize across deps.
-    let (entries, cache_generation) = repo_cache::load_with_generation(peppy_dirs)
-        .map_err(|e| format!("failed to load packages cache: {e}"))?;
+    // Lazy-load the package cache: defer the read until the first stack
+    // miss so a manifest fully covered by the NodeStack never touches
+    // packages.json5 (and a malformed cache can't fail a sync that
+    // wouldn't have used it). Loaded once for the whole BFS so the
+    // `mtime`-keyed memo + checkout dedup amortize across deps.
+    let mut cache: Option<(Vec<repo_cache::PackageEntry>, Option<std::time::SystemTime>)> = None;
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut pending: Vec<(String, String)> = deps
@@ -694,7 +696,14 @@ async fn materialize_repo_deps(
             stack_hits.push(format!("{}:{}", name, tag));
             continue;
         }
-        let Some(entry) = repo_cache::lookup(&entries, &name, &tag) else {
+        if cache.is_none() {
+            cache = Some(
+                repo_cache::load_with_generation(peppy_dirs)
+                    .map_err(|e| format!("failed to load packages cache: {e}"))?,
+            );
+        }
+        let (entries, cache_generation) = cache.as_ref().expect("cache loaded above");
+        let Some(entry) = repo_cache::lookup(entries, &name, &tag) else {
             return Err(format!(
                 "dep `{name}:{tag}` not found in node stack or repository cache; \
                  run `peppy repo refresh`"
@@ -705,7 +714,7 @@ async fn materialize_repo_deps(
         let (_root_dir, parsed) = node_cache::materialize_entry(
             &entry,
             peppy_dirs,
-            cache_generation,
+            *cache_generation,
             node_cache::silent_feedback(),
         )
         .await
