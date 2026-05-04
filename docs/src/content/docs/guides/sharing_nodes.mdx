@@ -111,3 +111,7 @@ We can see the video has been saved to a temporary folder. Go ahead and open it�
 In the same way, you can share your own nodes by hosting them in a Git repository and connect them to remote nodes.
 A node can also be pulled in the same way if it's in a `.tar.zst` archive.
 
+:::tip
+When you're iterating on a node that depends on a hub node — and you don't want to `peppy node add` the hub node first just to regenerate peppygen — run `peppy node sync -r` instead. The `--include-repositories` flag lets the daemon resolve missing dependencies through the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) directly.
+:::
+

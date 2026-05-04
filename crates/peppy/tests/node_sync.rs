@@ -112,7 +112,7 @@ async fn node_sync_rust_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Sync {
             path: None,
-            all: false,
+            include_repositories: false,
         },
     }
     .execute(&sync_ctx)
@@ -232,7 +232,7 @@ async fn node_sync_python_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Sync {
             path: None,
-            all: false,
+            include_repositories: false,
         },
     }
     .execute(&sync_ctx)
@@ -346,7 +346,7 @@ async fn node_sync_with_path_succeeds() {
     NodeCommand {
         command: NodeCommands::Sync {
             path: Some(PathBuf::from(node_name)),
-            all: false,
+            include_repositories: false,
         },
     }
     .execute(&sync_ctx)
@@ -381,16 +381,15 @@ async fn node_sync_with_path_succeeds() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_sync_all_succeeds_across_multiple_nodes() {
+async fn node_sync_with_include_repositories_prints_provenance() {
+    // Verifies the CLI accepts `peppy node sync -r` (the new include-
+    // repositories flag) and that the verbose two-section output reaches
+    // the captured logs when a dep is repository-resolved.
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
 
-    let workspace = tempfile::tempdir().expect("failed to create temp dir for workspace");
-    let workspace_path = workspace.path();
-
-    // Set up logging
     let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
@@ -399,154 +398,95 @@ async fn node_sync_all_succeeds_across_multiple_nodes() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    // Create three rust nodes at varying depths in the workspace:
-    //   <tmp>/node_a
-    //   <tmp>/subdir/node_b
-    //   <tmp>/deep/nested/node_c
-    let node_layouts: Vec<(PathBuf, &str)> = vec![
-        (workspace_path.to_path_buf(), "node_a"),
-        (workspace_path.join("subdir"), "node_b"),
-        (workspace_path.join("deep").join("nested"), "node_c"),
-    ];
-
-    for (parent_dir, node_name) in &node_layouts {
-        std::fs::create_dir_all(parent_dir).expect("create parent dir");
-        let init_ctx = Arc::new(
-            AppContext::with_messenger(parent_dir, Arc::clone(&shared_messenger))
-                .with_daemon_state_file(serve.daemon_state_path()),
-        );
-        NodeCommand {
-            command: NodeCommands::Init {
-                node_name: NodeName::new(*node_name).expect("valid node name"),
-                to_dir: None,
-                toolchain: Toolchain::Cargo,
-                with_container: false,
-            },
-        }
-        .execute(&init_ctx)
-        .expect("node init command should succeed");
-    }
-
-    // Drop a *valid* peppy.json5 under `target/` to verify pruning — the
-    // walker must ignore it. A malformed config wouldn't actually exercise
-    // pruning, since `find_root_node_dirs` already swallows parse errors with
-    // a warning; only a valid root would be added to the sync set if pruning
-    // broke, causing the assertions below to fail.
-    let pruned_dir = workspace_path.join("target").join("ghost");
-    std::fs::create_dir_all(&pruned_dir).expect("create pruned dir");
+    // Camera node — written into a temp dir and registered as an `fs`
+    // entry in the daemon's packages cache.
+    let camera_dir = tempfile::tempdir().expect("camera tempdir");
     std::fs::write(
-        pruned_dir.join("peppy.json5"),
+        camera_dir.path().join("peppy.json5"),
+        r#"{
+            schema_version: 1,
+            manifest: { name: "uvc_camera", tag: "0.1.0" },
+            interfaces: {
+                topics: {
+                    emits: [
+                        {
+                            name: "video_stream",
+                            qos_profile: "sensor_data",
+                            message_format: { encoding: "string" }
+                        }
+                    ],
+                    consumes: [],
+                },
+                services: { exposes: [] },
+                actions: { exposes: [] },
+            },
+            execution: { language: "rust", run_cmd: ["sleep", "10"] }
+        }"#,
+    )
+    .expect("write camera config");
+
+    // Seed the daemon's packages cache so the repo tier can find it.
+    let cache_dir = serve.temp_dir().join("cache");
+    std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+    let packages_json = serde_json::json!([{
+        "node_name": "uvc_camera",
+        "node_tag": "0.1.0",
+        "source_type": "fs",
+        "path": camera_dir.path().to_string_lossy(),
+    }]);
+    std::fs::write(
+        cache_dir.join("packages.json5"),
+        serde_json::to_string_pretty(&packages_json).unwrap(),
+    )
+    .expect("write packages.json5");
+
+    // Brain node consumes the camera's topic. Lives in its own temp dir
+    // so we can run `node sync` against it directly.
+    let brain_dir = tempfile::tempdir().expect("brain tempdir");
+    std::fs::write(
+        brain_dir.path().join("peppy.json5"),
         r#"{
             schema_version: 1,
             manifest: {
-                name: "ghost",
+                name: "my_robot_brain",
                 tag: "0.1.0",
+                depends_on: { nodes: [{ name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }] }
             },
-            execution: { language: "rust", run_cmd: ["./bin"] }
+            interfaces: {
+                topics: {
+                    emits: [],
+                    consumes: [{ local_node_id: "uvc_camera", name: "video_stream" }],
+                },
+                services: { exposes: [] },
+                actions: { exposes: [] },
+            },
+            execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#,
     )
-    .expect("write ghost config");
+    .expect("write brain config");
 
-    // Modify every node's peppy.json5 so the fingerprints will change.
-    let mut node_paths: Vec<PathBuf> = Vec::new();
-    let mut expected_fingerprints: Vec<String> = Vec::new();
-    for (parent_dir, node_name) in &node_layouts {
-        let node_path = parent_dir.join(node_name);
-        let peppy_json5_path = node_path.join("peppy.json5");
-        assert!(
-            peppy_json5_path.exists(),
-            "peppy.json5 should exist at {}",
-            peppy_json5_path.display()
-        );
-
-        let old_fingerprint = config::fingerprint::read_codegen_fingerprint(
-            &peppy_json5_path,
-            config::consts::PEPPYGEN_OUTPUT_PATH,
-        )
-        .expect("fingerprint should be readable");
-
-        add_emitted_topic(&peppy_json5_path);
-
-        let expected_fingerprint =
-            config::runtime::RuntimeConfig::generate_peppy_config_fingerprint(&peppy_json5_path)
-                .expect("peppy.json5 fingerprint should generate");
-        assert_ne!(
-            expected_fingerprint, old_fingerprint,
-            "fingerprint should change after modifying peppy.json5 for {}",
-            node_name
-        );
-
-        node_paths.push(node_path);
-        expected_fingerprints.push(expected_fingerprint);
-    }
-
-    // Run `sync --all` from the workspace root.
     let sync_ctx = Arc::new(
-        AppContext::with_messenger(workspace_path, Arc::clone(&shared_messenger))
+        AppContext::with_messenger(brain_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
     NodeCommand {
         command: NodeCommands::Sync {
             path: None,
-            all: true,
+            include_repositories: true,
         },
     }
     .execute(&sync_ctx)
-    .expect("node sync --all command should succeed");
+    .expect("node sync -r should succeed");
 
-    // Verify each node's fingerprint was updated.
-    for (node_path, expected_fingerprint) in node_paths.iter().zip(expected_fingerprints.iter()) {
-        let peppy_json5_path = node_path.join("peppy.json5");
-        let new_fingerprint = config::fingerprint::read_codegen_fingerprint(
-            &peppy_json5_path,
-            config::consts::PEPPYGEN_OUTPUT_PATH,
-        )
-        .expect("updated fingerprint should be readable");
-        assert_eq!(
-            &new_fingerprint,
-            expected_fingerprint,
-            "fingerprint should be updated for node at {}",
-            node_path.display()
-        );
-    }
-
-    // Verify the logs advertise every synchronized folder — the whole point
-    // of the `--all` flag per the user request.
     let logs = log_capture.logs();
-    for node_path in &node_paths {
-        let marker = format!("Synced node interfaces at {}", node_path.display());
-        assert!(
-            logs.contains(&marker),
-            "logs should announce sync for {}. Logs:\n{}",
-            node_path.display(),
-            logs
-        );
-    }
     assert!(
-        logs.contains(&format!("Synced {} node(s)", node_paths.len())),
-        "logs should contain the final sync count. Logs:\n{}",
-        logs
-    );
-
-    // Pruning check: the valid `target/ghost` node must not appear anywhere
-    // in the sync results — not in the logs, and not in the synced count.
-    let ghost_marker = format!("Synced node interfaces at {}", pruned_dir.display());
-    assert!(
-        !logs.contains(&ghost_marker),
-        "ghost node under target/ should be pruned, but logs contain '{}'. Logs:\n{}",
-        ghost_marker,
-        logs
-    );
-    let ghost_syncing_marker = format!("Syncing node at {}", pruned_dir.display());
-    assert!(
-        !logs.contains(&ghost_syncing_marker),
-        "ghost node under target/ should be pruned, but logs contain '{}'. Logs:\n{}",
-        ghost_syncing_marker,
+        logs.contains("Synchronized from repositories:"),
+        "verbose output should announce the repo section. Logs:\n{}",
         logs
     );
     assert!(
-        !logs.contains(&format!("Synced {} node(s)", node_paths.len() + 1)),
-        "ghost node under target/ should be pruned, but the sync count includes it. Logs:\n{}",
+        logs.contains("uvc_camera:0.1.0 (fs)"),
+        "verbose output should list the repo-resolved dep with its source kind. Logs:\n{}",
         logs
     );
 }

@@ -11,10 +11,10 @@ use super::super::repo::cache::{self, PackageEntry};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::add::{NodeAddActionContext, run_node_add};
 use super::cache as node_cache;
-use super::{FeedbackLine, FeedbackStream, create_action_log_file, sanitize_repo_path};
+use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use chrono::Local;
-use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
-use config::node::{NodeConfigParser, ParsedNodeConfig};
+use config::consts::PeppyDirs;
+use config::node::ParsedNodeConfig;
 use core_node_api::encoding::{
     DepVariantOverride, NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind,
 };
@@ -29,7 +29,6 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, warn};
-use url::Url;
 
 /// Upper bound on concurrently-running `materialize_entry` tasks inside a
 /// single batch. Bundles are materialized through git clones and HTTP
@@ -357,13 +356,25 @@ async fn resolve_transitive_closure<'a>(
             let entry = entry.clone();
             let source_kind = entry.source_type;
             let permit_source = Arc::clone(&semaphore);
+            let fb = feedback_tx.clone();
+            let on_feedback: node_cache::MaterializeFeedback = Arc::new(move |line: &str| {
+                let _ = fb.send(FeedbackLine {
+                    stream: FeedbackStream::Stdout,
+                    line: line.to_owned(),
+                });
+            });
             in_flight.push(Box::pin(async move {
                 let _permit = permit_source
                     .acquire_owned()
                     .await
                     .expect("materialize semaphore is never closed");
-                let result =
-                    materialize_entry(&entry, peppy_dirs, cache_generation, feedback_tx).await;
+                let result = node_cache::materialize_entry(
+                    &entry,
+                    peppy_dirs,
+                    cache_generation,
+                    on_feedback,
+                )
+                .await;
                 (name, tag, is_root, source_kind, result)
             }));
         }
@@ -443,79 +454,6 @@ async fn resolve_transitive_closure<'a>(
     }
 
     Ok(Resolution { to_add })
-}
-
-/// Materialize one package cache entry to a `(root_dir, parsed config)`
-/// pair, using the persistent git/http caches where applicable.
-async fn materialize_entry(
-    entry: &PackageEntry,
-    peppy_dirs: &PeppyDirs,
-    cache_generation: Option<SystemTime>,
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
-) -> Result<(PathBuf, ParsedNodeConfig), String> {
-    let root_dir = match entry.source_type {
-        RepoSourceKind::Fs => PathBuf::from(&entry.path),
-        RepoSourceKind::Git => {
-            let url = entry
-                .source_uri
-                .as_deref()
-                .ok_or_else(|| "Git cache entry missing source_uri".to_owned())?;
-            let reference = entry.resolved_ref.as_deref();
-            let fb = feedback_tx.clone();
-            let peppy_dirs = peppy_dirs.clone();
-            let url_owned = url.to_owned();
-            let ref_owned = reference.map(|s| s.to_owned());
-            let checkout = tokio::task::spawn_blocking(move || {
-                node_cache::ensure_checkout(
-                    &peppy_dirs,
-                    &url_owned,
-                    ref_owned.as_deref(),
-                    cache_generation,
-                    &|line| {
-                        let _ = fb.send(FeedbackLine {
-                            stream: FeedbackStream::Stdout,
-                            line: line.to_owned(),
-                        });
-                    },
-                )
-            })
-            .await
-            .map_err(|e| format!("git cache task failed: {}", e))??;
-            let repo_relative_path = sanitize_repo_path(&entry.path).map_err(|e| {
-                format!(
-                    "Git cache entry for {}:{} has unsafe path {:?}: {}",
-                    entry.node_name, entry.node_tag, entry.path, e
-                )
-            })?;
-            checkout.join(repo_relative_path)
-        }
-        RepoSourceKind::Url => {
-            let url_str = entry
-                .source_uri
-                .as_deref()
-                .ok_or_else(|| "Http cache entry missing source_uri".to_owned())?;
-            let url = Url::parse(url_str)
-                .map_err(|e| format!("Http cache entry has invalid URL '{url_str}': {e}"))?;
-            let fb = feedback_tx.clone();
-            node_cache::ensure_bundle(peppy_dirs, &url, entry.checksum.clone(), &move |line| {
-                let _ = fb.send(FeedbackLine {
-                    stream: FeedbackStream::Stdout,
-                    line: line.to_owned(),
-                });
-            })
-            .await?
-        }
-    };
-
-    let config_path = root_dir.join(NODE_CONFIG_FILE);
-    let parsed = NodeConfigParser::from_path(&config_path).map_err(|e| {
-        format!(
-            "Failed to parse node config at {}: {}",
-            config_path.display(),
-            e
-        )
-    })?;
-    Ok((root_dir, parsed))
 }
 
 /// Run a single node-add step inside the batch. Each sub-add gets its

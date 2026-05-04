@@ -146,7 +146,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
 
     // Step 1: Run node sync — this generates peppygen + fingerprint for root and variant.
     let sync_response = poll_node_sync(
-        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![]),
+        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -278,7 +278,7 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
     // Step 1: Run node sync — generates peppygen only for the variant (not root,
     // since root has no execution block).
     let sync_response = poll_node_sync(
-        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![]),
+        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -407,7 +407,7 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
 
     // Step 1: Sync — generates peppygen and fingerprint for both root and variant.
     let sync_response = poll_node_sync(
-        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![]),
+        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,

@@ -408,7 +408,7 @@ fn node_add_after_failed_sync_succeeds() {
     NodeCommand {
         command: NodeCommands::Sync {
             path: None,
-            all: false,
+            include_repositories: false,
         },
     }
     .execute(&sync_ctx)

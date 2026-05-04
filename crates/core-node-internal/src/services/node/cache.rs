@@ -8,6 +8,8 @@
 pub(super) mod bundle;
 pub(super) mod git;
 mod key;
+pub(super) mod materialize;
 
 pub(super) use bundle::ensure_bundle;
 pub(super) use git::ensure_checkout;
+pub(super) use materialize::{MaterializeFeedback, materialize_entry, silent_feedback};
