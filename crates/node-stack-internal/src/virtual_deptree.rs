@@ -138,13 +138,6 @@ impl VirtualDeptree {
         order.into_iter().map(|idx| &self.infos[&idx]).collect()
     }
 
-    /// Returns the on-disk root directories of every node in the tree.
-    /// Order is unspecified — callers that need ordering should use
-    /// [`Self::topological_order`].
-    pub fn peer_root_dirs(&self) -> Vec<PathBuf> {
-        self.infos.values().map(|i| i.root_dir.clone()).collect()
-    }
-
     /// Returns the number of nodes in the tree.
     pub fn len(&self) -> usize {
         self.infos.len()
@@ -209,7 +202,6 @@ mod tests {
         assert!(tree.is_empty());
         assert_eq!(tree.len(), 0);
         assert!(tree.topological_order().is_empty());
-        assert!(tree.peer_root_dirs().is_empty());
     }
 
     #[test]
@@ -220,17 +212,13 @@ mod tests {
         let a = write_node(&a_dir, "a", &[]);
         let b = write_node(&b_dir, "b", &[]);
 
-        let tree = VirtualDeptree::build(vec![(a_dir.clone(), a), (b_dir.clone(), b)]).unwrap();
+        let tree = VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)]).unwrap();
         assert_eq!(tree.len(), 2);
         let order = tree.topological_order();
         assert_eq!(order.len(), 2);
         let names: Vec<String> = order.iter().map(|n| key_of(n).0).collect();
         assert!(names.contains(&"a".to_string()));
         assert!(names.contains(&"b".to_string()));
-        let peers = tree.peer_root_dirs();
-        assert_eq!(peers.len(), 2);
-        assert!(peers.contains(&a_dir));
-        assert!(peers.contains(&b_dir));
     }
 
     #[test]
@@ -312,13 +300,11 @@ mod tests {
         let a_dir = tmp.path().join("a");
         let a = write_node(&a_dir, "a", &[("external_x", "9.9.9")]);
 
-        let tree = VirtualDeptree::build(vec![(a_dir.clone(), a)]).unwrap();
+        let tree = VirtualDeptree::build(vec![(a_dir, a)]).unwrap();
         assert_eq!(tree.len(), 1);
         let order = tree.topological_order();
         assert_eq!(order.len(), 1);
         assert_eq!(key_of(order[0]).0, "a");
-        // peer_root_dirs only contains the FS-discovered node, not the external dep
-        assert_eq!(tree.peer_root_dirs(), vec![a_dir]);
     }
 
     #[test]
