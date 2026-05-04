@@ -2053,12 +2053,11 @@ async fn sync_with_flag(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn include_repositories_false_keeps_existing_behavior() {
+async fn include_repositories_false_does_not_resolve_fs_dep_from_repository() {
     let started = start_core_node_with_mock_messenger().await;
 
     // Camera lives only in the repository cache — flag=false means the
-    // resolver never looks there, so this should fail like the old
-    // "missing dep" path.
+    // resolver never looks there, so the dep is missing from the stack.
     let camera_dir = tempdir().expect("camera tempdir");
     write_node_config(camera_dir.path(), camera_config());
     TestPackagesCache::new()
@@ -2075,7 +2074,7 @@ async fn include_repositories_false_keeps_existing_behavior() {
         response
             .error_message
             .contains("does not exist in the stack"),
-        "error should be the existing missing-from-stack message, got: {}",
+        "error should be the missing-from-stack message, got: {}",
         response.error_message
     );
 }

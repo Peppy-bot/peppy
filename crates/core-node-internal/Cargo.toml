@@ -34,7 +34,7 @@ tokio = { version = "1", features = [
 ] }
 tokio-util = "0.7"
 tracing = "0.1"
-askama = "0.15"
+askama = "0.16"
 rust-embed = { version = "8", features = ["include-exclude"] }
 gix-url = "0.36"
 git2 = { version = "0.20", features = ["vendored-openssl"] }
