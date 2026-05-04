@@ -14,7 +14,7 @@ use crate::Result;
 use config::{
     DefaultValue, ParameterSpec,
     consts::PeppyDirs,
-    launcher::CURRENT_SCHEMA_VERSION,
+    launcher::PeppySchema,
     node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage, TypeToken},
 };
 use futures::future::{BoxFuture, FutureExt, try_join_all};
@@ -174,7 +174,7 @@ impl CoreNode {
         let daemon_use_sim_time = node_arguments.daemon_use_sim_time;
 
         let node_config = NodeConfig {
-            schema_version: CURRENT_SCHEMA_VERSION,
+            peppy_schema: PeppySchema::NodesV1,
             manifest: Manifest {
                 name: manifest_name,
                 tag: CORE_NODE_TAG.to_string(),

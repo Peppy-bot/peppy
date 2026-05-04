@@ -19,7 +19,7 @@ async fn listen_for_node_list_returns_succeeds() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     let peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -111,7 +111,7 @@ async fn listen_for_node_list_returns_dot_graph() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     let peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",

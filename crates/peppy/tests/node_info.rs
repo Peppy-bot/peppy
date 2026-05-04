@@ -167,7 +167,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     const NODE_TAG: &str = "0.1.0";
 
     let peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
@@ -211,7 +211,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     // up minimal publisher nodes that expose exactly the interfaces
     // `consumer_node` consumes, so the add resolves cleanly.
     let camera_node = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: { name: "camera_node", tag: "0.1.0" },
             interfaces: {
                 topics: {
@@ -224,7 +224,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
     let lidar_node = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: { name: "lidar_node", tag: "0.1.0" },
             interfaces: {
                 topics: { emits: [{ name: "point_cloud" }] }
@@ -232,7 +232,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
     let config_node = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: { name: "config_node", tag: "0.1.0" },
             interfaces: {
                 services: { exposes: [{ name: "get_config" }] }
@@ -240,7 +240,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
     let navigation_node = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: { name: "navigation_node", tag: "0.1.0" },
             interfaces: {
                 actions: { exposes: [{ name: "go_to_pose" }] }
@@ -328,7 +328,7 @@ fn node_info_no_dependencies_when_no_consumes() {
     const NODE_TAG: &str = "0.1.0";
 
     let peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",

@@ -85,10 +85,10 @@ pub mod runtime {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        CURRENT_SCHEMA_VERSION, Deployment, DeploymentGitSource, DeploymentInstance,
-        DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
-        FrameworkOverrides, Name, PeppyLauncher, PeppyLauncherParser, SchemaVersion,
-        VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
+        Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
+        DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides, Name,
+        PeppyLauncher, PeppyLauncherParser, PeppySchema, VariantGitSource, VariantNameSource,
+        VariantSource, VariantUrlSource,
     };
 }
 

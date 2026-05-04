@@ -1202,7 +1202,7 @@ fn main() -> Result<()> {
     std::fs::write(
         node_dir.join(NODE_CONFIG_FILE),
         r#"{
-  schema_version: 1,
+  peppy_schema: "nodes_v1",
   manifest: {
     name: "{crate_name}",
     tag: "{node_tag}",

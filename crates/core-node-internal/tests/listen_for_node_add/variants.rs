@@ -18,7 +18,7 @@ async fn listen_for_node_add_variant_local_source() {
 
     // Root node config with a "mock" variant pointing to a subdirectory
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "robot_brain",
             tag: "0.1.0",
@@ -42,7 +42,7 @@ async fn listen_for_node_add_variant_local_source() {
 
     // Variant config — only defines runtime (no manifest, no interfaces)
     let variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "rust",
             run_cmd: ["sleep", "5"]
@@ -109,7 +109,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
 
     // Root node config with a "mock" variant pointing to a subdirectory
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "synced_robot",
             tag: "0.1.0",
@@ -135,7 +135,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
 
     // Variant config — only defines execution (no manifest, no interfaces)
     let variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "rust",
             run_cmd: ["sleep", "5"]
@@ -244,7 +244,7 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
     // provide the implementation. A "default" variant is required when there is
     // no execution block at root.
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "variant_only_robot",
             tag: "0.1.0",
@@ -266,7 +266,7 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
 
     // Variant config defines execution (the implementation)
     let variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "rust",
             run_cmd: ["sleep", "5"]
@@ -372,7 +372,7 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
     std::fs::create_dir_all(&variant_dir).unwrap();
 
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "stale_variant_robot",
             tag: "0.1.0",
@@ -396,7 +396,7 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
         .expect("failed to write root config");
 
     let variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "rust",
             run_cmd: ["sleep", "5"]
@@ -425,7 +425,7 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
 
     // Step 2: Modify the variant config after sync (simulates user editing without re-syncing).
     let modified_variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "rust",
             run_cmd: ["sleep", "99"]
@@ -481,7 +481,7 @@ async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
     std::fs::create_dir_all(&archived_variant_dir).expect("failed to create archived variant dir");
 
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "archive_robot_brain",
             tag: "0.1.0",
@@ -509,7 +509,7 @@ async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
     write_peppy_json5(
         &archived_variant_dir,
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "5"]
@@ -523,7 +523,7 @@ async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
     write_peppy_json5(
         &host_decoy_variant_dir,
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "99"]
@@ -579,7 +579,7 @@ async fn listen_for_node_add_variant_not_found() {
     std::fs::create_dir_all(&variant_dir).unwrap();
 
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "test_node",
             tag: "0.1.0",
@@ -595,7 +595,7 @@ async fn listen_for_node_add_variant_not_found() {
     write_peppy_json5(&root_dir, root_config);
 
     let variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "rust",
             run_cmd: ["sleep", "5"]
@@ -640,7 +640,7 @@ async fn listen_for_node_add_variant_interface_mismatch() {
     std::fs::create_dir_all(&variant_dir).unwrap();
 
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "test_node",
             tag: "0.1.0",
@@ -664,7 +664,7 @@ async fn listen_for_node_add_variant_interface_mismatch() {
 
     // Variant defines DIFFERENT interfaces
     let variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         interfaces: {
             topics: {
                 emits: [
@@ -717,7 +717,7 @@ async fn listen_for_node_add_variant_matching_interfaces_different_order() {
     std::fs::create_dir_all(&variant_dir).unwrap();
 
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "test_node",
             tag: "0.1.0",
@@ -742,7 +742,7 @@ async fn listen_for_node_add_variant_matching_interfaces_different_order() {
 
     // Variant defines the SAME interfaces but in different order
     let variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         interfaces: {
             topics: {
                 emits: [
@@ -789,7 +789,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
     std::fs::create_dir_all(&variant_dir).unwrap();
 
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "test_node",
             tag: "0.1.0",
@@ -813,7 +813,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
 
     // Variant has NO interfaces (omitted entirely) — should be accepted
     let variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "rust",
             run_cmd: ["sleep", "5"]
@@ -929,7 +929,7 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
     std::fs::create_dir_all(&variant_dir).unwrap();
 
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "test_node",
             tag: "0.1.0",
@@ -946,7 +946,7 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
 
     // Variant defines a manifest — it should be ignored with a warning
     let variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "overridden_name",
             tag: "9.9.9",
@@ -1042,7 +1042,7 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
 
     // Root config: has a "default" variant, NO runtime
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "uvc_camera",
             tag: "0.1.0",
@@ -1063,7 +1063,7 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
 
     // Default variant config
     let default_variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "rust",
             run_cmd: ["sleep", "7"]
@@ -1073,7 +1073,7 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
 
     // Mujoco variant config
     let mujoco_variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "python",
             run_cmd: ["sleep", "3"]
@@ -1143,7 +1143,7 @@ async fn listen_for_node_add_default_variant_explicit_other() {
     std::fs::create_dir_all(&mujoco_variant_dir).unwrap();
 
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "uvc_camera2",
             tag: "0.2.0",
@@ -1163,7 +1163,7 @@ async fn listen_for_node_add_default_variant_explicit_other() {
     write_peppy_json5(&root_dir, root_config);
 
     let default_variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "rust",
             run_cmd: ["sleep", "7"]
@@ -1172,7 +1172,7 @@ async fn listen_for_node_add_default_variant_explicit_other() {
     write_peppy_json5(&default_variant_dir, default_variant_config);
 
     let mujoco_variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "python",
             run_cmd: ["sleep", "3"]
@@ -1227,7 +1227,7 @@ async fn listen_for_node_add_execution_with_default_variant_fails() {
 
     // Root config: has BOTH execution AND a "default" variant — this is invalid.
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "uvc_camera",
             tag: "0.1.0",
@@ -1300,7 +1300,7 @@ async fn listen_for_node_add_git_variant_verifies_git_hash_at_root() {
     std::fs::write(
         git_repo_path.join(variant_config_rel),
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "5"]
@@ -1338,7 +1338,7 @@ async fn listen_for_node_add_git_variant_verifies_git_hash_at_root() {
     std::fs::create_dir_all(&root_dir).unwrap();
 
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "ROOT_NODE_NAME",
             tag: "ROOT_NODE_TAG",
@@ -1420,7 +1420,7 @@ async fn listen_for_node_add_default_fs_variant_verifies_git_hash_at_root() {
     std::fs::create_dir_all(&variant_dir).unwrap();
 
     let root_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {
             name: "default_variant_hash_robot",
             tag: "0.1.0",
@@ -1439,7 +1439,7 @@ async fn listen_for_node_add_default_fs_variant_verifies_git_hash_at_root() {
     write_peppy_json5(&root_dir, root_config);
 
     let variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "rust",
             run_cmd: ["sleep", "5"]

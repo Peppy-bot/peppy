@@ -48,6 +48,7 @@ mod tests {
     #[test]
     fn test_parse_peppy_config() {
         let json5 = r#"{
+            peppy_schema: "launcher_v1",
             deployments: [
                 {
                     source: {
@@ -147,6 +148,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join(PEPPY_LAUNCHER_FILE_NAME);
         let json5 = r#"{
+            peppy_schema: "launcher_v1",
             deployments: []
         }"#;
         std::fs::write(&path, json5).unwrap();
@@ -172,6 +174,7 @@ mod tests {
     fn test_parse_peppy_config_with_variants() {
         let valid_sha = "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a";
         let json5 = r#"{
+            peppy_schema: "launcher_v1",
             deployments: [
                 {
                     source: {

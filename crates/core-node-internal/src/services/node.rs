@@ -78,7 +78,7 @@ mod tests {
     use super::*;
 
     const TEST_NODE_CONFIG: &str = r#"{
-  schema_version: 1,
+  peppy_schema: "nodes_v1",
   manifest: {
     name: "standalone",
     tag: "0.1.0",

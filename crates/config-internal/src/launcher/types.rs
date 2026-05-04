@@ -13,14 +13,21 @@ pub use crate::source::{
     DeploymentUrlSource, VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
 };
 
-/// Version identifier embedded in node `peppy.json5` manifests.
-/// Using a simple alias keeps serialization straightforward while making the intent explicit.
-pub type SchemaVersion = u16;
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = 1;
+/// Schema identifier embedded in `peppy.json5` and `peppy_launcher.json5`
+/// documents. The variant tells the daemon which document shape it is reading
+/// so the strict deserializer can reject mixed-up files (e.g. a launcher that
+/// claims to be a node config).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeppySchema {
+    NodesV1,
+    LauncherV1,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeppyLauncher {
+    pub peppy_schema: PeppySchema,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deployments: Vec<Deployment>,
 }

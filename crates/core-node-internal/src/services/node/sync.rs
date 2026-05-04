@@ -245,7 +245,7 @@ async fn handle_node_sync_request_inner(
         variants,
         root_manifest,
         root_interfaces,
-        root_schema_version,
+        root_peppy_schema,
     ) = if !node_config_path.exists() {
         return NodeSyncResponse::failure(format!(
             "Node config file does not exist: {}",
@@ -359,14 +359,14 @@ async fn handle_node_sync_request_inner(
                 let variants = node_config.manifest().variants.clone();
                 let root_manifest = node_config.manifest().clone();
                 let root_interfaces = node_config.interfaces().clone();
-                let root_schema_version = node_config.schema_version();
+                let root_peppy_schema = node_config.peppy_schema();
                 (
                     interfaces,
                     language,
                     variants,
                     root_manifest,
                     root_interfaces,
-                    root_schema_version,
+                    root_peppy_schema,
                 )
             }
             Err(e) => {
@@ -528,7 +528,7 @@ async fn handle_node_sync_request_inner(
             let mut merged_manifest = root_manifest.clone();
             merged_manifest.variants = None;
             let merged_config = config::node::NodeConfig {
-                schema_version: root_schema_version,
+                peppy_schema: root_peppy_schema,
                 manifest: merged_manifest,
                 interfaces: root_interfaces.clone(),
                 execution: variant_config.execution,
@@ -1280,7 +1280,7 @@ mod tests {
 
         let config = config::node::NodeConfigParser::from_content(
             r#"{
-                schema_version: 1,
+                peppy_schema: "nodes_v1",
                 manifest: { name: "test_node", tag: "0.1.0" },
                 execution: { language: "rust", run_cmd: ["sleep", "10"] },
                 interfaces: {

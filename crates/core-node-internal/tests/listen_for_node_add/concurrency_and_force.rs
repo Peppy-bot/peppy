@@ -11,7 +11,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     // during the add phase, so we use a benign no-op here.
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "slow_add_node",
                 tag: "0.1.0",
@@ -100,7 +100,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     // during the add phase, so we use a benign no-op here.
     let slow_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let slow_peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "slow_node",
                 tag: "0.1.0",
@@ -151,7 +151,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     let fast_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let fast_peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {{
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",

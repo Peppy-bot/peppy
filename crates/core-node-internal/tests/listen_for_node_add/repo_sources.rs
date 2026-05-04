@@ -411,7 +411,7 @@ async fn repo_node_add_root_variant_only() {
     std::fs::create_dir_all(&alt_dir).unwrap();
 
     let root_peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "with_variants",
                 tag: "0.1.0",
@@ -428,7 +428,7 @@ async fn repo_node_add_root_variant_only() {
         std::fs::write(
             d.join(NODE_CONFIG_FILE),
             r#"{
-                schema_version: 1,
+                peppy_schema: "nodes_v1",
                 execution: {
                     language: "rust",
                     run_cmd: ["sleep", "10"]
@@ -480,7 +480,7 @@ async fn repo_node_add_dep_variants_only_no_root() {
     std::fs::create_dir_all(&default_dir).unwrap();
     std::fs::create_dir_all(&mock_dir).unwrap();
     let dep_peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "dep_with_variant",
                 tag: "0.1.0",
@@ -496,7 +496,7 @@ async fn repo_node_add_dep_variants_only_no_root() {
         std::fs::write(
             d.join(NODE_CONFIG_FILE),
             r#"{
-                schema_version: 1,
+                peppy_schema: "nodes_v1",
                 execution: {
                     language: "rust",
                     run_cmd: ["sleep", "10"]
@@ -622,7 +622,7 @@ async fn repo_node_add_re_add_swaps_dep_variant() {
         std::fs::write(
             d.join(NODE_CONFIG_FILE),
             r#"{
-                schema_version: 1,
+                peppy_schema: "nodes_v1",
                 execution: {
                     language: "rust",
                     run_cmd: ["sleep", "10"]
@@ -634,7 +634,7 @@ async fn repo_node_add_re_add_swaps_dep_variant() {
     write_plain_peppy_json5(
         &dep_dir,
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "dep_with_variant",
                 tag: "0.1.0",

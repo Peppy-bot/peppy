@@ -679,7 +679,7 @@ mod tests {
             dir.join(NODE_CONFIG_FILE),
             format!(
                 r#"{{
-  schema_version: 1,
+  peppy_schema: "nodes_v1",
   manifest: {{ name: "{name}", tag: "{tag}" }},
   interfaces: {{}},
   execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},

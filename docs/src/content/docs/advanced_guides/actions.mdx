@@ -41,7 +41,7 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
 
 ```json5
 {
-  schema_version: 1,
+  peppy_schema: "nodes_v1",
   manifest: {
     name: "brain",
     tag: "0.1.0",
@@ -206,7 +206,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
 
 ```json5
 {
-  schema_version: 1,
+  peppy_schema: "nodes_v1",
   manifest: {
     name: "controller",
     tag: "0.1.0",

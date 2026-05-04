@@ -10,7 +10,7 @@ async fn listen_for_node_fs_add_success() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -167,7 +167,7 @@ async fn listen_for_node_http_add_success() {
 
     let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
     let peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -361,7 +361,7 @@ async fn listen_for_node_git_add_with_default_local_variant_success() {
 
     let root_config = format!(
         r#"{{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         manifest: {{
             name: "{ROOT_NODE_NAME}",
             tag: "{ROOT_NODE_TAG}",
@@ -381,7 +381,7 @@ async fn listen_for_node_git_add_with_default_local_variant_success() {
     std::fs::write(git_repo_path.join(root_config_rel), &root_config).expect("write root config");
 
     let variant_config = r#"{
-        schema_version: 1,
+        peppy_schema: "nodes_v1",
         execution: {
             language: "rust",
             run_cmd: ["sleep", "5"]

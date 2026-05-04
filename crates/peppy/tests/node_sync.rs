@@ -404,7 +404,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     std::fs::write(
         camera_dir.path().join("peppy.json5"),
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: { name: "uvc_camera", tag: "0.1.0" },
             interfaces: {
                 topics: {
@@ -446,7 +446,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     std::fs::write(
         brain_dir.path().join("peppy.json5"),
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",

@@ -20,7 +20,7 @@ use std::time::Duration;
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     format!(
         r#"{{
-  schema_version: 1,
+  peppy_schema: "nodes_v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",
@@ -46,7 +46,7 @@ fn root_with_variants_peppy_json5(name: &str, tag: &str, variants: &[(&str, &str
         .collect();
     format!(
         r#"{{
-  schema_version: 1,
+  peppy_schema: "nodes_v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",
@@ -63,7 +63,7 @@ fn root_with_variants_peppy_json5(name: &str, tag: &str, variants: &[(&str, &str
 /// Minimal valid variant peppy.json5 (no manifest, execution only).
 fn variant_peppy_json5() -> &'static str {
     r#"{
-  schema_version: 1,
+  peppy_schema: "nodes_v1",
   execution: {
     language: "rust",
     build_cmd: ["true"],

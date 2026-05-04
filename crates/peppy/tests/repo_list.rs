@@ -7,7 +7,7 @@ use peppy::commands::repo::{RepoCommand, RepoCommands};
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     format!(
         r#"{{
-  schema_version: 1,
+  peppy_schema: "nodes_v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",

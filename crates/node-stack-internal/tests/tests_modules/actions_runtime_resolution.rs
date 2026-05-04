@@ -8,7 +8,7 @@ use crate::helpers::config_common::core_node_config;
 fn action_dependency_resolved_when_dependency_added_first() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
               name: "brain",
               tag: "1.0.0",
@@ -38,7 +38,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
 
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
               name: "controller",
               tag: "1.0.0",
@@ -143,7 +143,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
 fn action_dependency_fails_when_dependency_is_missing() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
               name: "brain",
               tag: "1.0.0",
@@ -194,7 +194,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
     // but the target node exists without exposing the requested action
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
               name: "brain",
               tag: "1.0.0",
@@ -225,7 +225,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
     // This node has the correct name but exposes a different action
     let dependency_wrong_action: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
               name: "controller",
               tag: "1.0.0",
@@ -314,7 +314,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
 fn action_dependency_fails_when_local_node_id_is_undeclared() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
+            peppy_schema: "nodes_v1",
             manifest: {
               name: "brain",
               tag: "1.0.0",

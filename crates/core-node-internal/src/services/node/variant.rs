@@ -371,7 +371,7 @@ mod tests {
         fs::write(
             root.join(NODE_CONFIG_FILE),
             r#"{
-                schema_version: 1,
+                peppy_schema: "nodes_v1",
                 manifest: {
                     name: "host",
                     tag: "0.0.0",

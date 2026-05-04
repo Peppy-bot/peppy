@@ -1,5 +1,5 @@
 {
-  schema_version: 1,
+  peppy_schema: "nodes_v1",
   manifest: {
     name: "fake_uvc_camera",
     tag: "0.1.0",
