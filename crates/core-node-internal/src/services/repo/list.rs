@@ -202,9 +202,9 @@ fn handle_repo_list_request_inner(
         .map_err(Into::into)
 }
 
-/// Read cached node entries from packages.json5 in the cache directory.
+/// Read cached node entries from nodes.json5 in the cache directory.
 fn read_cached_nodes(peppy_dirs: &PeppyDirs) -> Vec<Value> {
-    let cache_path = peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = peppy_dirs.cache_dir().join("nodes.json5");
     if !cache_path.exists() {
         return Vec::new();
     }

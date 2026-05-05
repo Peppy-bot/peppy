@@ -31,7 +31,7 @@ fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
 fn write_packages_cache(started: &StartedCoreNode, content: &str) {
     let cache_dir = started.peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-    std::fs::write(cache_dir.join("packages.json5"), content).expect("write cache file");
+    std::fs::write(cache_dir.join("nodes.json5"), content).expect("write cache file");
 }
 
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
@@ -82,10 +82,10 @@ async fn remove_fs_repo_succeeds() {
     assert!(repos.is_empty(), "repos should be empty after removal");
 
     // Cache refresh is triggered for all repo types (including fs)
-    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = started.peppy_dirs.cache_dir().join("nodes.json5");
     assert!(
         cache_path.exists(),
-        "packages.json5 cache should exist after fs repo removal"
+        "nodes.json5 cache should exist after fs repo removal"
     );
 }
 
@@ -136,12 +136,12 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
     assert_eq!(repos.len(), 1, "only the fs entry should remain");
     assert_eq!(repos[0]["type"], "fs");
 
-    // Verify refresh was triggered: packages.json5 should be updated.
+    // Verify refresh was triggered: nodes.json5 should be updated.
     // Since the git repo was removed, cache should no longer contain git_sensor.
-    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = started.peppy_dirs.cache_dir().join("nodes.json5");
     assert!(
         cache_path.exists(),
-        "packages.json5 cache should exist after refresh"
+        "nodes.json5 cache should exist after refresh"
     );
     let cache_content = std::fs::read_to_string(&cache_path).expect("read cache file");
     let cached: Vec<serde_json::Value> =
@@ -186,10 +186,10 @@ async fn remove_url_repo_succeeds_and_triggers_refresh() {
     assert_eq!(repos[0]["type"], "fs");
 
     // Verify refresh was triggered (cache file should be written)
-    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = started.peppy_dirs.cache_dir().join("nodes.json5");
     assert!(
         cache_path.exists(),
-        "packages.json5 cache should exist after refresh"
+        "nodes.json5 cache should exist after refresh"
     );
 }
 

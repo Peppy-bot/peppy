@@ -1,4 +1,4 @@
-//! Materialize a `PackageEntry` from `~/.peppy/cache/packages.json5`
+//! Materialize a `PackageEntry` from `~/.peppy/cache/nodes.json5`
 //! into an on-disk `(root_dir, parsed config)` pair.
 //!
 //! Filesystem entries are resolved directly. Git and HTTP entries route
@@ -35,7 +35,7 @@ pub(crate) fn silent_feedback() -> MaterializeFeedback {
 /// Materialize one packages-cache entry to a `(root_dir, parsed config)`
 /// pair, reusing the persistent git / HTTP caches for non-FS entries.
 ///
-/// `cache_generation` is the `mtime` of the `packages.json5` snapshot
+/// `cache_generation` is the `mtime` of the `nodes.json5` snapshot
 /// the entry was resolved from. The git cache uses it to dedup
 /// fetch/refresh work across calls within the same snapshot.
 ///

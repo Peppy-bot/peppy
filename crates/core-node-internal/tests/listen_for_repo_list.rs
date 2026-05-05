@@ -32,11 +32,11 @@ fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
     std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
 }
 
-/// Write a packages.json5 cache file in the cache_dir of the started core node.
+/// Write a nodes.json5 cache file in the cache_dir of the started core node.
 fn write_packages_cache(started: &StartedCoreNode, content: &str) {
     let cache_dir = started.peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-    std::fs::write(cache_dir.join("packages.json5"), content).expect("write cache file");
+    std::fs::write(cache_dir.join("nodes.json5"), content).expect("write cache file");
 }
 
 /// Create a directory with a valid peppy.json5 inside it.
@@ -138,7 +138,7 @@ async fn list_reads_git_nodes_from_cache() {
         .unwrap(),
     );
 
-    // Write a packages.json5 cache with nodes from that git repo
+    // Write a nodes.json5 cache with nodes from that git repo
     write_packages_cache(
         &started,
         &serde_json::to_string(&serde_json::json!([

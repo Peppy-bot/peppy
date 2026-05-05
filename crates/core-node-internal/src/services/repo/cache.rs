@@ -1,4 +1,4 @@
-//! Typed loader for `~/.peppy/cache/packages.json5`.
+//! Typed loader for `~/.peppy/cache/nodes.json5`.
 //!
 //! The cache file is written by `repo_refresh` (see `write_cache`) and
 //! lists every node discovered across every configured repository — FS,
@@ -6,7 +6,7 @@
 //! over those entries so callers don't have to dig through
 //! `serde_json::Value` every time.
 //!
-//! Reads are memoized by `(mtime-of-packages.json5)` per path so that a
+//! Reads are memoized by `(mtime-of-nodes.json5)` per path so that a
 //! daemon hit by many `node add` goals in a row doesn't re-read and
 //! re-parse the cache file on every request.
 
@@ -21,7 +21,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 use tracing::warn;
 
-/// One entry as it appears in `packages.json5`.
+/// One entry as it appears in `nodes.json5`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PackageEntry {
     pub node_name: String,
@@ -59,18 +59,18 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Reads the cache file plus the `packages.json5` generation used for
+/// Reads the cache file plus the `nodes.json5` generation used for
 /// the read.
 pub fn load_with_generation(
     peppy_dirs: &PeppyDirs,
 ) -> Result<(Vec<PackageEntry>, Option<SystemTime>)> {
-    let path = cache_path(peppy_dirs);
+    let path = nodes_repo_cache_path(peppy_dirs);
     let generation = std::fs::metadata(&path)
         .ok()
         .and_then(|m| m.modified().ok());
     // `repo_id` on each cached entry is derived from `repositories.json5`,
     // so the memo must invalidate when that file changes too (not just
-    // when packages.json5 is rewritten). Missing file → UNIX_EPOCH so any
+    // when nodes.json5 is rewritten). Missing file → UNIX_EPOCH so any
     // future appearance counts as a change.
     let repos_mtime = repositories_mtime(peppy_dirs);
 
@@ -107,7 +107,7 @@ pub fn load_with_generation(
         let ok = !e.node_name.is_empty() && !e.node_tag.is_empty() && !e.path.is_empty();
         if !ok {
             warn!(
-                "Skipping malformed packages.json5 entry: {:?}:{:?}",
+                "Skipping malformed nodes.json5 entry: {:?}:{:?}",
                 e.node_name, e.node_tag
             );
         }
@@ -132,14 +132,14 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
 ///
 /// The write is performed via a sibling temp file + atomic rename so that
 /// concurrent readers (see [`load_with_generation`]) never observe a
-/// truncated or partially-written `packages.json5`.
+/// truncated or partially-written `nodes.json5`.
 pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[PackageEntry]) -> Result<()> {
     let cache_dir = peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir)?;
     let content = serde_json::to_string_pretty(nodes)
         .map_err(|e| core_node_api::Error::Encoding(format!("failed to serialize cache: {e}")))?;
-    let final_path = cache_dir.join("packages.json5");
-    let tmp_path = cache_dir.join("packages.json5.tmp");
+    let final_path = cache_dir.join("nodes.json5");
+    let tmp_path = cache_dir.join("nodes.json5.tmp");
     std::fs::write(&tmp_path, content)?;
     std::fs::rename(&tmp_path, &final_path)?;
     Ok(())
@@ -181,9 +181,8 @@ pub fn lookup<'a>(entries: &'a [PackageEntry], name: &str, tag: &str) -> Option<
         .min_by_key(|e| e.repo_id)
 }
 
-/// Path to the cache file. Used for user-facing error messages.
-pub fn cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
-    peppy_dirs.cache_dir().join("packages.json5")
+pub fn nodes_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
+    peppy_dirs.cache_dir().join("nodes.json5")
 }
 
 /// Looks up `(name, tag)` in the packages cache and translates the matched
@@ -200,7 +199,7 @@ pub(crate) fn resolve_repo_node_source(
     let entry = lookup(&entries, name, tag).ok_or_else(|| {
         format!(
             "repo-node `{id}` not found in {}",
-            cache_path(peppy_dirs).display()
+            nodes_repo_cache_path(peppy_dirs).display()
         )
     })?;
 

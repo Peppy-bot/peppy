@@ -9,7 +9,7 @@ async fn repo_node_add_fails_when_packages_cache_missing() {
     let started = start_core_node_with_mock_messenger().await;
     let node_stack = started.node_stack.clone();
 
-    // No packages.json5 written at all.
+    // No nodes.json5 written at all.
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,

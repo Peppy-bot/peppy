@@ -37,7 +37,7 @@ struct NodeAddGoal {
         # HTTP URL source
         http @3 :Text;
         # Reference a node by `name:tag` — the daemon looks it up in
-        # `~/.peppy/cache/packages.json5` and resolves transitive
+        # `~/.peppy/cache/nodes.json5` and resolves transitive
         # dependencies as an atomic batch. Carries the dep-variant
         # overrides inline so they're unrepresentable on non-repo
         # sources.
@@ -59,9 +59,9 @@ struct NodeAddGoal {
 }
 
 struct NodeAddRepoNodeSource {
-    # Node name as it appears in `packages.json5`
+    # Node name as it appears in `nodes.json5`
     name @0 :Text;
-    # Node tag as it appears in `packages.json5`
+    # Node tag as it appears in `nodes.json5`
     tag @1 :Text;
     # Dep-level variant overrides applied when resolving transitive
     # dependencies. Empty for "use defaults for every dep".
@@ -188,7 +188,7 @@ struct NodeGenerateRequest {
     # Git commit hash of the node being synced
     gitHash @1 :Text;
     # When true, dependencies missing from the persistent node stack are
-    # looked up in `~/.peppy/cache/packages.json5` and materialized through
+    # looked up in `~/.peppy/cache/nodes.json5` and materialized through
     # the existing FS / git / HTTP repository cache before peppygen
     # generation proceeds. Resolution still prefers the node stack; the
     # repository cache is consulted only as a fallback.

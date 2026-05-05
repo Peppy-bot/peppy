@@ -435,10 +435,10 @@ async fn node_sync_with_include_repositories_prints_provenance() {
         "path": camera_dir.path().to_string_lossy(),
     }]);
     std::fs::write(
-        cache_dir.join("packages.json5"),
+        cache_dir.join("nodes.json5"),
         serde_json::to_string_pretty(&packages_json).unwrap(),
     )
-    .expect("write packages.json5");
+    .expect("write nodes.json5");
 
     // Brain node consumes the camera's topic. Lives in its own temp dir
     // so we can run `node sync` against it directly.

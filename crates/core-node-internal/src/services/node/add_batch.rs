@@ -1,6 +1,6 @@
 //! Batch-add pipeline for `NodeSource::RepoNode` goals.
 //!
-//! Resolves a `(name, tag)` target against `~/.peppy/cache/packages.json5`,
+//! Resolves a `(name, tag)` target against `~/.peppy/cache/nodes.json5`,
 //! walks its transitive deps, materializes every node through the
 //! persistent git/http caches, topologically sorts them via
 //! [`VirtualDeptree`], then feeds each to [`super::add::run_node_add`].
@@ -97,8 +97,8 @@ pub(crate) async fn run_repo_node_add(
             &log_file,
             &log_path,
             format!(
-                "packages.json5 not found or empty at {}; run `peppy repo refresh` to populate it",
-                cache::cache_path(&peppy_dirs).display()
+                "nodes.json5 not found or empty at {}; run `peppy repo refresh` to populate it",
+                cache::nodes_repo_cache_path(&peppy_dirs).display()
             ),
         );
     }

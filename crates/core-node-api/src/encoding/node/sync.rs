@@ -14,7 +14,7 @@ pub struct NodeSyncRequest {
     pub git_hash: String,
     /// When true, dependencies missing from the persistent node stack are
     /// resolved by materializing them from the configured repositories
-    /// (`~/.peppy/cache/packages.json5`). Stack lookup still wins; the
+    /// (`~/.peppy/cache/nodes.json5`). Stack lookup still wins; the
     /// repo cache is consulted only as a fallback.
     pub include_repositories: bool,
 }

@@ -2476,7 +2476,7 @@ async fn include_repositories_true_walks_transitive_dep() {
 async fn include_repositories_true_missing_from_stack_and_repo_fails() {
     let started = start_core_node_with_mock_messenger().await;
 
-    // Empty packages.json5 — nothing to materialize from.
+    // Empty nodes.json5 — nothing to materialize from.
     TestPackagesCache::new().write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");

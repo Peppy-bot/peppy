@@ -24,7 +24,7 @@ pub enum NodeSource {
     },
     /// Reference a node by `(name, tag)`; the daemon resolves it and
     /// its transitive dependencies against the repo cache
-    /// (`~/.peppy/cache/packages.json5`) and adds them as one batch.
+    /// (`~/.peppy/cache/nodes.json5`) and adds them as one batch.
     ///
     /// Dep-level variant overrides travel with the source so they're
     /// unrepresentable on non-repo sources.

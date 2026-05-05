@@ -56,7 +56,7 @@ fn lock_for(key: &str) -> Arc<Mutex<()>> {
 
 /// Per-process map of cache keys to the repo-cache generation they were
 /// last refreshed against. This keeps repeated materializations within a
-/// single `packages.json5` snapshot fast without pinning moving refs for
+/// single `nodes.json5` snapshot fast without pinning moving refs for
 /// the full daemon lifetime.
 fn refreshed_generations() -> &'static Mutex<HashMap<String, SystemTime>> {
     static MAP: OnceLock<Mutex<HashMap<String, SystemTime>>> = OnceLock::new();
@@ -67,7 +67,7 @@ fn refreshed_generations() -> &'static Mutex<HashMap<String, SystemTime>> {
 /// working-tree directory. The checkout is populated on first call and
 /// refreshed (fetch + checkout) on subsequent calls so pinned refs that
 /// moved upstream stay current. Callers should pass the same
-/// `packages.json5` generation they resolved the repo entry from so the
+/// `nodes.json5` generation they resolved the repo entry from so the
 /// checkout stays consistent with that snapshot.
 ///
 /// Blocking — callers inside tokio should run this via
@@ -235,7 +235,7 @@ mod tests {
         marker: &str,
         previous: Option<SystemTime>,
     ) -> SystemTime {
-        let cache_path = peppy_dirs.cache_dir().join("packages.json5");
+        let cache_path = peppy_dirs.cache_dir().join("nodes.json5");
         std::fs::create_dir_all(peppy_dirs.cache_dir()).expect("create cache dir");
 
         for attempt in 0..20 {

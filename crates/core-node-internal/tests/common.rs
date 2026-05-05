@@ -206,7 +206,7 @@ pub enum NodeAddSource<'a> {
         sha256: Option<String>,
     },
     /// Add a node by `(name, tag)` against the repo cache — the daemon
-    /// resolves transitive deps from `~/.peppy/cache/packages.json5`.
+    /// resolves transitive deps from `~/.peppy/cache/nodes.json5`.
     RepoNode { name: &'a str, tag: &'a str },
 }
 
@@ -845,10 +845,10 @@ pub async fn send_node_add_and_wait_with_dep_overrides<'a>(
     .await
 }
 
-/// Builder for a `packages.json5` cache fixture. Tests call
+/// Builder for a `nodes.json5` cache fixture. Tests call
 /// [`TestPackagesCache::fs_entry`] / `git_entry` / `http_entry` to declare
 /// discovered nodes and then [`TestPackagesCache::write`] to serialize
-/// the file under `peppy_dirs.cache_dir()/packages.json5`.
+/// the file under `peppy_dirs.cache_dir()/nodes.json5`.
 #[derive(Default)]
 pub struct TestPackagesCache {
     entries: Vec<serde_json::Value>,
@@ -937,8 +937,8 @@ impl TestPackagesCache {
         std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
         let content =
             serde_json::to_string_pretty(&self.entries).expect("failed to serialize cache entries");
-        std::fs::write(cache_dir.join("packages.json5"), content)
-            .expect("failed to write packages.json5 fixture");
+        std::fs::write(cache_dir.join("nodes.json5"), content)
+            .expect("failed to write nodes.json5 fixture");
     }
 }
 

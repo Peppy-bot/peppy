@@ -25,7 +25,7 @@ pub(crate) fn repos_file_lock() -> &'static parking_lot::Mutex<()> {
 
 /// Serializes `process_refresh` + `write_cache` so the user-facing repo_refresh
 /// action and the post-remove refresh in repo_remove cannot race on
-/// packages.json5. The ActionState single-flight inside repo_refresh rejects
+/// nodes.json5. The ActionState single-flight inside repo_refresh rejects
 /// concurrent *user* refreshes with a friendly error; this mutex is the
 /// correctness backstop that also covers the remove-triggered path.
 pub(crate) fn refresh_lock() -> &'static parking_lot::Mutex<()> {
