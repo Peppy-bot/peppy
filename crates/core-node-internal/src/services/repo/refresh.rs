@@ -2,9 +2,11 @@ use crate::Result;
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::clone_with_progress;
+use crate::services::repo::cache::{EntryType, LauncherEntry};
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::normalize_repo_entries;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
+use config::launcher::{PeppyLauncherParser, PeppySchema};
 use config::node::NodeConfigParser;
 use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
@@ -139,15 +141,15 @@ impl GoalHandler for RepoRefreshGoalHandler {
                     let _ = tx.send(fb);
                 };
                 match process_refresh(&dirs, &mut emit) {
-                    Ok((discovered, excluded)) => {
-                        // Write cache for all nodes (including duplicates, so
-                        // `repo list` can display every source).
+                    Ok((discovered, launchers, excluded)) => {
+                        // Write caches for all nodes/launchers (including
+                        // duplicates, so `repo list` can display every
+                        // source).
                         let unique_count =
                             discovered.iter().filter(|n| !n.duplicate).count() as u32;
-                        match write_cache(&dirs, &discovered) {
-                            Ok(()) => Ok((unique_count, excluded)),
-                            Err(e) => Err(e),
-                        }
+                        write_cache(&dirs, &discovered)?;
+                        write_launcher_cache(&dirs, &launchers)?;
+                        Ok((unique_count, excluded))
                     }
                     Err(e) => Err(e),
                 }
@@ -255,7 +257,7 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
-) -> Result<(Vec<DiscoveredNode>, Vec<ExcludedRepo>)> {
+) -> Result<(Vec<DiscoveredNode>, Vec<LauncherEntry>, Vec<ExcludedRepo>)> {
     let (repos, exclusions) = {
         let _guard = crate::services::repo::repos_file_lock().lock();
         let repos = read_or_create_repos(peppy_dirs)?;
@@ -264,7 +266,9 @@ pub(crate) fn process_refresh(
     };
 
     let mut global_seen: HashSet<(String, String)> = HashSet::new();
+    let mut global_seen_launchers: HashSet<String> = HashSet::new();
     let mut all_nodes: Vec<DiscoveredNode> = Vec::new();
+    let mut all_launchers: Vec<LauncherEntry> = Vec::new();
     let excluded_repos: Vec<ExcludedRepo> = exclusions
         .entries
         .iter()
@@ -309,6 +313,8 @@ pub(crate) fn process_refresh(
                 )));
                 let mut repo_seen = HashSet::new();
                 let mut repo_nodes = Vec::new();
+                let mut repo_launchers_seen = HashSet::new();
+                let mut repo_launchers = Vec::new();
                 walk_directory(
                     &path,
                     RepoSourceKind::Fs,
@@ -316,6 +322,8 @@ pub(crate) fn process_refresh(
                     None,
                     &mut repo_seen,
                     &mut repo_nodes,
+                    &mut repo_launchers_seen,
+                    &mut repo_launchers,
                     &exclusions.fs_paths,
                 );
                 for mut node in repo_nodes {
@@ -334,6 +342,12 @@ pub(crate) fn process_refresh(
                     }
                     all_nodes.push(node);
                 }
+                for mut launcher in repo_launchers {
+                    if !global_seen_launchers.insert(launcher.node_name.clone()) {
+                        launcher.duplicate = true;
+                    }
+                    all_launchers.push(launcher);
+                }
             }
             RepoSource::Git { repo_url, repo_ref } => {
                 let ref_suffix = repo_ref
@@ -350,7 +364,7 @@ pub(crate) fn process_refresh(
                     peppy_dirs,
                     on_feedback,
                 ) {
-                    Ok(nodes) => {
+                    Ok((nodes, launchers)) => {
                         for mut node in nodes {
                             let key = (node.node_name.clone(), node.node_tag.clone());
                             if !global_seen.insert(key) {
@@ -367,6 +381,12 @@ pub(crate) fn process_refresh(
                             }
                             all_nodes.push(node);
                         }
+                        for mut launcher in launchers {
+                            if !global_seen_launchers.insert(launcher.node_name.clone()) {
+                                launcher.duplicate = true;
+                            }
+                            all_launchers.push(launcher);
+                        }
                     }
                     Err(e) => {
                         warn!("Failed to refresh git repository {}: {}", repo_url, e);
@@ -376,20 +396,25 @@ pub(crate) fn process_refresh(
         }
     }
 
-    Ok((all_nodes, excluded_repos))
+    Ok((all_nodes, all_launchers, excluded_repos))
 }
 
-/// Walk a directory looking for `peppy.json5` files, collecting discovered nodes.
+/// Walk a directory looking for `peppy.json5` (node) and any `.json5`
+/// file whose body declares `peppy_schema: "launcher_v1"` (launcher),
+/// collecting discovered nodes and launchers.
 ///
 /// Any directory whose path matches one of the `excluded_paths` entries is
 /// pruned from the walk (neither descended into nor scanned for config files).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn walk_directory(
     root: &Path,
     source_type: RepoSourceKind,
     source_uri: Option<&str>,
     resolved_ref: Option<&str>,
-    seen: &mut HashSet<(String, String)>,
+    nodes_seen: &mut HashSet<(String, String)>,
     nodes: &mut Vec<DiscoveredNode>,
+    launchers_seen: &mut HashSet<String>,
+    launchers: &mut Vec<LauncherEntry>,
     excluded_paths: &[PathBuf],
 ) {
     // Canonicalize the root so that paths emitted by the walker share a
@@ -418,59 +443,188 @@ pub(crate) fn walk_directory(
         .build();
 
     for entry in walker.flatten() {
-        if entry.file_name().to_string_lossy() != NODE_CONFIG_FILE {
-            continue;
-        }
-
+        let file_name = entry.file_name().to_string_lossy();
         let config_path = entry.path();
-        let parsed = match NodeConfigParser::from_path(config_path) {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                debug!(
-                    "Skipping invalid peppy.json5 at {}: {}",
-                    config_path.display(),
-                    e
-                );
-                continue;
-            }
-        };
-
-        let name = parsed.manifest_name().to_string();
-        let tag = parsed.manifest_tag().to_string();
-        let variants = parsed.variant_names();
-        let key = (name.clone(), tag.clone());
-
-        if !seen.insert(key) {
-            continue;
+        if file_name == NODE_CONFIG_FILE {
+            collect_node_entry(
+                &root,
+                source_type,
+                source_uri,
+                resolved_ref,
+                config_path,
+                nodes_seen,
+                nodes,
+            );
+        } else if has_json5_extension(config_path) {
+            // Launchers have no fixed name — any `.json5` file whose
+            // body declares `peppy_schema: "launcher_v1"` is treated as
+            // a launcher. The `.json5` extension is the cheap pre-filter;
+            // the schema check (inside `collect_launcher_entry`) is
+            // authoritative.
+            collect_launcher_entry(
+                &root,
+                source_type,
+                source_uri,
+                resolved_ref,
+                config_path,
+                launchers_seen,
+                launchers,
+            );
         }
+    }
+}
 
-        let node_path = if source_type == RepoSourceKind::Git {
-            // For git repos, store relative path from repo root
-            config_path
-                .parent()
-                .and_then(|p| p.strip_prefix(&root).ok())
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        } else {
-            // For FS repos, store absolute path
-            config_path
-                .parent()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        };
+fn has_json5_extension(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "json5")
+}
 
-        nodes.push(DiscoveredNode {
-            node_name: name,
-            node_tag: tag,
-            source_type,
-            path: node_path,
-            source_uri: source_uri.map(|s| s.to_string()),
-            variants,
-            duplicate: false,
-            resolved_ref: resolved_ref.map(|s| s.to_string()),
-            checksum: None,
-            repo_id: 0,
-        });
+fn collect_node_entry(
+    root: &Path,
+    source_type: RepoSourceKind,
+    source_uri: Option<&str>,
+    resolved_ref: Option<&str>,
+    config_path: &Path,
+    seen: &mut HashSet<(String, String)>,
+    nodes: &mut Vec<DiscoveredNode>,
+) {
+    let parsed = match NodeConfigParser::from_path(config_path) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            debug!(
+                "Skipping invalid peppy.json5 at {}: {}",
+                config_path.display(),
+                e
+            );
+            return;
+        }
+    };
+
+    let name = parsed.manifest_name().to_string();
+    let tag = parsed.manifest_tag().to_string();
+    let variants = parsed.variant_names();
+    let key = (name.clone(), tag.clone());
+
+    if !seen.insert(key) {
+        return;
+    }
+
+    let node_path = relative_or_absolute_parent(root, config_path, source_type);
+
+    nodes.push(DiscoveredNode {
+        entry_type: EntryType::Node,
+        node_name: name,
+        node_tag: tag,
+        source_type,
+        path: node_path,
+        source_uri: source_uri.map(|s| s.to_string()),
+        variants,
+        duplicate: false,
+        resolved_ref: resolved_ref.map(|s| s.to_string()),
+        checksum: None,
+        repo_id: 0,
+    });
+}
+
+fn collect_launcher_entry(
+    root: &Path,
+    source_type: RepoSourceKind,
+    source_uri: Option<&str>,
+    resolved_ref: Option<&str>,
+    config_path: &Path,
+    seen: &mut HashSet<String>,
+    launchers: &mut Vec<LauncherEntry>,
+) {
+    // Parse the file as a launcher; if it doesn't deserialize cleanly
+    // or its `peppy_schema` isn't `LauncherV1`, it is just an unrelated
+    // `.json5` file we should skip silently. Strict deserialization
+    // (`#[serde(deny_unknown_fields)]` on `PeppyLauncher`) makes this a
+    // robust signal — node configs etc. fail at the structural level.
+    let parsed = match PeppyLauncherParser::from_path(config_path) {
+        Ok(parsed) if parsed.peppy_schema == PeppySchema::LauncherV1 => parsed,
+        Ok(_) => {
+            // Some other peppy schema — not our concern.
+            return;
+        }
+        Err(e) => {
+            debug!(
+                "Skipping non-launcher .json5 at {}: {}",
+                config_path.display(),
+                e
+            );
+            return;
+        }
+    };
+    // We don't keep the parsed body — only its presence and schema
+    // matter for cache discovery. Drop it explicitly to avoid retaining
+    // the deployments vector longer than needed.
+    drop(parsed);
+
+    // Launcher name = basename without `.json5`. This matches
+    // `resolve_launcher_path`, which appends `.json5` to a bare name
+    // when looking up a launcher file.
+    let Some(stem) = config_path.file_stem().and_then(|s| s.to_str()) else {
+        return;
+    };
+    let name = stem.to_string();
+    if name.is_empty() {
+        return;
+    }
+
+    if !seen.insert(name.clone()) {
+        return;
+    }
+
+    let launcher_path = relative_or_absolute_path(root, config_path, source_type);
+
+    launchers.push(LauncherEntry {
+        entry_type: EntryType::Launcher,
+        node_name: name,
+        source_type,
+        source_uri: source_uri.map(|s| s.to_string()),
+        resolved_ref: resolved_ref.map(|s| s.to_string()),
+        path: launcher_path,
+        duplicate: false,
+        repo_id: 0,
+    });
+}
+
+fn relative_or_absolute_parent(
+    root: &Path,
+    config_path: &Path,
+    source_type: RepoSourceKind,
+) -> String {
+    if source_type == RepoSourceKind::Git {
+        // For git repos, store the relative path from the repo root.
+        config_path
+            .parent()
+            .and_then(|p| p.strip_prefix(root).ok())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    } else {
+        // For FS repos, store the absolute path.
+        config_path
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
+/// Like `relative_or_absolute_parent` but returns the path of the file
+/// itself (not its parent directory). Used for launchers, where the
+/// cache should point at the `.json5` file rather than its containing
+/// folder so callers can read it directly.
+fn relative_or_absolute_path(
+    root: &Path,
+    config_path: &Path,
+    source_type: RepoSourceKind,
+) -> String {
+    if source_type == RepoSourceKind::Git {
+        config_path
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    } else {
+        config_path.to_string_lossy().into_owned()
     }
 }
 
@@ -522,7 +676,7 @@ fn clone_and_walk_git_repo(
     repo_ref: Option<&str>,
     peppy_dirs: &PeppyDirs,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
-) -> std::result::Result<Vec<DiscoveredNode>, String> {
+) -> std::result::Result<(Vec<DiscoveredNode>, Vec<LauncherEntry>), String> {
     let tmp_dir = peppy_dirs.tmp_dir();
     std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("failed to create tmp dir: {}", e))?;
     let tmp =
@@ -533,6 +687,8 @@ fn clone_and_walk_git_repo(
 
     let mut seen = HashSet::new();
     let mut nodes = Vec::new();
+    let mut launchers_seen = HashSet::new();
+    let mut launchers = Vec::new();
     walk_directory(
         tmp.path(),
         RepoSourceKind::Git,
@@ -540,13 +696,15 @@ fn clone_and_walk_git_repo(
         Some(&resolved_ref),
         &mut seen,
         &mut nodes,
+        &mut launchers_seen,
+        &mut launchers,
         &[],
     );
 
-    Ok(nodes)
+    Ok((nodes, launchers))
 }
 
-pub(crate) use crate::services::repo::cache::write_cache;
+pub(crate) use crate::services::repo::cache::{write_cache, write_launcher_cache};
 
 #[cfg(test)]
 mod tests {
@@ -729,7 +887,7 @@ mod tests {
             ),
         );
 
-        let (discovered, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let (discovered, _launchers, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "only non-excluded repo nodes returned");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "one repo should be excluded");
@@ -772,7 +930,7 @@ mod tests {
             ),
         );
 
-        let (discovered, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let (discovered, _launchers, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
         assert_eq!(
             discovered.len(),
             1,
@@ -816,7 +974,7 @@ mod tests {
             r#"[{ "id": 1, "type": "git", "url": "https://example.com/repo.git" }]"#,
         );
 
-        let (discovered, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let (discovered, _launchers, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "FS node should still be found");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "git repo should be excluded");
@@ -841,7 +999,7 @@ mod tests {
         );
 
         // No excluded_repositories.json5 file
-        let (discovered, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let (discovered, _launchers, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "node should be found normally");
         assert!(excluded.is_empty(), "no repos should be excluded");
     }
@@ -869,10 +1027,179 @@ mod tests {
             r#"[{ "id": 1, "type": "url", "url": "https://example.com/packages" }]"#,
         );
 
-        let (discovered, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let (discovered, _launchers, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "FS node should still be found");
         assert_eq!(excluded.len(), 1, "url repo should be excluded");
         assert_eq!(excluded[0].source_type, RepoSourceKind::Url);
+    }
+
+    /// Helper: write a `.json5` launcher file at `path` (any name accepted).
+    fn write_launcher_json5(path: &Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(
+            path,
+            r#"{
+  peppy_schema: "launcher_v1",
+  deployments: []
+}"#,
+        )
+        .unwrap();
+    }
+
+    /// Process_refresh discovers launcher files (any `.json5` filename
+    /// with `peppy_schema: "launcher_v1"`) alongside node files in the
+    /// same FS walk, names them by basename, and dedupes across repos.
+    #[test]
+    fn process_refresh_discovers_launchers_from_fs_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo_a = tmp.path().join("repo_a");
+        let repo_b = tmp.path().join("repo_b");
+        // Three launchers with arbitrary names in repo_a; one collides
+        // with a launcher named the same in repo_b. Note that none of
+        // them use the legacy `peppy_launcher.json5` name.
+        write_launcher_json5(&repo_a.join("openarm01_sim_teleop.json5"));
+        write_launcher_json5(&repo_a.join("calibration.json5"));
+        write_launcher_json5(&repo_a.join("nested").join("demo.json5"));
+        write_launcher_json5(&repo_b.join("openarm01_sim_teleop.json5"));
+        // Throw a node into repo_a too so we exercise the mixed walk.
+        write_peppy_json5(&repo_a.join("node_a"), "node_a", "1.0.0");
+
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+                repo_a.display(),
+                repo_b.display()
+            ),
+        );
+
+        let (discovered, launchers, _excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        assert_eq!(discovered.len(), 1, "node_a should be the only node");
+        assert_eq!(
+            launchers.len(),
+            4,
+            "every launcher kept (including duplicates)"
+        );
+
+        let unique: Vec<&LauncherEntry> = launchers.iter().filter(|l| !l.duplicate).collect();
+        let mut unique_names: Vec<&str> = unique.iter().map(|l| l.node_name.as_str()).collect();
+        unique_names.sort_unstable();
+        assert_eq!(
+            unique_names,
+            vec!["calibration", "demo", "openarm01_sim_teleop"]
+        );
+
+        // Path points at the `.json5` file, not its parent directory, so
+        // downstream code can read it directly.
+        let demo = unique
+            .iter()
+            .find(|l| l.node_name == "demo")
+            .expect("demo launcher");
+        assert!(
+            demo.path.ends_with("demo.json5"),
+            "launcher path should be the .json5 file itself: {}",
+            demo.path
+        );
+
+        let dup: Vec<&LauncherEntry> = launchers.iter().filter(|l| l.duplicate).collect();
+        assert_eq!(dup.len(), 1);
+        assert_eq!(dup[0].node_name, "openarm01_sim_teleop");
+        assert!(
+            dup[0].path.contains("repo_b"),
+            "duplicate should be the lower-priority launcher: {}",
+            dup[0].path
+        );
+    }
+
+    /// `.json5` files that don't declare `peppy_schema: "launcher_v1"`
+    /// must be skipped silently — they're unrelated configuration, not
+    /// launchers.
+    #[test]
+    fn process_refresh_ignores_non_launcher_json5_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        // Real launcher.
+        write_launcher_json5(&repo.join("real_launcher.json5"));
+        // Random JSON5 file (not a launcher schema).
+        std::fs::write(
+            repo.join("settings.json5"),
+            r#"{ theme: "dark", verbose: true }"#,
+        )
+        .unwrap();
+        // Another node config in the wrong shape — this lives elsewhere
+        // in the repo and must not be misclassified.
+        std::fs::write(
+            repo.join("manifest.json5"),
+            r#"{ peppy_schema: "nodes_v1", manifest: { name: "x", tag: "1.0.0" }, interfaces: {}, execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] } }"#,
+        )
+        .unwrap();
+
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
+        );
+
+        let (_discovered, launchers, _excluded) =
+            process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        assert_eq!(
+            launchers.len(),
+            1,
+            "only the real launcher should be cached"
+        );
+        assert_eq!(launchers[0].node_name, "real_launcher");
+    }
+
+    /// The launcher cache is written to disk by the refresh handler so
+    /// downstream lookups can resolve launchers by name.
+    #[test]
+    fn process_refresh_writes_launcher_cache_via_write_launcher_cache() {
+        use crate::services::repo::cache::launchers_repo_cache_path;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo = tmp.path().join("repo");
+        write_launcher_json5(&repo.join("openarm01_sim_teleop.json5"));
+
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
+        );
+
+        let (_discovered, launchers, _excluded) =
+            process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        write_launcher_cache(&peppy_dirs, &launchers).unwrap();
+
+        let cache_path = launchers_repo_cache_path(&peppy_dirs);
+        assert!(cache_path.exists(), "launcher cache should be written");
+
+        let raw = std::fs::read_to_string(&cache_path).expect("read launcher cache");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("launcher cache should be valid JSON");
+        let arr = parsed.as_array().expect("expected JSON array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["entry_type"], "launcher");
+        assert_eq!(arr[0]["node_name"], "openarm01_sim_teleop");
+        assert_eq!(arr[0]["source_type"], "fs");
+        let path_str = arr[0]["path"].as_str().expect("path should be a string");
+        assert!(
+            path_str.ends_with("openarm01_sim_teleop.json5"),
+            "cached path should point at the .json5 file: {path_str}"
+        );
     }
 
     #[test]

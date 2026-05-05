@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::names;
-use crate::services::repo::refresh::{process_refresh, write_cache};
+use crate::services::repo::refresh::{process_refresh, write_cache, write_launcher_cache};
 use crate::services::repo::{json_entry_identity, normalize_repo_entries, repo_source_to_json};
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
@@ -60,9 +60,12 @@ async fn handle_repo_exclude_request(
         })
         .await
         {
-            Ok((Ok((discovered, _excluded)), dirs)) => {
+            Ok((Ok((discovered, launchers, _excluded)), dirs)) => {
                 if let Err(e) = write_cache(&dirs, &discovered) {
                     warn!("Failed to write cache after repo exclusion: {}", e);
+                }
+                if let Err(e) = write_launcher_cache(&dirs, &launchers) {
+                    warn!("Failed to write launcher cache after repo exclusion: {}", e);
                 }
             }
             Ok((Err(e), _dirs)) => {

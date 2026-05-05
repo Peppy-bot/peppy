@@ -111,6 +111,8 @@ fn handle_repo_list_request_inner(
                 let repo_label = path.to_string_lossy().into_owned();
                 let mut repo_seen = HashSet::new();
                 let mut discovered = Vec::new();
+                let mut launchers_seen = HashSet::new();
+                let mut launchers = Vec::new();
                 walk_directory(
                     &path,
                     RepoSourceKind::Fs,
@@ -118,6 +120,8 @@ fn handle_repo_list_request_inner(
                     None,
                     &mut repo_seen,
                     &mut discovered,
+                    &mut launchers_seen,
+                    &mut launchers,
                     &exclusions.fs_paths,
                 );
                 for node in discovered {

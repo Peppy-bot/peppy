@@ -1,6 +1,8 @@
 use crate::Result;
 use crate::names;
-use crate::services::repo::refresh::{process_refresh, read_or_create_repos, write_cache};
+use crate::services::repo::refresh::{
+    process_refresh, read_or_create_repos, write_cache, write_launcher_cache,
+};
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use peppylib::messaging::ServiceRequestContext;
@@ -51,7 +53,10 @@ async fn handle_repo_remove_request(
         match tokio::task::spawn_blocking(move || {
             let _guard = crate::services::repo::refresh_lock().lock();
             match process_refresh(&dirs, &mut |_| {}) {
-                Ok((discovered, _excluded)) => write_cache(&dirs, &discovered),
+                Ok((discovered, launchers, _excluded)) => {
+                    write_cache(&dirs, &discovered)?;
+                    write_launcher_cache(&dirs, &launchers)
+                }
                 Err(e) => Err(e),
             }
         })
