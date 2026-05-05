@@ -5,4 +5,5 @@ mod error;
 mod services;
 
 pub use error::{Error, Result};
+pub use services::repo::cache::nodes_repo_cache_path;
 pub use services::{CoreNode, CoreNodeArguments, FORBIDDEN_ENV_KEYS};

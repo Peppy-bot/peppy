@@ -1,5 +1,6 @@
 use super::common::setup;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
+use core_node::nodes_repo_cache_path;
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 
@@ -85,7 +86,7 @@ fn repo_list_finds_nodes_in_fs_repo() {
     );
 
     // Verify discovery by inspecting the cache that refresh wrote.
-    let cache_path = peppy_dirs.cache_dir().join("nodes.json5");
+    let cache_path = nodes_repo_cache_path(&peppy_dirs);
     let cache_content =
         std::fs::read_to_string(&cache_path).expect("nodes.json5 should be written by refresh");
     let cached: Vec<serde_json::Value> =

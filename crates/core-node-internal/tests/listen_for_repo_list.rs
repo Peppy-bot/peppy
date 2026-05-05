@@ -2,6 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
+use core_node::nodes_repo_cache_path;
 use core_node_api::encoding::{RepoListRequest, RepoListResponse, RepoSourceKind};
 use peppylib::core_node::transport::poll_repo_list;
 use std::time::Duration;
@@ -36,7 +37,7 @@ fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
 fn write_packages_cache(started: &StartedCoreNode, content: &str) {
     let cache_dir = started.peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-    std::fs::write(cache_dir.join("nodes.json5"), content).expect("write cache file");
+    std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
 }
 
 /// Create a directory with a valid peppy.json5 inside it.

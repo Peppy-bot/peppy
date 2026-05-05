@@ -3,7 +3,7 @@ mod clock;
 mod info;
 mod node;
 mod ping;
-mod repo;
+pub(crate) mod repo;
 mod stack;
 
 use clock::{ClockSource, SimClockSource, WallClockSource};

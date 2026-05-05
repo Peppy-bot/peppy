@@ -5,6 +5,7 @@ use config::consts::{
 };
 use config::node::{PeppygenLanguage, QoSProfile};
 use core_node::names;
+use core_node::nodes_repo_cache_path;
 use core_node::{CoreNode, CoreNodeArguments};
 use core_node_api::encoding::{
     ClockRequest, ClockResponse, ClockTick, NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse,
@@ -937,7 +938,7 @@ impl TestPackagesCache {
         std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
         let content =
             serde_json::to_string_pretty(&self.entries).expect("failed to serialize cache entries");
-        std::fs::write(cache_dir.join("nodes.json5"), content)
+        std::fs::write(nodes_repo_cache_path(peppy_dirs), content)
             .expect("failed to write nodes.json5 fixture");
     }
 }

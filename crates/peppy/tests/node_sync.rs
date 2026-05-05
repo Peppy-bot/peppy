@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::consts::PeppyDirs;
 use config::node::{EmittedTopic, MessageFormat, NodeConfigParser, QoSProfile, Toolchain};
+use core_node::nodes_repo_cache_path;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName};
 use peppy::context::AppContext;
@@ -426,8 +428,8 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     .expect("write camera config");
 
     // Seed the daemon's packages cache so the repo tier can find it.
-    let cache_dir = serve.temp_dir().join("cache");
-    std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+    let peppy_dirs = PeppyDirs::new(serve.temp_dir());
+    std::fs::create_dir_all(peppy_dirs.cache_dir()).expect("create cache dir");
     let packages_json = serde_json::json!([{
         "node_name": "uvc_camera",
         "node_tag": "0.1.0",
@@ -435,7 +437,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
         "path": camera_dir.path().to_string_lossy(),
     }]);
     std::fs::write(
-        cache_dir.join("nodes.json5"),
+        nodes_repo_cache_path(&peppy_dirs),
         serde_json::to_string_pretty(&packages_json).unwrap(),
     )
     .expect("write nodes.json5");

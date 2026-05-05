@@ -2,6 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
+use core_node::nodes_repo_cache_path;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use peppylib::core_node::transport::poll_repo_remove;
 use std::time::Duration;
@@ -31,7 +32,7 @@ fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
 fn write_packages_cache(started: &StartedCoreNode, content: &str) {
     let cache_dir = started.peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-    std::fs::write(cache_dir.join("nodes.json5"), content).expect("write cache file");
+    std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
 }
 
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
@@ -82,7 +83,7 @@ async fn remove_fs_repo_succeeds() {
     assert!(repos.is_empty(), "repos should be empty after removal");
 
     // Cache refresh is triggered for all repo types (including fs)
-    let cache_path = started.peppy_dirs.cache_dir().join("nodes.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(
         cache_path.exists(),
         "nodes.json5 cache should exist after fs repo removal"
@@ -138,7 +139,7 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
 
     // Verify refresh was triggered: nodes.json5 should be updated.
     // Since the git repo was removed, cache should no longer contain git_sensor.
-    let cache_path = started.peppy_dirs.cache_dir().join("nodes.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(
         cache_path.exists(),
         "nodes.json5 cache should exist after refresh"
@@ -186,7 +187,7 @@ async fn remove_url_repo_succeeds_and_triggers_refresh() {
     assert_eq!(repos[0]["type"], "fs");
 
     // Verify refresh was triggered (cache file should be written)
-    let cache_path = started.peppy_dirs.cache_dir().join("nodes.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(
         cache_path.exists(),
         "nodes.json5 cache should exist after refresh"

@@ -7,6 +7,7 @@ use common::{
 use config::consts::NODE_CONFIG_FILE;
 use config::node::QoSProfile;
 use core_node::names;
+use core_node::nodes_repo_cache_path;
 use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSourceKind,
@@ -549,7 +550,7 @@ async fn refresh_cache_written() {
     let result = send_refresh_and_wait(&started).await;
     assert!(result.result.success, "refresh should succeed");
 
-    let cache_path = started.peppy_dirs.cache_dir().join("nodes.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(cache_path.exists(), "cache file should exist");
 
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
@@ -608,7 +609,7 @@ async fn refresh_cache_includes_variants() {
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 2);
 
-    let cache_path = started.peppy_dirs.cache_dir().join("nodes.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
     let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
 
@@ -686,7 +687,7 @@ async fn refresh_cache_includes_duplicates() {
     assert!(feedback_names.contains(&"unique_node"));
 
     // Cache should contain all 3 entries (including the duplicate)
-    let cache_path = started.peppy_dirs.cache_dir().join("nodes.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
     let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
     assert_eq!(
@@ -949,7 +950,7 @@ async fn refresh_excluded_repos_not_in_cache() {
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
 
-    let cache_path = started.peppy_dirs.cache_dir().join("nodes.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
     let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
     assert_eq!(

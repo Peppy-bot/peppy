@@ -235,7 +235,7 @@ mod tests {
         marker: &str,
         previous: Option<SystemTime>,
     ) -> SystemTime {
-        let cache_path = peppy_dirs.cache_dir().join("nodes.json5");
+        let cache_path = crate::services::repo::cache::nodes_repo_cache_path(peppy_dirs);
         std::fs::create_dir_all(peppy_dirs.cache_dir()).expect("create cache dir");
 
         for attempt in 0..20 {

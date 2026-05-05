@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::names;
+use crate::services::repo::cache::nodes_repo_cache_path;
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos, walk_directory};
 use config::consts::PeppyDirs;
@@ -208,7 +209,7 @@ fn handle_repo_list_request_inner(
 
 /// Read cached node entries from nodes.json5 in the cache directory.
 fn read_cached_nodes(peppy_dirs: &PeppyDirs) -> Vec<Value> {
-    let cache_path = peppy_dirs.cache_dir().join("nodes.json5");
+    let cache_path = nodes_repo_cache_path(peppy_dirs);
     if !cache_path.exists() {
         return Vec::new();
     }
