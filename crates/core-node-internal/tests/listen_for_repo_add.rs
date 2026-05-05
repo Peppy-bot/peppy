@@ -18,6 +18,26 @@ async fn send_repo_add(started: &StartedCoreNode, request: &RepoAddRequest) -> R
     .expect("repo_add poll should succeed")
 }
 
+/// Assert the most recently appended repo got the next-available id —
+/// strictly greater than every other id present. Avoids hardcoding a
+/// specific value, which goes stale every time a default is added to
+/// the shipped `default_repositories.json5`.
+fn assert_last_got_next_id(repos: &[serde_json::Value]) {
+    let last_id = repos
+        .last()
+        .and_then(|r| r["id"].as_u64())
+        .expect("last repo should have an integer id");
+    let max_other = repos[..repos.len() - 1]
+        .iter()
+        .filter_map(|r| r["id"].as_u64())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        last_id > max_other,
+        "added entry should get the next available id (got {last_id}, max other {max_other})"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_repo_add_url_succeed() {
     let started = start_core_node_with_mock_messenger().await;
@@ -39,10 +59,7 @@ async fn listen_for_repo_add_url_succeed() {
     let last = repos.last().unwrap();
     assert_eq!(last["type"], "url");
     assert_eq!(last["url"], "https://example.com/packages");
-    assert_eq!(
-        last["id"], 1001,
-        "added entry should get the next available id"
-    );
+    assert_last_got_next_id(&repos);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -68,10 +85,7 @@ async fn listen_for_repo_add_git_succeed() {
     assert_eq!(last["type"], "git");
     assert_eq!(last["url"], "https://github.com/example/repo.git");
     assert_eq!(last["ref"], "main");
-    assert_eq!(
-        last["id"], 1001,
-        "added entry should get the next available id"
-    );
+    assert_last_got_next_id(&repos);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -89,10 +103,7 @@ async fn listen_for_repo_add_fs_succeed() {
     let last = repos.last().unwrap();
     assert_eq!(last["type"], "fs");
     assert_eq!(last["path"], "/tmp/my-local-repo");
-    assert_eq!(
-        last["id"], 1001,
-        "added entry should get the next available id"
-    );
+    assert_last_got_next_id(&repos);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

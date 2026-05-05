@@ -2,7 +2,7 @@ use crate::Result;
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::clone_with_progress;
-use crate::services::repo::cache::{EntryType, LauncherEntry};
+use crate::services::repo::cache::LauncherCacheEntry;
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::normalize_repo_entries;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
@@ -183,7 +183,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
     }
 }
 
-pub(crate) use crate::services::repo::cache::PackageEntry as DiscoveredNode;
+pub(crate) use crate::services::repo::cache::NodeCacheEntry;
 
 /// A repository that was skipped during refresh because it appears in the
 /// `excluded_repositories.json5` configuration.
@@ -257,7 +257,11 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
-) -> Result<(Vec<DiscoveredNode>, Vec<LauncherEntry>, Vec<ExcludedRepo>)> {
+) -> Result<(
+    Vec<NodeCacheEntry>,
+    Vec<LauncherCacheEntry>,
+    Vec<ExcludedRepo>,
+)> {
     let (repos, exclusions) = {
         let _guard = crate::services::repo::repos_file_lock().lock();
         let repos = read_or_create_repos(peppy_dirs)?;
@@ -267,8 +271,8 @@ pub(crate) fn process_refresh(
 
     let mut global_seen: HashSet<(String, String)> = HashSet::new();
     let mut global_seen_launchers: HashSet<String> = HashSet::new();
-    let mut all_nodes: Vec<DiscoveredNode> = Vec::new();
-    let mut all_launchers: Vec<LauncherEntry> = Vec::new();
+    let mut all_nodes: Vec<NodeCacheEntry> = Vec::new();
+    let mut all_launchers: Vec<LauncherCacheEntry> = Vec::new();
     let excluded_repos: Vec<ExcludedRepo> = exclusions
         .entries
         .iter()
@@ -343,7 +347,7 @@ pub(crate) fn process_refresh(
                     all_nodes.push(node);
                 }
                 for mut launcher in repo_launchers {
-                    if !global_seen_launchers.insert(launcher.node_name.clone()) {
+                    if !global_seen_launchers.insert(launcher.launcher_name.clone()) {
                         launcher.duplicate = true;
                     }
                     all_launchers.push(launcher);
@@ -382,7 +386,7 @@ pub(crate) fn process_refresh(
                             all_nodes.push(node);
                         }
                         for mut launcher in launchers {
-                            if !global_seen_launchers.insert(launcher.node_name.clone()) {
+                            if !global_seen_launchers.insert(launcher.launcher_name.clone()) {
                                 launcher.duplicate = true;
                             }
                             all_launchers.push(launcher);
@@ -412,9 +416,9 @@ pub(crate) fn walk_directory(
     source_uri: Option<&str>,
     resolved_ref: Option<&str>,
     nodes_seen: &mut HashSet<(String, String)>,
-    nodes: &mut Vec<DiscoveredNode>,
+    nodes: &mut Vec<NodeCacheEntry>,
     launchers_seen: &mut HashSet<String>,
-    launchers: &mut Vec<LauncherEntry>,
+    launchers: &mut Vec<LauncherCacheEntry>,
     excluded_paths: &[PathBuf],
 ) {
     // Canonicalize the root so that paths emitted by the walker share a
@@ -485,7 +489,7 @@ fn collect_node_entry(
     resolved_ref: Option<&str>,
     config_path: &Path,
     seen: &mut HashSet<(String, String)>,
-    nodes: &mut Vec<DiscoveredNode>,
+    nodes: &mut Vec<NodeCacheEntry>,
 ) {
     let parsed = match NodeConfigParser::from_path(config_path) {
         Ok(parsed) => parsed,
@@ -510,8 +514,7 @@ fn collect_node_entry(
 
     let node_path = relative_or_absolute_parent(root, config_path, source_type);
 
-    nodes.push(DiscoveredNode {
-        entry_type: EntryType::Node,
+    nodes.push(NodeCacheEntry {
         node_name: name,
         node_tag: tag,
         source_type,
@@ -532,7 +535,7 @@ fn collect_launcher_entry(
     resolved_ref: Option<&str>,
     config_path: &Path,
     seen: &mut HashSet<String>,
-    launchers: &mut Vec<LauncherEntry>,
+    launchers: &mut Vec<LauncherCacheEntry>,
 ) {
     // Parse the file as a launcher; if it doesn't deserialize cleanly
     // or its `peppy_schema` isn't `LauncherV1`, it is just an unrelated
@@ -576,9 +579,8 @@ fn collect_launcher_entry(
 
     let launcher_path = relative_or_absolute_path(root, config_path, source_type);
 
-    launchers.push(LauncherEntry {
-        entry_type: EntryType::Launcher,
-        node_name: name,
+    launchers.push(LauncherCacheEntry {
+        launcher_name: name,
         source_type,
         source_uri: source_uri.map(|s| s.to_string()),
         resolved_ref: resolved_ref.map(|s| s.to_string()),
@@ -676,7 +678,7 @@ fn clone_and_walk_git_repo(
     repo_ref: Option<&str>,
     peppy_dirs: &PeppyDirs,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
-) -> std::result::Result<(Vec<DiscoveredNode>, Vec<LauncherEntry>), String> {
+) -> std::result::Result<(Vec<NodeCacheEntry>, Vec<LauncherCacheEntry>), String> {
     let tmp_dir = peppy_dirs.tmp_dir();
     std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("failed to create tmp dir: {}", e))?;
     let tmp =
@@ -721,16 +723,30 @@ mod tests {
         let repos = read_or_create_repos(&peppy_dirs).unwrap();
         assert!(repos_path.exists(), "repositories.json5 should be created");
 
-        assert_eq!(repos.len(), 1, "default repos should have 1 entry");
+        // Don't pin the exact count — defaults grow over time. Just
+        // assert that the well-known entries shipped in the template are
+        // present with their expected shape.
+        let by_id = |id: u64| -> &Value {
+            repos
+                .iter()
+                .find(|r| r.get("id").and_then(|v| v.as_u64()) == Some(id))
+                .unwrap_or_else(|| panic!("default repos should include id {id}"))
+        };
 
-        let git_entry = &repos[0];
-        assert_eq!(git_entry.get("id").unwrap().as_u64().unwrap(), 1000);
-        assert_eq!(git_entry.get("type").unwrap().as_str().unwrap(), "git");
+        let nodes_hub = by_id(1000);
+        assert_eq!(nodes_hub.get("type").unwrap().as_str().unwrap(), "git");
         assert_eq!(
-            git_entry.get("url").unwrap().as_str().unwrap(),
+            nodes_hub.get("url").unwrap().as_str().unwrap(),
             "https://github.com/Peppy-bot/nodes_hub"
         );
-        assert_eq!(git_entry.get("ref").unwrap().as_str().unwrap(), "main");
+        assert_eq!(nodes_hub.get("ref").unwrap().as_str().unwrap(), "main");
+
+        let launchers_hub = by_id(1001);
+        assert_eq!(launchers_hub.get("type").unwrap().as_str().unwrap(), "git");
+        assert_eq!(
+            launchers_hub.get("url").unwrap().as_str().unwrap(),
+            "https://github.com/Peppy-bot/launchers_hub.git"
+        );
     }
 
     #[test]
@@ -1085,8 +1101,8 @@ mod tests {
             "every launcher kept (including duplicates)"
         );
 
-        let unique: Vec<&LauncherEntry> = launchers.iter().filter(|l| !l.duplicate).collect();
-        let mut unique_names: Vec<&str> = unique.iter().map(|l| l.node_name.as_str()).collect();
+        let unique: Vec<&LauncherCacheEntry> = launchers.iter().filter(|l| !l.duplicate).collect();
+        let mut unique_names: Vec<&str> = unique.iter().map(|l| l.launcher_name.as_str()).collect();
         unique_names.sort_unstable();
         assert_eq!(
             unique_names,
@@ -1097,7 +1113,7 @@ mod tests {
         // downstream code can read it directly.
         let demo = unique
             .iter()
-            .find(|l| l.node_name == "demo")
+            .find(|l| l.launcher_name == "demo")
             .expect("demo launcher");
         assert!(
             demo.path.ends_with("demo.json5"),
@@ -1105,9 +1121,9 @@ mod tests {
             demo.path
         );
 
-        let dup: Vec<&LauncherEntry> = launchers.iter().filter(|l| l.duplicate).collect();
+        let dup: Vec<&LauncherCacheEntry> = launchers.iter().filter(|l| l.duplicate).collect();
         assert_eq!(dup.len(), 1);
-        assert_eq!(dup[0].node_name, "openarm01_sim_teleop");
+        assert_eq!(dup[0].launcher_name, "openarm01_sim_teleop");
         assert!(
             dup[0].path.contains("repo_b"),
             "duplicate should be the lower-priority launcher: {}",
@@ -1157,7 +1173,7 @@ mod tests {
             1,
             "only the real launcher should be cached"
         );
-        assert_eq!(launchers[0].node_name, "real_launcher");
+        assert_eq!(launchers[0].launcher_name, "real_launcher");
     }
 
     /// The launcher cache is written to disk by the refresh handler so
@@ -1192,13 +1208,109 @@ mod tests {
             serde_json::from_str(&raw).expect("launcher cache should be valid JSON");
         let arr = parsed.as_array().expect("expected JSON array");
         assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["entry_type"], "launcher");
-        assert_eq!(arr[0]["node_name"], "openarm01_sim_teleop");
+        assert_eq!(arr[0]["launcher_name"], "openarm01_sim_teleop");
         assert_eq!(arr[0]["source_type"], "fs");
         let path_str = arr[0]["path"].as_str().expect("path should be a string");
         assert!(
             path_str.ends_with("openarm01_sim_teleop.json5"),
             "cached path should point at the .json5 file: {path_str}"
+        );
+    }
+
+    /// End-to-end coverage of the launchers_hub flow: a git repository
+    /// (cloned via libgit2's local transport) that ships a launcher at
+    /// `openarm01/openarm01_teleop.json5` should land in `launcher.json5`
+    /// with `launcher_name = "openarm01_teleop"`, the `file://` source
+    /// URI, a non-`HEAD` resolved ref, and the relative path to the
+    /// `.json5` file.
+    #[test]
+    fn process_refresh_discovers_launchers_from_git_repo() {
+        use crate::services::repo::cache::launchers_repo_cache_path;
+
+        // Build a real git repo with one launcher committed at the same
+        // path layout as launchers_hub's openarm01_teleop launcher.
+        let src_tmp = tempfile::tempdir().unwrap();
+        let src = src_tmp.path();
+        let repo = git2::Repository::init(src).expect("init repo");
+        std::fs::create_dir_all(src.join("openarm01")).unwrap();
+        std::fs::write(
+            src.join("openarm01").join("openarm01_teleop.json5"),
+            r#"{
+                peppy_schema: "launcher_v1",
+                deployments: []
+            }"#,
+        )
+        .unwrap();
+        let signature =
+            git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
+        let mut index = repo.index().expect("open index");
+        index
+            .add_path(Path::new("openarm01/openarm01_teleop.json5"))
+            .expect("stage launcher");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "add openarm01_teleop launcher",
+            &tree,
+            &[],
+        )
+        .expect("commit");
+        let branch = repo
+            .head()
+            .expect("head")
+            .shorthand()
+            .expect("shorthand")
+            .to_owned();
+
+        // Configure peppy with a single git repo entry pointing at the
+        // local source via `file://`.
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+        let repo_url = format!("file://{}", src.display());
+        write_repos(
+            &peppy_dirs,
+            &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
+        );
+
+        let (_nodes, launchers, _excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        assert_eq!(launchers.len(), 1, "exactly one launcher expected");
+        let launcher = &launchers[0];
+        assert_eq!(launcher.launcher_name, "openarm01_teleop");
+        assert_eq!(launcher.source_type, RepoSourceKind::Git);
+        assert_eq!(launcher.source_uri.as_deref(), Some(repo_url.as_str()));
+        assert_eq!(
+            launcher.resolved_ref.as_deref(),
+            Some(branch.as_str()),
+            "resolved_ref should record the branch we cloned, not literal `HEAD`"
+        );
+        assert_eq!(launcher.path, "openarm01/openarm01_teleop.json5");
+        assert!(!launcher.duplicate);
+
+        // Round-trip through `write_launcher_cache` so we also lock in
+        // the on-disk shape the user specified: `launcher_name` field
+        // present, `entry_type` and `node_name` absent.
+        write_launcher_cache(&peppy_dirs, &launchers).unwrap();
+        let raw = std::fs::read_to_string(launchers_repo_cache_path(&peppy_dirs))
+            .expect("read launcher cache");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("launcher cache should be valid JSON");
+        let entry = &parsed.as_array().expect("array")[0];
+        assert_eq!(entry["launcher_name"], "openarm01_teleop");
+        assert_eq!(entry["source_type"], "git");
+        assert_eq!(entry["source_uri"], repo_url);
+        assert_eq!(entry["resolved_ref"], branch);
+        assert_eq!(entry["path"], "openarm01/openarm01_teleop.json5");
+        assert!(
+            entry.get("entry_type").is_none(),
+            "entry_type should not be present in the on-disk schema"
+        );
+        assert!(
+            entry.get("node_name").is_none(),
+            "node_name should be replaced by launcher_name"
         );
     }
 

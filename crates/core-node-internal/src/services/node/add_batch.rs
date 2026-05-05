@@ -7,7 +7,7 @@
 //! Mid-batch failure rolls back every node pushed during the batch via a
 //! drop guard.
 
-use super::super::repo::cache::{self, PackageEntry};
+use super::super::repo::cache::{self, NodeCacheEntry};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::add::{NodeAddActionContext, run_node_add};
 use super::cache as node_cache;
@@ -309,7 +309,7 @@ type MaterializeOutput = (
 #[derive(Clone, Copy)]
 struct BatchResolutionCtx<'a> {
     peppy_dirs: &'a PeppyDirs,
-    entries: &'a [PackageEntry],
+    entries: &'a [NodeCacheEntry],
     cache_generation: Option<SystemTime>,
     feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
 }

@@ -671,12 +671,15 @@ async fn materialize_repo_deps(
         return Ok((resolved, provenance, stack_hits));
     }
 
-    // Lazy-load the package cache: defer the read until the first stack
+    // Lazy-load the nodes cache: defer the read until the first stack
     // miss so a manifest fully covered by the NodeStack never touches
     // nodes.json5 (and a malformed cache can't fail a sync that
     // wouldn't have used it). Loaded once for the whole BFS so the
     // `mtime`-keyed memo + checkout dedup amortize across deps.
-    let mut cache: Option<(Vec<repo_cache::PackageEntry>, Option<std::time::SystemTime>)> = None;
+    let mut cache: Option<(
+        Vec<repo_cache::NodeCacheEntry>,
+        Option<std::time::SystemTime>,
+    )> = None;
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut pending: Vec<(String, String)> = deps

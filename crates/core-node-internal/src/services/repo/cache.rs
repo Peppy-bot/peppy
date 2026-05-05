@@ -22,22 +22,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 use tracing::warn;
 
-/// Discriminator written into each cache entry so a single reader could
-/// tell node entries apart from launcher entries even if the two caches
-/// were ever merged or inspected side-by-side. Each cache file only
-/// contains entries of one type, but the field is always serialized so
-/// that the format is self-describing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EntryType {
-    Node,
-    Launcher,
-}
-
 /// One entry as it appears in `nodes.json5`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PackageEntry {
-    pub entry_type: EntryType,
+pub struct NodeCacheEntry {
     pub node_name: String,
     pub node_tag: String,
     pub source_type: RepoSourceKind,
@@ -62,7 +49,7 @@ pub struct PackageEntry {
     /// in the file for `repo list` but are skipped during lookup.
     #[serde(default, skip_serializing_if = "is_false")]
     pub duplicate: bool,
-    /// The id of the repository entry this package was discovered
+    /// The id of the repository entry this node was discovered
     /// under (as read from `repositories.json5`). Derived at read time
     /// and never serialized back to disk.
     #[serde(skip)]
@@ -74,12 +61,9 @@ pub struct PackageEntry {
 /// a tag, variants, or a checksum — they're just the location of a
 /// `peppy_launcher.json5` file by name.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct LauncherEntry {
-    pub entry_type: EntryType,
-    /// Name of the launcher (the directory containing the launcher
-    /// file). Field is named `node_name` so the on-disk shape stays
-    /// uniform with `PackageEntry`.
-    pub node_name: String,
+pub struct LauncherCacheEntry {
+    /// Name of the launcher (file stem of the `.json5` file).
+    pub launcher_name: String,
     pub source_type: RepoSourceKind,
     /// Git repository URL or HTTP archive URL. `None` for FS entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -109,7 +93,7 @@ fn is_false(b: &bool) -> bool {
 /// the read.
 pub fn load_with_generation(
     peppy_dirs: &PeppyDirs,
-) -> Result<(Vec<PackageEntry>, Option<SystemTime>)> {
+) -> Result<(Vec<NodeCacheEntry>, Option<SystemTime>)> {
     let path = nodes_repo_cache_path(peppy_dirs);
     let generation = std::fs::metadata(&path)
         .ok()
@@ -131,18 +115,18 @@ pub fn load_with_generation(
     }
 
     let content = std::fs::read_to_string(&path)?;
-    let raw: Vec<PackageEntry> = serde_json5::from_str(&content).map_err(|e| {
+    let raw: Vec<NodeCacheEntry> = serde_json5::from_str(&content).map_err(|e| {
         core_node_api::Error::Decoding(format!(
-            "failed to parse packages cache at {}: {e}",
+            "failed to parse nodes cache at {}: {e}",
             path.display()
         ))
     })?;
 
-    // Build a URL/path → repo_id map so we can tag each package with its
+    // Build a URL/path → repo_id map so we can tag each node with its
     // originating repository's id. Missing matches default to 0 (highest
     // priority) to preserve previous behavior for hand-written caches.
     let repos = read_or_create_repos(peppy_dirs)?;
-    let mut entries: Vec<PackageEntry> = raw
+    let mut entries: Vec<NodeCacheEntry> = raw
         .into_iter()
         .map(|mut e| {
             e.repo_id = lookup_repo_id(&repos, e.source_type, e.source_uri.as_deref(), &e.path);
@@ -179,7 +163,7 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
 /// The write is performed via a sibling temp file + atomic rename so that
 /// concurrent readers (see [`load_with_generation`]) never observe a
 /// truncated or partially-written `nodes.json5`.
-pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[PackageEntry]) -> Result<()> {
+pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[NodeCacheEntry]) -> Result<()> {
     let cache_dir = peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir)?;
     let content = serde_json::to_string_pretty(nodes)
@@ -198,7 +182,7 @@ pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[PackageEntry]) -> Res
 /// file.
 pub(crate) fn write_launcher_cache(
     peppy_dirs: &PeppyDirs,
-    launchers: &[LauncherEntry],
+    launchers: &[LauncherCacheEntry],
 ) -> Result<()> {
     let cache_dir = peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir)?;
@@ -241,7 +225,11 @@ fn lookup_repo_id(
 
 /// Returns the highest-priority (lowest `repo_id`) non-duplicate entry
 /// for `(name, tag)`. Returns `None` when no entry matches.
-pub fn lookup<'a>(entries: &'a [PackageEntry], name: &str, tag: &str) -> Option<&'a PackageEntry> {
+pub fn lookup<'a>(
+    entries: &'a [NodeCacheEntry],
+    name: &str,
+    tag: &str,
+) -> Option<&'a NodeCacheEntry> {
     entries
         .iter()
         .filter(|e| !e.duplicate && e.node_name == name && e.node_tag == tag)
@@ -256,7 +244,7 @@ pub fn launchers_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs.cache_dir().join("launcher.json5")
 }
 
-/// Looks up `(name, tag)` in the packages cache and translates the matched
+/// Looks up `(name, tag)` in the nodes cache and translates the matched
 /// entry into a concrete `NodeSource` (Fs / Git / Http) that downstream
 /// resolution can handle directly.
 pub(crate) fn resolve_repo_node_source(
@@ -264,8 +252,8 @@ pub(crate) fn resolve_repo_node_source(
     tag: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<NodeSource, String> {
-    let (entries, _) = load_with_generation(peppy_dirs)
-        .map_err(|e| format!("failed to load packages cache: {e}"))?;
+    let (entries, _) =
+        load_with_generation(peppy_dirs).map_err(|e| format!("failed to load nodes cache: {e}"))?;
     let id = format!("{name}:{tag}");
     let entry = lookup(&entries, name, tag).ok_or_else(|| {
         format!(
@@ -311,7 +299,7 @@ pub(crate) fn resolve_repo_node_source(
 struct MemoEntry {
     mtime: SystemTime,
     repos_mtime: SystemTime,
-    entries: Arc<Vec<PackageEntry>>,
+    entries: Arc<Vec<NodeCacheEntry>>,
 }
 
 fn memo_map() -> &'static Mutex<HashMap<PathBuf, MemoEntry>> {
@@ -323,14 +311,14 @@ fn memo_get(
     path: &Path,
     mtime: SystemTime,
     repos_mtime: SystemTime,
-) -> Option<Arc<Vec<PackageEntry>>> {
+) -> Option<Arc<Vec<NodeCacheEntry>>> {
     let map = memo_map().lock();
     map.get(path)
         .filter(|e| e.mtime == mtime && e.repos_mtime == repos_mtime)
         .map(|e| Arc::clone(&e.entries))
 }
 
-fn memo_put(path: &Path, mtime: SystemTime, repos_mtime: SystemTime, entries: Vec<PackageEntry>) {
+fn memo_put(path: &Path, mtime: SystemTime, repos_mtime: SystemTime, entries: Vec<NodeCacheEntry>) {
     memo_map().lock().insert(
         path.to_path_buf(),
         MemoEntry {
@@ -345,9 +333,8 @@ fn memo_put(path: &Path, mtime: SystemTime, repos_mtime: SystemTime, entries: Ve
 mod tests {
     use super::*;
 
-    fn mk_entry(name: &str, tag: &str, repo_id: u32, duplicate: bool) -> PackageEntry {
-        PackageEntry {
-            entry_type: EntryType::Node,
+    fn mk_entry(name: &str, tag: &str, repo_id: u32, duplicate: bool) -> NodeCacheEntry {
+        NodeCacheEntry {
             node_name: name.to_owned(),
             node_tag: tag.to_owned(),
             source_type: RepoSourceKind::Fs,
@@ -361,9 +348,8 @@ mod tests {
         }
     }
 
-    fn mk_fs_entry(name: &str, tag: &str, path: &str) -> PackageEntry {
-        PackageEntry {
-            entry_type: EntryType::Node,
+    fn mk_fs_entry(name: &str, tag: &str, path: &str) -> NodeCacheEntry {
+        NodeCacheEntry {
             node_name: name.to_owned(),
             node_tag: tag.to_owned(),
             source_type: RepoSourceKind::Fs,
@@ -382,9 +368,8 @@ mod tests {
         tag: &str,
         uri: Option<&str>,
         resolved_ref: Option<&str>,
-    ) -> PackageEntry {
-        PackageEntry {
-            entry_type: EntryType::Node,
+    ) -> NodeCacheEntry {
+        NodeCacheEntry {
             node_name: name.to_owned(),
             node_tag: tag.to_owned(),
             source_type: RepoSourceKind::Git,
@@ -403,9 +388,8 @@ mod tests {
         tag: &str,
         uri: Option<&str>,
         checksum: Option<&str>,
-    ) -> PackageEntry {
-        PackageEntry {
-            entry_type: EntryType::Node,
+    ) -> NodeCacheEntry {
+        NodeCacheEntry {
             node_name: name.to_owned(),
             node_tag: tag.to_owned(),
             source_type: RepoSourceKind::Url,
@@ -427,10 +411,9 @@ mod tests {
         path: &str,
         repo_id: u32,
         duplicate: bool,
-    ) -> LauncherEntry {
-        LauncherEntry {
-            entry_type: EntryType::Launcher,
-            node_name: name.to_owned(),
+    ) -> LauncherCacheEntry {
+        LauncherCacheEntry {
+            launcher_name: name.to_owned(),
             source_type,
             source_uri: uri.map(str::to_owned),
             resolved_ref: resolved_ref.map(str::to_owned),
@@ -481,8 +464,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let input = vec![
-            PackageEntry {
-                entry_type: EntryType::Node,
+            NodeCacheEntry {
                 node_name: "a".to_owned(),
                 node_tag: "0.1.0".to_owned(),
                 source_type: RepoSourceKind::Git,
@@ -494,8 +476,7 @@ mod tests {
                 duplicate: false,
                 repo_id: 0,
             },
-            PackageEntry {
-                entry_type: EntryType::Node,
+            NodeCacheEntry {
                 node_name: "b".to_owned(),
                 node_tag: "0.2.0".to_owned(),
                 source_type: RepoSourceKind::Fs,
@@ -512,29 +493,11 @@ mod tests {
         let (loaded, generation) = load_with_generation(&peppy_dirs).unwrap();
         assert!(generation.is_some());
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].entry_type, EntryType::Node);
         assert_eq!(loaded[0].node_name, "a");
         assert_eq!(loaded[0].variants, vec!["sim".to_owned()]);
         assert_eq!(loaded[0].resolved_ref.as_deref(), Some("main"));
         assert_eq!(loaded[1].node_name, "b");
         assert!(loaded[1].duplicate);
-    }
-
-    /// `write_cache` persists `entry_type: "node"` so the on-disk shape
-    /// stays self-describing even when only one variant is in play.
-    #[test]
-    fn write_cache_serializes_entry_type() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entries = vec![mk_fs_entry("a", "0.1.0", "/tmp/a")];
-        write_cache(&peppy_dirs, &entries).unwrap();
-
-        let raw =
-            std::fs::read_to_string(nodes_repo_cache_path(&peppy_dirs)).expect("read nodes.json5");
-        assert!(
-            raw.contains("\"entry_type\": \"node\""),
-            "nodes.json5 should serialize entry_type: \"node\", got:\n{raw}"
-        );
     }
 
     // -- resolve_repo_node_source tests --
@@ -678,8 +641,7 @@ mod tests {
     // -- launcher cache tests --
 
     /// `write_launcher_cache` writes to the path returned by
-    /// `launchers_repo_cache_path` and serializes every entry with the
-    /// `entry_type: "launcher"` discriminator.
+    /// `launchers_repo_cache_path` with the on-disk launcher schema.
     #[test]
     fn write_launcher_cache_serializes_entries() {
         let tmp = tempfile::tempdir().unwrap();
@@ -718,16 +680,13 @@ mod tests {
             serde_json::from_str(&raw).expect("launcher cache should be valid JSON");
         let arr = parsed.as_array().expect("expected array");
         assert_eq!(arr.len(), 2);
-        for entry in arr {
-            assert_eq!(entry["entry_type"], "launcher");
-        }
-        assert_eq!(arr[0]["node_name"], "openarm01_sim_teleop");
+        assert_eq!(arr[0]["launcher_name"], "openarm01_sim_teleop");
         assert_eq!(
             arr[0]["source_uri"],
             "https://github.com/Peppy-bot/launchers_hub"
         );
         assert_eq!(arr[0]["resolved_ref"], "main");
-        assert_eq!(arr[1]["node_name"], "local_demo");
+        assert_eq!(arr[1]["launcher_name"], "local_demo");
         assert_eq!(arr[1]["source_type"], "fs");
     }
 

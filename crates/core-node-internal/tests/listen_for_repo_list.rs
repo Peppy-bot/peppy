@@ -84,12 +84,15 @@ async fn list_default_repos_creates_repositories_file() {
     let content = std::fs::read_to_string(&repos_path).expect("read created file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse created file");
-    assert_eq!(repos.len(), 1, "default file should contain 1 entry");
-    assert_eq!(repos[0].get("type").unwrap().as_str().unwrap(), "git");
-    assert_eq!(
-        repos[0].get("url").unwrap().as_str().unwrap(),
-        "https://github.com/Peppy-bot/nodes_hub"
-    );
+    // Don't pin the count — the shipped defaults grow over time. Just
+    // verify the canonical nodes_hub entry is there.
+    let nodes_hub = repos
+        .iter()
+        .find(|r| {
+            r.get("url").and_then(|v| v.as_str()) == Some("https://github.com/Peppy-bot/nodes_hub")
+        })
+        .expect("default repos should include nodes_hub");
+    assert_eq!(nodes_hub.get("type").unwrap().as_str().unwrap(), "git");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
