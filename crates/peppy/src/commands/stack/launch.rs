@@ -5,7 +5,7 @@ use std::time::Duration;
 use config::launcher::PeppyLauncherParser;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
+    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, resolve_launcher_path,
 };
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::info;
@@ -154,6 +154,9 @@ async fn launch_async(
     node_run_idle_timeout_secs: u64,
     max_timeout_secs: Option<u64>,
 ) -> Result<()> {
+    // Auto-append `.json5` when the user passes the bare name (e.g. `openarm01_sim_teleop`).
+    let launcher_config_path = resolve_launcher_path(launcher_config_path);
+
     // Canonicalize the path so the core node can find the file regardless of its working directory
     let launcher_config_path = launcher_config_path.canonicalize().map_err(|e| {
         Error::ExecutionFailed(format!(

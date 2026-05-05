@@ -13,6 +13,23 @@ use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_t
 /// received on the wire — Cap'n Proto defaults unset `UInt64` to 0).
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
 
+/// Resolves a user-supplied launcher path, treating a bare name as shorthand for the `.json5`
+/// file. If the path does not have a `.json5` extension and a sibling `<path>.json5` exists as
+/// a file, that is returned; otherwise the original path is returned unchanged so the caller's
+/// existing not-found error path fires.
+///
+/// Lives here so every endpoint that constructs a `LaunchGoal` (CLI, peppylib, future SDKs)
+/// can call it — keeping the bare-name shorthand consistent regardless of entry point.
+pub fn resolve_launcher_path(path: PathBuf) -> PathBuf {
+    if path.extension().is_some_and(|ext| ext == "json5") {
+        return path;
+    }
+    let mut with_ext = path.clone().into_os_string();
+    with_ext.push(".json5");
+    let candidate = PathBuf::from(with_ext);
+    if candidate.is_file() { candidate } else { path }
+}
+
 /// Applies a default value when a timeout field is 0 (Cap'n Proto defaults unset UInt64 to 0).
 fn with_timeout_default(value: u64, default: u64) -> u64 {
     if value == 0 { default } else { value }
@@ -418,5 +435,46 @@ impl LaunchResult {
             node_build_logs,
             node_run_logs,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_launcher_path_appends_json5_when_sibling_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("openarm01_sim_teleop");
+        let with_ext = tmp.path().join("openarm01_sim_teleop.json5");
+        std::fs::write(&with_ext, "{}").unwrap();
+
+        assert_eq!(resolve_launcher_path(bare), with_ext);
+    }
+
+    #[test]
+    fn resolve_launcher_path_keeps_explicit_json5_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("foo.json5");
+        std::fs::write(&p, "{}").unwrap();
+
+        assert_eq!(resolve_launcher_path(p.clone()), p);
+    }
+
+    #[test]
+    fn resolve_launcher_path_returns_original_when_no_sibling_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("does_not_exist");
+
+        assert_eq!(resolve_launcher_path(bare.clone()), bare);
+    }
+
+    #[test]
+    fn resolve_launcher_path_ignores_directory_at_sibling_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("name");
+        std::fs::create_dir(tmp.path().join("name.json5")).unwrap();
+
+        assert_eq!(resolve_launcher_path(bare.clone()), bare);
     }
 }
