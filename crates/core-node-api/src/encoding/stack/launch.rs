@@ -145,21 +145,10 @@ impl LaunchGoal {
         }
 
         let launcher_origin = match goal.get_launcher_origin().which()? {
-            Which::Fs(fs) => {
-                let path = fs?.to_str()?;
-                if path.is_empty() {
-                    return Err(crate::Error::Decoding(
-                        "LaunchGoal.launcher_origin.fs path is empty".to_owned(),
-                    ));
-                }
-                let path_buf = PathBuf::from(path);
-                if !path_buf.is_absolute() {
-                    return Err(crate::Error::Decoding(format!(
-                        "LaunchGoal.launcher_origin.fs path must be absolute, got `{path}`"
-                    )));
-                }
-                LauncherOrigin::Fs(path_buf)
-            }
+            Which::Fs(fs) => LauncherOrigin::Fs(crate::encoding::decode_absolute_fs_path(
+                fs?.to_str()?,
+                "LaunchGoal.launcher_origin.fs",
+            )?),
             Which::Repository(name) => {
                 let name = name?.to_str()?;
                 if name.is_empty() {

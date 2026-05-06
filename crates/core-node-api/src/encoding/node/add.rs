@@ -77,10 +77,10 @@ impl NodeSource {
 
 impl NodeSource {
     pub fn decode_fs(path: &str) -> Result<Self> {
-        if path.is_empty() {
-            return Err(crate::Error::Decoding("empty filesystem path".to_owned()));
-        }
-        Ok(Self::Fs(PathBuf::from(path)))
+        Ok(Self::Fs(crate::encoding::decode_fs_path(
+            path,
+            "NodeSource.fs",
+        )?))
     }
 
     pub fn decode_git(repo_url_str: &str, repo_path: &str, repo_ref: &str) -> Result<Self> {
@@ -427,7 +427,7 @@ mod tests {
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
-            err_msg.contains("empty filesystem path"),
+            err_msg.contains("NodeSource.fs") && err_msg.contains("empty"),
             "unexpected error: {err_msg}"
         );
     }
