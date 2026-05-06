@@ -174,7 +174,7 @@ impl CoreNode {
         let daemon_use_sim_time = node_arguments.daemon_use_sim_time;
 
         let node_config = NodeConfig {
-            peppy_schema: PeppySchema::NodesV1,
+            peppy_schema: PeppySchema::NodeV1,
             manifest: Manifest {
                 name: manifest_name,
                 tag: CORE_NODE_TAG.to_string(),

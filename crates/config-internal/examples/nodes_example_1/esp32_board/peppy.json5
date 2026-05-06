@@ -2,7 +2,7 @@
 // no_std environenments will be a bit particular so we'll need a "peppylib_no_std" version of "peppylib".
 // This lib will allow topics/actions/services creation/polling
 {
-  peppy_schema: "nodes_v1",
+  peppy_schema: "node_v1",
   manifest: {
     // Here we assume a XIAO ESP32-C3 board connected to a servo and responsible for controlling it 
     name: "esp32_board",

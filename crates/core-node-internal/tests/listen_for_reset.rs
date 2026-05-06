@@ -34,7 +34,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     let source_dir_b = tempfile::tempdir().expect("failed to create temp source dir");
 
     let peppy_json5_a = r#"{
-            peppy_schema: "nodes_v1",
+            peppy_schema: "node_v1",
             manifest: {
                 name: "{TARGET_NODE_A_NAME}",
                 tag: "{TARGET_NODE_A_TAG}",
@@ -66,7 +66,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     );
 
     let peppy_json5_b = r#"{
-            peppy_schema: "nodes_v1",
+            peppy_schema: "node_v1",
             manifest: {
                 name: "{TARGET_NODE_B_NAME}",
                 tag: "{TARGET_NODE_B_TAG}",

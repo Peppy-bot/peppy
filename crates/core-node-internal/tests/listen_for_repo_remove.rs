@@ -38,7 +38,7 @@ fn write_packages_cache(started: &StartedCoreNode, content: &str) {
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     format!(
         r#"{{
-  peppy_schema: "nodes_v1",
+  peppy_schema: "node_v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",

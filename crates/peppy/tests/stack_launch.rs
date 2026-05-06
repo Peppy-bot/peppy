@@ -40,7 +40,7 @@ fn write_node_config(
     fs::write(
         &node_config_path,
         r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "{node_name}",
                     tag: "{node_tag}",

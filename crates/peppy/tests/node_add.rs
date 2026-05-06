@@ -752,7 +752,7 @@ fn node_add_command_with_variant_succeeds() {
     let variant_dir = root_path.join("mock_variant");
     std::fs::create_dir_all(&variant_dir).expect("should create variant dir");
     let variant_config = r#"{
-        "peppy_schema": "nodes_v1",
+        "peppy_schema": "node_v1",
         "execution": {
             "language": "rust",
             "run_cmd": ["sleep", "42"]
@@ -887,7 +887,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     let variant_dir = root_path.join("mock_variant");
     std::fs::create_dir_all(&variant_dir).expect("should create variant dir");
     let variant_config = r#"{
-        "peppy_schema": "nodes_v1",
+        "peppy_schema": "node_v1",
         "execution": {
             "language": "rust",
             "run_cmd": ["sleep", "4"]
@@ -1329,7 +1329,7 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
     let variant_dir = root_path.join("mock_variant");
     std::fs::create_dir_all(&variant_dir).expect("should create variant dir");
     let variant_config = r#"{
-        "peppy_schema": "nodes_v1",
+        "peppy_schema": "node_v1",
         "execution": {
             "language": "rust",
             "run_cmd": ["sleep", "42"]

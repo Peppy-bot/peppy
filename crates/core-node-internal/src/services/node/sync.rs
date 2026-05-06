@@ -1283,7 +1283,7 @@ mod tests {
 
         let config = config::node::NodeConfigParser::from_content(
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: { name: "test_node", tag: "0.1.0" },
                 execution: { language: "rust", run_cmd: ["sleep", "10"] },
                 interfaces: {

@@ -11,7 +11,7 @@ use std::time::Duration;
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     format!(
         r#"{{
-  peppy_schema: "nodes_v1",
+  peppy_schema: "node_v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",
@@ -67,10 +67,6 @@ async fn list_default_repos_creates_repositories_file() {
     let started = start_core_node_with_mock_messenger().await;
 
     let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
-    assert!(
-        !repos_path.exists(),
-        "repositories.json5 should not exist before first repo command"
-    );
 
     let resp = send_repo_list(&started).await;
     assert!(resp.success, "repo_list should succeed");
@@ -78,7 +74,7 @@ async fn list_default_repos_creates_repositories_file() {
 
     assert!(
         repos_path.exists(),
-        "repositories.json5 should be created by repo list"
+        "repositories.json5 should be created with default entries on core node startup"
     );
 
     let content = std::fs::read_to_string(&repos_path).expect("read created file");

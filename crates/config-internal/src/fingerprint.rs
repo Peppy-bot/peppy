@@ -152,7 +152,7 @@ mod tests {
         let config_path = tmp.path().join(crate::consts::NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(&tmp);
 
-        let config_contents = r#"{ peppy_schema: "nodes_v1", manifest: { name: "camera", tag: "0.1.0" },
+        let config_contents = r#"{ peppy_schema: "node_v1", manifest: { name: "camera", tag: "0.1.0" },
  execution: { language: "rust", run_cmd: ["./target/release/camera"] } }"#;
         fs::write(&config_path, config_contents).expect("failed to write config");
 
@@ -177,7 +177,7 @@ mod tests {
         let fingerprint_path = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
         fs::write(&fingerprint_path, "old_fingerprint\n").expect("failed to write old fingerprint");
 
-        let config_contents = r#"{ peppy_schema: "nodes_v1", manifest: { name: "camera", tag: "0.1.0" },
+        let config_contents = r#"{ peppy_schema: "node_v1", manifest: { name: "camera", tag: "0.1.0" },
  execution: { language: "rust", run_cmd: ["./target/release/camera"] } }"#;
         fs::write(&config_path, config_contents).expect("failed to write config");
 

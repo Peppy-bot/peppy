@@ -175,7 +175,7 @@ mod tests {
         };
         let json5 = format!(
             r#"{{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {{
                     name: "{name}",
                     tag: "0.1.0",

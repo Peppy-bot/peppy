@@ -5,7 +5,7 @@ use config::node::{NodeConfig, NodeConfigParser};
 pub fn core_node_config() -> NodeConfig {
     NodeConfigParser::from_content(
         r#"{
-            peppy_schema: "nodes_v1",
+            peppy_schema: "node_v1",
             manifest: {
                 name: "core",
                 tag: "1.0.0",

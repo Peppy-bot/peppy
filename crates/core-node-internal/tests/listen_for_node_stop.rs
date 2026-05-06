@@ -38,7 +38,7 @@ async fn listen_for_node_stop_success() {
 
     // Add the node to the stack so it can be discovered by instance_id
     let peppy_json5 = r#"{
-            peppy_schema: "nodes_v1",
+            peppy_schema: "node_v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",

@@ -1887,7 +1887,7 @@ mod tests {
     #[test]
     fn variant_config_omits_none_interfaces_on_serialize() {
         let json5 = r#"{
-            peppy_schema: "nodes_v1",
+            peppy_schema: "node_v1",
             execution: { language: "rust" }
         }"#;
         let config: VariantConfig =
@@ -1908,7 +1908,7 @@ mod tests {
     #[test]
     fn node_config_rejects_unknown_fields() {
         let json5 = r#"{
-            peppy_schema: "nodes_v1",
+            peppy_schema: "node_v1",
             manifest: { name: "node", tag: "0.1.0" },
             execution: { language: "rust", run_cmd: ["./run"] },
             extra: "bad"

@@ -187,7 +187,11 @@ fn repo_add_top_assigns_id_below_current_min() {
         .find(|e| e["url"] == "https://example.com/second")
         .expect("second (top) entry missing");
 
-    assert_eq!(first["id"], 1000, "first add lands at the 1000 floor");
+    let first_id = first["id"].as_u64().expect("first id is a number");
+    assert!(
+        first_id >= 1000,
+        "first add lands at or above the 1000 floor, got {first_id}"
+    );
     assert_eq!(
         second["id"], 999,
         "--top should assign min(existing)-1 so the repo outranks all others"

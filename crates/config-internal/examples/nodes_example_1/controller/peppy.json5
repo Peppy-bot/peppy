@@ -1,6 +1,6 @@
 // A simple node that receives commands from a brain and control the joints of the robot
 {
-  peppy_schema: "nodes_v1",
+  peppy_schema: "node_v1",
   manifest: {
     name: "controller",
     tag: "0.1.0",

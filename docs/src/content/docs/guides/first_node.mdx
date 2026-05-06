@@ -86,7 +86,7 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
   <TabItem label="Python">
     ```json5 title="peppy.json5"
     {
-      peppy_schema: "nodes_v1",
+      peppy_schema: "node_v1",
       manifest: {
         name: "hello_world",
         tag: "0.1.0",
@@ -110,7 +110,7 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
   <TabItem label="Rust">
     ```json5 title="peppy.json5"
     {
-      peppy_schema: "nodes_v1",
+      peppy_schema: "node_v1",
       manifest: {
         name: "hello_world",
         tag: "0.1.0",
@@ -133,7 +133,7 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
 </Tabs>
 
 Let's go through the different options:
- - `peppy_schema`: Identifies the structure of the configuration file. For node configs always set this to `"nodes_v1"`
+ - `peppy_schema`: Identifies the structure of the configuration file. For node configs always set this to `"node_v1"`
  - `manifest`: Contains information about the node. Each node is identified by its `name` and `tag`
  - `execution`: Contains the language and execution commands for the node
    - `language`: The programming language used by the node (e.g. `"python"`, `"rust"`)

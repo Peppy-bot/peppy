@@ -137,7 +137,7 @@ mod tests {
         }
     }
 
-    /// A file declaring `peppy_schema: "nodes_v1"` is not a launcher.
+    /// A file declaring `peppy_schema: "node_v1"` is not a launcher.
     /// The strict deserializer either rejects unexpected node fields or
     /// the caller can gate on `peppy_schema` after parsing — either way
     /// node configs do not slip through `from_path`.
@@ -146,7 +146,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("anything.json5");
         let json5 = r#"{
-            peppy_schema: "nodes_v1",
+            peppy_schema: "node_v1",
             manifest: { name: "n", tag: "0.1.0" },
             interfaces: {},
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }

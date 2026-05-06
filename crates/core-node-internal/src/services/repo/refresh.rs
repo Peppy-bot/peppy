@@ -857,7 +857,7 @@ mod tests {
             dir.join(NODE_CONFIG_FILE),
             format!(
                 r#"{{
-  peppy_schema: "nodes_v1",
+  peppy_schema: "node_v1",
   manifest: {{ name: "{name}", tag: "{tag}" }},
   interfaces: {{}},
   execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
@@ -1158,7 +1158,7 @@ mod tests {
         // in the repo and must not be misclassified.
         std::fs::write(
             repo.join("manifest.json5"),
-            r#"{ peppy_schema: "nodes_v1", manifest: { name: "x", tag: "1.0.0" }, interfaces: {}, execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] } }"#,
+            r#"{ peppy_schema: "node_v1", manifest: { name: "x", tag: "1.0.0" }, interfaces: {}, execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] } }"#,
         )
         .unwrap();
 

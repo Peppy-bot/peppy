@@ -677,7 +677,7 @@ mod tests {
         std::fs::write(
             root.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "my_node",
                     tag: "0.1.0",
@@ -694,7 +694,7 @@ mod tests {
         std::fs::write(
             variant.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
@@ -713,7 +713,7 @@ mod tests {
         std::fs::write(
             variant.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
@@ -733,7 +733,7 @@ mod tests {
         std::fs::write(
             root.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "my_node",
                     tag: "0.1.0",
@@ -749,7 +749,7 @@ mod tests {
         std::fs::write(
             variant.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
@@ -781,7 +781,7 @@ mod tests {
         std::fs::write(
             root.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "my_node",
                     tag: "0.1.0",
@@ -810,7 +810,7 @@ mod tests {
         std::fs::write(
             root.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "my_node",
                     tag: "0.1.0",
@@ -827,7 +827,7 @@ mod tests {
         std::fs::write(
             variant.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
@@ -847,7 +847,7 @@ mod tests {
         std::fs::write(
             root.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "my_node",
                     tag: "0.1.0",
@@ -863,7 +863,7 @@ mod tests {
         std::fs::write(
             variant.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
@@ -888,7 +888,7 @@ mod tests {
         std::fs::write(
             orphan.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
@@ -911,7 +911,7 @@ mod tests {
         std::fs::write(
             orphan.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
@@ -960,7 +960,7 @@ mod tests {
         std::fs::write(
             variant.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
@@ -985,7 +985,7 @@ mod tests {
         std::fs::write(
             root.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "my_node",
                     tag: "0.1.0",
@@ -1002,7 +1002,7 @@ mod tests {
         std::fs::write(
             variant.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "linux-variant",
                     tag: "9.9.9",
@@ -1033,7 +1033,7 @@ mod tests {
         std::fs::write(
             root.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "my_node",
                     tag: "0.1.0",
@@ -1050,7 +1050,7 @@ mod tests {
         std::fs::write(
             platform.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "platform-variant",
                     tag: "9.9.9",
@@ -1080,7 +1080,7 @@ mod tests {
         std::fs::write(
             root.join(NODE_CONFIG_FILE),
             r#"{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "simple_node",
                     tag: "0.1.0",

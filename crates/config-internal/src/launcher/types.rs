@@ -20,7 +20,7 @@ pub use crate::source::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeppySchema {
-    NodesV1,
+    NodeV1,
     LauncherV1,
 }
 

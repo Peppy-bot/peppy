@@ -1,5 +1,5 @@
 {
-  peppy_schema: "nodes_v1",
+  peppy_schema: "node_v1",
   manifest: {
     // This is a brain that can plug to any controller
     name: "fake_robot_brain",
@@ -9,8 +9,16 @@
     ],
     depends_on: {
       nodes: [
-        { name: "fake_uvc_camera", tag: "0.1.0", local_id: "fake_uvc_camera" },
-        { name: "fake_openarm01_controller", tag: "0.1.0", local_id: "fake_openarm01_controller" },
+        {
+          name: "fake_uvc_camera",
+          tag: "0.1.0",
+          local_id: "fake_uvc_camera"
+        },
+        {
+          name: "fake_openarm01_controller",
+          tag: "0.1.0",
+          local_id: "fake_openarm01_controller"
+        },
       ]
     },
   },

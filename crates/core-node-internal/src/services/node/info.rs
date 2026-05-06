@@ -417,7 +417,7 @@ mod tests {
 
         let variant_config = format!(
             r#"{{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 execution: {{
                     language: "python",
                     run_cmd: ["python", "{marker}"]
@@ -456,7 +456,7 @@ mod tests {
         let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
         let config = format!(
             r#"{{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {{
                     name: "{name}",
                     tag: "{tag}",
@@ -543,7 +543,7 @@ mod tests {
         let root_dir = tempfile::TempDir::new().expect("failed to create root node dir");
         let root_config = format!(
             r#"{{
-                peppy_schema: "nodes_v1",
+                peppy_schema: "node_v1",
                 manifest: {{
                     name: "default_variant_root",
                     tag: "0.1.0",

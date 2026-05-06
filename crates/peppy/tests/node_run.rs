@@ -257,7 +257,7 @@ async fn node_run_command_with_args_succeeds() {
 
     // Overwrite peppy.json5 with a config that includes parameters
     let peppy_config = r#"{
-  peppy_schema: "nodes_v1",
+  peppy_schema: "node_v1",
   manifest: { name: "test_run_args_node",
     tag: "0.1.0" },
   interfaces: {
