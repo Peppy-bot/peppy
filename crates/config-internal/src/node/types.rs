@@ -85,13 +85,7 @@ fn deserialize_node_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D:
 where
     D: Deserializer<'de>,
 {
-    let schema = PeppySchema::deserialize(deserializer)?;
-    if schema != PeppySchema::NodeV1 {
-        return Err(de::Error::custom(format!(
-            "expected peppy_schema 'node_v1', got '{schema}'"
-        )));
-    }
-    Ok(schema)
+    PeppySchema::deserialize_expecting(deserializer, PeppySchema::NodeV1)
 }
 
 /// Name reserved for the default variant.

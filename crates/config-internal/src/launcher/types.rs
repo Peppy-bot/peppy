@@ -35,6 +35,27 @@ impl fmt::Display for PeppySchema {
     }
 }
 
+impl PeppySchema {
+    /// Deserialize a `peppy_schema` field and reject any value other
+    /// than `expected`. Used as the core of the per-document-shape
+    /// `#[serde(deserialize_with = ...)]` guards.
+    pub(crate) fn deserialize_expecting<'de, D>(
+        deserializer: D,
+        expected: Self,
+    ) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let schema = Self::deserialize(deserializer)?;
+        if schema != expected {
+            return Err(de::Error::custom(format!(
+                "expected peppy_schema '{expected}', got '{schema}'"
+            )));
+        }
+        Ok(schema)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeppyLauncher {
@@ -51,13 +72,7 @@ fn deserialize_launcher_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema
 where
     D: Deserializer<'de>,
 {
-    let schema = PeppySchema::deserialize(deserializer)?;
-    if schema != PeppySchema::LauncherV1 {
-        return Err(de::Error::custom(format!(
-            "expected peppy_schema 'launcher_v1', got '{schema}'"
-        )));
-    }
-    Ok(schema)
+    PeppySchema::deserialize_expecting(deserializer, PeppySchema::LauncherV1)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
