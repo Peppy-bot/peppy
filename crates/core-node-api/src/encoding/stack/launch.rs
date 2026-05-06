@@ -152,7 +152,13 @@ impl LaunchGoal {
                         "LaunchGoal.launcher_origin.fs path is empty".to_owned(),
                     ));
                 }
-                LauncherOrigin::Fs(PathBuf::from(path))
+                let path_buf = PathBuf::from(path);
+                if !path_buf.is_absolute() {
+                    return Err(crate::Error::Decoding(format!(
+                        "LaunchGoal.launcher_origin.fs path must be absolute, got `{path}`"
+                    )));
+                }
+                LauncherOrigin::Fs(path_buf)
             }
             Which::Repository(name) => {
                 let name = name?.to_str()?;
@@ -565,6 +571,26 @@ mod tests {
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert_eq!(goal, decoded);
         assert_eq!(decoded.max_timeout_secs, None);
+    }
+
+    /// `LauncherOrigin::Fs` is documented to carry an absolute path; the
+    /// daemon opens it directly without resolving. A relative path here
+    /// would silently anchor at the daemon's CWD, which is a footgun.
+    #[test]
+    fn launch_goal_decode_rejects_relative_fs_path() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Fs(PathBuf::from("relative/launcher.json5")),
+            1,
+            1,
+            1,
+            None,
+        );
+        let bytes = goal.encode().expect("encode");
+        let err = LaunchGoal::decode(&bytes).expect_err("relative path should fail");
+        let crate::Error::Decoding(msg) = err else {
+            panic!("expected Decoding error, got {err:?}");
+        };
+        assert!(msg.contains("absolute"), "got: {msg}");
     }
 
     #[test]

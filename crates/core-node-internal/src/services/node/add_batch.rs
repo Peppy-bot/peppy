@@ -449,7 +449,8 @@ async fn resolve_transitive_closure<'a>(
             .collect::<Vec<_>>()
             .join(", ");
         return Err(format!(
-            "Dependencies missing from packages cache: {list}. Run `peppy repo refresh` or add the missing nodes to a configured repository."
+            "Dependencies missing from nodes cache ({}): {list}. Run `peppy repo refresh` or add the missing nodes to a configured repository.",
+            cache::nodes_repo_cache_path(peppy_dirs).display()
         ));
     }
 

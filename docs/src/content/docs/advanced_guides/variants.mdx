@@ -432,7 +432,7 @@ If the interfaces do not match, the add operation fails with a `VariantInterface
 }
 ```
 
-If a variant omits `interfaces` entirely, no validation is performed and the root's interfaces are used as-is.
+If a variant omits `interfaces` entirely, no validation is performed and the root's interfaces are used as-is. This is the right choice for variants that ship alongside their root — they already share the root's contract. A flavor node consumed as a variant from a different project should declare its own `interfaces`, since its root and the consuming root can evolve independently and the declared block is what lets peppy compare them at add time.
 
 ## Adding a variant
 

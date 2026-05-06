@@ -287,6 +287,7 @@ pub struct MergedVariant {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
+    #[serde(deserialize_with = "deserialize_node_v1_schema")]
     pub peppy_schema: PeppySchema,
     pub manifest: Manifest,
     #[serde(default)]
@@ -1964,6 +1965,24 @@ mod tests {
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
         }"#;
         let err = serde_json5::from_str::<VariantConfig>(json5)
+            .expect_err("launcher_v1 schema must be rejected");
+        assert!(
+            err.to_string().contains("node_v1"),
+            "error should mention the expected schema, got: {err}"
+        );
+    }
+
+    /// `NodeConfig` is reachable through public deserialization paths that
+    /// bypass `RawNodeConfig`, so the schema guard must apply here too.
+    #[test]
+    fn node_config_rejects_launcher_schema() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            manifest: { name: "node", tag: "0.1.0" },
+            interfaces: {},
+            execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
+        }"#;
+        let err = serde_json5::from_str::<NodeConfig>(json5)
             .expect_err("launcher_v1 schema must be rejected");
         assert!(
             err.to_string().contains("node_v1"),

@@ -54,8 +54,15 @@ pub async fn listen_for_node_sync(
 ///
 /// The atomic rename approach:
 /// 1. Renames `.peppy` → `.peppy-old-{pid}-{timestamp}` (atomic operation)
-/// 2. Spawns background cleanup of the old directory
+/// 2. Synchronously deletes the renamed directory
 /// 3. Lets the generator create a fresh `.peppy` directory
+///
+/// The deletion is intentionally synchronous: the next pipeline stage
+/// (`process_node_add`) copies the source directory recursively and walks
+/// `.peppy-old-{pid}-{timestamp}` (which is not in the excluded list), which
+/// would race with a concurrent background deletion and surface as intermittent
+/// "No such file or directory" errors. Callers already run inside
+/// `tokio::task::spawn_blocking`, so the synchronous cost is acceptable.
 fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
     let peppy_output_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
 
@@ -89,10 +96,16 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
 
     match std::fs::rename(&peppy_output_dir, &old_peppy_dir) {
         Ok(()) => {
-            // Best-effort cleanup of old directory in background
-            std::thread::spawn(move || {
-                std::fs::remove_dir_all(&old_peppy_dir).ok();
-            });
+            if let Err(e) = std::fs::remove_dir_all(&old_peppy_dir) {
+                // Best-effort: the next stage may copy this stray directory and
+                // fail, but that surfaces a real error rather than silently
+                // leaving the dir behind.
+                debug!(
+                    "Failed to remove renamed .peppy directory at {}: {}",
+                    old_peppy_dir.display(),
+                    e
+                );
+            }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Directory was already removed by another process, that's fine
