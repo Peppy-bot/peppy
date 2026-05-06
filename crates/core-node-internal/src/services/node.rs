@@ -2,7 +2,7 @@ mod add;
 mod add_batch;
 mod archive;
 mod builder;
-mod cache;
+pub(crate) mod cache;
 mod common;
 mod env;
 mod feedback;

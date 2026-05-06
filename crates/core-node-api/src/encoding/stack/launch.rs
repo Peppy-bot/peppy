@@ -35,10 +35,31 @@ fn with_timeout_default(value: u64, default: u64) -> u64 {
     if value == 0 { default } else { value }
 }
 
+/// Where the launcher file lives.
+///
+/// `Fs` carries an absolute path that the daemon opens directly. `Repository` carries the
+/// launcher *name* (the file stem of a `.json5` file as recorded in `launchers.json5`); the
+/// daemon resolves it against the launcher repository cache before opening.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LauncherOrigin {
+    Fs(PathBuf),
+    Repository { name: String },
+}
+
+impl LauncherOrigin {
+    pub fn fs(path: impl Into<PathBuf>) -> Self {
+        Self::Fs(path.into())
+    }
+
+    pub fn repository(name: impl Into<String>) -> Self {
+        Self::Repository { name: name.into() }
+    }
+}
+
 /// Goal message for the Launch action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchGoal {
-    pub peppy_launch_file_path: PathBuf,
+    pub launcher_origin: LauncherOrigin,
     pub env_vars: Vec<(String, String)>,
     pub node_add_idle_timeout_secs: u64,
     pub node_build_idle_timeout_secs: u64,
@@ -50,14 +71,14 @@ pub struct LaunchGoal {
 
 impl LaunchGoal {
     pub fn new(
-        peppy_launch_file_path: impl Into<PathBuf>,
+        launcher_origin: LauncherOrigin,
         node_add_idle_timeout_secs: u64,
         node_build_idle_timeout_secs: u64,
         node_run_idle_timeout_secs: u64,
         max_timeout_secs: Option<u64>,
     ) -> Self {
         Self {
-            peppy_launch_file_path: peppy_launch_file_path.into(),
+            launcher_origin,
             env_vars: Vec::new(),
             node_add_idle_timeout_secs,
             node_build_idle_timeout_secs,
@@ -75,7 +96,6 @@ impl LaunchGoal {
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<launch_capnp::launch_goal::Builder>();
-            goal.set_peppy_launch_file_path(self.peppy_launch_file_path.to_string_lossy());
 
             let env_var_count = capnp_list_len(self.env_vars.len(), "LaunchGoal.env_vars")?;
             let mut env_vars = goal.reborrow().init_env_vars(env_var_count);
@@ -94,11 +114,23 @@ impl LaunchGoal {
             // 0 on the wire means "unset" (no overall deadline).
             goal.reborrow()
                 .set_max_timeout_secs(self.max_timeout_secs.unwrap_or(0));
+
+            let mut origin = goal.reborrow().init_launcher_origin();
+            match &self.launcher_origin {
+                LauncherOrigin::Fs(path) => {
+                    origin.set_fs(path.to_string_lossy().as_ref());
+                }
+                LauncherOrigin::Repository { name } => {
+                    origin.set_repository(name.as_str());
+                }
+            }
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
+        use launch_capnp::launch_goal::launcher_origin::Which;
+
         let reader = decode_message(data)?;
         let goal = reader.get_root::<launch_capnp::launch_goal::Reader>()?;
 
@@ -112,9 +144,32 @@ impl LaunchGoal {
             ));
         }
 
+        let launcher_origin = match goal.get_launcher_origin().which()? {
+            Which::Fs(fs) => {
+                let path = fs?.to_str()?;
+                if path.is_empty() {
+                    return Err(crate::Error::Decoding(
+                        "LaunchGoal.launcher_origin.fs path is empty".to_owned(),
+                    ));
+                }
+                LauncherOrigin::Fs(PathBuf::from(path))
+            }
+            Which::Repository(name) => {
+                let name = name?.to_str()?;
+                if name.is_empty() {
+                    return Err(crate::Error::Decoding(
+                        "LaunchGoal.launcher_origin.repository name is empty".to_owned(),
+                    ));
+                }
+                LauncherOrigin::Repository {
+                    name: name.to_owned(),
+                }
+            }
+        };
+
         let raw_max = goal.get_max_timeout_secs();
         Ok(Self {
-            peppy_launch_file_path: PathBuf::from(goal.get_peppy_launch_file_path()?.to_str()?),
+            launcher_origin,
             env_vars,
             node_add_idle_timeout_secs: with_timeout_default(
                 goal.get_node_add_idle_timeout_secs(),
@@ -476,5 +531,55 @@ mod tests {
         std::fs::create_dir(tmp.path().join("name.json5")).unwrap();
 
         assert_eq!(resolve_launcher_path(bare.clone()), bare);
+    }
+
+    #[test]
+    fn launch_goal_roundtrips_fs_origin() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Fs(PathBuf::from("/tmp/launcher.json5")),
+            10,
+            20,
+            30,
+            Some(99),
+        )
+        .with_env_vars(vec![("PATH".to_string(), "/usr/bin".to_string())]);
+
+        let bytes = goal.encode().expect("encode");
+        let decoded = LaunchGoal::decode(&bytes).expect("decode");
+        assert_eq!(goal, decoded);
+    }
+
+    #[test]
+    fn launch_goal_roundtrips_repository_origin() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "openarm01_sim_teleop".to_string(),
+            },
+            5,
+            10,
+            15,
+            None,
+        );
+
+        let bytes = goal.encode().expect("encode");
+        let decoded = LaunchGoal::decode(&bytes).expect("decode");
+        assert_eq!(goal, decoded);
+        assert_eq!(decoded.max_timeout_secs, None);
+    }
+
+    #[test]
+    fn launch_goal_decode_rejects_empty_repository_name() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "".to_string(),
+            },
+            1,
+            1,
+            1,
+            None,
+        );
+        let bytes = goal.encode().expect("encode");
+        let err = LaunchGoal::decode(&bytes).expect_err("empty name should fail");
+        assert!(matches!(err, crate::Error::Decoding(_)));
     }
 }

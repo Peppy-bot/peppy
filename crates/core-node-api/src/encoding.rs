@@ -34,7 +34,7 @@ pub use repo::{
 };
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, resolve_launcher_path,
+    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, resolve_launcher_path,
 };
 pub use stack::list::{StackListRequest, StackListResponse};
 pub use stack::reset::{NodeResetRequest, NodeResetResponse};

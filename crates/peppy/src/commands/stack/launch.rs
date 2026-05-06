@@ -1,11 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use config::launcher::PeppyLauncherParser;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, resolve_launcher_path,
+    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, resolve_launcher_path,
 };
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::info;
@@ -128,6 +128,46 @@ fn handle_feedback(
     }
 }
 
+/// True when `input` syntactically looks like a filesystem path: it carries a path separator
+/// or a `.json5` extension. Such inputs never fall back to repository lookup so a typoed file
+/// path surfaces a precise file-not-found error instead of a confusing "launcher not in cache".
+fn looks_like_fs_path(input: &Path) -> bool {
+    let s = input.as_os_str().to_string_lossy();
+    if s.contains('/') || s.contains('\\') {
+        return true;
+    }
+    input.extension().is_some_and(|ext| ext == "json5")
+}
+
+/// Decide whether the user wants a filesystem launcher or a repository launcher.
+///
+/// `./demo.json5`, `/abs/path`, `foo.json5` → `Fs`, with the path canonicalized so the daemon
+/// finds it regardless of its working directory. A bare name like `openarm01_sim_teleop` first
+/// tries the filesystem (sibling `.json5` shorthand from `resolve_launcher_path`) and only
+/// falls back to `Repository` when no file exists at that name.
+fn infer_launcher_origin(input: PathBuf) -> Result<LauncherOrigin> {
+    if looks_like_fs_path(&input) {
+        let resolved = resolve_launcher_path(input);
+        let canonical = resolved.canonicalize().map_err(|e| {
+            Error::ExecutionFailed(format!(
+                "Failed to resolve launcher config path '{}': {}",
+                resolved.display(),
+                e
+            ))
+        })?;
+        return Ok(LauncherOrigin::Fs(canonical));
+    }
+
+    let resolved = resolve_launcher_path(input.clone());
+    if let Ok(canonical) = resolved.canonicalize() {
+        return Ok(LauncherOrigin::Fs(canonical));
+    }
+
+    Ok(LauncherOrigin::Repository {
+        name: input.to_string_lossy().into_owned(),
+    })
+}
+
 pub fn launch(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
@@ -154,30 +194,31 @@ async fn launch_async(
     node_run_idle_timeout_secs: u64,
     max_timeout_secs: Option<u64>,
 ) -> Result<()> {
-    // Auto-append `.json5` when the user passes the bare name (e.g. `openarm01_sim_teleop`).
-    let launcher_config_path = resolve_launcher_path(launcher_config_path);
+    let launcher_origin = infer_launcher_origin(launcher_config_path)?;
 
-    // Canonicalize the path so the core node can find the file regardless of its working directory
-    let launcher_config_path = launcher_config_path.canonicalize().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to resolve launcher config path '{}': {}",
-            launcher_config_path.display(),
-            e
-        ))
-    })?;
-
-    PeppyLauncherParser::from_path(&launcher_config_path).map_err(Error::PeppyConfig)?;
+    // Pre-validate the launcher config locally for `Fs` so the user gets a fast, precise parse
+    // error before the daemon round-trip. `Repository` resolution lives daemon-side, so we
+    // skip the local check rather than duplicate the lookup here.
+    if let LauncherOrigin::Fs(path) = &launcher_origin {
+        PeppyLauncherParser::from_path(path).map_err(Error::PeppyConfig)?;
+    }
 
     let conn = ctx.connect_to_daemon().await?;
 
-    info!(
-        "Calling launcher on daemon '{}' with config={}",
-        conn.core_node_name,
-        launcher_config_path.display()
-    );
+    match &launcher_origin {
+        LauncherOrigin::Fs(path) => info!(
+            "Calling launcher on daemon '{}' with config={}",
+            conn.core_node_name,
+            path.display()
+        ),
+        LauncherOrigin::Repository { name } => info!(
+            "Calling launcher on daemon '{}' with repository launcher `{}`",
+            conn.core_node_name, name
+        ),
+    }
 
     let goal = LaunchGoal::new(
-        &launcher_config_path,
+        launcher_origin,
         node_add_idle_timeout_secs,
         node_build_idle_timeout_secs,
         node_run_idle_timeout_secs,
@@ -394,5 +435,67 @@ mod tests {
     fn saturating_add_does_not_panic_at_u64_max() {
         let got = compute_cli_max_timeout(Some(u64::MAX)).expect("some");
         assert_eq!(got, Duration::MAX);
+    }
+
+    #[test]
+    fn looks_like_fs_path_detects_separators() {
+        assert!(looks_like_fs_path(Path::new("./foo")));
+        assert!(looks_like_fs_path(Path::new("../foo")));
+        assert!(looks_like_fs_path(Path::new("/abs/foo")));
+        assert!(looks_like_fs_path(Path::new("dir/foo")));
+    }
+
+    #[test]
+    fn looks_like_fs_path_detects_json5_extension() {
+        assert!(looks_like_fs_path(Path::new("foo.json5")));
+    }
+
+    #[test]
+    fn looks_like_fs_path_treats_bare_name_as_non_path() {
+        assert!(!looks_like_fs_path(Path::new("openarm01_sim_teleop")));
+        assert!(!looks_like_fs_path(Path::new("foo_bar")));
+    }
+
+    #[test]
+    fn infer_launcher_origin_canonicalizes_existing_fs_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("launcher.json5");
+        std::fs::write(&p, "{}").unwrap();
+
+        let origin = infer_launcher_origin(p.clone()).expect("should resolve fs path");
+        match origin {
+            LauncherOrigin::Fs(resolved) => {
+                assert_eq!(resolved, p.canonicalize().unwrap());
+            }
+            other => panic!("expected Fs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn infer_launcher_origin_errors_when_fs_looking_path_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("missing.json5");
+
+        let err = infer_launcher_origin(missing).expect_err("should fail on missing file");
+        match err {
+            Error::ExecutionFailed(msg) => assert!(
+                msg.contains("Failed to resolve launcher config path"),
+                "unexpected error: {msg}"
+            ),
+            other => panic!("expected ExecutionFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn infer_launcher_origin_falls_back_to_repository_for_bare_name() {
+        // Use a name that is unlikely to collide with any sibling .json5 in the test cwd.
+        let bare = PathBuf::from("definitely_not_a_real_launcher_xyz123");
+        let origin = infer_launcher_origin(bare.clone()).expect("bare name should not error");
+        match origin {
+            LauncherOrigin::Repository { name } => {
+                assert_eq!(name, "definitely_not_a_real_launcher_xyz123");
+            }
+            other => panic!("expected Repository, got {other:?}"),
+        }
     }
 }

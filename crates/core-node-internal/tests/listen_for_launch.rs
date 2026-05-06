@@ -4,7 +4,9 @@ use common::{AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_health_timeou
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::NodeConfigParser;
 use core_node::names;
-use core_node_api::encoding::{LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult};
+use core_node_api::encoding::{
+    LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult, LauncherOrigin,
+};
 use git2::{Repository, Signature};
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
@@ -300,10 +302,10 @@ async fn send_node_launch_and_wait(
     goal_timeout: Duration,
     result_timeout: Duration,
 ) -> Result<(LaunchGoalResponse, LaunchResult), String> {
-    send_node_launch_and_wait_with_env(
+    send_launch_origin_and_wait(
         messenger,
         core_node_name,
-        peppy_launch_file_path,
+        LauncherOrigin::Fs(peppy_launch_file_path.to_path_buf()),
         goal_timeout,
         result_timeout,
         vec![],
@@ -319,8 +321,26 @@ async fn send_node_launch_and_wait_with_env(
     result_timeout: Duration,
     env_vars: Vec<(String, String)>,
 ) -> Result<(LaunchGoalResponse, LaunchResult), String> {
-    let goal =
-        LaunchGoal::new(peppy_launch_file_path, 300, 300, 300, Some(3600)).with_env_vars(env_vars);
+    send_launch_origin_and_wait(
+        messenger,
+        core_node_name,
+        LauncherOrigin::Fs(peppy_launch_file_path.to_path_buf()),
+        goal_timeout,
+        result_timeout,
+        env_vars,
+    )
+    .await
+}
+
+async fn send_launch_origin_and_wait(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    launcher_origin: LauncherOrigin,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    env_vars: Vec<(String, String)>,
+) -> Result<(LaunchGoalResponse, LaunchResult), String> {
+    let goal = LaunchGoal::new(launcher_origin, 300, 300, 300, Some(3600)).with_env_vars(env_vars);
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode launch goal: {e}"))?;
@@ -1717,5 +1737,153 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
         launch_result.success,
         "The launch should succeed, got error: {:?}",
         launch_result.error_message
+    );
+}
+
+/// `LauncherOrigin::Repository` resolves the launcher name through `launchers.json5`
+/// (the launcher repo cache) and uses the on-disk path it points at. The deployment
+/// itself uses a local source so we don't need to spin up a fake git repo.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_launch_resolves_launcher_from_repository_cache() {
+    const ROBOT_NODE_NAME: &str = "robot_brain_repo";
+    const NODE_TAG: &str = "0.1.0";
+    const LAUNCHER_NAME: &str = "robot_brain_demo";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+    let peppy_dirs = started_core_node.peppy_dirs.clone();
+    let node_messenger =
+        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
+
+    let nodes_dir = tempdir().expect("failed to create temp nodes directory");
+    let _brain_path = write_node_config(
+        nodes_dir.path(),
+        ROBOT_NODE_NAME,
+        NODE_TAG,
+        "test-hash",
+        &["sleep", "60"],
+        false,
+        false,
+    );
+
+    let _ready_brain = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started_core_node.core_node_name,
+            "main_robot_brain",
+            ROBOT_NODE_NAME,
+        )
+        .await
+        .expect("ready service should start"),
+    );
+    let _health_brain = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started_core_node.core_node_name,
+            "main_robot_brain",
+            ROBOT_NODE_NAME,
+        )
+        .await
+        .expect("health service should start"),
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Launcher file references the node by its directory name (`local: "./robot_brain_repo"`),
+    // resolved relative to the launcher file's parent dir.
+    let launcher_json5 = format!(
+        r#"{{
+  peppy_schema: "launcher_v1",
+  deployments: [
+    {{
+      source: {{ local: "./{ROBOT_NODE_NAME}" }},
+      instances: [
+        {{ instance_id: "main_robot_brain" }}
+      ]
+    }}
+  ]
+}}"#
+    );
+    let launcher_file_path = nodes_dir.path().join(format!("{LAUNCHER_NAME}.json5"));
+    fs::write(&launcher_file_path, &launcher_json5).expect("failed to write launcher file");
+
+    // Hand-write the launcher cache so the daemon can map the bare name back to the file.
+    let cache_entries = serde_json::json!([
+        {
+            "launcher_name": LAUNCHER_NAME,
+            "source_type": "fs",
+            "path": launcher_file_path.to_string_lossy(),
+        }
+    ]);
+    let cache_dir = peppy_dirs.cache_dir();
+    fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
+    fs::write(
+        cache_dir.join("launchers.json5"),
+        serde_json::to_string_pretty(&cache_entries).expect("serialize cache"),
+    )
+    .expect("failed to write launchers.json5");
+
+    let (_goal_response, result) = send_launch_origin_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        LauncherOrigin::Repository {
+            name: LAUNCHER_NAME.to_string(),
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        vec![],
+    )
+    .await
+    .expect("launch should complete");
+
+    assert!(
+        result.success,
+        "launch should succeed, got error: {:?}",
+        result.error_message
+    );
+    assert!(
+        node_stack.contains(ROBOT_NODE_NAME, NODE_TAG),
+        "robot_brain_repo should be in stack"
+    );
+}
+
+/// When the `Repository` origin names a launcher that is not in the cache, the daemon
+/// surfaces an explicit error pointing at `launchers.json5` and does not fall back to
+/// any filesystem lookup.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_launch_repository_miss_returns_explicit_error() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let peppy_dirs = started_core_node.peppy_dirs.clone();
+
+    // Empty launcher cache: any name lookup must miss.
+    let cache_dir = peppy_dirs.cache_dir();
+    fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
+    fs::write(
+        cache_dir.join("launchers.json5"),
+        serde_json::to_string(&serde_json::Value::Array(vec![])).unwrap(),
+    )
+    .expect("failed to write launchers.json5");
+
+    let (_goal_response, result) = send_launch_origin_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        LauncherOrigin::Repository {
+            name: "definitely_missing_launcher".to_string(),
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        vec![],
+    )
+    .await
+    .expect("launch should return a result");
+
+    assert!(!result.success, "missing repository launcher should fail");
+    let err = result.error_message.unwrap_or_default();
+    assert!(
+        err.contains("launcher `definitely_missing_launcher` not found"),
+        "expected explicit not-found error, got: {err}"
+    );
+    assert!(
+        err.contains("launchers.json5"),
+        "error should reference the launcher cache path, got: {err}"
     );
 }
