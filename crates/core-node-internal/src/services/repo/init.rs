@@ -108,10 +108,11 @@ pub fn ensure_default_repos(peppy_dirs: &PeppyDirs) -> Result<InitOutcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::repo::cache::repositories_list_path;
 
     /// Helper: read repositories.json5 as a Vec<Value>.
     fn read_repos(peppy_dirs: &PeppyDirs) -> Vec<Value> {
-        let path = peppy_dirs.conf_dir().join("repositories.json5");
+        let path = repositories_list_path(peppy_dirs);
         let content = std::fs::read_to_string(&path).unwrap();
         serde_json5::from_str(&content).unwrap()
     }
@@ -128,7 +129,7 @@ mod tests {
     fn writes_template_verbatim_when_file_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
+        let repos_path = repositories_list_path(&peppy_dirs);
         assert!(!repos_path.exists());
 
         ensure_default_repos(&peppy_dirs).unwrap();
@@ -329,11 +330,7 @@ mod tests {
             })
             .collect();
         let serialized = serde_json::to_string_pretty(&without_launchers).unwrap();
-        std::fs::write(
-            peppy_dirs.conf_dir().join("repositories.json5"),
-            &serialized,
-        )
-        .unwrap();
+        std::fs::write(repositories_list_path(&peppy_dirs), &serialized).unwrap();
         without_launchers.clear(); // dropped, only used to write
 
         ensure_default_repos(&peppy_dirs).unwrap();

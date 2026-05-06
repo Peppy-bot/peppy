@@ -715,13 +715,14 @@ pub(crate) use crate::services::repo::cache::{write_cache, write_launcher_cache}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::repo::cache::repositories_list_path;
 
     #[test]
     fn read_or_create_repos_creates_file_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
-        let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
+        let repos_path = repositories_list_path(&peppy_dirs);
         assert!(!repos_path.exists());
 
         let repos = read_or_create_repos(&peppy_dirs).unwrap();
@@ -783,7 +784,7 @@ mod tests {
         let _ = read_or_create_repos(&peppy_dirs).unwrap();
 
         // Overwrite with custom content
-        let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
+        let repos_path = repositories_list_path(&peppy_dirs);
         std::fs::write(
             &repos_path,
             r#"[{ "id": 1, "type": "fs", "path": "/other" }]"#,

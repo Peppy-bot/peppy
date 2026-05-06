@@ -2,7 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
-use core_node::nodes_repo_cache_path;
+use core_node::{nodes_repo_cache_path, repositories_list_path};
 use core_node_api::encoding::{RepoListRequest, RepoListResponse, RepoSourceKind};
 use peppylib::core_node::transport::poll_repo_list;
 use std::time::Duration;
@@ -66,7 +66,7 @@ async fn send_repo_list(started: &StartedCoreNode) -> RepoListResponse {
 async fn list_default_repos_creates_repositories_file() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
 
     let resp = send_repo_list(&started).await;
     assert!(resp.success, "repo_list should succeed");

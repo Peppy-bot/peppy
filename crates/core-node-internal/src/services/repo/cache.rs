@@ -151,7 +151,7 @@ pub fn load_with_generation(
 }
 
 fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
-    let path = peppy_dirs.conf_dir().join("repositories.json5");
+    let path = repositories_list_path(peppy_dirs);
     std::fs::metadata(&path)
         .ok()
         .and_then(|m| m.modified().ok())
@@ -297,6 +297,10 @@ pub fn nodes_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 
 pub fn launchers_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs.cache_dir().join("launchers.json5")
+}
+
+pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
+    peppy_dirs.conf_dir().join("repositories.json5")
 }
 
 /// Looks up `(name, tag)` in the nodes cache and translates the matched

@@ -1,4 +1,5 @@
 use config::consts::PeppyDirs;
+use core_node::repositories_list_path;
 use peppy::commands::repo::repo_init_with_dirs;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -9,7 +10,7 @@ use tempfile::TempDir;
 /// enough. For the freshly-written template (which is JSON5 with comments)
 /// the test inspects the raw string instead.
 fn read_repos_json(peppy_dirs: &PeppyDirs) -> Vec<Value> {
-    let path = peppy_dirs.conf_dir().join("repositories.json5");
+    let path = repositories_list_path(&peppy_dirs);
     let content = std::fs::read_to_string(&path).unwrap();
     serde_json::from_str(&content).unwrap()
 }
@@ -25,7 +26,7 @@ fn has_git_url(repos: &[Value], url: &str) -> bool {
 fn repo_init_creates_file_when_missing() {
     let tmp = TempDir::new().unwrap();
     let peppy_dirs = PeppyDirs::new(tmp.path());
-    let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&peppy_dirs);
     assert!(!repos_path.exists());
 
     repo_init_with_dirs(&peppy_dirs).expect("repo init should succeed");
@@ -100,7 +101,7 @@ fn repo_init_preserves_user_repos() {
 fn repo_init_is_idempotent() {
     let tmp = TempDir::new().unwrap();
     let peppy_dirs = PeppyDirs::new(tmp.path());
-    let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&peppy_dirs);
 
     repo_init_with_dirs(&peppy_dirs).expect("first init");
     let first = std::fs::read_to_string(&repos_path).unwrap();

@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::names;
+use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::read_or_create_repos;
 use crate::services::repo::{json_entry_identity, repo_source_to_json};
 use config::consts::PeppyDirs;
@@ -70,7 +71,7 @@ fn handle_repo_add_request_inner(
             .map_err(Into::into);
     }
 
-    let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(peppy_dirs);
 
     let _guard = crate::services::repo::repos_file_lock().lock();
 

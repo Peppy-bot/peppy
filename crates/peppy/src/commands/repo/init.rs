@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use config::consts::PeppyDirs;
-use core_node::{InitOutcome, ensure_default_repos};
+use core_node::{InitOutcome, ensure_default_repos, repositories_list_path};
 use tracing::info;
 
 use crate::context::AppContext;
@@ -23,7 +23,7 @@ pub fn repo_init_with_dirs(peppy_dirs: &PeppyDirs) -> Result<()> {
         InitOutcome::Created => {
             info!(
                 "Created repositories.json5 with default entries at {}",
-                peppy_dirs.conf_dir().join("repositories.json5").display()
+                repositories_list_path(peppy_dirs).display()
             );
         }
         InitOutcome::Updated { added: 0 } => {

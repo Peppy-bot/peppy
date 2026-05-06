@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::names;
+use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::{
     process_refresh, read_or_create_repos, write_cache, write_launcher_cache,
 };
@@ -90,7 +91,7 @@ fn handle_repo_remove_request_inner(
         request.id
     );
 
-    let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(peppy_dirs);
 
     let _guard = crate::services::repo::repos_file_lock().lock();
 
