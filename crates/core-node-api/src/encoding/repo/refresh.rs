@@ -184,14 +184,16 @@ pub struct RepoRefreshResult {
     pub success: bool,
     pub error_message: Option<String>,
     pub total_nodes_found: u32,
+    pub total_launchers_found: u32,
 }
 
 impl RepoRefreshResult {
-    pub fn success(total_nodes_found: u32) -> Self {
+    pub fn success(total_nodes_found: u32, total_launchers_found: u32) -> Self {
         Self {
             success: true,
             error_message: None,
             total_nodes_found,
+            total_launchers_found,
         }
     }
 
@@ -200,6 +202,7 @@ impl RepoRefreshResult {
             success: false,
             error_message: Some(message.into()),
             total_nodes_found: 0,
+            total_launchers_found: 0,
         }
     }
 
@@ -212,6 +215,7 @@ impl RepoRefreshResult {
                 result.set_error_message(msg);
             }
             result.set_total_nodes_found(self.total_nodes_found);
+            result.set_total_launchers_found(self.total_launchers_found);
         }
         encode_message(&builder)
     }
@@ -223,6 +227,7 @@ impl RepoRefreshResult {
             success: result.get_success(),
             error_message: optional_text(result.get_error_message()?.to_str()?),
             total_nodes_found: result.get_total_nodes_found(),
+            total_launchers_found: result.get_total_launchers_found(),
         })
     }
 }

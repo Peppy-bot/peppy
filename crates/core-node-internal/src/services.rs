@@ -243,6 +243,13 @@ impl CoreNode {
     pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
         clear_instances_dir(&self.peppy_dirs);
 
+        // Sync `repositories.json5` against the bundled default template so
+        // entries that ship with a newer peppy build land in pre-existing
+        // user configs.
+        if let Err(e) = repo::ensure_default_repos(&self.peppy_dirs) {
+            tracing::warn!("Failed to sync default repositories: {}", e);
+        }
+
         let core_node_name = self.node_name(); // The core node binds to itself
         info!(
             "Starting the core node with name {} and instance_id {}...",

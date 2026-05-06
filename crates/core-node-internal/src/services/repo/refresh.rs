@@ -145,11 +145,13 @@ impl GoalHandler for RepoRefreshGoalHandler {
                         // Write caches for all nodes/launchers (including
                         // duplicates, so `repo list` can display every
                         // source).
-                        let unique_count =
+                        let unique_nodes =
                             discovered.iter().filter(|n| !n.duplicate).count() as u32;
+                        let unique_launchers =
+                            launchers.iter().filter(|l| !l.duplicate).count() as u32;
                         write_cache(&dirs, &discovered)?;
                         write_launcher_cache(&dirs, &launchers)?;
-                        Ok((unique_count, excluded))
+                        Ok((unique_nodes, unique_launchers, excluded))
                     }
                     Err(e) => Err(e),
                 }
@@ -157,7 +159,9 @@ impl GoalHandler for RepoRefreshGoalHandler {
             .await;
 
             let result = match scan {
-                Ok(Ok((unique_count, _excluded))) => RepoRefreshResult::success(unique_count),
+                Ok(Ok((unique_nodes, unique_launchers, _excluded))) => {
+                    RepoRefreshResult::success(unique_nodes, unique_launchers)
+                }
                 Ok(Err(e)) => {
                     warn!("Repo refresh failed: {}", e);
                     RepoRefreshResult::failure(e.to_string())
