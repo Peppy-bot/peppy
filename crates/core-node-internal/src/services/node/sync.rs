@@ -574,7 +574,7 @@ async fn handle_node_sync_request_inner(
                 interfaces: root_interfaces.clone(),
                 execution: variant_config.execution,
             };
-            let merged_json5 = match serde_json5::to_string(&merged_config) {
+            let merged_json5 = match config::json5_pretty::to_string_pretty(&merged_config) {
                 Ok(json) => json,
                 Err(e) => {
                     return NodeSyncResponse::failure(format!(
@@ -1112,7 +1112,7 @@ pub fn auto_sync_if_missing(
         // re-parses the config.
         let mut config_for_gen = v.merged_config.clone();
         config_for_gen.manifest.variants = None;
-        let merged_json5 = serde_json5::to_string(&config_for_gen)
+        let merged_json5 = config::json5_pretty::to_string_pretty(&config_for_gen)
             .map_err(|e| crate::Error::Io(std::io::Error::other(e)))?;
         // Keep the temp file alive while `merged_config_path` is in use;
         // it is automatically deleted when `tmp` is dropped.

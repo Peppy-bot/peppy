@@ -176,7 +176,7 @@ fn repo_add_top_assigns_id_below_current_min() {
 
     let repos_path = serve.temp_dir().join("conf/repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse repos");
+    let repos: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse repos");
 
     let first = repos
         .iter()

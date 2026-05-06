@@ -1210,7 +1210,7 @@ mod tests {
 
         let raw = std::fs::read_to_string(&cache_path).expect("read launcher cache");
         let parsed: serde_json::Value =
-            serde_json::from_str(&raw).expect("launcher cache should be valid JSON");
+            serde_json5::from_str(&raw).expect("launcher cache should be valid JSON5");
         let arr = parsed.as_array().expect("expected JSON array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["launcher_name"], "openarm01_sim_teleop");
@@ -1302,7 +1302,7 @@ mod tests {
         let raw = std::fs::read_to_string(launchers_repo_cache_path(&peppy_dirs))
             .expect("read launcher cache");
         let parsed: serde_json::Value =
-            serde_json::from_str(&raw).expect("launcher cache should be valid JSON");
+            serde_json5::from_str(&raw).expect("launcher cache should be valid JSON5");
         let entry = &parsed.as_array().expect("array")[0];
         assert_eq!(entry["launcher_name"], "openarm01_teleop");
         assert_eq!(entry["source_type"], "git");

@@ -90,7 +90,7 @@ fn repo_list_finds_nodes_in_fs_repo() {
     let cache_content =
         std::fs::read_to_string(&cache_path).expect("nodes.json5 should be written by refresh");
     let cached: Vec<serde_json::Value> =
-        serde_json::from_str(&cache_content).expect("nodes.json5 should parse as JSON");
+        serde_json5::from_str(&cache_content).expect("nodes.json5 should parse as JSON5");
     assert!(
         cached.iter().any(|n| {
             n.get("node_name").and_then(|v| v.as_str()) == Some("my_sensor")

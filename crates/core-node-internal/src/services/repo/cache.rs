@@ -162,7 +162,7 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
 /// [`config::atomic_write::publish_atomic`] so concurrent readers never
 /// observe a partial file.
 pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[NodeCacheEntry]) -> Result<()> {
-    let content = serde_json::to_string_pretty(nodes)
+    let content = config::json5_pretty::to_string_pretty(nodes)
         .map_err(|e| core_node_api::Error::Encoding(format!("failed to serialize cache: {e}")))?;
     config::atomic_write::publish_atomic(&nodes_repo_cache_path(peppy_dirs), |tmp| {
         std::fs::write(tmp, &content)
@@ -177,7 +177,7 @@ pub(crate) fn write_launcher_cache(
     peppy_dirs: &PeppyDirs,
     launchers: &[LauncherCacheEntry],
 ) -> Result<()> {
-    let content = serde_json::to_string_pretty(launchers).map_err(|e| {
+    let content = config::json5_pretty::to_string_pretty(launchers).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize launcher cache: {e}"))
     })?;
     config::atomic_write::publish_atomic(&launchers_repo_cache_path(peppy_dirs), |tmp| {
@@ -767,7 +767,7 @@ mod tests {
 
         let raw = std::fs::read_to_string(&path).expect("read launcher cache");
         let parsed: serde_json::Value =
-            serde_json::from_str(&raw).expect("launcher cache should be valid JSON");
+            serde_json5::from_str(&raw).expect("launcher cache should be valid JSON5");
         let arr = parsed.as_array().expect("expected array");
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["launcher_name"], "openarm01_sim_teleop");

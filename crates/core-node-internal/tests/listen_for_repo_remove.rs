@@ -79,7 +79,7 @@ async fn remove_fs_repo_succeeds() {
     let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
     assert!(repos.is_empty(), "repos should be empty after removal");
 
     // Cache refresh is triggered for all repo types (including fs)
@@ -138,7 +138,7 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
     let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
     assert_eq!(repos.len(), 1, "only the fs entry should remain");
     assert_eq!(repos[0]["type"], "fs");
 
@@ -151,7 +151,7 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
     );
     let cache_content = std::fs::read_to_string(&cache_path).expect("read cache file");
     let cached: Vec<serde_json::Value> =
-        serde_json::from_str(&cache_content).expect("parse cache as JSON");
+        serde_json5::from_str(&cache_content).expect("parse cache as JSON5");
     assert!(
         !cached
             .iter()
@@ -192,7 +192,7 @@ async fn remove_url_repo_succeeds_and_triggers_refresh() {
     let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
     assert_eq!(repos.len(), 1, "only the fs entry should remain");
     assert_eq!(repos[0]["type"], "fs");
 
@@ -230,7 +230,7 @@ async fn remove_nonexistent_id_fails() {
     let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
     assert_eq!(repos.len(), 1, "repos should be unchanged");
 }
 
@@ -300,7 +300,7 @@ async fn remove_verifies_id_on_manually_added_entry() {
     let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
     assert_eq!(repos.len(), 2, "two entries should remain");
     assert_eq!(repos[0]["id"], 10);
     assert_eq!(repos[0]["path"], "/repo-a");

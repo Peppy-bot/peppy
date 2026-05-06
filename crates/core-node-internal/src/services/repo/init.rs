@@ -91,7 +91,7 @@ pub fn ensure_default_repos(peppy_dirs: &PeppyDirs) -> Result<InitOutcome> {
 
     if added > 0 {
         existing.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
-        let serialized = serde_json::to_string_pretty(&existing).map_err(|e| {
+        let serialized = config::json5_pretty::to_string_pretty(&existing).map_err(|e| {
             core_node_api::Error::Encoding(format!("failed to serialize repositories: {e}"))
         })?;
         std::fs::write(&repos_path, serialized)?;
@@ -329,7 +329,7 @@ mod tests {
                     != Some("https://github.com/Peppy-bot/launchers_hub.git")
             })
             .collect();
-        let serialized = serde_json::to_string_pretty(&without_launchers).unwrap();
+        let serialized = config::json5_pretty::to_string_pretty(&without_launchers).unwrap();
         std::fs::write(repositories_list_path(&peppy_dirs), &serialized).unwrap();
         without_launchers.clear(); // dropped, only used to write
 

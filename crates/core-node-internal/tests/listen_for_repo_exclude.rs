@@ -58,7 +58,7 @@ async fn exclude_url_succeed() {
         .join("excluded_repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
 
     assert_eq!(repos.len(), 1);
     let entry = &repos[0];
@@ -88,7 +88,7 @@ async fn exclude_git_succeed() {
         .join("excluded_repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
 
     assert_eq!(repos.len(), 1);
     let entry = &repos[0];
@@ -112,7 +112,7 @@ async fn exclude_fs_succeed() {
         .join("excluded_repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
 
     assert_eq!(repos.len(), 1);
     let entry = &repos[0];
@@ -195,7 +195,7 @@ async fn exclude_assigns_id_after_manual_entry() {
         .join("excluded_repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
 
     assert_eq!(repos.len(), 2);
 

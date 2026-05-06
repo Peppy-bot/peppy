@@ -4,15 +4,13 @@ use peppy::commands::repo::repo_init_with_dirs;
 use serde_json::Value;
 use tempfile::TempDir;
 
-/// Helper: read repositories.json5 as a `Vec<Value>`.
-///
-/// Rewrites JSON-after-init paths produce strict JSON, so `serde_json` is
-/// enough. For the freshly-written template (which is JSON5 with comments)
-/// the test inspects the raw string instead.
+/// Helper: read repositories.json5 as a `Vec<Value>`. Both the seeded
+/// template and the rewritten file are JSON5 (unquoted keys, optional
+/// trailing commas), so use the JSON5 parser in both cases.
 fn read_repos_json(peppy_dirs: &PeppyDirs) -> Vec<Value> {
     let path = repositories_list_path(peppy_dirs);
     let content = std::fs::read_to_string(&path).unwrap();
-    serde_json::from_str(&content).unwrap()
+    serde_json5::from_str(&content).unwrap()
 }
 
 fn has_git_url(repos: &[Value], url: &str) -> bool {

@@ -9,7 +9,7 @@ fn find_repo_id(serve: &ServeCommandEmulation, source: &str) -> u64 {
     let repos_path = serve.temp_dir().join("conf/repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("failed to read repositories.json5");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("failed to parse repositories.json5");
+        serde_json5::from_str(&content).expect("failed to parse repositories.json5");
     for entry in &repos {
         let matches = entry
             .get("path")

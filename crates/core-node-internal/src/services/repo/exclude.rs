@@ -220,7 +220,7 @@ fn handle_repo_exclude_request_inner(
 
     repos.push(repo_source_to_json(next_id, &request.source));
     repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
-    let content = serde_json::to_string_pretty(&repos).map_err(|e| {
+    let content = config::json5_pretty::to_string_pretty(&repos).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize excluded repositories: {e}"))
     })?;
     std::fs::write(&repos_path, content)?;

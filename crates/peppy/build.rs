@@ -3,7 +3,7 @@ use std::process::Command;
 
 fn main() {
     // Embed the git hash into the binary at compile time.
-    // The serve command will write this to ~/.peppy/daemon_state.json at runtime.
+    // The serve command will write this to ~/.peppy/daemon_state.json5 at runtime.
     embed_git_hash();
 
     // Embed the git tag if provided (set by build_release.sh)

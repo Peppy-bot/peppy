@@ -133,7 +133,7 @@ fn handle_repo_add_request_inner(
     };
 
     repos.push(repo_source_to_json(next_id, &request.source));
-    let content = serde_json::to_string_pretty(&repos).map_err(|e| {
+    let content = config::json5_pretty::to_string_pretty(&repos).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize repositories: {e}"))
     })?;
     std::fs::write(&repos_path, content)?;

@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self};
 use std::io;
 
-const DAEMON_STATE_FILENAME: &str = "daemon_state.json";
+const DAEMON_STATE_FILENAME: &str = "daemon_state.json5";
 
 /// Persistent state for the peppy daemon.
 ///
-/// This struct is serialized to JSON and stored on disk to track daemon state
+/// This struct is serialized to JSON5 and stored on disk to track daemon state
 /// across restarts. The state file location is determined by the `PEPPY_DAEMON_STATE_FILE`
 /// environment variable, or defaults to `~/.peppy/$DAEMON_STATE_FILENAME` in production
 /// and a temp directory in development.
@@ -47,7 +47,7 @@ impl DaemonState {
     /// Returns the path where the daemon state file will be stored.
     ///
     /// If the `PEPPY_DAEMON_STATE_FILE` environment variable is set, returns that path.
-    /// Otherwise, returns `peppy_data_dir()/daemon_state.json`.
+    /// Otherwise, returns `peppy_data_dir()/daemon_state.json5`.
     pub(crate) fn state_file_path() -> PathBuf {
         Self::env_state_file_path().unwrap_or_else(Self::default_state_file_path)
     }
@@ -68,8 +68,8 @@ impl DaemonState {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let content =
-            serde_json::to_string_pretty(state).map_err(|e| io::Error::other(e.to_string()))?;
+        let content = config::json5_pretty::to_string_pretty(state)
+            .map_err(|e| io::Error::other(e.to_string()))?;
         fs::write(path, content)
     }
 
@@ -104,7 +104,7 @@ impl DaemonState {
 
     pub(crate) fn read_from(path: &Path) -> Result<Self, io::Error> {
         let content = fs::read_to_string(path)?;
-        serde_json::from_str(&content).map_err(|e| io::Error::other(e.to_string()))
+        serde_json5::from_str(&content).map_err(|e| io::Error::other(e.to_string()))
     }
 
     fn env_state_file_path() -> Option<PathBuf> {

@@ -70,7 +70,7 @@ fn read_daemon_git_hash(daemon_state_path: &Path) -> String {
     let contents =
         fs::read_to_string(daemon_state_path).expect("daemon state file should be readable");
     let value: serde_json::Value =
-        serde_json::from_str(&contents).expect("daemon state should parse as JSON");
+        serde_json5::from_str(&contents).expect("daemon state should parse as JSON5");
     value
         .get("git_hash")
         .and_then(|v| v.as_str())

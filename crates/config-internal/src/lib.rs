@@ -11,6 +11,7 @@ mod internal {
     pub mod consts;
     pub mod encoding;
     pub mod fingerprint;
+    pub mod json5_pretty;
     pub mod launcher;
     pub mod node;
     pub mod repo_node_id;
@@ -50,6 +51,11 @@ pub mod encoding {
     pub use crate::internal::encoding::{
         CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper, compile_capnp,
     };
+}
+
+// -- json5_pretty --
+pub mod json5_pretty {
+    pub use crate::internal::json5_pretty::to_string_pretty;
 }
 
 // -- fingerprint --

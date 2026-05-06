@@ -554,7 +554,8 @@ async fn refresh_cache_written() {
     assert!(cache_path.exists(), "cache file should exist");
 
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache JSON");
+    let entries: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse cache JSON5");
     assert_eq!(entries.len(), 2, "cache should contain 2 nodes (FS + git)");
 
     let fs_entry = entries
@@ -611,7 +612,7 @@ async fn refresh_cache_includes_variants() {
 
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
+    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
 
     let plain_entry = entries
         .iter()
@@ -689,7 +690,7 @@ async fn refresh_cache_includes_duplicates() {
     // Cache should contain all 3 entries (including the duplicate)
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
+    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
     assert_eq!(
         entries.len(),
         3,
@@ -952,7 +953,7 @@ async fn refresh_excluded_repos_not_in_cache() {
 
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
+    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
     assert_eq!(
         entries.len(),
         1,
