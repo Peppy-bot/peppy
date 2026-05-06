@@ -6,6 +6,7 @@ use serde::{
 use std::{
     collections::{BTreeMap, HashSet},
     convert::TryFrom,
+    fmt,
 };
 
 pub use crate::source::{
@@ -22,6 +23,16 @@ pub use crate::source::{
 pub enum PeppySchema {
     NodeV1,
     LauncherV1,
+}
+
+impl fmt::Display for PeppySchema {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            PeppySchema::NodeV1 => "node_v1",
+            PeppySchema::LauncherV1 => "launcher_v1",
+        };
+        f.write_str(s)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,11 +54,7 @@ where
     let schema = PeppySchema::deserialize(deserializer)?;
     if schema != PeppySchema::LauncherV1 {
         return Err(de::Error::custom(format!(
-            "expected peppy_schema 'launcher_v1', got '{}'",
-            match schema {
-                PeppySchema::NodeV1 => "node_v1",
-                PeppySchema::LauncherV1 => "launcher_v1",
-            }
+            "expected peppy_schema 'launcher_v1', got '{schema}'"
         )));
     }
     Ok(schema)

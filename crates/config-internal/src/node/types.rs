@@ -88,11 +88,7 @@ where
     let schema = PeppySchema::deserialize(deserializer)?;
     if schema != PeppySchema::NodeV1 {
         return Err(de::Error::custom(format!(
-            "expected peppy_schema 'node_v1', got '{}'",
-            match schema {
-                PeppySchema::NodeV1 => "node_v1",
-                PeppySchema::LauncherV1 => "launcher_v1",
-            }
+            "expected peppy_schema 'node_v1', got '{schema}'"
         )));
     }
     Ok(schema)

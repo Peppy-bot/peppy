@@ -158,25 +158,16 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
-/// Write cached node information for git/url repositories.
-///
-/// The write is performed via a unique sibling temp file + atomic rename
-/// so that concurrent readers (see [`load_with_generation`]) never
-/// observe a truncated or partially-written `nodes.json5`. Each
-/// invocation gets its own temp name so concurrent writers don't race
-/// over a shared staging path.
+/// Write cached node information for git/url repositories. See
+/// [`write_cache_atomic`] for the durability model.
 pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[NodeCacheEntry]) -> Result<()> {
     let content = serde_json::to_string_pretty(nodes)
         .map_err(|e| core_node_api::Error::Encoding(format!("failed to serialize cache: {e}")))?;
-    write_cache_atomic(&nodes_repo_cache_path(peppy_dirs), peppy_dirs, &content)
+    write_cache_atomic(&nodes_repo_cache_path(peppy_dirs), &content)
 }
 
-/// Write cached launcher information for git/url/fs repositories.
-///
-/// The write is performed via a unique sibling temp file + atomic rename
-/// so that concurrent readers never observe a truncated or
-/// partially-written file. Each invocation gets its own temp name so
-/// concurrent writers don't race over a shared staging path.
+/// Write cached launcher information for git/url/fs repositories. See
+/// [`write_cache_atomic`] for the durability model.
 pub(crate) fn write_launcher_cache(
     peppy_dirs: &PeppyDirs,
     launchers: &[LauncherCacheEntry],
@@ -184,18 +175,25 @@ pub(crate) fn write_launcher_cache(
     let content = serde_json::to_string_pretty(launchers).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize launcher cache: {e}"))
     })?;
-    write_cache_atomic(&launchers_repo_cache_path(peppy_dirs), peppy_dirs, &content)
+    write_cache_atomic(&launchers_repo_cache_path(peppy_dirs), &content)
 }
 
-fn write_cache_atomic(final_path: &Path, peppy_dirs: &PeppyDirs, content: &str) -> Result<()> {
+/// Stage `content` to a unique sibling of `final_path` and atomically
+/// rename it into place. Concurrent readers (see [`load_with_generation`])
+/// never observe a partial file, and concurrent writers don't race over
+/// a shared staging path. Staging in the same directory keeps the rename
+/// on the same filesystem (cross-fs `rename(2)` returns `EXDEV`).
+fn write_cache_atomic(final_path: &Path, content: &str) -> Result<()> {
     use std::io::Write;
 
-    let cache_dir = peppy_dirs.cache_dir();
-    std::fs::create_dir_all(&cache_dir)?;
-    // `NamedTempFile::new_in` produces a unique sibling file. `persist`
-    // performs the atomic rename onto the final path. Using a sibling
-    // (not `$TMPDIR`) keeps the rename on the same filesystem.
-    let mut tmp = tempfile::NamedTempFile::new_in(&cache_dir)?;
+    let cache_dir = final_path.parent().ok_or_else(|| {
+        core_node_api::Error::Encoding(format!(
+            "cache path has no parent: {}",
+            final_path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(cache_dir)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(cache_dir)?;
     tmp.write_all(content.as_bytes())?;
     tmp.persist(final_path).map_err(|e| e.error)?;
     Ok(())

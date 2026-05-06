@@ -475,18 +475,33 @@ async fn handle_node_sync_request_inner(
     } else {
         // Variant-only node: no peppygen at root, but .peppy/git.hash must
         // still exist alongside the manifest so that `node add` can verify
-        // the source is in sync.
-        remove_previous_peppy_dir(&node_root_dir);
-        let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
-        if let Err(e) = std::fs::create_dir_all(&peppy_dir)
-            .and_then(|()| std::fs::write(peppy_dir.join("git.hash"), git_hash.as_bytes()))
+        // the source is in sync. Wrapped in spawn_blocking because
+        // `remove_previous_peppy_dir` calls `remove_dir_all` synchronously.
+        match tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            remove_previous_peppy_dir(&node_root_dir);
+            let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+            std::fs::create_dir_all(&peppy_dir)?;
+            std::fs::write(peppy_dir.join("git.hash"), git_hash.as_bytes())
+        })
+        .await
         {
-            return NodeSyncResponse::failure(format!(
-                "Failed to write git hash at root for variant-only node: {}",
-                e
-            ))
-            .encode()
-            .map_err(Into::into);
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                return NodeSyncResponse::failure(format!(
+                    "Failed to write git hash at root for variant-only node: {}",
+                    e
+                ))
+                .encode()
+                .map_err(Into::into);
+            }
+            Err(e) => {
+                return NodeSyncResponse::failure(format!(
+                    "Failed to write git hash at root for variant-only node (task failed): {}",
+                    e
+                ))
+                .encode()
+                .map_err(Into::into);
+            }
         }
     }
 

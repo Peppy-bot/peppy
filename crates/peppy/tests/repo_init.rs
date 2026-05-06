@@ -10,7 +10,7 @@ use tempfile::TempDir;
 /// enough. For the freshly-written template (which is JSON5 with comments)
 /// the test inspects the raw string instead.
 fn read_repos_json(peppy_dirs: &PeppyDirs) -> Vec<Value> {
-    let path = repositories_list_path(&peppy_dirs);
+    let path = repositories_list_path(peppy_dirs);
     let content = std::fs::read_to_string(&path).unwrap();
     serde_json::from_str(&content).unwrap()
 }
