@@ -164,14 +164,13 @@ impl ServeCommandEmulation {
 
         let peppy_dirs = PeppyDirs::new(temp_dir.path());
 
-        // Pre-write an empty repositories.json5 to prevent the repo refresh
-        // step from falling back to the default template, which points at the
-        // real `$HOME` and triggers a full home-directory walk. Tests that
-        // need different contents can overwrite this file afterward.
+        // Pre-write an empty repositories.json5 so the daemon's `ensure_default_repos`
+        // sees an existing file and treats it as the user's config rather than
+        // falling back to the default template wholesale.
         let conf_dir = peppy_dirs.conf_dir();
         std::fs::create_dir_all(&conf_dir).expect("failed to create conf dir");
-        std::fs::write(conf_dir.join("repositories.json5"), "[]")
-            .expect("failed to write repositories.json5");
+        let repos_path = conf_dir.join("repositories.json5");
+        std::fs::write(&repos_path, "[]").expect("failed to write repositories.json5");
 
         let core_node = CoreNode::new(
             Arc::clone(&shared_messenger),
@@ -194,6 +193,15 @@ impl ServeCommandEmulation {
         let core_node_task =
             tokio::spawn(async move { core_node.start_with_ready(Some(ready_tx)).await });
         ready_rx.await.expect("core node ready signal failed");
+
+        // `ensure_default_repos` runs during `start_with_ready` and appends the
+        // bundled defaults (real GitHub URLs) to the empty file we wrote above.
+        // Reset the file once the daemon is ready so tests that trigger a
+        // refresh — e.g. `repo remove`, which fires a synchronous refresh
+        // before responding — don't try to clone real remotes and time out on
+        // slow networks. Tests that need specific contents can overwrite this.
+        std::fs::write(&repos_path, "[]")
+            .expect("failed to reset repositories.json5 after daemon startup");
 
         let daemon_state = DaemonState::new(&core_node_name, port, "test-git-hash");
         DaemonState::write_to(&daemon_state_path, &daemon_state)
