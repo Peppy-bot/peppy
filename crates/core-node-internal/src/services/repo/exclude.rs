@@ -55,20 +55,19 @@ async fn handle_repo_exclude_request(
     if needs_refresh {
         let dirs = peppy_dirs.clone();
         match tokio::task::spawn_blocking(move || {
-            let refresh_result = process_refresh(&dirs, &mut |_| {});
-            (refresh_result, dirs)
+            let _guard = crate::services::repo::refresh_lock().lock();
+            match process_refresh(&dirs, &mut |_| {}) {
+                Ok((discovered, launchers, _excluded)) => {
+                    write_cache(&dirs, &discovered)?;
+                    write_launcher_cache(&dirs, &launchers)
+                }
+                Err(e) => Err(e),
+            }
         })
         .await
         {
-            Ok((Ok((discovered, launchers, _excluded)), dirs)) => {
-                if let Err(e) = write_cache(&dirs, &discovered) {
-                    warn!("Failed to write cache after repo exclusion: {}", e);
-                }
-                if let Err(e) = write_launcher_cache(&dirs, &launchers) {
-                    warn!("Failed to write launcher cache after repo exclusion: {}", e);
-                }
-            }
-            Ok((Err(e), _dirs)) => {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
                 warn!("Failed to refresh after repo exclusion: {}", e);
             }
             Err(e) => {

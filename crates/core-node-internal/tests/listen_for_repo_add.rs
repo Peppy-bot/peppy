@@ -19,9 +19,9 @@ async fn send_repo_add(started: &StartedCoreNode, request: &RepoAddRequest) -> R
 }
 
 /// Assert the most recently appended repo got the next-available id —
-/// strictly greater than every other id present. Avoids hardcoding a
-/// specific value, which goes stale every time a default is added to
-/// the shipped `default_repositories.json5`.
+/// exactly `max(other_ids) + 1`. Avoids hardcoding a specific value, which
+/// goes stale every time a default is added to the shipped
+/// `default_repositories.json5`, and catches regressions where ids skip ahead.
 fn assert_last_got_next_id(repos: &[serde_json::Value]) {
     let last_id = repos
         .last()
@@ -32,9 +32,10 @@ fn assert_last_got_next_id(repos: &[serde_json::Value]) {
         .filter_map(|r| r["id"].as_u64())
         .max()
         .unwrap_or(0);
-    assert!(
-        last_id > max_other,
-        "added entry should get the next available id (got {last_id}, max other {max_other})"
+    assert_eq!(
+        last_id,
+        max_other + 1,
+        "added entry should get exactly max_other + 1 (got {last_id}, max other {max_other})"
     );
 }
 

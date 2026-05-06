@@ -702,7 +702,7 @@ async fn materialize_repo_deps(
         if cache.is_none() {
             cache = Some(
                 repo_cache::load_with_generation(peppy_dirs)
-                    .map_err(|e| format!("failed to load packages cache: {e}"))?,
+                    .map_err(|e| format!("failed to load nodes cache: {e}"))?,
             );
         }
         let (entries, cache_generation) = cache.as_ref().expect("cache loaded above");

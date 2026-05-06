@@ -69,12 +69,33 @@ impl Toolchain {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawNodeConfig {
+    #[serde(deserialize_with = "deserialize_node_v1_schema")]
     pub(crate) peppy_schema: PeppySchema,
     pub(crate) manifest: Manifest,
     #[serde(default)]
     pub(crate) interfaces: Interfaces,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) execution: Option<RawExecution>,
+}
+
+/// Reject any `peppy_schema` value other than `node_v1` so a launcher
+/// document that happens to share a node-compatible field set can't
+/// slip through `NodeConfigParser`.
+fn deserialize_node_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let schema = PeppySchema::deserialize(deserializer)?;
+    if schema != PeppySchema::NodeV1 {
+        return Err(de::Error::custom(format!(
+            "expected peppy_schema 'node_v1', got '{}'",
+            match schema {
+                PeppySchema::NodeV1 => "node_v1",
+                PeppySchema::LauncherV1 => "launcher_v1",
+            }
+        )));
+    }
+    Ok(schema)
 }
 
 /// Name reserved for the default variant.
@@ -1270,6 +1291,7 @@ impl PeppyNodeConfig for NodeConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VariantConfig {
+    #[serde(deserialize_with = "deserialize_node_v1_schema")]
     pub peppy_schema: PeppySchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<Manifest>,
@@ -1914,6 +1936,39 @@ mod tests {
             extra: "bad"
         }"#;
         assert!(serde_json5::from_str::<NodeConfig>(json5).is_err());
+    }
+
+    /// A node-shaped document that mislabels itself as a launcher must
+    /// be rejected — the schema field is the source of truth, not just
+    /// the field names.
+    #[test]
+    fn node_config_rejects_non_node_schema() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            manifest: { name: "node", tag: "0.1.0" },
+            interfaces: {},
+            execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
+        }"#;
+        let err = serde_json5::from_str::<RawNodeConfig>(json5)
+            .expect_err("launcher_v1 schema must be rejected");
+        assert!(
+            err.to_string().contains("node_v1"),
+            "error should mention the expected schema, got: {err}"
+        );
+    }
+
+    #[test]
+    fn variant_config_rejects_non_node_schema() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
+        }"#;
+        let err = serde_json5::from_str::<VariantConfig>(json5)
+            .expect_err("launcher_v1 schema must be rejected");
+        assert!(
+            err.to_string().contains("node_v1"),
+            "error should mention the expected schema, got: {err}"
+        );
     }
 
     #[test]

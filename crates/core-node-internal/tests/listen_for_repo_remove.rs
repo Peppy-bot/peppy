@@ -2,7 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
-use core_node::nodes_repo_cache_path;
+use core_node::{launchers_repo_cache_path, nodes_repo_cache_path};
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use peppylib::core_node::transport::poll_repo_remove;
 use std::time::Duration;
@@ -88,6 +88,11 @@ async fn remove_fs_repo_succeeds() {
         cache_path.exists(),
         "nodes.json5 cache should exist after fs repo removal"
     );
+    let launcher_cache_path = launchers_repo_cache_path(&started.peppy_dirs);
+    assert!(
+        launcher_cache_path.exists(),
+        "launchers.json5 cache should exist after fs repo removal"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -153,6 +158,11 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
             .any(|n| n.get("source_uri").and_then(|v| v.as_str()) == Some(git_url)),
         "cache should not contain nodes from the removed git repo"
     );
+    let launcher_cache_path = launchers_repo_cache_path(&started.peppy_dirs);
+    assert!(
+        launcher_cache_path.exists(),
+        "launchers.json5 cache should exist after refresh"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -191,6 +201,11 @@ async fn remove_url_repo_succeeds_and_triggers_refresh() {
     assert!(
         cache_path.exists(),
         "nodes.json5 cache should exist after refresh"
+    );
+    let launcher_cache_path = launchers_repo_cache_path(&started.peppy_dirs);
+    assert!(
+        launcher_cache_path.exists(),
+        "launchers.json5 cache should exist after refresh"
     );
 }
 

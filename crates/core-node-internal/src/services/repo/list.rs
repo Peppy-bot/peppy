@@ -216,7 +216,7 @@ fn read_cached_nodes(peppy_dirs: &PeppyDirs) -> Vec<Value> {
     match std::fs::read_to_string(&cache_path) {
         Ok(content) => serde_json5::from_str(&content).unwrap_or_else(|e| {
             warn!(
-                "Failed to parse packages cache at {}: {e}",
+                "Failed to parse nodes cache (nodes.json5) at {}: {e}",
                 cache_path.display()
             );
             Vec::new()

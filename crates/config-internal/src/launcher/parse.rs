@@ -155,10 +155,25 @@ mod tests {
 
         let err = PeppyLauncherParser::from_path(&path)
             .expect_err("node config must not parse as a launcher");
-        // The unknown `manifest` key surfaces in the error message.
+        // The schema check fires before `deny_unknown_fields` does.
         assert!(
-            err.to_string().contains("manifest"),
+            err.to_string().contains("launcher_v1"),
             "unexpected error: {err}"
+        );
+    }
+
+    /// A document whose shape is launcher-compatible but whose
+    /// `peppy_schema` claims to be a node must still be rejected — the
+    /// schema field is the source of truth, so `deny_unknown_fields`
+    /// alone isn't enough.
+    #[test]
+    fn test_from_content_rejects_non_launcher_schema() {
+        let json5 = r#"{ peppy_schema: "node_v1", deployments: [] }"#;
+        let err = PeppyLauncherParser::from_content(json5)
+            .expect_err("non-launcher schema must be rejected");
+        assert!(
+            err.to_string().contains("launcher_v1"),
+            "error should mention the expected schema, got: {err}"
         );
     }
 

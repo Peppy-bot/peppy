@@ -1,5 +1,5 @@
 //! Typed loader for `~/.peppy/cache/nodes.json5` and
-//! `~/.peppy/cache/launcher.json5`.
+//! `~/.peppy/cache/launchers.json5`.
 //!
 //! The cache files are written by `repo_refresh` (see `write_cache` /
 //! `write_launcher_cache`) and list every node and launcher discovered
@@ -56,7 +56,7 @@ pub struct NodeCacheEntry {
     pub repo_id: u32,
 }
 
-/// One entry as it appears in `launcher.json5`. Launchers live in the
+/// One entry as it appears in `launchers.json5`. Launchers live in the
 /// same kind of repositories as nodes (FS or Git), but they don't carry
 /// a tag, variants, or a checksum — they're just the location of a
 /// `peppy_launcher.json5` file by name.
@@ -190,7 +190,7 @@ pub(crate) fn write_launcher_cache(
         core_node_api::Error::Encoding(format!("failed to serialize launcher cache: {e}"))
     })?;
     let final_path = launchers_repo_cache_path(peppy_dirs);
-    let tmp_path = cache_dir.join("launcher.json5.tmp");
+    let tmp_path = cache_dir.join("launchers.json5.tmp");
     std::fs::write(&tmp_path, content)?;
     std::fs::rename(&tmp_path, &final_path)?;
     Ok(())
@@ -241,7 +241,7 @@ pub fn nodes_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 }
 
 pub fn launchers_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
-    peppy_dirs.cache_dir().join("launcher.json5")
+    peppy_dirs.cache_dir().join("launchers.json5")
 }
 
 /// Looks up `(name, tag)` in the nodes cache and translates the matched
@@ -712,7 +712,7 @@ mod tests {
         )
         .unwrap();
 
-        let tmp_path = peppy_dirs.cache_dir().join("launcher.json5.tmp");
+        let tmp_path = peppy_dirs.cache_dir().join("launchers.json5.tmp");
         assert!(
             !tmp_path.exists(),
             "tmp file should be renamed away, not left behind"

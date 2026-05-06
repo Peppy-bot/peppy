@@ -27,9 +27,30 @@ pub enum PeppySchema {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeppyLauncher {
+    #[serde(deserialize_with = "deserialize_launcher_v1_schema")]
     pub peppy_schema: PeppySchema,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deployments: Vec<Deployment>,
+}
+
+/// Reject any `peppy_schema` value other than `launcher_v1` so a node
+/// document that happens to share the launcher's deployment shape can't
+/// slip through `PeppyLauncherParser`.
+fn deserialize_launcher_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let schema = PeppySchema::deserialize(deserializer)?;
+    if schema != PeppySchema::LauncherV1 {
+        return Err(de::Error::custom(format!(
+            "expected peppy_schema 'launcher_v1', got '{}'",
+            match schema {
+                PeppySchema::NodeV1 => "node_v1",
+                PeppySchema::LauncherV1 => "launcher_v1",
+            }
+        )));
+    }
+    Ok(schema)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

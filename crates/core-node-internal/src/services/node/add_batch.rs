@@ -88,7 +88,7 @@ pub(crate) async fn run_repo_node_add(
             return fail(
                 &log_file,
                 &log_path,
-                format!("Failed to read packages cache: {}", e),
+                format!("Failed to read nodes cache: {}", e),
             );
         }
     };
