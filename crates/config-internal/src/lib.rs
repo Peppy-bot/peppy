@@ -7,6 +7,7 @@ mod parsing;
 /// the same directory as this file, so existing file paths are preserved.
 #[path = "."]
 mod internal {
+    pub mod atomic_write;
     pub mod consts;
     pub mod encoding;
     pub mod fingerprint;
@@ -26,6 +27,11 @@ pub use common::{
 
 // -- error --
 pub use error::{Error as ConfigError, ParsingError, Result as ConfigResult};
+
+// -- atomic_write --
+pub mod atomic_write {
+    pub use crate::internal::atomic_write::publish_atomic;
+}
 
 // -- consts --
 pub mod consts {
