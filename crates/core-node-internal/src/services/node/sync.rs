@@ -66,17 +66,7 @@ pub async fn listen_for_node_sync(
 fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
     let peppy_output_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
 
-    // Safety checks: ensure we're only operating on a `.peppy` directory
-    if !peppy_output_dir.exists() {
-        return;
-    }
-    if !peppy_output_dir.is_dir() {
-        debug!(
-            "Expected .peppy to be a directory, but it's a file: {}",
-            peppy_output_dir.display()
-        );
-        return;
-    }
+    // Path-string sanity check; pure CPU, no syscall.
     if peppy_output_dir.file_name() != Some(std::ffi::OsStr::new(config::consts::PEPPY_OUTPUT_DIR))
     {
         debug!(
@@ -85,6 +75,29 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
             peppy_output_dir.display()
         );
         return;
+    }
+
+    // One `metadata` call decides "missing", "is a file", or "is a dir".
+    // We refuse to rename a non-directory because a stray file at this
+    // path would otherwise be silently moved to `.peppy-old-{pid}-{ts}`
+    // and stranded there.
+    match std::fs::metadata(&peppy_output_dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            debug!(
+                "Expected .peppy to be a directory, but it's a file: {}",
+                peppy_output_dir.display()
+            );
+            return;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            debug!(
+                "Cannot stat .peppy at {}: {}, proceeding with rename anyway",
+                peppy_output_dir.display(),
+                e
+            );
+        }
     }
 
     let timestamp = std::time::SystemTime::now()
