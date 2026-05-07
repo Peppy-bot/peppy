@@ -158,7 +158,7 @@ Launchers discovered by `peppy repo refresh` (see [Repositories](/advanced_guide
 peppy stack launch openarm01_sim_teleop
 ```
 
-Peppy treats the argument as a repository launcher when it has no path separator and no `.json5` extension; otherwise it is resolved as a filesystem path. The repository form looks the launcher up in `~/.peppy/cache/launchers.json5`, so run `peppy repo refresh` first to ensure the cache is populated. If the name does not exist in the cache, the launch fails with an explicit "not found" error.
+An argument that contains a path separator or ends in `.json5` is always resolved as a filesystem path. A bare name (no separator, no extension) is first tried on disk as `<name>.json5` next to your current directory, and only falls back to the repository cache at `~/.peppy/cache/launchers.json5` when no such file exists. Run `peppy repo refresh` first to ensure the launcher cache is populated. If the name resolves neither to a file nor to a cached launcher, the launch fails with an explicit "not found" error.
 
 :::caution
 Running the `peppy stack launch` command clears the existing node stack and stops all running instances
