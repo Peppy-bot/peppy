@@ -9,7 +9,7 @@ async fn repo_node_add_fails_when_packages_cache_missing() {
     let started = start_core_node_with_mock_messenger().await;
     let node_stack = started.node_stack.clone();
 
-    // No packages.json5 written at all.
+    // No nodes.json5 written at all.
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -304,7 +304,7 @@ async fn listen_for_node_add_no_config_found() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -352,7 +352,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-        schema_version: 1,
+        peppy_schema: "node_v1",
         manifest: {
             name: "git_hash_mismatch_node",
             tag: "0.1.0",
@@ -438,7 +438,7 @@ async fn listen_for_node_add_no_run_cmd_fails() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-        schema_version: 1,
+        peppy_schema: "node_v1",
         manifest: {
             name: "no_run_cmd_node",
             tag: "0.1.0",
@@ -485,7 +485,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
 
     // Try to add a consumer node that depends on a non-existent provider
     let peppy_json5 = r#"{
-        schema_version: 1,
+        peppy_schema: "node_v1",
         manifest: {
             name: "consumer_node",
             tag: "1.0.0",
@@ -551,7 +551,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-        schema_version: 1,
+        peppy_schema: "node_v1",
         manifest: {
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",
@@ -632,7 +632,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     // than what the dependent node will subscribe to.
     let dep_source_dir = tempfile::tempdir().expect("failed to create temp dep source dir");
     let dep_peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
@@ -673,7 +673,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     let target_source_dir = tempfile::tempdir().expect("failed to create temp target source dir");
 
     let target_peppy_json5 = r#"{
-        schema_version: 1,
+        peppy_schema: "node_v1",
         manifest: {
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",
@@ -753,7 +753,7 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
     }
 
     let peppy_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",

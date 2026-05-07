@@ -9,6 +9,7 @@ use std::{
 #[derive(Template)]
 #[template(
     source = r#"{
+    peppy_schema: "launcher_v1",
     deployments: []
 }
 "#,
@@ -19,7 +20,7 @@ struct LauncherConfigTemplate;
 #[derive(Template)]
 #[template(
     source = r#"{
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "{{ name }}",
     tag: "0.1.0"
@@ -98,7 +99,7 @@ mod tests {
 
         // JSON5 ground truth with human-friendly syntax
         let expected_json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "a_node",
                 tag: "0.1.0",
@@ -129,6 +130,7 @@ mod tests {
 
         // JSON5 ground truth with human-friendly syntax
         let expected_json5 = r#"{
+            peppy_schema: "launcher_v1",
             deployments: []
         }"#;
 

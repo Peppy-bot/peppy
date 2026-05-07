@@ -34,13 +34,14 @@ pub use repo::{
 };
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
+    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, resolve_launcher_path,
 };
 pub use stack::list::{StackListRequest, StackListResponse};
 pub use stack::reset::{NodeResetRequest, NodeResetResponse};
 
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize;
+use std::path::PathBuf;
 
 use crate::{Payload, Result};
 
@@ -51,6 +52,31 @@ pub(crate) fn optional_text(s: &str) -> Option<String> {
     } else {
         Some(s.to_owned())
     }
+}
+
+/// Decode a non-empty filesystem-path text field into a `PathBuf`.
+/// Relative paths are accepted because some uses of `Fs` overload it
+/// to carry a bare variant name rather than a path; sites that name a
+/// real location should use [`decode_absolute_fs_path`] instead.
+pub(crate) fn decode_fs_path(path: &str, label: &str) -> Result<PathBuf> {
+    if path.is_empty() {
+        return Err(crate::Error::Decoding(format!("{label}: path is empty")));
+    }
+    Ok(PathBuf::from(path))
+}
+
+/// Like [`decode_fs_path`] but additionally requires an absolute path.
+/// Use this when the daemon will open the path without further
+/// resolution — relative paths would silently anchor at the daemon's
+/// CWD, which is a footgun.
+pub(crate) fn decode_absolute_fs_path(path: &str, label: &str) -> Result<PathBuf> {
+    let buf = decode_fs_path(path, label)?;
+    if !buf.is_absolute() {
+        return Err(crate::Error::Decoding(format!(
+            "{label}: path must be absolute, got `{path}`"
+        )));
+    }
+    Ok(buf)
 }
 
 pub(crate) fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
@@ -73,4 +99,37 @@ pub(crate) fn decode_message(
     data: &[u8],
 ) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
     Ok(serialize::read_message(data, ReaderOptions::default())?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_fs_path_rejects_empty() {
+        let err = decode_fs_path("", "TestLabel").expect_err("empty must fail");
+        assert!(err.to_string().contains("TestLabel"));
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn decode_fs_path_accepts_relative() {
+        let buf = decode_fs_path("rel/path", "TestLabel").expect("relative must pass");
+        assert_eq!(buf, PathBuf::from("rel/path"));
+    }
+
+    #[test]
+    fn decode_absolute_fs_path_rejects_relative() {
+        let err = decode_absolute_fs_path("rel/path", "TestLabel").expect_err("relative must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("TestLabel"), "got: {msg}");
+        assert!(msg.contains("absolute"), "got: {msg}");
+        assert!(msg.contains("rel/path"), "got: {msg}");
+    }
+
+    #[test]
+    fn decode_absolute_fs_path_accepts_absolute() {
+        let buf = decode_absolute_fs_path("/abs/path", "TestLabel").expect("absolute must pass");
+        assert_eq!(buf, PathBuf::from("/abs/path"));
+    }
 }

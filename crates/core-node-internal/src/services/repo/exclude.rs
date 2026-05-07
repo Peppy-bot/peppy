@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::names;
-use crate::services::repo::refresh::{process_refresh, write_cache};
+use crate::services::repo::refresh::{process_refresh, write_cache, write_launcher_cache};
 use crate::services::repo::{json_entry_identity, normalize_repo_entries, repo_source_to_json};
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
@@ -55,17 +55,19 @@ async fn handle_repo_exclude_request(
     if needs_refresh {
         let dirs = peppy_dirs.clone();
         match tokio::task::spawn_blocking(move || {
-            let refresh_result = process_refresh(&dirs, &mut |_| {});
-            (refresh_result, dirs)
+            let _guard = crate::services::repo::refresh_lock().lock();
+            match process_refresh(&dirs, &mut |_| {}) {
+                Ok((discovered, launchers, _excluded)) => {
+                    write_cache(&dirs, &discovered)?;
+                    write_launcher_cache(&dirs, &launchers)
+                }
+                Err(e) => Err(e),
+            }
         })
         .await
         {
-            Ok((Ok((discovered, _excluded)), dirs)) => {
-                if let Err(e) = write_cache(&dirs, &discovered) {
-                    warn!("Failed to write cache after repo exclusion: {}", e);
-                }
-            }
-            Ok((Err(e), _dirs)) => {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
                 warn!("Failed to refresh after repo exclusion: {}", e);
             }
             Err(e) => {
@@ -218,7 +220,7 @@ fn handle_repo_exclude_request_inner(
 
     repos.push(repo_source_to_json(next_id, &request.source));
     repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
-    let content = serde_json::to_string_pretty(&repos).map_err(|e| {
+    let content = config::json5_pretty::to_string_pretty(&repos).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize excluded repositories: {e}"))
     })?;
     std::fs::write(&repos_path, content)?;

@@ -1,13 +1,13 @@
 //! Batch-add pipeline for `NodeSource::RepoNode` goals.
 //!
-//! Resolves a `(name, tag)` target against `~/.peppy/cache/packages.json5`,
+//! Resolves a `(name, tag)` target against `~/.peppy/cache/nodes.json5`,
 //! walks its transitive deps, materializes every node through the
 //! persistent git/http caches, topologically sorts them via
 //! [`VirtualDeptree`], then feeds each to [`super::add::run_node_add`].
 //! Mid-batch failure rolls back every node pushed during the batch via a
 //! drop guard.
 
-use super::super::repo::cache::{self, PackageEntry};
+use super::super::repo::cache::{self, NodeCacheEntry};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::add::{NodeAddActionContext, run_node_add};
 use super::cache as node_cache;
@@ -88,7 +88,7 @@ pub(crate) async fn run_repo_node_add(
             return fail(
                 &log_file,
                 &log_path,
-                format!("Failed to read packages cache: {}", e),
+                format!("Failed to read nodes cache: {}", e),
             );
         }
     };
@@ -97,8 +97,8 @@ pub(crate) async fn run_repo_node_add(
             &log_file,
             &log_path,
             format!(
-                "packages.json5 not found or empty at {}; run `peppy repo refresh` to populate it",
-                cache::cache_path(&peppy_dirs).display()
+                "nodes.json5 not found or empty at {}; run `peppy repo refresh` to populate it",
+                cache::nodes_repo_cache_path(&peppy_dirs).display()
             ),
         );
     }
@@ -309,7 +309,7 @@ type MaterializeOutput = (
 #[derive(Clone, Copy)]
 struct BatchResolutionCtx<'a> {
     peppy_dirs: &'a PeppyDirs,
-    entries: &'a [PackageEntry],
+    entries: &'a [NodeCacheEntry],
     cache_generation: Option<SystemTime>,
     feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
 }
@@ -449,7 +449,8 @@ async fn resolve_transitive_closure<'a>(
             .collect::<Vec<_>>()
             .join(", ");
         return Err(format!(
-            "Dependencies missing from packages cache: {list}. Run `peppy repo refresh` or add the missing nodes to a configured repository."
+            "Dependencies missing from nodes cache ({}): {list}. Run `peppy repo refresh` or add the missing nodes to a configured repository.",
+            cache::nodes_repo_cache_path(peppy_dirs).display()
         ));
     }
 

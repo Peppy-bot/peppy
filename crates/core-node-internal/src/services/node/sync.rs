@@ -54,22 +54,19 @@ pub async fn listen_for_node_sync(
 ///
 /// The atomic rename approach:
 /// 1. Renames `.peppy` → `.peppy-old-{pid}-{timestamp}` (atomic operation)
-/// 2. Spawns background cleanup of the old directory
+/// 2. Synchronously deletes the renamed directory
 /// 3. Lets the generator create a fresh `.peppy` directory
+///
+/// The deletion is intentionally synchronous: the next pipeline stage
+/// (`process_node_add`) copies the source directory recursively and walks
+/// `.peppy-old-{pid}-{timestamp}` (which is not in the excluded list), which
+/// would race with a concurrent background deletion and surface as intermittent
+/// "No such file or directory" errors. Callers already run inside
+/// `tokio::task::spawn_blocking`, so the synchronous cost is acceptable.
 fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
     let peppy_output_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
 
-    // Safety checks: ensure we're only operating on a `.peppy` directory
-    if !peppy_output_dir.exists() {
-        return;
-    }
-    if !peppy_output_dir.is_dir() {
-        debug!(
-            "Expected .peppy to be a directory, but it's a file: {}",
-            peppy_output_dir.display()
-        );
-        return;
-    }
+    // Path-string sanity check; pure CPU, no syscall.
     if peppy_output_dir.file_name() != Some(std::ffi::OsStr::new(config::consts::PEPPY_OUTPUT_DIR))
     {
         debug!(
@@ -78,6 +75,29 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
             peppy_output_dir.display()
         );
         return;
+    }
+
+    // One `metadata` call decides "missing", "is a file", or "is a dir".
+    // We refuse to rename a non-directory because a stray file at this
+    // path would otherwise be silently moved to `.peppy-old-{pid}-{ts}`
+    // and stranded there.
+    match std::fs::metadata(&peppy_output_dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            debug!(
+                "Expected .peppy to be a directory, but it's a file: {}",
+                peppy_output_dir.display()
+            );
+            return;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            debug!(
+                "Cannot stat .peppy at {}: {}, proceeding with rename anyway",
+                peppy_output_dir.display(),
+                e
+            );
+        }
     }
 
     let timestamp = std::time::SystemTime::now()
@@ -89,10 +109,16 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
 
     match std::fs::rename(&peppy_output_dir, &old_peppy_dir) {
         Ok(()) => {
-            // Best-effort cleanup of old directory in background
-            std::thread::spawn(move || {
-                std::fs::remove_dir_all(&old_peppy_dir).ok();
-            });
+            if let Err(e) = std::fs::remove_dir_all(&old_peppy_dir) {
+                // Best-effort: the next stage may copy this stray directory and
+                // fail, but that surfaces a real error rather than silently
+                // leaving the dir behind.
+                debug!(
+                    "Failed to remove renamed .peppy directory at {}: {}",
+                    old_peppy_dir.display(),
+                    e
+                );
+            }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Directory was already removed by another process, that's fine
@@ -245,7 +271,7 @@ async fn handle_node_sync_request_inner(
         variants,
         root_manifest,
         root_interfaces,
-        root_schema_version,
+        root_peppy_schema,
     ) = if !node_config_path.exists() {
         return NodeSyncResponse::failure(format!(
             "Node config file does not exist: {}",
@@ -359,14 +385,14 @@ async fn handle_node_sync_request_inner(
                 let variants = node_config.manifest().variants.clone();
                 let root_manifest = node_config.manifest().clone();
                 let root_interfaces = node_config.interfaces().clone();
-                let root_schema_version = node_config.schema_version();
+                let root_peppy_schema = node_config.peppy_schema();
                 (
                     interfaces,
                     language,
                     variants,
                     root_manifest,
                     root_interfaces,
-                    root_schema_version,
+                    root_peppy_schema,
                 )
             }
             Err(e) => {
@@ -462,18 +488,33 @@ async fn handle_node_sync_request_inner(
     } else {
         // Variant-only node: no peppygen at root, but .peppy/git.hash must
         // still exist alongside the manifest so that `node add` can verify
-        // the source is in sync.
-        remove_previous_peppy_dir(&node_root_dir);
-        let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
-        if let Err(e) = std::fs::create_dir_all(&peppy_dir)
-            .and_then(|()| std::fs::write(peppy_dir.join("git.hash"), git_hash.as_bytes()))
+        // the source is in sync. Wrapped in spawn_blocking because
+        // `remove_previous_peppy_dir` calls `remove_dir_all` synchronously.
+        match tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            remove_previous_peppy_dir(&node_root_dir);
+            let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+            std::fs::create_dir_all(&peppy_dir)?;
+            std::fs::write(peppy_dir.join("git.hash"), git_hash.as_bytes())
+        })
+        .await
         {
-            return NodeSyncResponse::failure(format!(
-                "Failed to write git hash at root for variant-only node: {}",
-                e
-            ))
-            .encode()
-            .map_err(Into::into);
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                return NodeSyncResponse::failure(format!(
+                    "Failed to write git hash at root for variant-only node: {}",
+                    e
+                ))
+                .encode()
+                .map_err(Into::into);
+            }
+            Err(e) => {
+                return NodeSyncResponse::failure(format!(
+                    "Failed to write git hash at root for variant-only node (task failed): {}",
+                    e
+                ))
+                .encode()
+                .map_err(Into::into);
+            }
         }
     }
 
@@ -528,12 +569,12 @@ async fn handle_node_sync_request_inner(
             let mut merged_manifest = root_manifest.clone();
             merged_manifest.variants = None;
             let merged_config = config::node::NodeConfig {
-                schema_version: root_schema_version,
+                peppy_schema: root_peppy_schema,
                 manifest: merged_manifest,
                 interfaces: root_interfaces.clone(),
                 execution: variant_config.execution,
             };
-            let merged_json5 = match serde_json5::to_string(&merged_config) {
+            let merged_json5 = match config::json5_pretty::to_string_pretty(&merged_config) {
                 Ok(json) => json,
                 Err(e) => {
                     return NodeSyncResponse::failure(format!(
@@ -671,12 +712,15 @@ async fn materialize_repo_deps(
         return Ok((resolved, provenance, stack_hits));
     }
 
-    // Lazy-load the package cache: defer the read until the first stack
+    // Lazy-load the nodes cache: defer the read until the first stack
     // miss so a manifest fully covered by the NodeStack never touches
-    // packages.json5 (and a malformed cache can't fail a sync that
+    // nodes.json5 (and a malformed cache can't fail a sync that
     // wouldn't have used it). Loaded once for the whole BFS so the
     // `mtime`-keyed memo + checkout dedup amortize across deps.
-    let mut cache: Option<(Vec<repo_cache::PackageEntry>, Option<std::time::SystemTime>)> = None;
+    let mut cache: Option<(
+        Vec<repo_cache::NodeCacheEntry>,
+        Option<std::time::SystemTime>,
+    )> = None;
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut pending: Vec<(String, String)> = deps
@@ -699,7 +743,7 @@ async fn materialize_repo_deps(
         if cache.is_none() {
             cache = Some(
                 repo_cache::load_with_generation(peppy_dirs)
-                    .map_err(|e| format!("failed to load packages cache: {e}"))?,
+                    .map_err(|e| format!("failed to load nodes cache: {e}"))?,
             );
         }
         let (entries, cache_generation) = cache.as_ref().expect("cache loaded above");
@@ -1068,7 +1112,7 @@ pub fn auto_sync_if_missing(
         // re-parses the config.
         let mut config_for_gen = v.merged_config.clone();
         config_for_gen.manifest.variants = None;
-        let merged_json5 = serde_json5::to_string(&config_for_gen)
+        let merged_json5 = config::json5_pretty::to_string_pretty(&config_for_gen)
             .map_err(|e| crate::Error::Io(std::io::Error::other(e)))?;
         // Keep the temp file alive while `merged_config_path` is in use;
         // it is automatically deleted when `tmp` is dropped.
@@ -1280,7 +1324,7 @@ mod tests {
 
         let config = config::node::NodeConfigParser::from_content(
             r#"{
-                schema_version: 1,
+                peppy_schema: "node_v1",
                 manifest: { name: "test_node", tag: "0.1.0" },
                 execution: { language: "rust", run_cmd: ["sleep", "10"] },
                 interfaces: {

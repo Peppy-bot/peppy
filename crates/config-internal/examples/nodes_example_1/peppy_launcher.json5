@@ -1,6 +1,7 @@
 // PeppyOS Configuration
 // This is the main configuration file that defines the deployments on the current machine.
 {
+  peppy_schema: "launcher_v1",
   deployments: [
     {
       // Example of a node being pulled from an url

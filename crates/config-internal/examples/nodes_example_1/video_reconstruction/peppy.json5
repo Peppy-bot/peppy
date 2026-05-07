@@ -1,5 +1,5 @@
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "video_reconstruction",
     tag: "0.1.0",

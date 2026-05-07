@@ -1,7 +1,7 @@
 use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
-    launcher::SchemaVersion,
+    launcher::PeppySchema,
     source::DeploymentSource,
 };
 use indexmap::IndexMap;
@@ -69,12 +69,23 @@ impl Toolchain {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawNodeConfig {
-    pub(crate) schema_version: SchemaVersion,
+    #[serde(deserialize_with = "deserialize_node_v1_schema")]
+    pub(crate) peppy_schema: PeppySchema,
     pub(crate) manifest: Manifest,
     #[serde(default)]
     pub(crate) interfaces: Interfaces,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) execution: Option<RawExecution>,
+}
+
+/// Reject any `peppy_schema` value other than `node_v1` so a launcher
+/// document that happens to share a node-compatible field set can't
+/// slip through `NodeConfigParser`.
+fn deserialize_node_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    PeppySchema::deserialize_expecting(deserializer, PeppySchema::NodeV1)
 }
 
 /// Name reserved for the default variant.
@@ -97,7 +108,7 @@ impl RawNodeConfig {
             .ok_or(ParsingError::MissingExecution)?
             .into_execution()?;
         Ok(NodeConfig {
-            schema_version: self.schema_version,
+            peppy_schema: self.peppy_schema,
             manifest: self.manifest,
             interfaces: self.interfaces,
             execution,
@@ -148,7 +159,7 @@ impl ParsedNodeConfig {
             .and_then(|raw| raw.into_execution().ok())
             .unwrap_or_default();
         NodeConfig {
-            schema_version: self.0.schema_version,
+            peppy_schema: self.0.peppy_schema,
             manifest: self.0.manifest,
             interfaces: self.0.interfaces,
             execution,
@@ -165,9 +176,9 @@ impl ParsedNodeConfig {
         &self.0.manifest.tag
     }
 
-    /// Returns the schema version.
-    pub fn schema_version(&self) -> SchemaVersion {
-        self.0.schema_version
+    /// Returns the schema identifier.
+    pub fn peppy_schema(&self) -> PeppySchema {
+        self.0.peppy_schema
     }
 
     /// Looks up a variant by name in the manifest's variants list.
@@ -216,7 +227,7 @@ impl ParsedNodeConfig {
     /// [`NodeConfig`].
     ///
     /// Validates that any interfaces declared by the variant match the root's
-    /// interfaces. The merged config uses the root's schema_version, manifest,
+    /// interfaces. The merged config uses the root's peppy_schema, manifest,
     /// and interfaces, combined with the variant's execution.
     pub fn merge_variant(
         &self,
@@ -238,7 +249,7 @@ impl ParsedNodeConfig {
         let manifest_ignored = variant_config.manifest.is_some();
 
         let config = NodeConfig {
-            schema_version: self.0.schema_version,
+            peppy_schema: self.0.peppy_schema,
             manifest: self.0.manifest.clone(),
             interfaces: self.0.interfaces.clone(),
             execution: variant_config.execution,
@@ -266,7 +277,8 @@ pub struct MergedVariant {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
-    pub schema_version: SchemaVersion,
+    #[serde(deserialize_with = "deserialize_node_v1_schema")]
+    pub peppy_schema: PeppySchema,
     pub manifest: Manifest,
     #[serde(default)]
     pub interfaces: Interfaces,
@@ -1245,14 +1257,14 @@ impl Interfaces {
 /// Trait shared by [`NodeConfig`] and [`VariantConfig`], providing access to
 /// common fields for validation and variant resolution.
 pub trait PeppyNodeConfig {
-    fn schema_version(&self) -> SchemaVersion;
+    fn peppy_schema(&self) -> PeppySchema;
     fn interfaces(&self) -> Option<&Interfaces>;
     fn execution(&self) -> &Execution;
 }
 
 impl PeppyNodeConfig for NodeConfig {
-    fn schema_version(&self) -> SchemaVersion {
-        self.schema_version
+    fn peppy_schema(&self) -> PeppySchema {
+        self.peppy_schema
     }
 
     fn interfaces(&self) -> Option<&Interfaces> {
@@ -1270,7 +1282,8 @@ impl PeppyNodeConfig for NodeConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VariantConfig {
-    pub schema_version: SchemaVersion,
+    #[serde(deserialize_with = "deserialize_node_v1_schema")]
+    pub peppy_schema: PeppySchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<Manifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1279,8 +1292,8 @@ pub struct VariantConfig {
 }
 
 impl PeppyNodeConfig for VariantConfig {
-    fn schema_version(&self) -> SchemaVersion {
-        self.schema_version
+    fn peppy_schema(&self) -> PeppySchema {
+        self.peppy_schema
     }
 
     fn interfaces(&self) -> Option<&Interfaces> {
@@ -1887,7 +1900,7 @@ mod tests {
     #[test]
     fn variant_config_omits_none_interfaces_on_serialize() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             execution: { language: "rust" }
         }"#;
         let config: VariantConfig =
@@ -1908,12 +1921,63 @@ mod tests {
     #[test]
     fn node_config_rejects_unknown_fields() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: { name: "node", tag: "0.1.0" },
             execution: { language: "rust", run_cmd: ["./run"] },
             extra: "bad"
         }"#;
         assert!(serde_json5::from_str::<NodeConfig>(json5).is_err());
+    }
+
+    /// A node-shaped document that mislabels itself as a launcher must
+    /// be rejected — the schema field is the source of truth, not just
+    /// the field names.
+    #[test]
+    fn node_config_rejects_non_node_schema() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            manifest: { name: "node", tag: "0.1.0" },
+            interfaces: {},
+            execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
+        }"#;
+        let err = serde_json5::from_str::<RawNodeConfig>(json5)
+            .expect_err("launcher_v1 schema must be rejected");
+        assert!(
+            err.to_string().contains("node_v1"),
+            "error should mention the expected schema, got: {err}"
+        );
+    }
+
+    #[test]
+    fn variant_config_rejects_non_node_schema() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
+        }"#;
+        let err = serde_json5::from_str::<VariantConfig>(json5)
+            .expect_err("launcher_v1 schema must be rejected");
+        assert!(
+            err.to_string().contains("node_v1"),
+            "error should mention the expected schema, got: {err}"
+        );
+    }
+
+    /// `NodeConfig` is reachable through public deserialization paths that
+    /// bypass `RawNodeConfig`, so the schema guard must apply here too.
+    #[test]
+    fn node_config_rejects_launcher_schema() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            manifest: { name: "node", tag: "0.1.0" },
+            interfaces: {},
+            execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
+        }"#;
+        let err = serde_json5::from_str::<NodeConfig>(json5)
+            .expect_err("launcher_v1 schema must be rejected");
+        assert!(
+            err.to_string().contains("node_v1"),
+            "error should mention the expected schema, got: {err}"
+        );
     }
 
     #[test]

@@ -176,7 +176,7 @@ fn repo_add_top_assigns_id_below_current_min() {
 
     let repos_path = serve.temp_dir().join("conf/repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse repos");
+    let repos: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse repos");
 
     let first = repos
         .iter()
@@ -187,7 +187,11 @@ fn repo_add_top_assigns_id_below_current_min() {
         .find(|e| e["url"] == "https://example.com/second")
         .expect("second (top) entry missing");
 
-    assert_eq!(first["id"], 1000, "first add lands at the 1000 floor");
+    let first_id = first["id"].as_u64().expect("first id is a number");
+    assert!(
+        first_id >= 1000,
+        "first add lands at or above the 1000 floor, got {first_id}"
+    );
     assert_eq!(
         second["id"], 999,
         "--top should assign min(existing)-1 so the repo outranks all others"

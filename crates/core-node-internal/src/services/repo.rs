@@ -1,12 +1,14 @@
 mod add;
 pub(crate) mod cache;
 mod exclude;
+mod init;
 mod list;
 mod refresh;
 mod remove;
 
 pub use add::listen_for_repo_add;
 pub use exclude::listen_for_repo_exclude;
+pub use init::{InitOutcome, ensure_default_repos};
 pub use list::listen_for_repo_list;
 pub use refresh::listen_for_repo_refresh;
 pub use remove::listen_for_repo_remove;
@@ -25,7 +27,7 @@ pub(crate) fn repos_file_lock() -> &'static parking_lot::Mutex<()> {
 
 /// Serializes `process_refresh` + `write_cache` so the user-facing repo_refresh
 /// action and the post-remove refresh in repo_remove cannot race on
-/// packages.json5. The ActionState single-flight inside repo_refresh rejects
+/// nodes.json5. The ActionState single-flight inside repo_refresh rejects
 /// concurrent *user* refreshes with a friendly error; this mutex is the
 /// correctness backstop that also covers the remove-triggered path.
 pub(crate) fn refresh_lock() -> &'static parking_lot::Mutex<()> {
@@ -140,7 +142,7 @@ pub(crate) fn normalize_repo_entries(
     }
 
     if needs_write {
-        let content = serde_json::to_string_pretty(repos).map_err(|e| {
+        let content = config::json5_pretty::to_string_pretty(repos).map_err(|e| {
             core_node_api::Error::Encoding(format!("failed to serialize {desc}: {e}"))
         })?;
         std::fs::write(file_path, content)?;

@@ -1275,7 +1275,7 @@ async fn process_node_add(
     if goal.variant.is_some() || node_config.manifest.has_default_variant() {
         let mut write_config = node_config.clone();
         write_config.manifest.variants = None;
-        let merged_config_str = serde_json5::to_string(&write_config)
+        let merged_config_str = config::json5_pretty::to_string_pretty(&write_config)
             .map_err(|e| format!("Failed to serialize merged variant config: {}", e));
         match merged_config_str {
             Ok(content) => {

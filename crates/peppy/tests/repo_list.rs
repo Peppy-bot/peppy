@@ -1,5 +1,6 @@
 use super::common::setup;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
+use core_node::nodes_repo_cache_path;
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 
@@ -7,7 +8,7 @@ use peppy::commands::repo::{RepoCommand, RepoCommands};
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     format!(
         r#"{{
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",
@@ -85,11 +86,11 @@ fn repo_list_finds_nodes_in_fs_repo() {
     );
 
     // Verify discovery by inspecting the cache that refresh wrote.
-    let cache_path = peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = nodes_repo_cache_path(&peppy_dirs);
     let cache_content =
-        std::fs::read_to_string(&cache_path).expect("packages.json5 should be written by refresh");
+        std::fs::read_to_string(&cache_path).expect("nodes.json5 should be written by refresh");
     let cached: Vec<serde_json::Value> =
-        serde_json::from_str(&cache_content).expect("packages.json5 should parse as JSON");
+        serde_json5::from_str(&cache_content).expect("nodes.json5 should parse as JSON5");
     assert!(
         cached.iter().any(|n| {
             n.get("node_name").and_then(|v| v.as_str()) == Some("my_sensor")

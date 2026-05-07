@@ -168,7 +168,10 @@ impl RepoAddRequest {
         let request = reader.get_root::<repo_capnp::repo_add_request::Reader>()?;
         let top = request.get_top();
         let source = match request.get_source().which()? {
-            Which::Fs(path) => RepoSource::Fs(PathBuf::from(path?.to_str()?)),
+            Which::Fs(path) => RepoSource::Fs(crate::encoding::decode_fs_path(
+                path?.to_str()?,
+                "RepoAddRequest.source.fs",
+            )?),
             Which::Git(git) => {
                 let git = git?;
                 let repo_url = git.get_repo_url()?.to_str()?.to_owned();

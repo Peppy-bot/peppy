@@ -102,31 +102,23 @@ impl RuffFacade {
         let binary_path = temp_dir.join(format!("peppy_ruff_binary_{}", env!("RUFF_VERSION")));
 
         if !binary_path.exists() {
-            // Write to a process-unique temp file, set permissions, then
-            // atomically rename. This prevents concurrent processes from
-            // observing a partially-written or permission-less binary.
-            let tmp_path = temp_dir.join(format!(
-                "peppy_ruff_binary_{}.{}.tmp",
-                env!("RUFF_VERSION"),
-                std::process::id()
-            ));
-            std::fs::write(&tmp_path, binary_bytes)?;
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&tmp_path)?.permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&tmp_path, perms)?;
-            }
-
-            // Atomic rename — last writer wins, but the file is always
-            // complete and executable.
-            if let Err(e) = std::fs::rename(&tmp_path, &binary_path) {
-                let _ = std::fs::remove_file(&tmp_path);
-                if !binary_path.exists() {
-                    return Err(e);
+            let result = config::atomic_write::publish_atomic(&binary_path, |tmp_path| {
+                std::fs::write(tmp_path, binary_bytes)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = std::fs::metadata(tmp_path)?.permissions();
+                    perms.set_mode(0o755);
+                    std::fs::set_permissions(tmp_path, perms)?;
                 }
+                Ok(())
+            });
+            // Tolerate a lost rename race against another process — if the
+            // file is now in place, that's the outcome we wanted.
+            if let Err(e) = result
+                && !binary_path.exists()
+            {
+                return Err(e);
             }
         }
 

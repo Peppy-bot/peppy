@@ -22,7 +22,7 @@ pub(crate) fn write_standalone_peppy_config(dir: &TempDir) -> PathBuf {
     std::fs::write(
         &path,
         r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "0.1.0" },
             execution: { language: "rust", run_cmd: ["./target/debug/test_node"] },
         }"#,

@@ -186,7 +186,7 @@ pub enum NodeCommands {
         /// Optional path to the node directory. Defaults to the current directory.
         path: Option<PathBuf>,
         /// Resolve dependencies missing from the node stack by fetching them
-        /// from the configured repositories (`~/.peppy/cache/packages.json5`).
+        /// from the configured repositories (`~/.peppy/cache/nodes.json5`).
         /// Stack lookups still win; the repo cache is consulted only as a
         /// fallback. Output also reports which deps came from the stack vs.
         /// the repositories.

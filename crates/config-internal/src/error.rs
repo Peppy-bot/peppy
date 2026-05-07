@@ -49,8 +49,6 @@ pub enum ParsingError {
     CannotParseConfig(String),
     #[error("Empty content found in: {0}")]
     EmptyContent(String),
-    #[error("Invalid file name: expected {expected}, found {found}")]
-    InvalidFileName { expected: String, found: String },
 
     // -- node_config
     #[error("Invalid name: {0}, allowed characters: {1}")]

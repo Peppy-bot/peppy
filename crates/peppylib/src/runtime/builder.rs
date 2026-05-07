@@ -505,7 +505,7 @@ mod tests {
         let path = dir.join("peppy.json5");
         let content = format!(
             r#"{{
-                schema_version: 1,
+                peppy_schema: "node_v1",
                 manifest: {{ name: "test_node", tag: "0.1.0" }},
                 execution: {{ language: "rust", parameters: {{ {parameters} }}, run_cmd: ["./test"] }},
             }}"#,

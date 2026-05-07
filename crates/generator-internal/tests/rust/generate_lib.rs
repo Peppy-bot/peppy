@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use crate::helpers;
 
 const PEPPY_JSON5_CONFIG: &str = r#"{
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "test_node",
     tag: "0.1.0"
@@ -57,7 +57,7 @@ fn generate_peppygen_lib_minimal_config() {
 
     // Minimal config with no interfaces
     let minimal_config = r#"{
-      schema_version: 1,
+      peppy_schema: "node_v1",
       manifest: {
         name: "minimal_node",
         tag: "0.1.0"
@@ -266,7 +266,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
-          schema_version: 1,
+          peppy_schema: "node_v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
@@ -318,7 +318,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{
-          schema_version: 1,
+          peppy_schema: "node_v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
@@ -379,7 +379,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
-          schema_version: 1,
+          peppy_schema: "node_v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
@@ -434,7 +434,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{
-          schema_version: 1,
+          peppy_schema: "node_v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
@@ -508,7 +508,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
-          schema_version: 1,
+          peppy_schema: "node_v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
@@ -575,7 +575,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{
-          schema_version: 1,
+          peppy_schema: "node_v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",

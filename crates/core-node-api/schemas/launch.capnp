@@ -8,18 +8,22 @@ struct EnvVar {
 }
 
 struct LaunchGoal {
-    # Path to the peppy launch file
-    peppyLaunchFilePath @0 :Text;
     # Environment variables to apply when executing build_cmd and run_cmd (e.g. PATH)
-    envVars @1 :List(EnvVar);
+    envVars @0 :List(EnvVar);
     # Idle timeout in seconds for the node add phase (resets on git/http progress or sub-process output)
-    nodeAddIdleTimeoutSecs @2 :UInt64;
+    nodeAddIdleTimeoutSecs @1 :UInt64;
     # Idle timeout in seconds for the node run-startup phase (resets on subprocess output until the node signals ready)
-    nodeRunIdleTimeoutSecs @3 :UInt64;
+    nodeRunIdleTimeoutSecs @2 :UInt64;
     # Absolute max timeout in seconds for the entire launch; 0 = unset, no overall deadline (idle timeouts still apply)
-    maxTimeoutSecs @4 :UInt64;
+    maxTimeoutSecs @3 :UInt64;
     # Idle timeout in seconds for the node build phase (resets on build_cmd output)
-    nodeBuildIdleTimeoutSecs @5 :UInt64;
+    nodeBuildIdleTimeoutSecs @4 :UInt64;
+    # Where the launcher file comes from. `fs` carries an absolute path; `repository` carries
+    # a launcher name to look up in `~/.peppy/cache/launchers.json5`.
+    launcherOrigin :union {
+        fs @5 :Text;
+        repository @6 :Text;
+    }
 }
 
 struct LaunchGoalResponse {

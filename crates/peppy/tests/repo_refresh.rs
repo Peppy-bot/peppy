@@ -28,7 +28,7 @@ fn repo_refresh_succeeds_after_adding_fs_repo() {
     std::fs::write(
         node_dir.path().join("peppy.json5"),
         r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "0.1.0" },
             execution: { language: "rust", run_cmd: ["sleep", "1"] }
         }"#,

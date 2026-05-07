@@ -41,7 +41,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
   <TabItem label="Python">
     ```json5 title="robot_arm/peppy.json5"
     {
-      schema_version: 1,
+      peppy_schema: "node_v1",
       manifest: {
         name: "robot_arm",
         tag: "0.1.0",
@@ -95,7 +95,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
   <TabItem label="Rust">
     ```json5 title="robot_arm/peppy.json5"
     {
-      schema_version: 1,
+      peppy_schema: "node_v1",
       manifest: {
         name: "robot_arm",
         tag: "0.1.0",
@@ -154,7 +154,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
   <TabItem label="Python">
     ```json5 title="arm_controller/peppy.json5"
     {
-      schema_version: 1,
+      peppy_schema: "node_v1",
       manifest: {
         name: "arm_controller",
         tag: "0.1.0",
@@ -199,7 +199,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
   <TabItem label="Rust">
     ```json5 title="arm_controller/peppy.json5"
     {
-      schema_version: 1,
+      peppy_schema: "node_v1",
       manifest: {
         name: "arm_controller",
         tag: "0.1.0",

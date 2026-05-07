@@ -7,9 +7,11 @@ mod parsing;
 /// the same directory as this file, so existing file paths are preserved.
 #[path = "."]
 mod internal {
+    pub mod atomic_write;
     pub mod consts;
     pub mod encoding;
     pub mod fingerprint;
+    pub mod json5_pretty;
     pub mod launcher;
     pub mod node;
     pub mod repo_node_id;
@@ -26,6 +28,11 @@ pub use common::{
 
 // -- error --
 pub use error::{Error as ConfigError, ParsingError, Result as ConfigResult};
+
+// -- atomic_write --
+pub mod atomic_write {
+    pub use crate::internal::atomic_write::publish_atomic;
+}
 
 // -- consts --
 pub mod consts {
@@ -44,6 +51,11 @@ pub mod encoding {
     pub use crate::internal::encoding::{
         CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper, compile_capnp,
     };
+}
+
+// -- json5_pretty --
+pub mod json5_pretty {
+    pub use crate::internal::json5_pretty::to_string_pretty;
 }
 
 // -- fingerprint --
@@ -85,10 +97,10 @@ pub mod runtime {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        CURRENT_SCHEMA_VERSION, Deployment, DeploymentGitSource, DeploymentInstance,
-        DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
-        FrameworkOverrides, Name, PeppyLauncher, PeppyLauncherParser, SchemaVersion,
-        VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
+        Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
+        DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides, Name,
+        PeppyLauncher, PeppyLauncherParser, PeppySchema, VariantGitSource, VariantNameSource,
+        VariantSource, VariantUrlSource,
     };
 }
 

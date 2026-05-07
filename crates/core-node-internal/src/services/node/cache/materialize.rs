@@ -1,10 +1,10 @@
-//! Materialize a `PackageEntry` from `~/.peppy/cache/packages.json5`
+//! Materialize a `NodeCacheEntry` from `~/.peppy/cache/nodes.json5`
 //! into an on-disk `(root_dir, parsed config)` pair.
 //!
 //! Filesystem entries are resolved directly. Git and HTTP entries route
 //! through the persistent `git` / `bundle` caches under
 //! [`config::consts::PeppyDirs`], so the same repo or archive is fetched
-//! at most once per packages-cache generation.
+//! at most once per nodes-cache generation.
 //!
 //! Shared by `add_batch` (`run_repo_node_add`) and `sync`
 //! (`materialize_repo_deps`). Feedback flows through a callback so each
@@ -12,7 +12,7 @@
 
 use super::super::sanitize_repo_path;
 use super::{ensure_bundle, ensure_checkout};
-use crate::services::repo::cache::PackageEntry;
+use crate::services::repo::cache::NodeCacheEntry;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::{NodeConfigParser, ParsedNodeConfig};
 use core_node_api::encoding::RepoSourceKind;
@@ -32,10 +32,10 @@ pub(crate) fn silent_feedback() -> MaterializeFeedback {
     Arc::new(|_| {})
 }
 
-/// Materialize one packages-cache entry to a `(root_dir, parsed config)`
+/// Materialize one nodes-cache entry to a `(root_dir, parsed config)`
 /// pair, reusing the persistent git / HTTP caches for non-FS entries.
 ///
-/// `cache_generation` is the `mtime` of the `packages.json5` snapshot
+/// `cache_generation` is the `mtime` of the `nodes.json5` snapshot
 /// the entry was resolved from. The git cache uses it to dedup
 /// fetch/refresh work across calls within the same snapshot.
 ///
@@ -43,7 +43,7 @@ pub(crate) fn silent_feedback() -> MaterializeFeedback {
 /// underlying clone / download. Pass [`silent_feedback`] when no
 /// streaming is wanted.
 pub(crate) async fn materialize_entry(
-    entry: &PackageEntry,
+    entry: &NodeCacheEntry,
     peppy_dirs: &PeppyDirs,
     cache_generation: Option<SystemTime>,
     on_feedback: MaterializeFeedback,

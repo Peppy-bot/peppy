@@ -157,7 +157,7 @@ async fn handle_node_info_request_inner(
 
     let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
 
-    let config_json = serde_json5::to_string(&node_config)
+    let config_json = config::json5_pretty::to_string_pretty(&node_config)
         .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
 
@@ -417,7 +417,7 @@ mod tests {
 
         let variant_config = format!(
             r#"{{
-                schema_version: 1,
+                peppy_schema: "node_v1",
                 execution: {{
                     language: "python",
                     run_cmd: ["python", "{marker}"]
@@ -456,7 +456,7 @@ mod tests {
         let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
         let config = format!(
             r#"{{
-                schema_version: 1,
+                peppy_schema: "node_v1",
                 manifest: {{
                     name: "{name}",
                     tag: "{tag}",
@@ -543,7 +543,7 @@ mod tests {
         let root_dir = tempfile::TempDir::new().expect("failed to create root node dir");
         let root_config = format!(
             r#"{{
-                schema_version: 1,
+                peppy_schema: "node_v1",
                 manifest: {{
                     name: "default_variant_root",
                     tag: "0.1.0",

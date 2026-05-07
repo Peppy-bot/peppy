@@ -1,6 +1,9 @@
 use crate::Result;
 use crate::names;
-use crate::services::repo::refresh::{process_refresh, read_or_create_repos, write_cache};
+use crate::services::repo::cache::repositories_list_path;
+use crate::services::repo::refresh::{
+    process_refresh, read_or_create_repos, write_cache, write_launcher_cache,
+};
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use peppylib::messaging::ServiceRequestContext;
@@ -51,7 +54,10 @@ async fn handle_repo_remove_request(
         match tokio::task::spawn_blocking(move || {
             let _guard = crate::services::repo::refresh_lock().lock();
             match process_refresh(&dirs, &mut |_| {}) {
-                Ok((discovered, _excluded)) => write_cache(&dirs, &discovered),
+                Ok((discovered, launchers, _excluded)) => {
+                    write_cache(&dirs, &discovered)?;
+                    write_launcher_cache(&dirs, &launchers)
+                }
                 Err(e) => Err(e),
             }
         })
@@ -85,7 +91,7 @@ fn handle_repo_remove_request_inner(
         request.id
     );
 
-    let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(peppy_dirs);
 
     let _guard = crate::services::repo::repos_file_lock().lock();
 
@@ -111,7 +117,7 @@ fn handle_repo_remove_request_inner(
 
     repos.remove(pos);
 
-    let content = serde_json::to_string_pretty(&repos).map_err(|e| {
+    let content = config::json5_pretty::to_string_pretty(&repos).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize repositories: {e}"))
     })?;
     std::fs::write(&repos_path, content)?;

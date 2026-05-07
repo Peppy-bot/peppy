@@ -16,9 +16,6 @@ pub enum Error {
     #[error("system clock unavailable: {0}")]
     SystemTime(#[from] std::time::SystemTimeError),
 
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
-
     #[error("decoding error: {0}")]
     Decoding(String),
 

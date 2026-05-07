@@ -39,7 +39,7 @@ pub struct DeploymentUrlSource {
 }
 
 /// Deployment source that resolves a node through the user's repo cache
-/// (`~/.peppy/cache/packages.json5`). Accepts `{ name, tag }` or the
+/// (`~/.peppy/cache/nodes.json5`). Accepts `{ name, tag }` or the
 /// combined `{ name: "<name>:<tag>" }` shorthand.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeploymentRepoSource {
