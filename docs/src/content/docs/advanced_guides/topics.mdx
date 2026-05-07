@@ -18,7 +18,7 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
 
 ```json5
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
@@ -130,7 +130,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
 
 ```json5
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "web_video_stream",
     tag: "0.1.0",

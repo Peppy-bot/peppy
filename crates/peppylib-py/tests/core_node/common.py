@@ -24,7 +24,7 @@ CLIENT_INSTANCE = "test_caller"
 SERVER_INSTANCE = "test_server"
 
 _PEPPY_CONFIG = """{
-    schema_version: 1,
+    peppy_schema: "node_v1",
     manifest: { name: "test_node", tag: "0.1.0" },
     execution: { language: "rust", run_cmd: ["./target/debug/test_node"] },
 }"""

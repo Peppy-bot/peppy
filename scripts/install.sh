@@ -640,6 +640,20 @@ EOF
             exit 1
         fi
 
+        # Sync `repositories.json5` with the bundled defaults so any new
+        # default entries shipped with this release land in pre-existing
+        # configs. Operates on the local file and does not need the daemon,
+        # so we can run it before the bounded `repo update` wait below.
+        if ! REPO_INIT_CAPTURED=$("$PEPPY_BIN_DIR/peppy" repo init 2>&1); then
+            flush_progress_line
+            if [ -n "${REPO_INIT_CAPTURED-}" ]; then
+                printf '%s\n' "$REPO_INIT_CAPTURED" >&2
+            fi
+            echo "error: repository init failed." >&2
+            echo "       You can retry manually: $PEPPY_BIN_DIR/peppy repo init" >&2
+            exit 1
+        fi
+
         # Refresh repository indexes so nodes are discoverable immediately.
         # The service manager returns as soon as the daemon process is
         # launched, so wait a bounded amount for it to bind its messaging

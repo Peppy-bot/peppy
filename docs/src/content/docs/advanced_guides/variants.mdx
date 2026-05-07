@@ -45,7 +45,7 @@ depth_camera/             ← root node
 ```json5
 // depth_camera/peppy.json5 (root node)
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "depth_camera",
     tag: "0.1.0",
@@ -98,7 +98,7 @@ A `mock` variant lets you test the rest of the stack without real hardware. It p
 ```json5
 // depth_camera/mock/peppy.json5 — lightweight test double
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   execution: {
     language: "python",
     build_cmd: ["uv", "sync"],
@@ -116,7 +116,7 @@ A node can also declare variants for different execution environments. For insta
 ```json5
 // lidar/peppy.json5 (root node — Linux native)
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "lidar",
     tag: "0.2.0",
@@ -151,7 +151,7 @@ A node can also declare variants for different execution environments. For insta
 ```json5
 // lidar/containerized/peppy.json5 — same interfaces, runs in a container
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   execution: {
     language: "rust",
     container: {
@@ -193,7 +193,7 @@ Each flavor has its own manifest and interfaces tailored to its target robot:
 ```json5
 // groot_brain/openarm01/peppy.json5 — a standalone node
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "openarm01_brain",
     tag: "0.1.0",
@@ -227,7 +227,7 @@ A downstream OpenArm01 robot project can then reference this flavor as a variant
 ```json5
 // openarm01_robot/brain/peppy.json5 (root node in the robot project)
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "brain",
     tag: "0.1.0",
@@ -271,7 +271,7 @@ Variants are declared in the root node's `manifest.variants` array. Each entry h
 ```json5
 // peppy.json5 (root node)
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "robot_brain",
     tag: "0.1.0",
@@ -329,7 +329,7 @@ uvc_camera/                   ← root node (no execution)
 ```json5
 // uvc_camera/peppy.json5 (root node — no execution)
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
@@ -361,7 +361,7 @@ uvc_camera/                   ← root node (no execution)
 ```json5
 // uvc_camera/variants/default/peppy.json5
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   execution: {
     language: "rust",
     build_cmd: ["cargo", "build", "--release"],
@@ -378,12 +378,12 @@ When a `default` variant is present, the root `peppy.json5` **must not** define 
 
 ## Variant config
 
-A variant's `peppy.json5` only needs a `schema_version` and an `execution`. The `manifest` and `interfaces` fields are optional:
+A variant's `peppy.json5` only needs a `peppy_schema` and an `execution`. The `manifest` and `interfaces` fields are optional:
 
 ```json5
 // peppy.json5 (mock variant)
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   execution: {
     language: "rust",
     run_cmd: ["./target/release/mock_brain"],
@@ -408,7 +408,7 @@ If the interfaces do not match, the add operation fails with a `VariantInterface
 ```json5
 // This variant config is valid — same interfaces, different order
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   interfaces: {
     topics: {
       emits: [
@@ -432,7 +432,7 @@ If the interfaces do not match, the add operation fails with a `VariantInterface
 }
 ```
 
-If a variant omits `interfaces` entirely, no validation is performed and the root's interfaces are used as-is.
+If a variant omits `interfaces` entirely, no validation is performed and the root's interfaces are used as-is. This is the right choice for variants that ship alongside their root — they already share the root's contract. A flavor node consumed as a variant from a different project should declare its own `interfaces`, since its root and the consuming root can evolve independently and the declared block is what lets peppy compare them at add time.
 
 ## Adding a variant
 

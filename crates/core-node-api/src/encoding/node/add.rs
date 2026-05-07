@@ -24,7 +24,7 @@ pub enum NodeSource {
     },
     /// Reference a node by `(name, tag)`; the daemon resolves it and
     /// its transitive dependencies against the repo cache
-    /// (`~/.peppy/cache/packages.json5`) and adds them as one batch.
+    /// (`~/.peppy/cache/nodes.json5`) and adds them as one batch.
     ///
     /// Dep-level variant overrides travel with the source so they're
     /// unrepresentable on non-repo sources.
@@ -77,10 +77,10 @@ impl NodeSource {
 
 impl NodeSource {
     pub fn decode_fs(path: &str) -> Result<Self> {
-        if path.is_empty() {
-            return Err(crate::Error::Decoding("empty filesystem path".to_owned()));
-        }
-        Ok(Self::Fs(PathBuf::from(path)))
+        Ok(Self::Fs(crate::encoding::decode_fs_path(
+            path,
+            "NodeSource.fs",
+        )?))
     }
 
     pub fn decode_git(repo_url_str: &str, repo_path: &str, repo_ref: &str) -> Result<Self> {
@@ -427,7 +427,7 @@ mod tests {
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
-            err_msg.contains("empty filesystem path"),
+            err_msg.contains("NodeSource.fs") && err_msg.contains("empty"),
             "unexpected error: {err_msg}"
         );
     }

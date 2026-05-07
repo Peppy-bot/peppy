@@ -2,6 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
+use core_node::{nodes_repo_cache_path, repositories_list_path};
 use core_node_api::encoding::{RepoListRequest, RepoListResponse, RepoSourceKind};
 use peppylib::core_node::transport::poll_repo_list;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use std::time::Duration;
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     format!(
         r#"{{
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",
@@ -32,11 +33,11 @@ fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
     std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
 }
 
-/// Write a packages.json5 cache file in the cache_dir of the started core node.
+/// Write a nodes.json5 cache file in the cache_dir of the started core node.
 fn write_packages_cache(started: &StartedCoreNode, content: &str) {
     let cache_dir = started.peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-    std::fs::write(cache_dir.join("packages.json5"), content).expect("write cache file");
+    std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
 }
 
 /// Create a directory with a valid peppy.json5 inside it.
@@ -65,11 +66,7 @@ async fn send_repo_list(started: &StartedCoreNode) -> RepoListResponse {
 async fn list_default_repos_creates_repositories_file() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
-    assert!(
-        !repos_path.exists(),
-        "repositories.json5 should not exist before first repo command"
-    );
+    let repos_path = repositories_list_path(&started.peppy_dirs);
 
     let resp = send_repo_list(&started).await;
     assert!(resp.success, "repo_list should succeed");
@@ -77,18 +74,21 @@ async fn list_default_repos_creates_repositories_file() {
 
     assert!(
         repos_path.exists(),
-        "repositories.json5 should be created by repo list"
+        "repositories.json5 should be created with default entries on core node startup"
     );
 
     let content = std::fs::read_to_string(&repos_path).expect("read created file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse created file");
-    assert_eq!(repos.len(), 1, "default file should contain 1 entry");
-    assert_eq!(repos[0].get("type").unwrap().as_str().unwrap(), "git");
-    assert_eq!(
-        repos[0].get("url").unwrap().as_str().unwrap(),
-        "https://github.com/Peppy-bot/nodes_hub"
-    );
+    // Don't pin the count — the shipped defaults grow over time. Just
+    // verify the canonical nodes_hub entry is there.
+    let nodes_hub = repos
+        .iter()
+        .find(|r| {
+            r.get("url").and_then(|v| v.as_str()) == Some("https://github.com/Peppy-bot/nodes_hub")
+        })
+        .expect("default repos should include nodes_hub");
+    assert_eq!(nodes_hub.get("type").unwrap().as_str().unwrap(), "git");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -138,7 +138,7 @@ async fn list_reads_git_nodes_from_cache() {
         .unwrap(),
     );
 
-    // Write a packages.json5 cache with nodes from that git repo
+    // Write a nodes.json5 cache with nodes from that git repo
     write_packages_cache(
         &started,
         &serde_json::to_string(&serde_json::json!([

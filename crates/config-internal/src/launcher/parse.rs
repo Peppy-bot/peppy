@@ -1,29 +1,20 @@
 use super::types::PeppyLauncher;
-use crate::{
-    error::{ParsingError, Result},
-    parsing::read_non_empty_file,
-};
+use crate::{error::Result, parsing::read_non_empty_file};
 use std::path::Path;
 
-/// Parser responsible for extracting `peppy_launcher.json5` documents
+/// Parser responsible for extracting launcher documents.
+///
+/// Launcher files have no fixed name — any `.json5` file whose body
+/// declares `peppy_schema: "launcher_v1"` is a launcher. Schema and
+/// shape validation are handled by serde
+/// (`#[serde(deny_unknown_fields)]` + the typed `PeppySchema` enum), so
+/// callers that walk a repository can just attempt to parse and treat
+/// failures as "not a launcher."
 pub struct PeppyLauncherParser;
-
-const PEPPY_LAUNCHER_FILE_NAME: &str = "peppy_launcher.json5";
 
 impl PeppyLauncherParser {
     pub fn from_path(file: impl AsRef<Path>) -> Result<PeppyLauncher> {
         let path = file.as_ref();
-        let file_name = path.file_name().and_then(|name| name.to_str());
-        if file_name != Some(PEPPY_LAUNCHER_FILE_NAME) {
-            let found = file_name
-                .map(str::to_owned)
-                .unwrap_or_else(|| path.display().to_string());
-            return Err(ParsingError::InvalidFileName {
-                expected: PEPPY_LAUNCHER_FILE_NAME.to_string(),
-                found,
-            }
-            .into());
-        }
         let content = read_non_empty_file(path)?;
         Self::from_content(&content)
     }
@@ -37,17 +28,15 @@ impl PeppyLauncherParser {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        error::{Error, ParsingError},
-        launcher::{DeploymentSource, VariantSource},
-    };
+    use crate::launcher::{DeploymentSource, PeppySchema, VariantSource};
     use tempfile::tempdir;
 
-    use super::{PEPPY_LAUNCHER_FILE_NAME, PeppyLauncherParser};
+    use super::PeppyLauncherParser;
 
     #[test]
     fn test_parse_peppy_config() {
         let json5 = r#"{
+            peppy_schema: "launcher_v1",
             deployments: [
                 {
                     source: {
@@ -128,31 +117,64 @@ mod tests {
         );
     }
 
+    /// Launcher files have no fixed name — any path with valid launcher
+    /// content parses regardless of basename.
     #[test]
-    fn test_from_path_rejects_wrong_file_name() {
+    fn test_from_path_accepts_arbitrary_file_name() {
         let dir = tempdir().unwrap();
-        let wrong_path = dir.path().join(crate::consts::NODE_CONFIG_FILE);
-        std::fs::write(&wrong_path, "{}").unwrap();
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            deployments: []
+        }"#;
 
-        let err = PeppyLauncherParser::from_path(&wrong_path).unwrap_err();
-        assert!(matches!(
-            err,
-            Error::Parsing(ParsingError::InvalidFileName { ref expected, ref found })
-                if expected == PEPPY_LAUNCHER_FILE_NAME && found == crate::consts::NODE_CONFIG_FILE
-        ));
+        for name in ["openarm01_sim_teleop.json5", "demo.json5", "anything.json5"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, json5).unwrap();
+            let cfg = PeppyLauncherParser::from_path(&path)
+                .unwrap_or_else(|e| panic!("{name} should parse as launcher: {e}"));
+            assert_eq!(cfg.peppy_schema, PeppySchema::LauncherV1);
+            assert!(cfg.deployments.is_empty());
+        }
     }
 
+    /// A file declaring `peppy_schema: "node_v1"` is not a launcher.
+    /// The strict deserializer either rejects unexpected node fields or
+    /// the caller can gate on `peppy_schema` after parsing — either way
+    /// node configs do not slip through `from_path`.
     #[test]
-    fn test_from_path_accepts_correct_file_name() {
+    fn test_from_path_rejects_node_schema() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join(PEPPY_LAUNCHER_FILE_NAME);
+        let path = dir.path().join("anything.json5");
         let json5 = r#"{
-            deployments: []
+            peppy_schema: "node_v1",
+            manifest: { name: "n", tag: "0.1.0" },
+            interfaces: {},
+            execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
         }"#;
         std::fs::write(&path, json5).unwrap();
 
-        let cfg = PeppyLauncherParser::from_path(&path).unwrap();
-        assert!(cfg.deployments.is_empty());
+        let err = PeppyLauncherParser::from_path(&path)
+            .expect_err("node config must not parse as a launcher");
+        // The schema check fires before `deny_unknown_fields` does.
+        assert!(
+            err.to_string().contains("launcher_v1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A document whose shape is launcher-compatible but whose
+    /// `peppy_schema` claims to be a node must still be rejected — the
+    /// schema field is the source of truth, so `deny_unknown_fields`
+    /// alone isn't enough.
+    #[test]
+    fn test_from_content_rejects_non_launcher_schema() {
+        let json5 = r#"{ peppy_schema: "node_v1", deployments: [] }"#;
+        let err = PeppyLauncherParser::from_content(json5)
+            .expect_err("non-launcher schema must be rejected");
+        assert!(
+            err.to_string().contains("launcher_v1"),
+            "error should mention the expected schema, got: {err}"
+        );
     }
 
     #[test]
@@ -160,7 +182,7 @@ mod tests {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("examples")
             .join("nodes_example_1")
-            .join(PEPPY_LAUNCHER_FILE_NAME);
+            .join("peppy_launcher.json5");
         let cfg = PeppyLauncherParser::from_path(&path).expect("example launcher should parse");
         assert!(
             !cfg.deployments.is_empty(),
@@ -172,6 +194,7 @@ mod tests {
     fn test_parse_peppy_config_with_variants() {
         let valid_sha = "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a";
         let json5 = r#"{
+            peppy_schema: "launcher_v1",
             deployments: [
                 {
                     source: {

@@ -5,6 +5,7 @@ use config::consts::{
 };
 use config::node::{PeppygenLanguage, QoSProfile};
 use core_node::names;
+use core_node::nodes_repo_cache_path;
 use core_node::{CoreNode, CoreNodeArguments};
 use core_node_api::encoding::{
     ClockRequest, ClockResponse, ClockTick, NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse,
@@ -206,7 +207,7 @@ pub enum NodeAddSource<'a> {
         sha256: Option<String>,
     },
     /// Add a node by `(name, tag)` against the repo cache — the daemon
-    /// resolves transitive deps from `~/.peppy/cache/packages.json5`.
+    /// resolves transitive deps from `~/.peppy/cache/nodes.json5`.
     RepoNode { name: &'a str, tag: &'a str },
 }
 
@@ -845,10 +846,10 @@ pub async fn send_node_add_and_wait_with_dep_overrides<'a>(
     .await
 }
 
-/// Builder for a `packages.json5` cache fixture. Tests call
+/// Builder for a `nodes.json5` cache fixture. Tests call
 /// [`TestPackagesCache::fs_entry`] / `git_entry` / `http_entry` to declare
 /// discovered nodes and then [`TestPackagesCache::write`] to serialize
-/// the file under `peppy_dirs.cache_dir()/packages.json5`.
+/// the file under `peppy_dirs.cache_dir()/nodes.json5`.
 #[derive(Default)]
 pub struct TestPackagesCache {
     entries: Vec<serde_json::Value>,
@@ -937,8 +938,8 @@ impl TestPackagesCache {
         std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
         let content =
             serde_json::to_string_pretty(&self.entries).expect("failed to serialize cache entries");
-        std::fs::write(cache_dir.join("packages.json5"), content)
-            .expect("failed to write packages.json5 fixture");
+        std::fs::write(nodes_repo_cache_path(peppy_dirs), content)
+            .expect("failed to write nodes.json5 fixture");
     }
 }
 
@@ -1202,7 +1203,7 @@ fn main() -> Result<()> {
     std::fs::write(
         node_dir.join(NODE_CONFIG_FILE),
         r#"{
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "{crate_name}",
     tag: "{node_tag}",

@@ -13,47 +13,6 @@ use zstd::stream::write::Encoder as ZstdEncoder;
 
 use crate::build_io::{FeedbackLine, FeedbackStream, spawn_in_process_group, stream_child_output};
 
-/// Per-process counter used to make build-staging tmp filenames unique so
-/// concurrent builds for the same node:tag cannot clobber each other.
-static STAGING_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Unique staging path so concurrent builds for the same `node:tag` cannot
-/// clobber each other's in-flight file.
-fn staging_tmp_path(storage_dir: &Path, final_name: &str) -> PathBuf {
-    storage_dir.join(format!(
-        "{}.{}.{}.tmp",
-        final_name,
-        std::process::id(),
-        STAGING_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ))
-}
-
-/// Publishes an artifact into `storage_dir/final_name` atomically: allocates a
-/// unique tmp path, lets `write` populate it, then renames. If `write` (or
-/// any later step) fails, the tmp path is cleaned up before the error is
-/// returned. Used by both [`archive_dir_to_storage`] and [`move_sif_to_storage`].
-fn publish_to_storage_atomic<F>(
-    storage_dir: &Path,
-    final_name: &str,
-    write: F,
-) -> std::io::Result<PathBuf>
-where
-    F: FnOnce(&Path) -> std::io::Result<()>,
-{
-    std::fs::create_dir_all(storage_dir)?;
-    let tmp_path = staging_tmp_path(storage_dir, final_name);
-    let final_path = storage_dir.join(final_name);
-    if let Err(e) = write(&tmp_path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-    if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-    Ok(final_path)
-}
-
 /// Validates that `node_tag` is safe to splice into a filename joined under
 /// the storage directory. Re-validates the raw `Manifest::tag` string before
 /// it ever reaches `storage_dir.join(...)` to prevent path traversal or
@@ -78,7 +37,7 @@ pub(super) fn archive_dir_to_storage(
     validate_node_tag(node_tag)?;
     let storage_dir = peppy_dirs.built_nodes_dir();
     let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
-    publish_to_storage_atomic(&storage_dir, &archive_name, |tmp_path| {
+    config::atomic_write::publish_atomic(&storage_dir.join(&archive_name), |tmp_path| {
         let file = File::create(tmp_path)?;
         let encoder = ZstdEncoder::new(file, 1)?;
         let mut tar_builder = tar::Builder::new(encoder);
@@ -111,7 +70,7 @@ pub(super) fn move_sif_to_storage(
 
     // Copy + rename (not rename alone) because the working dir may be on a
     // different filesystem than storage.
-    publish_to_storage_atomic(&storage_dir, &sif_name, |tmp_path| {
+    config::atomic_write::publish_atomic(&storage_dir.join(&sif_name), |tmp_path| {
         std::fs::copy(&sif_source, tmp_path)
             .map(|_| ())
             .map_err(|e| {

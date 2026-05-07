@@ -2,6 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
+use core_node::{launchers_repo_cache_path, nodes_repo_cache_path, repositories_list_path};
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use peppylib::core_node::transport::poll_repo_remove;
 use std::time::Duration;
@@ -31,13 +32,13 @@ fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
 fn write_packages_cache(started: &StartedCoreNode, content: &str) {
     let cache_dir = started.peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-    std::fs::write(cache_dir.join("packages.json5"), content).expect("write cache file");
+    std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
 }
 
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     format!(
         r#"{{
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",
@@ -75,17 +76,22 @@ async fn remove_fs_repo_succeeds() {
     assert!(resp.error_message.is_empty());
 
     // Verify the entry was removed from repositories.json5
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
     assert!(repos.is_empty(), "repos should be empty after removal");
 
     // Cache refresh is triggered for all repo types (including fs)
-    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(
         cache_path.exists(),
-        "packages.json5 cache should exist after fs repo removal"
+        "nodes.json5 cache should exist after fs repo removal"
+    );
+    let launcher_cache_path = launchers_repo_cache_path(&started.peppy_dirs);
+    assert!(
+        launcher_cache_path.exists(),
+        "launchers.json5 cache should exist after fs repo removal"
     );
 }
 
@@ -129,28 +135,33 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
     );
 
     // Verify the git entry was removed from repositories.json5
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
     assert_eq!(repos.len(), 1, "only the fs entry should remain");
     assert_eq!(repos[0]["type"], "fs");
 
-    // Verify refresh was triggered: packages.json5 should be updated.
+    // Verify refresh was triggered: nodes.json5 should be updated.
     // Since the git repo was removed, cache should no longer contain git_sensor.
-    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(
         cache_path.exists(),
-        "packages.json5 cache should exist after refresh"
+        "nodes.json5 cache should exist after refresh"
     );
     let cache_content = std::fs::read_to_string(&cache_path).expect("read cache file");
     let cached: Vec<serde_json::Value> =
-        serde_json::from_str(&cache_content).expect("parse cache as JSON");
+        serde_json5::from_str(&cache_content).expect("parse cache as JSON5");
     assert!(
         !cached
             .iter()
             .any(|n| n.get("source_uri").and_then(|v| v.as_str()) == Some(git_url)),
         "cache should not contain nodes from the removed git repo"
+    );
+    let launcher_cache_path = launchers_repo_cache_path(&started.peppy_dirs);
+    assert!(
+        launcher_cache_path.exists(),
+        "launchers.json5 cache should exist after refresh"
     );
 }
 
@@ -178,18 +189,23 @@ async fn remove_url_repo_succeeds_and_triggers_refresh() {
     );
 
     // Verify the url entry was removed
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
     assert_eq!(repos.len(), 1, "only the fs entry should remain");
     assert_eq!(repos[0]["type"], "fs");
 
     // Verify refresh was triggered (cache file should be written)
-    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(
         cache_path.exists(),
-        "packages.json5 cache should exist after refresh"
+        "nodes.json5 cache should exist after refresh"
+    );
+    let launcher_cache_path = launchers_repo_cache_path(&started.peppy_dirs);
+    assert!(
+        launcher_cache_path.exists(),
+        "launchers.json5 cache should exist after refresh"
     );
 }
 
@@ -211,10 +227,10 @@ async fn remove_nonexistent_id_fails() {
     );
 
     // Verify the original repos file is unchanged
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
     assert_eq!(repos.len(), 1, "repos should be unchanged");
 }
 
@@ -281,10 +297,10 @@ async fn remove_verifies_id_on_manually_added_entry() {
     );
 
     // Verify the correct entry was removed and ids are preserved
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
     assert_eq!(repos.len(), 2, "two entries should remain");
     assert_eq!(repos[0]["id"], 10);
     assert_eq!(repos[0]["path"], "/repo-a");

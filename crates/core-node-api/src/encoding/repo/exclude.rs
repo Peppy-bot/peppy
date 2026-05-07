@@ -63,7 +63,10 @@ impl RepoExcludeRequest {
         let reader = decode_message(data)?;
         let request = reader.get_root::<repo_capnp::repo_exclude_request::Reader>()?;
         let source = match request.get_source().which()? {
-            Which::Fs(path) => RepoSource::Fs(PathBuf::from(path?.to_str()?)),
+            Which::Fs(path) => RepoSource::Fs(crate::encoding::decode_fs_path(
+                path?.to_str()?,
+                "RepoExcludeRequest.source.fs",
+            )?),
             Which::Git(git) => {
                 let git = git?;
                 let repo_url = git.get_repo_url()?.to_str()?.to_owned();

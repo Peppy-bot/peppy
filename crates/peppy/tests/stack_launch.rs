@@ -40,7 +40,7 @@ fn write_node_config(
     fs::write(
         &node_config_path,
         r#"{
-                schema_version: 1,
+                peppy_schema: "node_v1",
                 manifest: {
                     name: "{node_name}",
                     tag: "{node_tag}",
@@ -70,7 +70,7 @@ fn read_daemon_git_hash(daemon_state_path: &Path) -> String {
     let contents =
         fs::read_to_string(daemon_state_path).expect("daemon state file should be readable");
     let value: serde_json::Value =
-        serde_json::from_str(&contents).expect("daemon state should parse as JSON");
+        serde_json5::from_str(&contents).expect("daemon state should parse as JSON5");
     value
         .get("git_hash")
         .and_then(|v| v.as_str())
@@ -196,6 +196,7 @@ async fn node_launch_command_succeed() {
     let node_b_path = nodes_dir.path().join(node_b_name);
     let launcher_json5 = format!(
         r#"{{
+            peppy_schema: "launcher_v1",
             deployments: [
                 {{
                     source: {{ local: "{}" }},
@@ -401,6 +402,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
+            peppy_schema: "launcher_v1",
             deployments: [
                 {{
                     source: {{ local: "{}" }},
@@ -504,6 +506,7 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
     let launcher_path = nodes_dir_path.join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
+            peppy_schema: "launcher_v1",
             deployments: [
                 {{
                     source: {{ local: "{}" }},

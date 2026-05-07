@@ -62,6 +62,7 @@ struct RepoRefreshResult {
     success @0 :Bool;
     errorMessage @1 :Text;
     totalNodesFound @2 :UInt32;
+    totalLaunchersFound @3 :UInt32;
 }
 
 # ── Repo List (request-response) ────────────────────────────────

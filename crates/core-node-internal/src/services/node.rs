@@ -2,7 +2,7 @@ mod add;
 mod add_batch;
 mod archive;
 mod builder;
-mod cache;
+pub(crate) mod cache;
 mod common;
 mod env;
 mod feedback;
@@ -78,7 +78,7 @@ mod tests {
     use super::*;
 
     const TEST_NODE_CONFIG: &str = r#"{
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "standalone",
     tag: "0.1.0",

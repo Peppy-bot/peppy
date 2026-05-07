@@ -70,7 +70,7 @@ A container node includes a `container` block inside its `execution` section ins
   <TabItem label="Python">
     ```json5 title="peppy.json5"
     {
-      schema_version: 1,
+      peppy_schema: "node_v1",
       manifest: {
         name: "my_node",
         tag: "0.1.0",
@@ -88,7 +88,7 @@ A container node includes a `container` block inside its `execution` section ins
   <TabItem label="Rust">
     ```json5 title="peppy.json5"
     {
-      schema_version: 1,
+      peppy_schema: "node_v1",
       manifest: {
         name: "my_node",
         tag: "0.1.0",
@@ -113,7 +113,7 @@ Compare this with a standard process node, which defines `build_cmd` and `run_cm
   <TabItem label="Python">
     ```json5 title="peppy.json5 (process node)"
     {
-      schema_version: 1,
+      peppy_schema: "node_v1",
       manifest: {
         name: "my_node",
         tag: "0.1.0",
@@ -130,7 +130,7 @@ Compare this with a standard process node, which defines `build_cmd` and `run_cm
   <TabItem label="Rust">
     ```json5 title="peppy.json5 (process node)"
     {
-      schema_version: 1,
+      peppy_schema: "node_v1",
       manifest: {
         name: "my_node",
         tag: "0.1.0",
@@ -261,7 +261,7 @@ Add a `mount_paths` array to the `container` block inside `execution` in `peppy.
 
 ```json5 title="peppy.json5"
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "my_node",
     tag: "0.1.0",
@@ -304,7 +304,7 @@ Mount paths can reference runtime [parameters](/getting_started/parameters/) usi
 
 ```json5 title="peppy.json5"
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
@@ -365,7 +365,7 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
 
 ```json5 title="peppy.json5"
 {
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {
     name: "my_node",
     tag: "0.1.0",

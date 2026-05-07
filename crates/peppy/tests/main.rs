@@ -11,6 +11,7 @@ mod node_stop;
 mod node_sync;
 mod repo_add;
 mod repo_exclude;
+mod repo_init;
 mod repo_list;
 mod repo_refresh;
 mod repo_remove;

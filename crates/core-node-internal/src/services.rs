@@ -3,7 +3,7 @@ mod clock;
 mod info;
 mod node;
 mod ping;
-mod repo;
+pub(crate) mod repo;
 mod stack;
 
 use clock::{ClockSource, SimClockSource, WallClockSource};
@@ -14,7 +14,7 @@ use crate::Result;
 use config::{
     DefaultValue, ParameterSpec,
     consts::PeppyDirs,
-    launcher::CURRENT_SCHEMA_VERSION,
+    launcher::PeppySchema,
     node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage, TypeToken},
 };
 use futures::future::{BoxFuture, FutureExt, try_join_all};
@@ -174,7 +174,7 @@ impl CoreNode {
         let daemon_use_sim_time = node_arguments.daemon_use_sim_time;
 
         let node_config = NodeConfig {
-            schema_version: CURRENT_SCHEMA_VERSION,
+            peppy_schema: PeppySchema::NodeV1,
             manifest: Manifest {
                 name: manifest_name,
                 tag: CORE_NODE_TAG.to_string(),
@@ -242,6 +242,13 @@ impl CoreNode {
 
     pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
         clear_instances_dir(&self.peppy_dirs);
+
+        // Sync `repositories.json5` against the bundled default template so
+        // entries that ship with a newer peppy build land in pre-existing
+        // user configs.
+        if let Err(e) = repo::ensure_default_repos(&self.peppy_dirs) {
+            tracing::warn!("Failed to sync default repositories: {}", e);
+        }
 
         let core_node_name = self.node_name(); // The core node binds to itself
         info!(

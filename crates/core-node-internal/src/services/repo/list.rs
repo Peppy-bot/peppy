@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::names;
+use crate::services::repo::cache::nodes_repo_cache_path;
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos, walk_directory};
 use config::consts::PeppyDirs;
@@ -111,6 +112,8 @@ fn handle_repo_list_request_inner(
                 let repo_label = path.to_string_lossy().into_owned();
                 let mut repo_seen = HashSet::new();
                 let mut discovered = Vec::new();
+                let mut launchers_seen = HashSet::new();
+                let mut launchers = Vec::new();
                 walk_directory(
                     &path,
                     RepoSourceKind::Fs,
@@ -118,6 +121,8 @@ fn handle_repo_list_request_inner(
                     None,
                     &mut repo_seen,
                     &mut discovered,
+                    &mut launchers_seen,
+                    &mut launchers,
                     &exclusions.fs_paths,
                 );
                 for node in discovered {
@@ -202,16 +207,16 @@ fn handle_repo_list_request_inner(
         .map_err(Into::into)
 }
 
-/// Read cached node entries from packages.json5 in the cache directory.
+/// Read cached node entries from nodes.json5 in the cache directory.
 fn read_cached_nodes(peppy_dirs: &PeppyDirs) -> Vec<Value> {
-    let cache_path = peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = nodes_repo_cache_path(peppy_dirs);
     if !cache_path.exists() {
         return Vec::new();
     }
     match std::fs::read_to_string(&cache_path) {
         Ok(content) => serde_json5::from_str(&content).unwrap_or_else(|e| {
             warn!(
-                "Failed to parse packages cache at {}: {e}",
+                "Failed to parse nodes cache (nodes.json5) at {}: {e}",
                 cache_path.display()
             );
             Vec::new()

@@ -1,8 +1,11 @@
 mod add;
 mod exclude;
+mod init;
 mod list;
 mod refresh;
 mod remove;
+
+pub use init::repo_init_with_dirs;
 
 use std::sync::Arc;
 
@@ -19,6 +22,12 @@ pub(super) fn repo_source_label(source: &RepoSource) -> String {
 
 #[derive(Subcommand)]
 pub enum RepoCommands {
+    /// Sync the local `repositories.json5` with the bundled defaults.
+    ///
+    /// Creates the file if it does not exist, otherwise appends any default
+    /// entries that are missing without touching existing user entries.
+    /// Operates on the local config file directly — no daemon required.
+    Init,
     /// List configured repositories
     List,
     /// Update repository indexes
@@ -69,6 +78,7 @@ pub struct RepoCommand {
 impl Command for RepoCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         match self.command {
+            RepoCommands::Init => init::repo_init(ctx),
             RepoCommands::List => list::list_repos(ctx),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add {

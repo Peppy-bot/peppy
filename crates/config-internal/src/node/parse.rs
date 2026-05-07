@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn test_parse_minimal_config() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "test_node",
                 tag: "0.1.0",
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn test_parse_complex_config() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "camera_driver",
                 tag: "2.1.0",
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn test_parse_container_config() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn test_process_and_container_conflict() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "bad_node",
                 tag: "0.1.0",
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn test_no_process_or_container() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "bare_node",
                 tag: "0.1.0",
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn test_empty_run_cmd() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "empty_cmd_node",
                 tag: "0.1.0",
@@ -396,6 +396,7 @@ mod tests {
     #[test]
     fn test_invalid_deployment_source() {
         let json5 = r#"{
+            peppy_schema: "launcher_v1",
             deployments: [
                 {
                     source: { local: "" },
@@ -418,7 +419,7 @@ mod tests {
     #[test]
     fn test_container_config_rejects_system_path_mount() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "bad_mount_node",
                 tag: "0.1.0",
@@ -448,7 +449,7 @@ mod tests {
     #[test]
     fn test_container_config_rejects_private_system_path_mount() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "bad_mount_node",
                 tag: "0.1.0",
@@ -475,7 +476,7 @@ mod tests {
     #[test]
     fn test_container_config_accepts_subdirectory_mount() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "good_mount_node",
                 tag: "0.1.0",
@@ -499,7 +500,7 @@ mod tests {
     #[test]
     fn test_container_config_accepts_no_mount_paths() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "no_mount_node",
                 tag: "0.1.0",
@@ -522,7 +523,7 @@ mod tests {
     #[test]
     fn test_container_mount_path_with_parameter_ref() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "camera_node",
                 tag: "0.1.0",
@@ -549,7 +550,7 @@ mod tests {
     #[test]
     fn test_container_mount_path_with_nested_parameter_ref() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "camera_node",
                 tag: "0.1.0",
@@ -579,7 +580,7 @@ mod tests {
     #[test]
     fn test_container_mount_path_rejects_unknown_parameter_ref() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "bad_ref_node",
                 tag: "0.1.0",
@@ -610,7 +611,7 @@ mod tests {
     #[test]
     fn test_container_mount_path_rejects_non_string_parameter_ref() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "bad_type_node",
                 tag: "0.1.0",
@@ -643,7 +644,7 @@ mod tests {
         // A mount path whose source is a parameter reference should NOT be rejected
         // at parse time, even though the resolved value might be a blocked path.
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "dynamic_mount_node",
                 tag: "0.1.0",
@@ -670,7 +671,7 @@ mod tests {
     #[test]
     fn test_container_config_extra_args_default_to_none() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
@@ -691,7 +692,7 @@ mod tests {
     #[test]
     fn test_container_config_parses_extra_args() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
@@ -725,7 +726,7 @@ mod tests {
     #[test]
     fn test_container_config_parses_empty_extra_args() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
@@ -759,7 +760,7 @@ mod tests {
     #[test]
     fn test_parse_config_with_default_variant_no_execution() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
@@ -783,7 +784,7 @@ mod tests {
     #[test]
     fn test_parse_config_with_default_variant_and_execution_rejected() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
@@ -806,7 +807,7 @@ mod tests {
     #[test]
     fn test_parse_config_with_default_variant_and_execution_without_language_rejected() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
@@ -833,7 +834,7 @@ mod tests {
     #[test]
     fn test_parse_config_execution_without_language_rejected() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "test_node",
                 tag: "0.1.0",
@@ -852,7 +853,7 @@ mod tests {
     #[test]
     fn test_parse_config_no_execution_no_default_variant_rejected() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
@@ -871,7 +872,7 @@ mod tests {
     #[test]
     fn test_parse_config_no_execution_with_default_variant_accepted() {
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
@@ -892,7 +893,7 @@ mod tests {
     fn test_node_error_message_includes_field_path() {
         // run_cmd should be an array, not a map
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "test_node",
                 tag: "0.1.0",
@@ -916,7 +917,7 @@ mod tests {
     fn test_variant_error_message_includes_field_path() {
         // run_cmd should be an array, not a string
         let json5 = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             execution: {
                 language: "rust",
                 run_cmd: "not_an_array",
@@ -937,7 +938,7 @@ mod tests {
     use tempfile::TempDir;
 
     const ROOT_CONFIG_WITH_LOCAL_VARIANT: &str = r#"{
-        schema_version: 1,
+        peppy_schema: "node_v1",
         manifest: {
             name: "uvc_camera",
             tag: "0.1.0",
@@ -952,7 +953,7 @@ mod tests {
     }"#;
 
     const VARIANT_CONFIG_NO_MANIFEST: &str = r#"{
-        schema_version: 1,
+        peppy_schema: "node_v1",
         execution: {
             language: "rust",
             run_cmd: ["./target/debug/mock"],
@@ -977,7 +978,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join(NODE_CONFIG_FILE);
         let root = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
@@ -1021,7 +1022,7 @@ mod tests {
         // absence of `interfaces` alone isn't a problem.
         let temp = TempDir::new().unwrap();
         let variant = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             execution: { language: "rust", run_cmd: ["./mock"] },
         }"#;
         let variant_path = write_root_and_variant(&temp, ROOT_CONFIG_WITH_LOCAL_VARIANT, variant);
@@ -1057,7 +1058,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let root_path = temp.path().join(NODE_CONFIG_FILE);
         let root_without_variants = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: { name: "solo_node", tag: "0.1.0" },
             execution: { language: "rust", run_cmd: ["./solo"] },
         }"#;
@@ -1113,7 +1114,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let root_path = temp.path().join(NODE_CONFIG_FILE);
         let root = r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "deep_node",
                 tag: "0.1.0",
@@ -1158,14 +1159,14 @@ mod tests {
 
         // Exhaustive destructuring — add-a-field will fail compilation here.
         let NodeConfig {
-            schema_version,
+            peppy_schema,
             manifest,
             interfaces,
             execution,
         } = merged;
 
-        // schema_version comes from the variant (which matches the root).
-        assert_eq!(schema_version, 1);
+        // peppy_schema comes from the variant (which matches the root).
+        assert_eq!(peppy_schema, crate::launcher::PeppySchema::NodeV1);
         // manifest is inherited from the root.
         assert_eq!(manifest.name.as_str(), "uvc_camera");
         assert_eq!(manifest.tag, "0.1.0");

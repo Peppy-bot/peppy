@@ -7,6 +7,7 @@ use common::{
 use config::consts::NODE_CONFIG_FILE;
 use config::node::QoSProfile;
 use core_node::names;
+use core_node::nodes_repo_cache_path;
 use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSourceKind,
@@ -20,7 +21,7 @@ use std::time::Duration;
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     format!(
         r#"{{
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",
@@ -46,7 +47,7 @@ fn root_with_variants_peppy_json5(name: &str, tag: &str, variants: &[(&str, &str
         .collect();
     format!(
         r#"{{
-  schema_version: 1,
+  peppy_schema: "node_v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",
@@ -63,7 +64,7 @@ fn root_with_variants_peppy_json5(name: &str, tag: &str, variants: &[(&str, &str
 /// Minimal valid variant peppy.json5 (no manifest, execution only).
 fn variant_peppy_json5() -> &'static str {
     r#"{
-  schema_version: 1,
+  peppy_schema: "node_v1",
   execution: {
     language: "rust",
     build_cmd: ["true"],
@@ -549,11 +550,12 @@ async fn refresh_cache_written() {
     let result = send_refresh_and_wait(&started).await;
     assert!(result.result.success, "refresh should succeed");
 
-    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(cache_path.exists(), "cache file should exist");
 
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache JSON");
+    let entries: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse cache JSON5");
     assert_eq!(entries.len(), 2, "cache should contain 2 nodes (FS + git)");
 
     let fs_entry = entries
@@ -586,7 +588,7 @@ async fn refresh_cache_written() {
     );
 }
 
-/// Verify that the packages.json5 cache includes variant names for nodes that
+/// Verify that the nodes.json5 cache includes variant names for nodes that
 /// declare them, and omits the field for plain nodes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_cache_includes_variants() {
@@ -608,9 +610,9 @@ async fn refresh_cache_includes_variants() {
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 2);
 
-    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
+    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
 
     let plain_entry = entries
         .iter()
@@ -686,9 +688,9 @@ async fn refresh_cache_includes_duplicates() {
     assert!(feedback_names.contains(&"unique_node"));
 
     // Cache should contain all 3 entries (including the duplicate)
-    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
+    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
     assert_eq!(
         entries.len(),
         3,
@@ -919,7 +921,7 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
     assert_eq!(discovered_feedbacks[0].node_name, "keep_node");
 }
 
-/// Excluded repos should not appear in the packages.json5 cache.
+/// Excluded repos should not appear in the nodes.json5 cache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_excluded_repos_not_in_cache() {
     let started = start_core_node_with_mock_messenger().await;
@@ -949,9 +951,9 @@ async fn refresh_excluded_repos_not_in_cache() {
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
 
-    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
+    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
     assert_eq!(
         entries.len(),
         1,

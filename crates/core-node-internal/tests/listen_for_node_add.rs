@@ -69,7 +69,7 @@ fn minimal_node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
     };
     format!(
         r#"{{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {{
                 name: "{name}",
                 tag: "{tag}",
@@ -89,7 +89,7 @@ fn create_minimal_http_bundle(node_name: &str, node_tag: &str) -> (TempDir, Vec<
     let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {{
                 name: "{node_name}",
                 tag: "{node_tag}",
@@ -201,7 +201,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     std::fs::write(
         repo_path.join(&rel_config_path),
         r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
@@ -246,7 +246,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     std::fs::write(
         repo_path.join(&rel_config_path),
         r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "0.2.0",
@@ -308,7 +308,7 @@ fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
     std::fs::write(
         repo_path.join(config_rel),
         r#"{
-            schema_version: 1,
+            peppy_schema: "node_v1",
             manifest: {
                 name: "bad_node",
                 tag: "0.1.0",

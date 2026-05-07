@@ -11,9 +11,9 @@ use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
 use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, VariantSource};
 use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
-    LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal,
-    NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeRunResult,
-    NodeSource,
+    LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
+    LauncherOrigin, NodeAddGoal, NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeRunGoal,
+    NodeRunLogEntry, NodeRunResult, NodeSource,
 };
 use node_stack::NodeStack;
 use parking_lot::Mutex as StdMutex;
@@ -805,25 +805,27 @@ async fn parse_launcher_config(
     )
     .await;
 
-    if !goal.peppy_launch_file_path.exists() {
-        let msg = format!(
-            "launch file does not exist: {}",
-            goal.peppy_launch_file_path.display()
-        );
+    let launch_file = match resolve_launcher_origin(ctx, &goal.launcher_origin).await {
+        Ok(path) => path,
+        Err(msg) => {
+            publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+            return Err(LaunchResult::failure(&ctx.log_path, msg));
+        }
+    };
+
+    if !launch_file.exists() {
+        let msg = format!("launch file does not exist: {}", launch_file.display());
         publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
 
-    if !goal.peppy_launch_file_path.is_file() {
-        let msg = format!(
-            "launch file path must be a file: {}",
-            goal.peppy_launch_file_path.display()
-        );
+    if !launch_file.is_file() {
+        let msg = format!("launch file path must be a file: {}", launch_file.display());
         publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
 
-    let peppy_launcher = match PeppyLauncherParser::from_path(&goal.peppy_launch_file_path) {
+    let peppy_launcher = match PeppyLauncherParser::from_path(&launch_file) {
         Ok(cfg) => cfg,
         Err(e) => {
             publish_stderr(
@@ -840,14 +842,52 @@ async fn parse_launcher_config(
     };
 
     // Use the parent directory of the launch file as the nodes_directory.
-    let nodes_directory = goal
-        .peppy_launch_file_path
+    let nodes_directory = launch_file
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
 
     let deployments = peppy_launcher.deployments.clone();
     Ok((deployments, nodes_directory))
+}
+
+/// Translate a `LauncherOrigin` into a concrete on-disk path.
+///
+/// `Fs` is a no-op; `Repository` looks up the launcher in the cache and, for git-sourced
+/// entries, materializes the checkout via `ensure_checkout`. Progress lines emitted by the
+/// (blocking) checkout are buffered into a `Vec` and flushed to the launch feedback topic
+/// after the resolver returns — quiet for cached/Fs entries, a few lines for fresh clones.
+async fn resolve_launcher_origin(
+    ctx: &ProcessLaunchContext,
+    origin: &LauncherOrigin,
+) -> std::result::Result<PathBuf, String> {
+    match origin {
+        LauncherOrigin::Fs(path) => Ok(path.clone()),
+        LauncherOrigin::Repository { name } => {
+            let peppy_dirs = ctx.peppy_dirs.clone();
+            let name_for_blocking = name.clone();
+            let collected = Arc::new(StdMutex::new(Vec::<String>::new()));
+            let collected_for_cb = Arc::clone(&collected);
+
+            let result = tokio::task::spawn_blocking(move || {
+                crate::services::repo::cache::resolve_repo_launcher_path(
+                    &name_for_blocking,
+                    &peppy_dirs,
+                    &|line| {
+                        collected_for_cb.lock().push(line.to_owned());
+                    },
+                )
+            })
+            .await
+            .map_err(|e| format!("launcher resolver join error: {e}"))?;
+
+            let captured: Vec<String> = std::mem::take(&mut *collected.lock());
+            for line in captured {
+                publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
+            }
+            result
+        }
+    }
 }
 
 /// Step 2: Resolve deployments - retrieve node configs for each deployment.

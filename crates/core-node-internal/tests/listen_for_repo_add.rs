@@ -1,6 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
+use core_node::repositories_list_path;
 use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
 use peppylib::core_node::transport::poll_repo_add;
 use std::time::Duration;
@@ -18,6 +19,27 @@ async fn send_repo_add(started: &StartedCoreNode, request: &RepoAddRequest) -> R
     .expect("repo_add poll should succeed")
 }
 
+/// Assert the most recently appended repo got the next-available id —
+/// exactly `max(other_ids) + 1`. Avoids hardcoding a specific value, which
+/// goes stale every time a default is added to the shipped
+/// `default_repositories.json5`, and catches regressions where ids skip ahead.
+fn assert_last_got_next_id(repos: &[serde_json::Value]) {
+    let last_id = repos
+        .last()
+        .and_then(|r| r["id"].as_u64())
+        .expect("last repo should have an integer id");
+    let max_other = repos[..repos.len() - 1]
+        .iter()
+        .filter_map(|r| r["id"].as_u64())
+        .max()
+        .unwrap_or(0);
+    assert_eq!(
+        last_id,
+        max_other + 1,
+        "added entry should get exactly max_other + 1 (got {last_id}, max other {max_other})"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_repo_add_url_succeed() {
     let started = start_core_node_with_mock_messenger().await;
@@ -30,7 +52,7 @@ async fn listen_for_repo_add_url_succeed() {
     assert!(resp.success, "repo_add should succeed");
     assert!(resp.error_message.is_empty());
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");
@@ -39,10 +61,7 @@ async fn listen_for_repo_add_url_succeed() {
     let last = repos.last().unwrap();
     assert_eq!(last["type"], "url");
     assert_eq!(last["url"], "https://example.com/packages");
-    assert_eq!(
-        last["id"], 1001,
-        "added entry should get the next available id"
-    );
+    assert_last_got_next_id(&repos);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -59,7 +78,7 @@ async fn listen_for_repo_add_git_succeed() {
     .await;
     assert!(resp.success, "repo_add should succeed");
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");
@@ -68,10 +87,7 @@ async fn listen_for_repo_add_git_succeed() {
     assert_eq!(last["type"], "git");
     assert_eq!(last["url"], "https://github.com/example/repo.git");
     assert_eq!(last["ref"], "main");
-    assert_eq!(
-        last["id"], 1001,
-        "added entry should get the next available id"
-    );
+    assert_last_got_next_id(&repos);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -81,7 +97,7 @@ async fn listen_for_repo_add_fs_succeed() {
     let resp = send_repo_add(&started, &RepoAddRequest::new_fs("/tmp/my-local-repo")).await;
     assert!(resp.success, "repo_add should succeed");
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");
@@ -89,10 +105,7 @@ async fn listen_for_repo_add_fs_succeed() {
     let last = repos.last().unwrap();
     assert_eq!(last["type"], "fs");
     assert_eq!(last["path"], "/tmp/my-local-repo");
-    assert_eq!(
-        last["id"], 1001,
-        "added entry should get the next available id"
-    );
+    assert_last_got_next_id(&repos);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -167,7 +180,7 @@ async fn listen_for_repo_add_assigns_id_after_manual_entry() {
     .await;
     assert!(resp.success, "repo_add should succeed");
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");
@@ -208,7 +221,7 @@ async fn listen_for_repo_add_top_assigns_min_minus_one() {
     .await;
     assert!(resp.success, "repo_add with top should succeed");
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");
@@ -239,7 +252,7 @@ async fn listen_for_repo_add_top_sorts_first() {
     .await;
     assert!(resp.success);
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");
@@ -265,7 +278,7 @@ async fn listen_for_repo_add_top_on_empty_uses_default_floor() {
     .await;
     assert!(resp.success);
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");
@@ -285,7 +298,7 @@ async fn listen_for_repo_add_no_top_on_empty_uses_default_floor() {
     let resp = send_repo_add(&started, &RepoAddRequest::new_url("https://example.com/x")).await;
     assert!(resp.success);
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");
@@ -336,7 +349,7 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
     .await;
     assert!(resp2.success);
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");
@@ -373,7 +386,7 @@ async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
     .await;
     assert!(resp.success);
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");
@@ -410,7 +423,7 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
         resp_dev.error_message
     );
 
-    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let repos_path = repositories_list_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");

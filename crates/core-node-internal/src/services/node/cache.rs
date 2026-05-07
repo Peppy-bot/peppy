@@ -6,7 +6,7 @@
 //! names under [`config::consts::PeppyDirs`].
 
 pub(super) mod bundle;
-pub(super) mod git;
+pub(crate) mod git;
 mod key;
 pub(super) mod materialize;
 
