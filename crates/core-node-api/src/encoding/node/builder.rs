@@ -46,6 +46,7 @@ impl FeedbackStream {
 pub struct NodeBuildGoal {
     pub node_name: String,
     pub node_tag: String,
+    pub node_variant: String,
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
     pub force: bool,
@@ -55,11 +56,13 @@ impl NodeBuildGoal {
     pub fn new(
         node_name: impl Into<String>,
         node_tag: impl Into<String>,
+        node_variant: impl Into<String>,
         timeout_secs: u64,
     ) -> Self {
         Self {
             node_name: node_name.into(),
             node_tag: node_tag.into(),
+            node_variant: node_variant.into(),
             env_vars: Vec::new(),
             timeout_secs,
             force: false,
@@ -82,6 +85,7 @@ impl NodeBuildGoal {
             let mut goal = builder.init_root::<node_capnp::node_build_goal::Builder>();
             goal.set_node_name(&self.node_name);
             goal.set_node_tag(&self.node_tag);
+            goal.set_node_variant(&self.node_variant);
 
             let env_var_count = capnp_list_len(self.env_vars.len(), "NodeBuildGoal.env_vars")?;
             let mut env_vars = goal.reborrow().init_env_vars(env_var_count);
@@ -114,6 +118,7 @@ impl NodeBuildGoal {
         Ok(Self {
             node_name: goal.get_node_name()?.to_str()?.to_owned(),
             node_tag: goal.get_node_tag()?.to_str()?.to_owned(),
+            node_variant: goal.get_node_variant()?.to_str()?.to_owned(),
             env_vars,
             timeout_secs: goal.get_timeout_secs(),
             force: goal.get_force(),

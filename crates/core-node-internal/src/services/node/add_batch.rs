@@ -15,9 +15,7 @@ use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use chrono::Local;
 use config::consts::PeppyDirs;
 use config::node::ParsedNodeConfig;
-use core_node_api::encoding::{
-    DepVariantOverride, NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind,
-};
+use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind};
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use node_stack::VirtualDeptree;
@@ -46,12 +44,8 @@ pub(crate) async fn run_repo_node_add(
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
 ) -> NodeAddResult {
-    let (root_name, root_tag, dep_variant_overrides) = match &goal.source {
-        NodeSource::RepoNode {
-            name,
-            tag,
-            dep_variant_overrides,
-        } => (name.clone(), tag.clone(), dep_variant_overrides.clone()),
+    let (root_name, root_tag, root_variant) = match &goal.source {
+        NodeSource::RepoNode { name, tag, variant } => (name.clone(), tag.clone(), variant.clone()),
         _ => {
             return NodeAddResult::failure(
                 &log_path,
@@ -60,24 +54,13 @@ pub(crate) async fn run_repo_node_add(
         }
     };
 
-    if let Some(root_override) = dep_variant_overrides
-        .iter()
-        .find(|ov| ov.name == root_name && ov.tag == root_tag)
-    {
-        return fail(
-            &log_file,
-            &log_path,
-            format!(
-                "Dependency variant override {}:{}@{} targets the root repo node; use the root variant field instead",
-                root_override.name, root_override.tag, root_override.variant
-            ),
-        );
-    }
-
     emit(
         &feedback_tx,
         FeedbackStream::Stdout,
-        format!("Resolving {}:{} from repo cache", root_name, root_tag),
+        format!(
+            "Resolving {} from repo cache",
+            config::node::render_node_id(&root_name, &root_tag, &root_variant)
+        ),
     );
 
     let peppy_dirs = action_context.peppy_dirs.clone();
@@ -113,7 +96,7 @@ pub(crate) async fn run_repo_node_add(
         resolution_ctx,
         &root_name,
         &root_tag,
-        &dep_variant_overrides,
+        &root_variant,
     )
     .await
     {
@@ -121,30 +104,18 @@ pub(crate) async fn run_repo_node_add(
         Err(msg) => return fail(&log_file, &log_path, msg),
     };
 
-    // Warn about overrides that targeted nodes not actually in the tree.
-    for ov in &dep_variant_overrides {
-        let in_tree = resolution
-            .to_add
-            .iter()
-            .any(|n| n.name == ov.name && n.tag == ov.tag);
-        if !in_tree {
-            emit(
-                &feedback_tx,
-                FeedbackStream::Warning,
-                format!(
-                    "Dependency variant override for {}:{} ignored — not in the resolved dependency tree",
-                    ov.name, ov.tag
-                ),
-            );
-        }
-    }
-
-    let tree_input: Vec<(PathBuf, config::node::NodeConfig)> = resolution
+    let tree_input: Vec<(PathBuf, config::node::NodeConfig, String)> = resolution
         .to_add
         .iter()
-        .map(|n| (n.root_dir.clone(), n.config_resolved.clone()))
+        .map(|n| {
+            (
+                n.root_dir.clone(),
+                n.config_resolved.clone(),
+                n.variant.clone(),
+            )
+        })
         .collect();
-    let tree = match VirtualDeptree::build(tree_input) {
+    let tree = match VirtualDeptree::build_with_variants(tree_input) {
         Ok(t) => t,
         Err(e) => {
             return fail(
@@ -155,11 +126,11 @@ pub(crate) async fn run_repo_node_add(
         }
     };
 
-    // Build a (name, tag) -> ResolvedBatchNode lookup for variant info.
-    let node_lookup: HashMap<(String, String), &ResolvedBatchNode> = resolution
+    // Build a (name, tag, variant) -> ResolvedBatchNode lookup for variant info.
+    let node_lookup: HashMap<config::node::NodeKey, &ResolvedBatchNode> = resolution
         .to_add
         .iter()
-        .map(|n| ((n.name.clone(), n.tag.clone()), n))
+        .map(|n| (config::node::NodeKey::new(&n.name, &n.tag, &n.variant), n))
         .collect();
 
     emit(
@@ -171,7 +142,7 @@ pub(crate) async fn run_repo_node_add(
             resolution
                 .to_add
                 .iter()
-                .map(|n| format!("{}:{}", n.name, n.tag))
+                .map(|n| config::node::render_node_id(&n.name, &n.tag, &n.variant))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -187,8 +158,8 @@ pub(crate) async fn run_repo_node_add(
                 &log_file,
                 &log_path,
                 format!(
-                    "internal error: topological order produced a node not in the batch ({}:{})",
-                    key.0, key.1
+                    "internal error: topological order produced a node not in the batch ({})",
+                    key.label()
                 ),
             );
         };
@@ -197,9 +168,8 @@ pub(crate) async fn run_repo_node_add(
             &feedback_tx,
             FeedbackStream::Stdout,
             format!(
-                "Adding {}:{} ({})",
-                node.name,
-                node.tag,
+                "Adding {} ({})",
+                config::node::render_node_id(&node.name, &node.tag, &node.variant),
                 kind_label(node.source_kind)
             ),
         );
@@ -210,13 +180,13 @@ pub(crate) async fn run_repo_node_add(
         // elsewhere in the batch does not wipe the user's prior state.
         let previous = action_context
             .node_stack
-            .find(&node.name, &node.tag)
+            .find(&node.name, &node.tag, &node.variant)
             .map(|handle| {
                 let guard = handle.read();
                 PreviousConfig {
                     config: guard.config().clone(),
                     config_path: guard.config_path().to_path_buf(),
-                    variant_name: guard.variant_name().map(ToString::to_string),
+                    variant: guard.variant().to_owned(),
                 }
             });
 
@@ -227,7 +197,11 @@ pub(crate) async fn run_repo_node_add(
                     return fail(
                         &log_file,
                         &log_path,
-                        format!("Failed to add {}:{}: {}", node.name, node.tag, msg),
+                        format!(
+                            "Failed to add {}: {}",
+                            config::node::render_node_id(&node.name, &node.tag, &node.variant),
+                            msg
+                        ),
                     );
                 }
             };
@@ -239,7 +213,11 @@ pub(crate) async fn run_repo_node_add(
             return fail(
                 &log_file,
                 &log_path,
-                format!("Failed to add {}:{}: {}", node.name, node.tag, msg),
+                format!(
+                    "Failed to add {}: {}",
+                    config::node::render_node_id(&node.name, &node.tag, &node.variant),
+                    msg
+                ),
             );
         }
 
@@ -247,6 +225,7 @@ pub(crate) async fn run_repo_node_add(
         rollback.added.push(RollbackEntry {
             name: node.name.clone(),
             tag: node.tag.clone(),
+            variant: node.variant.clone(),
             previous,
         });
     }
@@ -264,7 +243,7 @@ pub(crate) async fn run_repo_node_add(
     );
 
     let effective_log = last_sub_log_path.unwrap_or(log_path);
-    NodeAddResult::success(effective_log, root_name, root_tag)
+    NodeAddResult::success(effective_log, root_name, root_tag, root_variant)
 }
 
 fn kind_label(kind: RepoSourceKind) -> &'static str {
@@ -280,11 +259,13 @@ fn kind_label(kind: RepoSourceKind) -> &'static str {
 struct ResolvedBatchNode {
     name: String,
     tag: String,
+    /// Variant identity for this node — taken from the manifest's
+    /// `depends_on[].variant` for transitive deps, or from the root
+    /// goal's `RepoNode.variant` for the entry point.
+    variant: String,
     root_dir: PathBuf,
     config_resolved: config::node::NodeConfig,
     source_kind: RepoSourceKind,
-    /// Caller-requested variant for this node, if any.
-    variant_override: Option<String>,
     /// Only set to `true` for the root of the batch. Controls whether
     /// the env_vars / force / root variant from the original goal apply.
     is_root: bool,
@@ -297,6 +278,7 @@ struct Resolution {
 }
 
 type MaterializeOutput = (
+    String,
     String,
     String,
     bool,
@@ -318,7 +300,7 @@ async fn resolve_transitive_closure<'a>(
     ctx: BatchResolutionCtx<'a>,
     root_name: &str,
     root_tag: &str,
-    dep_overrides: &[DepVariantOverride],
+    root_variant: &str,
 ) -> Result<Resolution, String> {
     let BatchResolutionCtx {
         peppy_dirs,
@@ -326,22 +308,22 @@ async fn resolve_transitive_closure<'a>(
         cache_generation,
         feedback_tx,
     } = ctx;
-    let override_map: HashMap<(String, String), String> = dep_overrides
-        .iter()
-        .map(|o| ((o.name.clone(), o.tag.clone()), o.variant.clone()))
-        .collect();
 
     let mut to_add: Vec<ResolvedBatchNode> = Vec::new();
-    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut seen: HashSet<(String, String, String)> = HashSet::new();
     let mut missing: Vec<(String, String)> = Vec::new();
-    let mut pending: Vec<(String, String, bool)> =
-        vec![(root_name.to_owned(), root_tag.to_owned(), true)];
+    let mut pending: Vec<(String, String, String, bool)> = vec![(
+        root_name.to_owned(),
+        root_tag.to_owned(),
+        root_variant.to_owned(),
+        true,
+    )];
     let mut in_flight: FuturesUnordered<BoxFuture<'a, MaterializeOutput>> = FuturesUnordered::new();
     let semaphore = Arc::new(Semaphore::new(MATERIALIZE_CONCURRENCY));
 
     loop {
-        while let Some((name, tag, is_root)) = pending.pop() {
-            let key = (name.clone(), tag.clone());
+        while let Some((name, tag, variant, is_root)) = pending.pop() {
+            let key = (name.clone(), tag.clone(), variant.clone());
             if !seen.insert(key.clone()) {
                 continue;
             }
@@ -350,7 +332,7 @@ async fn resolve_transitive_closure<'a>(
             // keys already in the stack, including the live-instance and
             // dependents safety gates.
             let Some(entry) = cache::lookup(entries, &name, &tag) else {
-                missing.push(key);
+                missing.push((name, tag));
                 continue;
             };
             let entry = entry.clone();
@@ -375,11 +357,12 @@ async fn resolve_transitive_closure<'a>(
                     on_feedback,
                 )
                 .await;
-                (name, tag, is_root, source_kind, result)
+                (name, tag, variant, is_root, source_kind, result)
             }));
         }
 
-        let Some((name, tag, is_root, source_kind, result)) = in_flight.next().await else {
+        let Some((name, tag, variant, is_root, source_kind, result)) = in_flight.next().await
+        else {
             break;
         };
 
@@ -387,28 +370,21 @@ async fn resolve_transitive_closure<'a>(
             Ok(pair) => pair,
             Err(e) => {
                 return Err(format!(
-                    "Failed to materialize {}:{} from repo cache: {}",
-                    name, tag, e
+                    "Failed to materialize {} from repo cache: {}",
+                    config::node::render_node_id(&name, &tag, &variant),
+                    e
                 ));
             }
         };
 
-        // Roots take their variant from goal.variant (handled later in
-        // run_single_batched_add); deps look at override_map.
-        let variant_override = if is_root {
-            None
-        } else {
-            override_map.get(&(name.clone(), tag.clone())).cloned()
-        };
-
-        // Enforce that an override points at a variant declared by this
-        // dep's manifest. (Root variant validation happens inside
-        // run_node_add itself.)
-        if let Some(ref v) = variant_override
-            && !parsed.variant_names().iter().any(|n| n == v)
+        // Enforce that the requested variant is declared by this node's
+        // manifest, except for the implicit "default" variant for nodes
+        // that don't expose a variants block at all.
+        if !is_default_variant_implicit(&variant, &parsed)
+            && !parsed.variant_names().iter().any(|n| n == &variant)
         {
             return Err(format!(
-                "variant '{v}' not declared on dep {name}:{tag} (available: {:?})",
+                "variant '{variant}' not declared on {name}:{tag} (available: {:?})",
                 parsed.variant_names()
             ));
         }
@@ -417,10 +393,11 @@ async fn resolve_transitive_closure<'a>(
             for dep in &deps.nodes {
                 let dep_name = dep.name.as_str().to_owned();
                 let dep_tag = dep.tag.clone();
-                if seen.contains(&(dep_name.clone(), dep_tag.clone())) {
+                let dep_variant = dep.variant.clone();
+                if seen.contains(&(dep_name.clone(), dep_tag.clone(), dep_variant.clone())) {
                     continue;
                 }
-                pending.push((dep_name, dep_tag, false));
+                pending.push((dep_name, dep_tag, dep_variant, false));
             }
         }
 
@@ -434,10 +411,10 @@ async fn resolve_transitive_closure<'a>(
         to_add.push(ResolvedBatchNode {
             name,
             tag,
+            variant,
             root_dir,
             config_resolved,
             source_kind,
-            variant_override,
             is_root,
         });
     }
@@ -455,6 +432,12 @@ async fn resolve_transitive_closure<'a>(
     }
 
     Ok(Resolution { to_add })
+}
+
+/// Returns true when the variant is the implicit `"default"` for a node
+/// whose manifest declares no `variants:` block.
+fn is_default_variant_implicit(variant: &str, parsed: &ParsedNodeConfig) -> bool {
+    variant == config::node::DEFAULT_VARIANT_NAME && !parsed.has_variants()
 }
 
 /// Run a single node-add step inside the batch. Each sub-add gets its
@@ -479,15 +462,21 @@ async fn run_single_batched_add(
             .with_force(batch_goal.force);
         if let Some(ref v) = batch_goal.variant {
             sub_goal = sub_goal.with_variant_source(v.clone());
+        } else if node.variant != config::node::DEFAULT_VARIANT_NAME {
+            sub_goal = sub_goal.with_variant_name(node.variant.clone());
         }
-    } else if let Some(ref v) = node.variant_override {
-        sub_goal = sub_goal.with_variant_name(v.clone());
+    } else if node.variant != config::node::DEFAULT_VARIANT_NAME {
+        sub_goal = sub_goal.with_variant_name(node.variant.clone());
     }
 
-    // Each sub-add gets its own log file derived from `{name}_{tag}`.
-    let log_dir = action_context.peppy_dirs.logs_dir_add();
+    // Each sub-add gets its own log file under the variant-specific subtree.
+    let key = config::node::NodeKey::new(&node.name, &node.tag, &node.variant);
+    let log_dir = action_context
+        .peppy_dirs
+        .logs_dir_add()
+        .join(key.artifact_subpath());
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-    let log_filename = format!("{}_{}_{}.log", node.name, node.tag, timestamp);
+    let log_filename = format!("{}.log", timestamp);
     let (log_file, log_path) = create_action_log_file(&log_dir, &log_filename)
         .map_err(|e| format!("Failed to create sub-add log: {}", e))?;
 
@@ -523,12 +512,13 @@ async fn run_single_batched_add(
 struct PreviousConfig {
     config: config::node::NodeConfig,
     config_path: PathBuf,
-    variant_name: Option<String>,
+    variant: String,
 }
 
 struct RollbackEntry {
     name: String,
     tag: String,
+    variant: String,
     previous: Option<PreviousConfig>,
 }
 
@@ -566,24 +556,26 @@ impl Drop for RollbackGuard {
             let RollbackEntry {
                 name,
                 tag,
+                variant,
                 previous,
             } = entry;
+            let label = config::node::render_node_id(&name, &tag, &variant);
             match previous {
-                Some(prev) => match self.node_stack.push_config_with_variant(
+                Some(prev) => match self.node_stack.push_config(
                     prev.config,
                     false,
                     prev.config_path,
-                    prev.variant_name,
+                    prev.variant,
                 ) {
-                    Ok(()) => debug!("Rolled back batched replacement of {}:{}", name, tag),
+                    Ok(()) => debug!("Rolled back batched replacement of {}", label),
                     Err(e) => warn!(
-                        "Batch-add rollback (restore previous) failed for {}:{} — {}",
-                        name, tag, e
+                        "Batch-add rollback (restore previous) failed for {} — {}",
+                        label, e
                     ),
                 },
-                None => match self.node_stack.remove_config(&name, &tag) {
-                    Ok(_) => debug!("Rolled back batched add of {}:{}", name, tag),
-                    Err(e) => warn!("Batch-add rollback failed for {}:{} — {}", name, tag, e),
+                None => match self.node_stack.remove_config(&name, &tag, &variant) {
+                    Ok(_) => debug!("Rolled back batched add of {}", label),
+                    Err(e) => warn!("Batch-add rollback failed for {} — {}", label, e),
                 },
             }
         }

@@ -167,7 +167,7 @@ fn write_row(out: &mut String, cells: &[String; 5], widths: &[usize; 5]) {
 }
 
 fn variant_label(node: &SerializedNode) -> &str {
-    node.variant_name.as_deref().unwrap_or("default")
+    &node.variant
 }
 
 /// Compact per-node instance summary. Detailed per-instance info is
@@ -211,7 +211,7 @@ mod tests {
         name: &str,
         tag: &str,
         stage: NodeStage,
-        variant: Option<&str>,
+        variant: &str,
         instances: Vec<(&str, InstanceState)>,
     ) -> SerializedNode {
         SerializedNode {
@@ -227,19 +227,19 @@ mod tests {
                     state,
                 })
                 .collect(),
-            variant_name: variant.map(str::to_owned),
+            variant: variant.to_owned(),
         }
     }
 
     #[test]
     fn table_renders_headers_and_rows() {
         let nodes = vec![
-            node("sensor", "0.1.0", NodeStage::Added, Some("default"), vec![]),
+            node("sensor", "0.1.0", NodeStage::Added, "default", vec![]),
             node(
                 "brain",
                 "0.1.0",
                 NodeStage::Ready,
-                Some("macos"),
+                "macos",
                 vec![("i1", InstanceState::Running)],
             ),
         ];
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn variant_falls_back_to_default_when_none() {
-        let nodes = vec![node("sensor", "0.1.0", NodeStage::Added, None, vec![])];
+        let nodes = vec![node("sensor", "0.1.0", NodeStage::Added, "default", vec![])];
         let out = format_stack_list(&nodes, &[]);
         assert!(
             out.contains("default"),
@@ -281,7 +281,7 @@ mod tests {
             "brain",
             "0.1.0",
             NodeStage::Ready,
-            Some("default"),
+            "default",
             vec![
                 ("r1", InstanceState::Running),
                 ("s1", InstanceState::Starting),
@@ -309,8 +309,8 @@ mod tests {
 
     #[test]
     fn edges_render_as_arrows() {
-        let from = node("brain", "0.1.0", NodeStage::Ready, None, vec![]);
-        let to = node("sensor", "0.1.0", NodeStage::Ready, None, vec![]);
+        let from = node("brain", "0.1.0", NodeStage::Ready, "default", vec![]);
+        let to = node("sensor", "0.1.0", NodeStage::Ready, "default", vec![]);
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),

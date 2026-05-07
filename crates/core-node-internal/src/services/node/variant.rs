@@ -386,7 +386,7 @@ mod tests {
         let root_config =
             config::node::NodeConfigParser::from_path(root.join(NODE_CONFIG_FILE)).unwrap();
 
-        let variant = NodeSource::repo_node("some_dep", "1.2.3").unwrap();
+        let variant = NodeSource::repo_node("some_dep", "1.2.3", "default").unwrap();
         let peppy_dirs = PeppyDirs::default();
 
         match resolve_variant(&variant, &root_config, root, &peppy_dirs, None).await {

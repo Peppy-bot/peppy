@@ -436,6 +436,7 @@ async fn process_node_run(
     let NodeRunGoal {
         node_name,
         tag,
+        node_variant,
         env_vars,
         ..
     } = goal;
@@ -463,10 +464,13 @@ async fn process_node_run(
         node_name, tag, instance_id_str
     );
 
-    let entity_handle = match ctx.action.node_stack.find(&node_name, &tag) {
+    let entity_handle = match ctx.action.node_stack.find(&node_name, &tag, &node_variant) {
         Some(entity) => entity,
         None => {
-            let msg = format!("Node '{}:{}' not found in node stack", node_name, tag);
+            let msg = format!(
+                "Node '{}' not found in node stack",
+                config::node::render_node_id(&node_name, &tag, &node_variant)
+            );
             write_error_to_log(&ctx.log_file, &msg);
             return NodeRunResult::failure(msg);
         }

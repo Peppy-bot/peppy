@@ -832,7 +832,12 @@ pub(crate) async fn run_node_add(
         // Capture the variant label alongside `effective_variant` so it can
         // be persisted on the `NodeEntity` after `push_config` — the daemon
         // reads it back out of the entity when answering `node_info`.
-        let variant_name: Option<String> = effective_variant.as_ref().map(variant_label);
+        // Nodes without a variant context default to the literal "default"
+        // string so identity is always a non-empty triple.
+        let variant: String = effective_variant
+            .as_ref()
+            .map(variant_label)
+            .unwrap_or_else(|| DEFAULT_VARIANT_NAME.to_owned());
 
         // Capture the root source path before variant resolution may overwrite it.
         // The .peppy/git.hash file is written by `peppy node sync` at the root
@@ -979,12 +984,16 @@ pub(crate) async fn run_node_add(
             matches!(&goal.source, NodeSource::Fs(_)) && goal.git_hash != STACK_LAUNCH_GIT_HASH;
         let verify_codegen_fingerprint = is_local_root && variant_source_is_local;
 
-        // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
-        // now that we know the node name and tag from the resolved config.
+        // Move the log file under the canonical
+        // `<logs_add>/<name>/<tag>/<variant>/<timestamp>.log` subtree now that
+        // the resolved node identity (including variant) is known.
         let node_name = node_config.manifest.name.as_str();
         let node_tag = &node_config.manifest.tag;
-        let canonical_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
-        let canonical_log_path = log_dir.join(&canonical_filename);
+        let key = config::node::NodeKey::new(node_name, node_tag, &variant);
+        let canonical_dir = log_dir.join(key.artifact_subpath());
+        let _ = std::fs::create_dir_all(&canonical_dir);
+        let canonical_filename = format!("{}.log", timestamp);
+        let canonical_log_path = canonical_dir.join(&canonical_filename);
         let log_path = if std::fs::rename(&log_path, &canonical_log_path).is_ok() {
             canonical_log_path
         } else {
@@ -1006,7 +1015,7 @@ pub(crate) async fn run_node_add(
             source_path,
             verify_codegen_fingerprint,
             cleanup_dir,
-            variant_name,
+            variant,
             ctx,
         )
         .await
@@ -1158,9 +1167,14 @@ async fn handle_goal_request(
 async fn shutdown_existing_instances(
     node_name: &str,
     node_tag: &str,
+    node_variant: &str,
     ctx: &ProcessNodeAddContext,
 ) -> std::result::Result<(), String> {
-    let Some(entity) = ctx.action.node_stack.find(node_name, node_tag) else {
+    let Some(entity) = ctx
+        .action
+        .node_stack
+        .find(node_name, node_tag, node_variant)
+    else {
         return Ok(());
     };
 
@@ -1205,6 +1219,7 @@ async fn shutdown_existing_instances(
             &ctx.action.node_stack,
             node_name,
             node_tag,
+            node_variant,
             &instance_id,
         )
         .await?;
@@ -1224,7 +1239,7 @@ async fn process_node_add(
     source_path: PathBuf,
     verify_codegen_fingerprint: bool,
     cleanup_dir: Option<PathBuf>,
-    variant_name: Option<String>,
+    variant: String,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
     // Reject any forbidden env vars early so the user gets a fast failure;
@@ -1323,10 +1338,11 @@ async fn process_node_add(
         &node_config.interfaces,
         &node_name,
         &node_tag,
-        |name, tag| {
+        &variant,
+        |name, tag, variant| {
             ctx.action
                 .node_stack
-                .find(name, tag)
+                .find(name, tag, variant)
                 .map(|e| e.read().config().clone())
         },
     );
@@ -1375,7 +1391,7 @@ async fn process_node_add(
     // config. `push_config` rejects replacements that still have live
     // instances (it would otherwise orphan them), so we shut them down
     // first to satisfy that precondition.
-    if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
+    if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &variant, &ctx).await {
         let msg = format!("Failed to shutdown existing node instances: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);
@@ -1387,23 +1403,23 @@ async fn process_node_add(
     // clone) that is cleaned up after this function returns. The
     // working_dir persists as long as the entity exists via WorkingDirGuard.
     let config_path_for_stack = working_dir.join(NODE_CONFIG_FILE);
-    if let Err(e) = ctx.action.node_stack.push_config_with_variant(
+    if let Err(e) = ctx.action.node_stack.push_config(
         node_config.clone(),
         false,
         &config_path_for_stack,
-        variant_name.clone(),
+        variant.clone(),
     ) {
         let msg = format!("Failed to add node config: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    let entity_handle = match ctx.action.node_stack.find(&node_name, &node_tag) {
+    let entity_handle = match ctx.action.node_stack.find(&node_name, &node_tag, &variant) {
         Some(handle) => handle,
         None => {
             let msg = format!(
-                "internal error: just-pushed entity {}:{} disappeared from the stack",
-                node_name, node_tag
+                "internal error: just-pushed entity {} disappeared from the stack",
+                config::node::render_node_id(&node_name, &node_tag, &variant)
             );
             write_error_to_log(&ctx.log_file, &msg);
             return NodeAddResult::failure(&ctx.log_path, msg);
@@ -1420,15 +1436,21 @@ async fn process_node_add(
     ));
     {
         let mut guard = entity_handle.write();
-        ctx.action
-            .node_stack
-            .set_add_log_path(&node_name, &node_tag, ctx.log_path.clone());
+        ctx.action.node_stack.set_add_log_path(
+            &node_name,
+            &node_tag,
+            &variant,
+            ctx.log_path.clone(),
+        );
         guard.set_pending_working_dir(Arc::clone(&working_dir_guard));
     }
 
-    debug!("Added node {}:{} (pending build)", node_name, node_tag);
+    debug!(
+        "Added node {} (pending build)",
+        config::node::render_node_id(&node_name, &node_tag, &variant)
+    );
 
-    NodeAddResult::success(&ctx.log_path, node_name, node_tag)
+    NodeAddResult::success(&ctx.log_path, node_name, node_tag, variant)
 }
 
 #[cfg(test)]

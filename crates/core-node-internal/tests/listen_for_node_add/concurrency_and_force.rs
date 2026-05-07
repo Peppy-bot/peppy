@@ -184,7 +184,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     );
 
     assert!(
-        node_stack.contains(SECOND_NODE_NAME, SECOND_NODE_TAG),
+        node_stack.contains(SECOND_NODE_NAME, SECOND_NODE_TAG, "default"),
         "force-added node should be in the stack"
     );
 }

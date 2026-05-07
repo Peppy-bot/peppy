@@ -123,10 +123,10 @@ pub async fn build_ready(
     let tag = config.manifest.tag.clone();
 
     stack
-        .push_config(config, false, &config_path)
+        .push_config(config, false, &config_path, "default")
         .expect("test fixture: push_config should succeed");
     let handle = stack
-        .find(&name, &tag)
+        .find(&name, &tag, "default")
         .expect("test fixture: just-pushed entity should exist");
 
     NodeEntity::build(

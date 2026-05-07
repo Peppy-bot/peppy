@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use config::consts::PeppyDirs;
-use config::node::{Name, NodeConfig};
+use config::node::{DEFAULT_VARIANT_NAME, Name, NodeConfig};
 use core_node_api::{
     InstanceState, NodeStage as SerializedNodeStage, SerializedInstance, SerializedNode,
 };
@@ -42,7 +42,7 @@ impl From<&NodeEntity> for SerializedNode {
                     state: i.state(),
                 })
                 .collect(),
-            variant_name: entity.variant_name().map(str::to_owned),
+            variant: entity.variant().to_owned(),
         }
     }
 }
@@ -275,21 +275,21 @@ pub struct NodeEntity {
     /// `take_pending_working_dir` clears the entity-side slot. Never
     /// persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
-    /// Variant label captured at `node add` time. `None` for nodes added
-    /// without a variant (no default variant, no `--variant` flag) and for
-    /// the synthetic root entity.
-    variant_name: Option<String>,
+    /// Variant label captured at `node add` time. Always populated — the
+    /// synthetic root entity and nodes added without an explicit variant
+    /// default to [`DEFAULT_VARIANT_NAME`] (`"default"`).
+    variant: String,
 }
 
 impl NodeEntity {
     /// Creates a new `NodeEntity` in the [`NodeStage::Added`] stage. The
     /// `config_path` should point at the `peppy.json5` file that supplied
-    /// `config`. `variant_name` is the variant label selected at add time
-    /// (or `None` if no variant applies).
+    /// `config`. `variant` is the variant label selected at add time
+    /// (`"default"` when no variant applies).
     pub fn new<P: Into<PathBuf>>(
         config: NodeConfig,
         config_path: P,
-        variant_name: Option<String>,
+        variant: impl Into<String>,
     ) -> Self {
         Self {
             config,
@@ -298,7 +298,7 @@ impl NodeEntity {
             },
             generation: next_entity_generation(),
             pending_working_dir: None,
-            variant_name,
+            variant: variant.into(),
         }
     }
 
@@ -352,10 +352,11 @@ impl NodeEntity {
         &self.stage
     }
 
-    /// Returns the variant label captured at `node add` time, if any. `None`
-    /// for the synthetic root entity and for nodes added without a variant.
-    pub fn variant_name(&self) -> Option<&str> {
-        self.variant_name.as_deref()
+    /// Returns the variant label captured at `node add` time. Always
+    /// populated — the synthetic root entity and nodes added without an
+    /// explicit variant return [`DEFAULT_VARIANT_NAME`] (`"default"`).
+    pub fn variant(&self) -> &str {
+        &self.variant
     }
 
     /// Returns the `peppy.json5` path that registered this entity. Always
@@ -404,7 +405,15 @@ impl NodeEntity {
     /// calling `NodeStack::remove_config`.
     pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
-        let (node_name, node_tag, config_path, container_opt, build_cmd, build_generation) = {
+        let (
+            node_name,
+            node_tag,
+            node_variant,
+            config_path,
+            container_opt,
+            build_cmd,
+            build_generation,
+        ) = {
             let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_buildable() {
                 return Err(Error::InvalidStageTransition {
@@ -421,6 +430,7 @@ impl NodeEntity {
             let snapshot = (
                 guard.config.manifest.name.as_str().to_owned(),
                 guard.config.manifest.tag.clone(),
+                guard.variant().to_owned(),
                 config_path.clone(),
                 guard.config.execution.container.clone(),
                 guard.config.execution.build_cmd.clone(),
@@ -453,7 +463,6 @@ impl NodeEntity {
 
                 build_container_image(ContainerBuildInputs {
                     working_dir: ctx.working_dir,
-                    node_name: &node_name,
                     node_tag: &node_tag,
                     def_file: &container.def_file,
                     apptainer_build_extra_args,
@@ -498,12 +507,14 @@ impl NodeEntity {
                 let peppy_dirs = ctx.peppy_dirs.clone();
                 let node_name_pub = node_name.clone();
                 let node_tag_pub = node_tag.clone();
+                let node_variant_pub = node_variant.clone();
                 let join_res = tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
                     if is_container {
                         move_sif_to_storage(
                             &working_dir,
                             &node_name_pub,
                             &node_tag_pub,
+                            &node_variant_pub,
                             &peppy_dirs,
                         )
                     } else {
@@ -511,6 +522,7 @@ impl NodeEntity {
                             &working_dir,
                             &node_name_pub,
                             &node_tag_pub,
+                            &node_variant_pub,
                             &peppy_dirs,
                         )
                     }
@@ -681,12 +693,26 @@ impl NodeEntity {
         // ---- Phase 2/3/4: I/O without any entity lock ----
         let instance_id_str = ctx.instance_id.as_str();
         let is_container = node_config.execution.container.is_some();
+        let entity_variant = handle.read().variant().to_owned();
 
         // ---- Phase 2: prepare instance dir ----
         let instance_dir = if is_container {
-            create_instance_dir(instance_id_str, ctx.peppy_dirs)
+            create_instance_dir(
+                &node_name,
+                &node_tag,
+                &entity_variant,
+                instance_id_str,
+                ctx.peppy_dirs,
+            )
         } else {
-            extract_node_archive(&artifact_path, instance_id_str, ctx.peppy_dirs)
+            extract_node_archive(
+                &artifact_path,
+                &node_name,
+                &node_tag,
+                &entity_variant,
+                instance_id_str,
+                ctx.peppy_dirs,
+            )
         }
         .map_err(|reason| {
             Self::remove_starting_instance(handle, ctx.instance_id);
@@ -978,7 +1004,7 @@ impl NodeEntity {
             },
             generation: next_entity_generation(),
             pending_working_dir: None,
-            variant_name: None,
+            variant: DEFAULT_VARIANT_NAME.to_owned(),
         }
     }
 
@@ -1002,7 +1028,7 @@ impl NodeEntity {
         config_path: PathBuf,
         artifact_path: Option<PathBuf>,
         instances: Vec<TrackedNodeInstance>,
-        variant_name: Option<String>,
+        variant: impl Into<String>,
     ) -> Self {
         let stage = match (artifact_path, instances.is_empty()) {
             (None, true) => NodeStage::Added { config_path },
@@ -1021,7 +1047,7 @@ impl NodeEntity {
             stage,
             generation: next_entity_generation(),
             pending_working_dir: None,
-            variant_name,
+            variant: variant.into(),
         }
     }
 
@@ -1133,4 +1159,5 @@ impl TrackedNodeInstance {
 pub struct DependencySpec {
     pub node_name: String,
     pub node_tag: String,
+    pub node_variant: String,
 }

@@ -119,27 +119,29 @@ async fn handle_node_info_request_inner(
     let request = NodeInfoRequest::decode(payload.as_ref()).map_err(|e| format!("{}", e))?;
 
     debug!(
-        "Received `node_info` request from {sender_instance_id} for {}:{}",
-        request.node_name, request.node_tag
+        "Received `node_info` request from {sender_instance_id} for {}",
+        config::node::render_node_id(&request.node_name, &request.node_tag, &request.node_variant)
     );
 
-    // A missing `(name, tag)` is a *successful* negative lookup, not a
-    // malformed request. Encode it as `NodeInfoResponse::NotInStack` so
-    // callers (e.g. the `peppy node add` preflight) can handle it without
-    // provoking the generic service-handler error log. Malformed requests
-    // (decode failures above) still route to `InfoError::Invalid` and are
-    // the only legitimate caller-fault path through this handler.
-    let Some(entity) = node_stack.find(&request.node_name, &request.node_tag) else {
+    // A missing identity is a *successful* negative lookup, not a malformed
+    // request. Encode it as `NodeInfoResponse::NotInStack` so callers (e.g.
+    // the `peppy node add` preflight) can handle it without provoking the
+    // generic service-handler error log. Malformed requests (decode failures
+    // above) still route to `InfoError::Invalid` and are the only legitimate
+    // caller-fault path through this handler.
+    let Some(entity) =
+        node_stack.find(&request.node_name, &request.node_tag, &request.node_variant)
+    else {
         return NodeInfoResponse::NotInStack
             .encode()
             .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)));
     };
 
-    let (node_config, stage, instances, run_log_paths, variant_name) = {
+    let (node_config, stage, instances, run_log_paths, variant) = {
         let guard = entity.read();
         let stage = guard.stage().to_serialized();
         let node_config = guard.config().clone();
-        let variant_name = guard.variant_name().map(str::to_owned);
+        let variant = guard.variant().to_owned();
         let tracked = guard.instances();
         let run_log_dir = peppy_dirs.logs_dir_run();
         let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
@@ -152,10 +154,11 @@ async fn handle_node_info_request_inner(
             });
             run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
         }
-        (node_config, stage, instances, run_log_paths, variant_name)
+        (node_config, stage, instances, run_log_paths, variant)
     };
 
-    let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
+    let add_log_path =
+        node_stack.add_log_path(&request.node_name, &request.node_tag, &request.node_variant);
 
     let config_json = config::json5_pretty::to_string_pretty(&node_config)
         .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
@@ -168,7 +171,7 @@ async fn handle_node_info_request_inner(
         instances,
         add_log_path,
         run_log_paths,
-        variant_name,
+        variant,
     }))
     .encode()
     .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))
@@ -235,6 +238,9 @@ async fn resolve_node_config_with_source_path(
             parse_node_config_from_http_with_path(url, sha256, peppy_dirs).await
         }
         NodeSource::RepoNode { name, tag, .. } => {
+            // Variant routing happens at the goal level (in add_batch); for
+            // raw config inspection we just resolve the underlying source
+            // entry, which is keyed by `(name, tag)` in the repo cache.
             let resolved = repo_cache::resolve_repo_node_source(&name, &tag, peppy_dirs)?;
             // The packages cache only stores Fs/Git/Http entries, so the
             // resolved source should never be another RepoNode. Guard against

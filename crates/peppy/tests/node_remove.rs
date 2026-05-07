@@ -113,7 +113,11 @@ fn node_remove_command_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Remove {
-            node_ref: (node_name.to_string(), node_tag.to_string()),
+            node_ref: (
+                node_name.to_string(),
+                node_tag.to_string(),
+                "default".to_string(),
+            ),
             stop_instances: false,
             force: false,
         },
@@ -258,7 +262,11 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
     NodeCommand {
         command: NodeCommands::Remove {
-            node_ref: (node_name.to_string(), node_tag.to_string()),
+            node_ref: (
+                node_name.to_string(),
+                node_tag.to_string(),
+                "default".to_string(),
+            ),
             stop_instances: false,
             force: true,
         },
@@ -403,7 +411,11 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     NodeCommand {
         command: NodeCommands::Remove {
-            node_ref: (node_name.to_string(), node_tag.to_string()),
+            node_ref: (
+                node_name.to_string(),
+                node_tag.to_string(),
+                "default".to_string(),
+            ),
             stop_instances: true,
             force: false,
         },

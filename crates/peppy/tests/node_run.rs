@@ -151,6 +151,7 @@ async fn node_run_command_succeeds() {
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
+            variant: "default".to_string(),
         },
     }
     .execute(&node_ctx)
@@ -378,6 +379,7 @@ async fn node_run_command_with_args_succeeds() {
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
+            variant: "default".to_string(),
         },
     }
     .execute(&node_ctx)
@@ -576,6 +578,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
+            variant: "default".to_string(),
         },
     }
     .execute(&node_ctx)
@@ -704,7 +707,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     // Pre-state: the node is in the stack and is in the `Added` stage
     // (not yet built).
     let info_response = poll_node_info(
-        &NodeInfoRequest::new(node_name, "0.1.0"),
+        &NodeInfoRequest::new(node_name, "0.1.0", "default".to_string()),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -749,6 +752,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
             idle_timeout: 60,
             max_timeout: 3600,
             build: true,
+            variant: "default".to_string(),
         },
     }
     .execute(&node_ctx)
@@ -866,7 +870,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
 
     // Sanity check: node is in `Ready` stage before we run `-b`.
     let info_response = poll_node_info(
-        &NodeInfoRequest::new(node_name, "0.1.0"),
+        &NodeInfoRequest::new(node_name, "0.1.0", "default".to_string()),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -911,6 +915,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
             idle_timeout: 60,
             max_timeout: 3600,
             build: true,
+            variant: "default".to_string(),
         },
     }
     .execute(&node_ctx)

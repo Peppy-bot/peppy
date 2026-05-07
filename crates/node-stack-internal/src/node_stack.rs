@@ -11,7 +11,7 @@ pub use entity::{
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
 
 use crate::error::{Error, Result};
-use config::node::{Name, NodeConfig};
+use config::node::{Name, NodeConfig, NodeKey, render_node_id};
 use core_node_api::{InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph};
 use names_generator2::get_random;
 use parking_lot::RwLock;
@@ -30,25 +30,11 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 /// reflected in subsequent stack queries without any take-and-replace dance.
 pub type EntityHandle = Arc<RwLock<NodeEntity>>;
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct NodeKey {
-    name: String,
-    tag: String,
-}
-
-impl NodeKey {
-    fn new(name: &str, tag: &str) -> Self {
-        Self {
-            name: name.trim().to_owned(),
-            tag: tag.trim().to_owned(),
-        }
-    }
-}
-
 fn key_from_entity(entity: &NodeEntity) -> NodeKey {
     NodeKey::new(
-        entity.config().manifest.name.as_str(),
-        &entity.config().manifest.tag,
+        entity.config().manifest.name.as_str().trim(),
+        entity.config().manifest.tag.trim(),
+        entity.variant(),
     )
 }
 
@@ -58,6 +44,7 @@ fn key_from_entity(entity: &NodeEntity) -> NodeKey {
 pub struct RestoreTarget<'a> {
     pub name: &'a str,
     pub tag: &'a str,
+    pub variant: &'a str,
     pub expected_handle: &'a Arc<RwLock<NodeEntity>>,
     pub expected_generation: u64,
 }
@@ -70,14 +57,18 @@ pub struct EntitySnapshot {
     pub config: NodeConfig,
     pub config_path: PathBuf,
     pub artifact_path: Option<PathBuf>,
-    pub variant_name: Option<String>,
+    pub variant: String,
 }
 
 fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
     collect_dependency_specs(node)
         .into_iter()
-        .map(|spec| NodeKey::new(&spec.node_name, &spec.node_tag))
+        .map(|spec| NodeKey::new(spec.node_name, spec.node_tag, spec.node_variant))
         .collect()
+}
+
+fn trimmed_key(name: &str, tag: &str, variant: &str) -> NodeKey {
+    NodeKey::new(name.trim(), tag.trim(), variant.trim())
 }
 
 struct NodeStackInner {
@@ -137,8 +128,9 @@ impl NodeStackInner {
             &entity.config().interfaces,
             entity.config().manifest.name.as_str(),
             &entity.config().manifest.tag,
-            |name, tag| {
-                let key = NodeKey::new(name, tag);
+            entity.variant(),
+            |name, tag, variant| {
+                let key = trimmed_key(name, tag, variant);
                 self.key_to_index
                     .get(&key)
                     .and_then(|&idx| self.graph.node_weight(idx))
@@ -347,9 +339,13 @@ impl NodeStackInner {
         config: NodeConfig,
         allow_missing_dependencies: bool,
         config_path: P,
-        variant_name: Option<String>,
+        variant: String,
     ) -> Result<Option<EntitySnapshot>> {
-        let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
+        let key = trimmed_key(
+            config.manifest.name.as_str(),
+            &config.manifest.tag,
+            &variant,
+        );
         let config_path = config_path.into();
 
         // The root node cannot be modified
@@ -410,7 +406,7 @@ impl NodeStackInner {
 
                 if (interfaces_changed || dependencies_changed) && !allow_missing_dependencies {
                     let candidate =
-                        NodeEntity::new(config.clone(), config_path.clone(), variant_name.clone());
+                        NodeEntity::new(config.clone(), config_path.clone(), variant.clone());
                     self.validate_dependencies(&candidate)?;
                 }
 
@@ -424,13 +420,13 @@ impl NodeStackInner {
                     config: guard.config().clone(),
                     config_path: guard.config_path().to_path_buf(),
                     artifact_path: guard.artifact_path().map(|p| p.to_path_buf()),
-                    variant_name: guard.variant_name().map(str::to_owned),
+                    variant: guard.variant().to_owned(),
                 };
 
                 // Replace the entity in-place under the still-held write
                 // lock. The same `Arc` handle is preserved so any external
                 // readers see the new state.
-                *guard = NodeEntity::new(config, config_path, variant_name);
+                *guard = NodeEntity::new(config, config_path, variant);
 
                 (previous_snapshot, interfaces_changed, dependencies_changed)
             };
@@ -442,7 +438,7 @@ impl NodeStackInner {
             Ok(Some(previous_snapshot))
         } else {
             // Entity doesn't exist, create new one in the Added stage.
-            let entity = NodeEntity::new(config, config_path, variant_name);
+            let entity = NodeEntity::new(config, config_path, variant);
             self.insert_entity(entity, !allow_missing_dependencies)?;
             Ok(None)
         }
@@ -478,12 +474,12 @@ impl NodeStackInner {
                 let guard = handle.read();
                 let name = guard.config().manifest.name.as_str();
                 let tag = &guard.config().manifest.tag;
+                let variant = guard.variant();
                 let stage = guard.stage().name();
                 let instance_count = guard.instances().len();
                 format!(
-                    "label=\"{}:{}\\n[{}] ({} instance{})\"",
-                    name,
-                    tag,
+                    "label=\"{}\\n[{}] ({} instance{})\"",
+                    render_node_id(name, tag, variant),
                     stage,
                     instance_count,
                     if instance_count == 1 { "" } else { "s" }
@@ -531,10 +527,10 @@ impl NodeStackInner {
 #[derive(Clone)]
 pub struct NodeStack {
     shared: Arc<RwLock<NodeStackInner>>,
-    /// Most-recent add log path per `(node_name, node_tag)`. This is a
-    /// daemon-only cache (not persisted) so it lives here rather than on
+    /// Most-recent add log path per `(node_name, node_tag, variant)`. This is
+    /// a daemon-only cache (not persisted) so it lives here rather than on
     /// `NodeEntity`, which is a pure lifecycle/config model.
-    add_log_paths: Arc<parking_lot::Mutex<HashMap<(String, String), PathBuf>>>,
+    add_log_paths: Arc<parking_lot::Mutex<HashMap<(String, String, String), PathBuf>>>,
 }
 
 impl NodeStack {
@@ -570,19 +566,28 @@ impl NodeStack {
         }
     }
 
-    /// Records the add-log path for a `(name, tag)` key. Called by the
-    /// add/launch handlers after creating the log file.
-    pub fn set_add_log_path(&self, name: &str, tag: &str, path: PathBuf) {
-        self.add_log_paths
-            .lock()
-            .insert((name.trim().to_owned(), tag.trim().to_owned()), path);
+    /// Records the add-log path for a `(name, tag, variant)` key. Called by
+    /// the add/launch handlers after creating the log file.
+    pub fn set_add_log_path(&self, name: &str, tag: &str, variant: &str, path: PathBuf) {
+        self.add_log_paths.lock().insert(
+            (
+                name.trim().to_owned(),
+                tag.trim().to_owned(),
+                variant.trim().to_owned(),
+            ),
+            path,
+        );
     }
 
-    /// Returns the most-recent add-log path for `(name, tag)`, if any.
-    pub fn add_log_path(&self, name: &str, tag: &str) -> Option<PathBuf> {
+    /// Returns the most-recent add-log path for `(name, tag, variant)`, if any.
+    pub fn add_log_path(&self, name: &str, tag: &str, variant: &str) -> Option<PathBuf> {
         self.add_log_paths
             .lock()
-            .get(&(name.trim().to_owned(), tag.trim().to_owned()))
+            .get(&(
+                name.trim().to_owned(),
+                tag.trim().to_owned(),
+                variant.trim().to_owned(),
+            ))
             .cloned()
     }
 
@@ -601,18 +606,18 @@ impl NodeStack {
         guard.root()
     }
 
-    pub fn contains(&self, name: &str, tag: &str) -> bool {
+    pub fn contains(&self, name: &str, tag: &str, variant: &str) -> bool {
         let guard = self.shared.read();
-        guard.contains(&NodeKey::new(name, tag))
+        guard.contains(&trimmed_key(name, tag, variant))
     }
 
-    /// Returns a shared handle to the entity with the given name and tag, if
-    /// any. Callers can read or write through the returned `Arc<RwLock<...>>`
-    /// to inspect the entity or to drive lifecycle transitions
+    /// Returns a shared handle to the entity with the given identity, if any.
+    /// Callers can read or write through the returned `Arc<RwLock<...>>` to
+    /// inspect the entity or to drive lifecycle transitions
     /// (`build` / `start_instance` / `stop_instance`).
-    pub fn find(&self, name: &str, tag: &str) -> Option<EntityHandle> {
+    pub fn find(&self, name: &str, tag: &str, variant: &str) -> Option<EntityHandle> {
         let guard = self.shared.read();
-        guard.find(&NodeKey::new(name, tag))
+        guard.find(&trimmed_key(name, tag, variant))
     }
 
     /// Finds a node instance by its instance_id across all entities in the stack.
@@ -645,27 +650,13 @@ impl NodeStack {
         config: NodeConfig,
         allow_missing_dependencies: bool,
         config_path: P,
-    ) -> Result<()> {
-        self.push_config_with_variant(config, allow_missing_dependencies, config_path, None)
-    }
-
-    /// Like [`Self::push_config`] but also records the variant label that
-    /// was selected at `node add` time. The variant is stored as
-    /// first-class state on the resulting [`NodeEntity`] and exposed via
-    /// [`NodeEntity::variant_name`]. Passing `None` is equivalent to
-    /// [`Self::push_config`].
-    pub fn push_config_with_variant<P: Into<PathBuf>>(
-        &self,
-        config: NodeConfig,
-        allow_missing_dependencies: bool,
-        config_path: P,
-        variant_name: Option<String>,
+        variant: impl Into<String>,
     ) -> Result<()> {
         self.push_config_capturing_previous(
             config,
             allow_missing_dependencies,
             config_path,
-            variant_name,
+            variant,
         )
         .map(|_| ())
     }
@@ -682,14 +673,14 @@ impl NodeStack {
         config: NodeConfig,
         allow_missing_dependencies: bool,
         config_path: P,
-        variant_name: Option<String>,
+        variant: impl Into<String>,
     ) -> Result<Option<EntitySnapshot>> {
         let mut guard = self.shared.write();
         guard.push_config_impl(
             config,
             allow_missing_dependencies,
             config_path,
-            variant_name,
+            variant.into(),
         )
     }
 
@@ -698,14 +689,14 @@ impl NodeStack {
         guard.entities_snapshot()
     }
 
-    pub fn dependencies_of(&self, name: &str, tag: &str) -> Vec<EntityHandle> {
+    pub fn dependencies_of(&self, name: &str, tag: &str, variant: &str) -> Vec<EntityHandle> {
         let guard = self.shared.read();
-        guard.dependencies_of(&NodeKey::new(name, tag))
+        guard.dependencies_of(&trimmed_key(name, tag, variant))
     }
 
-    pub fn dependents_of(&self, name: &str, tag: &str) -> Vec<EntityHandle> {
+    pub fn dependents_of(&self, name: &str, tag: &str, variant: &str) -> Vec<EntityHandle> {
         let guard = self.shared.read();
-        guard.dependents_of(&NodeKey::new(name, tag))
+        guard.dependents_of(&trimmed_key(name, tag, variant))
     }
 
     /// Removes a node configuration if it has no instances.
@@ -713,9 +704,9 @@ impl NodeStack {
     /// Returns Ok(true) if the config was found and removed, Ok(false) if not found.
     /// Returns Err(CannotModifyRootNode) if trying to remove the root node.
     /// Returns Err(CannotRemoveNodeWithInstances) if the node still has instances.
-    pub fn remove_config(&self, name: &str, tag: &str) -> Result<bool> {
+    pub fn remove_config(&self, name: &str, tag: &str, variant: &str) -> Result<bool> {
         let mut guard = self.shared.write();
-        let key = NodeKey::new(name, tag);
+        let key = trimmed_key(name, tag, variant);
 
         if guard.is_root(&key) {
             return Err(Error::CannotModifyRootNode);
@@ -742,9 +733,11 @@ impl NodeStack {
             });
         }
         guard.remove_entity(&key);
-        self.add_log_paths
-            .lock()
-            .remove(&(name.trim().to_owned(), tag.trim().to_owned()));
+        self.add_log_paths.lock().remove(&(
+            name.trim().to_owned(),
+            tag.trim().to_owned(),
+            variant.trim().to_owned(),
+        ));
         // Keep `entity_guard` alive until *after* the unlink so an outside
         // thread holding a clone of the handle still cannot mutate the
         // entity between the check and the removal.
@@ -768,11 +761,12 @@ impl NodeStack {
         &self,
         name: &str,
         tag: &str,
+        variant: &str,
         expected_handle: &Arc<RwLock<NodeEntity>>,
         expected_generation: u64,
     ) -> bool {
         let mut guard = self.shared.write();
-        let key = NodeKey::new(name, tag);
+        let key = trimmed_key(name, tag, variant);
 
         if guard.is_root(&key) {
             return false;
@@ -795,9 +789,11 @@ impl NodeStack {
         }
 
         guard.remove_entity(&key);
-        self.add_log_paths
-            .lock()
-            .remove(&(name.trim().to_owned(), tag.trim().to_owned()));
+        self.add_log_paths.lock().remove(&(
+            name.trim().to_owned(),
+            tag.trim().to_owned(),
+            variant.trim().to_owned(),
+        ));
         true
     }
 
@@ -824,7 +820,7 @@ impl NodeStack {
         snapshot: EntitySnapshot,
     ) -> bool {
         let guard = self.shared.write();
-        let key = NodeKey::new(target.name, target.tag);
+        let key = trimmed_key(target.name, target.tag, target.variant);
 
         if guard.is_root(&key) {
             return false;
@@ -858,7 +854,7 @@ impl NodeStack {
             snapshot.config_path,
             snapshot.artifact_path,
             Vec::new(),
-            snapshot.variant_name,
+            snapshot.variant,
         );
         *current.write() = restored;
         true
@@ -908,7 +904,7 @@ impl NodeStack {
             let config_path = source_guard.config_path().to_path_buf();
             let artifact_path = source_guard.artifact_path().map(|p| p.to_path_buf());
             let instances: Vec<TrackedNodeInstance> = source_guard.instances().to_vec();
-            let variant_name = source_guard.variant_name().map(str::to_owned);
+            let variant = source_guard.variant().to_owned();
 
             // Reject transient lifecycle state from the source: snapshot
             // replay only makes sense for entities that are quiescent (no
@@ -951,14 +947,10 @@ impl NodeStack {
             // Materialize the entity directly in the appropriate stage. The
             // `from_snapshot` constructor bypasses the lifecycle because the
             // source artifact already exists on disk.
-            let entity = NodeEntity::from_snapshot(
-                config,
-                config_path,
-                artifact_path,
-                instances,
-                variant_name,
-            );
-            prepared.push((format!("{}:{}", name, tag), entity));
+            let label = render_node_id(&name, &tag, &variant);
+            let entity =
+                NodeEntity::from_snapshot(config, config_path, artifact_path, instances, variant);
+            prepared.push((label, entity));
         }
 
         // Phase 2: only after *every* source entity has validated, clear the

@@ -38,29 +38,9 @@ pub struct TimeoutConfig {
     pub max_secs: u64,
 }
 
-/// Parses a node_name:tag argument string into a tuple
-fn parse_node_ref(s: &str) -> Result<(String, String), String> {
-    let pos = s.find(':').ok_or_else(|| {
-        format!(
-            "invalid node reference '{}': expected node_name:tag format",
-            s
-        )
-    })?;
-    let node_name = s[..pos].trim().to_string();
-    let tag = s[pos + 1..].trim().to_string();
-    if node_name.is_empty() {
-        return Err(format!(
-            "invalid node reference '{}': node_name cannot be empty",
-            s
-        ));
-    }
-    if tag.is_empty() {
-        return Err(format!(
-            "invalid node reference '{}': tag cannot be empty",
-            s
-        ));
-    }
-    Ok((node_name, tag))
+/// Parses a `name:tag` (variant=default) or `name:tag@variant` reference.
+fn parse_node_ref(s: &str) -> Result<(String, String, String), String> {
+    config::node::parse_node_ref(s).map_err(|e| e.to_string())
 }
 
 /// Parses a key=value argument string into a tuple
@@ -168,9 +148,9 @@ pub enum NodeCommands {
     },
     /// Build a node previously added to the node stack
     Build {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference: `name:tag` or `name:tag@variant`.
         #[arg(value_parser = parse_node_ref)]
-        node_ref: (String, String),
+        node_ref: (String, String, String),
         /// Idle timeout in seconds — resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -198,15 +178,18 @@ pub enum NodeCommands {
     /// Usage: `peppy node run <node_name>:<tag>` or `peppy node run --node-name <name> --tag <tag>`
     #[command(group(ArgGroup::new("node_source").required(true).args(["node_ref", "node_name"])))]
     Run {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference: `name:tag` or `name:tag@variant`.
         #[arg(value_parser = parse_node_ref)]
-        node_ref: Option<(String, String)>,
+        node_ref: Option<(String, String, String)>,
         /// Name of the node to spawn
         #[arg(long, requires = "tag")]
         node_name: Option<String>, // Finds the `NodeConfig` in the node stack that matches this name
         /// Tag of the node
         #[arg(long, requires = "node_name")]
         tag: Option<String>,
+        /// Variant identity for the `--node-name` / `--tag` form.
+        #[arg(long, default_value = config::node::DEFAULT_VARIANT_NAME)]
+        variant: String,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
         /// These are passed to the node via PEPPY_RUNTIME_CONFIG
         #[arg(value_parser = parse_key_value_arg)]
@@ -245,9 +228,9 @@ pub enum NodeCommands {
     },
     /// Remove a node from the node stack
     Remove {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference: `name:tag` or `name:tag@variant`.
         #[arg(value_parser = parse_node_ref)]
-        node_ref: (String, String),
+        node_ref: (String, String, String),
         /// When set, stop all instances running on this node before removing the node itself. Without this flag, the command prompts if instances are still running
         #[arg(long)]
         stop_instances: bool,
@@ -262,9 +245,9 @@ pub enum NodeCommands {
     /// with an error — inspecting sources on disk is the job of `node add`,
     /// not `node info`.
     Info {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference: `name:tag` or `name:tag@variant`.
         #[arg(value_parser = parse_node_ref)]
-        node_ref: (String, String),
+        node_ref: (String, String, String),
     },
 }
 
@@ -333,7 +316,7 @@ impl Command for NodeCommand {
                 )
             }
             NodeCommands::Build {
-                node_ref: (node_name, node_tag),
+                node_ref: (node_name, node_tag, node_variant),
                 idle_timeout,
                 max_timeout,
                 force,
@@ -347,6 +330,7 @@ impl Command for NodeCommand {
                     builder::BuildNodeParams {
                         node_name,
                         node_tag,
+                        node_variant,
                         timeouts,
                         force,
                     },
@@ -363,21 +347,40 @@ impl Command for NodeCommand {
                 node_ref,
                 node_name,
                 tag,
+                variant,
                 args,
                 instance_id,
                 idle_timeout,
                 max_timeout,
                 build,
             } => {
-                let (node_name, tag) = node_ref
-                    .or_else(|| node_name.zip(tag))
-                    .expect("either node_ref or node_name+tag must be provided");
-                info!("Running node {}:{}...", node_name, tag);
+                let (node_name, tag, node_variant) = match node_ref {
+                    Some(triple) => triple,
+                    None => {
+                        let (n, t) = node_name
+                            .zip(tag)
+                            .expect("either node_ref or node_name+tag must be provided");
+                        (n, t, variant)
+                    }
+                };
+                info!(
+                    "Running node {}...",
+                    config::node::render_node_id(&node_name, &tag, &node_variant)
+                );
                 let timeouts = TimeoutConfig {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
                 };
-                run::run_node(ctx, node_name, tag, args, instance_id, timeouts, build)
+                run::run_node(
+                    ctx,
+                    node_name,
+                    tag,
+                    node_variant,
+                    args,
+                    instance_id,
+                    timeouts,
+                    build,
+                )
             }
             NodeCommands::RuntimeConfig {
                 node_name,
@@ -389,18 +392,24 @@ impl Command for NodeCommand {
                 stop::stop_node(ctx, instance_id)
             }
             NodeCommands::Remove {
-                node_ref: (node_name, tag),
+                node_ref: (node_name, tag, node_variant),
                 stop_instances,
                 force,
             } => {
-                info!("Remove node {}:{}...", node_name, tag);
-                remove::remove_node(ctx, node_name, tag, stop_instances, force)
+                info!(
+                    "Remove node {}...",
+                    config::node::render_node_id(&node_name, &tag, &node_variant)
+                );
+                remove::remove_node(ctx, node_name, tag, node_variant, stop_instances, force)
             }
             NodeCommands::Info {
-                node_ref: (node_name, node_tag),
+                node_ref: (node_name, node_tag, node_variant),
             } => {
-                info!("Getting node info for {}:{}...", node_name, node_tag);
-                info::node_info(ctx, node_name, node_tag)
+                info!(
+                    "Getting node info for {}...",
+                    config::node::render_node_id(&node_name, &node_tag, &node_variant)
+                );
+                info::node_info(ctx, node_name, node_tag, node_variant)
             }
         }
     }

@@ -91,6 +91,122 @@ where
 /// Name reserved for the default variant.
 pub const DEFAULT_VARIANT_NAME: &str = "default";
 
+/// `serde(default = ...)` helper for fields that default to the `"default"` variant.
+pub fn default_variant_name() -> String {
+    DEFAULT_VARIANT_NAME.to_owned()
+}
+
+/// Triple identifying a single node in a stack: `(name, tag, variant)`.
+///
+/// The variant field is always present — bare `name:tag` references resolve to
+/// `variant == "default"`. Display via [`NodeKey::label`] elides the
+/// `@default` suffix as a display nicety; the on-disk subpath via
+/// [`NodeKey::artifact_subpath`] never elides.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NodeKey {
+    pub name: String,
+    pub tag: String,
+    pub variant: String,
+}
+
+impl NodeKey {
+    pub fn new(
+        name: impl Into<String>,
+        tag: impl Into<String>,
+        variant: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            tag: tag.into(),
+            variant: variant.into(),
+        }
+    }
+
+    /// Synthetic-default constructor for callers without explicit variant context.
+    pub fn with_default_variant(name: impl Into<String>, tag: impl Into<String>) -> Self {
+        Self::new(name, tag, DEFAULT_VARIANT_NAME)
+    }
+
+    /// Canonical display string: `name:tag` when variant is `"default"`,
+    /// otherwise `name:tag@variant`.
+    pub fn label(&self) -> String {
+        render_node_id(&self.name, &self.tag, &self.variant)
+    }
+
+    /// On-disk subpath: `<name>/<tag>/<variant>`. Never elides — every variant,
+    /// including `"default"`, gets its own directory tree so artifacts of
+    /// different variants cannot collide.
+    pub fn artifact_subpath(&self) -> std::path::PathBuf {
+        let mut p = std::path::PathBuf::new();
+        p.push(&self.name);
+        p.push(&self.tag);
+        p.push(&self.variant);
+        p
+    }
+}
+
+/// Render a node identity as `name:tag` (when variant is `"default"`) or
+/// `name:tag@variant` otherwise.
+pub fn render_node_id(name: &str, tag: &str, variant: &str) -> String {
+    if variant == DEFAULT_VARIANT_NAME {
+        format!("{name}:{tag}")
+    } else {
+        format!("{name}:{tag}@{variant}")
+    }
+}
+
+/// Parse a node reference string. Accepts:
+/// - `name:tag` → variant defaults to `"default"`
+/// - `name:tag@variant`
+///
+/// Rejects empty parts, multiple `@`, multiple `:`, embedded whitespace, and
+/// references that don't contain a `:`.
+pub fn parse_node_ref(s: &str) -> Result<(String, String, String), ParsingError> {
+    let invalid = |reason: &str| ParsingError::InvalidNodeRef(s.to_owned(), reason.to_owned());
+
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err(invalid("empty"));
+    }
+
+    let (left, variant) = match trimmed.split_once('@') {
+        Some((left, variant)) => {
+            if variant.is_empty() {
+                return Err(invalid("variant after `@` is empty"));
+            }
+            if variant.contains('@') {
+                return Err(invalid("variant must not contain `@`"));
+            }
+            if variant.contains(':') {
+                return Err(invalid("variant must not contain `:`"));
+            }
+            if variant.chars().any(char::is_whitespace) {
+                return Err(invalid("variant must not contain whitespace"));
+            }
+            (left, variant.to_owned())
+        }
+        None => (trimmed, DEFAULT_VARIANT_NAME.to_owned()),
+    };
+
+    let Some((name, tag)) = left.split_once(':') else {
+        return Err(invalid("expected `name:tag` (with optional `@variant`)"));
+    };
+    if name.is_empty() {
+        return Err(invalid("name is empty"));
+    }
+    if tag.is_empty() {
+        return Err(invalid("tag is empty"));
+    }
+    if name.contains(':') || tag.contains(':') {
+        return Err(invalid("name and tag must not contain `:`"));
+    }
+    if name.chars().any(char::is_whitespace) || tag.chars().any(char::is_whitespace) {
+        return Err(invalid("name and tag must not contain whitespace"));
+    }
+
+    Ok((name.to_owned(), tag.to_owned(), variant))
+}
+
 impl RawNodeConfig {
     /// Returns `true` if the manifest contains a variant named `"default"`.
     pub(crate) fn has_default_variant(&self) -> bool {
@@ -806,6 +922,8 @@ fn default_action_service_qos_profile() -> QoSProfile {
 pub struct NodeDependency {
     pub name: Name,
     pub tag: String,
+    #[serde(default = "default_variant_name")]
+    pub variant: String,
     pub local_id: String,
 }
 
@@ -2084,5 +2202,106 @@ mod tests {
         let consumes = actions_a.consumes.unwrap();
         assert_eq!(consumes[0].local_node_id, "node_a");
         assert_eq!(consumes[1].local_node_id, "node_b");
+    }
+
+    #[test]
+    fn render_node_id_elides_default_variant() {
+        assert_eq!(render_node_id("foo", "bar", "default"), "foo:bar");
+        assert_eq!(
+            render_node_id("foo", "bar", DEFAULT_VARIANT_NAME),
+            "foo:bar"
+        );
+    }
+
+    #[test]
+    fn render_node_id_includes_non_default_variant() {
+        assert_eq!(render_node_id("foo", "bar", "v1"), "foo:bar@v1");
+        assert_eq!(
+            render_node_id("depth_camera", "0.1.0", "realsense_d435"),
+            "depth_camera:0.1.0@realsense_d435"
+        );
+    }
+
+    #[test]
+    fn parse_node_ref_bare_defaults_to_default_variant() {
+        let (n, t, v) = parse_node_ref("foo:bar").unwrap();
+        assert_eq!(n, "foo");
+        assert_eq!(t, "bar");
+        assert_eq!(v, DEFAULT_VARIANT_NAME);
+    }
+
+    #[test]
+    fn parse_node_ref_with_variant() {
+        let (n, t, v) = parse_node_ref("foo:bar@v1").unwrap();
+        assert_eq!(n, "foo");
+        assert_eq!(t, "bar");
+        assert_eq!(v, "v1");
+    }
+
+    #[test]
+    fn parse_node_ref_rejects_malformed_inputs() {
+        for bad in [
+            "",                 // empty
+            "   ",              // whitespace only
+            "foo",              // missing colon
+            ":bar",             // empty name
+            "foo:",             // empty tag
+            "foo:bar@",         // empty variant
+            "foo:bar@v1@v2",    // multiple `@`
+            "foo:tag:extra@v1", // multiple `:` before `@`
+            "foo bar:tag",      // whitespace in name
+            "foo:tag@v 1",      // whitespace in variant
+            "foo:tag@v:1",      // `:` in variant
+        ] {
+            assert!(
+                parse_node_ref(bad).is_err(),
+                "expected error for input {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_node_ref_round_trips_render_node_id() {
+        for variant in ["default", "v1", "realsense_d435"] {
+            let s = render_node_id("foo", "bar", variant);
+            let (n, t, v) = parse_node_ref(&s).unwrap();
+            assert_eq!(n, "foo");
+            assert_eq!(t, "bar");
+            assert_eq!(v, variant);
+        }
+    }
+
+    #[test]
+    fn node_key_label_matches_render_node_id() {
+        let k = NodeKey::new("foo", "bar", "default");
+        assert_eq!(k.label(), "foo:bar");
+        let k = NodeKey::new("foo", "bar", "v1");
+        assert_eq!(k.label(), "foo:bar@v1");
+    }
+
+    #[test]
+    fn node_key_artifact_subpath_is_three_components() {
+        let k = NodeKey::new("foo", "bar", "v1");
+        let p = k.artifact_subpath();
+        let parts: Vec<_> = p.components().collect();
+        assert_eq!(parts.len(), 3);
+        // Default-variant subpath still has three components (no elision).
+        let k = NodeKey::new("foo", "bar", "default");
+        let p = k.artifact_subpath();
+        assert_eq!(p.components().count(), 3);
+    }
+
+    #[test]
+    fn node_dependency_defaults_variant_when_absent() {
+        let json = r#"{ "name": "foo", "tag": "0.1.0", "local_id": "x" }"#;
+        let dep: NodeDependency = serde_json::from_str(json).unwrap();
+        assert_eq!(dep.variant, DEFAULT_VARIANT_NAME);
+    }
+
+    #[test]
+    fn node_dependency_reads_explicit_variant() {
+        let json = r#"{ "name": "foo", "tag": "0.1.0", "variant": "v1", "local_id": "x" }"#;
+        let dep: NodeDependency = serde_json::from_str(json).unwrap();
+        assert_eq!(dep.variant, "v1");
     }
 }

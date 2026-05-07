@@ -74,7 +74,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
 
     // Add the dependency first
     stack
-        .push_config(dependency, false, PathBuf::from("/tmp"))
+        .push_config(dependency, false, PathBuf::from("/tmp"), "default")
         .expect("dependency node has no dependencies");
     assert_eq!(
         stack.len(),
@@ -84,12 +84,12 @@ fn service_dependency_resolved_when_dependency_added_first() {
 
     // Now add the dependent node
     stack
-        .push_config(dependent, false, PathBuf::from("/tmp"))
+        .push_config(dependent, false, PathBuf::from("/tmp"), "default")
         .expect("dependent node should be added when dependency exists");
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
     let deps = stack
-        .dependencies_of("brain", "1.0.0")
+        .dependencies_of("brain", "1.0.0", "default")
         .into_iter()
         .map(|node| {
             let guard = node.read();
@@ -106,7 +106,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
     );
 
     let dependants = stack
-        .dependents_of("lidar", "1.0.0")
+        .dependents_of("lidar", "1.0.0", "default")
         .into_iter()
         .map(|node| node.read().config().manifest.name.as_str().to_owned())
         .collect::<Vec<_>>();
@@ -152,7 +152,7 @@ fn service_dependency_fails_when_dependency_is_missing() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     // Adding a node that depends on a non-existent service provider should fail
-    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
+    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"), "default");
     let Err(NodeStackError::MissingDependency {
         dependency,
         dependency_tag,
@@ -235,12 +235,17 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
 
     // Add the node with the correct name but wrong service
     stack
-        .push_config(dependency_wrong_service, false, PathBuf::from("/tmp"))
+        .push_config(
+            dependency_wrong_service,
+            false,
+            PathBuf::from("/tmp"),
+            "default",
+        )
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + lidar");
 
     // Adding brain should fail because lidar doesn't expose "reset_sensor"
-    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
+    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"), "default");
     let Err(NodeStackError::MissingInterface {
         dependency,
         dependency_tag,
@@ -294,7 +299,7 @@ fn service_dependency_fails_when_local_node_id_is_undeclared() {
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
-    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
+    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"), "default");
     let Err(NodeStackError::UndeclaredLocalNodeId { local_node_id, .. }) = result else {
         panic!("expected UndeclaredLocalNodeId error, got {:?}", result);
     };

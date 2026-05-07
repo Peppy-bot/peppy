@@ -16,6 +16,7 @@ pub struct NodeRunGoal {
     pub runtime_config_json5: String,
     pub node_name: String,
     pub tag: String,
+    pub node_variant: String,
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
 }
@@ -25,12 +26,14 @@ impl NodeRunGoal {
         runtime_config_json5: impl Into<String>,
         node_name: impl Into<String>,
         tag: impl Into<String>,
+        node_variant: impl Into<String>,
         timeout_secs: u64,
     ) -> Self {
         Self {
             runtime_config_json5: runtime_config_json5.into(),
             node_name: node_name.into(),
             tag: tag.into(),
+            node_variant: node_variant.into(),
             env_vars: Vec::new(),
             timeout_secs,
         }
@@ -49,8 +52,9 @@ impl NodeRunGoal {
         runtime_config_json5: impl Into<String>,
         node_name: impl Into<String>,
         tag: impl Into<String>,
+        node_variant: impl Into<String>,
     ) -> Self {
-        Self::new(runtime_config_json5, node_name, tag, 0)
+        Self::new(runtime_config_json5, node_name, tag, node_variant, 0)
     }
 
     pub fn encode(&self) -> Result<Payload> {
@@ -60,6 +64,7 @@ impl NodeRunGoal {
             goal.set_runtime_config_json5(&self.runtime_config_json5);
             goal.set_node_name(&self.node_name);
             goal.set_tag(&self.tag);
+            goal.set_node_variant(&self.node_variant);
 
             let env_var_count = capnp_list_len(self.env_vars.len(), "NodeRunGoal.env_vars")?;
             let mut env_vars = goal.reborrow().init_env_vars(env_var_count);
@@ -92,6 +97,7 @@ impl NodeRunGoal {
             runtime_config_json5: goal.get_runtime_config_json5()?.to_str()?.to_owned(),
             node_name: goal.get_node_name()?.to_str()?.to_owned(),
             tag: goal.get_tag()?.to_str()?.to_owned(),
+            node_variant: goal.get_node_variant()?.to_str()?.to_owned(),
             env_vars,
             timeout_secs: goal.get_timeout_secs(),
         })

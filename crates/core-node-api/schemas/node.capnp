@@ -63,17 +63,7 @@ struct NodeAddRepoNodeSource {
     name @0 :Text;
     # Node tag as it appears in `nodes.json5`
     tag @1 :Text;
-    # Dep-level variant overrides applied when resolving transitive
-    # dependencies. Empty for "use defaults for every dep".
-    depVariantOverrides @2 :List(DepVariantOverride);
-}
-
-struct DepVariantOverride {
-    # Dep node name
-    name @0 :Text;
-    # Dep node tag
-    tag @1 :Text;
-    # Variant name to use when resolving this dep
+    # Variant name to resolve from the manifest. Required.
     variant @2 :Text;
 }
 
@@ -130,6 +120,9 @@ struct NodeAddResult {
     nodeName @3 :Text;
     # Tag of the added node (empty on failure)
     nodeTag @4 :Text;
+    # Variant of the added node. Always populated; the implicit default is
+    # the literal string "default".
+    nodeVariant @5 :Text;
 }
 
 # Node Build Action — drives the build of a previously-added node
@@ -139,6 +132,9 @@ struct NodeBuildGoal {
     envVars @2 :List(EnvVar);
     timeoutSecs @3 :UInt64;
     force @4 :Bool;
+    # Variant identity. Always populated; the implicit default is the
+    # literal string "default".
+    nodeVariant @5 :Text;
 }
 
 struct NodeBuildGoalResponse {
@@ -226,6 +222,9 @@ struct NodeRunGoal {
     envVars @3 :List(EnvVar);
     # Timeout in seconds for the run operation (used to report remaining time when busy)
     timeoutSecs @4 :UInt64;
+    # Variant identity. Always populated; the implicit default is the
+    # literal string "default".
+    nodeVariant @5 :Text;
 }
 
 struct NodeRunGoalResponse {
@@ -273,6 +272,9 @@ struct NodeRemoveRequest {
     stopInstances @1 :Bool;
     # Tag of the node to remove
     tag @2 :Text;
+    # Variant identity. Always populated; the implicit default is the
+    # literal string "default".
+    nodeVariant @3 :Text;
 }
 
 struct NodeRemoveResponse {
@@ -299,6 +301,9 @@ struct NodeInfoRequest {
     nodeName @0 :Text;
     # Tag of the node to look up in the stack
     nodeTag @1 :Text;
+    # Variant identity. Always populated; the implicit default is the
+    # literal string "default".
+    nodeVariant @2 :Text;
 }
 
 struct NodeInstanceInfo {
@@ -336,8 +341,8 @@ struct NodeInfoResponse {
             addLogPath @5 :Text;
             # Per-instance run log paths, aligned with `instances` (same order).
             runLogPaths @6 :List(Text);
-            # Variant label selected at `node add` time. Empty string when
-            # no variant applies (non-variant add paths).
+            # Variant label selected at `node add` time. Always populated;
+            # the implicit default is the literal string "default".
             variantName @7 :Text;
         }
     }

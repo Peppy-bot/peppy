@@ -16,7 +16,7 @@ const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
     node_stack
-        .find(name, tag)
+        .find(name, tag, "default")
         .expect("entity should exist")
         .read()
         .artifact_path()
@@ -414,10 +414,15 @@ async fn listen_for_node_build_writes_log_file() {
     );
 
     let log_dir = started_core_node.peppy_dirs.logs_dir_build();
+    // Log paths are nested per-(name, tag, variant): <logs_dir>/<name>/<tag>/<variant>/<ts>.log.
+    let expected_subdir = log_dir
+        .join(TARGET_NODE_NAME)
+        .join(TARGET_NODE_TAG)
+        .join("default");
     assert!(
-        build_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
-        log_dir,
+        build_result.log_path.starts_with(&expected_subdir),
+        "log file should be under {:?}, got {:?}",
+        expected_subdir,
         build_result.log_path
     );
 
@@ -426,11 +431,6 @@ async fn listen_for_node_build_writes_log_file() {
         .file_name()
         .and_then(|n| n.to_str())
         .expect("should have log filename");
-    assert!(
-        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "log filename should start with '<node_name>_<tag>_', got: {}",
-        log_filename
-    );
     assert!(
         log_filename.ends_with(".log"),
         "log filename should end with '.log', got: {}",
@@ -754,7 +754,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         build_result.error_message
     );
 
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG, "default"));
 
     let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(build_result.artifact_path.as_path(), root_path.as_path());
@@ -773,12 +773,9 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .file_name()
         .and_then(|n| n.to_str())
         .expect("should have file name");
-    assert_eq!(
-        file_name,
-        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.sif"),
-        "stored image should be '<node_name>_<tag>.sif', got: {}",
-        file_name
-    );
+    // SIF artifacts are stored at <built_nodes>/<name>/<tag>/<variant>/node.sif —
+    // the per-variant subdir is what disambiguates, so the leaf is a stable name.
+    assert_eq!(file_name, "node.sif", "got: {}", file_name);
 
     assert!(
         !build_result.log_path.as_os_str().is_empty(),
@@ -791,10 +788,15 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
 
     let log_dir = started_core_node.peppy_dirs.logs_dir_build();
+    // Log paths are nested per-(name, tag, variant): <logs_dir>/<name>/<tag>/<variant>/<ts>.log.
+    let expected_subdir = log_dir
+        .join(TARGET_NODE_NAME)
+        .join(TARGET_NODE_TAG)
+        .join("default");
     assert!(
-        build_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
-        log_dir,
+        build_result.log_path.starts_with(&expected_subdir),
+        "log file should be under {:?}, got {:?}",
+        expected_subdir,
         build_result.log_path
     );
 
@@ -803,11 +805,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .file_name()
         .and_then(|n| n.to_str())
         .expect("should have log filename");
-    assert!(
-        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "log filename should start with '<node_name>_<tag>_', got: {}",
-        log_filename
-    );
     assert!(
         log_filename.ends_with(".log"),
         "log filename should end with '.log', got: {}",

@@ -86,7 +86,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         .into_resolved()
         .expect("resolve config");
     node_stack
-        .push_config(config, false, node_dir.path())
+        .push_config(config, false, node_dir.path(), "default")
         .expect("push_config should succeed");
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -98,7 +98,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     )
     .await;
 
-    let request = NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let request = NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG, "default".to_string());
     let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
         .await
         .expect("node_info request should succeed");
@@ -138,10 +138,15 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         .peppy_dirs
         .logs_dir_add()
         .join("recorded.log");
-    node_stack.set_add_log_path(TARGET_NODE_NAME, TARGET_NODE_TAG, recorded_add_log.clone());
+    node_stack.set_add_log_path(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        "default",
+        recorded_add_log.clone(),
+    );
     let info_response = poll_node_info(
         &started_core_node,
-        &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG, "default".to_string()),
         Duration::from_secs(5),
     )
     .await
@@ -294,7 +299,7 @@ async fn node_info_has_instance_ids() {
 
     let info_response = poll_node_info(
         &started_core_node,
-        &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG, "default".to_string()),
         Duration::from_secs(5),
     )
     .await
@@ -339,7 +344,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
     // successful response channel. No error log, no transport fault.
     let response = poll_node_info_raw(
         &started_core_node,
-        &NodeInfoRequest::new("ghost_node", "9.9.9"),
+        &NodeInfoRequest::new("ghost_node", "9.9.9", "default".to_string()),
         Duration::from_secs(2),
     )
     .await
@@ -371,12 +376,12 @@ async fn node_info_reports_not_in_stack_and_recovers() {
         .expect("resolve config");
     started_core_node
         .node_stack
-        .push_config(config, false, node_dir.path())
+        .push_config(config, false, node_dir.path(), "default")
         .expect("push_config should succeed");
 
     let info_response = poll_node_info(
         &started_core_node,
-        &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG, "default".to_string()),
         Duration::from_secs(5),
     )
     .await

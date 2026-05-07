@@ -144,7 +144,7 @@ fn fetch_info(
     let response = added
         .rt
         .block_on(poll_node_info(
-            &NodeInfoRequest::new(node_name, node_tag),
+            &NodeInfoRequest::new(node_name, node_tag, "default".to_string()),
             messenger_handle,
             &added.core_node_name,
             CALLER_INSTANCE_ID,
@@ -421,7 +421,7 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
 
     let response = rt
         .block_on(poll_node_info(
-            &NodeInfoRequest::new("ghost_node", "9.9.9"),
+            &NodeInfoRequest::new("ghost_node", "9.9.9", "default".to_string()),
             &caller_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,

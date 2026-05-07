@@ -67,6 +67,7 @@ impl ActionResult for NodeBuildResult {
 struct NodeBuildRun {
     node_name: String,
     node_tag: String,
+    node_variant: String,
     env_vars: Vec<(String, String)>,
     entity_handle: node_stack::EntityHandle,
     working_dir_guard: Arc<node_stack::WorkingDirGuard>,
@@ -83,16 +84,23 @@ struct NodeBuildRun {
 pub(crate) async fn run_node_build_for_entity(
     node_name: String,
     node_tag: String,
+    node_variant: String,
     env_vars: Vec<(String, String)>,
     action_context: NodeBuildActionContext,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
 ) -> NodeBuildResult {
-    let entity_handle = match action_context.node_stack.find(&node_name, &node_tag) {
+    let entity_handle = match action_context
+        .node_stack
+        .find(&node_name, &node_tag, &node_variant)
+    {
         Some(handle) => handle,
         None => {
-            let msg = format!("node `{}:{}` is not in the node stack", node_name, node_tag);
+            let msg = format!(
+                "node `{}` is not in the node stack",
+                config::node::render_node_id(&node_name, &node_tag, &node_variant)
+            );
             write_error_to_log(&log_file, &msg);
             return NodeBuildResult::failure(&log_path, msg);
         }
@@ -102,8 +110,9 @@ pub(crate) async fn run_node_build_for_entity(
         let guard = entity_handle.read();
         if let Err(stage) = guard.stage().ensure_buildable() {
             let msg = format!(
-                "node `{}:{}` is in stage `{}`; cannot build",
-                node_name, node_tag, stage
+                "node `{}` is in stage `{}`; cannot build",
+                config::node::render_node_id(&node_name, &node_tag, &node_variant),
+                stage
             );
             write_error_to_log(&log_file, &msg);
             return NodeBuildResult::failure(&log_path, msg);
@@ -112,8 +121,8 @@ pub(crate) async fn run_node_build_for_entity(
             Some(g) => (g, guard.generation()),
             None => {
                 let msg = format!(
-                    "node `{}:{}` has no staged working directory",
-                    node_name, node_tag
+                    "node `{}` has no staged working directory",
+                    config::node::render_node_id(&node_name, &node_tag, &node_variant)
                 );
                 write_error_to_log(&log_file, &msg);
                 return NodeBuildResult::failure(&log_path, msg);
@@ -124,6 +133,7 @@ pub(crate) async fn run_node_build_for_entity(
     run_node_build(NodeBuildRun {
         node_name,
         node_tag,
+        node_variant,
         env_vars,
         entity_handle,
         working_dir_guard,
@@ -201,25 +211,30 @@ impl NodeBuildGoalHandler {
         }
 
         debug!(
-            "Received `node_build` goal from {sender_instance_id}, target={}:{}",
-            goal.node_name, goal.node_tag
+            "Received `node_build` goal from {sender_instance_id}, target={}",
+            config::node::render_node_id(&goal.node_name, &goal.node_tag, &goal.node_variant)
         );
 
-        let entity_handle = match self
-            .context
-            .node_stack
-            .find(&goal.node_name, &goal.node_tag)
-        {
-            Some(handle) => handle,
-            None => {
-                let mut state_guard = state.lock().await;
-                *state_guard = ActionState::Rejected;
-                return encode_rejected_goal(format!(
-                    "node `{}:{}` is not in the node stack — run `peppy node add` first",
-                    goal.node_name, goal.node_tag
-                ));
-            }
-        };
+        let entity_handle =
+            match self
+                .context
+                .node_stack
+                .find(&goal.node_name, &goal.node_tag, &goal.node_variant)
+            {
+                Some(handle) => handle,
+                None => {
+                    let mut state_guard = state.lock().await;
+                    *state_guard = ActionState::Rejected;
+                    return encode_rejected_goal(format!(
+                        "node `{}` is not in the node stack — run `peppy node add` first",
+                        config::node::render_node_id(
+                            &goal.node_name,
+                            &goal.node_tag,
+                            &goal.node_variant,
+                        )
+                    ));
+                }
+            };
 
         let pending = {
             let guard = entity_handle.read();
@@ -233,25 +248,39 @@ impl NodeBuildGoalHandler {
                 let mut state_guard = state.lock().await;
                 *state_guard = ActionState::Rejected;
                 return encode_rejected_goal(format!(
-                    "node `{}:{}` is in stage `{}`; cannot build",
-                    goal.node_name, goal.node_tag, stage
+                    "node `{}` is in stage `{}`; cannot build",
+                    config::node::render_node_id(
+                        &goal.node_name,
+                        &goal.node_tag,
+                        &goal.node_variant,
+                    ),
+                    stage
                 ));
             }
             Ok((None, _)) => {
                 let mut state_guard = state.lock().await;
                 *state_guard = ActionState::Rejected;
                 return encode_rejected_goal(format!(
-                    "node `{}:{}` has no staged working directory; \
+                    "node `{}` has no staged working directory; \
                      re-run `peppy node add` to stage one",
-                    goal.node_name, goal.node_tag
+                    config::node::render_node_id(
+                        &goal.node_name,
+                        &goal.node_tag,
+                        &goal.node_variant,
+                    )
                 ));
             }
             Ok((Some(g), generation)) => (g, generation),
         };
 
-        let log_dir = self.context.peppy_dirs.logs_dir_build();
+        let key = config::node::NodeKey::new(&goal.node_name, &goal.node_tag, &goal.node_variant);
+        let log_dir = self
+            .context
+            .peppy_dirs
+            .logs_dir_build()
+            .join(key.artifact_subpath());
         let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-        let log_filename = format!("{}_{}_{}.log", goal.node_name, goal.node_tag, timestamp);
+        let log_filename = format!("{}.log", timestamp);
         let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
             Ok(result) => result,
             Err(error_msg) => {
@@ -276,6 +305,7 @@ impl NodeBuildGoalHandler {
         let node_stack_for_cancel = Arc::clone(&self.context.node_stack);
         let node_name_for_cancel = goal.node_name.clone();
         let node_tag_for_cancel = goal.node_tag.clone();
+        let node_variant_for_cancel = goal.node_variant.clone();
         let entity_handle_for_cancel = entity_handle.clone();
         let generation_for_cancel = captured_generation;
         let log_path_for_cancel = log_path.clone();
@@ -292,6 +322,7 @@ impl NodeBuildGoalHandler {
                 result = run_node_build(NodeBuildRun {
                     node_name: goal.node_name,
                     node_tag: goal.node_tag,
+                    node_variant: goal.node_variant,
                     env_vars: goal.env_vars,
                     entity_handle,
                     working_dir_guard,
@@ -305,6 +336,7 @@ impl NodeBuildGoalHandler {
                     let _ = node_stack_for_cancel.remove_config_if_matches(
                         &node_name_for_cancel,
                         &node_tag_for_cancel,
+                        &node_variant_for_cancel,
                         &entity_handle_for_cancel,
                         generation_for_cancel,
                     );
@@ -333,6 +365,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
     let NodeBuildRun {
         node_name,
         node_tag,
+        node_variant,
         env_vars: goal_env_vars,
         entity_handle,
         working_dir_guard,
@@ -353,6 +386,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
     let node_stack_for_panic = Arc::clone(&action_context.node_stack);
     let node_name_for_panic = node_name.clone();
     let node_tag_for_panic = node_tag.clone();
+    let node_variant_for_panic = node_variant.clone();
     let entity_handle_for_panic = entity_handle.clone();
     let generation_for_panic = captured_generation;
     let working_dir_detached = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -391,9 +425,11 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 }
                 Err(current_gen) => {
                     let msg = format!(
-                        "node `{}:{}` was replaced by a concurrent push \
+                        "node `{}` was replaced by a concurrent push \
                          (generation {} -> {}); aborting build",
-                        node_name, node_tag, captured_generation, current_gen
+                        config::node::render_node_id(&node_name, &node_tag, &node_variant),
+                        captured_generation,
+                        current_gen
                     );
                     write_error_to_log(&log_file, &msg);
                     return NodeBuildResult::failure(&log_path, msg);
@@ -419,9 +455,8 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         match build_result {
             Ok(artifact_path) => {
                 debug!(
-                    "Built node {}:{} at {}",
-                    node_name,
-                    node_tag,
+                    "Built node {} at {}",
+                    config::node::render_node_id(&node_name, &node_tag, &node_variant),
                     artifact_path.display()
                 );
                 NodeBuildResult::success(artifact_path, &log_path)
@@ -432,6 +467,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 let _ = action_context.node_stack.remove_config_if_matches(
                     &node_name,
                     &node_tag,
+                    &node_variant,
                     &entity_handle,
                     expected_generation,
                 );
@@ -458,6 +494,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 let _ = node_stack_for_panic.remove_config_if_matches(
                     &node_name_for_panic,
                     &node_tag_for_panic,
+                    &node_variant_for_panic,
                     &entity_handle_for_panic,
                     generation_for_panic,
                 );

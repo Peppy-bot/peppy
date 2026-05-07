@@ -44,10 +44,12 @@ fn push_config_creates_entity_in_added_stage() {
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
 
     stack
-        .push_config(sensor_config(), false, &config_path)
+        .push_config(sensor_config(), false, &config_path, "default")
         .expect("push_config should succeed");
 
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack
+        .find("sensor", "1.0.0", "default")
+        .expect("entity should exist");
     let guard = handle.read();
 
     if let NodeStage::Added { config_path: cp } = guard.stage() {
@@ -234,10 +236,12 @@ async fn push_config_resets_existing_entity_to_added() {
     // Re-push with the same config but a different config_path. The entity
     // should be reset to Added with the new config_path; artifact_path is gone.
     stack
-        .push_config(sensor_config(), false, &config_path_v2)
+        .push_config(sensor_config(), false, &config_path_v2, "default")
         .expect("second push_config should succeed");
 
-    let handle_after = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle_after = stack
+        .find("sensor", "1.0.0", "default")
+        .expect("entity should exist");
     let guard = handle_after.read();
     match guard.stage() {
         NodeStage::Added { config_path: cp } => {
@@ -306,22 +310,33 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     };
 
     stack
-        .push_config(producer_a, false, PathBuf::from("/tmp/producer_a.json5"))
+        .push_config(
+            producer_a,
+            false,
+            PathBuf::from("/tmp/producer_a.json5"),
+            "default",
+        )
         .expect("push producer_a");
     stack
-        .push_config(producer_b, false, PathBuf::from("/tmp/producer_b.json5"))
+        .push_config(
+            producer_b,
+            false,
+            PathBuf::from("/tmp/producer_b.json5"),
+            "default",
+        )
         .expect("push producer_b");
     stack
         .push_config(
             consumer_pointing_at("producer_a"),
             false,
             PathBuf::from("/tmp/consumer_v1.json5"),
+            "default",
         )
         .expect("first consumer push");
 
     // Initially the consumer depends on producer_a.
     let deps_a: Vec<String> = stack
-        .dependencies_of("consumer", "1.0.0")
+        .dependencies_of("consumer", "1.0.0", "default")
         .iter()
         .map(|h| h.read().config().manifest.name.as_str().to_owned())
         .collect();
@@ -334,11 +349,12 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
             consumer_pointing_at("producer_b"),
             false,
             PathBuf::from("/tmp/consumer_v2.json5"),
+            "default",
         )
         .expect("second consumer push");
 
     let deps_b: Vec<String> = stack
-        .dependencies_of("consumer", "1.0.0")
+        .dependencies_of("consumer", "1.0.0", "default")
         .iter()
         .map(|h| h.read().config().manifest.name.as_str().to_owned())
         .collect();
@@ -366,7 +382,7 @@ async fn push_config_rejects_replacement_with_live_instances() {
     .await;
 
     let err = stack
-        .push_config(sensor_config(), false, &config_path_v2)
+        .push_config(sensor_config(), false, &config_path_v2, "default")
         .expect_err("re-push should be rejected when live instances exist");
     match err {
         NodeStackError::CannotOverwriteNodeWithLiveInstances {
@@ -406,10 +422,13 @@ async fn concurrent_builds_are_rejected_immediately() {
             sensor_config_with_build_cmd("sleep 0.5"),
             false,
             &config_path,
+            "default",
         )
         .expect("push_config should succeed");
 
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack
+        .find("sensor", "1.0.0", "default")
+        .expect("entity should exist");
 
     // Working directory with some content to archive.
     let working_dir = tempfile::tempdir().expect("tempdir working_dir");
@@ -506,8 +525,13 @@ async fn concurrent_builds_are_rejected_immediately() {
     let guard = handle.read();
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
 
-    // The on-disk archive exists exactly once.
-    let archive = peppy_dirs.built_nodes_dir().join("sensor_1.0.0.tar.zst");
+    // The on-disk archive exists exactly once. Storage layout is nested per-variant.
+    let archive = peppy_dirs
+        .built_nodes_dir()
+        .join("sensor")
+        .join("1.0.0")
+        .join("default")
+        .join("node.tar.zst");
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 }
 
@@ -589,10 +613,13 @@ async fn build_runs_add_cmd_for_process_node() {
             sensor_config_with_build_cmd("echo built > marker.txt"),
             false,
             &config_path,
+            "default",
         )
         .expect("push_config should succeed");
 
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack
+        .find("sensor", "1.0.0", "default")
+        .expect("entity should exist");
     let h = build_harness();
 
     NodeEntity::build(
@@ -614,7 +641,14 @@ async fn build_runs_add_cmd_for_process_node() {
     drop(guard);
 
     // The archive exists and contains the marker file produced by build_cmd.
-    let archive = h.peppy_dirs.built_nodes_dir().join("sensor_1.0.0.tar.zst");
+    // Storage layout is nested per-variant: <name>/<tag>/<variant>/node.tar.zst.
+    let archive = h
+        .peppy_dirs
+        .built_nodes_dir()
+        .join("sensor")
+        .join("1.0.0")
+        .join("default")
+        .join("node.tar.zst");
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 
     // Decode the archive and look for the marker.
@@ -694,9 +728,16 @@ fn start_harness(instance_id_str: &str) -> (Name, real_lifecycle::LifecycleHarne
 async fn prepare_and_spawn_rejects_when_not_built() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     stack
-        .push_config(sensor_config(), false, PathBuf::from("/tmp/sensor"))
+        .push_config(
+            sensor_config(),
+            false,
+            PathBuf::from("/tmp/sensor"),
+            "default",
+        )
         .expect("push_config should succeed");
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack
+        .find("sensor", "1.0.0", "default")
+        .expect("entity should exist");
     let (instance_id, h) = start_harness("test-inst-1");
 
     let err = NodeEntity::prepare_and_spawn(
@@ -1136,9 +1177,11 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
         proceed_file_disp
     ));
     stack
-        .push_config(blocking_config, false, &config_path_v2)
+        .push_config(blocking_config, false, &config_path_v2, "default")
         .expect("rebuild push_config should succeed");
-    let handle_after_push = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle_after_push = stack
+        .find("sensor", "1.0.0", "default")
+        .expect("entity should exist");
     let captured_generation = handle_after_push.read().generation();
 
     // Kick off the rebuild in a task. It will sit in `Building` until we
@@ -1187,6 +1230,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
         RestoreTarget {
             name: "sensor",
             tag: "1.0.0",
+            variant: "default",
             expected_handle: &handle_after_push,
             expected_generation: captured_generation,
         },
@@ -1194,7 +1238,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
             config: v1_config,
             config_path: config_path_v1.clone(),
             artifact_path: Some(artifact_v1.clone()),
-            variant_name: None,
+            variant: "default".to_string(),
         },
     );
     assert!(
@@ -1212,7 +1256,9 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
         "build task should fail its Phase 3 commit after the restore drifted the generation, got Ok"
     );
 
-    let handle_final = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle_final = stack
+        .find("sensor", "1.0.0", "default")
+        .expect("entity should exist");
     let guard = handle_final.read();
     match guard.stage() {
         NodeStage::Ready {
@@ -1254,9 +1300,11 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
         proceed_file_disp
     ));
     stack
-        .push_config(blocking_config, false, &config_path_v1)
+        .push_config(blocking_config, false, &config_path_v1, "default")
         .expect("initial push_config should succeed");
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack
+        .find("sensor", "1.0.0", "default")
+        .expect("entity should exist");
     let stale_generation = handle.read().generation();
     let stale_config = handle.read().config().clone();
 
@@ -1302,13 +1350,14 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
     // entity is in Building — the in-flight build task will then fail its
     // Phase 3 check via the generation token.
     stack
-        .push_config(sensor_config(), false, &config_path_v2)
+        .push_config(sensor_config(), false, &config_path_v2, "default")
         .expect("concurrent push_config should succeed");
 
     let restored = stack.restore_snapshot_if_matches(
         RestoreTarget {
             name: "sensor",
             tag: "1.0.0",
+            variant: "default",
             expected_handle: &handle,
             expected_generation: stale_generation,
         },
@@ -1316,7 +1365,7 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
             config: stale_config,
             config_path: config_path_v1.clone(),
             artifact_path: Some(PathBuf::from("/tmp/sensor-v1.sif")),
-            variant_name: None,
+            variant: "default".to_string(),
         },
     );
     assert!(

@@ -206,9 +206,13 @@ pub enum NodeAddSource<'a> {
         url: url::Url,
         sha256: Option<String>,
     },
-    /// Add a node by `(name, tag)` against the repo cache — the daemon
+    /// Add a node by `(name, tag, variant)` against the repo cache — the daemon
     /// resolves transitive deps from `~/.peppy/cache/nodes.json5`.
-    RepoNode { name: &'a str, tag: &'a str },
+    RepoNode {
+        name: &'a str,
+        tag: &'a str,
+        variant: &'a str,
+    },
 }
 
 impl<'a> From<&'a Path> for NodeAddSource<'a> {
@@ -313,6 +317,7 @@ async fn send_node_run_and_wait_internal(
         runtime_config_json5,
         node_name,
         tag,
+        "default".to_string(),
         timeouts.result.as_secs(),
     )
     .with_env_vars(env_vars);
@@ -426,7 +431,6 @@ async fn send_node_add_and_wait_internal<'a>(
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
     variant: Option<NodeSource>,
-    dep_variant_overrides: Vec<core_node_api::encoding::DepVariantOverride>,
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
@@ -434,17 +438,6 @@ async fn send_node_add_and_wait_internal<'a>(
     force: bool,
 ) -> Result<NodeAddResult, String> {
     let source = source.into();
-
-    // Dep-variant overrides are only representable on RepoNode sources.
-    // If a test supplies them with any other source kind, that is a bug in
-    // the test — fail loudly instead of silently dropping them and
-    // running down the wrong code path.
-    if !dep_variant_overrides.is_empty() && !matches!(source, NodeAddSource::RepoNode { .. }) {
-        return Err(format!(
-            "dep_variant_overrides only allowed with RepoNode sources, got {:?}",
-            source
-        ));
-    }
 
     let mut goal = match &source {
         NodeAddSource::Path(path) => {
@@ -493,14 +486,9 @@ async fn send_node_add_and_wait_internal<'a>(
             TEST_GIT_HASH,
             result_timeout.as_secs(),
         ),
-        NodeAddSource::RepoNode { name, tag } => {
-            let mut src = NodeSource::repo_node(*name, *tag)
+        NodeAddSource::RepoNode { name, tag, variant } => {
+            let src = NodeSource::repo_node(*name, *tag, *variant)
                 .map_err(|e| format!("invalid repo-node source in test: {e}"))?;
-            if !dep_variant_overrides.is_empty() {
-                src = src
-                    .with_dep_variant_overrides(dep_variant_overrides.clone())
-                    .map_err(|e| format!("invalid dep-variant override in test: {e}"))?;
-            }
             NodeAddGoal::from_source(src, TEST_GIT_HASH, result_timeout.as_secs())
         }
     }
@@ -634,8 +622,13 @@ pub async fn send_node_build_and_wait(
     env_vars: Vec<(String, String)>,
     feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
 ) -> Result<NodeBuildResult, String> {
-    let goal =
-        NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs()).with_env_vars(env_vars);
+    let goal = NodeBuildGoal::new(
+        node_name,
+        node_tag,
+        "default".to_string(),
+        result_timeout.as_secs(),
+    )
+    .with_env_vars(env_vars);
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode build goal: {}", e))?;
@@ -762,7 +755,6 @@ pub async fn send_node_add_and_wait<'a>(
         core_node_name,
         source,
         None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -786,7 +778,6 @@ pub async fn send_node_add_and_wait_with_env<'a>(
         core_node_name,
         source,
         None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -810,33 +801,6 @@ pub async fn send_node_add_and_wait_with_variant<'a>(
         core_node_name,
         source,
         Some(NodeSource::Fs(PathBuf::from(variant))),
-        Vec::new(),
-        goal_timeout,
-        result_timeout,
-        feedback_tx,
-        Vec::new(),
-        false,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-pub async fn send_node_add_and_wait_with_dep_overrides<'a>(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
-    source: impl Into<NodeAddSource<'a>>,
-    variant: Option<&str>,
-    dep_overrides: Vec<core_node_api::encoding::DepVariantOverride>,
-    goal_timeout: Duration,
-    result_timeout: Duration,
-    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-) -> Result<NodeAddResult, String> {
-    send_node_add_and_wait_internal(
-        messenger,
-        core_node_name,
-        source,
-        variant.map(|v| NodeSource::Fs(PathBuf::from(v))),
-        dep_overrides,
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -989,7 +953,6 @@ pub async fn send_node_add_then_build<'a>(
         core_node_name,
         source,
         None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         None,
@@ -1038,7 +1001,6 @@ pub async fn send_node_add_and_wait_with_force<'a>(
         core_node_name,
         source,
         None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -1509,7 +1471,7 @@ async fn spawn_real_running_instance_inner(
 ) -> TestRunningInstance {
     let handle = started
         .node_stack
-        .find(name, tag)
+        .find(name, tag, "default")
         .expect("spawn_real_running_instance: entity should exist");
     let (output_sinks, _feedback_tx, drain) =
         make_real_output_sinks(&started.peppy_dirs, instance_id);
@@ -1586,7 +1548,7 @@ pub async fn real_build_and_spawn_instance(
 
     let handle = started
         .node_stack
-        .find(name, tag)
+        .find(name, tag, "default")
         .expect("real_build_and_spawn_instance: entity should exist");
 
     let working_dir = TempDir::new().expect("working_dir tempdir");

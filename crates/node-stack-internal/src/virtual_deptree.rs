@@ -16,27 +16,27 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use config::node::NodeConfig;
+pub use config::node::NodeKey;
+use config::node::{DEFAULT_VARIANT_NAME, NodeConfig};
 use petgraph::algo::toposort;
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 
 use crate::error::{Error, Result};
-
-/// `(name, tag)` identifier used to address a node in the virtual dep tree.
-pub type NodeKey = (String, String);
 
 /// One node sitting in the virtual dependency tree.
 #[derive(Debug, Clone)]
 pub struct VirtualNodeInfo {
     pub root_dir: PathBuf,
     pub config: NodeConfig,
+    pub variant: String,
 }
 
 impl VirtualNodeInfo {
     pub fn key(&self) -> NodeKey {
-        (
-            self.config.manifest.name.as_str().to_owned(),
+        NodeKey::new(
+            self.config.manifest.name.as_str(),
             self.config.manifest.tag.clone(),
+            &self.variant,
         )
     }
 }
@@ -62,22 +62,35 @@ impl VirtualDeptree {
     ///   `name:tag`.
     /// - [`Error::VirtualDeptreeCycle`] when the resulting graph is not a DAG.
     pub fn build(nodes: Vec<(PathBuf, NodeConfig)>) -> Result<Self> {
+        // Inputs without an explicit variant default to "default". Callers
+        // that need to express variants pass them in via `build_with_variants`.
+        let variants_defaulted: Vec<(PathBuf, NodeConfig, String)> = nodes
+            .into_iter()
+            .map(|(root_dir, config)| (root_dir, config, DEFAULT_VARIANT_NAME.to_owned()))
+            .collect();
+        Self::build_with_variants(variants_defaulted)
+    }
+
+    /// Like [`Self::build`] but accepts an explicit variant string per input
+    /// so callers can register multiple variants of the same `name:tag`.
+    pub fn build_with_variants(nodes: Vec<(PathBuf, NodeConfig, String)>) -> Result<Self> {
         let mut graph: StableDiGraph<NodeKey, ()> = StableDiGraph::new();
         let mut by_key: HashMap<NodeKey, NodeIndex> = HashMap::with_capacity(nodes.len());
         let mut infos: HashMap<NodeIndex, VirtualNodeInfo> = HashMap::with_capacity(nodes.len());
         let mut origin_paths: HashMap<NodeKey, PathBuf> = HashMap::with_capacity(nodes.len());
 
         // First pass: register every input node and detect duplicates.
-        for (root_dir, config) in nodes {
-            let key = (
-                config.manifest.name.as_str().to_owned(),
+        for (root_dir, config, variant) in nodes {
+            let key = NodeKey::new(
+                config.manifest.name.as_str(),
                 config.manifest.tag.clone(),
+                &variant,
             );
 
             if let Some(first) = origin_paths.get(&key) {
                 return Err(Error::DuplicateLocalNode {
-                    name: key.0,
-                    tag: key.1,
+                    name: key.name.clone(),
+                    tag: key.tag.clone(),
                     first: first.clone(),
                     second: root_dir,
                 });
@@ -86,6 +99,7 @@ impl VirtualDeptree {
             let info = VirtualNodeInfo {
                 root_dir: root_dir.clone(),
                 config,
+                variant,
             };
             let idx = graph.add_node(key.clone());
             by_key.insert(key.clone(), idx);
@@ -102,7 +116,7 @@ impl VirtualDeptree {
                 continue;
             };
             for dep in &depends_on.nodes {
-                let dep_key = (dep.name.as_str().to_owned(), dep.tag.clone());
+                let dep_key = NodeKey::new(dep.name.as_str(), dep.tag.clone(), dep.variant.clone());
                 if let Some(dep_idx) = by_key.get(&dep_key) {
                     // Edge: dep -> dependant. Toposort returns a slice in
                     // dependency order (deps first).
@@ -117,9 +131,9 @@ impl VirtualDeptree {
             let key = graph
                 .node_weight(offending)
                 .cloned()
-                .unwrap_or_else(|| ("?".to_owned(), "?".to_owned()));
+                .unwrap_or_else(|| NodeKey::with_default_variant("?", "?"));
             return Err(Error::VirtualDeptreeCycle {
-                nodes: vec![format!("{}:{}", key.0, key.1)],
+                nodes: vec![key.label()],
             });
         }
 
@@ -216,7 +230,7 @@ mod tests {
         assert_eq!(tree.len(), 2);
         let order = tree.topological_order();
         assert_eq!(order.len(), 2);
-        let names: Vec<String> = order.iter().map(|n| key_of(n).0).collect();
+        let names: Vec<String> = order.iter().map(|n| key_of(n).name).collect();
         assert!(names.contains(&"a".to_string()));
         assert!(names.contains(&"b".to_string()));
     }
@@ -240,7 +254,7 @@ mod tests {
         let order: Vec<String> = tree
             .topological_order()
             .iter()
-            .map(|n| key_of(n).0)
+            .map(|n| key_of(n).name)
             .collect();
         assert_eq!(
             order,
@@ -270,7 +284,7 @@ mod tests {
         let order: Vec<String> = tree
             .topological_order()
             .iter()
-            .map(|n| key_of(n).0)
+            .map(|n| key_of(n).name)
             .collect();
         assert_eq!(order.first().unwrap(), "a");
         assert_eq!(order.last().unwrap(), "d");
@@ -304,7 +318,7 @@ mod tests {
         assert_eq!(tree.len(), 1);
         let order = tree.topological_order();
         assert_eq!(order.len(), 1);
-        assert_eq!(key_of(order[0]).0, "a");
+        assert_eq!(key_of(order[0]).name, "a");
     }
 
     #[test]

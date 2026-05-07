@@ -50,25 +50,30 @@ pub(super) fn write_runtime_config_temp(
     Ok(runtime_config_path)
 }
 
-/// Creates (or recreates) a clean instance directory under `peppy_dirs.instances_dir()`.
+/// Creates (or recreates) a clean instance directory under
+/// `peppy_dirs.instances_dir()/<name>/<tag>/<variant>/<instance_id>`.
 /// Returns the path to the newly created directory.
 ///
 /// Used directly for container nodes (whose instance dir is empty) and as the
 /// first step of [`extract_node_archive`] for process nodes.
 pub(super) fn create_instance_dir(
+    node_name: &str,
+    node_tag: &str,
+    variant: &str,
     instance_id: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<PathBuf, String> {
-    let instances_dir = peppy_dirs.instances_dir();
-    std::fs::create_dir_all(&instances_dir).map_err(|e| {
+    let key = config::node::NodeKey::new(node_name, node_tag, variant);
+    let parent_dir = peppy_dirs.instances_dir().join(key.artifact_subpath());
+    std::fs::create_dir_all(&parent_dir).map_err(|e| {
         format!(
             "Failed to create instances directory {}: {}",
-            instances_dir.display(),
+            parent_dir.display(),
             e
         )
     })?;
 
-    let instance_dir = instances_dir.join(instance_id);
+    let instance_dir = parent_dir.join(instance_id);
 
     // Clean up any leftover instance directory from a previous failed attempt,
     // since the instance ID is deterministic and may be retried.
@@ -103,10 +108,13 @@ pub(super) fn create_instance_dir(
 /// SIF image is self-contained.
 pub(super) fn extract_node_archive(
     archive_path: &Path,
+    node_name: &str,
+    node_tag: &str,
+    variant: &str,
     instance_id: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<PathBuf, String> {
-    let instance_dir = create_instance_dir(instance_id, peppy_dirs)?;
+    let instance_dir = create_instance_dir(node_name, node_tag, variant, instance_id, peppy_dirs)?;
     if let Err(e) = extract_tar_zst(archive_path, &instance_dir) {
         // Best-effort cleanup of the partially-extracted instance dir so a
         // failed extraction doesn't leave orphaned data on disk.

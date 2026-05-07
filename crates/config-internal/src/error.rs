@@ -91,6 +91,10 @@ pub enum ParsingError {
     InvalidMountPath(String, String),
     #[error("Invalid parameter reference `${{parameters:{0}}}` in mount path: {1}")]
     InvalidMountPathParameterRef(String, String),
+
+    // -- node identifier parsing
+    #[error("Invalid node reference `{0}`: {1}")]
+    InvalidNodeRef(String, String),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

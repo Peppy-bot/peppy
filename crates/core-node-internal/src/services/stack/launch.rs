@@ -180,24 +180,7 @@ struct LaunchActionContext {
     daemon_use_sim_time: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct NodeKey {
-    name: String,
-    tag: String,
-}
-
-impl NodeKey {
-    fn new(name: impl Into<String>, tag: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            tag: tag.into(),
-        }
-    }
-
-    fn label(&self) -> String {
-        format!("{}:{}", self.name, self.tag)
-    }
-}
+use config::node::NodeKey;
 
 #[derive(Clone)]
 struct PlannedDeployment {
@@ -206,6 +189,7 @@ struct PlannedDeployment {
     variant: Option<NodeSource>,
     node_name: String,
     node_tag: String,
+    node_variant: String,
     config: config::node::NodeConfig,
 }
 
@@ -641,11 +625,13 @@ async fn build_node_directly(
     ctx: &ProcessLaunchContext,
     node_name: String,
     node_tag: String,
+    node_variant: String,
     env_vars: Vec<(String, String)>,
 ) -> (std::result::Result<(), String>, Option<PathBuf>) {
-    let log_dir = ctx.peppy_dirs.logs_dir_build();
+    let key = NodeKey::new(&node_name, &node_tag, &node_variant);
+    let log_dir = ctx.peppy_dirs.logs_dir_build().join(key.artifact_subpath());
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-    let log_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
+    let log_filename = format!("{}.log", timestamp);
     let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
         Ok(pair) => pair,
         Err(e) => return (Err(e.to_string()), None),
@@ -673,6 +659,7 @@ async fn build_node_directly(
         run_node_build_for_entity(
             node_name.clone(),
             node_tag.clone(),
+            node_variant.clone(),
             env_vars,
             action_context,
             feedback_tx,
@@ -953,7 +940,19 @@ async fn resolve_deployments(
         let node_name = config.manifest.name.as_str().to_owned();
         let node_tag = config.manifest.tag.clone();
 
-        let key = NodeKey::new(&node_name, &node_tag);
+        // Resolve the variant identity for the planned deployment. Bare
+        // sources (no variant block) and `VariantSource::Name` map directly;
+        // Git/Url variants must point at a manifest-declared `Variant.name`,
+        // which is enforced inside the actual variant resolution path. Here
+        // we record the placeholder identity so duplicate detection works.
+        let node_variant = match deployment.source.variant() {
+            None => config::node::DEFAULT_VARIANT_NAME.to_owned(),
+            Some(VariantSource::Name(v)) => v.name.clone(),
+            Some(VariantSource::Git(v)) => v.path.clone().unwrap_or_else(|| v.repo.clone()),
+            Some(VariantSource::Url(v)) => v.url.clone(),
+        };
+
+        let key = NodeKey::new(&node_name, &node_tag, &node_variant);
         if !planned_keys.insert(key.clone()) {
             planning_errors.push(format!(
                 "duplicate deployment for node {} (resolved from {})",
@@ -966,10 +965,9 @@ async fn resolve_deployments(
         publish_stdout(
             ctx,
             format!(
-                "Deployment {} resolved to {}:{}",
+                "Deployment {} resolved to {}",
                 deployment_label(&deployment),
-                node_name,
-                node_tag
+                key.label()
             ),
             LaunchFeedbackStep::LauncherStep,
         )
@@ -981,6 +979,7 @@ async fn resolve_deployments(
             variant,
             node_name,
             node_tag,
+            node_variant,
             config,
         });
     }
@@ -1010,20 +1009,21 @@ async fn validate_and_order_dependencies(
     let root_key = NodeKey::new(
         root_config.manifest.name.as_str(),
         root_config.manifest.tag.as_str(),
+        config::node::DEFAULT_VARIANT_NAME,
     );
 
     let mut configs_by_key: HashMap<NodeKey, config::node::NodeConfig> = HashMap::new();
     configs_by_key.insert(root_key.clone(), root_config.clone());
     for item in planned {
         configs_by_key.insert(
-            NodeKey::new(&item.node_name, &item.node_tag),
+            NodeKey::new(&item.node_name, &item.node_tag, &item.node_variant),
             item.config.clone(),
         );
     }
 
     let planned_keys: HashSet<NodeKey> = planned
         .iter()
-        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
+        .map(|p| NodeKey::new(&p.node_name, &p.node_tag, &p.node_variant))
         .collect();
 
     // Validate all dependencies exist and expose the required interfaces.
@@ -1035,7 +1035,12 @@ async fn validate_and_order_dependencies(
                 &item.config.interfaces,
                 &item.node_name,
                 &item.node_tag,
-                |name, tag| configs_by_key.get(&NodeKey::new(name, tag)).cloned(),
+                &item.node_variant,
+                |name, tag, variant| {
+                    configs_by_key
+                        .get(&NodeKey::new(name, tag, variant))
+                        .cloned()
+                },
             )
         })
         .map(|e| e.to_string())
@@ -1050,10 +1055,10 @@ async fn validate_and_order_dependencies(
     // Build the dependency graph for topological ordering.
     let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
     for item in planned {
-        let dependant_key = NodeKey::new(&item.node_name, &item.node_tag);
+        let dependant_key = NodeKey::new(&item.node_name, &item.node_tag, &item.node_variant);
         let mut deps = HashSet::new();
         for spec in node_stack::collect_dependency_specs(&item.config) {
-            let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag);
+            let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag, &spec.node_variant);
             if dep_key != root_key && planned_keys.contains(&dep_key) {
                 deps.insert(dep_key);
             }
@@ -1092,7 +1097,7 @@ fn topological_sort(
 
     for key in planned
         .iter()
-        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
+        .map(|p| NodeKey::new(&p.node_name, &p.node_tag, &p.node_variant))
     {
         in_degree.entry(key.clone()).or_insert(0);
         dependents.entry(key).or_default();
@@ -1111,7 +1116,12 @@ fn topological_sort(
     let order_index: HashMap<NodeKey, usize> = planned
         .iter()
         .enumerate()
-        .map(|(idx, p)| (NodeKey::new(&p.node_name, &p.node_tag), idx))
+        .map(|(idx, p)| {
+            (
+                NodeKey::new(&p.node_name, &p.node_tag, &p.node_variant),
+                idx,
+            )
+        })
         .collect();
 
     let mut ready: Vec<NodeKey> = in_degree
@@ -1255,13 +1265,23 @@ async fn add_nodes_to_stack(
                 }
                 let node_name = result.node_name.clone().unwrap_or_else(|| key.name.clone());
                 let node_tag = result.node_tag.clone().unwrap_or_else(|| key.tag.clone());
+                let node_variant = result
+                    .node_variant
+                    .clone()
+                    .unwrap_or_else(|| key.variant.clone());
 
                 // Stack launch chains directly from add into build, since the
                 // launcher's contract is "the stack is up and running" — an
                 // `Added` entity isn't actually buildable from the user's
                 // perspective until `node build` has run.
-                let (build_result, build_log_path) =
-                    build_node_directly(ctx, node_name, node_tag, ctx.env_vars.clone()).await;
+                let (build_result, build_log_path) = build_node_directly(
+                    ctx,
+                    node_name,
+                    node_tag,
+                    node_variant,
+                    ctx.env_vars.clone(),
+                )
+                .await;
 
                 let build_failed = build_result.is_err();
                 if let Some(path) = build_log_path {
@@ -1352,11 +1372,12 @@ async fn start_node_instances(
                 &runtime_config_json5,
                 item.node_name.as_str(),
                 item.node_tag.as_str(),
+                item.node_variant.as_str(),
             )
             .with_env_vars(ctx.env_vars.clone());
 
-            // Create log file for this node start
-            let log_dir = ctx.peppy_dirs.logs_dir_run();
+            // Create log file for this node start under the per-variant subtree.
+            let log_dir = ctx.peppy_dirs.logs_dir_run().join(key.artifact_subpath());
             let log_filename = format!("{}.log", instance_id);
             let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
                 Ok(r) => r,
@@ -1587,7 +1608,12 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     // Build lookup map
     let planned_by_key: HashMap<NodeKey, PlannedDeployment> = planned
         .into_iter()
-        .map(|item| (NodeKey::new(&item.node_name, &item.node_tag), item))
+        .map(|item| {
+            (
+                NodeKey::new(&item.node_name, &item.node_tag, &item.node_variant),
+                item,
+            )
+        })
         .collect();
 
     let mut add_log_paths: Vec<NodeAddLogEntry> = Vec::new();
@@ -1778,5 +1804,42 @@ mod tests {
         let none = config::launcher::FrameworkOverrides::default();
         assert!(!resolve_framework(&none, false).use_sim_time);
         assert!(resolve_framework(&none, true).use_sim_time);
+    }
+
+    /// The launcher's duplicate detection now keys on the full
+    /// `(name, tag, variant)` triple. Two deployments differing only in
+    /// `variant` must not collide — this is what makes the user's golden
+    /// case (two `depth_camera:0.1.0` deployments for `realsense_d435`
+    /// and `realsense_d405`) work side-by-side.
+    #[test]
+    fn planned_keys_distinguish_deployments_by_variant() {
+        let mut planned: std::collections::HashSet<NodeKey> = std::collections::HashSet::new();
+
+        let k_default = NodeKey::new("depth_camera", "0.1.0", "default");
+        let k_d435 = NodeKey::new("depth_camera", "0.1.0", "realsense_d435");
+        let k_d405 = NodeKey::new("depth_camera", "0.1.0", "realsense_d405");
+
+        assert!(
+            planned.insert(k_d435.clone()),
+            "first variant should insert"
+        );
+        assert!(
+            planned.insert(k_d405.clone()),
+            "second variant of same name:tag must coexist"
+        );
+        assert!(
+            planned.insert(k_default.clone()),
+            "default variant of same name:tag is yet another distinct deployment"
+        );
+        assert!(
+            !planned.insert(k_d435.clone()),
+            "exact-duplicate triple must collide"
+        );
+
+        // Display elision: default-variant labels strip the `@default`,
+        // but on-disk subpaths never elide.
+        assert_eq!(k_default.label(), "depth_camera:0.1.0");
+        assert_eq!(k_d435.label(), "depth_camera:0.1.0@realsense_d435");
+        assert_eq!(k_d435.artifact_subpath().components().count(), 3);
     }
 }

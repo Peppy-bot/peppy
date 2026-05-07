@@ -15,6 +15,7 @@ use peppylib::core_node::transport::send_node_build;
 pub struct BuildNodeParams {
     pub node_name: String,
     pub node_tag: String,
+    pub node_variant: String,
     pub timeouts: TimeoutConfig,
     pub force: bool,
 }
@@ -33,6 +34,7 @@ async fn build_node_async_with_connect(
         &conn.core_node_name,
         &params.node_name,
         &params.node_tag,
+        &params.node_variant,
         &params.timeouts,
         params.force,
     )
@@ -46,12 +48,14 @@ pub async fn build_node_async(
     core_node_name: &str,
     node_name: &str,
     node_tag: &str,
+    node_variant: &str,
     timeouts: &TimeoutConfig,
     force: bool,
 ) -> Result<()> {
-    info!("Building node {}:{}...", node_name, node_tag);
+    let label = config::node::render_node_id(node_name, node_tag, node_variant);
+    info!("Building node {}...", label);
 
-    let mut goal = NodeBuildGoal::new(node_name, node_tag, timeouts.max_secs)
+    let mut goal = NodeBuildGoal::new(node_name, node_tag, node_variant, timeouts.max_secs)
         .with_env_vars(caller_env_overrides());
     if force {
         goal = goal.with_force(true);
@@ -77,9 +81,8 @@ pub async fn build_node_async(
     .await?;
 
     info!(
-        "Built node {}:{}. Artifact: {}",
-        node_name,
-        node_tag,
+        "Built node {}. Artifact: {}",
+        label,
         build_result.artifact_path.to_string_lossy()
     );
 

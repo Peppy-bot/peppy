@@ -159,6 +159,7 @@ async fn node_stop_command_succeeds() {
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
+            variant: "default".to_string(),
         },
     }
     .execute(&node_ctx)

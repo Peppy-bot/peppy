@@ -26,13 +26,17 @@ pub enum Error {
         interface_name: String,
     },
     #[error(
-        "`{dependant}:{dependant_tag}` depends on `{dependency}:{dependency_tag}`, but it does not exist in the stack"
+        "`{}` depends on `{}`, but it does not exist in the stack",
+        config::node::render_node_id(dependant, dependant_tag, dependant_variant),
+        config::node::render_node_id(dependency, dependency_tag, dependency_variant)
     )]
     MissingDependency {
         dependant: String,
         dependant_tag: String,
+        dependant_variant: String,
         dependency: String,
         dependency_tag: String,
+        dependency_variant: String,
     },
     #[error(
         "`{dependant}:{dependant_tag}` references undeclared local_node_id `{local_node_id}` in consumed interfaces"

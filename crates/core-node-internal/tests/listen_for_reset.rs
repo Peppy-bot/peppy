@@ -97,8 +97,8 @@ async fn listen_for_node_reset_clears_node_stack() {
         add_response_b.error_message
     );
 
-    assert!(node_stack.contains(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG));
-    assert!(node_stack.contains(TARGET_NODE_B_NAME, TARGET_NODE_B_TAG));
+    assert!(node_stack.contains(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG, "default"));
+    assert!(node_stack.contains(TARGET_NODE_B_NAME, TARGET_NODE_B_TAG, "default"));
     assert_eq!(node_stack.len(), 3, "root + two added nodes");
     build_staged_node(&started_core_node, TARGET_NODE_A_NAME, TARGET_NODE_A_TAG).await;
     build_staged_node(&started_core_node, TARGET_NODE_B_NAME, TARGET_NODE_B_TAG).await;
@@ -112,7 +112,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     )
     .await;
     let entity_a = node_stack
-        .find(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG)
+        .find(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG, "default")
         .expect("node A should exist in stack");
     assert_eq!(
         entity_a.read().instances().len(),
@@ -144,11 +144,11 @@ async fn listen_for_node_reset_clears_node_stack() {
 
     assert_eq!(node_stack.len(), 1, "only root should remain");
     assert!(
-        !node_stack.contains(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG),
+        !node_stack.contains(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG, "default"),
         "node A should be removed from node stack"
     );
     assert!(
-        !node_stack.contains(TARGET_NODE_B_NAME, TARGET_NODE_B_TAG),
+        !node_stack.contains(TARGET_NODE_B_NAME, TARGET_NODE_B_TAG, "default"),
         "node B should be removed from node stack"
     );
 

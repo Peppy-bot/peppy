@@ -253,9 +253,9 @@ async fn handle_node_sync_request_inner(
     // Resolver closure: node stack first, then any repository-materialized
     // deps. Stack always wins — the repo cache is a fallback opt-in via
     // the request's `include_repositories` flag.
-    let resolve_dep = |name: &str, tag: &str| -> Option<config::node::NodeConfig> {
+    let resolve_dep = |name: &str, tag: &str, variant: &str| -> Option<config::node::NodeConfig> {
         node_stack
-            .find(name, tag)
+            .find(name, tag, variant)
             .map(|e| e.read().config().clone())
             .or_else(|| {
                 repo_resolved
@@ -287,6 +287,7 @@ async fn handle_node_sync_request_inner(
                     node_config.interfaces(),
                     node_config.manifest_name(),
                     node_config.manifest_tag(),
+                    config::node::DEFAULT_VARIANT_NAME,
                     resolve_dep,
                 );
 
@@ -423,15 +424,16 @@ async fn handle_node_sync_request_inner(
             .as_ref()
             .map(|d| {
                 let mut acc: Vec<String> = Vec::new();
-                let mut seen: HashSet<(String, String)> = HashSet::new();
+                let mut seen: HashSet<(String, String, String)> = HashSet::new();
                 for dep in &d.nodes {
                     let name = dep.name.as_str().to_owned();
                     let tag = dep.tag.clone();
-                    if !seen.insert((name.clone(), tag.clone())) {
+                    let variant = dep.variant.clone();
+                    if !seen.insert((name.clone(), tag.clone(), variant.clone())) {
                         continue;
                     }
-                    if node_stack.find(&name, &tag).is_some() {
-                        acc.push(format!("{}:{}", name, tag));
+                    if node_stack.find(&name, &tag, &variant).is_some() {
+                        acc.push(config::node::render_node_id(&name, &tag, &variant));
                     }
                 }
                 acc
@@ -722,22 +724,22 @@ async fn materialize_repo_deps(
         Option<std::time::SystemTime>,
     )> = None;
 
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut pending: Vec<(String, String)> = deps
+    let mut seen: HashSet<(String, String, String)> = HashSet::new();
+    let mut pending: Vec<(String, String, String)> = deps
         .nodes
         .iter()
-        .map(|n| (n.name.as_str().to_owned(), n.tag.clone()))
+        .map(|n| (n.name.as_str().to_owned(), n.tag.clone(), n.variant.clone()))
         .collect();
 
-    while let Some((name, tag)) = pending.pop() {
-        if !seen.insert((name.clone(), tag.clone())) {
+    while let Some((name, tag, variant)) = pending.pop() {
+        if !seen.insert((name.clone(), tag.clone(), variant.clone())) {
             continue;
         }
         // Stack tier wins — record the hit (de-duped via `seen` above)
         // and skip materialization for anything already pushed onto the
         // persistent NodeStack.
-        if node_stack.find(&name, &tag).is_some() {
-            stack_hits.push(format!("{}:{}", name, tag));
+        if node_stack.find(&name, &tag, &variant).is_some() {
+            stack_hits.push(config::node::render_node_id(&name, &tag, &variant));
             continue;
         }
         if cache.is_none() {
@@ -768,7 +770,11 @@ async fn materialize_repo_deps(
         // already plan to visit. Stack-tier shadowing happens at pop time.
         if let Some(child_deps) = parsed.manifest().depends_on.as_ref() {
             for child in &child_deps.nodes {
-                let key = (child.name.as_str().to_owned(), child.tag.clone());
+                let key = (
+                    child.name.as_str().to_owned(),
+                    child.tag.clone(),
+                    child.variant.clone(),
+                );
                 if !seen.contains(&key) {
                     pending.push(key);
                 }
@@ -787,10 +793,11 @@ async fn materialize_repo_deps(
     Ok((resolved, provenance, stack_hits))
 }
 
-/// Builds a lookup from `local_id` → `(dep_name, dep_tag)` using the node's `depends_on.nodes`.
+/// Builds a lookup from `local_id` → `(dep_name, dep_tag, dep_variant)` using
+/// the node's `depends_on.nodes`.
 fn build_dependency_lookup(
     manifest: &config::node::Manifest,
-) -> std::collections::HashMap<String, (String, String)> {
+) -> std::collections::HashMap<String, (String, String, String)> {
     manifest
         .depends_on
         .as_ref()
@@ -800,7 +807,11 @@ fn build_dependency_lookup(
                 .map(|n| {
                     (
                         n.local_id.clone(),
-                        (n.name.as_str().to_string(), n.tag.clone()),
+                        (
+                            n.name.as_str().to_string(),
+                            n.tag.clone(),
+                            n.variant.clone(),
+                        ),
                     )
                 })
                 .collect()
@@ -820,20 +831,22 @@ fn build_dependency_lookup(
 pub fn collect_consumed_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
-    resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
+    resolve: impl Fn(&str, &str, &str) -> Option<config::node::NodeConfig>,
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
     let dep_lookup = build_dependency_lookup(manifest);
 
-    // Pre-resolve each unique (name, tag) into a cloned NodeConfig so the
-    // per-item loops below don't repeatedly hit the resolver (which may take
-    // a NodeStack read lock or do filesystem I/O).
-    let mut dep_configs: std::collections::HashMap<(String, String), config::node::NodeConfig> =
-        std::collections::HashMap::new();
-    for (dep_name, dep_tag) in dep_lookup.values() {
-        let key = (dep_name.clone(), dep_tag.clone());
+    // Pre-resolve each unique (name, tag, variant) into a cloned NodeConfig so
+    // the per-item loops below don't repeatedly hit the resolver (which may
+    // take a NodeStack read lock or do filesystem I/O).
+    let mut dep_configs: std::collections::HashMap<
+        (String, String, String),
+        config::node::NodeConfig,
+    > = std::collections::HashMap::new();
+    for (dep_name, dep_tag, dep_variant) in dep_lookup.values() {
+        let key = (dep_name.clone(), dep_tag.clone(), dep_variant.clone());
         if !dep_configs.contains_key(&key)
-            && let Some(cfg) = resolve(dep_name, dep_tag)
+            && let Some(cfg) = resolve(dep_name, dep_tag, dep_variant)
         {
             dep_configs.insert(key, cfg);
         }
@@ -846,11 +859,13 @@ pub fn collect_consumed_interfaces(
         for consumed_topic in consumed_topics {
             match consumed_topic {
                 config::node::ConsumedTopic::Linked(linked) => {
-                    let Some((dep_name, dep_tag)) = dep_lookup.get(linked.local_node_id.as_str())
+                    let Some((dep_name, dep_tag, dep_variant)) =
+                        dep_lookup.get(linked.local_node_id.as_str())
                     else {
                         continue;
                     };
-                    if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
+                    if let Some(dep_config) =
+                        dep_configs.get(&(dep_name.clone(), dep_tag.clone(), dep_variant.clone()))
                         && let Some(dep_topics) = &dep_config.interfaces.topics
                         && let Some(emitted_topics) = &dep_topics.emits
                         && let Some(emitted_topic) = emitted_topics
@@ -884,10 +899,13 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_services) = &service_interfaces.consumes
     {
         for consumed_service in consumed_services {
-            let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_service.local_node_id) else {
+            let Some((dep_name, dep_tag, dep_variant)) =
+                dep_lookup.get(&consumed_service.local_node_id)
+            else {
                 continue;
             };
-            if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
+            if let Some(dep_config) =
+                dep_configs.get(&(dep_name.clone(), dep_tag.clone(), dep_variant.clone()))
                 && let Some(dep_services) = &dep_config.interfaces.services
                 && let Some(exposed_services) = &dep_services.exposes
                 && let Some(exposed_service) = exposed_services
@@ -917,10 +935,13 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_actions) = &action_interfaces.consumes
     {
         for consumed_action in consumed_actions {
-            let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_action.local_node_id) else {
+            let Some((dep_name, dep_tag, dep_variant)) =
+                dep_lookup.get(&consumed_action.local_node_id)
+            else {
                 continue;
             };
-            if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
+            if let Some(dep_config) =
+                dep_configs.get(&(dep_name.clone(), dep_tag.clone(), dep_variant.clone()))
                 && let Some(dep_actions) = &dep_config.interfaces.actions
                 && let Some(exposed_actions) = &dep_actions.exposes
                 && let Some(exposed_action) = exposed_actions
@@ -968,10 +989,10 @@ pub fn collect_consumed_interfaces(
 /// the daemon's persistent stack — i.e. `node add` and `auto_sync_if_missing`.
 pub fn stack_resolver(
     node_stack: &NodeStack,
-) -> impl Fn(&str, &str) -> Option<config::node::NodeConfig> + '_ {
-    move |name, tag| {
+) -> impl Fn(&str, &str, &str) -> Option<config::node::NodeConfig> + '_ {
+    move |name, tag, variant| {
         node_stack
-            .find(name, tag)
+            .find(name, tag, variant)
             .map(|e| e.read().config().clone())
     }
 }

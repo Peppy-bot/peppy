@@ -151,23 +151,26 @@ async fn handle_node_stop_request_inner(
     // Get the PID for later verification (if available)
     let pid = instance.pid();
 
-    let (node_name, node_tag) = {
+    let (node_name, node_tag, node_variant) = {
         let guard = entity_handle.read();
         (
             guard.config().manifest.name.as_str().to_owned(),
             guard.config().manifest.tag.clone(),
+            guard.variant().to_owned(),
         )
     };
-    let (root_node_name, root_node_tag) = {
+    let (root_node_name, root_node_tag, root_node_variant) = {
         let root = node_stack.root();
         let guard = root.read();
         (
             guard.config().manifest.name.as_str().to_owned(),
             guard.config().manifest.tag.clone(),
+            guard.variant().to_owned(),
         )
     };
 
-    if node_name == root_node_name && node_tag == root_node_tag {
+    if node_name == root_node_name && node_tag == root_node_tag && node_variant == root_node_variant
+    {
         return NodeStopResponse::failure("Cannot stop the core node")
             .encode()
             .map_err(Into::into);
@@ -212,8 +215,13 @@ async fn handle_node_stop_request_inner(
     }
 
     // Step 3: confirmed termination — now finalize the registry removal.
-    if let Err(e) = remove_instance_from_registry(&node_stack, &node_name, &node_tag, &instance_id)
-    {
+    if let Err(e) = remove_instance_from_registry(
+        &node_stack,
+        &node_name,
+        &node_tag,
+        &node_variant,
+        &instance_id,
+    ) {
         return NodeStopResponse::failure(e).encode().map_err(Into::into);
     }
 
@@ -276,9 +284,10 @@ fn remove_instance_from_registry(
     node_stack: &Arc<NodeStack>,
     node_name: &str,
     node_tag: &str,
+    node_variant: &str,
     instance_id: &Name,
 ) -> std::result::Result<(), String> {
-    let Some(handle) = node_stack.find(node_name, node_tag) else {
+    let Some(handle) = node_stack.find(node_name, node_tag, node_variant) else {
         return Ok(());
     };
     let mut guard = handle.write();
@@ -289,18 +298,16 @@ fn remove_instance_from_registry(
         });
         if starting {
             debug!(
-                "Node instance '{}' is in Starting state on {}:{}; cannot stop via stop_instance \
+                "Node instance '{}' is in Starting state on {}; cannot stop via stop_instance \
                  (will resolve via abort_started)",
                 instance_id.as_str(),
-                node_name,
-                node_tag
+                config::node::render_node_id(node_name, node_tag, node_variant),
             );
         } else {
             debug!(
-                "Node instance '{}' was not tracked in entity {}:{}",
+                "Node instance '{}' was not tracked in entity {}",
                 instance_id.as_str(),
-                node_name,
-                node_tag
+                config::node::render_node_id(node_name, node_tag, node_variant),
             );
         }
     }
@@ -326,6 +333,7 @@ pub(super) async fn stop_instance(
     node_stack: &Arc<NodeStack>,
     node_name: &str,
     node_tag: &str,
+    node_variant: &str,
     instance_id: &Name,
 ) -> std::result::Result<(), String> {
     let instance_id_str = instance_id.as_str();
@@ -334,14 +342,16 @@ pub(super) async fn stop_instance(
     // Reading it from the live entry (rather than after shutdown) avoids a
     // race with any concurrent registry mutation and matches the shape of
     // `handle_node_stop_request_inner`.
-    let pid = node_stack.find(node_name, node_tag).and_then(|handle| {
-        handle
-            .read()
-            .instances()
-            .iter()
-            .find(|inst| inst.instance_id() == instance_id)
-            .and_then(|inst| inst.pid())
-    });
+    let pid = node_stack
+        .find(node_name, node_tag, node_variant)
+        .and_then(|handle| {
+            handle
+                .read()
+                .instances()
+                .iter()
+                .find(|inst| inst.instance_id() == instance_id)
+                .and_then(|inst| inst.pid())
+        });
 
     send_shutdown_signal(
         messenger,
@@ -361,7 +371,7 @@ pub(super) async fn stop_instance(
         ));
     }
 
-    remove_instance_from_registry(node_stack, node_name, node_tag, instance_id)
+    remove_instance_from_registry(node_stack, node_name, node_tag, node_variant, instance_id)
 }
 
 /// Waits for a process to terminate, polling at regular intervals.

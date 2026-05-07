@@ -25,19 +25,22 @@ pub(super) fn validate_node_tag(node_tag: &str) -> std::io::Result<()> {
 /// Archives the contents of `source_dir` into a `.tar.zst` file in the
 /// peppy built nodes directory.
 ///
-/// The archive path follows the format: `<storage_dir>/<node_name>_<tag>.tar.zst`
+/// The archive path follows the format:
+/// `<storage_dir>/<node_name>/<node_tag>/<variant>/node.tar.zst`.
 ///
 /// Uses zstd compression level 1 (fastest speed).
 pub(super) fn archive_dir_to_storage(
     source_dir: &Path,
     node_name: &str,
     node_tag: &str,
+    variant: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<PathBuf> {
     validate_node_tag(node_tag)?;
-    let storage_dir = peppy_dirs.built_nodes_dir();
-    let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
-    config::atomic_write::publish_atomic(&storage_dir.join(&archive_name), |tmp_path| {
+    let key = config::node::NodeKey::new(node_name, node_tag, variant);
+    let storage_dir = peppy_dirs.built_nodes_dir().join(key.artifact_subpath());
+    std::fs::create_dir_all(&storage_dir)?;
+    config::atomic_write::publish_atomic(&storage_dir.join("node.tar.zst"), |tmp_path| {
         let file = File::create(tmp_path)?;
         let encoder = ZstdEncoder::new(file, 1)?;
         let mut tar_builder = tar::Builder::new(encoder);
@@ -53,24 +56,27 @@ pub(super) fn archive_dir_to_storage(
 
 /// Moves the built `.sif` container image from the working directory to peppy storage.
 ///
-/// The image is expected at `working_dir/{node_name}_{node_tag}.sif`, which is the
+/// The image is expected at `working_dir/node.sif`, which is the
 /// conventional output path produced by `apptainer build`.
 ///
-/// Returns the final storage path: `<built_nodes_dir>/<node_name>_<tag>.sif`.
+/// Returns the final storage path:
+/// `<built_nodes_dir>/<node_name>/<node_tag>/<variant>/node.sif`.
 pub(super) fn move_sif_to_storage(
     working_dir: &Path,
     node_name: &str,
     node_tag: &str,
+    variant: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<PathBuf> {
     validate_node_tag(node_tag)?;
-    let sif_name = format!("{}_{}.sif", node_name, node_tag);
-    let sif_source = working_dir.join(&sif_name);
-    let storage_dir = peppy_dirs.built_nodes_dir();
+    let sif_source = working_dir.join("node.sif");
+    let key = config::node::NodeKey::new(node_name, node_tag, variant);
+    let storage_dir = peppy_dirs.built_nodes_dir().join(key.artifact_subpath());
+    std::fs::create_dir_all(&storage_dir)?;
 
     // Copy + rename (not rename alone) because the working dir may be on a
     // different filesystem than storage.
-    config::atomic_write::publish_atomic(&storage_dir.join(&sif_name), |tmp_path| {
+    config::atomic_write::publish_atomic(&storage_dir.join("node.sif"), |tmp_path| {
         std::fs::copy(&sif_source, tmp_path)
             .map(|_| ())
             .map_err(|e| {
@@ -89,7 +95,6 @@ pub(super) fn move_sif_to_storage(
 /// Inputs needed to drive an apptainer container build to completion.
 pub(super) struct ContainerBuildInputs<'a> {
     pub working_dir: &'a Path,
-    pub node_name: &'a str,
     pub node_tag: &'a str,
     pub def_file: &'a str,
     pub apptainer_build_extra_args: &'a [String],
@@ -132,8 +137,11 @@ pub(super) async fn build_container_image(
         .map_err(|e| format!("Apptainer initialization task failed: {}", e))?
         .map_err(|e| format!("Failed to initialize Apptainer runtime: {}", e))?;
 
-    let sif_name = format!("{}_{}.sif", inputs.node_name, inputs.node_tag);
-    let output_path = inputs.working_dir.join(&sif_name);
+    // The SIF output is written into the build working directory under a
+    // stable filename and moved into per-variant storage by
+    // [`move_sif_to_storage`]. Different variants build in their own
+    // working dirs, so a fixed filename here cannot collide.
+    let output_path = inputs.working_dir.join("node.sif");
     let def_path = inputs.working_dir.join(inputs.def_file);
 
     let mut cmd_builder = apptainer.build(&output_path, &def_path);
@@ -328,7 +336,6 @@ mod tests {
         ));
         let err = build_container_image(ContainerBuildInputs {
             working_dir,
-            node_name: "sensor",
             node_tag: "../evil",
             def_file: "sensor.def",
             apptainer_build_extra_args: &[],

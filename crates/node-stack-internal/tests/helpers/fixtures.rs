@@ -53,7 +53,7 @@ pub async fn start_instance_in_stack(
     instance_id: Option<&Name>,
 ) -> RunningInstanceGuard {
     let handle = stack
-        .find(name, tag)
+        .find(name, tag, "default")
         .expect("test fixture: entity should exist for start_instance_in_stack");
     let instance_id = instance_id.cloned().unwrap_or_else(fixture_instance_name);
     real_lifecycle::spawn_running_instance(handle, harness, instance_id).await
@@ -69,7 +69,7 @@ pub fn stop_instance_in_stack(
     tag: &str,
     instance_id: &Name,
 ) -> bool {
-    let Some(handle) = stack.find(name, tag) else {
+    let Some(handle) = stack.find(name, tag, "default") else {
         return false;
     };
     handle.write().stop_instance(instance_id)

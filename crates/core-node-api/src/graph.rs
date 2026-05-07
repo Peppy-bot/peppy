@@ -130,15 +130,19 @@ pub struct SerializedNode {
     /// in-flight `Starting` instances.
     #[serde(default)]
     pub instances: Vec<SerializedInstance>,
-    /// Variant label selected at `node add` time, if any. `None` for the
-    /// synthetic root node and for non-variant add paths.
-    #[serde(default)]
-    pub variant_name: Option<String>,
+    /// Variant label captured at `node add` time. Always populated — the
+    /// synthetic root node and non-variant add paths use the literal
+    /// `"default"` string.
+    pub variant: String,
 }
 
 impl SerializedNode {
     pub fn label(&self) -> String {
-        format!("{}:{}", self.name, self.tag)
+        if self.variant == "default" {
+            format!("{}:{}", self.name, self.tag)
+        } else {
+            format!("{}:{}@{}", self.name, self.tag, self.variant)
+        }
     }
 
     /// Externally visible instance ids — the subset of `instances` that have

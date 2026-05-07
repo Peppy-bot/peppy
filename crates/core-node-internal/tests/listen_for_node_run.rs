@@ -954,6 +954,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         &first_runtime_config_json5,
         FIRST_NODE_NAME,
         FIRST_NODE_TAG,
+        "default".to_string(),
         60,
     );
     let first_goal_payload = first_goal.encode().expect("failed to encode first goal");

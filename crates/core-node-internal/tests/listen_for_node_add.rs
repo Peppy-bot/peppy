@@ -36,7 +36,7 @@ const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// the `read()` + `artifact_path().expect(...)` boilerplate.
 fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
     node_stack
-        .find(name, tag)
+        .find(name, tag, "default")
         .expect("entity should exist")
         .read()
         .artifact_path()
@@ -47,7 +47,7 @@ fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &st
 /// Returns the number of tracked instances for the entity at `(name, tag)`.
 fn entity_instance_count(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> usize {
     node_stack
-        .find(name, tag)
+        .find(name, tag, "default")
         .expect("entity should exist")
         .read()
         .instances()

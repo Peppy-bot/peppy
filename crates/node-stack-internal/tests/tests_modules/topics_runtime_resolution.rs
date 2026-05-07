@@ -78,7 +78,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
 
     // Add the lidar dependency first
     stack
-        .push_config(lidar_dependency, false, PathBuf::from("/tmp"))
+        .push_config(lidar_dependency, false, PathBuf::from("/tmp"), "default")
         .expect("dependency node has no dependencies");
     assert_eq!(
         stack.len(),
@@ -88,11 +88,11 @@ fn topic_dependency_resolved_when_dependency_added_first() {
 
     // Now add the dependent node - should succeed because dependency exists
     stack
-        .push_config(brain_dependent, false, PathBuf::from("/tmp"))
+        .push_config(brain_dependent, false, PathBuf::from("/tmp"), "default")
         .expect("dependent node should be added when dependency exists");
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
-    let dependencies = stack.dependencies_of("brain", "1.0.0");
+    let dependencies = stack.dependencies_of("brain", "1.0.0", "default");
     let dependency_names: Vec<_> = dependencies
         .iter()
         .map(|node| node.read().config().manifest.name.as_str().to_owned())
@@ -104,7 +104,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
     );
 
     let dependants = stack
-        .dependents_of("lidar", "1.0.0")
+        .dependents_of("lidar", "1.0.0", "default")
         .into_iter()
         .map(|node| node.read().config().manifest.name.as_str().to_owned())
         .collect::<Vec<_>>();
@@ -150,7 +150,7 @@ fn topic_dependency_fails_when_dependency_is_missing() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     // Adding a node that depends on a non-existent node should fail
-    let result = stack.push_config(brain_dependent, false, PathBuf::from("/tmp"));
+    let result = stack.push_config(brain_dependent, false, PathBuf::from("/tmp"), "default");
     let Err(NodeStackError::MissingDependency {
         dependency,
         dependency_tag,
@@ -232,12 +232,17 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
 
     // Add the node with the correct name but wrong topic
     stack
-        .push_config(dependency_wrong_topic, false, PathBuf::from("/tmp"))
+        .push_config(
+            dependency_wrong_topic,
+            false,
+            PathBuf::from("/tmp"),
+            "default",
+        )
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + lidar");
 
     // Adding brain should fail because lidar doesn't emit "push_lidar_object"
-    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
+    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"), "default");
     let Err(NodeStackError::MissingInterface {
         dependency,
         dependency_tag,
@@ -291,7 +296,7 @@ fn topic_dependency_fails_when_local_node_id_is_undeclared() {
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
-    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
+    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"), "default");
     let Err(NodeStackError::UndeclaredLocalNodeId { local_node_id, .. }) = result else {
         panic!("expected UndeclaredLocalNodeId error, got {:?}", result);
     };

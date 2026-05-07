@@ -49,7 +49,7 @@ async fn listen_for_node_list_returns_succeeds() {
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG, "default"));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
     let response = poll_stack_list(
@@ -141,7 +141,7 @@ async fn listen_for_node_list_returns_dot_graph() {
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG, "default"));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
     let response = poll_stack_list(

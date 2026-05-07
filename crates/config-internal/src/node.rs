@@ -12,7 +12,8 @@ pub use types::{
     ConsumedTopic, ContainerConfig, DEFAULT_VARIANT_NAME, DependsOn, EmittedTopic, Execution,
     ExposedAction, ExposedService, ExternalConsumedTopic, InterfaceKind, Interfaces,
     LinkedConsumedTopic, Manifest, MergedVariant, MessageFormat, Name, NodeConfig, NodeDependency,
-    ObjectKind, ObjectSchema, ParsedNodeConfig, PeppyNodeConfig, PeppygenLanguage, PrimitiveSchema,
-    QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, Variant,
-    VariantConfig, extract_parameter_refs, is_blocked_mount_source,
+    NodeKey, ObjectKind, ObjectSchema, ParsedNodeConfig, PeppyNodeConfig, PeppygenLanguage,
+    PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces,
+    TypeToken, Variant, VariantConfig, default_variant_name, extract_parameter_refs,
+    is_blocked_mount_source, parse_node_ref, render_node_id,
 };

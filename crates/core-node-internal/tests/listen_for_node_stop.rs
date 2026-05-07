@@ -68,7 +68,7 @@ async fn listen_for_node_stop_success() {
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG, "default"));
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     // Drive the real start lifecycle so the entity tracks a live child

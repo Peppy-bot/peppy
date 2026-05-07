@@ -11,15 +11,25 @@ use crate::error::{Error, Result};
 use peppylib::core_node::transport::poll_node_info;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
-    crate::commands::block_on(node_info_async(ctx, node_name, node_tag))
+pub fn node_info(
+    ctx: &Arc<AppContext>,
+    node_name: String,
+    node_tag: String,
+    node_variant: String,
+) -> Result<()> {
+    crate::commands::block_on(node_info_async(ctx, node_name, node_tag, node_variant))
 }
 
-async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
+async fn node_info_async(
+    ctx: &Arc<AppContext>,
+    node_name: String,
+    node_tag: String,
+    node_variant: String,
+) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     let response = poll_node_info(
-        &NodeInfoRequest::new(node_name.clone(), node_tag.clone()),
+        &NodeInfoRequest::new(node_name.clone(), node_tag.clone(), node_variant.clone()),
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
@@ -35,8 +45,8 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
     let info = match response {
         NodeInfoResponse::NotInStack => {
             return Err(Error::ExecutionFailed(format!(
-                "Node '{}:{}' is not in the node stack",
-                node_name, node_tag
+                "Node '{}' is not in the node stack",
+                config::node::render_node_id(&node_name, &node_tag, &node_variant)
             )));
         }
         NodeInfoResponse::Found(info) => info,
@@ -108,13 +118,11 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
     let _ = writeln!(out, "Node Stack Status");
     let _ = writeln!(out, "{}", "-".repeat(50));
     let _ = writeln!(out, "Stage:     {}", response.stage);
-    // Always show the selected variant. A node without an explicit
-    // variant is conceptually running the "default" variant — either
-    // literally (auto-resolved from the root manifest's `variants[]`)
-    // or effectively (no variants defined, so the root's own execution
-    // section IS the default).
-    let variant = response.variant_name.as_deref().unwrap_or("default");
-    let _ = writeln!(out, "Variant:   {}", variant);
+    // Always show the selected variant. The wire field is always
+    // populated; a node added without an explicit variant carries the
+    // literal `"default"` string (either auto-resolved from the root
+    // manifest's `variants[]` or used because no variants were defined).
+    let _ = writeln!(out, "Variant:   {}", response.variant);
     if response.instances.is_empty() {
         let _ = writeln!(out, "Instances: None tracked");
     } else {
@@ -137,7 +145,11 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
         let _ = writeln!(out);
         let _ = writeln!(out, "Logs");
         let _ = writeln!(out, "{}", "-".repeat(50));
-        let _ = writeln!(out, "{}:{}", manifest.name.as_str(), manifest.tag);
+        let _ = writeln!(
+            out,
+            "{}",
+            config::node::render_node_id(manifest.name.as_str(), &manifest.tag, &response.variant)
+        );
         if let Some(add_log_path) = response.add_log_path.as_ref() {
             let _ = writeln!(out, "  Add log: {}", add_log_path.display());
         }
@@ -502,7 +514,7 @@ mod tests {
                 PathBuf::from("/tmp/peppy/logs/run/inst-abc.log"),
                 PathBuf::from("/tmp/peppy/logs/run/inst-def.log"),
             ],
-            variant_name: None,
+            variant: config::node::DEFAULT_VARIANT_NAME.to_owned(),
         }
     }
 
@@ -554,30 +566,34 @@ mod tests {
     }
 
     #[test]
-    fn print_node_info_renders_variant_line_as_default_when_none() {
+    fn print_node_info_renders_variant_line_as_default_when_default() {
         let response = sample_response();
-        assert!(response.variant_name.is_none(), "precondition");
+        assert_eq!(
+            response.variant,
+            config::node::DEFAULT_VARIANT_NAME,
+            "precondition"
+        );
 
         let mut out = String::new();
         format_node_info(&mut out, &response);
 
         assert!(
             out.contains("Variant:   default"),
-            "Variant line should fall back to 'default' when variant_name is None:\n{out}"
+            "Variant line should render 'default' when variant is the implicit default:\n{out}"
         );
     }
 
     #[test]
-    fn print_node_info_renders_variant_line_when_present() {
+    fn print_node_info_renders_variant_line_when_explicit() {
         let mut response = sample_response();
-        response.variant_name = Some("macos".to_string());
+        response.variant = "macos".to_string();
 
         let mut out = String::new();
         format_node_info(&mut out, &response);
 
         assert!(
             out.contains("Variant:   macos"),
-            "Variant line missing when variant_name is Some:\n{out}"
+            "Variant line missing when variant is set:\n{out}"
         );
         // Variant must appear inside the Node Stack Status section, between
         // the Stage line and the Instances line.

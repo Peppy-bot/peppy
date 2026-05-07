@@ -16,6 +16,7 @@ pub fn remove_node(
     ctx: &Arc<AppContext>,
     node_name: String,
     tag: String,
+    node_variant: String,
     stop_instances: bool,
     force: bool,
 ) -> Result<()> {
@@ -23,6 +24,7 @@ pub fn remove_node(
         ctx,
         node_name,
         tag,
+        node_variant,
         stop_instances,
         force,
     ))
@@ -32,6 +34,7 @@ async fn remove_node_async(
     ctx: &Arc<AppContext>,
     node_name: String,
     tag: String,
+    node_variant: String,
     stop_instances: bool,
     force: bool,
 ) -> Result<()> {
@@ -42,11 +45,17 @@ async fn remove_node_async(
         stop_instances = true;
     }
     if !stop_instances {
-        let instance_ids =
-            fetch_instance_ids(conn.messenger, &conn.core_node_name, &node_name, &tag).await?;
+        let instance_ids = fetch_instance_ids(
+            conn.messenger,
+            &conn.core_node_name,
+            &node_name,
+            &tag,
+            &node_variant,
+        )
+        .await?;
 
         if !instance_ids.is_empty() {
-            let confirm = confirm_removal(&node_name, &tag, &instance_ids)?;
+            let confirm = confirm_removal(&node_name, &tag, &node_variant, &instance_ids)?;
             if !confirm {
                 return Err(Error::ExecutionFailed(
                     "Node removal aborted by user".to_string(),
@@ -56,13 +65,14 @@ async fn remove_node_async(
         }
     }
 
+    let label = config::node::render_node_id(&node_name, &tag, &node_variant);
     info!(
-        "Calling node_remove for '{}:{}' on daemon '{}' (stop_instances={})...",
-        node_name, tag, conn.core_node_name, stop_instances
+        "Calling node_remove for '{}' on daemon '{}' (stop_instances={})...",
+        label, conn.core_node_name, stop_instances
     );
 
     let remove_request =
-        NodeRemoveRequest::new(&node_name, &tag).with_stop_instances(stop_instances);
+        NodeRemoveRequest::new(&node_name, &tag, &node_variant).with_stop_instances(stop_instances);
     let remove_response = poll_node_remove(
         &remove_request,
         conn.messenger,
@@ -82,7 +92,7 @@ async fn remove_node_async(
         ));
     }
 
-    info!("Removed node '{}:{}'", node_name, tag);
+    info!("Removed node '{}'", label);
     Ok(())
 }
 
@@ -91,6 +101,7 @@ async fn fetch_instance_ids(
     core_node_name: &str,
     node_name: &str,
     tag: &str,
+    node_variant: &str,
 ) -> Result<Vec<String>> {
     let response = poll_stack_list(
         &StackListRequest::new(false),
@@ -108,7 +119,7 @@ async fn fetch_instance_ids(
     Ok(graph
         .nodes
         .iter()
-        .find(|node| node.name == node_name && node.tag == tag)
+        .find(|node| node.name == node_name && node.tag == tag && node.variant == node_variant)
         .map(|node| {
             node.running_instance_ids()
                 .into_iter()
@@ -118,16 +129,22 @@ async fn fetch_instance_ids(
         .unwrap_or_default())
 }
 
-fn confirm_removal(node_name: &str, tag: &str, instance_ids: &[String]) -> Result<bool> {
+fn confirm_removal(
+    node_name: &str,
+    tag: &str,
+    node_variant: &str,
+    instance_ids: &[String],
+) -> Result<bool> {
     use crate::commands::confirm::{confirm_prompt, format_instance_ids};
 
     let count = instance_ids.len();
     let suffix = if count == 1 { "instance" } else { "instances" };
     let verb = if count == 1 { "is" } else { "are" };
     let ids = format_instance_ids(instance_ids);
+    let label = config::node::render_node_id(node_name, tag, node_variant);
 
     let message = format!(
-        "Are you sure you want to remove `{node_name}:{tag}`? \
+        "Are you sure you want to remove `{label}`? \
          {count} {suffix} ({ids}) {verb} still running [y/n] ",
     );
 

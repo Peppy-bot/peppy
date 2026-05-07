@@ -69,10 +69,10 @@ async fn listen_for_node_add_variant_local_source() {
     );
 
     // Variant should be in the stack under the root node's name:tag
-    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG, "mock"));
 
     let entity = node_stack
-        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG, "mock")
         .expect("node should exist in stack");
     let entity_guard = entity.read();
     // The config in the stack should have root's interfaces but variant's runtime
@@ -188,10 +188,10 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
     );
 
     // Verify the node is in the stack with the expected merged config
-    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG, "mock"));
 
     let entity = node_stack
-        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG, "mock")
         .expect("node should exist in stack");
     let entity_guard = entity.read();
     let config = entity_guard.config();
@@ -336,10 +336,10 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
     );
 
     // Verify the node is in the stack with the expected merged config
-    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG, "mock"));
 
     let entity = node_stack
-        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG, "mock")
         .expect("node should exist in stack");
     let entity_guard = entity.read();
     let config = entity_guard.config();
@@ -463,7 +463,7 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
 
     // Node should not be in the stack
     assert!(
-        !node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG),
+        !node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG, "default"),
         "node should not be added when variant fingerprint mismatches"
     );
 }
@@ -551,10 +551,10 @@ async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
         "archive variant node_add should succeed, got error: {:?}",
         add_result.error_message
     );
-    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG, "mock"));
 
     let entity = node_stack
-        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG, "mock")
         .expect("node should exist in stack");
     let entity_guard = entity.read();
     let config = entity_guard.config();
@@ -775,7 +775,7 @@ async fn listen_for_node_add_variant_matching_interfaces_different_order() {
         "variant with matching interfaces (different order) should succeed, got error: {:?}",
         add_result.error_message
     );
-    assert!(node_stack.contains("test_node", "0.1.0"));
+    assert!(node_stack.contains("test_node", "0.1.0", "good"));
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_no_interfaces() {
@@ -838,10 +838,10 @@ async fn listen_for_node_add_variant_no_interfaces() {
         "variant without interfaces should succeed, got error: {:?}",
         add_result.error_message
     );
-    assert!(node_stack.contains("test_node", "0.1.0"));
+    assert!(node_stack.contains("test_node", "0.1.0", "minimal"));
 
     let entity = node_stack
-        .find("test_node", "0.1.0")
+        .find("test_node", "0.1.0", "minimal")
         .expect("node should exist");
     assert!(
         entity.read().config().interfaces.topics.is_some(),
@@ -1016,7 +1016,7 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
     // Verify the root manifest was used, not the variant's
     let entity = started_core_node
         .node_stack
-        .find("test_node", "0.1.0")
+        .find("test_node", "0.1.0", "custom")
         .expect("node should be in stack under root's name:tag");
     let entity_guard = entity.read();
     assert_eq!(entity_guard.config().manifest.name.as_str(), "test_node");
@@ -1099,10 +1099,10 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
         add_result.error_message
     );
 
-    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG, "default"));
 
     let entity = node_stack
-        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG, "default")
         .expect("node should exist in stack");
     let entity_guard = entity.read();
     let config = entity_guard.config();
@@ -1200,7 +1200,7 @@ async fn listen_for_node_add_default_variant_explicit_other() {
     );
 
     let entity = node_stack
-        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG, "mujoco")
         .expect("node should exist in stack");
     let entity_guard = entity.read();
     let config = entity_guard.config();
@@ -1387,10 +1387,10 @@ async fn listen_for_node_add_git_variant_verifies_git_hash_at_root() {
         add_result.error_message
     );
 
-    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG, "git_variant"));
 
     let entity = node_stack
-        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG, "git_variant")
         .expect("node should exist in stack");
     let entity_guard = entity.read();
     let config = entity_guard.config();

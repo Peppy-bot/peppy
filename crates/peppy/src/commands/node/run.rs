@@ -86,14 +86,19 @@ fn remaining_timeouts(
 ///
 /// Split out as a pure function so the stage-matching logic can be
 /// unit-tested directly.
-fn classify_stage(stage: NodeStage, node_name: &str, tag: &str) -> Result<BuildDecision> {
+fn classify_stage(
+    stage: NodeStage,
+    node_name: &str,
+    tag: &str,
+    variant: &str,
+) -> Result<BuildDecision> {
     match stage {
         NodeStage::Ready => Ok(BuildDecision::Skip),
         NodeStage::Added => Ok(BuildDecision::Build),
         NodeStage::Building => Ok(BuildDecision::Wait),
         NodeStage::Root => Err(Error::ExecutionFailed(format!(
-            "Node '{}:{}' is a root node and cannot be built or run via `node run`",
-            node_name, tag
+            "Node '{}' is a root node and cannot be built or run via `node run`",
+            config::node::render_node_id(node_name, tag, variant)
         ))),
     }
 }
@@ -107,18 +112,24 @@ async fn wait_for_build_to_finish(
     core_node_name: &str,
     node_name: &str,
     tag: &str,
+    node_variant: &str,
     timeouts: &TimeoutConfig,
 ) -> Result<()> {
+    let label = config::node::render_node_id(node_name, tag, node_variant);
     info!(
-        "Node {}:{} is already building, waiting for the in-flight build to finish...",
-        node_name, tag
+        "Node {} is already building, waiting for the in-flight build to finish...",
+        label
     );
 
     let deadline = Instant::now() + Duration::from_secs(timeouts.max_secs);
 
     loop {
         let response = poll_node_info(
-            &NodeInfoRequest::new(node_name.to_string(), tag.to_string()),
+            &NodeInfoRequest::new(
+                node_name.to_string(),
+                tag.to_string(),
+                node_variant.to_string(),
+            ),
             messenger,
             core_node_name,
             CALLER_INSTANCE_ID,
@@ -136,8 +147,8 @@ async fn wait_for_build_to_finish(
         match response {
             NodeInfoResponse::NotInStack => {
                 return Err(Error::ExecutionFailed(format!(
-                    "Node '{}:{}' disappeared from the stack while waiting for build to finish",
-                    node_name, tag
+                    "Node '{}' disappeared from the stack while waiting for build to finish",
+                    label
                 )));
             }
             NodeInfoResponse::Found(info) => match info.stage {
@@ -145,8 +156,8 @@ async fn wait_for_build_to_finish(
                 NodeStage::Building => { /* still in flight — keep polling */ }
                 other => {
                     return Err(Error::ExecutionFailed(format!(
-                        "Node '{}:{}' transitioned to unexpected stage '{}' while waiting for build to finish",
-                        node_name, tag, other
+                        "Node '{}' transitioned to unexpected stage '{}' while waiting for build to finish",
+                        label, other
                     )));
                 }
             },
@@ -154,8 +165,8 @@ async fn wait_for_build_to_finish(
 
         if Instant::now() >= deadline {
             return Err(Error::ExecutionFailed(format!(
-                "Timed out waiting for node '{}:{}' build to finish",
-                node_name, tag
+                "Timed out waiting for node '{}' build to finish",
+                label
             )));
         }
 
@@ -268,6 +279,7 @@ pub async fn run_instance_async(
     core_node_name: &str,
     node_name: &str,
     tag: &str,
+    node_variant: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
     timeouts: &TimeoutConfig,
@@ -278,10 +290,10 @@ pub async fn run_instance_async(
     // Convert CLI arguments to node arguments
     let arguments = args_to_node_arguments(args);
 
+    let label = config::node::render_node_id(node_name, tag, node_variant);
     info!(
-        "Starting node {}:{} with instance_id '{}' and {} argument(s)...",
-        node_name,
-        tag,
+        "Starting node {} with instance_id '{}' and {} argument(s)...",
+        label,
         instance_id,
         arguments.len()
     );
@@ -313,14 +325,15 @@ pub async fn run_instance_async(
         serde_json::to_string(&runtime_config).map_err(|e| Error::Sync(e.to_string()))?;
 
     info!(
-        "Calling node_run for {}:{} (instance_id={})...",
-        node_name, tag, instance_id
+        "Calling node_run for {} (instance_id={})...",
+        label, instance_id
     );
 
     let start_goal = NodeRunGoal::new(
         &runtime_config_json,
         node_name.to_string(),
         tag.to_string(),
+        node_variant.to_string(),
         timeouts.max_secs,
     )
     .with_env_vars(caller_env_overrides());
@@ -355,6 +368,7 @@ pub fn run_node(
     ctx: &Arc<AppContext>,
     node_name: String,
     tag: String,
+    node_variant: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     timeouts: TimeoutConfig,
@@ -364,6 +378,7 @@ pub fn run_node(
         ctx,
         node_name,
         tag,
+        node_variant,
         args,
         instance_id,
         timeouts,
@@ -375,6 +390,7 @@ async fn run_node_async(
     ctx: &Arc<AppContext>,
     node_name: String,
     tag: String,
+    node_variant: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     timeouts: TimeoutConfig,
@@ -389,13 +405,14 @@ async fn run_node_async(
     // uses its own fixed-30s timeout and is exempt (see
     // `NODE_INFO_PREFLIGHT_TIMEOUT` docs above).
     let start = Instant::now();
+    let label = config::node::render_node_id(&node_name, &tag, &node_variant);
 
     if build {
         // Look up the node's current lifecycle stage so we only trigger a
         // build when the node is not yet built. The same `NodeInfoRequest`
         // is used by the `node add` preflight (see add.rs).
         let response = poll_node_info(
-            &NodeInfoRequest::new(node_name.clone(), tag.clone()),
+            &NodeInfoRequest::new(node_name.clone(), tag.clone(), node_variant.clone()),
             conn.messenger,
             &conn.core_node_name,
             CALLER_INSTANCE_ID,
@@ -410,19 +427,16 @@ async fn run_node_async(
         let info = match response {
             NodeInfoResponse::NotInStack => {
                 return Err(Error::ExecutionFailed(format!(
-                    "Node '{}:{}' is not in the node stack",
-                    node_name, tag
+                    "Node '{}' is not in the node stack",
+                    label
                 )));
             }
             NodeInfoResponse::Found(info) => info,
         };
 
-        match classify_stage(info.stage, &node_name, &tag)? {
+        match classify_stage(info.stage, &node_name, &tag, &node_variant)? {
             BuildDecision::Skip => {
-                info!(
-                    "Node {}:{} has already been built, skipping build",
-                    node_name, tag
-                );
+                info!("Node {} has already been built, skipping build", label);
             }
             BuildDecision::Build => {
                 super::builder::build_node_async(
@@ -430,6 +444,7 @@ async fn run_node_async(
                     &conn.core_node_name,
                     &node_name,
                     &tag,
+                    &node_variant,
                     &remaining_timeouts(&timeouts, start, "build")?,
                     false,
                 )
@@ -441,6 +456,7 @@ async fn run_node_async(
                     &conn.core_node_name,
                     &node_name,
                     &tag,
+                    &node_variant,
                     &remaining_timeouts(&timeouts, start, "wait-for-build")?,
                 )
                 .await?;
@@ -453,6 +469,7 @@ async fn run_node_async(
         &conn.core_node_name,
         &node_name,
         &tag,
+        &node_variant,
         &args,
         instance_id,
         &remaining_timeouts(&timeouts, start, "run")?,
@@ -582,7 +599,7 @@ mod tests {
     #[test]
     fn classify_stage_ready_skips() {
         assert_eq!(
-            classify_stage(NodeStage::Ready, "n", "t").expect("Ready should classify"),
+            classify_stage(NodeStage::Ready, "n", "t", "default").expect("Ready should classify"),
             BuildDecision::Skip
         );
     }
@@ -590,7 +607,7 @@ mod tests {
     #[test]
     fn classify_stage_added_builds() {
         assert_eq!(
-            classify_stage(NodeStage::Added, "n", "t").expect("Added should classify"),
+            classify_stage(NodeStage::Added, "n", "t", "default").expect("Added should classify"),
             BuildDecision::Build
         );
     }
@@ -603,14 +620,15 @@ mod tests {
         // waits for the in-flight build instead of trying to start a new
         // one.
         assert_eq!(
-            classify_stage(NodeStage::Building, "n", "t").expect("Building should classify"),
+            classify_stage(NodeStage::Building, "n", "t", "default")
+                .expect("Building should classify"),
             BuildDecision::Wait
         );
     }
 
     #[test]
     fn classify_stage_root_fails_fast() {
-        let err = classify_stage(NodeStage::Root, "my_node", "v1")
+        let err = classify_stage(NodeStage::Root, "my_node", "v1", "default")
             .expect_err("Root should fail to classify");
         let msg = format!("{err}");
         assert!(msg.contains("my_node"), "error should name node: {msg}");

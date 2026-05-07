@@ -91,14 +91,18 @@ async fn handle_node_remove_request_inner(
     );
 
     let root_handle = node_stack.root();
-    let (root_node_name, root_node_tag) = {
+    let (root_node_name, root_node_tag, root_node_variant) = {
         let guard = root_handle.read();
         (
             guard.config().manifest.name.as_str().to_owned(),
             guard.config().manifest.tag.clone(),
+            guard.variant().to_owned(),
         )
     };
-    if request.node_name == root_node_name && request.tag == root_node_tag {
+    if request.node_name == root_node_name
+        && request.tag == root_node_tag
+        && request.node_variant == root_node_variant
+    {
         return NodeRemoveResponse::failure("Cannot remove the core node from the node stack")
             .encode()
             .map_err(Into::into);
@@ -108,11 +112,12 @@ async fn handle_node_remove_request_inner(
         let guard = handle.read();
         guard.config().manifest.name.as_str() == request.node_name
             && guard.config().manifest.tag == request.tag
+            && guard.variant() == request.node_variant
     });
     let Some(matching_entity) = matching_entity else {
         return NodeRemoveResponse::failure(format!(
-            "Node '{}:{}' not found in node stack",
-            request.node_name, request.tag
+            "Node '{}' not found in node stack",
+            config::node::render_node_id(&request.node_name, &request.tag, &request.node_variant)
         ))
         .encode()
         .map_err(Into::into);
@@ -124,6 +129,7 @@ async fn handle_node_remove_request_inner(
     struct RemovalTarget {
         node_name: String,
         node_tag: String,
+        node_variant: String,
         instance_id: Name,
     }
 
@@ -131,6 +137,7 @@ async fn handle_node_remove_request_inner(
     struct ConfigRemovalTarget {
         node_name: String,
         node_tag: String,
+        node_variant: String,
     }
 
     let mut targets: Vec<RemovalTarget> = Vec::new();
@@ -139,9 +146,11 @@ async fn handle_node_remove_request_inner(
         let guard = handle.read();
         let node_tag = guard.config().manifest.tag.clone();
         let node_name = guard.config().manifest.name.as_str().to_owned();
+        let node_variant = guard.variant().to_owned();
         config_targets.push(ConfigRemovalTarget {
             node_name: node_name.clone(),
             node_tag: node_tag.clone(),
+            node_variant: node_variant.clone(),
         });
         for instance in guard.instances() {
             // Skip Starting instances: they will resolve via the
@@ -153,6 +162,7 @@ async fn handle_node_remove_request_inner(
             targets.push(RemovalTarget {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),
+                node_variant: node_variant.clone(),
                 instance_id: instance.instance_id().clone(),
             });
         }
@@ -272,12 +282,18 @@ async fn handle_node_remove_request_inner(
     }
 
     for target in &targets {
-        let Some(handle) = node_stack.find(&target.node_name, &target.node_tag) else {
+        let Some(handle) =
+            node_stack.find(&target.node_name, &target.node_tag, &target.node_variant)
+        else {
             // Entity was concurrently removed; nothing to stop. Treat as
             // success rather than failing the whole removal request.
             debug!(
-                "Node '{}:{}' already absent from node stack; skipping instance stop",
-                target.node_name, target.node_tag
+                "Node '{}' already absent from node stack; skipping instance stop",
+                config::node::render_node_id(
+                    &target.node_name,
+                    &target.node_tag,
+                    &target.node_variant
+                )
             );
             continue;
         };
@@ -292,19 +308,28 @@ async fn handle_node_remove_request_inner(
     }
 
     for target in &config_targets {
-        match node_stack.remove_config(&target.node_name, &target.node_tag) {
+        match node_stack.remove_config(&target.node_name, &target.node_tag, &target.node_variant) {
             Ok(true) => {}
             Ok(false) => {
                 // Concurrently removed — treat as success.
                 debug!(
-                    "Node '{}:{}' already absent from node stack during remove_config",
-                    target.node_name, target.node_tag
+                    "Node '{}' already absent from node stack during remove_config",
+                    config::node::render_node_id(
+                        &target.node_name,
+                        &target.node_tag,
+                        &target.node_variant
+                    )
                 );
             }
             Err(e) => {
                 return NodeRemoveResponse::failure(format!(
-                    "Failed to remove node config '{}:{}': {}",
-                    target.node_name, target.node_tag, e
+                    "Failed to remove node config '{}': {}",
+                    config::node::render_node_id(
+                        &target.node_name,
+                        &target.node_tag,
+                        &target.node_variant
+                    ),
+                    e
                 ))
                 .encode()
                 .map_err(Into::into);

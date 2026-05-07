@@ -54,10 +54,10 @@ async fn listen_for_node_remove_success() {
         add_response.error_message
     );
 
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG, "default"));
     assert_eq!(node_stack.len(), 2, "root + added node");
     let entity = node_stack
-        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .find(TARGET_NODE_NAME, TARGET_NODE_TAG, "default")
         .expect("node should exist in stack");
     assert_eq!(
         entity.read().instances().len(),
@@ -66,7 +66,7 @@ async fn listen_for_node_remove_success() {
     );
 
     let response = poll_node_remove(
-        &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG, "default".to_string()),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -88,7 +88,7 @@ async fn listen_for_node_remove_success() {
     );
 
     assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG, "default"),
         "node should be removed from node stack"
     );
     assert_eq!(node_stack.len(), 1, "only root should remain");
@@ -104,7 +104,7 @@ async fn listen_for_node_remove_node_name_not_found_fails() {
     let before_len = node_stack.len();
 
     let response = poll_node_remove(
-        &NodeRemoveRequest::new(MISSING_NODE_NAME, MISSING_NODE_TAG),
+        &NodeRemoveRequest::new(MISSING_NODE_NAME, MISSING_NODE_TAG, "default".to_string()),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -203,7 +203,8 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let response = poll_node_remove(
-        &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
+        &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG, "default".to_string())
+            .with_stop_instances(true),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -225,7 +226,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         .expect("shutdown channel should not be dropped");
 
     assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG, "default"),
         "node should be removed from node stack"
     );
     assert_eq!(node_stack.len(), 1, "only root should remain");
@@ -303,7 +304,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     let before_len = node_stack.len();
 
     let response = poll_node_remove(
-        &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG, "default".to_string()),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -339,11 +340,11 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
 
     assert_eq!(node_stack.len(), before_len, "stack should be unchanged");
     assert!(
-        node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG, "default"),
         "node should remain in node stack"
     );
     let entity = node_stack
-        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .find(TARGET_NODE_NAME, TARGET_NODE_TAG, "default")
         .expect("node entity should still exist in stack");
     {
         let entity_guard = entity.read();

@@ -58,6 +58,7 @@ fn make_consumer_depend_on_provider(
             name: ConfigName::new(provider_name).expect("valid provider name"),
             tag: "0.1.0".to_string(),
             local_id: provider_name.to_string(),
+            variant: "default".to_string(),
         }],
     });
 

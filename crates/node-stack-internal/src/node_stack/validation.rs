@@ -38,13 +38,17 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
         .map(|dep| DependencySpec {
             node_name: dep.name.as_str().to_owned(),
             node_tag: dep.tag.clone(),
+            node_variant: dep.variant.clone(),
         })
         .collect()
 }
 
 /// Validates that all dependencies of a node config exist and expose the required interfaces.
 ///
-/// Uses the provided `resolve` closure to look up a dependency's `NodeConfig` by name and tag.
+/// Uses the provided `resolve` closure to look up a dependency's `NodeConfig` by the full
+/// `(name, tag, variant)` triple. Resolution is exact: a dependent of `foo:bar@v1` binds
+/// to that specific variant or fails validation.
+///
 /// Returns a list of all validation errors found (empty if all dependencies are satisfied).
 ///
 /// Validation is two-phase:
@@ -56,28 +60,35 @@ pub fn validate_dependency_specs(
     interfaces: &Interfaces,
     dependant_name: &str,
     dependant_tag: &str,
-    resolve: impl Fn(&str, &str) -> Option<NodeConfig>,
+    dependant_variant: &str,
+    resolve: impl Fn(&str, &str, &str) -> Option<NodeConfig>,
 ) -> Vec<crate::error::Error> {
     let mut errors = Vec::new();
 
-    // Build local_id → (name, tag, resolved_config) lookup from depends_on.nodes
-    let mut resolved_deps: HashMap<String, (String, String, NodeConfig)> = HashMap::new();
+    // Build local_id → (name, tag, variant, resolved_config) lookup from depends_on.nodes
+    let mut resolved_deps: HashMap<String, (String, String, String, NodeConfig)> = HashMap::new();
 
     // Phase 1: Validate all declared dependency nodes exist
     if let Some(depends_on) = &manifest.depends_on {
         for dep in &depends_on.nodes {
             let dep_name = dep.name.as_str().to_owned();
             let dep_tag = dep.tag.clone();
-            let Some(dependency_config) = resolve(&dep_name, &dep_tag) else {
+            let dep_variant = dep.variant.clone();
+            let Some(dependency_config) = resolve(&dep_name, &dep_tag, &dep_variant) else {
                 errors.push(crate::error::Error::MissingDependency {
                     dependant: dependant_name.to_owned(),
                     dependant_tag: dependant_tag.to_owned(),
+                    dependant_variant: dependant_variant.to_owned(),
                     dependency: dep_name,
                     dependency_tag: dep_tag,
+                    dependency_variant: dep_variant,
                 });
                 continue;
             };
-            resolved_deps.insert(dep.local_id.clone(), (dep_name, dep_tag, dependency_config));
+            resolved_deps.insert(
+                dep.local_id.clone(),
+                (dep_name, dep_tag, dep_variant, dependency_config),
+            );
         }
     }
 
@@ -153,7 +164,7 @@ pub fn validate_dependency_specs(
 fn validate_consumed_items<'a>(
     items: impl Iterator<Item = (&'a str, &'a str)>,
     kind: InterfaceKind,
-    resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
+    resolved_deps: &HashMap<String, (String, String, String, NodeConfig)>,
     declared_local_ids: &HashSet<&str>,
     dependant_name: &str,
     dependant_tag: &str,
@@ -188,12 +199,13 @@ fn validate_consumed_interface(
     local_node_id: &str,
     interface_name: &str,
     kind: InterfaceKind,
-    resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
+    resolved_deps: &HashMap<String, (String, String, String, NodeConfig)>,
     dependant_name: &str,
     dependant_tag: &str,
     errors: &mut Vec<crate::error::Error>,
 ) {
-    let Some((dep_name, dep_tag, dep_config)) = resolved_deps.get(local_node_id) else {
+    let Some((dep_name, dep_tag, _dep_variant, dep_config)) = resolved_deps.get(local_node_id)
+    else {
         // The local_node_id doesn't map to any resolved dependency.
         // This path is only reached when the dependency was declared but failed
         // to resolve (already reported as MissingDependency in Phase 1).

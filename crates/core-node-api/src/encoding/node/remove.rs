@@ -9,14 +9,20 @@ use crate::encoding::{decode_message, encode_message, optional_text};
 pub struct NodeRemoveRequest {
     pub node_name: String,
     pub tag: String,
+    pub node_variant: String,
     pub stop_instances: bool,
 }
 
 impl NodeRemoveRequest {
-    pub fn new(node_name: impl Into<String>, tag: impl Into<String>) -> Self {
+    pub fn new(
+        node_name: impl Into<String>,
+        tag: impl Into<String>,
+        node_variant: impl Into<String>,
+    ) -> Self {
         Self {
             node_name: node_name.into(),
             tag: tag.into(),
+            node_variant: node_variant.into(),
             stop_instances: false,
         }
     }
@@ -33,6 +39,7 @@ impl NodeRemoveRequest {
             request.set_node_name(&self.node_name);
             request.set_stop_instances(self.stop_instances);
             request.set_tag(&self.tag);
+            request.set_node_variant(&self.node_variant);
         }
         encode_message(&builder)
     }
@@ -43,6 +50,7 @@ impl NodeRemoveRequest {
         Ok(Self {
             node_name: request.get_node_name()?.to_str()?.to_owned(),
             tag: request.get_tag()?.to_str()?.to_owned(),
+            node_variant: request.get_node_variant()?.to_str()?.to_owned(),
             stop_instances: request.get_stop_instances(),
         })
     }
