@@ -20,7 +20,8 @@ fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node:
         .into_resolved()
         .expect("test node should resolve");
     modify(&mut cfg);
-    let content = config::json5_pretty::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
+    let content =
+        config::json5_pretty::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
     std::fs::write(peppy_json5, content).expect("peppy.json5 should update");
     config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
 }

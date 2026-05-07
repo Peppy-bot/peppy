@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_template_verbatim_when_file_missing() {
+    fn creating_new_file_preserves_template_comments_and_formatting_byte_for_byte() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let repos_path = repositories_list_path(&peppy_dirs);
@@ -140,9 +140,9 @@ mod tests {
         assert_eq!(written, DEFAULT_REPOS_TEMPLATE);
     }
 
-    /// Reproduces the reported bug: a user upgrades peppy and a new entry
-    /// (`launchers_hub`) is added to the bundled defaults, but their
-    /// pre-existing `repositories.json5` only contains the older entries.
+    /// A user upgrades peppy and a new entry (`launchers_hub`) is added
+    /// to the bundled defaults, but their pre-existing `repositories.json5`
+    /// only contains the older entries.
     /// `ensure_default_repos` must add the missing default(s) without
     /// disturbing what is already there.
     #[test]

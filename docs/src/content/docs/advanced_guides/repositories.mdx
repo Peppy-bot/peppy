@@ -5,24 +5,31 @@ sidebar:
   order: 7
 ---
 
-Repositories tell peppy where to look for nodes. When you run `peppy repo refresh`, peppy walks every configured repository, finds `peppy.json5` files, and builds an index of available nodes.
+Repositories tell peppy where to look for nodes and launchers. When you run `peppy repo refresh`, peppy walks every configured repository and indexes:
 
-Out of the box, one repository is configured:
+- **Nodes**, identified by filename — every `peppy.json5` file is treated as a node config.
+- **Launchers**, identified by content — every `.json5` file whose body declares `peppy_schema: "launcher_v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
 
-- **The community hub** (`https://github.com/Peppy-bot/nodes_hub`, tracked on `main`) — a curated collection of ready-to-use nodes.
+Out of the box, three repositories are configured:
+
+- **`nodes_hub`** (`https://github.com/Peppy-bot/nodes_hub`, tracked on `main`) — a curated collection of ready-to-use nodes.
+- **`launchers_hub`** (`https://github.com/Peppy-bot/launchers_hub`, tracked on `main`) — community launch files that compose nodes from the hubs.
+- **`openarm01_nodes`** (`https://github.com/Peppy-bot/openarm01_nodes`, tracked on `main`) — nodes specific to the OpenArm01 robot.
 
 Add your own local directory with `peppy repo add /path/to/my/nodes` so peppy can discover nodes you create locally.
 
 ## Configuration files
 
-Repository configuration lives in `~/.peppy/conf/`:
+Repository configuration lives in `~/.peppy/conf/`, and the indexes built by `peppy repo refresh` are written to `~/.peppy/cache/`:
 
 | File | Purpose |
 |------|---------|
-| `repositories.json5` | Repositories to scan |
-| `excluded_repositories.json5` | Repositories (or subdirectories) to skip |
+| `conf/repositories.json5` | Repositories to scan |
+| `conf/excluded_repositories.json5` | Repositories (or subdirectories) to skip |
+| `cache/nodes.json5` | Index of nodes discovered across repositories |
+| `cache/launchers.json5` | Index of launch files discovered across repositories |
 
-Both files are JSON5 arrays. Each entry has an `id` (auto-assigned if missing), a `type`, and source-specific fields:
+The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if missing), a `type`, and source-specific fields:
 
 ```json5
 // repositories.json5
@@ -37,11 +44,19 @@ Both files are JSON5 arrays. Each entry has an `id` (auto-assigned if missing), 
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `fs` | `path` | A local directory. Peppy recursively walks it looking for `peppy.json5` files. |
-| `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and scans for nodes. Use `ref` to pin a branch, tag, or commit. |
+| `fs` | `path` | A local directory. Peppy recursively walks it, indexing every `peppy.json5` (node) and every `.json5` file whose body declares `peppy_schema: "launcher_v1"` (launcher). |
+| `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and scans it the same way as an `fs` source. Use `ref` to pin a branch, tag, or commit. |
 | `url` | `url` | An HTTP endpoint (not yet implemented). |
 
 ## Commands
+
+### Initialize the defaults
+
+```sh
+peppy repo init
+```
+
+Syncs `repositories.json5` with the bundled default template. If the file does not yet exist it is created verbatim; otherwise any missing default entries are appended without touching your existing entries. Use this after upgrading peppy to pick up new defaults (for example when `launchers_hub` was added) without having to restart the daemon. The command operates directly on the local config file — no daemon connection is required.
 
 ### List repositories
 
@@ -57,13 +72,14 @@ Shows all discovered nodes grouped by the repository that provides them. Each gr
 peppy repo refresh
 ```
 
-Re-scans all configured repositories and rebuilds the node index. `peppy repo update` is accepted as an alias. During refresh, peppy:
+Re-scans all configured repositories and rebuilds the node and launcher indexes. `peppy repo update` is accepted as an alias. During refresh, peppy:
 
 - Reads `repositories.json5` (creates it with defaults on first run).
 - Skips any repository or path listed in `excluded_repositories.json5`.
 - Walks local directories and shallow-clones git repositories.
-- Reports each discovered node and excluded repository in real time.
-- Caches results in `~/.peppy/cache/nodes.json5`.
+- Records every `peppy.json5` as a node, and every `.json5` file whose body declares `peppy_schema: "launcher_v1"` as a launcher (file stem becomes the launcher name).
+- Reports each discovered node, launcher, and excluded repository in real time.
+- Caches results in `~/.peppy/cache/nodes.json5` and `~/.peppy/cache/launchers.json5`.
 
 When multiple repositories provide the same `name:tag` pair, the repository with the lower `id` takes priority. The duplicate is still recorded and shown in `repo list` but does not override the primary source.
 

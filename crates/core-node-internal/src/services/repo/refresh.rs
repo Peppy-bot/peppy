@@ -1224,7 +1224,7 @@ mod tests {
 
     /// End-to-end coverage of the launchers_hub flow: a git repository
     /// (cloned via libgit2's local transport) that ships a launcher at
-    /// `openarm01/openarm01_teleop.json5` should land in `launcher.json5`
+    /// `openarm01/openarm01_teleop.json5` should land in `launchers.json5`
     /// with `launcher_name = "openarm01_teleop"`, the `file://` source
     /// URI, a non-`HEAD` resolved ref, and the relative path to the
     /// `.json5` file.

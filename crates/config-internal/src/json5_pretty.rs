@@ -53,11 +53,7 @@ fn write_array(out: &mut String, arr: &[serde_json::Value], depth: usize) {
     out.push(']');
 }
 
-fn write_object(
-    out: &mut String,
-    map: &serde_json::Map<String, serde_json::Value>,
-    depth: usize,
-) {
+fn write_object(out: &mut String, map: &serde_json::Map<String, serde_json::Value>, depth: usize) {
     if map.is_empty() {
         out.push_str("{}");
         return;
