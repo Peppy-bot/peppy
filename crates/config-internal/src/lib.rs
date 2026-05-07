@@ -82,9 +82,8 @@ pub mod node {
         Name, NodeConfig, NodeConfigCreator, NodeConfigParser, NodeDependency, NodeKey, ObjectKind,
         ObjectSchema, ParsedNodeConfig, PeppyNodeConfig, PeppygenLanguage, PrimitiveSchema,
         QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, Variant,
-        VariantConfig, VariantConfigParser, default_variant_name, extract_parameter_refs,
-        find_root_node_dir, is_blocked_mount_source, load_standalone_node_config, parse_node_ref,
-        render_node_id,
+        VariantConfig, VariantConfigParser, extract_parameter_refs, find_root_node_dir,
+        is_blocked_mount_source, load_standalone_node_config, parse_node_ref, render_node_id,
     };
 }
 

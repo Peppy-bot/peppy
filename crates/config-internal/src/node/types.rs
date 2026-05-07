@@ -92,7 +92,7 @@ where
 pub const DEFAULT_VARIANT_NAME: &str = "default";
 
 /// `serde(default = ...)` helper for fields that default to the `"default"` variant.
-pub fn default_variant_name() -> String {
+fn default_variant_name() -> String {
     DEFAULT_VARIANT_NAME.to_owned()
 }
 

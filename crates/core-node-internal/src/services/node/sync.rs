@@ -299,10 +299,14 @@ async fn handle_node_sync_request_inner(
                         node_stack::NodeStackError::MissingDependency {
                             dependency,
                             dependency_tag,
+                            dependency_variant,
                             ..
                         } => {
-                            missing_dependencies
-                                .insert(format!("{}:{}", dependency, dependency_tag));
+                            missing_dependencies.insert(config::node::render_node_id(
+                                dependency,
+                                dependency_tag,
+                                dependency_variant,
+                            ));
                         }
                         node_stack::NodeStackError::MissingInterface {
                             dependency,

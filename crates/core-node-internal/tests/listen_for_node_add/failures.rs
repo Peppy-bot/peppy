@@ -153,16 +153,6 @@ async fn repo_node_add_fails_on_cycle() {
     assert_eq!(node_stack.len(), 1, "nothing should have been added");
 }
 
-// TODO: re-express via manifest-declared `NodeDependency.variant`. See failures.rs:151.
-#[ignore = "DepVariantOverride deleted; rewrite via manifest variant field"]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn repo_node_add_fails_on_unknown_dep_variant() {}
-
-// TODO: re-express via manifest-declared `NodeDependency.variant`. See failures.rs:155.
-#[ignore = "DepVariantOverride deleted; rewrite via manifest variant field"]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn repo_node_add_rejects_root_target_dep_variant_override() {}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repo_node_add_rolls_back_on_mid_batch_failure() {
     let started = start_core_node_with_mock_messenger().await;

@@ -455,6 +455,7 @@ async fn run_single_batched_add(
         batch_goal.timeout_secs,
     );
 
+    let mut variant_set_via_source = false;
     if node.is_root {
         // Env vars / force / root variant only apply to the root entity.
         sub_goal = sub_goal
@@ -462,10 +463,10 @@ async fn run_single_batched_add(
             .with_force(batch_goal.force);
         if let Some(ref v) = batch_goal.variant {
             sub_goal = sub_goal.with_variant_source(v.clone());
-        } else if node.variant != config::node::DEFAULT_VARIANT_NAME {
-            sub_goal = sub_goal.with_variant_name(node.variant.clone());
+            variant_set_via_source = true;
         }
-    } else if node.variant != config::node::DEFAULT_VARIANT_NAME {
+    }
+    if !variant_set_via_source && node.variant != config::node::DEFAULT_VARIANT_NAME {
         sub_goal = sub_goal.with_variant_name(node.variant.clone());
     }
 

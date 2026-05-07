@@ -14,6 +14,6 @@ pub use types::{
     LinkedConsumedTopic, Manifest, MergedVariant, MessageFormat, Name, NodeConfig, NodeDependency,
     NodeKey, ObjectKind, ObjectSchema, ParsedNodeConfig, PeppyNodeConfig, PeppygenLanguage,
     PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces,
-    TypeToken, Variant, VariantConfig, default_variant_name, extract_parameter_refs,
-    is_blocked_mount_source, parse_node_ref, render_node_id,
+    TypeToken, Variant, VariantConfig, extract_parameter_refs, is_blocked_mount_source,
+    parse_node_ref, render_node_id,
 };

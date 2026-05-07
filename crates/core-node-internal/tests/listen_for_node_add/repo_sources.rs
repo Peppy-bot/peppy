@@ -473,19 +473,3 @@ async fn repo_node_add_root_variant_only() {
     );
     assert!(node_stack.contains("with_variants", "0.1.0", "alt"));
 }
-
-// TODO: re-express via manifest-declared `NodeDependency.variant` instead of
-// the deleted `DepVariantOverride` plumbing. See repo_sources.rs:466.
-#[ignore = "DepVariantOverride deleted; rewrite via manifest variant field"]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn repo_node_add_dep_variants_only_no_root() {}
-
-// TODO: re-express via manifest-declared `NodeDependency.variant`. See repo_sources.rs:471.
-#[ignore = "DepVariantOverride deleted; rewrite via manifest variant field"]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn repo_node_add_dep_override_on_unrelated_node_warns() {}
-
-// TODO: re-express via manifest-declared `NodeDependency.variant`. See repo_sources.rs:476.
-#[ignore = "DepVariantOverride deleted; rewrite via manifest variant field"]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn repo_node_add_re_add_swaps_dep_variant() {}

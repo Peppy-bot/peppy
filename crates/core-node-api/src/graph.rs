@@ -138,11 +138,7 @@ pub struct SerializedNode {
 
 impl SerializedNode {
     pub fn label(&self) -> String {
-        if self.variant == "default" {
-            format!("{}:{}", self.name, self.tag)
-        } else {
-            format!("{}:{}@{}", self.name, self.tag, self.variant)
-        }
+        config::node::render_node_id(&self.name, &self.tag, &self.variant)
     }
 
     /// Externally visible instance ids — the subset of `instances` that have

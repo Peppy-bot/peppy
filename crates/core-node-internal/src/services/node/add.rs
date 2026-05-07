@@ -829,11 +829,8 @@ pub(crate) async fn run_node_add(
             None => None,
         };
 
-        // Capture the variant label alongside `effective_variant` so it can
-        // be persisted on the `NodeEntity` after `push_config` — the daemon
-        // reads it back out of the entity when answering `node_info`.
-        // Nodes without a variant context default to the literal "default"
-        // string so identity is always a non-empty triple.
+        // Identity is always a non-empty `(name, tag, variant)` triple — fall
+        // back to the literal "default" when no variant context applies.
         let variant: String = effective_variant
             .as_ref()
             .map(variant_label)

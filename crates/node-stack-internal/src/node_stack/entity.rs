@@ -641,7 +641,7 @@ impl NodeEntity {
         ctx: StartContext<'_>,
     ) -> Result<(Child, StartedInstanceCtx)> {
         // ---- Phase 1: register the Starting instance under a brief write lock ----
-        let (node_name, node_tag, node_config, artifact_path, start_generation) = {
+        let (node_name, node_tag, entity_variant, node_config, artifact_path, start_generation) = {
             let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_spawnable() {
                 return Err(Error::InvalidStageTransition {
@@ -652,6 +652,7 @@ impl NodeEntity {
                 });
             }
             let entity_generation = guard.generation;
+            let entity_variant = guard.variant.clone();
             let NodeStage::Ready {
                 artifact_path,
                 instances,
@@ -684,6 +685,7 @@ impl NodeEntity {
             (
                 guard.config.manifest.name.as_str().to_owned(),
                 guard.config.manifest.tag.clone(),
+                entity_variant,
                 guard.config.clone(),
                 snapshot_artifact,
                 entity_generation,
@@ -693,7 +695,6 @@ impl NodeEntity {
         // ---- Phase 2/3/4: I/O without any entity lock ----
         let instance_id_str = ctx.instance_id.as_str();
         let is_container = node_config.execution.container.is_some();
-        let entity_variant = handle.read().variant().to_owned();
 
         // ---- Phase 2: prepare instance dir ----
         let instance_dir = if is_container {

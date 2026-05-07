@@ -17,9 +17,7 @@ pub fn is_probably_remote_source(source: &str) -> bool {
 /// - Must not contain `/` or `\` (those would make it a path).
 /// - Must not contain `://` (URLs are caught upstream).
 /// - Must not start with `.` or `~` (relative paths).
-/// - Must contain exactly one `:` separating a non-empty name from a
-///   non-empty tag, neither of which may contain further `:`.
-/// - May carry a single trailing `@variant` suffix.
+/// - Must parse as a valid `name:tag[@variant]` reference.
 /// - The arg must not exist on disk (a directory named `foo:bar` wins).
 pub fn looks_like_repo_node_ref(source: &str) -> bool {
     if source.contains('/') || source.contains('\\') {
@@ -31,35 +29,12 @@ pub fn looks_like_repo_node_ref(source: &str) -> bool {
     if source.starts_with('.') || source.starts_with('~') {
         return false;
     }
-    let (left, variant) = match source.split_once('@') {
-        Some((left, variant)) => (left, Some(variant)),
-        None => (source, None),
-    };
-    let Some((name, tag)) = left.split_once(':') else {
+    if config::node::parse_node_ref(source).is_err() {
         return false;
-    };
-    if name.is_empty() || tag.is_empty() {
-        return false;
-    }
-    if name.contains(':') || tag.contains(':') {
-        return false;
-    }
-    // Reject strings with multiple `@` (`a:b@c@v`) or with `@` inside the
-    // name/tag slice — both would not be valid repo-node references.
-    if name.contains('@') || tag.contains('@') {
-        return false;
-    }
-    if let Some(v) = variant {
-        if v.is_empty() || v.contains('@') || v.contains(':') {
-            return false;
-        }
     }
     // Don't treat `some:path` as repo-node if a matching file/dir exists
     // on disk.
-    if Path::new(source).exists() {
-        return false;
-    }
-    true
+    !Path::new(source).exists()
 }
 
 pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSource> {
