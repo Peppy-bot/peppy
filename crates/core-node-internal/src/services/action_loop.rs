@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use peppylib::PeppyResult;
 use peppylib::messaging::{ActionCreation, ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
@@ -61,7 +62,7 @@ pub(crate) trait GoalHandler: Clone + Send + 'static {
     fn handle_goal(
         &self,
         context: ServiceRequestContext,
-        user_payload: Vec<u8>,
+        user_payload: Bytes,
         feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<Self::Result>>>,
     ) -> impl Future<Output = PeppyResult<Payload>> + Send;
@@ -232,11 +233,6 @@ pub(crate) async fn run_action_loop<H: GoalHandler>(
     }
 }
 
-/// Handles a single goal request: unwraps the wire envelope and declares a
-/// per-goal feedback publisher in one call via
-/// [`ActionFeedbackPublisherFactory::declare_from_wire`], then invokes the
-/// user's handler with the unwrapped user payload. Mirrors the lifecycle
-/// the codegen-generated `handle_goal_next_request` runs for user actions.
 async fn process_goal_request<H: GoalHandler>(
     goal_service: &mut peppylib::messaging::ServiceEndpoint,
     factory: &peppylib::messaging::ActionFeedbackPublisherFactory,
@@ -246,18 +242,12 @@ async fn process_goal_request<H: GoalHandler>(
     let factory = factory.clone();
     let handler = handler.clone();
     goal_service
-        .handle_next_request(move |context| {
-            let factory = factory.clone();
-            let handler = handler.clone();
-            let state = Arc::clone(&state);
-            async move {
-                let wire = context.message().payload();
-                let declared = factory.declare_from_wire(wire.as_ref()).await?;
-                handler
-                    .handle_goal(context, declared.user_payload, declared.publisher, state)
-                    .await
-            }
+        .handle_next_request(|context| async move {
+            let wire = context.message().payload().into_inner();
+            let declared = factory.declare_from_wire(wire).await?;
+            handler
+                .handle_goal(context, declared.user_payload, declared.publisher, state)
+                .await
         })
         .await
-        .map_err(Into::into)
 }

@@ -154,7 +154,7 @@ impl GoalHandler for NodeBuildGoalHandler {
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
-        user_payload: Vec<u8>,
+        user_payload: bytes::Bytes,
         feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<NodeBuildResult>>>,
     ) -> PeppyResult<Payload> {
@@ -174,7 +174,7 @@ impl NodeBuildGoalHandler {
     async fn handle_goal_request(
         &self,
         context: ServiceRequestContext,
-        user_payload: Vec<u8>,
+        user_payload: bytes::Bytes,
         feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<NodeBuildResult>>>,
     ) -> PeppyResult<Payload> {

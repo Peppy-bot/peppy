@@ -1569,7 +1569,7 @@ async fn action_communication_no_instance_id_target() {
                 let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
                 async move {
                     let declared = factory
-                        .declare_from_wire(request.message().payload().as_ref())
+                        .declare_from_wire(request.message().payload().into_inner())
                         .await
                         .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
@@ -1804,7 +1804,7 @@ async fn action_communication_with_instance_id_target() {
                 let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
                 async move {
                     let declared = factory
-                        .declare_from_wire(request.message().payload().as_ref())
+                        .declare_from_wire(request.message().payload().into_inner())
                         .await
                         .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
@@ -1997,7 +1997,7 @@ async fn action_communication_goal_cancelled() {
                 let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
                 async move {
                     let declared = factory
-                        .declare_from_wire(request.message().payload().as_ref())
+                        .declare_from_wire(request.message().payload().into_inner())
                         .await
                         .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
@@ -2265,7 +2265,7 @@ async fn single_action_communication_multiple_polls() {
 
                         async move {
                             let declared = factory
-                                .declare_from_wire(request.message().payload().as_ref())
+                                .declare_from_wire(request.message().payload().into_inner())
                                 .await
                                 .expect("declare from wire");
                             let payload_str = std::str::from_utf8(&declared.user_payload)

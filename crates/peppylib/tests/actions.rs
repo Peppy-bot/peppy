@@ -60,9 +60,9 @@ async fn action_messenger_communication() {
                 let factory = factory.clone();
                 let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
                 async move {
-                    let wire = req_ctx.message().payload();
+                    let wire = req_ctx.message().payload().into_inner();
                     let declared = factory
-                        .declare_from_wire(wire.as_ref())
+                        .declare_from_wire(wire)
                         .await
                         .expect("declare from wire");
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {

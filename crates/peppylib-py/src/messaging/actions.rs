@@ -25,9 +25,8 @@ pub struct PyActionFeedbackPublisher {
 
 #[pymethods]
 impl PyActionFeedbackPublisher {
-    /// Publish a feedback payload. The payload must be non-empty — empty
-    /// payloads are reserved for the end-of-stream sentinel emitted by
-    /// [`Self::publish_end`].
+    /// Publish a feedback payload. Must be non-empty: empty is reserved for
+    /// the end-of-stream sentinel emitted by [`Self::publish_end`].
     fn publish<'py>(&self, py: Python<'py>, payload: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         let publisher = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -65,10 +64,9 @@ pub struct PyActionFeedbackPublisherFactory {
 
 #[pymethods]
 impl PyActionFeedbackPublisherFactory {
-    /// Unwrap the wire envelope of an incoming goal request, extract the
-    /// embedded `goal_id`, and declare a feedback publisher bound to the
-    /// per-goal feedback topic. Returns a `(publisher, goal_id, user_payload)`
-    /// tuple — the standard server-side entry point used by the Python codegen.
+    /// Standard server-side entry point used by the Python codegen. Unwraps
+    /// the wire envelope, declares a per-goal publisher, and returns
+    /// `(publisher, goal_id, user_payload)`.
     fn declare_from_wire<'py>(
         &self,
         py: Python<'py>,
@@ -76,13 +74,16 @@ impl PyActionFeedbackPublisherFactory {
     ) -> PyResult<Bound<'py, PyAny>> {
         let factory = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let declared = factory.declare_from_wire(&wire).await.map_err(to_py_err)?;
+            let declared = factory
+                .declare_from_wire(peppylib::Payload::from(wire).into_inner())
+                .await
+                .map_err(to_py_err)?;
             Ok((
                 PyActionFeedbackPublisher {
                     inner: declared.publisher,
                 },
                 declared.goal_id,
-                declared.user_payload,
+                declared.user_payload.to_vec(),
             ))
         })
     }

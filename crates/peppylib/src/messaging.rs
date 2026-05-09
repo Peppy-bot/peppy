@@ -94,26 +94,32 @@ pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
 }
 
-/// Generates a unique request ID using SHA256 hash of timestamp + thread ID
-/// This ensures each service call has a unique correlation ID
-fn generate_request_id() -> String {
+/// 16 hex chars (64 bits) of correlation entropy, salted with `domain` so
+/// IDs from different namespaces (request, goal, ...) cannot collide on a
+/// timestamp + thread_id tie.
+pub(crate) fn generate_short_id(domain: &str) -> String {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
     let thread_id = std::thread::current().id();
 
     let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
     hasher.update(timestamp.to_le_bytes());
-    hasher.update(format!("{:?}", thread_id).as_bytes());
-
+    hasher.update(format!("{thread_id:?}").as_bytes());
     let result = hasher.finalize();
+
     use std::fmt::Write;
     let mut hex = String::with_capacity(16);
     for b in result.iter().take(8) {
-        let _ = write!(hex, "{:02x}", b);
+        let _ = write!(hex, "{b:02x}");
     }
-    hex // Use first 16 hex chars for compactness
+    hex
+}
+
+fn generate_request_id() -> String {
+    generate_short_id("request")
 }
 
 /// Formats an instance ID as a key-expression segment, returning `None` for wildcards.

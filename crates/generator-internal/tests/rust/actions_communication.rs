@@ -921,8 +921,8 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     .await?;
     println!("server accepted goal");
 
-    // Emit 3 feedback messages — the client must drain ALL of them
-    // before the End signal closes the stream.
+    // Emit 3 feedback messages; the client must drain all of them before
+    // the end-of-stream signal closes the stream.
     for i in 0..3 {
         let pos = [i, i + 1, i + 2];
         action.emit_feedback(pos).await?;

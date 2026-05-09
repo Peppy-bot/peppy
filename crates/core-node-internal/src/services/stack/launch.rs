@@ -142,7 +142,7 @@ impl GoalHandler for LaunchGoalHandler {
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
-        user_payload: Vec<u8>,
+        user_payload: bytes::Bytes,
         feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<LaunchResult>>>,
     ) -> PeppyResult<Payload> {
@@ -1419,7 +1419,7 @@ async fn start_node_instances(
 
 async fn handle_goal_request(
     context: ServiceRequestContext,
-    user_payload: Vec<u8>,
+    user_payload: bytes::Bytes,
     feedback_publisher: ActionFeedbackPublisher,
     state: Arc<Mutex<ActionState<LaunchResult>>>,
     action_context: LaunchActionContext,

@@ -172,7 +172,7 @@ The `CancelResponse` contains:
 - `accepted` — whether the cancellation was accepted.
 - `error_message` — an optional message explaining the cancellation outcome.
 
-After accepting a cancellation, the server should stop processing and not respond to the result request for that goal. When the server accepts a cancel request — or its cancel handler returns an error — the framework closes the client's feedback stream automatically: any in-flight `on_next_feedback_message` call resolves with the closed-channel error, allowing clients to break out of their drain loop cleanly.
+After accepting a cancellation, the server should stop processing and not respond to the result request for that goal. When the server accepts a cancel request, or its cancel handler returns an error, the framework closes the client's feedback stream automatically: any in-flight `on_next_feedback_message` call resolves with the closed-channel error, allowing clients to break out of their drain loop cleanly.
 
 ### Serving goals continuously
 
@@ -288,7 +288,7 @@ loop {
 }
 ```
 
-The feedback stream is automatically closed by the server when it begins handling the result request, when it accepts a cancel request, or when its cancel handler errors. Each goal cycle has its own feedback stream — the close signal for one goal does not affect concurrent goals from other clients. Clients can rely on the loop-until-error pattern to drain feedback before requesting the result.
+The feedback stream is automatically closed by the server when it begins handling the result request, when it accepts a cancel request, or when its cancel handler errors. Each goal cycle has its own feedback stream, so the close signal for one goal does not affect concurrent goals from other clients. Clients can rely on the loop-until-error pattern to drain feedback before requesting the result.
 
 ### Getting the result
 

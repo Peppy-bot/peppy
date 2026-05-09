@@ -127,7 +127,7 @@ impl GoalHandler for NodeRunGoalHandler {
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
-        user_payload: Vec<u8>,
+        user_payload: bytes::Bytes,
         feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<NodeRunResult>>>,
     ) -> PeppyResult<Payload> {
@@ -325,7 +325,7 @@ pub(crate) async fn run_node_run(
 
 async fn handle_goal_request(
     context: ServiceRequestContext,
-    user_payload: Vec<u8>,
+    user_payload: bytes::Bytes,
     feedback_publisher: ActionFeedbackPublisher,
     state: Arc<Mutex<ActionState<NodeRunResult>>>,
     action_context: NodeRunActionContext,

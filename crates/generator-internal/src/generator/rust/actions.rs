@@ -27,9 +27,6 @@ pub fn build_action_handle_struct(
     }
 
     if has_feedback {
-        // Per-goal feedback: we keep a factory plus an optional active-goal
-        // tuple `(goal_id, publisher)` populated by handle_goal_next_request
-        // and cleared on result-handled / cancel-accepted / cancel-error.
         fields.push(
             quote!(feedback_publisher_factory: peppylib::messaging::ActionFeedbackPublisherFactory),
         );
@@ -84,27 +81,21 @@ pub fn build_action_expose_method(
     }
 }
 
-/// What lifecycle role this `handle_*_next_request` plays. Determines
-/// whether the generated method extracts a goal_id from the wire payload
-/// (`Goal`) or emits a feedback End signal at appropriate boundaries
-/// (`Result`, `Cancel`).
+/// Lifecycle role of a `handle_*_next_request` method. The non-Plain
+/// variants extract or emit per-goal feedback signals around the user
+/// handler; Plain just dispatches.
 #[derive(Clone, Copy)]
 pub enum ActionHandleRole {
-    /// Service is unrelated to per-goal feedback (action without a feedback
-    /// topic, or the goal/result/cancel of such an action).
     Plain,
-    /// Goal handler when the action has a feedback topic. Unwraps the
-    /// envelope, stores `(goal_id, publisher)` on `self.current_goal` so
-    /// later `emit_feedback` calls can target the per-goal topic.
+    /// Unwrap the goal envelope and stash `(goal_id, publisher)` on
+    /// `self.current_goal` for subsequent `emit_feedback` calls.
     Goal,
-    /// Result handler when the action has a feedback topic. Emits End on
-    /// the per-goal feedback topic before awaiting the result request, then
-    /// clears `self.current_goal` once the request has been handled.
+    /// Publish the end-of-stream sentinel on the active goal's feedback
+    /// topic before serving the result request, then clear `current_goal`.
     Result,
-    /// Cancel handler when the action has a feedback topic. Inspects the
-    /// user's response: emits End and clears `self.current_goal` if the
-    /// cancel was accepted (`accepted == true`) or the user handler
-    /// returned an error.
+    /// On `accepted == true` or handler error, publish end-of-stream and
+    /// clear `current_goal`. A rejection keeps the feedback stream open
+    /// since the goal continues.
     Cancel,
 }
 
@@ -153,8 +144,6 @@ pub fn build_action_handle_method(
     }
 }
 
-/// Original behavior: invoke the user's handler via the helper, no
-/// lifecycle side effects on `self`.
 fn build_plain_handle_method(
     method_name: &Ident,
     helper_name: &Ident,
@@ -212,15 +201,6 @@ fn build_plain_handle_method(
     }
 }
 
-/// Goal handler with feedback support: hand the wire payload to
-/// `factory.declare_from_wire(...)` to get the per-goal publisher and
-/// the unwrapped user payload in one call, then invoke the user's
-/// handler. The (goal_id, publisher) pair is stashed in the closure and
-/// adopted onto `self.current_goal` after the service call completes —
-/// the closure can't mutate `&mut self` directly.
-///
-/// The helper's signature depends on whether the action declared a goal
-/// request body (`has_payload`).
 fn build_goal_handle_method(
     method_name: &Ident,
     helper_name: &Ident,
@@ -229,15 +209,11 @@ fn build_goal_handle_method(
     service_field: &Ident,
     has_payload: bool,
 ) -> TokenStream {
-    // Wrap helper_call in a block so it always evaluates to a single
-    // expression — the !has_payload branch needs a `let _ = ...` first
-    // statement which would otherwise break the surrounding `let outcome
-    // = ...` binding.
     let helper_call = if has_payload {
         quote! {
             {
                 #helper_name(
-                    declared.user_payload.as_slice(),
+                    declared.user_payload.as_ref(),
                     &handler,
                     core_node,
                     instance_id,
@@ -247,9 +223,6 @@ fn build_goal_handle_method(
     } else {
         quote! {
             {
-                // No goal request body declared; the helper doesn't take
-                // a payload argument. Consume the unwrapped bytes to
-                // silence unused-variable warnings.
                 let _ = declared.user_payload;
                 #helper_name(&handler, core_node, instance_id)
             }
@@ -272,29 +245,23 @@ fn build_goal_handle_method(
 
             let result = self
                 .#service_field
-                .handle_next_request(move |request_context| {
-                    let factory = factory.clone();
-                    let captured = std::sync::Arc::clone(&captured_for_closure);
-                    async move {
-                        let message = request_context.message();
-                        let wire = message.payload();
-                        let declared = factory
-                            .declare_from_wire(wire.as_ref())
-                            .await?;
-                        let core_node = message.core_node().to_string();
-                        let instance_id = message.instance_id().to_string();
-                        let outcome: crate::Result<peppylib::Payload> = #helper_call
-                            .map_err(|error| {
-                                peppylib::PeppyError::Io(
-                                    std::io::Error::other(error.to_string()),
-                                )
-                            });
-                        if outcome.is_ok() {
-                            *captured.lock().unwrap() =
-                                Some((declared.goal_id, declared.publisher));
-                        }
-                        outcome
+                .handle_next_request(|request_context| async move {
+                    let message = request_context.message();
+                    let wire = message.payload().into_inner();
+                    let declared = factory.declare_from_wire(wire).await?;
+                    let core_node = message.core_node().to_string();
+                    let instance_id = message.instance_id().to_string();
+                    let outcome: crate::Result<peppylib::Payload> = #helper_call
+                        .map_err(|error| {
+                            peppylib::PeppyError::Io(
+                                std::io::Error::other(error.to_string()),
+                            )
+                        });
+                    if outcome.is_ok() {
+                        *captured_for_closure.lock().unwrap() =
+                            Some((declared.goal_id, declared.publisher));
                     }
+                    outcome
                 })
                 .await?;
 
@@ -306,10 +273,6 @@ fn build_goal_handle_method(
     }
 }
 
-/// Result handler with feedback support: publish End on the per-goal
-/// feedback topic before awaiting the result request (so the client can
-/// break out of its drain loop and call `get_result`), then clear the
-/// active goal once the request is handled.
 fn build_result_handle_method(
     method_name: &Ident,
     helper_name: &Ident,
@@ -370,10 +333,6 @@ fn build_result_handle_method(
     }
 }
 
-/// Cancel handler with feedback support: invoke the user's handler, peek
-/// at the response (or error), and emit End + clear the active goal when
-/// the cancel was accepted or the handler errored. Reject (accepted=false)
-/// keeps the feedback stream open since the goal continues.
 fn build_cancel_handle_method(
     method_name: &Ident,
     helper_name: &Ident,
@@ -382,11 +341,6 @@ fn build_cancel_handle_method(
     service_field: &Ident,
     has_payload: bool,
 ) -> TokenStream {
-    // The cancel response struct exposes `data.accepted`; we inspect it
-    // BEFORE serialization by running the user handler ourselves and
-    // forwarding to the existing helper-based serialization path is too
-    // restrictive. Instead, emit a small inline closure that calls the
-    // helper and threads back whether to close feedback.
     let helper_call = if has_payload {
         quote! {
             let message = request_context.message();
@@ -422,11 +376,9 @@ fn build_cancel_handle_method(
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let close_feedback_for_closure = std::sync::Arc::clone(&close_feedback);
 
-            // Wrap the user's handler so we can inspect its outcome before
-            // the helper serializes the response. CancelResponse is a flat
-            // struct (no `.data` nesting on the exposer side) defined by
-            // `cancel_action_response_format()` with fields `accepted` and
-            // `error_message`.
+            // CancelResponse.accepted decides whether to publish end-of-stream.
+            // Inspecting it requires running the user handler ourselves rather
+            // than letting the helper serialize directly.
             let handler = std::sync::Arc::new(handler);
             let handler_for_helper = {
                 let handler = std::sync::Arc::clone(&handler);

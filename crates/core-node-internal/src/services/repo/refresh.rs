@@ -81,7 +81,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
     async fn handle_goal(
         &self,
         _context: ServiceRequestContext,
-        user_payload: Vec<u8>,
+        user_payload: bytes::Bytes,
         feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<RepoRefreshResult>>>,
     ) -> PeppyResult<Payload> {

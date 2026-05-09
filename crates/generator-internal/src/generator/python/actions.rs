@@ -301,8 +301,6 @@ pub fn build_exposed_action(
     }
     if has_feedback {
         builder.line("handle.feedback_publisher_factory = action.feedback_publisher_factory");
-        // (goal_id, ActionFeedbackPublisher) — populated when a goal is
-        // accepted, cleared when result is handled or cancel is accepted.
         builder.line("handle.current_goal = None");
     }
     builder.line("return handle");
@@ -324,17 +322,12 @@ pub fn build_exposed_action(
         ));
         builder.indent();
         if has_feedback {
-            // Closure-captured holder so we can extract the per-goal
-            // publisher (declared inside the coroutine) and adopt it onto
-            // self.current_goal once the service call completes.
             builder.line("captured = [None]");
         }
         builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
         if has_feedback {
-            // declare_from_wire absorbs the envelope unwrap + per-goal
-            // publisher declaration in one async call.
             builder.line(
                 "publisher, goal_id, payload = await self.feedback_publisher_factory.declare_from_wire(message.payload)",
             );
@@ -607,7 +600,6 @@ pub fn build_consumed_action(
         emit_format_as_dataclass(&mut builder, "GoalRequest", fmt)?;
     }
 
-    // GoalResponseData (no wrapper class — data lives on ActionHandle.data)
     if let Some(fmt) = goal_response_format {
         emit_format_as_dataclass(&mut builder, "GoalResponseData", fmt)?;
     }
@@ -748,11 +740,7 @@ pub fn build_consumed_action(
         builder.line("user_goal_payload = b\"\"");
     }
 
-    // Wrap the user payload with a per-goal correlation ID so the server
-    // can scope feedback emissions (and the end-of-stream signal) to this
-    // specific goal cycle.
-    builder.add_import("import uuid");
-    builder.line("goal_id = str(uuid.uuid4())");
+    builder.line("goal_id = peppylib.messaging.actions.generate_goal_id()");
     builder.line(
         "goal_payload = peppylib.messaging.actions.wrap_goal_payload(goal_id, user_goal_payload)",
     );

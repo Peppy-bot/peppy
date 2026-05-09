@@ -262,10 +262,7 @@ impl RustGenerator {
             ) -> crate::Result<Self> {
                 #goal_payload_tokens
 
-                // Wrap the user payload with a per-goal correlation ID so
-                // the server can scope feedback emissions (and the
-                // end-of-stream signal) to this specific goal cycle.
-                let goal_id = uuid::Uuid::new_v4().to_string();
+                let goal_id = peppylib::messaging::generate_goal_id();
                 let goal_payload = peppylib::messaging::wrap_goal_payload(
                     &goal_id,
                     goal_payload.as_ref(),
