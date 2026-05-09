@@ -494,10 +494,19 @@ impl MessengerHandle {
             .create_service_endpoint(bound_core_node, result_service_root, as_instance_id)
             .await?;
 
+        // Per-goal feedback uses `Important` (Block on congestion, DataHigh
+        // priority) rather than `Standard`. The publisher is declared inside
+        // the goal handler — the moment a fast server's first `emit_feedback`
+        // fires, the local routing tables may not yet have the client's
+        // subscription propagated through the router. Empirically, `Standard`
+        // (Drop, Data) loses the first publish in tight in-process tests;
+        // `Important` is delivered reliably. The block-on-congestion semantic
+        // is also the right call for action feedback: it's preferable to
+        // backpressure a fast emitter than to silently drop progress updates.
         let feedback_publisher_factory = actions::ActionFeedbackPublisherFactory::new(
             self.clone(),
             feedback_topic_suffix,
-            PublisherQoS::Standard,
+            PublisherQoS::Important,
         );
 
         Ok(ActionCreation {

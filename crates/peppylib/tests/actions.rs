@@ -240,39 +240,6 @@ async fn setup_goal_handshake(
     )
 }
 
-/// Drive `publisher.publish` with a short retry loop until the client
-/// confirms delivery via `on_next_feedback`. The per-goal publisher uses
-/// `PublisherQoS::Standard` (drop-on-no-match), and matching between the
-/// just-declared publisher and the client's pre-existing subscription is
-/// eventually-consistent through the Zenoh router. Without this warmup,
-/// the first publish can be silently dropped.
-async fn warm_up_feedback(
-    publisher: &ActionFeedbackPublisher,
-    goal_handle: &mut ActionGoalHandle,
-    warmup_payload: &Payload,
-) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        publisher
-            .publish(warmup_payload.clone())
-            .await
-            .expect("warmup publish should succeed");
-        match tokio::time::timeout(Duration::from_millis(100), goal_handle.on_next_feedback()).await
-        {
-            Ok(Ok(msg)) => {
-                assert_eq!(msg.payload(), warmup_payload);
-                return;
-            }
-            Ok(Err(err)) => panic!("unexpected feedback error during warmup: {err:?}"),
-            Err(_elapsed) => {
-                if tokio::time::Instant::now() >= deadline {
-                    panic!("publisher → subscriber matching never settled within timeout");
-                }
-            }
-        }
-    }
-}
-
 /// `publish_end()` must surface as `Err(ActionFeedbackChannelClosed)` on the
 /// client's drain loop. This is the messaging-layer primitive every codegen
 /// relies on; protect it with a direct test.
@@ -283,7 +250,6 @@ async fn action_feedback_publish_end_signals_channel_closed() {
         .expect("failed to start zenoh router for test");
     let (host, port) = (instance.host.clone(), instance.port);
 
-    let warmup_payload = Payload::from_static(b"warmup");
     let feedback_payload = Payload::from_static(b"50% done");
     let (publisher, mut goal_handle, scaffold) = setup_goal_handshake(
         &host,
@@ -295,10 +261,6 @@ async fn action_feedback_publish_end_signals_channel_closed() {
     )
     .await;
 
-    warm_up_feedback(&publisher, &mut goal_handle, &warmup_payload).await;
-
-    // With matching settled, the regular publish + publish_end pair must
-    // arrive in order on the client side.
     publisher
         .publish(feedback_payload.clone())
         .await
@@ -335,7 +297,6 @@ async fn action_feedback_publish_end_signals_channel_closed_via_try_next() {
         .expect("failed to start zenoh router for test");
     let (host, port) = (instance.host.clone(), instance.port);
 
-    let warmup_payload = Payload::from_static(b"warmup");
     let (publisher, mut goal_handle, scaffold) = setup_goal_handshake(
         &host,
         port,
@@ -345,8 +306,6 @@ async fn action_feedback_publish_end_signals_channel_closed_via_try_next() {
         "test_action_try",
     )
     .await;
-
-    warm_up_feedback(&publisher, &mut goal_handle, &warmup_payload).await;
 
     publisher
         .publish_end()
