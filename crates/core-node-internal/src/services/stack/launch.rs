@@ -142,10 +142,18 @@ impl GoalHandler for LaunchGoalHandler {
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
+        user_payload: Vec<u8>,
         feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<LaunchResult>>>,
     ) -> PeppyResult<Payload> {
-        handle_goal_request(context, feedback_publisher, state, self.context.clone()).await
+        handle_goal_request(
+            context,
+            user_payload,
+            feedback_publisher,
+            state,
+            self.context.clone(),
+        )
+        .await
     }
 }
 
@@ -1411,12 +1419,12 @@ async fn start_node_instances(
 
 async fn handle_goal_request(
     context: ServiceRequestContext,
+    user_payload: Vec<u8>,
     feedback_publisher: ActionFeedbackPublisher,
     state: Arc<Mutex<ActionState<LaunchResult>>>,
     action_context: LaunchActionContext,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
 
     // Check if already running (but don't set Running yet — we need the goal's timeout first)
     {
@@ -1433,7 +1441,7 @@ async fn handle_goal_request(
     }
 
     // Decode the goal before marking as Running so we can capture the user-supplied timeouts
-    let goal = match LaunchGoal::decode(payload.as_ref()) {
+    let goal = match LaunchGoal::decode(&user_payload) {
         Ok(g) => g,
         Err(e) => {
             let mut state_guard = state.lock().await;

@@ -324,20 +324,21 @@ pub fn build_exposed_action(
         ));
         builder.indent();
         if has_feedback {
-            // Closure-captured holder so we can extract goal_id from inside
-            // the coroutine and declare the per-goal publisher after.
-            builder.line("captured_goal_id = [None]");
+            // Closure-captured holder so we can extract the per-goal
+            // publisher (declared inside the coroutine) and adopt it onto
+            // self.current_goal once the service call completes.
+            builder.line("captured = [None]");
         }
         builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
         if has_feedback {
-            // Always peel the envelope on the server side, even if the
-            // user request format is empty — the wire prefix is mandatory
-            // when the action has a feedback topic.
-            builder.line("wire = message.payload");
-            builder.line("goal_id, payload = peppylib.messaging.actions.unwrap_goal_payload(wire)");
-            builder.line("captured_goal_id[0] = goal_id");
+            // declare_from_wire absorbs the envelope unwrap + per-goal
+            // publisher declaration in one async call.
+            builder.line(
+                "publisher, goal_id, payload = await self.feedback_publisher_factory.declare_from_wire(message.payload)",
+            );
+            builder.line("captured[0] = (goal_id, publisher)");
         } else if has_goal_request {
             builder.line("payload = message.payload");
         }
@@ -353,12 +354,9 @@ pub fn build_exposed_action(
         builder.dedent();
         builder.line("await self.goal_service.handle_next_request(_on_request)");
         if has_feedback {
-            builder.line("if captured_goal_id[0] is not None:");
+            builder.line("if captured[0] is not None:");
             builder.indent();
-            builder.line(
-                "publisher = await self.feedback_publisher_factory.declare(captured_goal_id[0])",
-            );
-            builder.line("self.current_goal = (captured_goal_id[0], publisher)");
+            builder.line("self.current_goal = captured[0]");
             builder.dedent();
         }
         builder.dedent();

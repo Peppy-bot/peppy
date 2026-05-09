@@ -61,6 +61,7 @@ pub(crate) trait GoalHandler: Clone + Send + 'static {
     fn handle_goal(
         &self,
         context: ServiceRequestContext,
+        user_payload: Vec<u8>,
         feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<Self::Result>>>,
     ) -> impl Future<Output = PeppyResult<Payload>> + Send;
@@ -134,30 +135,16 @@ pub(crate) async fn run_action_loop<H: GoalHandler>(
     handler: H,
 ) -> crate::Result<()> {
     let state = Arc::new(Mutex::new(ActionState::<H::Result>::default()));
-    // Core-node-internal services share a single unscoped feedback publisher
-    // across all goals — they predate per-goal feedback isolation. Migration
-    // to `feedback_publisher_factory.declare(goal_id)` is tracked separately.
-    let feedback_publisher = action.feedback_publisher_factory.declare_unscoped().await?;
+    let factory = action.feedback_publisher_factory.clone();
 
     loop {
-        let goal_result = action
-            .goal_service
-            .handle_next_request({
-                let feedback_publisher = feedback_publisher.clone();
-                let state = Arc::clone(&state);
-                let handler = handler.clone();
-                move |context| {
-                    let feedback_publisher = feedback_publisher.clone();
-                    let state = Arc::clone(&state);
-                    let handler = handler.clone();
-                    async move {
-                        handler
-                            .handle_goal(context, feedback_publisher, state)
-                            .await
-                    }
-                }
-            })
-            .await;
+        let goal_result = process_goal_request(
+            &mut action.goal_service,
+            &factory,
+            &handler,
+            Arc::clone(&state),
+        )
+        .await;
 
         match goal_result {
             Ok(true) => {
@@ -210,19 +197,12 @@ pub(crate) async fn run_action_loop<H: GoalHandler>(
                                 }
                             }
                         }
-                        goal_result = action.goal_service.handle_next_request({
-                            let feedback_publisher = feedback_publisher.clone();
-                            let state = Arc::clone(&state);
-                            let handler = handler.clone();
-                            move |context| {
-                                let feedback_publisher = feedback_publisher.clone();
-                                let state = Arc::clone(&state);
-                                let handler = handler.clone();
-                                async move {
-                                    handler.handle_goal(context, feedback_publisher, state).await
-                                }
-                            }
-                        }) => {
+                        goal_result = process_goal_request(
+                            &mut action.goal_service,
+                            &factory,
+                            &handler,
+                            Arc::clone(&state),
+                        ) => {
                             match goal_result {
                                 Ok(true) => {
                                     let mut state_guard = state.lock().await;
@@ -250,4 +230,34 @@ pub(crate) async fn run_action_loop<H: GoalHandler>(
             }
         }
     }
+}
+
+/// Handles a single goal request: unwraps the wire envelope and declares a
+/// per-goal feedback publisher in one call via
+/// [`ActionFeedbackPublisherFactory::declare_from_wire`], then invokes the
+/// user's handler with the unwrapped user payload. Mirrors the lifecycle
+/// the codegen-generated `handle_goal_next_request` runs for user actions.
+async fn process_goal_request<H: GoalHandler>(
+    goal_service: &mut peppylib::messaging::ServiceEndpoint,
+    factory: &peppylib::messaging::ActionFeedbackPublisherFactory,
+    handler: &H,
+    state: Arc<Mutex<ActionState<H::Result>>>,
+) -> peppylib::PeppyResult<bool> {
+    let factory = factory.clone();
+    let handler = handler.clone();
+    goal_service
+        .handle_next_request(move |context| {
+            let factory = factory.clone();
+            let handler = handler.clone();
+            let state = Arc::clone(&state);
+            async move {
+                let wire = context.message().payload();
+                let declared = factory.declare_from_wire(wire.as_ref()).await?;
+                handler
+                    .handle_goal(context, declared.user_payload, declared.publisher, state)
+                    .await
+            }
+        })
+        .await
+        .map_err(Into::into)
 }

@@ -127,11 +127,13 @@ impl GoalHandler for NodeRunGoalHandler {
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
+        user_payload: Vec<u8>,
         feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<NodeRunResult>>>,
     ) -> PeppyResult<Payload> {
         handle_goal_request(
             context,
+            user_payload,
             feedback_publisher,
             state,
             self.context.clone(),
@@ -323,15 +325,15 @@ pub(crate) async fn run_node_run(
 
 async fn handle_goal_request(
     context: ServiceRequestContext,
+    user_payload: Vec<u8>,
     feedback_publisher: ActionFeedbackPublisher,
     state: Arc<Mutex<ActionState<NodeRunResult>>>,
     action_context: NodeRunActionContext,
     gate: ConcurrencyGate,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
-    let payload = context.message().payload();
 
-    let goal = match NodeRunGoal::decode(payload.as_ref()) {
+    let goal = match NodeRunGoal::decode(&user_payload) {
         Ok(goal) => goal,
         Err(e) => {
             return encode_rejected_start_goal(format!("invalid payload: {}", e));

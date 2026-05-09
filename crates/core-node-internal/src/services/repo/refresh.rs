@@ -80,7 +80,8 @@ impl GoalHandler for RepoRefreshGoalHandler {
 
     async fn handle_goal(
         &self,
-        context: ServiceRequestContext,
+        _context: ServiceRequestContext,
+        user_payload: Vec<u8>,
         feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<RepoRefreshResult>>>,
     ) -> PeppyResult<Payload> {
@@ -99,8 +100,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
             }
         }
 
-        let payload = context.message().payload();
-        if let Err(e) = RepoRefreshGoal::decode(payload.as_ref()) {
+        if let Err(e) = RepoRefreshGoal::decode(&user_payload) {
             let response =
                 RepoRefreshGoalResponse::rejected(format!("invalid goal payload: {}", e));
             *state.lock().await = ActionState::Rejected;

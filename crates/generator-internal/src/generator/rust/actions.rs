@@ -212,11 +212,15 @@ fn build_plain_handle_method(
     }
 }
 
-/// Goal handler with feedback support: unwrap the envelope, stash goal_id
-/// inside the closure, then declare the per-goal publisher after the
-/// service call completes. The wire envelope is always present (the
-/// codegen wraps even empty user payloads), but the helper's signature
-/// depends on whether the action declared a goal request body.
+/// Goal handler with feedback support: hand the wire payload to
+/// `factory.declare_from_wire(...)` to get the per-goal publisher and
+/// the unwrapped user payload in one call, then invoke the user's
+/// handler. The (goal_id, publisher) pair is stashed in the closure and
+/// adopted onto `self.current_goal` after the service call completes —
+/// the closure can't mutate `&mut self` directly.
+///
+/// The helper's signature depends on whether the action declared a goal
+/// request body (`has_payload`).
 fn build_goal_handle_method(
     method_name: &Ident,
     helper_name: &Ident,
@@ -225,21 +229,30 @@ fn build_goal_handle_method(
     service_field: &Ident,
     has_payload: bool,
 ) -> TokenStream {
+    // Wrap helper_call in a block so it always evaluates to a single
+    // expression — the !has_payload branch needs a `let _ = ...` first
+    // statement which would otherwise break the surrounding `let outcome
+    // = ...` binding.
     let helper_call = if has_payload {
         quote! {
-            #helper_name(
-                user_payload,
-                &handler,
-                core_node,
-                instance_id,
-            )
+            {
+                #helper_name(
+                    declared.user_payload.as_slice(),
+                    &handler,
+                    core_node,
+                    instance_id,
+                )
+            }
         }
     } else {
         quote! {
-            // user_payload is empty (no goal request body); the helper
-            // doesn't take a payload argument.
-            let _ = user_payload;
-            #helper_name(&handler, core_node, instance_id)
+            {
+                // No goal request body declared; the helper doesn't take
+                // a payload argument. Consume the unwrapped bytes to
+                // silence unused-variable warnings.
+                let _ = declared.user_payload;
+                #helper_name(&handler, core_node, instance_id)
+            }
         }
     };
 
@@ -251,46 +264,42 @@ fn build_goal_handle_method(
         where
             F: Fn(#request_struct) -> crate::Result<#response_struct>,
         {
-            let goal_id_holder: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+            type Captured = (String, peppylib::messaging::ActionFeedbackPublisher);
+            let captured: std::sync::Arc<std::sync::Mutex<Option<Captured>>> =
                 std::sync::Arc::new(std::sync::Mutex::new(None));
-            let goal_id_holder_for_closure = std::sync::Arc::clone(&goal_id_holder);
+            let captured_for_closure = std::sync::Arc::clone(&captured);
+            let factory = self.feedback_publisher_factory.clone();
 
             let result = self
                 .#service_field
                 .handle_next_request(move |request_context| {
-                    let goal_id_holder = std::sync::Arc::clone(&goal_id_holder_for_closure);
+                    let factory = factory.clone();
+                    let captured = std::sync::Arc::clone(&captured_for_closure);
                     async move {
                         let message = request_context.message();
                         let wire = message.payload();
-                        let (goal_id, user_payload) =
-                            peppylib::messaging::unwrap_goal_payload(wire.as_ref())
-                                .map_err(|e| peppylib::PeppyError::Io(
-                                    std::io::Error::other(e.to_string()),
-                                ))?;
-                        *goal_id_holder.lock().unwrap() = Some(goal_id.to_string());
+                        let declared = factory
+                            .declare_from_wire(wire.as_ref())
+                            .await?;
                         let core_node = message.core_node().to_string();
                         let instance_id = message.instance_id().to_string();
-                        #helper_call
-                        .map_err(|error| {
-                            peppylib::PeppyError::Io(
-                                std::io::Error::other(error.to_string()),
-                            )
-                        })
+                        let outcome: crate::Result<peppylib::Payload> = #helper_call
+                            .map_err(|error| {
+                                peppylib::PeppyError::Io(
+                                    std::io::Error::other(error.to_string()),
+                                )
+                            });
+                        if outcome.is_ok() {
+                            *captured.lock().unwrap() =
+                                Some((declared.goal_id, declared.publisher));
+                        }
+                        outcome
                     }
                 })
                 .await?;
 
-            // Drop the MutexGuard before awaiting `declare()` to avoid
-            // clippy::await_holding_lock; the value has already been
-            // captured by the closure above so the lock is no longer
-            // needed.
-            let captured_goal_id = goal_id_holder.lock().unwrap().take();
-            if result && let Some(goal_id) = captured_goal_id {
-                let publisher = self
-                    .feedback_publisher_factory
-                    .declare(&goal_id)
-                    .await?;
-                self.current_goal = Some((goal_id, publisher));
+            if result && let Some(active_goal) = captured.lock().unwrap().take() {
+                self.current_goal = Some(active_goal);
             }
             Ok(result)
         }

@@ -7,27 +7,54 @@ use crate::types::{Message, Payload};
 use bytes::{BufMut, BytesMut};
 use config::node::QoSProfile;
 use pmi::{MessengerBackend, PublisherQoS};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::Duration;
 
 pub struct ActionMessenger;
 
-/// Wire-format envelope helpers for goal payloads.
-///
-/// The codegen prepends a length-byte-prefixed `goal_id` to each goal
-/// request payload so the server can route feedback to a per-goal topic.
-/// `goal_id.len()` must fit in a single byte (UUID v4 strings are 36 bytes
-/// — well within range). An empty `goal_id` encodes as a single 0 byte
-/// followed by the user payload.
+/// Generate a unique `goal_id` suitable for `ActionMessenger::send_goal`
+/// and per-goal feedback topic scoping. Returns 16 hex chars (64 bits of
+/// entropy from a SHA-256 of timestamp + thread id).
+pub fn generate_goal_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let thread_id = std::thread::current().id();
+
+    let mut hasher = Sha256::new();
+    hasher.update(timestamp.to_le_bytes());
+    hasher.update(format!("{thread_id:?}").as_bytes());
+    let result = hasher.finalize();
+
+    use std::fmt::Write;
+    let mut hex = String::with_capacity(16);
+    for b in result.iter().take(8) {
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
+}
+
+/// Wrap a user goal payload with a length-prefixed `goal_id` so the server
+/// can route feedback to a per-goal topic. `goal_id` must be non-empty and
+/// at most 255 bytes (UUID v4 strings or [`generate_goal_id`] outputs are
+/// well within range).
 ///
 /// Layout: `[goal_id_len: u8][goal_id_bytes: ASCII][user_payload]`.
 ///
-/// These helpers are used by the codegen-generated action server/client
-/// pair. Callers that send goal payloads through other paths (e.g. the
-/// internal `core-node-internal` action services that bypass the codegen)
-/// must agree on the same wire format with their peer; see also
-/// [`ActionFeedbackPublisherFactory::declare_unscoped`].
+/// All goal-payload-emitting callers (codegen-generated `fire_goal`,
+/// `core-node-internal` service clients, peppylib internal transport)
+/// must wrap their payload here. Servers must call [`unwrap_goal_payload`]
+/// before deserializing.
 pub fn wrap_goal_payload(goal_id: &str, user_payload: &[u8]) -> Result<Payload> {
+    if goal_id.is_empty() {
+        return Err(Error::InternalEncodingError {
+            identifier: "action_goal_envelope".to_string(),
+            reason: "goal_id must be non-empty".to_string(),
+        });
+    }
     if goal_id.len() > u8::MAX as usize {
         return Err(Error::InternalEncodingError {
             identifier: "action_goal_envelope".to_string(),
@@ -45,13 +72,19 @@ pub fn wrap_goal_payload(goal_id: &str, user_payload: &[u8]) -> Result<Payload> 
     Ok(Payload::from(buf.freeze()))
 }
 
-/// Decode an action goal envelope. Returns the embedded `goal_id` (may be
-/// empty) and the user payload bytes. See [`wrap_goal_payload`].
+/// Decode an action goal envelope. Returns the embedded `goal_id` (always
+/// non-empty) and the user payload bytes. See [`wrap_goal_payload`].
 pub fn unwrap_goal_payload(wire: &[u8]) -> Result<(&str, &[u8])> {
     let goal_id_len = *wire.first().ok_or_else(|| Error::InternalEncodingError {
         identifier: "action_goal_envelope".to_string(),
         reason: "wire payload is empty".to_string(),
     })? as usize;
+    if goal_id_len == 0 {
+        return Err(Error::InternalEncodingError {
+            identifier: "action_goal_envelope".to_string(),
+            reason: "goal_id is empty".to_string(),
+        });
+    }
     let body_start = 1 + goal_id_len;
     if wire.len() < body_start {
         return Err(Error::InternalEncodingError {
@@ -101,10 +134,29 @@ impl ActionFeedbackPublisher {
     }
 }
 
+/// Outcome of [`ActionFeedbackPublisherFactory::declare_from_wire`]. The
+/// factory peels the goal envelope off the wire payload and uses the
+/// extracted `goal_id` to declare a per-goal `ActionFeedbackPublisher`,
+/// returning all three pieces so the caller can dispatch the user payload
+/// to the goal handler.
+pub struct DeclaredFeedback {
+    /// Per-goal feedback publisher. End-of-stream signals emitted via
+    /// [`ActionFeedbackPublisher::publish_end`] only reach subscribers of
+    /// this specific goal cycle.
+    pub publisher: ActionFeedbackPublisher,
+    /// The goal correlation ID extracted from the wire envelope.
+    pub goal_id: String,
+    /// The user payload (envelope stripped) ready to be deserialized by
+    /// the goal handler.
+    pub user_payload: Vec<u8>,
+}
+
 /// Vends per-goal [`ActionFeedbackPublisher`]s. Returned by
-/// [`ActionMessenger::expose`] inside an [`ActionCreation`] — the codegen
-/// calls [`Self::declare`] from inside `handle_goal_next_request` once a
-/// goal is accepted, scoping the feedback topic to that single goal cycle.
+/// [`ActionMessenger::expose`] inside an [`ActionCreation`] — server-side
+/// callers pass each incoming goal request's wire bytes to
+/// [`Self::declare_from_wire`], which extracts the embedded `goal_id`
+/// (originated by the client and carried through the goal envelope) and
+/// declares a feedback publisher scoped to that single goal cycle.
 #[derive(Clone)]
 pub struct ActionFeedbackPublisherFactory {
     messenger: MessengerHandle,
@@ -121,25 +173,32 @@ impl ActionFeedbackPublisherFactory {
         }
     }
 
-    /// Declare a feedback publisher whose topic key is the action's base
-    /// feedback topic suffixed with `/<goal_id>`. End-of-stream signals
-    /// emitted via [`ActionFeedbackPublisher::publish_end`] only reach
-    /// subscribers of this specific goal cycle.
-    pub async fn declare(&self, goal_id: &str) -> Result<ActionFeedbackPublisher> {
+    /// Unwrap the wire envelope of an incoming goal request, extract the
+    /// embedded `goal_id`, and declare a feedback publisher bound to the
+    /// per-goal feedback topic. Returns the publisher, the `goal_id`, and
+    /// the user payload (envelope stripped) so the caller can dispatch it
+    /// to the goal handler.
+    ///
+    /// This is the standard server-side entry point — it absorbs the
+    /// `unwrap_goal_payload` + `declare` boilerplate that every action
+    /// handler would otherwise duplicate.
+    pub async fn declare_from_wire(&self, wire: &[u8]) -> Result<DeclaredFeedback> {
+        let (goal_id, user_payload) = unwrap_goal_payload(wire)?;
+        let publisher = self.declare(goal_id).await?;
+        Ok(DeclaredFeedback {
+            publisher,
+            goal_id: goal_id.to_string(),
+            user_payload: user_payload.to_vec(),
+        })
+    }
+
+    /// Low-level primitive: declare a feedback publisher whose topic key
+    /// is the action's base feedback topic suffixed with `/<goal_id>`.
+    /// Used internally by [`Self::declare_from_wire`]; exposed
+    /// crate-locally for peppylib's own tests that build the goal_id
+    /// out-of-band. Outside callers should use `declare_from_wire`.
+    async fn declare(&self, goal_id: &str) -> Result<ActionFeedbackPublisher> {
         let topic = format!("{}/{}", self.base_topic, goal_id);
-        self.declare_with_topic(topic).await
-    }
-
-    /// Declare a feedback publisher bound to the action's base topic without
-    /// per-goal scoping. Use this only for callers (e.g. core-node-internal
-    /// service actions) that have not migrated to per-goal feedback streams —
-    /// matching subscribers must use an empty `goal_id` in
-    /// [`ActionMessenger::send_goal`].
-    pub async fn declare_unscoped(&self) -> Result<ActionFeedbackPublisher> {
-        self.declare_with_topic(self.base_topic.clone()).await
-    }
-
-    async fn declare_with_topic(&self, topic: String) -> Result<ActionFeedbackPublisher> {
         let inner = self
             .messenger
             .declare_publisher(topic.clone(), self.qos)
@@ -274,11 +333,12 @@ impl ActionMessenger {
 
     /// Send a goal to an action server.
     ///
-    /// `goal_id` scopes the feedback subscription to a single goal cycle. Pass
-    /// a unique value (e.g. UUID) per call to ensure End-of-stream signals from
-    /// other goals don't terminate this client's stream. An empty string is
-    /// reserved for legacy "unscoped" callers and matches a server publisher
-    /// declared via [`ActionFeedbackPublisherFactory::declare_unscoped`].
+    /// `goal_id` scopes the feedback subscription to a single goal cycle.
+    /// Pass a unique value (e.g. [`generate_goal_id`] or a UUID) per call so
+    /// End-of-stream signals from other goals don't terminate this client's
+    /// stream. The server side must wrap its goal payload via
+    /// [`wrap_goal_payload`] with the same `goal_id`, so the action handler
+    /// can declare a per-goal feedback publisher.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
@@ -293,21 +353,22 @@ impl ActionMessenger {
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let goal_segment = if goal_id.is_empty() {
-            String::new()
-        } else {
-            format!("/{goal_id}")
-        };
+        if goal_id.is_empty() {
+            return Err(Error::InternalEncodingError {
+                identifier: "action_goal_envelope".to_string(),
+                reason: "goal_id passed to send_goal must be non-empty".to_string(),
+            });
+        }
         let feedback_topic = {
             let sender_core_node = target_core_instance_id.unwrap_or("*");
             match target_instance_id {
                 Some(target_instance_id) => {
                     format!(
-                        "{as_core_node}/{sender_core_node}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}{goal_segment}"
+                        "{as_core_node}/{sender_core_node}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}/{goal_id}"
                     )
                 }
                 None => format!(
-                    "{as_core_node}/*/{as_instance_id}/*/action/{to_node_name}/{to_action_name}/feedback/*{goal_segment}"
+                    "{as_core_node}/*/{as_instance_id}/*/action/{to_node_name}/{to_action_name}/feedback/*/{goal_id}"
                 ),
             }
         };

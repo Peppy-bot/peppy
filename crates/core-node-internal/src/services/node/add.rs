@@ -94,11 +94,13 @@ impl GoalHandler for NodeAddGoalHandler {
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
+        user_payload: Vec<u8>,
         feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<NodeAddResult>>>,
     ) -> PeppyResult<Payload> {
         handle_goal_request(
             context,
+            user_payload,
             feedback_publisher,
             state,
             self.context.clone(),
@@ -1029,15 +1031,15 @@ pub(crate) async fn run_node_add(
 
 async fn handle_goal_request(
     context: ServiceRequestContext,
+    user_payload: Vec<u8>,
     feedback_publisher: ActionFeedbackPublisher,
     state: Arc<Mutex<ActionState<NodeAddResult>>>,
     action_context: NodeAddActionContext,
     gate: ConcurrencyGate,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
 
-    let goal = match NodeAddGoal::decode(payload.as_ref()) {
+    let goal = match NodeAddGoal::decode(&user_payload) {
         Ok(g) => g,
         Err(e) => return encode_rejected_goal(format!("invalid payload: {}", e)),
     };

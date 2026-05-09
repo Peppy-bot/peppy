@@ -65,19 +65,25 @@ pub struct PyActionFeedbackPublisherFactory {
 
 #[pymethods]
 impl PyActionFeedbackPublisherFactory {
-    fn declare<'py>(&self, py: Python<'py>, goal_id: String) -> PyResult<Bound<'py, PyAny>> {
+    /// Unwrap the wire envelope of an incoming goal request, extract the
+    /// embedded `goal_id`, and declare a feedback publisher bound to the
+    /// per-goal feedback topic. Returns a `(publisher, goal_id, user_payload)`
+    /// tuple — the standard server-side entry point used by the Python codegen.
+    fn declare_from_wire<'py>(
+        &self,
+        py: Python<'py>,
+        wire: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let factory = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let publisher = factory.declare(&goal_id).await.map_err(to_py_err)?;
-            Ok(PyActionFeedbackPublisher { inner: publisher })
-        })
-    }
-
-    fn declare_unscoped<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let factory = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let publisher = factory.declare_unscoped().await.map_err(to_py_err)?;
-            Ok(PyActionFeedbackPublisher { inner: publisher })
+            let declared = factory.declare_from_wire(&wire).await.map_err(to_py_err)?;
+            Ok((
+                PyActionFeedbackPublisher {
+                    inner: declared.publisher,
+                },
+                declared.goal_id,
+                declared.user_payload,
+            ))
         })
     }
 }
@@ -395,6 +401,13 @@ fn unwrap_goal_payload(wire: Vec<u8>) -> PyResult<(String, Vec<u8>)> {
     Ok((goal_id.to_string(), body.to_vec()))
 }
 
+/// Generate a unique `goal_id` for use with `ActionMessenger.send_goal` and
+/// per-goal feedback scoping. Mirrors `peppylib::messaging::generate_goal_id`.
+#[pyfunction]
+fn generate_goal_id() -> String {
+    peppylib::messaging::generate_goal_id()
+}
+
 // ---------------------------------------------------------------------------
 // Module registration
 // ---------------------------------------------------------------------------
@@ -409,6 +422,7 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     actions_module.add_class::<PyActionFeedbackPublisherFactory>()?;
     actions_module.add_function(wrap_pyfunction!(wrap_goal_payload, &actions_module)?)?;
     actions_module.add_function(wrap_pyfunction!(unwrap_goal_payload, &actions_module)?)?;
+    actions_module.add_function(wrap_pyfunction!(generate_goal_id, &actions_module)?)?;
     parent_module.add_submodule(&actions_module)?;
     Ok(())
 }

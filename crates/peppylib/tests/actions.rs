@@ -45,24 +45,38 @@ async fn action_messenger_communication() {
     let goal_resp = goal_response_payload.clone();
     let fb = feedback_payload.clone();
     let res = result_payload.clone();
+    // Server uses declare_from_wire to unwrap the envelope + declare the
+    // per-goal feedback publisher in one call, matching the goal_id the
+    // client emits below.
+    let (publisher_tx, publisher_rx) =
+        tokio::sync::oneshot::channel::<peppylib::messaging::ActionFeedbackPublisher>();
+    let factory = action.feedback_publisher_factory.clone();
     let server = tokio::spawn(async move {
-        // Handle the goal request
+        let publisher_tx = std::sync::Mutex::new(Some(publisher_tx));
         action
             .goal_service
-            .handle_next_request(|_req| {
-                let resp = goal_resp;
-                async move { Ok(resp) }
+            .handle_next_request(move |req_ctx| {
+                let resp = goal_resp.clone();
+                let factory = factory.clone();
+                let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
+                async move {
+                    let wire = req_ctx.message().payload();
+                    let declared = factory
+                        .declare_from_wire(wire.as_ref())
+                        .await
+                        .expect("declare from wire");
+                    if let Some(tx) = publisher_tx.lock().unwrap().take() {
+                        let _ = tx.send(declared.publisher);
+                    }
+                    Ok(resp)
+                }
             })
             .await
             .expect("goal handler should succeed");
 
-        // Publish feedback via an unscoped publisher (matches the empty-string
-        // goal_id passed to send_goal below).
-        let feedback_publisher = action
-            .feedback_publisher_factory
-            .declare_unscoped()
+        let feedback_publisher = publisher_rx
             .await
-            .expect("declare unscoped feedback publisher");
+            .expect("server should have captured publisher");
         feedback_publisher
             .publish(fb)
             .await
@@ -79,7 +93,10 @@ async fn action_messenger_communication() {
             .expect("result handler should succeed");
     });
 
-    // Client: send goal
+    // Client: wrap the user payload with a fresh goal_id and send.
+    let goal_id = peppylib::messaging::generate_goal_id();
+    let goal_payload =
+        peppylib::messaging::wrap_goal_payload(&goal_id, goal_payload.as_ref()).expect("wrap goal");
     let mut goal_handle = ActionMessenger::send_goal(
         &client_handle,
         core_node,
@@ -88,7 +105,7 @@ async fn action_messenger_communication() {
         action_name,
         Some(core_node),
         Some(instance_id),
-        "",
+        &goal_id,
         goal_payload,
         QoSProfile::Reliable,
         Duration::from_secs(2),

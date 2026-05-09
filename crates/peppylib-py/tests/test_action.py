@@ -7,6 +7,7 @@ crates/peppylib/tests/actions.rs.
 
 import asyncio
 
+import peppylib
 import pytest
 
 from peppylib import ActionMessenger, MessengerHandle, QoSProfile, ZenohdInstance
@@ -41,24 +42,38 @@ async def test_action_messenger_communication():
         # Allow subscriptions to propagate
         await asyncio.sleep(0.05)
 
-        # Run the server side in a spawned task
-        async def server():
-            # Handle the goal request
-            await action.goal_service.handle_next_request(
-                lambda _req: GOAL_RESPONSE_PAYLOAD
-            )
+        # Run the server side in a spawned task. The factory's
+        # declare_from_wire absorbs the envelope unwrap + per-goal publisher
+        # declaration in one call.
+        captured_publisher: list = [None]
 
-            # Publish feedback via the unscoped publisher (matches the
-            # empty-string goal_id passed by the caller below).
-            feedback_publisher = await action.feedback_publisher_factory.declare_unscoped()
-            await feedback_publisher.publish(FEEDBACK_PAYLOAD)
+        async def _on_goal(req):
+            (
+                publisher,
+                _goal_id,
+                _user_payload,
+            ) = await action.feedback_publisher_factory.declare_from_wire(
+                bytes(req.message.payload)
+            )
+            captured_publisher[0] = publisher
+            return GOAL_RESPONSE_PAYLOAD
+
+        async def server():
+            await action.goal_service.handle_next_request(_on_goal)
+
+            assert captured_publisher[0] is not None
+            await captured_publisher[0].publish(FEEDBACK_PAYLOAD)
 
             # Handle the result request
             await action.result_service.handle_next_request(lambda _req: RESULT_PAYLOAD)
 
         server_task = asyncio.create_task(server())
 
-        # Client: send goal
+        # Client: wrap the user payload with a fresh goal_id and send.
+        client_goal_id = peppylib.messaging.actions.generate_goal_id()
+        wrapped_goal_payload = peppylib.messaging.actions.wrap_goal_payload(
+            client_goal_id, GOAL_PAYLOAD
+        )
         goal_handle = await ActionMessenger.send_goal(
             client_handle,
             CORE_NODE,
@@ -67,8 +82,8 @@ async def test_action_messenger_communication():
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
-            "",
-            GOAL_PAYLOAD,
+            client_goal_id,
+            wrapped_goal_payload,
             QoSProfile.Reliable,
             2.0,
         )
@@ -126,6 +141,10 @@ async def test_cancel_goal_concurrent_with_feedback():
 
         server_task = asyncio.create_task(server())
 
+        client_goal_id = peppylib.messaging.actions.generate_goal_id()
+        wrapped_goal_payload = peppylib.messaging.actions.wrap_goal_payload(
+            client_goal_id, GOAL_PAYLOAD
+        )
         goal_handle = await ActionMessenger.send_goal(
             client_handle,
             CORE_NODE,
@@ -134,8 +153,8 @@ async def test_cancel_goal_concurrent_with_feedback():
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
-            "",
-            GOAL_PAYLOAD,
+            client_goal_id,
+            wrapped_goal_payload,
             QoSProfile.Reliable,
             2.0,
         )
@@ -172,8 +191,10 @@ async def test_send_goal_rejects_invalid_timeout():
                 ACTION_NAME,
                 CORE_NODE,
                 INSTANCE_ID,
-                "",
-                GOAL_PAYLOAD,
+                peppylib.messaging.actions.generate_goal_id(),
+                peppylib.messaging.actions.wrap_goal_payload(
+                    peppylib.messaging.actions.generate_goal_id(), GOAL_PAYLOAD
+                ),
                 QoSProfile.Reliable,
                 -1.0,
             )
@@ -205,8 +226,10 @@ async def test_send_goal_honors_target_core_node():
                 ACTION_NAME,
                 "wrong_core_node",
                 INSTANCE_ID,
-                "",
-                GOAL_PAYLOAD,
+                peppylib.messaging.actions.generate_goal_id(),
+                peppylib.messaging.actions.wrap_goal_payload(
+                    peppylib.messaging.actions.generate_goal_id(), GOAL_PAYLOAD
+                ),
                 QoSProfile.Reliable,
                 0.5,
             )
