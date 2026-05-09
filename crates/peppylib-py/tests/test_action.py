@@ -69,11 +69,6 @@ async def test_action_messenger_communication():
 
         server_task = asyncio.create_task(server())
 
-        # Client: wrap the user payload with a fresh goal_id and send.
-        client_goal_id = peppylib.messaging.actions.generate_goal_id()
-        wrapped_goal_payload = peppylib.messaging.actions.wrap_goal_payload(
-            client_goal_id, GOAL_PAYLOAD
-        )
         goal_handle = await ActionMessenger.send_goal(
             client_handle,
             CORE_NODE,
@@ -82,8 +77,7 @@ async def test_action_messenger_communication():
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
-            client_goal_id,
-            wrapped_goal_payload,
+            GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,
         )
@@ -141,10 +135,6 @@ async def test_cancel_goal_concurrent_with_feedback():
 
         server_task = asyncio.create_task(server())
 
-        client_goal_id = peppylib.messaging.actions.generate_goal_id()
-        wrapped_goal_payload = peppylib.messaging.actions.wrap_goal_payload(
-            client_goal_id, GOAL_PAYLOAD
-        )
         goal_handle = await ActionMessenger.send_goal(
             client_handle,
             CORE_NODE,
@@ -153,8 +143,7 @@ async def test_cancel_goal_concurrent_with_feedback():
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
-            client_goal_id,
-            wrapped_goal_payload,
+            GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,
         )
@@ -191,10 +180,7 @@ async def test_send_goal_rejects_invalid_timeout():
                 ACTION_NAME,
                 CORE_NODE,
                 INSTANCE_ID,
-                peppylib.messaging.actions.generate_goal_id(),
-                peppylib.messaging.actions.wrap_goal_payload(
-                    peppylib.messaging.actions.generate_goal_id(), GOAL_PAYLOAD
-                ),
+                GOAL_PAYLOAD,
                 QoSProfile.Reliable,
                 -1.0,
             )
@@ -226,10 +212,7 @@ async def test_send_goal_honors_target_core_node():
                 ACTION_NAME,
                 "wrong_core_node",
                 INSTANCE_ID,
-                peppylib.messaging.actions.generate_goal_id(),
-                peppylib.messaging.actions.wrap_goal_payload(
-                    peppylib.messaging.actions.generate_goal_id(), GOAL_PAYLOAD
-                ),
+                GOAL_PAYLOAD,
                 QoSProfile.Reliable,
                 0.5,
             )

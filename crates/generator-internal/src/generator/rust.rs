@@ -262,12 +262,6 @@ impl RustGenerator {
             ) -> crate::Result<Self> {
                 #goal_payload_tokens
 
-                let goal_id = peppylib::messaging::generate_goal_id();
-                let goal_payload = peppylib::messaging::wrap_goal_payload(
-                    &goal_id,
-                    goal_payload.as_ref(),
-                )?;
-
                 let action_handle = peppylib::ActionMessenger::send_goal(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
@@ -276,7 +270,6 @@ impl RustGenerator {
                     TARGET_ACTION_NAME,
                     target_core_node,
                     target_instance_id,
-                    &goal_id,
                     goal_payload,
                     feedback_qos,
                     timeout,

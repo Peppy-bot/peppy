@@ -345,10 +345,6 @@ async fn send_launch_origin_and_wait(
         .encode()
         .map_err(|e| format!("Failed to encode launch goal: {e}"))?;
 
-    let goal_id = peppylib::messaging::generate_goal_id();
-    let goal_payload = peppylib::messaging::wrap_goal_payload(&goal_id, goal_payload.as_ref())
-        .expect("wrap goal payload");
-
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
         core_node_name,
@@ -357,7 +353,6 @@ async fn send_launch_origin_and_wait(
         names::STACK_LAUNCH_ACTION,
         None,
         None,
-        &goal_id,
         goal_payload,
         config::node::QoSProfile::default(),
         goal_timeout,

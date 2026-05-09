@@ -36,11 +36,6 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     let first_goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
     let first_goal_payload = first_goal.encode().expect("failed to encode goal");
 
-    let goal_id = peppylib::messaging::generate_goal_id();
-    let first_goal_payload =
-        peppylib::messaging::wrap_goal_payload(&goal_id, first_goal_payload.as_ref())
-            .expect("wrap goal payload");
-
     let first_action_handle = ActionMessenger::send_goal(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -49,7 +44,6 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,
-        &goal_id,
         first_goal_payload,
         QoSProfile::default(),
         GOAL_TIMEOUT,
@@ -133,11 +127,6 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     );
     let first_goal_payload = first_goal.encode().expect("failed to encode goal");
 
-    let goal_id = peppylib::messaging::generate_goal_id();
-    let first_goal_payload =
-        peppylib::messaging::wrap_goal_payload(&goal_id, first_goal_payload.as_ref())
-            .expect("wrap goal payload");
-
     let first_action_handle = ActionMessenger::send_goal(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -146,7 +135,6 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,
-        &goal_id,
         first_goal_payload,
         QoSProfile::default(),
         GOAL_TIMEOUT,

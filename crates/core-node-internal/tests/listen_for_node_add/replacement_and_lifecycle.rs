@@ -512,11 +512,6 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     );
     let first_goal_payload = first_goal.encode().expect("failed to encode goal");
 
-    let goal_id = peppylib::messaging::generate_goal_id();
-    let first_goal_payload =
-        peppylib::messaging::wrap_goal_payload(&goal_id, first_goal_payload.as_ref())
-            .expect("wrap goal payload");
-
     let first_action_handle = ActionMessenger::send_goal(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -525,7 +520,6 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,
-        &goal_id,
         first_goal_payload,
         QoSProfile::default(),
         GOAL_TIMEOUT,

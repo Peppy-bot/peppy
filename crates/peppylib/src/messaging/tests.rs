@@ -1641,10 +1641,6 @@ async fn action_communication_no_instance_id_target() {
     {
         let caller_handle = router.messenger().await;
 
-        // Client wraps the user payload with a fresh goal_id and sends.
-        let goal_id = crate::messaging::generate_goal_id();
-        let goal_payload = crate::messaging::wrap_goal_payload(&goal_id, goal_payload.as_ref())
-            .expect("wrap goal payload");
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
             CALLER_CORE_NODE,
@@ -1653,7 +1649,6 @@ async fn action_communication_no_instance_id_target() {
             listener_action_name,
             None, // No target core_id
             None, // No target instance_id
-            &goal_id,
             goal_payload,
             QoSProfile::Reliable,
             Duration::from_millis(1000),
@@ -1876,10 +1871,6 @@ async fn action_communication_with_instance_id_target() {
     {
         let caller_handle = router.messenger().await;
 
-        // Client wraps the user payload with a fresh goal_id and sends.
-        let goal_id = crate::messaging::generate_goal_id();
-        let goal_payload = crate::messaging::wrap_goal_payload(&goal_id, goal_payload.as_ref())
-            .expect("wrap goal payload");
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
             CALLER_CORE_NODE,
@@ -1888,7 +1879,6 @@ async fn action_communication_with_instance_id_target() {
             listener_action_name,
             Some(LISTENER_CORE_NODE2),
             Some(LISTENER_INSTANCE_ID2),
-            &goal_id,
             goal_payload,
             QoSProfile::Reliable,
             Duration::from_millis(1000),
@@ -2093,9 +2083,6 @@ async fn action_communication_goal_cancelled() {
 
     let caller_handle = router.messenger().await;
 
-    let goal_id = crate::messaging::generate_goal_id();
-    let goal_payload = crate::messaging::wrap_goal_payload(&goal_id, goal_payload.as_ref())
-        .expect("wrap goal payload");
     let mut goal_handle = ActionMessenger::send_goal(
         &caller_handle,
         CALLER_CORE_NODE,
@@ -2104,7 +2091,6 @@ async fn action_communication_goal_cancelled() {
         listener_action_name,
         Some(LISTENER_CORE_NODE),
         Some(LISTENER_INSTANCE_ID),
-        &goal_id,
         goal_payload,
         QoSProfile::Reliable,
         Duration::from_millis(1000),
@@ -2357,9 +2343,6 @@ async fn single_action_communication_multiple_polls() {
         let handle = tokio::spawn(async move {
             let caller_handle = connect_messenger(&host, port).await;
 
-            let goal_id = crate::messaging::generate_goal_id();
-            let wrapped = crate::messaging::wrap_goal_payload(&goal_id, case.goal.as_ref())
-                .expect("wrap goal payload");
             let mut goal_handle = ActionMessenger::send_goal(
                 &caller_handle,
                 CALLER_CORE_NODE,
@@ -2368,8 +2351,7 @@ async fn single_action_communication_multiple_polls() {
                 listener_action_name,
                 None,
                 None,
-                &goal_id,
-                wrapped,
+                case.goal.clone(),
                 QoSProfile::Reliable,
                 Duration::from_millis(1000),
             )

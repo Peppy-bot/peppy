@@ -155,10 +155,6 @@ async fn send_refresh_inner(
     let goal = RepoRefreshGoal;
     let goal_payload = goal.encode().expect("encode goal");
 
-    let goal_id = peppylib::messaging::generate_goal_id();
-    let goal_payload = peppylib::messaging::wrap_goal_payload(&goal_id, goal_payload.as_ref())
-        .expect("wrap goal payload");
-
     let mut action_handle = ActionMessenger::send_goal(
         &started.caller_handle,
         caller_core_node,
@@ -167,7 +163,6 @@ async fn send_refresh_inner(
         names::REPO_REFRESH_ACTION,
         Some(&started.core_node_name),
         None,
-        &goal_id,
         goal_payload,
         QoSProfile::default(),
         Duration::from_secs(5),

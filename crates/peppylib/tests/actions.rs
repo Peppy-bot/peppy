@@ -93,10 +93,6 @@ async fn action_messenger_communication() {
             .expect("result handler should succeed");
     });
 
-    // Client: wrap the user payload with a fresh goal_id and send.
-    let goal_id = peppylib::messaging::generate_goal_id();
-    let goal_payload =
-        peppylib::messaging::wrap_goal_payload(&goal_id, goal_payload.as_ref()).expect("wrap goal");
     let mut goal_handle = ActionMessenger::send_goal(
         &client_handle,
         core_node,
@@ -105,7 +101,6 @@ async fn action_messenger_communication() {
         action_name,
         Some(core_node),
         Some(instance_id),
-        &goal_id,
         goal_payload,
         QoSProfile::Reliable,
         Duration::from_secs(2),

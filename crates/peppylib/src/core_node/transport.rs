@@ -72,8 +72,6 @@ async fn send_core_node_goal(
     goal_payload: Payload,
     goal_timeout: Duration,
 ) -> Result<ActionGoalHandle> {
-    let goal_id = crate::messaging::generate_goal_id();
-    let wrapped = crate::messaging::wrap_goal_payload(&goal_id, goal_payload.as_ref())?;
     ActionMessenger::send_goal(
         route.messenger,
         route.as_core_node,
@@ -82,8 +80,7 @@ async fn send_core_node_goal(
         route.action_name,
         route.target_core_node,
         route.target_instance_id,
-        &goal_id,
-        wrapped,
+        goal_payload,
         QoSProfile::default(),
         goal_timeout,
     )

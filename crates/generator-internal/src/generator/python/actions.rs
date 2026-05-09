@@ -331,7 +331,6 @@ pub fn build_exposed_action(
             builder.line(
                 "publisher, goal_id, payload = await self.feedback_publisher_factory.declare_from_wire(message.payload)",
             );
-            builder.line("captured[0] = (goal_id, publisher)");
         } else if has_goal_request {
             builder.line("payload = message.payload");
         }
@@ -339,11 +338,15 @@ pub fn build_exposed_action(
         builder.line("instance_id = message.instance_id");
         if has_goal_request {
             builder.line(
-                "return await _handle_goal_payload(payload, handler, core_node, instance_id)",
+                "outcome = await _handle_goal_payload(payload, handler, core_node, instance_id)",
             );
         } else {
-            builder.line("return await _handle_goal_payload(handler, core_node, instance_id)");
+            builder.line("outcome = await _handle_goal_payload(handler, core_node, instance_id)");
         }
+        if has_feedback {
+            builder.line("captured[0] = (goal_id, publisher)");
+        }
+        builder.line("return outcome");
         builder.dedent();
         builder.line("await self.goal_service.handle_next_request(_on_request)");
         if has_feedback {
@@ -362,9 +365,13 @@ pub fn build_exposed_action(
         ));
         builder.indent();
         if has_feedback {
-            // Wrap the user's handler so we can inspect its outcome before
-            // the helper serializes the response.
-            builder.line("close_feedback = [False]");
+            builder.line(
+                "publisher = self.current_goal[1] if self.current_goal is not None else None",
+            );
+            // CancelResponse.accepted decides whether to publish end-of-stream.
+            // Inspecting it requires running the user handler ourselves rather
+            // than letting the helper serialize directly.
+            builder.line("close_decision = [None]");
             builder.line("def _wrapped_handler(request):");
             builder.indent();
             builder.line("try:");
@@ -373,13 +380,10 @@ pub fn build_exposed_action(
             builder.dedent();
             builder.line("except Exception:");
             builder.indent();
-            builder.line("close_feedback[0] = True");
+            builder.line("close_decision[0] = True");
             builder.line("raise");
             builder.dedent();
-            builder.line("if getattr(response, 'accepted', False):");
-            builder.indent();
-            builder.line("close_feedback[0] = True");
-            builder.dedent();
+            builder.line("close_decision[0] = bool(response.accepted)");
             builder.line("return response");
             builder.dedent();
         }
@@ -390,17 +394,10 @@ pub fn build_exposed_action(
         builder.line("instance_id = message.instance_id");
         if has_feedback {
             builder.line(
-                "return await _handle_cancel_payload(_wrapped_handler, core_node, instance_id)",
+                "outcome = await _handle_cancel_payload(_wrapped_handler, core_node, instance_id)",
             );
-        } else {
-            builder.line("return await _handle_cancel_payload(handler, core_node, instance_id)");
-        }
-        builder.dedent();
-        builder.line("await self.cancel_service.handle_next_request(_on_request)");
-        if has_feedback {
-            builder.line("if close_feedback[0] and self.current_goal is not None:");
+            builder.line("if close_decision[0] is True and publisher is not None:");
             builder.indent();
-            builder.line("_, publisher = self.current_goal");
             builder.line("try:");
             builder.indent();
             builder.line("await publisher.publish_end()");
@@ -409,6 +406,16 @@ pub fn build_exposed_action(
             builder.indent();
             builder.line("pass");
             builder.dedent();
+            builder.dedent();
+            builder.line("return outcome");
+        } else {
+            builder.line("return await _handle_cancel_payload(handler, core_node, instance_id)");
+        }
+        builder.dedent();
+        builder.line("await self.cancel_service.handle_next_request(_on_request)");
+        if has_feedback {
+            builder.line("if close_decision[0] is True:");
+            builder.indent();
             builder.line("self.current_goal = None");
             builder.dedent();
         }
@@ -740,11 +747,6 @@ pub fn build_consumed_action(
         builder.line("user_goal_payload = b\"\"");
     }
 
-    builder.line("goal_id = peppylib.messaging.actions.generate_goal_id()");
-    builder.line(
-        "goal_payload = peppylib.messaging.actions.wrap_goal_payload(goal_id, user_goal_payload)",
-    );
-
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
@@ -754,8 +756,7 @@ pub fn build_consumed_action(
     builder.line("TARGET_ACTION_NAME,");
     builder.line("target_core_node,");
     builder.line("target_instance_id,");
-    builder.line("goal_id,");
-    builder.line("goal_payload,");
+    builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");
     builder.dedent();

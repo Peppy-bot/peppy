@@ -72,12 +72,6 @@ async fn main() {
             .bold()
             .green()
     );
-    let goal_id = peppylib::messaging::generate_goal_id();
-    let goal_payload = peppylib::messaging::wrap_goal_payload(
-        &goal_id,
-        b"Hello from the action client",
-    )
-    .expect("wrap goal");
     let mut goal_handle = ActionMessenger::send_goal(
         &sender_handle,
         &core_node_name,
@@ -86,8 +80,7 @@ async fn main() {
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found
-        &goal_id,
-        goal_payload,
+        Payload::from_static(b"Hello from the action client"),
         QoSProfile::Reliable,
         GOAL_TIMEOUT,
     )
@@ -130,12 +123,6 @@ async fn main() {
     sleep(Duration::from_secs(2)).await;
 
     println!("{}", "[GOAL] Sending cancellable goal...".bold().green());
-    let goal_id = peppylib::messaging::generate_goal_id();
-    let goal_payload = peppylib::messaging::wrap_goal_payload(
-        &goal_id,
-        b"This goal will be cancelled",
-    )
-    .expect("wrap goal");
     let mut goal_handle = ActionMessenger::send_goal(
         &sender_handle,
         &core_node_name,
@@ -144,8 +131,7 @@ async fn main() {
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found
-        &goal_id,
-        goal_payload,
+        Payload::from_static(b"This goal will be cancelled"),
         QoSProfile::Reliable,
         GOAL_TIMEOUT,
     )

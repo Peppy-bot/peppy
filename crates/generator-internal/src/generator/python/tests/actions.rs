@@ -304,7 +304,7 @@ fn exposed_action() {
         &[
             "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalResponse]) -> None:",
             "async def _on_request(request_context):",
-            "return await _handle_goal_payload(payload, handler, core_node, instance_id)",
+            "outcome = await _handle_goal_payload(payload, handler, core_node, instance_id)",
             "await self.goal_service.handle_next_request(_on_request)",
         ],
     );
@@ -328,7 +328,7 @@ fn exposed_action() {
         &rendered,
         &[
             "async def handle_cancel_next_request(self, handler: Callable[[CancelRequest], CancelResponse]) -> None:",
-            "return await _handle_cancel_payload(_wrapped_handler, core_node, instance_id)",
+            "outcome = await _handle_cancel_payload(_wrapped_handler, core_node, instance_id)",
             "await self.cancel_service.handle_next_request(_on_request)",
         ],
     );
@@ -404,7 +404,7 @@ fn expose_action_without_request_body() {
     assert_contains_all(
         &rendered,
         &[
-            "return await _handle_goal_payload(handler, core_node, instance_id)",
+            "outcome = await _handle_goal_payload(handler, core_node, instance_id)",
             "await self.goal_service.handle_next_request(_on_request)",
         ],
     );
@@ -688,7 +688,7 @@ fn consumed_action() {
             "target_core_node: Optional[str] = None",
             "target_instance_id: Optional[str] = None",
             ") -> Self:",
-            "goal_payload = capnp_msg.to_bytes()",
+            "user_goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
             "feedback_qos,",
             "handle = cls()",
@@ -829,7 +829,7 @@ fn consumed_two_actions_same_node() {
             ") -> Self:",
             ") -> CancelResponse:",
             ") -> ResultResponse:",
-            "goal_payload = capnp_msg.to_bytes()",
+            "user_goal_payload = capnp_msg.to_bytes()",
         ],
     );
 
@@ -869,7 +869,7 @@ fn consumed_two_actions_same_node() {
             ") -> Self:",
             ") -> CancelResponse:",
             ") -> ResultResponse:",
-            "goal_payload = b\"\"",
+            "user_goal_payload = b\"\"",
         ],
     );
 
@@ -952,7 +952,7 @@ fn consumed_action_without_response_payload() {
     assert_contains_all(
         &rendered,
         &[
-            "goal_payload = capnp_msg.to_bytes()",
+            "user_goal_payload = capnp_msg.to_bytes()",
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",
             "handle._inner = action_handle",

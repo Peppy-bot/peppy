@@ -108,323 +108,146 @@ pub fn build_action_handle_method(
     has_payload: bool,
     role: ActionHandleRole,
 ) -> TokenStream {
-    match role {
-        ActionHandleRole::Plain => build_plain_handle_method(
-            method_name,
-            helper_name,
-            request_struct,
-            response_struct,
-            service_field,
-            has_payload,
-        ),
-        ActionHandleRole::Goal => build_goal_handle_method(
-            method_name,
-            helper_name,
-            request_struct,
-            response_struct,
-            service_field,
-            has_payload,
-        ),
-        ActionHandleRole::Result => build_result_handle_method(
-            method_name,
-            helper_name,
-            request_struct,
-            response_struct,
-            service_field,
-            has_payload,
-        ),
-        ActionHandleRole::Cancel => build_cancel_handle_method(
-            method_name,
-            helper_name,
-            request_struct,
-            response_struct,
-            service_field,
-            has_payload,
-        ),
-    }
-}
-
-fn build_plain_handle_method(
-    method_name: &Ident,
-    helper_name: &Ident,
-    request_struct: &Ident,
-    response_struct: &Ident,
-    service_field: &Ident,
-    has_payload: bool,
-) -> TokenStream {
-    let helper_call = if has_payload {
-        quote! {
-            let message = request_context.message();
-            let payload = message.payload();
-            let core_node = message.core_node().to_string();
-            let instance_id = message.instance_id().to_string();
-            #helper_name(
-                payload.as_ref(),
-                &handler,
-                core_node,
-                instance_id,
-            )
-        }
-    } else {
-        quote! {
-            let message = request_context.message();
-            let core_node = message.core_node().to_string();
-            let instance_id = message.instance_id().to_string();
-            #helper_name(&handler, core_node, instance_id)
-        }
-    };
-
-    quote! {
-        pub async fn #method_name<F>(
-            &mut self,
-            handler: F,
-        ) -> crate::Result<bool>
-        where
-            F: Fn(#request_struct) -> crate::Result<#response_struct>,
-        {
-            let result = self
-                .#service_field
-                .handle_next_request(move |request_context| {
-                    async move {
-                        #helper_call
-                        .map_err(|error| {
-                            peppylib::PeppyError::Io(
-                                std::io::Error::other(error.to_string()),
-                            )
-                        })
-                    }
-                })
-                .await?;
-
-            Ok(result)
-        }
-    }
-}
-
-fn build_goal_handle_method(
-    method_name: &Ident,
-    helper_name: &Ident,
-    request_struct: &Ident,
-    response_struct: &Ident,
-    service_field: &Ident,
-    has_payload: bool,
-) -> TokenStream {
-    let helper_call = if has_payload {
-        quote! {
-            {
-                #helper_name(
-                    declared.user_payload.as_ref(),
-                    &handler,
-                    core_node,
-                    instance_id,
-                )
-            }
-        }
-    } else {
-        quote! {
-            {
-                let _ = declared.user_payload;
-                #helper_name(&handler, core_node, instance_id)
-            }
-        }
-    };
-
-    quote! {
-        pub async fn #method_name<F>(
-            &mut self,
-            handler: F,
-        ) -> crate::Result<bool>
-        where
-            F: Fn(#request_struct) -> crate::Result<#response_struct>,
-        {
+    let setup = match role {
+        ActionHandleRole::Plain => quote!(),
+        ActionHandleRole::Goal => quote! {
             type Captured = (String, peppylib::messaging::ActionFeedbackPublisher);
             let captured: std::sync::Arc<std::sync::Mutex<Option<Captured>>> =
                 std::sync::Arc::new(std::sync::Mutex::new(None));
             let captured_for_closure = std::sync::Arc::clone(&captured);
             let factory = self.feedback_publisher_factory.clone();
-
-            let result = self
-                .#service_field
-                .handle_next_request(|request_context| async move {
-                    let message = request_context.message();
-                    let wire = message.payload().into_inner();
-                    let declared = factory.declare_from_wire(wire).await?;
-                    let core_node = message.core_node().to_string();
-                    let instance_id = message.instance_id().to_string();
-                    let outcome: crate::Result<peppylib::Payload> = #helper_call
-                        .map_err(|error| {
-                            peppylib::PeppyError::Io(
-                                std::io::Error::other(error.to_string()),
-                            )
-                        });
-                    if outcome.is_ok() {
-                        *captured_for_closure.lock().unwrap() =
-                            Some((declared.goal_id, declared.publisher));
-                    }
-                    outcome
-                })
-                .await?;
-
-            if result && let Some(active_goal) = captured.lock().unwrap().take() {
-                self.current_goal = Some(active_goal);
-            }
-            Ok(result)
-        }
-    }
-}
-
-fn build_result_handle_method(
-    method_name: &Ident,
-    helper_name: &Ident,
-    request_struct: &Ident,
-    response_struct: &Ident,
-    service_field: &Ident,
-    has_payload: bool,
-) -> TokenStream {
-    let helper_call = if has_payload {
-        quote! {
-            let message = request_context.message();
-            let payload = message.payload();
-            let core_node = message.core_node().to_string();
-            let instance_id = message.instance_id().to_string();
-            #helper_name(
-                payload.as_ref(),
-                &handler,
-                core_node,
-                instance_id,
-            )
-        }
-    } else {
-        quote! {
-            let message = request_context.message();
-            let core_node = message.core_node().to_string();
-            let instance_id = message.instance_id().to_string();
-            #helper_name(&handler, core_node, instance_id)
-        }
-    };
-
-    quote! {
-        pub async fn #method_name<F>(
-            &mut self,
-            handler: F,
-        ) -> crate::Result<bool>
-        where
-            F: Fn(#request_struct) -> crate::Result<#response_struct>,
-        {
+        },
+        ActionHandleRole::Result => quote! {
             if let Some((_, publisher)) = self.current_goal.as_ref() {
                 let _ = publisher.publish_end().await;
             }
-            let result = self
-                .#service_field
-                .handle_next_request(move |request_context| {
-                    async move {
-                        #helper_call
-                        .map_err(|error| {
-                            peppylib::PeppyError::Io(
-                                std::io::Error::other(error.to_string()),
-                            )
-                        })
-                    }
-                })
-                .await?;
-            self.current_goal = None;
-            Ok(result)
-        }
-    }
-}
-
-fn build_cancel_handle_method(
-    method_name: &Ident,
-    helper_name: &Ident,
-    request_struct: &Ident,
-    response_struct: &Ident,
-    service_field: &Ident,
-    has_payload: bool,
-) -> TokenStream {
-    let helper_call = if has_payload {
-        quote! {
-            let message = request_context.message();
-            let payload = message.payload();
-            let core_node = message.core_node().to_string();
-            let instance_id = message.instance_id().to_string();
-            #helper_name(
-                payload.as_ref(),
-                &handler_for_helper,
-                core_node,
-                instance_id,
-            )
-        }
-    } else {
-        quote! {
-            let message = request_context.message();
-            let core_node = message.core_node().to_string();
-            let instance_id = message.instance_id().to_string();
-            #helper_name(&handler_for_helper, core_node, instance_id)
-        }
-    };
-
-    quote! {
-        pub async fn #method_name<F>(
-            &mut self,
-            handler: F,
-        ) -> crate::Result<bool>
-        where
-            F: Fn(#request_struct) -> crate::Result<#response_struct>,
-        {
+        },
+        ActionHandleRole::Cancel => quote! {
             let publisher = self.current_goal.as_ref().map(|(_, p)| p.clone());
-            let close_feedback: std::sync::Arc<std::sync::atomic::AtomicBool> =
-                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let close_feedback_for_closure = std::sync::Arc::clone(&close_feedback);
-
+            let close_decision: std::sync::Arc<std::sync::Mutex<Option<bool>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(None));
+            let close_decision_for_closure = std::sync::Arc::clone(&close_decision);
             // CancelResponse.accepted decides whether to publish end-of-stream.
             // Inspecting it requires running the user handler ourselves rather
             // than letting the helper serialize directly.
-            let handler = std::sync::Arc::new(handler);
             let handler_for_helper = {
-                let handler = std::sync::Arc::clone(&handler);
-                let close_feedback = std::sync::Arc::clone(&close_feedback_for_closure);
+                let close_decision = std::sync::Arc::clone(&close_decision_for_closure);
                 move |request: #request_struct| -> crate::Result<#response_struct> {
                     let response = handler(request);
                     let should_close = match &response {
                         Ok(r) => r.accepted,
                         Err(_) => true,
                     };
-                    if should_close {
-                        close_feedback.store(true, std::sync::atomic::Ordering::SeqCst);
-                    }
+                    *close_decision.lock().unwrap() = Some(should_close);
                     response
                 }
             };
-            let publisher_for_closure = publisher.clone();
+        },
+    };
 
-            let result = self
-                .#service_field
-                .handle_next_request(move |request_context| {
-                    let handler_for_helper = handler_for_helper.clone();
-                    let publisher = publisher_for_closure.clone();
-                    let close_feedback = std::sync::Arc::clone(&close_feedback_for_closure);
-                    async move {
-                        let outcome: crate::Result<peppylib::Payload> = {
-                            #helper_call
-                            .map_err(|error| {
-                                peppylib::PeppyError::Io(
-                                    std::io::Error::other(error.to_string()),
-                                )
-                            })
-                        };
-                        if close_feedback.load(std::sync::atomic::Ordering::SeqCst)
-                            && let Some(p) = publisher.as_ref()
-                        {
-                            let _ = p.publish_end().await;
-                        }
-                        outcome
-                    }
-                })
-                .await?;
+    let payload_setup = match role {
+        ActionHandleRole::Goal => quote! {
+            let message = request_context.message();
+            let wire = message.payload().into_inner();
+            let declared = factory.declare_from_wire(wire).await?;
+            let core_node = message.core_node().to_string();
+            let instance_id = message.instance_id().to_string();
+        },
+        _ if has_payload => quote! {
+            let message = request_context.message();
+            let payload = message.payload();
+            let core_node = message.core_node().to_string();
+            let instance_id = message.instance_id().to_string();
+        },
+        _ => quote! {
+            let message = request_context.message();
+            let core_node = message.core_node().to_string();
+            let instance_id = message.instance_id().to_string();
+        },
+    };
 
-            if close_feedback.load(std::sync::atomic::Ordering::SeqCst) {
+    let handler_ref = match role {
+        ActionHandleRole::Cancel => quote!(&handler_for_helper),
+        _ => quote!(&handler),
+    };
+    let helper_call = match (role, has_payload) {
+        (ActionHandleRole::Goal, true) => quote!(#helper_name(
+            declared.user_payload.as_ref(),
+            #handler_ref,
+            core_node,
+            instance_id,
+        )),
+        (ActionHandleRole::Goal, false) => quote!({
+            let _ = declared.user_payload;
+            #helper_name(#handler_ref, core_node, instance_id)
+        }),
+        (_, true) => quote!(#helper_name(
+            payload.as_ref(),
+            #handler_ref,
+            core_node,
+            instance_id,
+        )),
+        (_, false) => quote!(#helper_name(#handler_ref, core_node, instance_id)),
+    };
+
+    let post_outcome = match role {
+        ActionHandleRole::Goal => quote! {
+            if outcome.is_ok() {
+                *captured_for_closure.lock().unwrap() =
+                    Some((declared.goal_id, declared.publisher));
+            }
+        },
+        ActionHandleRole::Cancel => quote! {
+            if matches!(*close_decision_for_closure.lock().unwrap(), Some(true))
+                && let Some(p) = publisher.as_ref()
+            {
+                let _ = p.publish_end().await;
+            }
+        },
+        _ => quote!(),
+    };
+
+    let post_call = match role {
+        ActionHandleRole::Plain => quote!(),
+        ActionHandleRole::Goal => quote! {
+            if result && let Some(active_goal) = captured.lock().unwrap().take() {
+                self.current_goal = Some(active_goal);
+            }
+        },
+        ActionHandleRole::Result => quote! {
+            self.current_goal = None;
+        },
+        ActionHandleRole::Cancel => quote! {
+            if matches!(*close_decision.lock().unwrap(), Some(true)) {
                 self.current_goal = None;
             }
+        },
+    };
+
+    quote! {
+        pub async fn #method_name<F>(
+            &mut self,
+            handler: F,
+        ) -> crate::Result<bool>
+        where
+            F: Fn(#request_struct) -> crate::Result<#response_struct>,
+        {
+            #setup
+            let result = self
+                .#service_field
+                .handle_next_request(|request_context| async move {
+                    #payload_setup
+                    let outcome: crate::Result<peppylib::Payload> = #helper_call
+                        .map_err(|error| {
+                            peppylib::PeppyError::Io(
+                                std::io::Error::other(error.to_string()),
+                            )
+                        });
+                    #post_outcome
+                    outcome
+                })
+                .await?;
+            #post_call
             Ok(result)
         }
     }

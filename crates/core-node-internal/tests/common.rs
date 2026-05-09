@@ -325,10 +325,6 @@ async fn send_node_run_and_wait_internal(
         .encode()
         .map_err(|e| format!("Failed to encode goal: {}", e))?;
 
-    let goal_id = peppylib::messaging::generate_goal_id();
-    let goal_payload = peppylib::messaging::wrap_goal_payload(&goal_id, goal_payload.as_ref())
-        .expect("wrap goal payload");
-
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
         caller_core_node,
@@ -337,7 +333,6 @@ async fn send_node_run_and_wait_internal(
         names::NODE_RUN_ACTION,
         Some(core_node_name),
         None,
-        &goal_id,
         goal_payload,
         QoSProfile::default(),
         timeouts.goal,
@@ -525,10 +520,6 @@ async fn send_node_add_and_wait_internal<'a>(
         .encode()
         .map_err(|e| format!("Failed to encode goal: {}", e))?;
 
-    let goal_id = peppylib::messaging::generate_goal_id();
-    let goal_payload = peppylib::messaging::wrap_goal_payload(&goal_id, goal_payload.as_ref())
-        .expect("wrap goal payload");
-
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
         caller_core_node,
@@ -537,7 +528,6 @@ async fn send_node_add_and_wait_internal<'a>(
         names::NODE_ADD_ACTION,
         Some(core_node_name),
         None,
-        &goal_id,
         goal_payload,
         QoSProfile::default(),
         goal_timeout,
@@ -655,10 +645,6 @@ pub async fn send_node_build_and_wait(
     } else {
         (core_node_name, CALLER_INSTANCE_ID)
     };
-    let goal_id = peppylib::messaging::generate_goal_id();
-    let goal_payload = peppylib::messaging::wrap_goal_payload(&goal_id, goal_payload.as_ref())
-        .expect("wrap goal payload");
-
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
         caller_core_node,
@@ -667,7 +653,6 @@ pub async fn send_node_build_and_wait(
         names::NODE_BUILD_ACTION,
         Some(core_node_name),
         None,
-        &goal_id,
         goal_payload,
         QoSProfile::default(),
         goal_timeout,
