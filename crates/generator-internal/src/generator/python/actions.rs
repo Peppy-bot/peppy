@@ -446,14 +446,12 @@ pub fn build_exposed_action(
             "async def handle_result_next_request(self, handler: {rht}) -> None:"
         ));
         builder.indent();
-        builder.line("async def _on_request(request_context):");
-        builder.indent();
-        builder.line("message = request_context.message");
-        builder.line("core_node = message.core_node");
-        builder.line("instance_id = message.instance_id");
         if has_feedback {
-            // Publish end-of-feedback atomically with handling the incoming
-            // result request, using the goal that's active at request time.
+            // Publish end-of-stream BEFORE awaiting the next result request
+            // so the client's drain loop can break out and actually send the
+            // request. Matches the Rust codegen's `ActionHandleRole::Result`
+            // setup block. Inverting this ordering deadlocks any client that
+            // drains feedback before calling get_result.
             builder.line("if self.current_goal is not None:");
             builder.indent();
             builder.line("_, publisher = self.current_goal");
@@ -465,12 +463,19 @@ pub fn build_exposed_action(
             builder.indent();
             builder.line("pass");
             builder.dedent();
-            builder.line("self.current_goal = None");
             builder.dedent();
         }
+        builder.line("async def _on_request(request_context):");
+        builder.indent();
+        builder.line("message = request_context.message");
+        builder.line("core_node = message.core_node");
+        builder.line("instance_id = message.instance_id");
         builder.line("return await _handle_result_payload(handler, core_node, instance_id)");
         builder.dedent();
         builder.line("await self.result_service.handle_next_request(_on_request)");
+        if has_feedback {
+            builder.line("self.current_goal = None");
+        }
         builder.dedent();
         builder.blank_line();
     }

@@ -352,13 +352,18 @@ fn exposed_action() {
         ],
     );
 
-    // emit_feedback as method with self
+    // emit_feedback as method with self. The guard text is verbatim because
+    // user code may match against it; pin both the condition and the panic
+    // message so a refactor doesn't silently drop either.
     assert_contains_all(
         &rendered,
         &[
             "async def emit_feedback(self, new_position: list[int]):",
             "payload = capnp_msg.to_bytes()",
             "await publisher.publish(payload)",
+            "if self.current_goal is None:",
+            "emit_feedback called with no active goal",
+            "call handle_goal_next_request first",
         ],
     );
 }

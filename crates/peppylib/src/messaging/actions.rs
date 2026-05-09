@@ -485,3 +485,86 @@ impl ActionMessenger {
             })
     }
 }
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+
+    fn assert_envelope_error(result: Result<Payload>) {
+        match result {
+            Err(Error::InternalEncodingError { identifier, .. }) => {
+                assert_eq!(identifier, "action_goal_envelope");
+            }
+            Err(other) => panic!("expected InternalEncodingError, got {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    fn assert_unwrap_error(result: Result<(&str, &[u8])>) {
+        match result {
+            Err(Error::InternalEncodingError { identifier, .. }) => {
+                assert_eq!(identifier, "action_goal_envelope");
+            }
+            Err(other) => panic!("expected InternalEncodingError, got {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn wrap_then_unwrap_roundtrip() {
+        let wire = wrap_goal_payload("goal-abc", b"hello").expect("wrap should succeed");
+        let (goal_id, body) = unwrap_goal_payload(wire.as_ref()).expect("unwrap should succeed");
+        assert_eq!(goal_id, "goal-abc");
+        assert_eq!(body, b"hello");
+    }
+
+    #[test]
+    fn wrap_unwrap_with_empty_user_payload() {
+        let wire = wrap_goal_payload("goal-xyz", b"").expect("wrap should succeed");
+        let (goal_id, body) = unwrap_goal_payload(wire.as_ref()).expect("unwrap should succeed");
+        assert_eq!(goal_id, "goal-xyz");
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn wrap_rejects_empty_goal_id() {
+        assert_envelope_error(wrap_goal_payload("", b"payload"));
+    }
+
+    #[test]
+    fn wrap_rejects_goal_id_over_255_bytes() {
+        let oversized = "a".repeat(256);
+        assert_envelope_error(wrap_goal_payload(&oversized, b"payload"));
+    }
+
+    #[test]
+    fn wrap_accepts_max_length_goal_id() {
+        let max_len = "a".repeat(255);
+        let wire = wrap_goal_payload(&max_len, b"x").expect("wrap should succeed at 255 bytes");
+        let (goal_id, body) = unwrap_goal_payload(wire.as_ref()).expect("unwrap should succeed");
+        assert_eq!(goal_id, max_len);
+        assert_eq!(body, b"x");
+    }
+
+    #[test]
+    fn unwrap_rejects_empty_wire() {
+        assert_unwrap_error(unwrap_goal_payload(&[]));
+    }
+
+    #[test]
+    fn unwrap_rejects_zero_length_prefix() {
+        assert_unwrap_error(unwrap_goal_payload(&[0x00]));
+    }
+
+    #[test]
+    fn unwrap_rejects_truncated_wire() {
+        // Declares a 5-byte goal_id but only provides 1 byte after the length prefix.
+        assert_unwrap_error(unwrap_goal_payload(&[0x05, b'a']));
+    }
+
+    #[test]
+    fn unwrap_rejects_non_utf8_goal_id() {
+        // 0xFF / 0xFE form an invalid UTF-8 sequence.
+        assert_unwrap_error(unwrap_goal_payload(&[0x02, 0xFF, 0xFE, b'p']));
+    }
+}

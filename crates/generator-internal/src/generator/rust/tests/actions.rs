@@ -308,13 +308,19 @@ fn exposed_action() {
     );
 
     // Feedback emit method (publishes via the per-goal publisher stored on
-    // current_goal — no longer a single per-action publisher).
+    // current_goal — no longer a single per-action publisher). The guard
+    // text is verbatim because user code matches against it; pin both the
+    // condition and the panic message so a refactor doesn't silently drop
+    // either.
     assert_contains_all(
         &rendered,
         &[
             "pub async fn emit_feedback",
             "#[allow(clippy::too_many_arguments)]",
             "publisher.publish(payload).await",
+            "self.current_goal",
+            "emit_feedback called with no active goal",
+            "call handle_goal_next_request first",
         ],
     );
 
