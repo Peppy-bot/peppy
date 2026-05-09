@@ -80,6 +80,7 @@ async fn main() {
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found
+        "",
         Payload::from_static(b"Hello from the action client"),
         QoSProfile::Reliable,
         GOAL_TIMEOUT,
@@ -131,6 +132,7 @@ async fn main() {
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found
+        "",
         Payload::from_static(b"This goal will be cancelled"),
         QoSProfile::Reliable,
         GOAL_TIMEOUT,

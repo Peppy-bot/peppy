@@ -5,7 +5,10 @@ mod actions;
 mod services;
 mod topics;
 
-pub use actions::{ActionCreation, ActionGoalHandle, ActionMessenger};
+pub use actions::{
+    ActionCreation, ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle,
+    ActionMessenger, unwrap_goal_payload, wrap_goal_payload,
+};
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
@@ -485,16 +488,16 @@ impl MessengerHandle {
             .create_service_endpoint(bound_core_node, result_service_root, as_instance_id)
             .await?;
 
-        let feedback_inner = self
-            .declare_publisher(feedback_topic_suffix.clone(), PublisherQoS::Standard)
-            .await?;
-        let feedback_publisher =
-            TopicPublisher::new(Arc::new(feedback_inner), feedback_topic_suffix);
+        let feedback_publisher_factory = actions::ActionFeedbackPublisherFactory::new(
+            self.clone(),
+            feedback_topic_suffix,
+            PublisherQoS::Standard,
+        );
 
         Ok(ActionCreation {
             goal_service,
             cancel_service,
-            feedback_publisher,
+            feedback_publisher_factory,
             result_service,
         })
     }

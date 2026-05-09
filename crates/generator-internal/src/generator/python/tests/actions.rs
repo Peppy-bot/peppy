@@ -269,7 +269,8 @@ fn exposed_action() {
             "handle.goal_service = action.goal_service",
             "handle.cancel_service = action.cancel_service",
             "handle.result_service = action.result_service",
-            "handle.feedback_publisher = action.feedback_publisher",
+            "handle.feedback_publisher_factory = action.feedback_publisher_factory",
+            "handle.current_goal = None",
             "return handle",
         ],
     );
@@ -320,12 +321,14 @@ fn exposed_action() {
         ],
     );
 
-    // handle_cancel_next_request as method with self
+    // handle_cancel_next_request as method with self.
+    // When the action has a feedback topic, the handler is wrapped so the
+    // codegen can inspect its outcome and emit publish_end on accept/error.
     assert_contains_all(
         &rendered,
         &[
             "async def handle_cancel_next_request(self, handler: Callable[[CancelRequest], CancelResponse]) -> None:",
-            "return await _handle_cancel_payload(handler, core_node, instance_id)",
+            "return await _handle_cancel_payload(_wrapped_handler, core_node, instance_id)",
             "await self.cancel_service.handle_next_request(_on_request)",
         ],
     );
@@ -355,7 +358,7 @@ fn exposed_action() {
         &[
             "async def emit_feedback(self, new_position: list[int]):",
             "payload = capnp_msg.to_bytes()",
-            "await self.feedback_publisher.publish(payload)",
+            "await publisher.publish(payload)",
         ],
     );
 }
@@ -442,7 +445,7 @@ fn expose_action_without_request_body() {
         &rendered,
         &[
             "async def emit_feedback(self, new_position: int, speed: int):",
-            "await self.feedback_publisher.publish(payload)",
+            "await publisher.publish(payload)",
         ],
     );
 }
@@ -529,7 +532,7 @@ fn expose_two_actions() {
             "await self.cancel_service.handle_next_request(_on_request)",
             "await self.result_service.handle_next_request(_on_request)",
             "async def emit_feedback(self,",
-            "await self.feedback_publisher.publish(payload)",
+            "await publisher.publish(payload)",
         ],
     );
 
@@ -551,7 +554,7 @@ fn expose_two_actions() {
             "await self.cancel_service.handle_next_request(_on_request)",
             "await self.result_service.handle_next_request(_on_request)",
             "async def emit_feedback(self,",
-            "await self.feedback_publisher.publish(payload)",
+            "await publisher.publish(payload)",
         ],
     );
 }

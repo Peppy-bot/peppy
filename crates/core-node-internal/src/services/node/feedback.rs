@@ -16,7 +16,7 @@ pub(crate) use node_stack::{FeedbackLine, FeedbackStream};
 /// consumer-side forwarder over differently-typed feedback encoders.
 pub(crate) fn spawn_feedback_forwarder<F>(
     mut feedback_rx: tokio::sync::mpsc::UnboundedReceiver<FeedbackLine>,
-    publisher: peppylib::messaging::TopicPublisher,
+    publisher: peppylib::messaging::ActionFeedbackPublisher,
     encode: F,
 ) -> tokio::task::JoinHandle<()>
 where

@@ -300,7 +300,10 @@ pub fn build_exposed_action(
         builder.line("handle.result_service = action.result_service");
     }
     if has_feedback {
-        builder.line("handle.feedback_publisher = action.feedback_publisher");
+        builder.line("handle.feedback_publisher_factory = action.feedback_publisher_factory");
+        // (goal_id, ActionFeedbackPublisher) — populated when a goal is
+        // accepted, cleared when result is handled or cancel is accepted.
+        builder.line("handle.current_goal = None");
     }
     builder.line("return handle");
     builder.dedent();
@@ -320,10 +323,22 @@ pub fn build_exposed_action(
             "async def handle_goal_next_request(self, handler: {ght}) -> None:"
         ));
         builder.indent();
+        if has_feedback {
+            // Closure-captured holder so we can extract goal_id from inside
+            // the coroutine and declare the per-goal publisher after.
+            builder.line("captured_goal_id = [None]");
+        }
         builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
-        if has_goal_request {
+        if has_feedback {
+            // Always peel the envelope on the server side, even if the
+            // user request format is empty — the wire prefix is mandatory
+            // when the action has a feedback topic.
+            builder.line("wire = message.payload");
+            builder.line("goal_id, payload = peppylib.messaging.actions.unwrap_goal_payload(wire)");
+            builder.line("captured_goal_id[0] = goal_id");
+        } else if has_goal_request {
             builder.line("payload = message.payload");
         }
         builder.line("core_node = message.core_node");
@@ -337,6 +352,15 @@ pub fn build_exposed_action(
         }
         builder.dedent();
         builder.line("await self.goal_service.handle_next_request(_on_request)");
+        if has_feedback {
+            builder.line("if captured_goal_id[0] is not None:");
+            builder.indent();
+            builder.line(
+                "publisher = await self.feedback_publisher_factory.declare(captured_goal_id[0])",
+            );
+            builder.line("self.current_goal = (captured_goal_id[0], publisher)");
+            builder.dedent();
+        }
         builder.dedent();
         builder.blank_line();
 
@@ -346,14 +370,57 @@ pub fn build_exposed_action(
             "async def handle_cancel_next_request(self, handler: {cancel_handler_type}) -> None:"
         ));
         builder.indent();
+        if has_feedback {
+            // Wrap the user's handler so we can inspect its outcome before
+            // the helper serializes the response.
+            builder.line("close_feedback = [False]");
+            builder.line("def _wrapped_handler(request):");
+            builder.indent();
+            builder.line("try:");
+            builder.indent();
+            builder.line("response = handler(request)");
+            builder.dedent();
+            builder.line("except Exception:");
+            builder.indent();
+            builder.line("close_feedback[0] = True");
+            builder.line("raise");
+            builder.dedent();
+            builder.line("if getattr(response, 'accepted', False):");
+            builder.indent();
+            builder.line("close_feedback[0] = True");
+            builder.dedent();
+            builder.line("return response");
+            builder.dedent();
+        }
         builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
         builder.line("core_node = message.core_node");
         builder.line("instance_id = message.instance_id");
-        builder.line("return await _handle_cancel_payload(handler, core_node, instance_id)");
+        if has_feedback {
+            builder.line(
+                "return await _handle_cancel_payload(_wrapped_handler, core_node, instance_id)",
+            );
+        } else {
+            builder.line("return await _handle_cancel_payload(handler, core_node, instance_id)");
+        }
         builder.dedent();
         builder.line("await self.cancel_service.handle_next_request(_on_request)");
+        if has_feedback {
+            builder.line("if close_feedback[0] and self.current_goal is not None:");
+            builder.indent();
+            builder.line("_, publisher = self.current_goal");
+            builder.line("try:");
+            builder.indent();
+            builder.line("await publisher.publish_end()");
+            builder.dedent();
+            builder.line("except Exception:");
+            builder.indent();
+            builder.line("pass");
+            builder.dedent();
+            builder.line("self.current_goal = None");
+            builder.dedent();
+        }
         builder.dedent();
         builder.blank_line();
     }
@@ -372,6 +439,22 @@ pub fn build_exposed_action(
             "async def handle_result_next_request(self, handler: {rht}) -> None:"
         ));
         builder.indent();
+        if has_feedback {
+            // Emit end-of-feedback BEFORE awaiting the result request so the
+            // client can break out of its drain loop and call get_result.
+            builder.line("if self.current_goal is not None:");
+            builder.indent();
+            builder.line("_, publisher = self.current_goal");
+            builder.line("try:");
+            builder.indent();
+            builder.line("await publisher.publish_end()");
+            builder.dedent();
+            builder.line("except Exception:");
+            builder.indent();
+            builder.line("pass");
+            builder.dedent();
+            builder.dedent();
+        }
         builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
@@ -380,6 +463,9 @@ pub fn build_exposed_action(
         builder.line("return await _handle_result_payload(handler, core_node, instance_id)");
         builder.dedent();
         builder.line("await self.result_service.handle_next_request(_on_request)");
+        if has_feedback {
+            builder.line("self.current_goal = None");
+        }
         builder.dedent();
         builder.blank_line();
     }
@@ -394,6 +480,14 @@ pub fn build_exposed_action(
 
         builder.line(&format!("async def emit_feedback({params}):"));
         builder.indent();
+        // Per-goal publisher; user must call handle_goal_next_request first.
+        builder.line("if self.current_goal is None:");
+        builder.indent();
+        builder.line(
+            "raise RuntimeError('emit_feedback called with no active goal; call handle_goal_next_request first')",
+        );
+        builder.dedent();
+        builder.line("_, publisher = self.current_goal");
 
         if let (Some(info), Some(fmt)) = (feedback_schema_info, feedback_format) {
             let loader_fn_name = capnp_loader_fn_name(info);
@@ -408,7 +502,7 @@ pub fn build_exposed_action(
             builder.line("payload = b\"\"");
         }
 
-        builder.line("await self.feedback_publisher.publish(payload)");
+        builder.line("await publisher.publish(payload)");
         builder.dedent();
     }
 
@@ -651,10 +745,19 @@ pub fn build_consumed_action(
             "request",
             &mut counter,
         );
-        builder.line("goal_payload = capnp_msg.to_bytes()");
+        builder.line("user_goal_payload = capnp_msg.to_bytes()");
     } else {
-        builder.line("goal_payload = b\"\"");
+        builder.line("user_goal_payload = b\"\"");
     }
+
+    // Wrap the user payload with a per-goal correlation ID so the server
+    // can scope feedback emissions (and the end-of-stream signal) to this
+    // specific goal cycle.
+    builder.add_import("import uuid");
+    builder.line("goal_id = str(uuid.uuid4())");
+    builder.line(
+        "goal_payload = peppylib.messaging.actions.wrap_goal_payload(goal_id, user_goal_payload)",
+    );
 
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
@@ -665,6 +768,7 @@ pub fn build_consumed_action(
     builder.line("TARGET_ACTION_NAME,");
     builder.line("target_core_node,");
     builder.line("target_instance_id,");
+    builder.line("goal_id,");
     builder.line("goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");

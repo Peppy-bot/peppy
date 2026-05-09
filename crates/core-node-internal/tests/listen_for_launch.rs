@@ -353,6 +353,7 @@ async fn send_launch_origin_and_wait(
         names::STACK_LAUNCH_ACTION,
         None,
         None,
+        "",
         goal_payload,
         config::node::QoSProfile::default(),
         goal_timeout,

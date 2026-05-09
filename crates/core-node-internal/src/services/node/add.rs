@@ -22,7 +22,7 @@ use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
 use node_stack::{InstanceState, NodeStack, WorkingDirGuard, validate_dependency_specs};
 use parking_lot::Mutex as StdMutex;
-use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
+use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::fs::File;
@@ -94,7 +94,7 @@ impl GoalHandler for NodeAddGoalHandler {
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
-        feedback_publisher: TopicPublisher,
+        feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<NodeAddResult>>>,
     ) -> PeppyResult<Payload> {
         handle_goal_request(
@@ -1029,7 +1029,7 @@ pub(crate) async fn run_node_add(
 
 async fn handle_goal_request(
     context: ServiceRequestContext,
-    feedback_publisher: TopicPublisher,
+    feedback_publisher: ActionFeedbackPublisher,
     state: Arc<Mutex<ActionState<NodeAddResult>>>,
     action_context: NodeAddActionContext,
     gate: ConcurrencyGate,

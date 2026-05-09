@@ -14,7 +14,7 @@ use parking_lot::Mutex as StdMutex;
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::{
-    NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext, TopicPublisher,
+    ActionFeedbackPublisher, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext,
 };
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -127,7 +127,7 @@ impl GoalHandler for NodeRunGoalHandler {
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
-        feedback_publisher: TopicPublisher,
+        feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<NodeRunResult>>>,
     ) -> PeppyResult<Payload> {
         handle_goal_request(
@@ -323,7 +323,7 @@ pub(crate) async fn run_node_run(
 
 async fn handle_goal_request(
     context: ServiceRequestContext,
-    feedback_publisher: TopicPublisher,
+    feedback_publisher: ActionFeedbackPublisher,
     state: Arc<Mutex<ActionState<NodeRunResult>>>,
     action_context: NodeRunActionContext,
     gate: ConcurrencyGate,

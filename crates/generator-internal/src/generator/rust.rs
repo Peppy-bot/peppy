@@ -34,8 +34,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use actions::{
-    build_action_expose_method, build_action_feedback_emit, build_action_handle_method,
-    build_action_handle_struct, build_action_payload_handler, build_action_request_deserializer,
+    ActionHandleRole, build_action_expose_method, build_action_feedback_emit,
+    build_action_handle_method, build_action_handle_struct, build_action_payload_handler,
+    build_action_request_deserializer,
 };
 use context::{GenerationContext, collect_function_params, map_message_format};
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
@@ -261,6 +262,15 @@ impl RustGenerator {
             ) -> crate::Result<Self> {
                 #goal_payload_tokens
 
+                // Wrap the user payload with a per-goal correlation ID so
+                // the server can scope feedback emissions (and the
+                // end-of-stream signal) to this specific goal cycle.
+                let goal_id = uuid::Uuid::new_v4().to_string();
+                let goal_payload = peppylib::messaging::wrap_goal_payload(
+                    &goal_id,
+                    goal_payload.as_ref(),
+                )?;
+
                 let action_handle = peppylib::ActionMessenger::send_goal(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
@@ -269,6 +279,7 @@ impl RustGenerator {
                     TARGET_ACTION_NAME,
                     target_core_node,
                     target_instance_id,
+                    &goal_id,
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -755,6 +766,11 @@ impl LanguageGenerator for RustGenerator {
             )?;
             helper_tokens.push(goal_handler_fn);
 
+            let goal_role = if has_feedback {
+                ActionHandleRole::Goal
+            } else {
+                ActionHandleRole::Plain
+            };
             let goal_method = build_action_handle_method(
                 &Ident::new("handle_goal_next_request", Span::call_site()),
                 &Ident::new("handle_goal_payload", Span::call_site()),
@@ -762,6 +778,7 @@ impl LanguageGenerator for RustGenerator {
                 &Ident::new("GoalResponse", Span::call_site()),
                 &Ident::new("goal_service", Span::call_site()),
                 encoding.is_some(),
+                goal_role,
             );
             action_handle_methods.push(goal_method);
 
@@ -809,6 +826,11 @@ impl LanguageGenerator for RustGenerator {
             )?;
             helper_tokens.push(cancel_handler_fn);
 
+            let cancel_role = if has_feedback {
+                ActionHandleRole::Cancel
+            } else {
+                ActionHandleRole::Plain
+            };
             let cancel_method = build_action_handle_method(
                 &Ident::new("handle_cancel_next_request", Span::call_site()),
                 &Ident::new("handle_cancel_payload", Span::call_site()),
@@ -816,6 +838,7 @@ impl LanguageGenerator for RustGenerator {
                 &Ident::new("CancelResponse", Span::call_site()),
                 &Ident::new("cancel_service", Span::call_site()),
                 false,
+                cancel_role,
             );
             action_handle_methods.push(cancel_method);
         }
@@ -866,6 +889,11 @@ impl LanguageGenerator for RustGenerator {
             )?;
             helper_tokens.push(result_handler_fn);
 
+            let result_role = if has_feedback {
+                ActionHandleRole::Result
+            } else {
+                ActionHandleRole::Plain
+            };
             let result_method = build_action_handle_method(
                 &Ident::new("handle_result_next_request", Span::call_site()),
                 &Ident::new("handle_result_payload", Span::call_site()),
@@ -873,6 +901,7 @@ impl LanguageGenerator for RustGenerator {
                 &Ident::new("ResultResponse", Span::call_site()),
                 &Ident::new("result_service", Span::call_site()),
                 false,
+                result_role,
             );
             action_handle_methods.push(result_method);
         }

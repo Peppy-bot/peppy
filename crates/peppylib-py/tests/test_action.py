@@ -48,8 +48,10 @@ async def test_action_messenger_communication():
                 lambda _req: GOAL_RESPONSE_PAYLOAD
             )
 
-            # Publish feedback
-            await action.feedback_publisher.publish(FEEDBACK_PAYLOAD)
+            # Publish feedback via the unscoped publisher (matches the
+            # empty-string goal_id passed by the caller below).
+            feedback_publisher = await action.feedback_publisher_factory.declare_unscoped()
+            await feedback_publisher.publish(FEEDBACK_PAYLOAD)
 
             # Handle the result request
             await action.result_service.handle_next_request(lambda _req: RESULT_PAYLOAD)
@@ -65,6 +67,7 @@ async def test_action_messenger_communication():
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
+            "",
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,
@@ -131,6 +134,7 @@ async def test_cancel_goal_concurrent_with_feedback():
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
+            "",
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,
@@ -168,6 +172,7 @@ async def test_send_goal_rejects_invalid_timeout():
                 ACTION_NAME,
                 CORE_NODE,
                 INSTANCE_ID,
+                "",
                 GOAL_PAYLOAD,
                 QoSProfile.Reliable,
                 -1.0,
@@ -200,6 +205,7 @@ async def test_send_goal_honors_target_core_node():
                 ACTION_NAME,
                 "wrong_core_node",
                 INSTANCE_ID,
+                "",
                 GOAL_PAYLOAD,
                 QoSProfile.Reliable,
                 0.5,

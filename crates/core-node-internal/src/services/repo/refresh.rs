@@ -12,7 +12,7 @@ use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
     RepoSourceKind,
 };
-use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
+use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult};
 use serde_json::Value;
@@ -81,7 +81,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
-        feedback_publisher: TopicPublisher,
+        feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<RepoRefreshResult>>>,
     ) -> PeppyResult<Payload> {
         {

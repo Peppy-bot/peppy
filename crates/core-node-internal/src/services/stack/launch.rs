@@ -17,7 +17,7 @@ use core_node_api::encoding::{
 };
 use node_stack::NodeStack;
 use parking_lot::Mutex as StdMutex;
-use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
+use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -142,7 +142,7 @@ impl GoalHandler for LaunchGoalHandler {
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
-        feedback_publisher: TopicPublisher,
+        feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<LaunchResult>>>,
     ) -> PeppyResult<Payload> {
         handle_goal_request(context, feedback_publisher, state, self.context.clone()).await
@@ -155,7 +155,7 @@ struct ProcessLaunchContext {
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
-    feedback_publisher: TopicPublisher,
+    feedback_publisher: ActionFeedbackPublisher,
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
     env_vars: Vec<(String, String)>,
@@ -365,7 +365,7 @@ async fn publish_stderr(
 /// for the consumer task. Drop the sender to signal completion, then await the
 /// handle to drain remaining messages.
 fn spawn_feedback_forwarder(
-    feedback_publisher: &TopicPublisher,
+    feedback_publisher: &ActionFeedbackPublisher,
     step: LaunchFeedbackStep,
     log_file: &Arc<StdMutex<File>>,
     activity_notify: Option<Arc<Notify>>,
@@ -1411,7 +1411,7 @@ async fn start_node_instances(
 
 async fn handle_goal_request(
     context: ServiceRequestContext,
-    feedback_publisher: TopicPublisher,
+    feedback_publisher: ActionFeedbackPublisher,
     state: Arc<Mutex<ActionState<LaunchResult>>>,
     action_context: LaunchActionContext,
 ) -> PeppyResult<Payload> {

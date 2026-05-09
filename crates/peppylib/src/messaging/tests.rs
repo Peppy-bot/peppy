@@ -1594,9 +1594,14 @@ async fn action_communication_no_instance_id_target() {
                 "goal subscription closed before handling request"
             );
 
-            // Publishes a feedback message
-            action
-                .feedback_publisher
+            // Publishes a feedback message via the unscoped publisher
+            // (matches the empty-string goal_id passed by the caller)
+            let feedback_publisher = action
+                .feedback_publisher_factory
+                .declare_unscoped()
+                .await
+                .expect("declare unscoped feedback publisher");
+            feedback_publisher
                 .publish(feedback_payload_server.clone())
                 .await
                 .expect("action should publish feedback");
@@ -1635,6 +1640,7 @@ async fn action_communication_no_instance_id_target() {
             listener_action_name,
             None, // No target core_id
             None, // No target instance_id
+            "",
             goal_payload,
             QoSProfile::Reliable,
             Duration::from_millis(1000),
@@ -1810,9 +1816,14 @@ async fn action_communication_with_instance_id_target() {
                 "goal subscription closed before handling request"
             );
 
-            // Publishes a feedback message
-            action
-                .feedback_publisher
+            // Publishes a feedback message via the unscoped publisher
+            // (matches the empty-string goal_id passed by the caller)
+            let feedback_publisher = action
+                .feedback_publisher_factory
+                .declare_unscoped()
+                .await
+                .expect("declare unscoped feedback publisher");
+            feedback_publisher
                 .publish(feedback_payload_server.clone())
                 .await
                 .expect("action should publish feedback");
@@ -1851,6 +1862,7 @@ async fn action_communication_with_instance_id_target() {
             listener_action_name,
             Some(LISTENER_CORE_NODE2),
             Some(LISTENER_INSTANCE_ID2),
+            "",
             goal_payload,
             QoSProfile::Reliable,
             Duration::from_millis(1000),
@@ -1975,9 +1987,14 @@ async fn action_communication_goal_cancelled() {
             );
 
             let stop_feedback = Arc::new(tokio::sync::Notify::new());
+            let feedback_publisher = action
+                .feedback_publisher_factory
+                .declare_unscoped()
+                .await
+                .expect("declare unscoped feedback publisher");
             let feedback_task = {
                 let stop_feedback = Arc::clone(&stop_feedback);
-                let feedback_publisher = action.feedback_publisher;
+                let feedback_publisher = feedback_publisher.clone();
                 let feedback_payload = feedback_payload_server.clone();
                 tokio::spawn(async move {
                     let mut ticker = tokio::time::interval(Duration::from_millis(50));
@@ -2047,6 +2064,7 @@ async fn action_communication_goal_cancelled() {
         listener_action_name,
         Some(LISTENER_CORE_NODE),
         Some(LISTENER_INSTANCE_ID),
+        "",
         goal_payload,
         QoSProfile::Reliable,
         Duration::from_millis(1000),
@@ -2184,9 +2202,13 @@ async fn single_action_communication_multiple_polls() {
             let crate::messaging::ActionCreation {
                 mut goal_service,
                 cancel_service: _,
-                feedback_publisher,
+                feedback_publisher_factory,
                 mut result_service,
             } = action;
+            let feedback_publisher = feedback_publisher_factory
+                .declare_unscoped()
+                .await
+                .expect("declare unscoped feedback publisher");
             let feedback_publisher = Arc::new(feedback_publisher);
 
             if let Some(tx) = action_ready_tx {
@@ -2304,6 +2326,7 @@ async fn single_action_communication_multiple_polls() {
                 listener_action_name,
                 None,
                 None,
+                "",
                 case.goal.clone(),
                 QoSProfile::Reliable,
                 Duration::from_millis(1000),

@@ -172,7 +172,7 @@ The `CancelResponse` contains:
 - `accepted` — whether the cancellation was accepted.
 - `error_message` — an optional message explaining the cancellation outcome.
 
-After accepting a cancellation, the server should stop processing and not respond to the result request for that goal.
+After accepting a cancellation, the server should stop processing and not respond to the result request for that goal. When the server accepts a cancel request — or its cancel handler returns an error — the framework closes the client's feedback stream automatically: any in-flight `on_next_feedback_message` call resolves with the closed-channel error, allowing clients to break out of their drain loop cleanly.
 
 ### Serving goals continuously
 
@@ -277,17 +277,18 @@ The `fire_goal` function returns a `GoalResponse` containing:
 
 ### Receiving feedback
 
-Use `on_next_feedback_message` to receive the next feedback message from the server:
+Use `on_next_feedback_message` to receive feedback messages from the server. The idiomatic pattern is a loop that drains feedback until the server signals end-of-stream:
 
 ```rust
-let feedback = brain_move_arm::on_next_feedback_message(
-    &mut goal.action_handle,
-).await?;
-
-println!("new_position={:?}", feedback.new_position);
+loop {
+    match brain_move_arm::on_next_feedback_message(&mut goal.action_handle).await {
+        Ok(feedback) => println!("new_position={:?}", feedback.new_position),
+        Err(_) => break, // server has emitted the result or accepted/errored a cancel
+    }
+}
 ```
 
-This blocks until a feedback message arrives. The server can emit multiple feedback messages, so you can call this in a loop if needed.
+The feedback stream is automatically closed by the server when it begins handling the result request, when it accepts a cancel request, or when its cancel handler errors. Each goal cycle has its own feedback stream — the close signal for one goal does not affect concurrent goals from other clients. Clients can rely on the loop-until-error pattern to drain feedback before requesting the result.
 
 ### Getting the result
 

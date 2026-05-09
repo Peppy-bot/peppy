@@ -56,9 +56,14 @@ async fn action_messenger_communication() {
             .await
             .expect("goal handler should succeed");
 
-        // Publish feedback
-        action
-            .feedback_publisher
+        // Publish feedback via an unscoped publisher (matches the empty-string
+        // goal_id passed to send_goal below).
+        let feedback_publisher = action
+            .feedback_publisher_factory
+            .declare_unscoped()
+            .await
+            .expect("declare unscoped feedback publisher");
+        feedback_publisher
             .publish(fb)
             .await
             .expect("feedback publish should succeed");
@@ -83,6 +88,7 @@ async fn action_messenger_communication() {
         action_name,
         Some(core_node),
         Some(instance_id),
+        "",
         goal_payload,
         QoSProfile::Reliable,
         Duration::from_secs(2),

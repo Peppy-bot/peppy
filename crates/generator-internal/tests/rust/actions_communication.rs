@@ -743,3 +743,353 @@ fn main() -> Result<()> {
         exposer_stderr
     );
 }
+
+/// Mirrors the openarm01_nodes/{action_server,action_client} pattern:
+/// server emits N feedback messages then calls handle_result_next_request;
+/// client drains feedback in a loop until it receives the End signal,
+/// then calls get_result. This exercises the per-goal feedback closure
+/// signal that was added to fix the original "stuck on draining feedback"
+/// hang.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn actions_communication_drain_loop_until_end_signal() {
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    // --- Consumer (client) project
+    let consumer_instance_id = CONSUMER_INSTANCE_ID;
+    let temp_dir_consumer = TempDir::new().unwrap();
+    let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
+    let goal_request_format: MessageFormat =
+        serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
+    let goal_response_format: MessageFormat =
+        serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
+    let feedback_format: MessageFormat =
+        serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
+    let result_response_format: MessageFormat =
+        serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
+    let action_messages = ConsumedActionMessage {
+        goal_request: Some(goal_request_format),
+        goal_response: Some(goal_response_format),
+        feedback: Some(feedback_format),
+        result_request: None,
+        result_response: Some(result_response_format),
+    };
+    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(&temp_dir_consumer, STUB_NODE_CONFIG);
+    generator
+        .add_consumed_action(&consumed_action, &action_messages, "brain")
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
+    generator
+        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let consumer_runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        NodeInstanceConfig {
+            instance_id: Name::new(consumer_instance_id).unwrap(),
+            arguments: Default::default(),
+            framework: Default::default(),
+        },
+        CONSUMER_NODE_NAME,
+        TEST_CORE_NODE,
+    )
+    .unwrap();
+    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
+    consumer_runtime_config
+        .save_json5_launch_config(&consumer_runtime_config_path)
+        .unwrap();
+
+    init_cargo_user_node(&user_node_consumer);
+    let consumer_main = r#"
+use peppygen::consumed_actions::brain_move_arm;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+use std::time::Duration;
+
+async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    let request = brain_move_arm::GoalRequest {
+        arm_id: 7,
+        desired_position: [10, 20, 30],
+    };
+    let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
+        &node_runner,
+        Duration::from_secs(5),
+        None,
+        None,
+        request,
+        peppygen::QoSProfile::SensorData,
+    ).await?;
+    println!("goal accepted={}", action_handle.data.accepted);
+    println!("draining feedback...");
+
+    // Drain-loop pattern: keep reading feedback until the server signals
+    // end-of-stream. Without the empty-payload sentinel, this loop would
+    // hang forever because mpsc::recv() never returns None.
+    let mut feedback_count = 0;
+    loop {
+        match action_handle.on_next_feedback_message().await {
+            Ok(feedback) => {
+                feedback_count += 1;
+                println!("feedback #{} new_position={:?}", feedback_count, feedback.new_position);
+            }
+            Err(_) => {
+                println!("feedback channel closed after {} messages", feedback_count);
+                break;
+            }
+        }
+    }
+
+    let result = action_handle.get_result(Duration::from_secs(5)).await?;
+    println!(
+        "result success={} final_position={:?}",
+        result.data.success,
+        result.data.final_position
+    );
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        consume_action(&node_runner).await
+    })
+}
+"#;
+    let main_file = user_node_consumer.join("src").join("main.rs");
+    fs::write(main_file, consumer_main).expect("failed to write consumer main");
+
+    // --- Exposer (server) project
+    let exposer_instance_id = EXPOSER_INSTANCE_ID;
+    let temp_dir_exposer = TempDir::new().unwrap();
+    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
+    generator.add_exposed_action(&exposed_action).unwrap();
+    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
+    generator
+        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let exposer_runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        NodeInstanceConfig {
+            instance_id: Name::new(exposer_instance_id).unwrap(),
+            arguments: Default::default(),
+            framework: Default::default(),
+        },
+        BRAIN_NODE_NAME,
+        TEST_CORE_NODE,
+    )
+    .unwrap();
+    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
+    exposer_runtime_config
+        .save_json5_launch_config(&exposer_runtime_config_path)
+        .unwrap();
+
+    init_cargo_user_node(&user_node_exposer);
+    let exposer_main = r#"
+use peppygen::exposed_actions::move_arm;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+
+async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
+
+    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+        println!(
+            "server received goal arm_id={} desired={:?}",
+            request.data.arm_id,
+            request.data.desired_position
+        );
+        Ok(move_arm::GoalResponse::new(true))
+    })
+    .await?;
+    println!("server accepted goal");
+
+    // Emit 3 feedback messages — the client must drain ALL of them
+    // before the End signal closes the stream.
+    for i in 0..3 {
+        let pos = [i, i + 1, i + 2];
+        action.emit_feedback(pos).await?;
+        println!("server emitted feedback #{} position={:?}", i + 1, pos);
+    }
+
+    let final_position = [99, 99, 99];
+    action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
+        Ok(move_arm::ResultResponse::new(true, None, final_position))
+    })
+    .await?;
+    println!("server handled result request final_position={:?}", final_position);
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        expose_action(&node_runner).await
+    })
+}
+"#;
+    let main_file = user_node_exposer.join("src").join("main.rs");
+    fs::write(main_file, exposer_main).expect("failed to write exposer main");
+
+    compile_project(&user_node_consumer);
+    compile_project(&user_node_exposer);
+
+    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
+    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
+
+    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
+
+    let mut exposer_child = spawn_cargo_run(
+        &user_node_exposer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
+    );
+
+    let action_ctx = WaitContext {
+        messenger: &messenger,
+        bound_core_node: TEST_CORE_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_core_node: None,
+    };
+    wait_for_action_service_reachable_or_exit(
+        &action_ctx,
+        BRAIN_NODE_NAME,
+        "move_arm/goal",
+        None,
+        &mut exposer_child,
+        &user_node_exposer,
+    )
+    .await;
+
+    let mut consumer_child = spawn_cargo_run(
+        &user_node_consumer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
+    );
+
+    let ctx = WaitContext {
+        messenger: &messenger,
+        bound_core_node: TEST_CORE_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_core_node: Some(TEST_CORE_NODE),
+    };
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        CONSUMER_NODE_NAME,
+        consumer_instance_id,
+        &mut consumer_child,
+        &user_node_consumer,
+    )
+    .await;
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        BRAIN_NODE_NAME,
+        exposer_instance_id,
+        &mut exposer_child,
+        &user_node_exposer,
+    )
+    .await;
+
+    send_shutdown(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        CONSUMER_NODE_NAME,
+        Some(TEST_CORE_NODE),
+        consumer_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+    send_shutdown(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        BRAIN_NODE_NAME,
+        Some(TEST_CORE_NODE),
+        exposer_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let consumer_output = wait_for_child(
+        &mut consumer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_consumer,
+    );
+    let exposer_output = wait_for_child(
+        &mut exposer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
+
+    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
+    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
+    assert!(
+        consumer_output.status.success(),
+        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        consumer_output.status.code(),
+        consumer_stdout,
+        consumer_stderr
+    );
+    // Critical assertions: client drained all 3 feedback messages, then
+    // the End signal closed the loop, then get_result succeeded.
+    assert!(
+        consumer_stdout.contains("feedback #1 new_position=[0, 1, 2]"),
+        "consumer missed first feedback message.\nstdout:\n{}",
+        consumer_stdout
+    );
+    assert!(
+        consumer_stdout.contains("feedback #2 new_position=[1, 2, 3]"),
+        "consumer missed second feedback message.\nstdout:\n{}",
+        consumer_stdout
+    );
+    assert!(
+        consumer_stdout.contains("feedback #3 new_position=[2, 3, 4]"),
+        "consumer missed third feedback message.\nstdout:\n{}",
+        consumer_stdout
+    );
+    assert!(
+        consumer_stdout.contains("feedback channel closed after 3 messages"),
+        "consumer feedback loop did not exit via the close signal.\nstdout:\n{}",
+        consumer_stdout
+    );
+    assert!(
+        consumer_stdout.contains("result success=true final_position=[99, 99, 99]"),
+        "consumer did not receive final result.\nstdout:\n{}",
+        consumer_stdout
+    );
+
+    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
+    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
+    assert!(
+        exposer_output.status.success(),
+        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        exposer_output.status.code(),
+        exposer_stdout,
+        exposer_stderr
+    );
+    assert!(
+        exposer_stdout.contains("server emitted feedback #3 position=[2, 3, 4]")
+            && exposer_stdout.contains("server handled result request"),
+        "exposer did not complete the action lifecycle.\nstdout:\n{}\nstderr:\n{}",
+        exposer_stdout,
+        exposer_stderr
+    );
+}

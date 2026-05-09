@@ -1,5 +1,5 @@
 use peppylib::PeppyResult;
-use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
+use peppylib::messaging::{ActionCreation, ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
 use std::future::Future;
 use std::sync::Arc;
@@ -61,7 +61,7 @@ pub(crate) trait GoalHandler: Clone + Send + 'static {
     fn handle_goal(
         &self,
         context: ServiceRequestContext,
-        feedback_publisher: TopicPublisher,
+        feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<Self::Result>>>,
     ) -> impl Future<Output = PeppyResult<Payload>> + Send;
 }
@@ -134,12 +134,16 @@ pub(crate) async fn run_action_loop<H: GoalHandler>(
     handler: H,
 ) -> crate::Result<()> {
     let state = Arc::new(Mutex::new(ActionState::<H::Result>::default()));
+    // Core-node-internal services share a single unscoped feedback publisher
+    // across all goals — they predate per-goal feedback isolation. Migration
+    // to `feedback_publisher_factory.declare(goal_id)` is tracked separately.
+    let feedback_publisher = action.feedback_publisher_factory.declare_unscoped().await?;
 
     loop {
         let goal_result = action
             .goal_service
             .handle_next_request({
-                let feedback_publisher = action.feedback_publisher.clone();
+                let feedback_publisher = feedback_publisher.clone();
                 let state = Arc::clone(&state);
                 let handler = handler.clone();
                 move |context| {
@@ -207,7 +211,7 @@ pub(crate) async fn run_action_loop<H: GoalHandler>(
                             }
                         }
                         goal_result = action.goal_service.handle_next_request({
-                            let feedback_publisher = action.feedback_publisher.clone();
+                            let feedback_publisher = feedback_publisher.clone();
                             let state = Arc::clone(&state);
                             let handler = handler.clone();
                             move |context| {

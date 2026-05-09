@@ -163,6 +163,7 @@ async fn send_refresh_inner(
         names::REPO_REFRESH_ACTION,
         Some(&started.core_node_name),
         None,
+        "",
         goal_payload,
         QoSProfile::default(),
         Duration::from_secs(5),
