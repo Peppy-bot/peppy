@@ -3,7 +3,7 @@ mod apptainer_build {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    const APPTAINER_VERSION: &str = "1.4.5";
+    const APPTAINER_VERSION: &str = "1.5.0";
     const LIMA_VERSION: &str = "2.1.1";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
         "b6b0e6701189cd8c4e549cc39e6d054dc681487798b9b774ad2cbd30c08b2bd8";
