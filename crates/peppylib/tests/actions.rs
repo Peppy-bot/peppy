@@ -52,13 +52,13 @@ async fn action_messenger_communication() {
         tokio::sync::oneshot::channel::<peppylib::messaging::ActionFeedbackPublisher>();
     let factory = action.feedback_publisher_factory.clone();
     let server = tokio::spawn(async move {
-        let publisher_tx = std::sync::Mutex::new(Some(publisher_tx));
+        let publisher_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(publisher_tx)));
         action
             .goal_service
             .handle_next_request(move |req_ctx| {
                 let resp = goal_resp.clone();
                 let factory = factory.clone();
-                let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
+                let publisher_tx = publisher_tx.clone();
                 async move {
                     let wire = req_ctx.message().payload().into_inner();
                     let declared = factory

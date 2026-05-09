@@ -331,6 +331,11 @@ pub fn build_exposed_action(
             builder.line(
                 "publisher, goal_id, payload = await self.feedback_publisher_factory.declare_from_wire(message.payload)",
             );
+            // Publish self.current_goal BEFORE awaiting the user handler so
+            // emit_feedback() sees it. captured[0] mirrors the assignment for
+            // the post-await re-affirmation below.
+            builder.line("self.current_goal = (goal_id, publisher)");
+            builder.line("captured[0] = (goal_id, publisher)");
         } else if has_goal_request {
             builder.line("payload = message.payload");
         }
@@ -342,9 +347,6 @@ pub fn build_exposed_action(
             );
         } else {
             builder.line("outcome = await _handle_goal_payload(handler, core_node, instance_id)");
-        }
-        if has_feedback {
-            builder.line("captured[0] = (goal_id, publisher)");
         }
         builder.line("return outcome");
         builder.dedent();
@@ -365,18 +367,20 @@ pub fn build_exposed_action(
         ));
         builder.indent();
         if has_feedback {
-            builder.line(
-                "publisher = self.current_goal[1] if self.current_goal is not None else None",
-            );
+            builder.line("close_decision = [None]");
             // CancelResponse.accepted decides whether to publish end-of-stream.
             // Inspecting it requires running the user handler ourselves rather
-            // than letting the helper serialize directly.
-            builder.line("close_decision = [None]");
-            builder.line("def _wrapped_handler(request):");
+            // than letting the helper serialize directly. The handler may be
+            // sync or async; await + hasattr(__await__) covers both.
+            builder.line("async def _wrapped_handler(request):");
             builder.indent();
             builder.line("try:");
             builder.indent();
             builder.line("response = handler(request)");
+            builder.line("if hasattr(response, \"__await__\"):");
+            builder.indent();
+            builder.line("response = await response");
+            builder.dedent();
             builder.dedent();
             builder.line("except Exception:");
             builder.indent();
@@ -393,6 +397,11 @@ pub fn build_exposed_action(
         builder.line("core_node = message.core_node");
         builder.line("instance_id = message.instance_id");
         if has_feedback {
+            // Resolve the publisher when the cancel request actually arrives,
+            // not when handle_cancel_next_request was called.
+            builder.line(
+                "publisher = self.current_goal[1] if self.current_goal is not None else None",
+            );
             builder.line(
                 "outcome = await _handle_cancel_payload(_wrapped_handler, core_node, instance_id)",
             );
@@ -437,9 +446,14 @@ pub fn build_exposed_action(
             "async def handle_result_next_request(self, handler: {rht}) -> None:"
         ));
         builder.indent();
+        builder.line("async def _on_request(request_context):");
+        builder.indent();
+        builder.line("message = request_context.message");
+        builder.line("core_node = message.core_node");
+        builder.line("instance_id = message.instance_id");
         if has_feedback {
-            // Emit end-of-feedback BEFORE awaiting the result request so the
-            // client can break out of its drain loop and call get_result.
+            // Publish end-of-feedback atomically with handling the incoming
+            // result request, using the goal that's active at request time.
             builder.line("if self.current_goal is not None:");
             builder.indent();
             builder.line("_, publisher = self.current_goal");
@@ -451,19 +465,12 @@ pub fn build_exposed_action(
             builder.indent();
             builder.line("pass");
             builder.dedent();
+            builder.line("self.current_goal = None");
             builder.dedent();
         }
-        builder.line("async def _on_request(request_context):");
-        builder.indent();
-        builder.line("message = request_context.message");
-        builder.line("core_node = message.core_node");
-        builder.line("instance_id = message.instance_id");
         builder.line("return await _handle_result_payload(handler, core_node, instance_id)");
         builder.dedent();
         builder.line("await self.result_service.handle_next_request(_on_request)");
-        if has_feedback {
-            builder.line("self.current_goal = None");
-        }
         builder.dedent();
         builder.blank_line();
     }

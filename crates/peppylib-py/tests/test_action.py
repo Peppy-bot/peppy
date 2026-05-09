@@ -7,7 +7,6 @@ crates/peppylib/tests/actions.rs.
 
 import asyncio
 
-import peppylib
 import pytest
 
 from peppylib import ActionMessenger, MessengerHandle, QoSProfile, ZenohdInstance

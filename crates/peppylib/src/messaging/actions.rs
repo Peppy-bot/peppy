@@ -102,10 +102,12 @@ impl ActionFeedbackPublisher {
     /// Publish a feedback message. Payload must be non-empty: empty is
     /// reserved for the end-of-stream sentinel.
     pub async fn publish(&self, payload: Payload) -> Result<()> {
-        debug_assert!(
-            !payload.is_empty(),
-            "feedback payload must not be empty; empty is reserved for publish_end"
-        );
+        if payload.is_empty() {
+            return Err(Error::InternalEncodingError {
+                identifier: "action_feedback_publish".to_string(),
+                reason: "empty payload not allowed (reserved for publish_end)".to_string(),
+            });
+        }
         self.inner.publish(payload).await
     }
 
