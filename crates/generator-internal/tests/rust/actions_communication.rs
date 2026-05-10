@@ -744,12 +744,36 @@ fn main() -> Result<()> {
     );
 }
 
-/// Mirrors the openarm01_nodes/{action_server,action_client} pattern:
-/// server emits N feedback messages then calls handle_result_next_request;
-/// client drains feedback in a loop until it receives the End signal,
-/// then calls get_result. This exercises the per-goal feedback closure
-/// signal that was added to fix the original "stuck on draining feedback"
-/// hang.
+/// Verifies the goal-completion side of the action lifecycle contract: a
+/// client can use a drain-loop pattern (`loop { match
+/// on_next_feedback_message().await { Ok(_) => ..., Err(_) => break } }`)
+/// to consume every feedback message and reliably exit once the goal is
+/// complete. This works because the Rust codegen for
+/// `handle_result_next_request` publishes an end-of-stream sentinel (an
+/// empty payload on the per-goal feedback publisher) before invoking the
+/// user's result handler. Without that sentinel the loop would hang
+/// forever, because `mpsc::Receiver::recv()` never returns `None` on its
+/// own.
+///
+/// This is the regression test for the original "stuck on draining
+/// feedback" hang seen in `openarm01_nodes/{action_server,action_client}`,
+/// which is what motivated adding the per-goal feedback closure signal in
+/// the first place.
+///
+/// End-to-end flow exercised here:
+///   1. Client `fire_goal`, server accepts.
+///   2. Server emits 3 feedback messages.
+///   3. Client's drain-loop receives all 3 in order.
+///   4. Server calls `handle_result_next_request`. Before invoking the
+///      user's result handler, codegen publishes the end-of-stream
+///      sentinel; then it runs the handler and returns the result.
+///   5. Client's next `on_next_feedback_message().await` returns `Err`
+///      (sentinel observed). The drain-loop matches the `Err` arm and
+///      breaks.
+///   6. Client calls `get_result` and receives the final response.
+///
+/// Python parity is `actions_communication_drain_loop_until_end_signal`
+/// in the python/ test module.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_drain_loop_until_end_signal() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)

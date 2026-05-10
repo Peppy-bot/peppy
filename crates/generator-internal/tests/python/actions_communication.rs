@@ -791,10 +791,28 @@ if __name__ == "__main__":
     );
 }
 
-/// Verifies that an async goal handler can call `await
-/// action.emit_feedback(...)` on itself. This requires `self.current_goal`
-/// to be set before the handler is awaited; otherwise `emit_feedback`
-/// raises `RuntimeError("emit_feedback called with no active goal...")`.
+/// Regression test for a Python-codegen deadlock where calling
+/// `await action.emit_feedback(...)` *inside* an async goal handler (i.e.
+/// before returning `GoalResponse(accepted=True)`) would either block
+/// forever or raise `RuntimeError("emit_feedback called with no active
+/// goal...")` depending on scheduling.
+///
+/// Why this pattern is supported on purpose: a server may want to publish
+/// an initial feedback snapshot atomically with goal acceptance so the
+/// client never observes an "accepted but no feedback yet" window. The
+/// common case is still to accept the goal first and then emit feedback
+/// from a follow-up task, but emitting from inside the handler must also
+/// work.
+///
+/// Root cause of the original deadlock: `self.current_goal` (which holds
+/// the per-goal feedback publisher) was assigned only *after* the user
+/// handler returned. Any in-handler `emit_feedback` therefore observed
+/// `current_goal is None`. The fix moves that assignment to *before*
+/// awaiting the handler.
+///
+/// Do NOT "simplify" this test by moving `emit_feedback` after the
+/// `return GoalResponse(...)` line in the exposer below: that would
+/// defeat the entire regression.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_emit_feedback_from_within_goal_handler() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -893,9 +911,10 @@ if __name__ == "__main__":
     let main_file = user_node_consumer.join("main.py");
     fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
 
-    // --- Exposer (server) project. The goal handler is `async` and awaits
-    // `emit_feedback` *before* returning the goal response — exactly the
-    // pattern that deadlocked pre-fix.
+    // --- Exposer (server) project. Reproduces the exact pattern that
+    // deadlocked pre-fix: the goal handler is `async` and `await`s
+    // `emit_feedback(...)` before returning `GoalResponse(accepted=True)`.
+    // See the test docstring above for the full motivation and root cause.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -943,9 +962,12 @@ async def run_exposer(node_runner):
             f"server received goal arm_id={request.data.arm_id} desired={request.data.desired_position}",
             flush=True,
         )
-        # CRITICAL: emit feedback from inside the async goal handler, BEFORE
-        # returning the goal response. Pre-fix this raised RuntimeError
-        # because self.current_goal was still None.
+        # Regression check: emit feedback from inside the async goal handler,
+        # BEFORE returning the goal response. Pre-fix, `self.current_goal`
+        # (which holds the per-goal feedback publisher) was assigned only
+        # after the handler returned, so this `await` saw no active goal and
+        # the call either blocked or raised. Do NOT move this emit after the
+        # `return GoalResponse(...)` line: that defeats the regression.
         await action.emit_feedback([request.data.arm_id, 100, 200])
         print("server emitted in-handler feedback", flush=True)
         return move_arm.GoalResponse(accepted=True)
@@ -1113,10 +1135,25 @@ if __name__ == "__main__":
     );
 }
 
-/// Python codegen `handle_cancel_next_request` publishes the end-of-stream
-/// sentinel iff the cancel response's `accepted` is true. Verifies the
-/// accept branch: the client's drain-loop `on_next_feedback_message` errors
-/// out as a direct consequence of the cancel-accept.
+/// Verifies the cancel-accept side of the action lifecycle contract: when
+/// the server's cancel handler returns `CancelResponse(accepted=True)`,
+/// the Python codegen for `handle_cancel_next_request` must publish an
+/// end-of-stream sentinel (an empty payload on the per-goal feedback
+/// publisher) so the client knows no further feedback will arrive.
+///
+/// End-to-end flow exercised here:
+///   1. Client `fire_goal`, server accepts.
+///   2. Server emits one warmup feedback message; client receives it.
+///   3. Client calls `cancel_goal`; server's cancel handler returns
+///      `accepted=True`.
+///   4. As a direct consequence of accepting the cancel, the codegen
+///      publishes the end-of-stream sentinel.
+///   5. The client's next `await goal.on_next_feedback_message()` raises
+///      (instead of blocking forever waiting for feedback that will never
+///      come). That raise is what this test asserts.
+///
+/// The reject branch is covered by
+/// `actions_communication_cancel_reject_keeps_feedback_open`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_cancel_accept_closes_feedback_stream() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -1435,11 +1472,32 @@ if __name__ == "__main__":
     );
 }
 
-/// Python codegen `handle_cancel_next_request` publishes the end-of-stream
-/// sentinel iff `accepted == True`. Verifies the reject branch: after a
-/// rejected cancel the goal continues, the server can keep emitting
-/// feedback, the client keeps draining it, and only the subsequent
-/// result-handler step closes the stream.
+/// Verifies the cancel-reject side of the action lifecycle contract: when
+/// the server's cancel handler returns `CancelResponse(accepted=False)`,
+/// the Python codegen for `handle_cancel_next_request` must NOT publish an
+/// end-of-stream sentinel. The goal stays alive, feedback keeps flowing,
+/// and the stream is closed only later by the result-handler step (which
+/// publishes the sentinel as part of normal goal completion).
+///
+/// End-to-end flow exercised here:
+///   1. Client `fire_goal`, server accepts.
+///   2. Server emits pre-cancel feedback; client receives it.
+///   3. Client calls `cancel_goal`; server's cancel handler returns
+///      `accepted=False`.
+///   4. Because the cancel was rejected, codegen does NOT publish the
+///      end-of-stream sentinel and `self.current_goal` stays set.
+///   5. Server emits post-cancel feedback; the client still receives it.
+///      This is what proves step 4: the stream was not closed by the
+///      cancel-reject.
+///   6. Server's result handler runs and returns; this is the step that
+///      publishes the end-of-stream sentinel, as part of normal goal
+///      completion.
+///   7. The client's next `await goal.on_next_feedback_message()` raises,
+///      confirming the stream is closed by the result step (not by the
+///      earlier cancel-reject).
+///
+/// The accept branch is covered by
+/// `actions_communication_cancel_accept_closes_feedback_stream`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_cancel_reject_keeps_feedback_open() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -1786,11 +1844,29 @@ if __name__ == "__main__":
     );
 }
 
-/// Python parity for the Rust `actions_communication_drain_loop_until_end_signal`
-/// test. Server emits 3 feedback messages then handles a result request;
-/// the codegen's `handle_result_next_request` publishes the end-of-stream
-/// sentinel, which lets the client's `while True: await on_next_feedback`
-/// drain-loop exit cleanly.
+/// Verifies the goal-completion side of the action lifecycle contract: a
+/// client can use a drain-loop pattern (`while True: await
+/// on_next_feedback_message()`) to consume every feedback message and
+/// reliably exit once the goal is complete. This works because the Python
+/// codegen for `handle_result_next_request` publishes an end-of-stream
+/// sentinel (an empty payload on the per-goal feedback publisher) before
+/// invoking the user's result handler. Without that sentinel the loop
+/// would hang forever, because the underlying mpsc receiver never
+/// surfaces an end-of-stream condition on its own.
+///
+/// End-to-end flow exercised here:
+///   1. Client `fire_goal`, server accepts.
+///   2. Server emits 3 feedback messages.
+///   3. Client's drain-loop receives all 3 in order.
+///   4. Server calls `handle_result_next_request`. Before invoking the
+///      user's result handler, codegen publishes the end-of-stream
+///      sentinel; then it runs the handler and returns the result.
+///   5. Client's next `on_next_feedback_message()` raises (sentinel
+///      observed). The drain-loop catches the exception and exits.
+///   6. Client calls `get_result` and receives the final response.
+///
+/// Rust parity is `actions_communication_drain_loop_until_end_signal` in
+/// the rust/ test module.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_drain_loop_until_end_signal() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
