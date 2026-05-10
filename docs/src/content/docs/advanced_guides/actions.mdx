@@ -100,7 +100,7 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
 }
 ```
 
-The `goal_service.request_message_format` is optional — an action can have no goal parameters (e.g. a `calibrate` action that just starts when fired).
+The `goal_service.request_message_format` is optional — an action can have no goal parameters (e.g. a `calibrate` action that just starts when fired). The `feedback_topic.message_format`, in contrast, is required: every feedback message carries a non-empty payload, since empty payloads are reserved as the framework's per-goal end-of-stream signal (see [Receiving feedback](#receiving-feedback)). Code generation will fail if `feedback_topic` is declared without a `message_format`.
 
 ### Handling goals
 
