@@ -79,6 +79,17 @@ pub fn unwrap_goal_payload(wire: &[u8]) -> Result<(&str, &[u8])> {
     Ok((goal_id, &wire[body_start..]))
 }
 
+/// Whether a goal_id is safe to splice into the feedback topic key
+/// expression. Restricts to a single non-empty segment of ASCII
+/// alphanumerics, `_`, and `-` so wildcard markers (`*`, `**`, `+`, `#`)
+/// and topic separators (`/`) cannot escape the per-goal scope.
+fn is_safe_goal_id(goal_id: &str) -> bool {
+    !goal_id.is_empty()
+        && goal_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 /// Per-goal feedback publisher used by action servers. An empty-payload
 /// publish is reserved as the end-of-stream sentinel: clients receive
 /// `Err(Error::ActionFeedbackChannelClosed)` from
@@ -155,6 +166,17 @@ impl ActionFeedbackPublisherFactory {
     pub async fn declare_from_wire(&self, wire: Bytes) -> Result<DeclaredFeedback> {
         let (goal_id, user_payload_offset) = {
             let (goal_id, user_payload) = unwrap_goal_payload(wire.as_ref())?;
+            // The goal_id is appended to `base_topic` to scope the feedback
+            // publisher per goal cycle. Reject anything that could let a
+            // malicious or malformed envelope escape that scope (extra
+            // segments, Zenoh wildcards, ...) so the publisher cannot be
+            // steered onto a topic the server didn't intend.
+            if !is_safe_goal_id(goal_id) {
+                return Err(Error::InternalEncodingError {
+                    identifier: "action_goal_envelope".to_string(),
+                    reason: format!("goal_id contains unsafe characters: {goal_id:?}"),
+                });
+            }
             // Cheap derived offset so we can slice the original `Bytes`
             // and skip the `Vec<u8>` copy of the user payload.
             let offset = wire.len() - user_payload.len();

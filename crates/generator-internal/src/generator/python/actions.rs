@@ -341,12 +341,29 @@ pub fn build_exposed_action(
         }
         builder.line("core_node = message.core_node");
         builder.line("instance_id = message.instance_id");
+        if has_feedback {
+            // If the handler raises, the goal is rejected — clear the
+            // pre-await assignment so a stale publisher isn't re-affirmed
+            // after handle_next_request returns and so emit_feedback() can't
+            // be called against a goal that never reached the client.
+            builder.line("try:");
+            builder.indent();
+        }
         if has_goal_request {
             builder.line(
                 "outcome = await _handle_goal_payload(payload, handler, core_node, instance_id)",
             );
         } else {
             builder.line("outcome = await _handle_goal_payload(handler, core_node, instance_id)");
+        }
+        if has_feedback {
+            builder.dedent();
+            builder.line("except BaseException:");
+            builder.indent();
+            builder.line("self.current_goal = None");
+            builder.line("captured[0] = None");
+            builder.line("raise");
+            builder.dedent();
         }
         builder.line("return outcome");
         builder.dedent();
@@ -482,6 +499,23 @@ pub fn build_exposed_action(
 
     // emit_feedback method
     if action.feedback_topic.is_some() {
+        // ActionFeedbackPublisher.publish rejects empty payloads (reserved
+        // for the publish_end sentinel), so a feedback_topic without any
+        // message_format would emit code that fails at runtime on the first
+        // call. Surface the misconfiguration at generation time instead.
+        let (info, fmt) = match (feedback_schema_info, feedback_format) {
+            (Some(info), Some(fmt)) => (info, fmt),
+            _ => {
+                return Err(Error::InvariantViolation {
+                    context: format!(
+                        "action `{}` declares feedback_topic but no non-empty message_format; \
+                         emit_feedback would publish an empty payload, which is reserved for publish_end()",
+                        action.name
+                    ),
+                });
+            }
+        };
+
         let mut param_parts = vec![String::from("self")];
         for field in &feedback_fields {
             param_parts.push(format!("{}: {}", field.name, field.type_str));
@@ -499,18 +533,14 @@ pub fn build_exposed_action(
         builder.dedent();
         builder.line("_, publisher = self.current_goal");
 
-        if let (Some(info), Some(fmt)) = (feedback_schema_info, feedback_format) {
-            let loader_fn_name = capnp_loader_fn_name(info);
-            builder.line(&format!(
-                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(&mut builder, "capnp_msg", fmt, "", &mut counter);
-            builder.line("payload = capnp_msg.to_bytes()");
-        } else {
-            builder.line("payload = b\"\"");
-        }
+        let loader_fn_name = capnp_loader_fn_name(info);
+        builder.line(&format!(
+            "capnp_msg = {loader_fn_name}().{}.new_message()",
+            info.struct_name
+        ));
+        let mut counter = 0u32;
+        serialization::emit_capnp_assignments(&mut builder, "capnp_msg", fmt, "", &mut counter);
+        builder.line("payload = capnp_msg.to_bytes()");
 
         builder.line("await publisher.publish(payload)");
         builder.dedent();

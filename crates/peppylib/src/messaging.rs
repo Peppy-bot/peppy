@@ -22,7 +22,10 @@ use pmi::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -96,18 +99,24 @@ pub struct MessengerHandle {
 
 /// 16 hex chars (64 bits) of correlation entropy, salted with `domain` so
 /// IDs from different namespaces (request, goal, ...) cannot collide on a
-/// timestamp + thread_id tie.
+/// timestamp + thread_id tie. A process-wide counter is folded in to keep
+/// IDs unique even when two calls land on the same thread within a single
+/// clock tick.
 pub(crate) fn generate_short_id(domain: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     let thread_id = std::thread::current().id();
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
 
     let mut hasher = Sha256::new();
     hasher.update(domain.as_bytes());
     hasher.update(timestamp.to_le_bytes());
     hasher.update(format!("{thread_id:?}").as_bytes());
+    hasher.update(counter.to_le_bytes());
     let result = hasher.finalize();
 
     use std::fmt::Write;
