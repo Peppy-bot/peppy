@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle, ActionMessenger,
     NonEmptyPayload, ServiceEndpoint,
@@ -81,7 +82,7 @@ impl PyActionFeedbackPublisherFactory {
         let factory = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let declared = factory
-                .declare_from_wire(peppylib::Payload::from(wire).into_inner())
+                .declare_from_wire(Bytes::from(wire))
                 .await
                 .map_err(to_py_err)?;
             Ok((

@@ -210,7 +210,7 @@ pub fn build_action_handle_method(
     let post_call = match role {
         ActionHandleRole::Plain => quote!(),
         ActionHandleRole::Goal => quote! {
-            if result && let Some(active_goal) = captured.lock().unwrap().take() {
+            if let Some(active_goal) = captured.lock().unwrap().take() {
                 self.current_goal = Some(active_goal);
             }
         },

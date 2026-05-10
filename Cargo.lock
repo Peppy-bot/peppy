@@ -2954,6 +2954,7 @@ name = "peppylib-py"
 version = "0.0.1"
 dependencies = [
  "build-helpers",
+ "bytes",
  "config",
  "core-node-api",
  "names-generator2",
