@@ -5,10 +5,12 @@ use std::path::PathBuf;
 use capnp::message::Builder;
 
 use crate::node_capnp;
-use crate::{Payload, Result};
+use crate::{NonEmptyPayload, Payload, Result};
 
 use super::builder::FeedbackStream;
-use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
+use crate::encoding::{
+    capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
+};
 
 /// Goal message for the NodeRun action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,14 +190,14 @@ impl NodeRunFeedback {
         self.stream == FeedbackStream::Warning
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_run_feedback::Builder>();
             feedback.set_stream(self.stream.to_capnp());
             feedback.set_line(&self.line);
         }
-        encode_message(&builder)
+        encode_message_non_empty(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {

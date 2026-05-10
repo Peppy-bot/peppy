@@ -1,8 +1,10 @@
 //! Encoding types for the NodeBuild action (streaming version with feedback).
 
-use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
+use crate::encoding::{
+    capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
+};
 use crate::node_capnp;
-use crate::{Payload, Result};
+use crate::{NonEmptyPayload, Payload, Result};
 use capnp::message::Builder;
 use std::path::PathBuf;
 
@@ -209,14 +211,14 @@ impl NodeBuildFeedback {
         self.stream == FeedbackStream::Warning
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_build_feedback::Builder>();
             feedback.set_stream(self.stream.to_capnp());
             feedback.set_line(&self.line);
         }
-        encode_message(&builder)
+        encode_message_non_empty(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {

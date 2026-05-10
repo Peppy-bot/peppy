@@ -14,13 +14,21 @@ pub(crate) use node_stack::{FeedbackLine, FeedbackStream};
 /// converts each one via `encode` and publishes the resulting payload. Shared
 /// by the add/build/start goal handlers, which all run the same
 /// consumer-side forwarder over differently-typed feedback encoders.
+///
+/// `encode` returns a [`peppylib::messaging::NonEmptyPayload`] so the
+/// publish path is type-guaranteed not to send the empty end-of-stream
+/// sentinel by mistake; the codegen-driven `*Feedback::encode()` methods
+/// in `core-node-api` already return that type via
+/// `encode_message_non_empty`.
 pub(crate) fn spawn_feedback_forwarder<F>(
     mut feedback_rx: tokio::sync::mpsc::UnboundedReceiver<FeedbackLine>,
     publisher: peppylib::messaging::ActionFeedbackPublisher,
     encode: F,
 ) -> tokio::task::JoinHandle<()>
 where
-    F: Fn(FeedbackLine) -> core_node_api::Result<peppylib::types::Payload> + Send + 'static,
+    F: Fn(FeedbackLine) -> core_node_api::Result<peppylib::messaging::NonEmptyPayload>
+        + Send
+        + 'static,
 {
     tokio::spawn(async move {
         while let Some(line) = feedback_rx.recv().await {

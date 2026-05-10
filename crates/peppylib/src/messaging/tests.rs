@@ -1612,7 +1612,10 @@ async fn action_communication_no_instance_id_target() {
                 .await
                 .expect("server should have captured publisher");
             feedback_publisher
-                .publish(feedback_payload_server.clone())
+                .publish(
+                    crate::messaging::NonEmptyPayload::try_new(feedback_payload_server.clone())
+                        .expect("test feedback payload is non-empty"),
+                )
                 .await
                 .expect("action should publish feedback");
 
@@ -1842,7 +1845,10 @@ async fn action_communication_with_instance_id_target() {
                 .await
                 .expect("server should have captured publisher");
             feedback_publisher
-                .publish(feedback_payload_server.clone())
+                .publish(
+                    crate::messaging::NonEmptyPayload::try_new(feedback_payload_server.clone())
+                        .expect("test feedback payload is non-empty"),
+                )
                 .await
                 .expect("action should publish feedback");
 
@@ -2034,7 +2040,12 @@ async fn action_communication_goal_cancelled() {
                             _ = stop_notified.as_mut() => break,
                             _ = ticker.tick() => {
                                 feedback_publisher
-                                    .publish(feedback_payload.clone())
+                                    .publish(
+                                        crate::messaging::NonEmptyPayload::try_new(
+                                            feedback_payload.clone(),
+                                        )
+                                        .expect("test feedback payload is non-empty"),
+                                    )
                                     .await?;
                             }
                         }
@@ -2278,7 +2289,15 @@ async fn single_action_communication_multiple_polls() {
                                 "goal payload for `{client_id}` should match expected value"
                             );
 
-                            declared.publisher.publish(case.feedback.clone()).await?;
+                            declared
+                                .publisher
+                                .publish(
+                                    crate::messaging::NonEmptyPayload::try_new(
+                                        case.feedback.clone(),
+                                    )
+                                    .expect("test case feedback payload is non-empty"),
+                                )
+                                .await?;
 
                             Ok(case.goal_response.clone())
                         }

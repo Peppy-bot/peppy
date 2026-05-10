@@ -90,10 +90,20 @@ fn is_safe_goal_id(goal_id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// Per-goal feedback publisher used by action servers. An empty-payload
-/// publish is reserved as the end-of-stream sentinel: clients receive
+/// Re-exported from `core-node-api` so callers can use the existing
+/// `peppylib::messaging::NonEmptyPayload` import path. The type lives in
+/// `core-node-api` next to [`Payload`] so capnp `encode()` helpers can
+/// return it directly without `core-node-api` having to depend on
+/// `peppylib`.
+pub use core_node_api::{EmptyPayloadError, NonEmptyPayload};
+
+/// Per-goal feedback publisher used by action servers. The end-of-stream
+/// sentinel is a zero-length payload published via
+/// [`ActionFeedbackPublisher::publish_end`]; clients then receive
 /// `Err(Error::ActionFeedbackChannelClosed)` from
-/// [`ActionGoalHandle::on_next_feedback`] when it arrives.
+/// [`ActionGoalHandle::on_next_feedback`]. Regular feedback publishes go
+/// through [`ActionFeedbackPublisher::publish`], which takes a
+/// [`NonEmptyPayload`] so empty payloads cannot reach the publish path.
 #[derive(Clone)]
 pub struct ActionFeedbackPublisher {
     inner: TopicPublisher,
@@ -110,16 +120,11 @@ impl ActionFeedbackPublisher {
         Self { inner }
     }
 
-    /// Publish a feedback message. Payload must be non-empty: empty is
-    /// reserved for the end-of-stream sentinel.
-    pub async fn publish(&self, payload: Payload) -> Result<()> {
-        if payload.is_empty() {
-            return Err(Error::InternalEncodingError {
-                identifier: "action_feedback_publish".to_string(),
-                reason: "empty payload not allowed (reserved for publish_end)".to_string(),
-            });
-        }
-        self.inner.publish(payload).await
+    /// Publish a feedback message. The [`NonEmptyPayload`] type guarantees
+    /// non-emptiness at the type level, since an empty payload is reserved
+    /// for the end-of-stream sentinel emitted by [`Self::publish_end`].
+    pub async fn publish(&self, payload: NonEmptyPayload) -> Result<()> {
+        self.inner.publish(payload.into_inner()).await
     }
 
     /// Publish the end-of-stream sentinel (a zero-length payload). The next

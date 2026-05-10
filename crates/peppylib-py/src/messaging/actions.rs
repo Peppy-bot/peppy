@@ -1,8 +1,9 @@
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle, ActionMessenger,
-    ServiceEndpoint,
+    NonEmptyPayload, ServiceEndpoint,
 };
 use peppylib::types::Payload;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -26,14 +27,19 @@ pub struct PyActionFeedbackPublisher {
 #[pymethods]
 impl PyActionFeedbackPublisher {
     /// Publish a feedback payload. Must be non-empty: empty is reserved for
-    /// the end-of-stream sentinel emitted by [`Self::publish_end`].
+    /// the end-of-stream sentinel emitted by [`Self::publish_end`]. An empty
+    /// `payload` raises `ValueError` at this FFI boundary so a Python caller
+    /// cannot inadvertently close the feedback stream by publishing zero
+    /// bytes.
     fn publish<'py>(&self, py: Python<'py>, payload: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         let publisher = self.inner.clone();
+        let payload = NonEmptyPayload::try_new(Payload::from(payload)).map_err(|_| {
+            PyValueError::new_err(
+                "feedback payload must be non-empty; empty is reserved for publish_end()",
+            )
+        })?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            publisher
-                .publish(Payload::from(payload))
-                .await
-                .map_err(to_py_err)?;
+            publisher.publish(payload).await.map_err(to_py_err)?;
             Ok(())
         })
     }

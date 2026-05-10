@@ -398,6 +398,11 @@ pub fn build_action_feedback_emit(
                     "emit_feedback called with no active goal; \
                      call handle_goal_next_request first"
                 )))?;
+            let payload = peppylib::messaging::NonEmptyPayload::try_new(payload)
+                .map_err(|_| peppylib::PeppyError::Io(std::io::Error::other(
+                    "emit_feedback produced an empty payload (codec serialized \
+                     to zero bytes); empty is reserved for publish_end"
+                )))?;
             publisher.publish(payload).await?;
         },
         error_context: quote!(format!("{} {}", #label_literal, ACTION_NAME)),

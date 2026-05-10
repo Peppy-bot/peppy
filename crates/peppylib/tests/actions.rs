@@ -1,7 +1,8 @@
 use config::node::QoSProfile;
 use peppylib::PeppyError;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, MessengerHandle,
+    ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, EmptyPayloadError, MessengerHandle,
+    NonEmptyPayload,
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
@@ -82,7 +83,7 @@ async fn action_messenger_communication() {
             .await
             .expect("server should have captured publisher");
         feedback_publisher
-            .publish(fb)
+            .publish(NonEmptyPayload::try_new(fb).expect("test feedback payload is non-empty"))
             .await
             .expect("feedback publish should succeed");
 
@@ -262,7 +263,10 @@ async fn action_feedback_publish_end_signals_channel_closed() {
     .await;
 
     publisher
-        .publish(feedback_payload.clone())
+        .publish(
+            NonEmptyPayload::try_new(feedback_payload.clone())
+                .expect("test feedback payload is non-empty"),
+        )
         .await
         .expect("regular feedback publish should succeed");
     publisher
@@ -334,32 +338,18 @@ async fn action_feedback_publish_end_signals_channel_closed_via_try_next() {
     }
 }
 
-/// `ActionFeedbackPublisher::publish(empty_payload)` is a runtime error — empty
-/// is reserved for the end-of-stream sentinel. This was a `debug_assert!`
-/// originally and easy to regress back to one without breaking debug-build
-/// tests.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn action_feedback_publish_rejects_empty_payload() {
-    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (host, port) = (instance.host.clone(), instance.port);
-
-    let (publisher, _goal_handle, _scaffold) = setup_goal_handshake(
-        &host,
-        port,
-        "test_core",
-        "test_instance_empty",
-        "test_node",
-        "test_action_empty",
-    )
-    .await;
-
-    match publisher.publish(Payload::new()).await {
-        Err(PeppyError::InternalEncodingError { identifier, .. }) => {
-            assert_eq!(identifier, "action_feedback_publish");
-        }
-        Ok(()) => panic!("expected error, got Ok — empty payload must be rejected"),
-        Err(other) => panic!("expected InternalEncodingError, got {other:?}"),
-    }
+/// Empty feedback payloads are forbidden at the type layer:
+/// `ActionFeedbackPublisher::publish` takes [`NonEmptyPayload`], so the
+/// only way to construct one is through [`NonEmptyPayload::try_new`],
+/// which rejects empty payloads with [`EmptyPayloadError`]. This test pins
+/// that constructor contract so a refactor that loosens the check at the
+/// type boundary fails immediately, without needing a Zenoh router to
+/// reach `publish()`.
+#[test]
+fn non_empty_payload_rejects_empty_payload() {
+    let result = NonEmptyPayload::try_new(Payload::new());
+    assert!(
+        matches!(result, Err(EmptyPayloadError)),
+        "empty payload must be rejected by NonEmptyPayload::try_new",
+    );
 }

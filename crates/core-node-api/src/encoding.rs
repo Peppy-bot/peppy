@@ -94,6 +94,21 @@ pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload
     Ok(Payload::from(buffer))
 }
 
+/// Encode a Cap'n Proto message builder into a [`NonEmptyPayload`].
+///
+/// Cap'n Proto's framed wire format always emits at least the segment-table
+/// header, so the produced payload is non-empty by construction. The
+/// `NonEmptyPayload::try_new` here is therefore infallible in practice and
+/// the `expect` documents that invariant; if it ever fires it indicates a
+/// `capnp::serialize::write_message` regression rather than a caller bug.
+pub(crate) fn encode_message_non_empty(
+    message: &Builder<HeapAllocator>,
+) -> Result<crate::NonEmptyPayload> {
+    let payload = encode_message(message)?;
+    Ok(crate::NonEmptyPayload::try_new(payload)
+        .expect("capnp serialize::write_message always emits a non-empty framed buffer"))
+}
+
 /// Decode bytes into a Cap'n Proto message reader.
 pub(crate) fn decode_message(
     data: &[u8],
