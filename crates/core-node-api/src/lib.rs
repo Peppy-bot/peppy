@@ -15,7 +15,7 @@ pub use graph::{
     InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
     SerializedNodeGraph,
 };
-pub use payload::Payload;
+pub use payload::{EmptyPayloadError, NonEmptyPayload, Payload};
 
 // Generated Cap'n Proto types - must be at crate root for correct path resolution
 #[allow(clippy::all)]

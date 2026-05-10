@@ -41,22 +41,33 @@ async def test_action_messenger_communication():
         # Allow subscriptions to propagate
         await asyncio.sleep(0.05)
 
-        # Run the server side in a spawned task
-        async def server():
-            # Handle the goal request
-            await action.goal_service.handle_next_request(
-                lambda _req: GOAL_RESPONSE_PAYLOAD
-            )
+        # Run the server side in a spawned task. The factory's
+        # declare_from_wire absorbs the envelope unwrap + per-goal publisher
+        # declaration in one call.
+        captured_publisher: list = [None]
 
-            # Publish feedback
-            await action.feedback_publisher.publish(FEEDBACK_PAYLOAD)
+        async def _on_goal(req):
+            (
+                publisher,
+                _goal_id,
+                _user_payload,
+            ) = await action.feedback_publisher_factory.declare_from_wire(
+                bytes(req.message.payload)
+            )
+            captured_publisher[0] = publisher
+            return GOAL_RESPONSE_PAYLOAD
+
+        async def server():
+            await action.goal_service.handle_next_request(_on_goal)
+
+            assert captured_publisher[0] is not None
+            await captured_publisher[0].publish(FEEDBACK_PAYLOAD)
 
             # Handle the result request
             await action.result_service.handle_next_request(lambda _req: RESULT_PAYLOAD)
 
         server_task = asyncio.create_task(server())
 
-        # Client: send goal
         goal_handle = await ActionMessenger.send_goal(
             client_handle,
             CORE_NODE,

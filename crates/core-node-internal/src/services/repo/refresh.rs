@@ -12,7 +12,7 @@ use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
     RepoSourceKind,
 };
-use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
+use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult};
 use serde_json::Value;
@@ -80,8 +80,9 @@ impl GoalHandler for RepoRefreshGoalHandler {
 
     async fn handle_goal(
         &self,
-        context: ServiceRequestContext,
-        feedback_publisher: TopicPublisher,
+        _context: ServiceRequestContext,
+        user_payload: bytes::Bytes,
+        feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<RepoRefreshResult>>>,
     ) -> PeppyResult<Payload> {
         {
@@ -99,8 +100,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
             }
         }
 
-        let payload = context.message().payload();
-        if let Err(e) = RepoRefreshGoal::decode(payload.as_ref()) {
+        if let Err(e) = RepoRefreshGoal::decode(&user_payload) {
             let response =
                 RepoRefreshGoalResponse::rejected(format!("invalid goal payload: {}", e));
             *state.lock().await = ActionState::Rejected;

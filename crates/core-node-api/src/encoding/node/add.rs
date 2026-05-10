@@ -1,13 +1,15 @@
 //! Encoding types for the NodeAdd action (streaming version with feedback).
 
 use crate::node_capnp;
-use crate::{Payload, Result};
+use crate::{NonEmptyPayload, Payload, Result};
 use capnp::message::Builder;
 use gix_url::Url as GitUrl;
 use std::path::PathBuf;
 
 use super::builder::FeedbackStream;
-use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
+use crate::encoding::{
+    capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeSource {
@@ -732,14 +734,14 @@ impl NodeAddFeedback {
         self.stream == FeedbackStream::Warning
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder>();
             feedback.set_stream(self.stream.to_capnp());
             feedback.set_line(&self.line);
         }
-        encode_message(&builder)
+        encode_message_non_empty(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {

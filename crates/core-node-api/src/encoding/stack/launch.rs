@@ -5,9 +5,11 @@ use std::path::PathBuf;
 use capnp::message::Builder;
 
 use crate::launch_capnp;
-use crate::{Payload, Result};
+use crate::{NonEmptyPayload, Payload, Result};
 
-use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
+use crate::encoding::{
+    capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
+};
 
 /// Default idle timeout in seconds for the add/build/run phases (used as fallback when 0 is
 /// received on the wire — Cap'n Proto defaults unset `UInt64` to 0).
@@ -289,7 +291,7 @@ impl LaunchFeedback {
         self.stream == "stderr"
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<launch_capnp::launch_feedback::Builder>();
@@ -302,7 +304,7 @@ impl LaunchFeedback {
                 LaunchFeedbackStep::BuildingNode => launch_capnp::LaunchFeedbackStep::BuildingNode,
             });
         }
-        encode_message(&builder)
+        encode_message_non_empty(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {

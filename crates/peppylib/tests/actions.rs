@@ -1,7 +1,12 @@
 use config::node::QoSProfile;
-use peppylib::messaging::{ActionMessenger, MessengerHandle};
+use peppylib::PeppyError;
+use peppylib::messaging::{
+    ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, EmptyPayloadError, MessengerHandle,
+    NonEmptyPayload,
+};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -45,21 +50,40 @@ async fn action_messenger_communication() {
     let goal_resp = goal_response_payload.clone();
     let fb = feedback_payload.clone();
     let res = result_payload.clone();
+    // Server uses declare_from_wire to unwrap the envelope + declare the
+    // per-goal feedback publisher in one call, matching the goal_id the
+    // client emits below.
+    let (publisher_tx, publisher_rx) =
+        tokio::sync::oneshot::channel::<peppylib::messaging::ActionFeedbackPublisher>();
+    let factory = action.feedback_publisher_factory.clone();
     let server = tokio::spawn(async move {
-        // Handle the goal request
+        let publisher_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(publisher_tx)));
         action
             .goal_service
-            .handle_next_request(|_req| {
-                let resp = goal_resp;
-                async move { Ok(resp) }
+            .handle_next_request(move |req_ctx| {
+                let resp = goal_resp.clone();
+                let factory = factory.clone();
+                let publisher_tx = publisher_tx.clone();
+                async move {
+                    let wire = req_ctx.message().payload().into_inner();
+                    let declared = factory
+                        .declare_from_wire(wire)
+                        .await
+                        .expect("declare from wire");
+                    if let Some(tx) = publisher_tx.lock().unwrap().take() {
+                        let _ = tx.send(declared.publisher);
+                    }
+                    Ok(resp)
+                }
             })
             .await
             .expect("goal handler should succeed");
 
-        // Publish feedback
-        action
-            .feedback_publisher
-            .publish(fb)
+        let feedback_publisher = publisher_rx
+            .await
+            .expect("server should have captured publisher");
+        feedback_publisher
+            .publish(NonEmptyPayload::try_new(fb).expect("test feedback payload is non-empty"))
             .await
             .expect("feedback publish should succeed");
 
@@ -74,7 +98,6 @@ async fn action_messenger_communication() {
             .expect("result handler should succeed");
     });
 
-    // Client: send goal
     let mut goal_handle = ActionMessenger::send_goal(
         &client_handle,
         core_node,
@@ -112,4 +135,221 @@ async fn action_messenger_communication() {
     assert_eq!(result.payload(), &result_payload);
 
     server.await.expect("server task should not panic");
+}
+
+/// Scaffolding kept alive across a test. Holds both server and client
+/// `MessengerHandle`s so their underlying Zenoh sessions don't tear down
+/// while the test is still publishing or draining feedback (subscription
+/// background task fails the moment the session that produced the
+/// subscriber drops). `shutdown_tx` ends the goal-handler task at cleanup.
+struct ServerScaffold {
+    _server_handle: MessengerHandle,
+    _client_handle: MessengerHandle,
+    shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    _join: tokio::task::JoinHandle<()>,
+}
+
+/// Drives the goal request/response handshake and hands the test back the
+/// per-goal `ActionFeedbackPublisher` (server side) plus the client's
+/// `ActionGoalHandle`. The returned scaffold must outlive the test's
+/// publishes.
+async fn setup_goal_handshake(
+    host: &str,
+    port: u16,
+    core_node: &str,
+    instance_id: &str,
+    node_name: &str,
+    action_name: &str,
+) -> (ActionFeedbackPublisher, ActionGoalHandle, ServerScaffold) {
+    let server_handle = MessengerHandle::from_host_port(host, port)
+        .await
+        .expect("failed to create server handle");
+    let client_handle = MessengerHandle::from_host_port(host, port)
+        .await
+        .expect("failed to create client handle");
+
+    let mut action = ActionMessenger::expose(
+        &server_handle,
+        core_node,
+        instance_id,
+        node_name,
+        action_name,
+    )
+    .await
+    .expect("expose should succeed");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let (publisher_tx, publisher_rx) = tokio::sync::oneshot::channel::<ActionFeedbackPublisher>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let factory = action.feedback_publisher_factory.clone();
+    let join = tokio::spawn(async move {
+        let publisher_tx = Arc::new(std::sync::Mutex::new(Some(publisher_tx)));
+        action
+            .goal_service
+            .handle_next_request(move |req_ctx| {
+                let factory = factory.clone();
+                let publisher_tx = publisher_tx.clone();
+                async move {
+                    let wire = req_ctx.message().payload().into_inner();
+                    let declared = factory
+                        .declare_from_wire(wire)
+                        .await
+                        .expect("declare from wire");
+                    if let Some(tx) = publisher_tx.lock().unwrap().take() {
+                        let _ = tx.send(declared.publisher);
+                    }
+                    Ok(Payload::from_static(b"accepted"))
+                }
+            })
+            .await
+            .expect("goal handler should succeed");
+        // Hold `action` (and thus the per-goal publisher's session) alive
+        // until the test signals completion.
+        let _ = shutdown_rx.await;
+        drop(action);
+    });
+
+    let goal_handle = ActionMessenger::send_goal(
+        &client_handle,
+        core_node,
+        instance_id,
+        node_name,
+        action_name,
+        Some(core_node),
+        Some(instance_id),
+        Payload::from_static(b"goal data"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("send_goal should succeed");
+
+    let publisher = publisher_rx
+        .await
+        .expect("server should have captured publisher");
+
+    (
+        publisher,
+        goal_handle,
+        ServerScaffold {
+            _server_handle: server_handle,
+            _client_handle: client_handle,
+            shutdown_tx,
+            _join: join,
+        },
+    )
+}
+
+/// `publish_end()` must surface as `Err(ActionFeedbackChannelClosed)` on the
+/// client's drain loop. This is the messaging-layer primitive every codegen
+/// relies on; protect it with a direct test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn action_feedback_publish_end_signals_channel_closed() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let feedback_payload = Payload::from_static(b"50% done");
+    let (publisher, mut goal_handle, scaffold) = setup_goal_handshake(
+        &host,
+        port,
+        "test_core",
+        "test_instance",
+        "test_node",
+        "test_action",
+    )
+    .await;
+
+    publisher
+        .publish(
+            NonEmptyPayload::try_new(feedback_payload.clone())
+                .expect("test feedback payload is non-empty"),
+        )
+        .await
+        .expect("regular feedback publish should succeed");
+    publisher
+        .publish_end()
+        .await
+        .expect("publish_end should succeed");
+
+    let received = tokio::time::timeout(Duration::from_secs(2), goal_handle.on_next_feedback())
+        .await
+        .expect("regular feedback should arrive within timeout")
+        .expect("regular feedback should be Ok");
+    assert_eq!(received.payload(), &feedback_payload);
+
+    let closed = tokio::time::timeout(Duration::from_secs(2), goal_handle.on_next_feedback())
+        .await
+        .expect("close signal should arrive within timeout");
+    match closed {
+        Err(PeppyError::ActionFeedbackChannelClosed) => {}
+        other => panic!("expected ActionFeedbackChannelClosed, got {other:?}"),
+    }
+
+    let _ = scaffold.shutdown_tx.send(());
+}
+
+/// Same end-of-stream contract as above, but exercises the non-blocking
+/// `try_next_feedback` path — it has its own `is_end_sentinel` branch in
+/// actions.rs that's easy to miss in a refactor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn action_feedback_publish_end_signals_channel_closed_via_try_next() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let (publisher, mut goal_handle, scaffold) = setup_goal_handshake(
+        &host,
+        port,
+        "test_core",
+        "test_instance_try",
+        "test_node",
+        "test_action_try",
+    )
+    .await;
+
+    publisher
+        .publish_end()
+        .await
+        .expect("publish_end should succeed");
+
+    // Scaffold lives until the loop below confirms the close signal — keep
+    // the binding alive past the loop with `let _ = scaffold...`.
+    let _scaffold = scaffold;
+
+    // Poll until the sentinel reaches the client. Bound the wait so a
+    // regression that drops the sentinel fails the test instead of hanging.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match goal_handle.try_next_feedback() {
+            Err(PeppyError::ActionFeedbackChannelClosed) => break,
+            Ok(None) => {
+                if tokio::time::Instant::now() >= deadline {
+                    panic!("close signal did not arrive via try_next_feedback within timeout");
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok(Some(msg)) => panic!("expected close signal, got message: {msg:?}"),
+            Err(other) => panic!("expected ActionFeedbackChannelClosed, got {other:?}"),
+        }
+    }
+}
+
+/// Empty feedback payloads are forbidden at the type layer:
+/// `ActionFeedbackPublisher::publish` takes [`NonEmptyPayload`], so the
+/// only way to construct one is through [`NonEmptyPayload::try_new`],
+/// which rejects empty payloads with [`EmptyPayloadError`]. This test pins
+/// that constructor contract so a refactor that loosens the check at the
+/// type boundary fails immediately, without needing a Zenoh router to
+/// reach `publish()`.
+#[test]
+fn non_empty_payload_rejects_empty_payload() {
+    let result = NonEmptyPayload::try_new(Payload::new());
+    assert!(
+        matches!(result, Err(EmptyPayloadError)),
+        "empty payload must be rejected by NonEmptyPayload::try_new",
+    );
 }

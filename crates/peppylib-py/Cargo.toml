@@ -8,6 +8,7 @@ name = "_peppylib"
 crate-type = ["cdylib"]
 
 [dependencies]
+bytes = "1"
 config = { path = "../config-internal" }
 core-node-api = { path = "../core-node-api" }
 peppylib = { path = "../peppylib" }

@@ -269,7 +269,8 @@ fn exposed_action() {
             "handle.goal_service = action.goal_service",
             "handle.cancel_service = action.cancel_service",
             "handle.result_service = action.result_service",
-            "handle.feedback_publisher = action.feedback_publisher",
+            "handle.feedback_publisher_factory = action.feedback_publisher_factory",
+            "handle.current_goal = None",
             "return handle",
         ],
     );
@@ -303,7 +304,7 @@ fn exposed_action() {
         &[
             "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalResponse]) -> None:",
             "async def _on_request(request_context):",
-            "return await _handle_goal_payload(payload, handler, core_node, instance_id)",
+            "outcome = await _handle_goal_payload(payload, handler, core_node, instance_id)",
             "await self.goal_service.handle_next_request(_on_request)",
         ],
     );
@@ -320,12 +321,14 @@ fn exposed_action() {
         ],
     );
 
-    // handle_cancel_next_request as method with self
+    // handle_cancel_next_request as method with self.
+    // When the action has a feedback topic, the handler is wrapped so the
+    // codegen can inspect its outcome and emit publish_end on accept/error.
     assert_contains_all(
         &rendered,
         &[
             "async def handle_cancel_next_request(self, handler: Callable[[CancelRequest], CancelResponse]) -> None:",
-            "return await _handle_cancel_payload(handler, core_node, instance_id)",
+            "outcome = await _handle_cancel_payload(_wrapped_handler, core_node, instance_id)",
             "await self.cancel_service.handle_next_request(_on_request)",
         ],
     );
@@ -349,13 +352,18 @@ fn exposed_action() {
         ],
     );
 
-    // emit_feedback as method with self
+    // emit_feedback as method with self. The guard text is verbatim because
+    // user code may match against it; pin both the condition and the panic
+    // message so a refactor doesn't silently drop either.
     assert_contains_all(
         &rendered,
         &[
             "async def emit_feedback(self, new_position: list[int]):",
             "payload = capnp_msg.to_bytes()",
-            "await self.feedback_publisher.publish(payload)",
+            "await publisher.publish(payload)",
+            "if self.current_goal is None:",
+            "emit_feedback called with no active goal",
+            "call handle_goal_next_request first",
         ],
     );
 }
@@ -401,7 +409,7 @@ fn expose_action_without_request_body() {
     assert_contains_all(
         &rendered,
         &[
-            "return await _handle_goal_payload(handler, core_node, instance_id)",
+            "outcome = await _handle_goal_payload(handler, core_node, instance_id)",
             "await self.goal_service.handle_next_request(_on_request)",
         ],
     );
@@ -442,7 +450,7 @@ fn expose_action_without_request_body() {
         &rendered,
         &[
             "async def emit_feedback(self, new_position: int, speed: int):",
-            "await self.feedback_publisher.publish(payload)",
+            "await publisher.publish(payload)",
         ],
     );
 }
@@ -529,7 +537,7 @@ fn expose_two_actions() {
             "await self.cancel_service.handle_next_request(_on_request)",
             "await self.result_service.handle_next_request(_on_request)",
             "async def emit_feedback(self,",
-            "await self.feedback_publisher.publish(payload)",
+            "await publisher.publish(payload)",
         ],
     );
 
@@ -551,7 +559,7 @@ fn expose_two_actions() {
             "await self.cancel_service.handle_next_request(_on_request)",
             "await self.result_service.handle_next_request(_on_request)",
             "async def emit_feedback(self,",
-            "await self.feedback_publisher.publish(payload)",
+            "await publisher.publish(payload)",
         ],
     );
 }
@@ -685,7 +693,7 @@ fn consumed_action() {
             "target_core_node: Optional[str] = None",
             "target_instance_id: Optional[str] = None",
             ") -> Self:",
-            "goal_payload = capnp_msg.to_bytes()",
+            "user_goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
             "feedback_qos,",
             "handle = cls()",
@@ -826,7 +834,7 @@ fn consumed_two_actions_same_node() {
             ") -> Self:",
             ") -> CancelResponse:",
             ") -> ResultResponse:",
-            "goal_payload = capnp_msg.to_bytes()",
+            "user_goal_payload = capnp_msg.to_bytes()",
         ],
     );
 
@@ -866,7 +874,7 @@ fn consumed_two_actions_same_node() {
             ") -> Self:",
             ") -> CancelResponse:",
             ") -> ResultResponse:",
-            "goal_payload = b\"\"",
+            "user_goal_payload = b\"\"",
         ],
     );
 
@@ -949,7 +957,7 @@ fn consumed_action_without_response_payload() {
     assert_contains_all(
         &rendered,
         &[
-            "goal_payload = capnp_msg.to_bytes()",
+            "user_goal_payload = capnp_msg.to_bytes()",
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",
             "handle._inner = action_handle",

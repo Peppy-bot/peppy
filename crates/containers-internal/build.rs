@@ -3,7 +3,12 @@ mod apptainer_build {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    const APPTAINER_VERSION: &str = "1.4.5";
+    const APPTAINER_VERSION: &str = "1.5.0";
+    /// SHA-256 of `apptainer-{APPTAINER_VERSION}.tar.gz` from the GitHub release.
+    /// Bump alongside `APPTAINER_VERSION`; both `verify_apptainer_checksum`
+    /// call sites (host build, Lima guest build) consume this constant.
+    const APPTAINER_SHA256: &str =
+        "36d67d57ef959397fa4f59169cf7deb92220537160e761e0c1cff84624ad81e3";
     const LIMA_VERSION: &str = "2.1.1";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
         "b6b0e6701189cd8c4e549cc39e6d054dc681487798b9b774ad2cbd30c08b2bd8";
@@ -292,6 +297,21 @@ mod apptainer_build {
     }
 
     // -----------------------------------------------------------------------
+    // Apptainer tarball integrity
+    // -----------------------------------------------------------------------
+
+    /// Verify a downloaded apptainer source tarball against the pinned
+    /// [`APPTAINER_SHA256`]. Returns `true` on match. On mismatch, deletes
+    /// the file (so a stale corrupted download isn't reused) and returns false.
+    fn verify_apptainer_checksum(tarball: &Path) -> bool {
+        if build_helpers::verify_sha256(tarball, APPTAINER_SHA256, "apptainer source tarball") {
+            return true;
+        }
+        std::fs::remove_file(tarball).ok();
+        false
+    }
+
+    // -----------------------------------------------------------------------
     // Build apptainer from source
     // -----------------------------------------------------------------------
 
@@ -331,6 +351,11 @@ mod apptainer_build {
                 .arg(&tarball_path),
             &format!("download apptainer {version} source tarball"),
         ) {
+            return false;
+        }
+
+        // Verify integrity before touching the contents.
+        if !verify_apptainer_checksum(&tarball_path) {
             return false;
         }
 
@@ -494,6 +519,8 @@ cd /tmp
 sudo rm -rf apptainer-{version} apptainer-{version}.tar.gz {guest_install_dir}
 echo "=== Downloading apptainer {version} source ==="
 curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
+echo "=== Verifying apptainer source tarball SHA-256 ==="
+echo "{expected_sha256}  apptainer-{version}.tar.gz" | sha256sum -c -
 tar -xzf apptainer-{version}.tar.gz
 cd apptainer-{version}
 echo "{version}" > VERSION
@@ -508,6 +535,7 @@ echo "=== Apptainer build complete ==="
 "#,
             version = version,
             guest_install_dir = guest_install_dir,
+            expected_sha256 = APPTAINER_SHA256,
         );
 
         let label = format!("apptainer-build-{}", target_arch);

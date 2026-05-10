@@ -300,7 +300,8 @@ pub fn build_exposed_action(
         builder.line("handle.result_service = action.result_service");
     }
     if has_feedback {
-        builder.line("handle.feedback_publisher = action.feedback_publisher");
+        builder.line("handle.feedback_publisher_factory = action.feedback_publisher_factory");
+        builder.line("handle.current_goal = None");
     }
     builder.line("return handle");
     builder.dedent();
@@ -323,18 +324,39 @@ pub fn build_exposed_action(
         builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
-        if has_goal_request {
+        if has_feedback {
+            builder.line(
+                "publisher, goal_id, payload = await self.feedback_publisher_factory.declare_from_wire(message.payload)",
+            );
+            // Assign self.current_goal BEFORE awaiting the user handler so
+            // emit_feedback() called from within an async handler sees the
+            // active publisher (regression fix for the in-handler deadlock).
+            builder.line("self.current_goal = (goal_id, publisher)");
+        } else if has_goal_request {
             builder.line("payload = message.payload");
         }
         builder.line("core_node = message.core_node");
         builder.line("instance_id = message.instance_id");
+        if has_feedback {
+            builder.line("try:");
+            builder.indent();
+        }
         if has_goal_request {
             builder.line(
-                "return await _handle_goal_payload(payload, handler, core_node, instance_id)",
+                "outcome = await _handle_goal_payload(payload, handler, core_node, instance_id)",
             );
         } else {
-            builder.line("return await _handle_goal_payload(handler, core_node, instance_id)");
+            builder.line("outcome = await _handle_goal_payload(handler, core_node, instance_id)");
         }
+        if has_feedback {
+            builder.dedent();
+            builder.line("except BaseException:");
+            builder.indent();
+            builder.line("self.current_goal = None");
+            builder.line("raise");
+            builder.dedent();
+        }
+        builder.line("return outcome");
         builder.dedent();
         builder.line("await self.goal_service.handle_next_request(_on_request)");
         builder.dedent();
@@ -346,14 +368,68 @@ pub fn build_exposed_action(
             "async def handle_cancel_next_request(self, handler: {cancel_handler_type}) -> None:"
         ));
         builder.indent();
+        if has_feedback {
+            builder.line("close_decision = [None]");
+            // CancelResponse.accepted decides whether to publish end-of-stream.
+            // Inspecting it requires running the user handler ourselves rather
+            // than letting the helper serialize directly. The handler may be
+            // sync or async; await + hasattr(__await__) covers both.
+            builder.line("async def _wrapped_handler(request):");
+            builder.indent();
+            builder.line("try:");
+            builder.indent();
+            builder.line("response = handler(request)");
+            builder.line("if hasattr(response, \"__await__\"):");
+            builder.indent();
+            builder.line("response = await response");
+            builder.dedent();
+            builder.dedent();
+            builder.line("except Exception:");
+            builder.indent();
+            builder.line("close_decision[0] = True");
+            builder.line("raise");
+            builder.dedent();
+            builder.line("close_decision[0] = bool(response.accepted)");
+            builder.line("return response");
+            builder.dedent();
+        }
         builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
         builder.line("core_node = message.core_node");
         builder.line("instance_id = message.instance_id");
-        builder.line("return await _handle_cancel_payload(handler, core_node, instance_id)");
+        if has_feedback {
+            // Resolve the publisher when the cancel request actually arrives,
+            // not when handle_cancel_next_request was called.
+            builder.line(
+                "publisher = self.current_goal[1] if self.current_goal is not None else None",
+            );
+            builder.line(
+                "outcome = await _handle_cancel_payload(_wrapped_handler, core_node, instance_id)",
+            );
+            builder.line("if close_decision[0] is True and publisher is not None:");
+            builder.indent();
+            builder.line("try:");
+            builder.indent();
+            builder.line("await publisher.publish_end()");
+            builder.dedent();
+            builder.line("except Exception:");
+            builder.indent();
+            builder.line("pass");
+            builder.dedent();
+            builder.dedent();
+            builder.line("return outcome");
+        } else {
+            builder.line("return await _handle_cancel_payload(handler, core_node, instance_id)");
+        }
         builder.dedent();
         builder.line("await self.cancel_service.handle_next_request(_on_request)");
+        if has_feedback {
+            builder.line("if close_decision[0] is True:");
+            builder.indent();
+            builder.line("self.current_goal = None");
+            builder.dedent();
+        }
         builder.dedent();
         builder.blank_line();
     }
@@ -372,6 +448,25 @@ pub fn build_exposed_action(
             "async def handle_result_next_request(self, handler: {rht}) -> None:"
         ));
         builder.indent();
+        if has_feedback {
+            // Publish end-of-stream BEFORE awaiting the next result request
+            // so the client's drain loop can break out and actually send the
+            // request. Matches the Rust codegen's `ActionHandleRole::Result`
+            // setup block. Inverting this ordering deadlocks any client that
+            // drains feedback before calling get_result.
+            builder.line("if self.current_goal is not None:");
+            builder.indent();
+            builder.line("_, publisher = self.current_goal");
+            builder.line("try:");
+            builder.indent();
+            builder.line("await publisher.publish_end()");
+            builder.dedent();
+            builder.line("except Exception:");
+            builder.indent();
+            builder.line("pass");
+            builder.dedent();
+            builder.dedent();
+        }
         builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
@@ -380,12 +475,32 @@ pub fn build_exposed_action(
         builder.line("return await _handle_result_payload(handler, core_node, instance_id)");
         builder.dedent();
         builder.line("await self.result_service.handle_next_request(_on_request)");
+        if has_feedback {
+            builder.line("self.current_goal = None");
+        }
         builder.dedent();
         builder.blank_line();
     }
 
     // emit_feedback method
     if action.feedback_topic.is_some() {
+        // ActionFeedbackPublisher.publish rejects empty payloads (reserved
+        // for the publish_end sentinel), so a feedback_topic without any
+        // message_format would emit code that fails at runtime on the first
+        // call. Surface the misconfiguration at generation time instead.
+        let (info, fmt) = match (feedback_schema_info, feedback_format) {
+            (Some(info), Some(fmt)) => (info, fmt),
+            _ => {
+                return Err(Error::InvariantViolation {
+                    context: format!(
+                        "action `{}` declares feedback_topic but no non-empty message_format; \
+                         emit_feedback would publish an empty payload, which is reserved for publish_end()",
+                        action.name
+                    ),
+                });
+            }
+        };
+
         let mut param_parts = vec![String::from("self")];
         for field in &feedback_fields {
             param_parts.push(format!("{}: {}", field.name, field.type_str));
@@ -394,21 +509,25 @@ pub fn build_exposed_action(
 
         builder.line(&format!("async def emit_feedback({params}):"));
         builder.indent();
+        // Per-goal publisher; user must call handle_goal_next_request first.
+        builder.line("if self.current_goal is None:");
+        builder.indent();
+        builder.line(
+            "raise RuntimeError('emit_feedback called with no active goal; call handle_goal_next_request first')",
+        );
+        builder.dedent();
+        builder.line("_, publisher = self.current_goal");
 
-        if let (Some(info), Some(fmt)) = (feedback_schema_info, feedback_format) {
-            let loader_fn_name = capnp_loader_fn_name(info);
-            builder.line(&format!(
-                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(&mut builder, "capnp_msg", fmt, "", &mut counter);
-            builder.line("payload = capnp_msg.to_bytes()");
-        } else {
-            builder.line("payload = b\"\"");
-        }
+        let loader_fn_name = capnp_loader_fn_name(info);
+        builder.line(&format!(
+            "capnp_msg = {loader_fn_name}().{}.new_message()",
+            info.struct_name
+        ));
+        let mut counter = 0u32;
+        serialization::emit_capnp_assignments(&mut builder, "capnp_msg", fmt, "", &mut counter);
+        builder.line("payload = capnp_msg.to_bytes()");
 
-        builder.line("await self.feedback_publisher.publish(payload)");
+        builder.line("await publisher.publish(payload)");
         builder.dedent();
     }
 
@@ -515,7 +634,6 @@ pub fn build_consumed_action(
         emit_format_as_dataclass(&mut builder, "GoalRequest", fmt)?;
     }
 
-    // GoalResponseData (no wrapper class — data lives on ActionHandle.data)
     if let Some(fmt) = goal_response_format {
         emit_format_as_dataclass(&mut builder, "GoalResponseData", fmt)?;
     }
@@ -651,9 +769,9 @@ pub fn build_consumed_action(
             "request",
             &mut counter,
         );
-        builder.line("goal_payload = capnp_msg.to_bytes()");
+        builder.line("user_goal_payload = capnp_msg.to_bytes()");
     } else {
-        builder.line("goal_payload = b\"\"");
+        builder.line("user_goal_payload = b\"\"");
     }
 
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
@@ -665,7 +783,7 @@ pub fn build_consumed_action(
     builder.line("TARGET_ACTION_NAME,");
     builder.line("target_core_node,");
     builder.line("target_instance_id,");
-    builder.line("goal_payload,");
+    builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");
     builder.dedent();

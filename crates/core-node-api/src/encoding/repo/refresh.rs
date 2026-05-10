@@ -1,9 +1,11 @@
 use capnp::message::Builder;
 
 use crate::encoding::repo::add::RepoSourceKind;
-use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
+use crate::encoding::{
+    capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
+};
 use crate::repo_capnp;
-use crate::{Payload, Result};
+use crate::{NonEmptyPayload, Payload, Result};
 
 /// Goal message for the RepoRefresh action (empty — refresh all repos).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,7 +136,7 @@ impl RepoRefreshFeedback {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
@@ -151,7 +153,7 @@ impl RepoRefreshFeedback {
                 variants_builder.set(i as u32, v);
             }
         }
-        encode_message(&builder)
+        encode_message_non_empty(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
