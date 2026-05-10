@@ -766,7 +766,9 @@ fn main() -> Result<()> {
 ///   3. Client's drain-loop receives all 3 in order.
 ///   4. Server calls `handle_result_next_request`. Before invoking the
 ///      user's result handler, codegen publishes the end-of-stream
-///      sentinel; then it runs the handler and returns the result.
+///      sentinel on the per-goal feedback publisher (closing the
+///      feedback stream); then it runs the handler and returns the
+///      result.
 ///   5. Client's next `on_next_feedback_message().await` returns `Err`
 ///      (sentinel observed). The drain-loop matches the `Err` arm and
 ///      breaks.
@@ -1118,10 +1120,30 @@ fn main() -> Result<()> {
     );
 }
 
-/// Rust codegen `ActionHandleRole::Cancel` publishes the end-of-stream
-/// sentinel iff `CancelResponse.accepted == true`. Verifies the accept
-/// branch: the client's drain loop exits via the close signal as a direct
-/// consequence of the cancel-accept.
+/// Verifies the cancel-accept side of the action lifecycle contract: when
+/// the server's cancel handler returns `CancelResponse::new(true, ...)`,
+/// the Rust codegen for `handle_cancel_next_request` must publish an
+/// end-of-stream sentinel (an empty payload on the per-goal feedback
+/// publisher) so the client knows no further feedback will arrive.
+///
+/// End-to-end flow exercised here:
+///   1. Client `fire_goal`, server accepts.
+///   2. Server emits one warmup feedback message; client receives it.
+///   3. Client calls `cancel_goal`; server's cancel handler returns
+///      `accepted == true`.
+///   4. As a direct consequence of accepting the cancel, the codegen
+///      publishes the end-of-stream sentinel on the per-goal feedback
+///      publisher, closing the feedback stream for this goal.
+///   5. The client's next `on_next_feedback_message().await` returns
+///      `Err` (instead of blocking forever waiting for feedback that will
+///      never come). That `Err` is what this test asserts.
+///
+/// The reject branch is covered by
+/// `actions_communication_cancel_reject_keeps_feedback_open`.
+///
+/// Python parity is
+/// `actions_communication_cancel_accept_closes_feedback_stream` in the
+/// python/ test module.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_cancel_accept_closes_feedback_stream() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -1441,11 +1463,37 @@ fn main() -> Result<()> {
     );
 }
 
-/// Rust codegen `ActionHandleRole::Cancel` publishes the end-of-stream
-/// sentinel iff `CancelResponse.accepted == true`. Verifies the reject
-/// branch: after a rejected cancel the goal continues, the server can keep
-/// emitting feedback, the client keeps draining it, and only the
-/// subsequent result-handler step closes the stream.
+/// Verifies the cancel-reject side of the action lifecycle contract: when
+/// the server's cancel handler returns `CancelResponse::new(false, ...)`,
+/// the Rust codegen for `handle_cancel_next_request` must NOT publish an
+/// end-of-stream sentinel. The goal stays alive, feedback keeps flowing,
+/// and the stream is closed only later by the result-handler step (which
+/// publishes the sentinel as part of normal goal completion).
+///
+/// End-to-end flow exercised here:
+///   1. Client `fire_goal`, server accepts.
+///   2. Server emits pre-cancel feedback; client receives it.
+///   3. Client calls `cancel_goal`; server's cancel handler returns
+///      `accepted == false`.
+///   4. Because the cancel was rejected, codegen does NOT publish the
+///      end-of-stream sentinel on the per-goal feedback publisher; the
+///      feedback stream stays open and the active-goal state stays set.
+///   5. Server emits post-cancel feedback; the client still receives it.
+///      This is what proves step 4: the stream was not closed by the
+///      cancel-reject.
+///   6. Server's result handler runs and returns; this is the step that
+///      publishes the end-of-stream sentinel on the per-goal feedback
+///      publisher, as part of normal goal completion.
+///   7. The client's next `on_next_feedback_message().await` returns
+///      `Err`, confirming the stream is closed by the result step (not by
+///      the earlier cancel-reject).
+///
+/// The accept branch is covered by
+/// `actions_communication_cancel_accept_closes_feedback_stream`.
+///
+/// Python parity is
+/// `actions_communication_cancel_reject_keeps_feedback_open` in the
+/// python/ test module.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_cancel_reject_keeps_feedback_open() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)

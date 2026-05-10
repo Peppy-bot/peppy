@@ -1147,7 +1147,8 @@ if __name__ == "__main__":
 ///   3. Client calls `cancel_goal`; server's cancel handler returns
 ///      `accepted=True`.
 ///   4. As a direct consequence of accepting the cancel, the codegen
-///      publishes the end-of-stream sentinel.
+///      publishes the end-of-stream sentinel on the per-goal feedback
+///      publisher, closing the feedback stream for this goal.
 ///   5. The client's next `await goal.on_next_feedback_message()` raises
 ///      (instead of blocking forever waiting for feedback that will never
 ///      come). That raise is what this test asserts.
@@ -1485,7 +1486,8 @@ if __name__ == "__main__":
 ///   3. Client calls `cancel_goal`; server's cancel handler returns
 ///      `accepted=False`.
 ///   4. Because the cancel was rejected, codegen does NOT publish the
-///      end-of-stream sentinel and `self.current_goal` stays set.
+///      end-of-stream sentinel on the per-goal feedback publisher; the
+///      feedback stream stays open and `self.current_goal` stays set.
 ///   5. Server emits post-cancel feedback; the client still receives it.
 ///      This is what proves step 4: the stream was not closed by the
 ///      cancel-reject.
@@ -1860,7 +1862,9 @@ if __name__ == "__main__":
 ///   3. Client's drain-loop receives all 3 in order.
 ///   4. Server calls `handle_result_next_request`. Before invoking the
 ///      user's result handler, codegen publishes the end-of-stream
-///      sentinel; then it runs the handler and returns the result.
+///      sentinel on the per-goal feedback publisher (closing the
+///      feedback stream); then it runs the handler and returns the
+///      result.
 ///   5. Client's next `on_next_feedback_message()` raises (sentinel
 ///      observed). The drain-loop catches the exception and exits.
 ///   6. Client calls `get_result` and receives the final response.
