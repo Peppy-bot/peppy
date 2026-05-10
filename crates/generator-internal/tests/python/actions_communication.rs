@@ -791,13 +791,10 @@ if __name__ == "__main__":
     );
 }
 
-/// Direct regression test for the deadlock fix in commit `c174aa9a`. The
-/// Python codegen used to set `self.current_goal` *after* awaiting the user
-/// goal handler. With an async goal handler that calls `await
-/// action.emit_feedback(...)`, `self.current_goal` was still `None` at the
-/// time of the call, raising `RuntimeError("emit_feedback called with no
-/// active goal...")`. The post-fix codegen sets `current_goal` before the
-/// handler await, so this pattern works.
+/// Verifies that an async goal handler can call `await
+/// action.emit_feedback(...)` on itself. This requires `self.current_goal`
+/// to be set before the handler is awaited; otherwise `emit_feedback`
+/// raises `RuntimeError("emit_feedback called with no active goal...")`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_emit_feedback_from_within_goal_handler() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
