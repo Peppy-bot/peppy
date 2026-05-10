@@ -19,6 +19,15 @@ pub fn generate_goal_id() -> String {
     generate_short_id("goal")
 }
 
+const ACTION_GOAL_ENVELOPE: &str = "action_goal_envelope";
+
+fn envelope_error(reason: impl Into<String>) -> Error {
+    Error::InternalEncodingError {
+        identifier: ACTION_GOAL_ENVELOPE.to_string(),
+        reason: reason.into(),
+    }
+}
+
 /// Wrap a user goal payload with a length-prefixed `goal_id` so the server
 /// can route feedback to a per-goal topic. `goal_id` must be non-empty and
 /// at most 255 bytes ([`generate_goal_id`] satisfies both).
@@ -29,20 +38,14 @@ pub fn generate_goal_id() -> String {
 /// [`unwrap_goal_payload`] before deserializing.
 pub fn wrap_goal_payload(goal_id: &str, user_payload: &[u8]) -> Result<Payload> {
     if goal_id.is_empty() {
-        return Err(Error::InternalEncodingError {
-            identifier: "action_goal_envelope".to_string(),
-            reason: "goal_id must be non-empty".to_string(),
-        });
+        return Err(envelope_error("goal_id must be non-empty"));
     }
     if goal_id.len() > u8::MAX as usize {
-        return Err(Error::InternalEncodingError {
-            identifier: "action_goal_envelope".to_string(),
-            reason: format!(
-                "goal_id length {} exceeds wire limit {}",
-                goal_id.len(),
-                u8::MAX
-            ),
-        });
+        return Err(envelope_error(format!(
+            "goal_id length {} exceeds wire limit {}",
+            goal_id.len(),
+            u8::MAX
+        )));
     }
     let mut buf = BytesMut::with_capacity(1 + goal_id.len() + user_payload.len());
     buf.put_u8(goal_id.len() as u8);
@@ -54,28 +57,20 @@ pub fn wrap_goal_payload(goal_id: &str, user_payload: &[u8]) -> Result<Payload> 
 /// Decode an action goal envelope. Returns the embedded `goal_id` (always
 /// non-empty) and the user payload bytes. See [`wrap_goal_payload`].
 pub fn unwrap_goal_payload(wire: &[u8]) -> Result<(&str, &[u8])> {
-    let goal_id_len = *wire.first().ok_or_else(|| Error::InternalEncodingError {
-        identifier: "action_goal_envelope".to_string(),
-        reason: "wire payload is empty".to_string(),
-    })? as usize;
+    let goal_id_len = *wire
+        .first()
+        .ok_or_else(|| envelope_error("wire payload is empty"))? as usize;
     if goal_id_len == 0 {
-        return Err(Error::InternalEncodingError {
-            identifier: "action_goal_envelope".to_string(),
-            reason: "goal_id is empty".to_string(),
-        });
+        return Err(envelope_error("goal_id is empty"));
     }
     let body_start = 1 + goal_id_len;
     if wire.len() < body_start {
-        return Err(Error::InternalEncodingError {
-            identifier: "action_goal_envelope".to_string(),
-            reason: format!("wire payload too short for declared goal_id_len {goal_id_len}"),
-        });
+        return Err(envelope_error(format!(
+            "wire payload too short for declared goal_id_len {goal_id_len}"
+        )));
     }
-    let goal_id =
-        std::str::from_utf8(&wire[1..body_start]).map_err(|err| Error::InternalEncodingError {
-            identifier: "action_goal_envelope".to_string(),
-            reason: format!("goal_id is not valid UTF-8: {err}"),
-        })?;
+    let goal_id = std::str::from_utf8(&wire[1..body_start])
+        .map_err(|err| envelope_error(format!("goal_id is not valid UTF-8: {err}")))?;
     Ok((goal_id, &wire[body_start..]))
 }
 
@@ -177,10 +172,9 @@ impl ActionFeedbackPublisherFactory {
             // segments, Zenoh wildcards, ...) so the publisher cannot be
             // steered onto a topic the server didn't intend.
             if !is_safe_goal_id(goal_id) {
-                return Err(Error::InternalEncodingError {
-                    identifier: "action_goal_envelope".to_string(),
-                    reason: format!("goal_id contains unsafe characters: {goal_id:?}"),
-                });
+                return Err(envelope_error(format!(
+                    "goal_id contains unsafe characters: {goal_id:?}"
+                )));
             }
             // Cheap derived offset so we can slice the original `Bytes`
             // and skip the `Vec<u8>` copy of the user payload.
