@@ -1557,16 +1557,30 @@ async fn action_communication_no_instance_id_target() {
             .await
             .expect("action should start");
 
-            // Create the goal handler future first (this sets up the subscription)
-            let goal_handler = action
-                .goal_service
-                .handle_next_request(move |request| async move {
+            let (publisher_tx, publisher_rx) =
+                tokio::sync::oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
+            let publisher_tx = std::sync::Mutex::new(Some(publisher_tx));
+            let factory_for_handler = action.feedback_publisher_factory.clone();
+
+            // The factory unwraps the envelope and declares a per-goal
+            // publisher in one async call via declare_from_wire.
+            let goal_handler = action.goal_service.handle_next_request(move |request| {
+                let factory = factory_for_handler.clone();
+                let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
+                async move {
+                    let declared = factory
+                        .declare_from_wire(request.message().payload().into_inner())
+                        .await
+                        .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert_eq!(request.message().payload(), &expected_goal_payload);
-
+                    assert_eq!(declared.user_payload, expected_goal_payload.as_ref());
+                    if let Some(tx) = publisher_tx.lock().unwrap().take() {
+                        let _ = tx.send(declared.publisher);
+                    }
                     Ok(expected_goal_response_payload)
-                });
+                }
+            });
 
             // Create the result handler future
             let result_handler = action.result_service.handle_next_request(move |request| {
@@ -1594,10 +1608,14 @@ async fn action_communication_no_instance_id_target() {
                 "goal subscription closed before handling request"
             );
 
-            // Publishes a feedback message
-            action
-                .feedback_publisher
-                .publish(feedback_payload_server.clone())
+            let feedback_publisher = publisher_rx
+                .await
+                .expect("server should have captured publisher");
+            feedback_publisher
+                .publish(
+                    crate::messaging::NonEmptyPayload::try_new(feedback_payload_server.clone())
+                        .expect("test feedback payload is non-empty"),
+                )
                 .await
                 .expect("action should publish feedback");
 
@@ -1626,7 +1644,6 @@ async fn action_communication_no_instance_id_target() {
     {
         let caller_handle = router.messenger().await;
 
-        // Client sends the goal and obtains the handle carrying goal response + feedback sub.
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
             CALLER_CORE_NODE,
@@ -1773,16 +1790,30 @@ async fn action_communication_with_instance_id_target() {
             .await
             .expect("action should start");
 
-            // Create the goal handler future first (this sets up the subscription)
-            let goal_handler = action
-                .goal_service
-                .handle_next_request(move |request| async move {
+            let (publisher_tx, publisher_rx) =
+                tokio::sync::oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
+            let publisher_tx = std::sync::Mutex::new(Some(publisher_tx));
+            let factory_for_handler = action.feedback_publisher_factory.clone();
+
+            // The factory unwraps the envelope and declares a per-goal
+            // publisher in one async call via declare_from_wire.
+            let goal_handler = action.goal_service.handle_next_request(move |request| {
+                let factory = factory_for_handler.clone();
+                let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
+                async move {
+                    let declared = factory
+                        .declare_from_wire(request.message().payload().into_inner())
+                        .await
+                        .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert_eq!(request.message().payload(), &expected_goal_payload);
-
+                    assert_eq!(declared.user_payload, expected_goal_payload.as_ref());
+                    if let Some(tx) = publisher_tx.lock().unwrap().take() {
+                        let _ = tx.send(declared.publisher);
+                    }
                     Ok(expected_goal_response_payload)
-                });
+                }
+            });
 
             // Create the result handler future
             let result_handler = action.result_service.handle_next_request(move |request| {
@@ -1810,10 +1841,14 @@ async fn action_communication_with_instance_id_target() {
                 "goal subscription closed before handling request"
             );
 
-            // Publishes a feedback message
-            action
-                .feedback_publisher
-                .publish(feedback_payload_server.clone())
+            let feedback_publisher = publisher_rx
+                .await
+                .expect("server should have captured publisher");
+            feedback_publisher
+                .publish(
+                    crate::messaging::NonEmptyPayload::try_new(feedback_payload_server.clone())
+                        .expect("test feedback payload is non-empty"),
+                )
                 .await
                 .expect("action should publish feedback");
 
@@ -1842,7 +1877,6 @@ async fn action_communication_with_instance_id_target() {
     {
         let caller_handle = router.messenger().await;
 
-        // Client sends the goal and obtains the handle carrying goal response + feedback sub.
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
             CALLER_CORE_NODE,
@@ -1947,14 +1981,27 @@ async fn action_communication_goal_cancelled() {
             .await
             .expect("action should start");
 
+            let (publisher_tx, publisher_rx) =
+                tokio::sync::oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
+            let publisher_tx = std::sync::Mutex::new(Some(publisher_tx));
+            let factory_for_handler = action.feedback_publisher_factory.clone();
+
             // Create the goal handler future first (this sets up the subscription)
             let goal_handler = action.goal_service.handle_next_request(move |request| {
                 let goal_call_count = Arc::clone(&goal_call_count);
+                let factory = factory_for_handler.clone();
+                let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
                 async move {
+                    let declared = factory
+                        .declare_from_wire(request.message().payload().into_inner())
+                        .await
+                        .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert_eq!(request.message().payload(), &expected_goal_payload);
-
+                    assert_eq!(declared.user_payload, expected_goal_payload.as_ref());
+                    if let Some(tx) = publisher_tx.lock().unwrap().take() {
+                        let _ = tx.send(declared.publisher);
+                    }
                     goal_call_count.fetch_add(1, Ordering::SeqCst);
                     Ok(expected_goal_response_payload)
                 }
@@ -1975,9 +2022,12 @@ async fn action_communication_goal_cancelled() {
             );
 
             let stop_feedback = Arc::new(tokio::sync::Notify::new());
+            let feedback_publisher = publisher_rx
+                .await
+                .expect("server should have captured publisher");
             let feedback_task = {
                 let stop_feedback = Arc::clone(&stop_feedback);
-                let feedback_publisher = action.feedback_publisher;
+                let feedback_publisher = feedback_publisher.clone();
                 let feedback_payload = feedback_payload_server.clone();
                 tokio::spawn(async move {
                     let mut ticker = tokio::time::interval(Duration::from_millis(50));
@@ -1990,7 +2040,12 @@ async fn action_communication_goal_cancelled() {
                             _ = stop_notified.as_mut() => break,
                             _ = ticker.tick() => {
                                 feedback_publisher
-                                    .publish(feedback_payload.clone())
+                                    .publish(
+                                        crate::messaging::NonEmptyPayload::try_new(
+                                            feedback_payload.clone(),
+                                        )
+                                        .expect("test feedback payload is non-empty"),
+                                    )
                                     .await?;
                             }
                         }
@@ -2184,10 +2239,10 @@ async fn single_action_communication_multiple_polls() {
             let crate::messaging::ActionCreation {
                 mut goal_service,
                 cancel_service: _,
-                feedback_publisher,
+                feedback_publisher_factory,
                 mut result_service,
             } = action;
-            let feedback_publisher = Arc::new(feedback_publisher);
+            let feedback_publisher_factory = Arc::new(feedback_publisher_factory);
 
             if let Some(tx) = action_ready_tx {
                 let _ = tx.send(());
@@ -2198,17 +2253,19 @@ async fn single_action_communication_multiple_polls() {
             let mut goal_handlers = Vec::with_capacity(client_total);
             for _ in 0..client_total {
                 let cases = Arc::clone(&cases);
-                let feedback_publisher = Arc::clone(&feedback_publisher);
+                let factory = Arc::clone(&feedback_publisher_factory);
 
                 let handler = goal_service
                     .spawn_next_request_handler(move |request| {
                         let cases = Arc::clone(&cases);
-                        let feedback_publisher = Arc::clone(&feedback_publisher);
+                        let factory = Arc::clone(&factory);
 
                         async move {
-                            let payload = request.message().payload();
-                            let payload_bytes = payload.as_ref();
-                            let payload_str = std::str::from_utf8(payload_bytes)
+                            let declared = factory
+                                .declare_from_wire(request.message().payload().into_inner())
+                                .await
+                                .expect("declare from wire");
+                            let payload_str = std::str::from_utf8(&declared.user_payload)
                                 .expect("goal payload should be valid UTF-8");
 
                             let client_id = payload_str
@@ -2227,11 +2284,20 @@ async fn single_action_communication_multiple_polls() {
                                 });
 
                             assert_eq!(
-                                payload, &case.goal,
+                                declared.user_payload,
+                                case.goal.as_ref(),
                                 "goal payload for `{client_id}` should match expected value"
                             );
 
-                            feedback_publisher.publish(case.feedback.clone()).await?;
+                            declared
+                                .publisher
+                                .publish(
+                                    crate::messaging::NonEmptyPayload::try_new(
+                                        case.feedback.clone(),
+                                    )
+                                    .expect("test case feedback payload is non-empty"),
+                                )
+                                .await?;
 
                             Ok(case.goal_response.clone())
                         }

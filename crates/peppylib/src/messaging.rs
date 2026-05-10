@@ -5,7 +5,11 @@ mod actions;
 mod services;
 mod topics;
 
-pub use actions::{ActionCreation, ActionGoalHandle, ActionMessenger};
+pub use actions::{
+    ActionCreation, ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle,
+    ActionMessenger, DeclaredFeedback, EmptyPayloadError, NonEmptyPayload, generate_goal_id,
+    unwrap_goal_payload, wrap_goal_payload,
+};
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
@@ -19,7 +23,10 @@ use pmi::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -91,26 +98,38 @@ pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
 }
 
-/// Generates a unique request ID using SHA256 hash of timestamp + thread ID
-/// This ensures each service call has a unique correlation ID
-fn generate_request_id() -> String {
+/// 16 hex chars (64 bits) of correlation entropy, salted with `domain` so
+/// IDs from different namespaces (request, goal, ...) cannot collide on a
+/// timestamp + thread_id tie. A process-wide counter is folded in to keep
+/// IDs unique even when two calls land on the same thread within a single
+/// clock tick.
+pub(crate) fn generate_short_id(domain: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
     let thread_id = std::thread::current().id();
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
 
     let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
     hasher.update(timestamp.to_le_bytes());
-    hasher.update(format!("{:?}", thread_id).as_bytes());
-
+    hasher.update(format!("{thread_id:?}").as_bytes());
+    hasher.update(counter.to_le_bytes());
     let result = hasher.finalize();
+
     use std::fmt::Write;
     let mut hex = String::with_capacity(16);
     for b in result.iter().take(8) {
-        let _ = write!(hex, "{:02x}", b);
+        let _ = write!(hex, "{b:02x}");
     }
-    hex // Use first 16 hex chars for compactness
+    hex
+}
+
+fn generate_request_id() -> String {
+    generate_short_id("request")
 }
 
 /// Formats an instance ID as a key-expression segment, returning `None` for wildcards.
@@ -485,16 +504,25 @@ impl MessengerHandle {
             .create_service_endpoint(bound_core_node, result_service_root, as_instance_id)
             .await?;
 
-        let feedback_inner = self
-            .declare_publisher(feedback_topic_suffix.clone(), PublisherQoS::Standard)
-            .await?;
-        let feedback_publisher =
-            TopicPublisher::new(Arc::new(feedback_inner), feedback_topic_suffix);
+        // Per-goal feedback uses `Important` (Block on congestion, DataHigh
+        // priority) rather than `Standard`. The publisher is declared inside
+        // the goal handler — the moment a fast server's first `emit_feedback`
+        // fires, the local routing tables may not yet have the client's
+        // subscription propagated through the router. Empirically, `Standard`
+        // (Drop, Data) loses the first publish in tight in-process tests;
+        // `Important` is delivered reliably. The block-on-congestion semantic
+        // is also the right call for action feedback: it's preferable to
+        // backpressure a fast emitter than to silently drop progress updates.
+        let feedback_publisher_factory = actions::ActionFeedbackPublisherFactory::new(
+            self.clone(),
+            feedback_topic_suffix,
+            PublisherQoS::Important,
+        );
 
         Ok(ActionCreation {
             goal_service,
             cancel_service,
-            feedback_publisher,
+            feedback_publisher_factory,
             result_service,
         })
     }

@@ -27,7 +27,12 @@ pub fn build_action_handle_struct(
     }
 
     if has_feedback {
-        fields.push(quote!(feedback_publisher: peppylib::messaging::TopicPublisher));
+        fields.push(
+            quote!(feedback_publisher_factory: peppylib::messaging::ActionFeedbackPublisherFactory),
+        );
+        fields.push(
+            quote!(current_goal: Option<(String, peppylib::messaging::ActionFeedbackPublisher)>),
+        );
     }
 
     quote! {
@@ -54,7 +59,8 @@ pub fn build_action_expose_method(
     }
 
     if has_feedback {
-        init_fields.push(quote!(feedback_publisher: action.feedback_publisher));
+        init_fields.push(quote!(feedback_publisher_factory: action.feedback_publisher_factory));
+        init_fields.push(quote!(current_goal: None));
     }
 
     quote! {
@@ -75,6 +81,24 @@ pub fn build_action_expose_method(
     }
 }
 
+/// Lifecycle role of a `handle_*_next_request` method. The non-Plain
+/// variants extract or emit per-goal feedback signals around the user
+/// handler; Plain just dispatches.
+#[derive(Clone, Copy)]
+pub enum ActionHandleRole {
+    Plain,
+    /// Unwrap the goal envelope and stash `(goal_id, publisher)` on
+    /// `self.current_goal` for subsequent `emit_feedback` calls.
+    Goal,
+    /// Publish the end-of-stream sentinel on the active goal's feedback
+    /// topic before serving the result request, then clear `current_goal`.
+    Result,
+    /// On `accepted == true` or handler error, publish end-of-stream and
+    /// clear `current_goal`. A rejection keeps the feedback stream open
+    /// since the goal continues.
+    Cancel,
+}
+
 pub fn build_action_handle_method(
     method_name: &Ident,
     helper_name: &Ident,
@@ -82,27 +106,122 @@ pub fn build_action_handle_method(
     response_struct: &Ident,
     service_field: &Ident,
     has_payload: bool,
+    role: ActionHandleRole,
 ) -> TokenStream {
-    let helper_call = if has_payload {
-        quote! {
+    let setup = match role {
+        ActionHandleRole::Plain => quote!(),
+        ActionHandleRole::Goal => quote! {
+            type Captured = (String, peppylib::messaging::ActionFeedbackPublisher);
+            let captured: std::sync::Arc<std::sync::Mutex<Option<Captured>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(None));
+            let captured_for_closure = std::sync::Arc::clone(&captured);
+            let factory = self.feedback_publisher_factory.clone();
+        },
+        ActionHandleRole::Result => quote! {
+            if let Some((_, publisher)) = self.current_goal.as_ref() {
+                let _ = publisher.publish_end().await;
+            }
+        },
+        ActionHandleRole::Cancel => quote! {
+            let publisher = self.current_goal.as_ref().map(|(_, p)| p.clone());
+            let close_decision: std::sync::Arc<std::sync::Mutex<Option<bool>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(None));
+            let close_decision_for_closure = std::sync::Arc::clone(&close_decision);
+            // CancelResponse.accepted decides whether to publish end-of-stream.
+            // Inspecting it requires running the user handler ourselves rather
+            // than letting the helper serialize directly.
+            let handler_for_helper = {
+                let close_decision = std::sync::Arc::clone(&close_decision_for_closure);
+                move |request: #request_struct| -> crate::Result<#response_struct> {
+                    let response = handler(request);
+                    let should_close = match &response {
+                        Ok(r) => r.accepted,
+                        Err(_) => true,
+                    };
+                    *close_decision.lock().unwrap() = Some(should_close);
+                    response
+                }
+            };
+        },
+    };
+
+    let payload_setup = match role {
+        ActionHandleRole::Goal => quote! {
+            let message = request_context.message();
+            let wire = message.payload().into_inner();
+            let declared = factory.declare_from_wire(wire).await?;
+            let core_node = message.core_node().to_string();
+            let instance_id = message.instance_id().to_string();
+        },
+        _ if has_payload => quote! {
             let message = request_context.message();
             let payload = message.payload();
             let core_node = message.core_node().to_string();
             let instance_id = message.instance_id().to_string();
-            #helper_name(
-                payload.as_ref(),
-                &handler,
-                core_node,
-                instance_id,
-            )
-        }
-    } else {
-        quote! {
+        },
+        _ => quote! {
             let message = request_context.message();
             let core_node = message.core_node().to_string();
             let instance_id = message.instance_id().to_string();
-            #helper_name(&handler, core_node, instance_id)
-        }
+        },
+    };
+
+    let handler_ref = match role {
+        ActionHandleRole::Cancel => quote!(&handler_for_helper),
+        _ => quote!(&handler),
+    };
+    let helper_call = match (role, has_payload) {
+        (ActionHandleRole::Goal, true) => quote!(#helper_name(
+            declared.user_payload.as_ref(),
+            #handler_ref,
+            core_node,
+            instance_id,
+        )),
+        (ActionHandleRole::Goal, false) => quote!({
+            let _ = declared.user_payload;
+            #helper_name(#handler_ref, core_node, instance_id)
+        }),
+        (_, true) => quote!(#helper_name(
+            payload.as_ref(),
+            #handler_ref,
+            core_node,
+            instance_id,
+        )),
+        (_, false) => quote!(#helper_name(#handler_ref, core_node, instance_id)),
+    };
+
+    let post_outcome = match role {
+        ActionHandleRole::Goal => quote! {
+            if outcome.is_ok() {
+                *captured_for_closure.lock().unwrap() =
+                    Some((declared.goal_id, declared.publisher));
+            }
+        },
+        ActionHandleRole::Cancel => quote! {
+            if matches!(*close_decision_for_closure.lock().unwrap(), Some(true))
+                && let Some(p) = publisher.as_ref()
+            {
+                let _ = p.publish_end().await;
+            }
+        },
+        _ => quote!(),
+    };
+
+    let post_call = match role {
+        ActionHandleRole::Plain => quote!(),
+        ActionHandleRole::Goal => quote! {
+            if let Some(active_goal) = captured.lock().unwrap().take() {
+                self.current_goal = Some(active_goal);
+            }
+        },
+        ActionHandleRole::Result => quote! {
+            self.current_goal = None;
+        },
+        ActionHandleRole::Cancel => quote! {
+            if matches!(*close_decision.lock().unwrap(), Some(true)) {
+                self.current_goal = None;
+            }
+        },
     };
 
     quote! {
@@ -113,20 +232,22 @@ pub fn build_action_handle_method(
         where
             F: Fn(#request_struct) -> crate::Result<#response_struct>,
         {
+            #setup
             let result = self
                 .#service_field
-                .handle_next_request(move |request_context| {
-                    async move {
-                        #helper_call
+                .handle_next_request(|request_context| async move {
+                    #payload_setup
+                    let outcome: crate::Result<peppylib::Payload> = #helper_call
                         .map_err(|error| {
                             peppylib::PeppyError::Io(
                                 std::io::Error::other(error.to_string()),
                             )
-                        })
-                    }
+                        });
+                    #post_outcome
+                    outcome
                 })
                 .await?;
-
+            #post_call
             Ok(result)
         }
     }
@@ -270,7 +391,19 @@ pub fn build_action_feedback_emit(
         encoding,
         receiver: quote!(&self),
         publish_body: quote! {
-            self.feedback_publisher.publish(payload).await?;
+            let (_, publisher) = self
+                .current_goal
+                .as_ref()
+                .ok_or_else(|| peppylib::PeppyError::Io(std::io::Error::other(
+                    "emit_feedback called with no active goal; \
+                     call handle_goal_next_request first"
+                )))?;
+            let payload = peppylib::messaging::NonEmptyPayload::try_new(payload)
+                .map_err(|_| peppylib::PeppyError::Io(std::io::Error::other(
+                    "emit_feedback produced an empty payload (codec serialized \
+                     to zero bytes); empty is reserved for publish_end"
+                )))?;
+            publisher.publish(payload).await?;
         },
         error_context: quote!(format!("{} {}", #label_literal, ACTION_NAME)),
         suppress_unused: Vec::new(),

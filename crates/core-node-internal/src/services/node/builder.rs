@@ -12,7 +12,7 @@ use core_node_api::encoding::{
 use futures::FutureExt;
 use node_stack::{BuildContext, NodeStack};
 use parking_lot::Mutex as StdMutex;
-use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
+use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::fs::File;
@@ -154,10 +154,11 @@ impl GoalHandler for NodeBuildGoalHandler {
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
-        feedback_publisher: TopicPublisher,
+        user_payload: bytes::Bytes,
+        feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<NodeBuildResult>>>,
     ) -> PeppyResult<Payload> {
-        self.handle_goal_request(context, feedback_publisher, state)
+        self.handle_goal_request(context, user_payload, feedback_publisher, state)
             .await
     }
 }
@@ -173,13 +174,13 @@ impl NodeBuildGoalHandler {
     async fn handle_goal_request(
         &self,
         context: ServiceRequestContext,
-        feedback_publisher: TopicPublisher,
+        user_payload: bytes::Bytes,
+        feedback_publisher: ActionFeedbackPublisher,
         state: Arc<Mutex<ActionState<NodeBuildResult>>>,
     ) -> PeppyResult<Payload> {
         let sender_instance_id = context.message().instance_id();
-        let payload = context.message().payload();
 
-        let goal = match NodeBuildGoal::decode(payload.as_ref()) {
+        let goal = match NodeBuildGoal::decode(&user_payload) {
             Ok(g) => g,
             Err(e) => return encode_rejected_goal(format!("invalid payload: {}", e)),
         };

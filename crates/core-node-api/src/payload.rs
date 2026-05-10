@@ -76,3 +76,49 @@ impl PartialEq<Payload> for &Payload {
         self.0 == other.0
     }
 }
+
+/// Error returned when constructing a [`NonEmptyPayload`] from an empty
+/// payload. The empty payload is reserved as the end-of-stream sentinel
+/// for `peppylib::messaging::ActionFeedbackPublisher::publish_end`.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error(
+    "payload is empty (empty payloads are reserved for the action-feedback end-of-stream sentinel)"
+)]
+pub struct EmptyPayloadError;
+
+/// A [`Payload`] guaranteed at the type level to be non-empty. Required by
+/// `peppylib::messaging::ActionFeedbackPublisher::publish` so an empty
+/// payload, which is reserved as the end-of-stream sentinel for
+/// `publish_end`, cannot be sent through the regular publish path by
+/// mistake.
+///
+/// Lives next to [`Payload`] so that capnp `encode()` helpers can return a
+/// non-emptiness-typed payload directly without `peppylib` and
+/// `core-node-api` having to depend on each other.
+#[derive(Clone)]
+pub struct NonEmptyPayload(Payload);
+
+impl NonEmptyPayload {
+    /// Construct a `NonEmptyPayload`, returning [`EmptyPayloadError`] if
+    /// `payload` is empty.
+    pub fn try_new(payload: Payload) -> core::result::Result<Self, EmptyPayloadError> {
+        if payload.is_empty() {
+            Err(EmptyPayloadError)
+        } else {
+            Ok(Self(payload))
+        }
+    }
+
+    /// Consume the wrapper and return the inner [`Payload`].
+    pub fn into_inner(self) -> Payload {
+        self.0
+    }
+}
+
+impl TryFrom<Payload> for NonEmptyPayload {
+    type Error = EmptyPayloadError;
+
+    fn try_from(payload: Payload) -> core::result::Result<Self, Self::Error> {
+        Self::try_new(payload)
+    }
+}

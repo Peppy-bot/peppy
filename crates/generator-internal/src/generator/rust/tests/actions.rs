@@ -280,7 +280,8 @@ fn exposed_action() {
             "goal_service: peppylib::messaging::ServiceEndpoint",
             "cancel_service: peppylib::messaging::ServiceEndpoint",
             "result_service: peppylib::messaging::ServiceEndpoint",
-            "feedback_publisher: peppylib::messaging::TopicPublisher",
+            "feedback_publisher_factory: peppylib::messaging::ActionFeedbackPublisherFactory",
+            "current_goal: Option<(String, peppylib::messaging::ActionFeedbackPublisher)>",
         ],
     );
 
@@ -306,13 +307,20 @@ fn exposed_action() {
         ],
     );
 
-    // Feedback emit method
+    // Feedback emit method (publishes via the per-goal publisher stored on
+    // current_goal — no longer a single per-action publisher). The guard
+    // text is verbatim because user code matches against it; pin both the
+    // condition and the panic message so a refactor doesn't silently drop
+    // either.
     assert_contains_all(
         &rendered,
         &[
             "pub async fn emit_feedback",
             "#[allow(clippy::too_many_arguments)]",
-            "self.feedback_publisher.publish(payload).await",
+            "publisher.publish(payload).await",
+            "self.current_goal",
+            "emit_feedback called with no active goal",
+            "call handle_goal_next_request first",
         ],
     );
 
@@ -430,9 +438,11 @@ fn expose_action_with_feedback_only_initializes_existing_fields() {
         &rendered,
         &[
             "pub struct ActionHandle",
-            "feedback_publisher: peppylib::messaging::TopicPublisher",
+            "feedback_publisher_factory: peppylib::messaging::ActionFeedbackPublisherFactory",
+            "current_goal: Option<(String, peppylib::messaging::ActionFeedbackPublisher)>",
             "pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self>",
-            "feedback_publisher: action.feedback_publisher",
+            "feedback_publisher_factory: action.feedback_publisher_factory",
+            "current_goal: None",
         ],
     );
 
