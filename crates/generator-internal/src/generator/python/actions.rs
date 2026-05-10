@@ -321,9 +321,6 @@ pub fn build_exposed_action(
             "async def handle_goal_next_request(self, handler: {ght}) -> None:"
         ));
         builder.indent();
-        if has_feedback {
-            builder.line("captured = [None]");
-        }
         builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
@@ -331,21 +328,16 @@ pub fn build_exposed_action(
             builder.line(
                 "publisher, goal_id, payload = await self.feedback_publisher_factory.declare_from_wire(message.payload)",
             );
-            // Publish self.current_goal BEFORE awaiting the user handler so
-            // emit_feedback() sees it. captured[0] mirrors the assignment for
-            // the post-await re-affirmation below.
+            // Assign self.current_goal BEFORE awaiting the user handler so
+            // emit_feedback() called from within an async handler sees the
+            // active publisher (regression fix for the in-handler deadlock).
             builder.line("self.current_goal = (goal_id, publisher)");
-            builder.line("captured[0] = (goal_id, publisher)");
         } else if has_goal_request {
             builder.line("payload = message.payload");
         }
         builder.line("core_node = message.core_node");
         builder.line("instance_id = message.instance_id");
         if has_feedback {
-            // If the handler raises, the goal is rejected — clear the
-            // pre-await assignment so a stale publisher isn't re-affirmed
-            // after handle_next_request returns and so emit_feedback() can't
-            // be called against a goal that never reached the client.
             builder.line("try:");
             builder.indent();
         }
@@ -361,19 +353,12 @@ pub fn build_exposed_action(
             builder.line("except BaseException:");
             builder.indent();
             builder.line("self.current_goal = None");
-            builder.line("captured[0] = None");
             builder.line("raise");
             builder.dedent();
         }
         builder.line("return outcome");
         builder.dedent();
         builder.line("await self.goal_service.handle_next_request(_on_request)");
-        if has_feedback {
-            builder.line("if captured[0] is not None:");
-            builder.indent();
-            builder.line("self.current_goal = captured[0]");
-            builder.dedent();
-        }
         builder.dedent();
         builder.blank_line();
 
