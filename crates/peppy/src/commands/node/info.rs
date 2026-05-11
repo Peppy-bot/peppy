@@ -11,15 +11,30 @@ use crate::error::{Error, Result};
 use peppylib::core_node::transport::poll_node_info;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
-    crate::commands::block_on(node_info_async(ctx, node_name, node_tag))
+pub fn node_info(
+    ctx: &Arc<AppContext>,
+    node_name: String,
+    node_tag: String,
+    variant: Option<String>,
+) -> Result<()> {
+    crate::commands::block_on(node_info_async(ctx, node_name, node_tag, variant))
 }
 
-async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
+async fn node_info_async(
+    ctx: &Arc<AppContext>,
+    node_name: String,
+    node_tag: String,
+    variant: Option<String>,
+) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
+    let mut request = NodeInfoRequest::new(node_name.clone(), node_tag.clone());
+    if let Some(ref v) = variant {
+        request = request.with_variant(v);
+    }
+
     let response = poll_node_info(
-        &NodeInfoRequest::new(node_name.clone(), node_tag.clone()),
+        &request,
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
@@ -34,9 +49,12 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
     // failure message without the generic "Failed to get node info:" prefix.
     let info = match response {
         NodeInfoResponse::NotInStack => {
+            let label = match &variant {
+                Some(v) => format!("{node_name}:{node_tag}@{v}"),
+                None => format!("{node_name}:{node_tag}"),
+            };
             return Err(Error::ExecutionFailed(format!(
-                "Node '{}:{}' is not in the node stack",
-                node_name, node_tag
+                "Node `{label}` is not in the node stack"
             )));
         }
         NodeInfoResponse::Found(info) => info,

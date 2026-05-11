@@ -738,7 +738,6 @@ fn node_add_command_with_variant_succeeds() {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
             local: std::path::PathBuf::from("mock_variant"),
-            variant: None,
         }),
     }]);
     let updated = serde_json::to_string_pretty(&root_cfg).expect("should serialize updated config");
@@ -873,7 +872,6 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
             local: std::path::PathBuf::from("mock_variant"),
-            variant: None,
         }),
     }]);
     let updated = serde_json::to_string_pretty(&root_cfg).expect("should serialize updated config");
@@ -1319,7 +1317,6 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
             local: std::path::PathBuf::from("mock_variant"),
-            variant: None,
         }),
     }]);
     let updated = serde_json::to_string_pretty(&root_cfg).expect("should serialize");

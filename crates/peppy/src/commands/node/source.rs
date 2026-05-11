@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use config::consts::NODE_CONFIG_FILE;
 use config::node::{NodeConfigParser, find_root_node_dir};
-use core_node_api::encoding::{DepVariantOverride, NodeSource};
+use core_node_api::encoding::NodeSource;
 use gix_url::Url as GitUrl;
 
 use crate::error::{Error, Result};
@@ -177,125 +177,30 @@ pub fn parse_variant_source(variant: &str) -> Result<NodeSource> {
     Ok(NodeSource::Fs(PathBuf::from(variant)))
 }
 
-/// Parsed result of a single `--variant <v>` CLI flag.
-#[derive(Debug, PartialEq, Eq)]
-pub enum VariantArg {
-    /// Root-level variant: a name, a Git URL, or an HTTP URL.
-    Root(NodeSource),
-    /// Dependency-level override: `name:tag@variant_name`.
-    Dep(DepVariantOverride),
+/// Parses one `--variant` argument into a root-level variant selection.
+/// Accepted shapes are a plain variant name, a Git URL, or an HTTP URL;
+/// see [`parse_variant_source`] for details.
+pub fn parse_variant_arg(arg: &str) -> Result<NodeSource> {
+    parse_variant_source(arg)
 }
 
-/// Parses one `--variant` argument into either a root-level variant
-/// selection or a dep-level override.
-///
-/// Accepted shapes:
-/// - `name:tag@variant_name` → [`VariantArg::Dep`].
-/// - Any URL / plain name → [`VariantArg::Root`].
-///
-/// Returns an error for malformed dep-override shapes such as `foo@bar`
-/// (missing `:tag`), `foo:tag@` (empty variant), `:tag@v` (empty name),
-/// and `foo:@v` (empty tag).
-pub fn parse_variant_arg(arg: &str) -> Result<VariantArg> {
-    if let Some((left, variant)) = arg.rsplit_once('@')
-        && looks_like_dep_override_shape(left, variant, arg)
-    {
-        let (name, tag) = left.split_once(':').expect("split_once validated above");
-        if name.is_empty() {
-            return Err(Error::ExecutionFailed(format!(
-                "invalid --variant '{arg}': empty dependency name before ':'"
-            )));
-        }
-        if tag.is_empty() {
-            return Err(Error::ExecutionFailed(format!(
-                "invalid --variant '{arg}': empty dependency tag between ':' and '@'"
-            )));
-        }
-        if variant.is_empty() {
-            return Err(Error::ExecutionFailed(format!(
-                "invalid --variant '{arg}': empty variant name after '@'"
-            )));
-        }
-        return Ok(VariantArg::Dep(DepVariantOverride {
-            name: name.to_owned(),
-            tag: tag.to_owned(),
-            variant: variant.to_owned(),
-        }));
-    }
-    parse_variant_source(arg).map(VariantArg::Root)
-}
-
-/// Returns `true` when `left@right` (the original arg split on the
-/// **last** `@`) is shaped like a dep-override and not an ordinary
-/// URL with an `@ref` suffix.
-///
-/// - `left` must contain a `:` (the name:tag separator).
-/// - `left` must not look like a git URL (no `.git`, no scheme) —
-///   otherwise the `@` is a ref marker for [`parse_variant_source`].
-fn looks_like_dep_override_shape(left: &str, right: &str, original: &str) -> bool {
-    // Exactly one `:` (the name:tag separator) — `a:b:c` is malformed.
-    if left.matches(':').count() != 1 {
-        return false;
-    }
-    // `rsplit_once('@')` already peeled off the variant; any remaining `@`
-    // in `left` means the original had multiple `@`s (e.g. `a:b@c@v`).
-    if left.contains('@') {
-        return false;
-    }
-    // A URL (http://…) will contain `://` — and that colon must not be
-    // misinterpreted as a name:tag separator.
-    if left.contains("://") || original.contains("://") {
-        return false;
-    }
-    if left.contains(".git") {
-        return false;
-    }
-    if left.starts_with("git@") {
-        return false;
-    }
-    // Name portion should not contain path-separator-like characters.
-    if left.contains('/') || left.contains('\\') {
-        return false;
-    }
-    // Variant name can't contain whitespace or slashes.
-    if right.chars().any(|c| c.is_whitespace() || c == '/') {
-        return false;
-    }
-    true
-}
-
-/// Splits a list of raw `--variant` strings into (root, deps), validating:
-/// - at most one root-form `--variant`;
-/// - no duplicate dep overrides for the same `name:tag`.
-pub fn split_variant_args(raw: &[String]) -> Result<(Option<NodeSource>, Vec<DepVariantOverride>)> {
+/// Validates a list of raw `--variant` strings. Each entry is parsed
+/// individually; only one entry is permitted per invocation.
+pub fn split_variant_args(raw: &[String]) -> Result<Option<NodeSource>> {
     let mut root: Option<NodeSource> = None;
-    let mut deps: Vec<DepVariantOverride> = Vec::new();
-    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-
     for entry in raw {
-        match parse_variant_arg(entry)? {
-            VariantArg::Root(src) => {
-                if root.is_some() {
-                    return Err(Error::ExecutionFailed(
-                        "only one root --variant may be given per invocation; use `name:tag@variant` for dependency overrides".to_owned(),
-                    ));
-                }
-                root = Some(src);
-            }
-            VariantArg::Dep(ov) => {
-                let key = (ov.name.clone(), ov.tag.clone());
-                if !seen.insert(key) {
-                    return Err(Error::ExecutionFailed(format!(
-                        "duplicate --variant override for {}:{}",
-                        ov.name, ov.tag
-                    )));
-                }
-                deps.push(ov);
-            }
+        let src = parse_variant_arg(entry)?;
+        if root.is_some() {
+            return Err(Error::ExecutionFailed(
+                "only one --variant may be given per invocation; \
+                 add a transitive dependency at its desired variant by \
+                 running a separate `peppy node add` first."
+                    .to_owned(),
+            ));
         }
+        root = Some(src);
     }
-
-    Ok((root, deps))
+    Ok(root)
 }
 
 pub fn is_supported_http_archive(url: &url::Url) -> bool {
@@ -475,115 +380,34 @@ mod tests {
     }
 
     #[test]
-    fn parse_variant_arg_plain_name_is_root() {
+    fn parse_variant_arg_plain_name() {
         let got = parse_variant_arg("mock-python").unwrap();
-        assert_eq!(
-            got,
-            VariantArg::Root(NodeSource::Fs(PathBuf::from("mock-python")))
-        );
+        assert_eq!(got, NodeSource::Fs(PathBuf::from("mock-python")));
     }
 
     #[test]
-    fn parse_variant_arg_http_url_is_root() {
+    fn parse_variant_arg_http_url() {
         let got = parse_variant_arg("https://example.com/variant.tar.zst").unwrap();
-        assert!(matches!(got, VariantArg::Root(NodeSource::Http { .. })));
+        assert!(matches!(got, NodeSource::Http { .. }));
     }
 
     #[test]
-    fn parse_variant_arg_git_url_is_root() {
+    fn parse_variant_arg_git_url() {
         let got = parse_variant_arg("https://github.com/foo/bar.git/x").unwrap();
-        assert!(matches!(got, VariantArg::Root(NodeSource::Git { .. })));
+        assert!(matches!(got, NodeSource::Git { .. }));
     }
 
     #[test]
-    fn parse_variant_arg_dep_override_parsed() {
-        let got = parse_variant_arg("uvc_camera:0.1.0@mock-python").unwrap();
-        match got {
-            VariantArg::Dep(ov) => {
-                assert_eq!(ov.name, "uvc_camera");
-                assert_eq!(ov.tag, "0.1.0");
-                assert_eq!(ov.variant, "mock-python");
-            }
-            other => panic!("expected dep override, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_variant_arg_rejects_malformed_dep() {
-        // Missing :tag before @
-        assert!(parse_variant_arg("foo@bar").is_ok()); // `foo@bar` => root variant name "foo@bar"
-        // Empty tag between ':' and '@'
-        assert!(parse_variant_arg("foo:@bar").is_err());
-        // Empty variant after '@'
-        assert!(parse_variant_arg("foo:tag@").is_err());
-        // Empty name before ':'
-        assert!(parse_variant_arg(":tag@variant").is_err());
-    }
-
-    #[test]
-    fn parse_variant_arg_rejects_extra_colons_in_dep_shape() {
-        // `a:b:c@v` has two `:` in the left — it is not a well-formed
-        // dep override and must not produce `VariantArg::Dep`. It should
-        // fall through to `parse_variant_source` and be treated as a
-        // (malformed but non-dep) plain-name root variant.
-        let got = parse_variant_arg("a:b:c@v").unwrap();
-        assert!(
-            !matches!(got, VariantArg::Dep(_)),
-            "expected non-Dep parse for 'a:b:c@v', got {:?}",
-            got
-        );
-    }
-
-    #[test]
-    fn parse_variant_arg_rejects_extra_at_in_dep_shape() {
-        // `a:b@c@v` — after peeling the last `@`, `left = "a:b@c"` still
-        // contains `@`, which means the string has too many `@` markers
-        // for a dep override.
-        let got = parse_variant_arg("a:b@c@v").unwrap();
-        assert!(
-            !matches!(got, VariantArg::Dep(_)),
-            "expected non-Dep parse for 'a:b@c@v', got {:?}",
-            got
-        );
-    }
-
-    #[test]
-    fn split_variant_args_accepts_root_only() {
-        let (root, deps) = split_variant_args(&["mock-python".to_owned()]).unwrap();
+    fn split_variant_args_accepts_single_root() {
+        let root = split_variant_args(&["mock-python".to_owned()]).unwrap();
         assert!(root.is_some());
-        assert!(deps.is_empty());
     }
 
     #[test]
-    fn split_variant_args_accepts_deps_only() {
-        let (root, deps) =
-            split_variant_args(&["a:1.0@v1".to_owned(), "b:2.0@v2".to_owned()]).unwrap();
-        assert!(root.is_none());
-        assert_eq!(deps.len(), 2);
-    }
-
-    #[test]
-    fn split_variant_args_accepts_root_plus_deps() {
-        let (root, deps) =
-            split_variant_args(&["mock-python".to_owned(), "a:1.0@v1".to_owned()]).unwrap();
-        assert!(root.is_some());
-        assert_eq!(deps.len(), 1);
-    }
-
-    #[test]
-    fn split_variant_args_rejects_two_root_forms() {
-        let err = split_variant_args(&["mock-python".to_owned(), "alt".to_owned()]).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("only one root --variant"),
-            "expected multi-root rejection, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn split_variant_args_rejects_duplicate_dep_names() {
-        let err = split_variant_args(&["a:1.0@v1".to_owned(), "a:1.0@v2".to_owned()]).unwrap_err();
-        assert!(err.to_string().contains("duplicate"));
+    fn split_variant_args_rejects_two_entries() {
+        let err = split_variant_args(&["mock-python".to_owned(), "alt".to_owned()])
+            .expect_err("only one --variant per invocation");
+        assert!(err.to_string().contains("only one --variant"));
     }
 
     #[test]

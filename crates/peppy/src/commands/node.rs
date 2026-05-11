@@ -38,29 +38,79 @@ pub struct TimeoutConfig {
     pub max_secs: u64,
 }
 
-/// Parses a node_name:tag argument string into a tuple
+/// Combines a `@variant` suffix (from a node-ref string) with an explicit
+/// `--variant <name>` flag. Both forms are accepted; if both are present
+/// they must agree, otherwise the user gets a precise rejection message.
+fn reconcile_variant(
+    node_name: &str,
+    tag: &str,
+    from_ref: Option<String>,
+    from_flag: Option<String>,
+) -> Result<Option<String>, crate::error::Error> {
+    match (from_ref, from_flag) {
+        (Some(a), Some(b)) if a != b => Err(crate::error::Error::ExecutionFailed(format!(
+            "`{node_name}:{tag}@{a}` disagrees with `--variant {b}`; specify the variant in only one place"
+        ))),
+        (Some(v), _) | (_, Some(v)) => Ok(Some(v)),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Renders a node label including the variant when present:
+/// `name:tag` or `name:tag@variant`.
+fn format_variant_label(node_name: &str, tag: &str, variant: Option<&str>) -> String {
+    match variant {
+        Some(v) => format!("{node_name}:{tag}@{v}"),
+        None => format!("{node_name}:{tag}"),
+    }
+}
+
+/// Parses a `node_name:tag` argument string into a tuple.
 fn parse_node_ref(s: &str) -> Result<(String, String), String> {
-    let pos = s.find(':').ok_or_else(|| {
-        format!(
-            "invalid node reference '{}': expected node_name:tag format",
-            s
-        )
+    let (name, tag, variant) = parse_node_ref_with_variant(s)?;
+    if variant.is_some() {
+        return Err(format!(
+            "invalid node reference '{s}': `@variant` shorthand is not accepted here; \
+             use the variant-aware form on commands that support it"
+        ));
+    }
+    Ok((name, tag))
+}
+
+/// Parses a `node_name:tag` or `node_name:tag@variant` argument string.
+/// `@variant` is optional and returns `None` when absent.
+fn parse_node_ref_with_variant(s: &str) -> Result<(String, String, Option<String>), String> {
+    let (name_tag, variant) = match s.split_once('@') {
+        Some((nt, v)) => {
+            let v = v.trim();
+            if v.is_empty() {
+                return Err(format!(
+                    "invalid node reference '{s}': empty variant after '@'"
+                ));
+            }
+            if v.contains('@') {
+                return Err(format!(
+                    "invalid node reference '{s}': only one '@variant' suffix is allowed"
+                ));
+            }
+            (nt, Some(v.to_owned()))
+        }
+        None => (s, None),
+    };
+    let pos = name_tag.find(':').ok_or_else(|| {
+        format!("invalid node reference '{s}': expected `node_name:tag` (optionally `@variant`)")
     })?;
-    let node_name = s[..pos].trim().to_string();
-    let tag = s[pos + 1..].trim().to_string();
+    let node_name = name_tag[..pos].trim().to_string();
+    let tag = name_tag[pos + 1..].trim().to_string();
     if node_name.is_empty() {
         return Err(format!(
-            "invalid node reference '{}': node_name cannot be empty",
-            s
+            "invalid node reference '{s}': node_name cannot be empty"
         ));
     }
     if tag.is_empty() {
-        return Err(format!(
-            "invalid node reference '{}': tag cannot be empty",
-            s
-        ));
+        return Err(format!("invalid node reference '{s}': tag cannot be empty"));
     }
-    Ok((node_name, tag))
+    Ok((node_name, tag, variant))
 }
 
 /// Parses a key=value argument string into a tuple
@@ -107,21 +157,18 @@ pub enum NodeCommands {
         /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
         #[arg(long = "ref")]
         git_ref: Option<String>,
-        /// Variant selection. Repeatable.
+        /// Variant selection for the node being added.
         ///
-        /// Three shapes are accepted:
-        /// - Variant name for the *root* node: `mock-python`.
-        /// - Git or HTTP URL used directly as the root variant:
+        /// Two shapes are accepted:
+        /// - Variant name: `mock-python`.
+        /// - Git or HTTP URL used directly as the variant source:
         ///   `https://github.com/org/repo.git/path`,
         ///   `https://example.com/variant.tar.zst`.
-        /// - `<dep_name>:<dep_tag>@<variant_name>` — override the
-        ///   variant used when resolving a transitive dependency of
-        ///   the target node (only meaningful when the source is
-        ///   `<name>:<tag>`). Repeatable.
         ///
-        /// At most one *root* shape may appear per invocation; the
-        /// dep-override shape can appear any number of times with
-        /// distinct `name:tag` values.
+        /// At most one entry is permitted per invocation. To pin a
+        /// transitive dependency to a non-default variant, add it first
+        /// with its own `peppy node add <dep>:<tag> --variant <name>`
+        /// invocation, then add the parent.
         #[arg(long = "variant")]
         variant: Vec<String>,
         /// If set, runs `peppy node sync` on the source *before* adding. Forces
@@ -245,9 +292,15 @@ pub enum NodeCommands {
     },
     /// Remove a node from the node stack
     Remove {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
-        #[arg(value_parser = parse_node_ref)]
-        node_ref: (String, String),
+        /// Node reference in the format node_name:tag, optionally suffixed
+        /// with @variant (e.g., depth_camera:0.1.0@realsense_d405).
+        #[arg(value_parser = parse_node_ref_with_variant)]
+        node_ref: (String, String, Option<String>),
+        /// Variant of the target node to remove. Equivalent to the
+        /// `@variant` suffix; if both are given they must agree. Required
+        /// when more than one variant of `(name, tag)` is in the stack.
+        #[arg(long)]
+        variant: Option<String>,
         /// When set, stop all instances running on this node before removing the node itself. Without this flag, the command prompts if instances are still running
         #[arg(long)]
         stop_instances: bool,
@@ -262,9 +315,14 @@ pub enum NodeCommands {
     /// with an error — inspecting sources on disk is the job of `node add`,
     /// not `node info`.
     Info {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
-        #[arg(value_parser = parse_node_ref)]
-        node_ref: (String, String),
+        /// Node reference in the format node_name:tag, optionally suffixed
+        /// with @variant.
+        #[arg(value_parser = parse_node_ref_with_variant)]
+        node_ref: (String, String, Option<String>),
+        /// Variant to look up. Equivalent to the `@variant` suffix; if
+        /// both are given they must agree.
+        #[arg(long)]
+        variant: Option<String>,
     },
 }
 
@@ -389,18 +447,24 @@ impl Command for NodeCommand {
                 stop::stop_node(ctx, instance_id)
             }
             NodeCommands::Remove {
-                node_ref: (node_name, tag),
+                node_ref: (node_name, tag, ref_variant),
+                variant,
                 stop_instances,
                 force,
             } => {
-                info!("Remove node {}:{}...", node_name, tag);
-                remove::remove_node(ctx, node_name, tag, stop_instances, force)
+                let variant = reconcile_variant(&node_name, &tag, ref_variant, variant)?;
+                let label = format_variant_label(&node_name, &tag, variant.as_deref());
+                info!("Remove node {label}...");
+                remove::remove_node(ctx, node_name, tag, variant, stop_instances, force)
             }
             NodeCommands::Info {
-                node_ref: (node_name, node_tag),
+                node_ref: (node_name, node_tag, ref_variant),
+                variant,
             } => {
-                info!("Getting node info for {}:{}...", node_name, node_tag);
-                info::node_info(ctx, node_name, node_tag)
+                let variant = reconcile_variant(&node_name, &node_tag, ref_variant, variant)?;
+                let label = format_variant_label(&node_name, &node_tag, variant.as_deref());
+                info!("Getting node info for {label}...");
+                info::node_info(ctx, node_name, node_tag, variant)
             }
         }
     }

@@ -15,9 +15,7 @@ use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use chrono::Local;
 use config::consts::PeppyDirs;
 use config::node::ParsedNodeConfig;
-use core_node_api::encoding::{
-    DepVariantOverride, NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind,
-};
+use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind};
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use node_stack::VirtualDeptree;
@@ -46,12 +44,8 @@ pub(crate) async fn run_repo_node_add(
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
 ) -> NodeAddResult {
-    let (root_name, root_tag, dep_variant_overrides) = match &goal.source {
-        NodeSource::RepoNode {
-            name,
-            tag,
-            dep_variant_overrides,
-        } => (name.clone(), tag.clone(), dep_variant_overrides.clone()),
+    let (root_name, root_tag) = match &goal.source {
+        NodeSource::RepoNode { name, tag } => (name.clone(), tag.clone()),
         _ => {
             return NodeAddResult::failure(
                 &log_path,
@@ -59,20 +53,6 @@ pub(crate) async fn run_repo_node_add(
             );
         }
     };
-
-    if let Some(root_override) = dep_variant_overrides
-        .iter()
-        .find(|ov| ov.name == root_name && ov.tag == root_tag)
-    {
-        return fail(
-            &log_file,
-            &log_path,
-            format!(
-                "Dependency variant override {}:{}@{} targets the root repo node; use the root variant field instead",
-                root_override.name, root_override.tag, root_override.variant
-            ),
-        );
-    }
 
     emit(
         &feedback_tx,
@@ -109,35 +89,10 @@ pub(crate) async fn run_repo_node_add(
         cache_generation,
         feedback_tx: &feedback_tx,
     };
-    let resolution = match resolve_transitive_closure(
-        resolution_ctx,
-        &root_name,
-        &root_tag,
-        &dep_variant_overrides,
-    )
-    .await
-    {
+    let resolution = match resolve_transitive_closure(resolution_ctx, &root_name, &root_tag).await {
         Ok(r) => r,
         Err(msg) => return fail(&log_file, &log_path, msg),
     };
-
-    // Warn about overrides that targeted nodes not actually in the tree.
-    for ov in &dep_variant_overrides {
-        let in_tree = resolution
-            .to_add
-            .iter()
-            .any(|n| n.name == ov.name && n.tag == ov.tag);
-        if !in_tree {
-            emit(
-                &feedback_tx,
-                FeedbackStream::Warning,
-                format!(
-                    "Dependency variant override for {}:{} ignored — not in the resolved dependency tree",
-                    ov.name, ov.tag
-                ),
-            );
-        }
-    }
 
     let tree_input: Vec<(PathBuf, config::node::NodeConfig)> = resolution
         .to_add
@@ -329,7 +284,6 @@ async fn resolve_transitive_closure<'a>(
     ctx: BatchResolutionCtx<'a>,
     root_name: &str,
     root_tag: &str,
-    dep_overrides: &[DepVariantOverride],
 ) -> Result<Resolution, String> {
     let BatchResolutionCtx {
         peppy_dirs,
@@ -337,10 +291,6 @@ async fn resolve_transitive_closure<'a>(
         cache_generation,
         feedback_tx,
     } = ctx;
-    let override_map: HashMap<(String, String), String> = dep_overrides
-        .iter()
-        .map(|o| ((o.name.clone(), o.tag.clone()), o.variant.clone()))
-        .collect();
 
     let mut to_add: Vec<ResolvedBatchNode> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
@@ -405,24 +355,10 @@ async fn resolve_transitive_closure<'a>(
         };
 
         // Roots take their variant from goal.variant (handled later in
-        // run_single_batched_add); deps look at override_map.
-        let variant_override = if is_root {
-            None
-        } else {
-            override_map.get(&(name.clone(), tag.clone())).cloned()
-        };
-
-        // Enforce that an override points at a variant declared by this
-        // dep's manifest. (Root variant validation happens inside
-        // run_node_add itself.)
-        if let Some(ref v) = variant_override
-            && !parsed.variant_names().iter().any(|n| n == v)
-        {
-            return Err(format!(
-                "variant '{v}' not declared on dep {name}:{tag} (available: {:?})",
-                parsed.variant_names()
-            ));
-        }
+        // run_single_batched_add); deps inherit the default variant and
+        // are explicitly added at the desired variant via a separate
+        // `peppy node add` invocation when a non-default is required.
+        let variant_override: Option<String> = None;
 
         if let Some(deps) = parsed.manifest().depends_on.as_ref() {
             for dep in &deps.nodes {

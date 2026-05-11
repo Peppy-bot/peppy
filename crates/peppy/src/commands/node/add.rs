@@ -58,35 +58,6 @@ fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
     Ok(git_ref.map(str::to_owned))
 }
 
-fn apply_dep_variant_overrides(
-    node_source: NodeSource,
-    dep_overrides: Vec<core_node_api::encoding::DepVariantOverride>,
-) -> Result<NodeSource> {
-    if dep_overrides.is_empty() {
-        return Ok(node_source);
-    }
-
-    let NodeSource::RepoNode { name, tag, .. } = &node_source else {
-        return Err(Error::ExecutionFailed(
-            "`--variant <name>:<tag>@<variant>` dependency overrides are only valid when the source is `<name>:<tag>` (repo lookup)".to_owned(),
-        ));
-    };
-
-    if let Some(root_override) = dep_overrides
-        .iter()
-        .find(|ov| ov.name == *name && ov.tag == *tag)
-    {
-        return Err(Error::ExecutionFailed(format!(
-            "`--variant {}:{}@{}` targets the root repo-node source; use `--variant {}` to select the root variant",
-            root_override.name, root_override.tag, root_override.variant, root_override.variant
-        )));
-    }
-
-    node_source
-        .with_dep_variant_overrides(dep_overrides)
-        .map_err(|e| Error::ExecutionFailed(e.to_string()))
-}
-
 pub fn add_node(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<()> {
     crate::commands::block_on(add_node_async(ctx, params))
 }
@@ -105,13 +76,10 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     } = params;
     // Validate git_ref and parse the source into a NodeSource
     let git_ref = validate_git_ref(git_ref.as_deref())?;
-    let mut node_source = parse_node_source(&source, git_ref)?;
+    let node_source = parse_node_source(&source, git_ref)?;
 
-    // Split the --variant list into (root_variant, dep_overrides). This also
-    // validates there's at most one root --variant and rejects duplicate
-    // dep entries.
-    let (variant_source, dep_overrides) = split_variant_args(&variant)?;
-    node_source = apply_dep_variant_overrides(node_source, dep_overrides)?;
+    // Validate the --variant list (at most one entry).
+    let variant_source = split_variant_args(&variant)?;
 
     // `--sync` forces a `peppy node sync` *before* the add so the snapshot
     // taken by the daemon includes freshly regenerated peppygen output.
@@ -145,21 +113,6 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         info!("Adding node (with root variant) from {}...", display_source);
     } else {
         info!("Adding node from {}...", display_source);
-    }
-    if let NodeSource::RepoNode {
-        dep_variant_overrides,
-        ..
-    } = &node_source
-        && !dep_variant_overrides.is_empty()
-    {
-        info!(
-            "Dependency variant overrides: {}",
-            dep_variant_overrides
-                .iter()
-                .map(|o| format!("{}:{}@{}", o.name, o.tag, o.variant))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
     }
 
     let conn = ctx.connect_to_daemon().await?;
@@ -514,64 +467,19 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// Per-dep variant selection is no longer expressible via `--variant`;
+    /// the parser must reject the `name:tag@variant` shape outright.
     #[test]
-    fn apply_dep_variant_overrides_rejects_non_repo_source() {
-        let err = apply_dep_variant_overrides(
-            NodeSource::Fs(Path::new("/tmp/example").to_path_buf()),
-            vec![core_node_api::encoding::DepVariantOverride {
-                name: "camera".to_owned(),
-                tag: "1.0".to_owned(),
-                variant: "sim".to_owned(),
-            }],
-        )
-        .expect_err("non-repo source should reject dep overrides");
-
-        assert!(
-            err.to_string()
-                .contains("only valid when the source is `<name>:<tag>`")
-        );
-    }
-
-    #[test]
-    fn apply_dep_variant_overrides_rejects_root_target_override() {
-        let err = apply_dep_variant_overrides(
-            NodeSource::repo_node("camera", "1.0").expect("valid repo-node"),
-            vec![core_node_api::encoding::DepVariantOverride {
-                name: "camera".to_owned(),
-                tag: "1.0".to_owned(),
-                variant: "sim".to_owned(),
-            }],
-        )
-        .expect_err("root-target dep override should be rejected");
-
+    fn variant_arg_rejects_dep_override_shape() {
+        let err = split_variant_args(&["dep:0.1.0@sim".to_owned()])
+            .expect_err("dep-override shape must be rejected");
         let msg = err.to_string();
-        assert!(msg.contains("targets the root repo-node source"));
-        assert!(msg.contains("use `--variant sim`"));
-    }
-
-    #[test]
-    fn apply_dep_variant_overrides_accepts_non_root_override() {
-        let source = apply_dep_variant_overrides(
-            NodeSource::repo_node("camera", "1.0").expect("valid repo-node"),
-            vec![core_node_api::encoding::DepVariantOverride {
-                name: "dep".to_owned(),
-                tag: "0.2".to_owned(),
-                variant: "sim".to_owned(),
-            }],
-        )
-        .expect("non-root override should be accepted");
-
-        match source {
-            NodeSource::RepoNode {
-                dep_variant_overrides,
-                ..
-            } => {
-                assert_eq!(dep_variant_overrides.len(), 1);
-                assert_eq!(dep_variant_overrides[0].name, "dep");
-                assert_eq!(dep_variant_overrides[0].tag, "0.2");
-                assert_eq!(dep_variant_overrides[0].variant, "sim");
-            }
-            other => panic!("expected repo-node source, got {other:?}"),
-        }
+        // The CLI parser falls through to `parse_variant_source`, which
+        // rejects the shape because `dep:0.1.0@sim` is not a valid variant
+        // name, git URL, or http URL.
+        assert!(
+            !msg.is_empty(),
+            "expected a rejection message, got an empty error"
+        );
     }
 }

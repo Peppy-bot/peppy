@@ -16,8 +16,6 @@ pub enum DeploymentSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeploymentLocalSource {
     pub local: PathBuf,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub variant: Option<VariantSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26,16 +24,12 @@ pub struct DeploymentGitSource {
     pub path: String,
     #[serde(rename = "ref")]
     pub ref_: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub variant: Option<VariantSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeploymentUrlSource {
     pub url: String,
     pub sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub variant: Option<VariantSource>,
 }
 
 /// Deployment source that resolves a node through the user's repo cache
@@ -45,8 +39,6 @@ pub struct DeploymentUrlSource {
 pub struct DeploymentRepoSource {
     pub name: String,
     pub tag: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub variant: Option<VariantSource>,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,17 +72,6 @@ pub struct VariantUrlSource {
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-}
-
-impl DeploymentSource {
-    pub fn variant(&self) -> Option<&VariantSource> {
-        match self {
-            DeploymentSource::Local(s) => s.variant.as_ref(),
-            DeploymentSource::Git(s) => s.variant.as_ref(),
-            DeploymentSource::Url(s) => s.variant.as_ref(),
-            DeploymentSource::Repo(s) => s.variant.as_ref(),
-        }
-    }
 }
 
 fn invalid_deployment_source<E>(detail: impl Into<String>) -> E
@@ -328,8 +309,6 @@ impl<'de> Deserialize<'de> for DeploymentSource {
             name: Option<String>,
             #[serde(default)]
             tag: Option<String>,
-            #[serde(default)]
-            variant: Option<VariantSource>,
         }
 
         let raw = RawDeploymentSource::deserialize(deserializer)?;
@@ -345,11 +324,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                 })?;
                 let (name, tag) =
                     split_repo_name_and_tag::<D::Error>(name_raw, raw.tag.as_deref())?;
-                Ok(DeploymentSource::Repo(DeploymentRepoSource {
-                    name,
-                    tag,
-                    variant: raw.variant,
-                }))
+                Ok(DeploymentSource::Repo(DeploymentRepoSource { name, tag }))
             }
             (true, false, false, false) => {
                 let local = trim_non_empty::<D::Error>(
@@ -360,10 +335,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                     .components()
                     .filter(|c| !matches!(c, Component::CurDir))
                     .collect();
-                Ok(DeploymentSource::Local(DeploymentLocalSource {
-                    local,
-                    variant: raw.variant,
-                }))
+                Ok(DeploymentSource::Local(DeploymentLocalSource { local }))
             }
             (false, true, false, false) => {
                 let repo = raw.repo.ok_or_else(|| {
@@ -384,7 +356,6 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                     repo,
                     path,
                     ref_,
-                    variant: raw.variant,
                 }))
             }
             (false, false, true, false) => {
@@ -398,11 +369,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                 let url = normalize_http_url::<D::Error>(url)?;
                 let sha256 = normalize_sha256_hex::<D::Error>(sha256)?;
 
-                Ok(DeploymentSource::Url(DeploymentUrlSource {
-                    url,
-                    sha256,
-                    variant: raw.variant,
-                }))
+                Ok(DeploymentSource::Url(DeploymentUrlSource { url, sha256 }))
             }
             _ => {
                 if has_git && has_repo {
@@ -681,75 +648,26 @@ mod tests {
         );
     }
 
-    // -- DeploymentSource with variant tests --
+    // -- variant on DeploymentSource is invalid --
+    //
+    // `variant` is a per-`DeploymentInstance` field; placing it on
+    // `source` is rejected by `deny_unknown_fields`.
 
     #[test]
-    fn deployment_source_with_name_variant() {
-        let src: DeploymentSource =
-            serde_json5::from_str("{ local: \"./my_node\", variant: { name: \"mock\" } }").unwrap();
-        let DeploymentSource::Local(local) = &src else {
+    fn deployment_source_rejects_variant_field() {
+        serde_json5::from_str::<DeploymentSource>(
+            "{ local: \"./my_node\", variant: { name: \"mock\" } }",
+        )
+        .expect_err("`variant` on source must be rejected");
+    }
+
+    #[test]
+    fn deployment_source_parses_local() {
+        let src: DeploymentSource = serde_json5::from_str("{ local: \"./uvc_camera\" }").unwrap();
+        let DeploymentSource::Local(local) = src else {
             panic!("expected local source");
         };
-        let Some(VariantSource::Name(v)) = &local.variant else {
-            panic!("expected name variant");
-        };
-        assert_eq!(v.name, "mock");
-    }
-
-    #[test]
-    fn deployment_source_git_with_git_variant() {
-        let src: DeploymentSource = serde_json5::from_str(
-            r#"{
-                repo: "https://github.com/Peppy-bot/nodes_hub.git",
-                path: "brain",
-                ref: "main",
-                variant: {
-                    repo: "https://github.com/Peppy-bot/variants.git",
-                    path: "mock_brain",
-                    ref: "v1"
-                }
-            }"#,
-        )
-        .unwrap();
-        let DeploymentSource::Git(git) = &src else {
-            panic!("expected git source");
-        };
-        let Some(VariantSource::Git(v)) = &git.variant else {
-            panic!("expected git variant");
-        };
-        assert_eq!(v.repo, "https://github.com/Peppy-bot/variants.git");
-        assert_eq!(v.path.as_deref(), Some("mock_brain"));
-        assert_eq!(v.ref_.as_deref(), Some("v1"));
-    }
-
-    #[test]
-    fn deployment_source_url_with_url_variant() {
-        let valid_sha = "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a";
-        let input = format!(
-            r#"{{
-                url: "https://example.com/node.tar.zst",
-                sha256: "{valid_sha}",
-                variant: {{
-                    url: "https://example.com/variant.tar.zst",
-                    sha256: "{valid_sha}"
-                }}
-            }}"#
-        );
-        let src: DeploymentSource = serde_json5::from_str(&input).unwrap();
-        let DeploymentSource::Url(url_src) = &src else {
-            panic!("expected url source");
-        };
-        let Some(VariantSource::Url(v)) = &url_src.variant else {
-            panic!("expected url variant");
-        };
-        assert_eq!(v.url, "https://example.com/variant.tar.zst");
-        assert_eq!(v.sha256.as_deref(), Some(valid_sha));
-    }
-
-    #[test]
-    fn deployment_source_without_variant_is_none() {
-        let src: DeploymentSource = serde_json5::from_str("{ local: \"./uvc_camera\" }").unwrap();
-        assert!(src.variant().is_none());
+        assert_eq!(local.local.to_string_lossy(), "uvc_camera");
     }
 
     // -- DeploymentRepoSource tests --
@@ -763,7 +681,6 @@ mod tests {
         };
         assert_eq!(repo.name, "robot_brain");
         assert_eq!(repo.tag, "0.1.0");
-        assert!(repo.variant.is_none());
     }
 
     #[test]
@@ -778,18 +695,11 @@ mod tests {
     }
 
     #[test]
-    fn repo_source_parses_with_name_variant() {
-        let src: DeploymentSource = serde_json5::from_str(
+    fn repo_source_with_variant_field_is_rejected() {
+        serde_json5::from_str::<DeploymentSource>(
             "{ name: \"robot_brain\", tag: \"0.1.0\", variant: { name: \"mock-python\" } }",
         )
-        .unwrap();
-        let DeploymentSource::Repo(repo) = src else {
-            panic!("expected repo source");
-        };
-        let Some(VariantSource::Name(v)) = repo.variant else {
-            panic!("expected name variant");
-        };
-        assert_eq!(v.name, "mock-python");
+        .expect_err("`variant` on source must be rejected");
     }
 
     #[test]
@@ -881,22 +791,5 @@ mod tests {
             panic!("expected InvalidDeploymentSource");
         };
         assert!(msg.contains("cannot mix git fields"), "unexpected: {msg}");
-    }
-
-    #[test]
-    fn deployment_source_variant_convenience_method() {
-        let src: DeploymentSource = serde_json5::from_str(
-            r#"{
-                repo: "https://github.com/Peppy-bot/nodes_hub.git",
-                path: "brain",
-                ref: "main",
-                variant: { name: "mock" }
-            }"#,
-        )
-        .unwrap();
-        let Some(VariantSource::Name(v)) = src.variant() else {
-            panic!("expected name variant via convenience method");
-        };
-        assert_eq!(v.name, "mock");
     }
 }

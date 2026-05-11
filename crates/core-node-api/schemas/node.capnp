@@ -63,18 +63,6 @@ struct NodeAddRepoNodeSource {
     name @0 :Text;
     # Node tag as it appears in `nodes.json5`
     tag @1 :Text;
-    # Dep-level variant overrides applied when resolving transitive
-    # dependencies. Empty for "use defaults for every dep".
-    depVariantOverrides @2 :List(DepVariantOverride);
-}
-
-struct DepVariantOverride {
-    # Dep node name
-    name @0 :Text;
-    # Dep node tag
-    tag @1 :Text;
-    # Variant name to use when resolving this dep
-    variant @2 :Text;
 }
 
 struct EnvVar {

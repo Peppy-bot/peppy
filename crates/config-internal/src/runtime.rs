@@ -157,10 +157,10 @@ mod tests {
     }
 
     /// `use_sim_time` round-trips through serialize/deserialize, and a
-    /// runtime config written before this field existed (no `framework` key)
-    /// still parses cleanly with `use_sim_time = false`.
+    /// runtime config that omits the `framework` key parses with
+    /// `use_sim_time = false`.
     #[test]
-    fn resolved_framework_round_trip_and_back_compat() {
+    fn resolved_framework_round_trip_and_default() {
         let with_sim: RuntimeConfig = serde_json5::from_str(
             r#"{
                 messaging_host: "127.0.0.1",
@@ -180,17 +180,17 @@ mod tests {
         let reparsed: RuntimeConfig = serde_json5::from_str(&serialized).unwrap();
         assert!(reparsed.node_instance.framework.use_sim_time);
 
-        let legacy = runtime_config_from_json("camera_front").unwrap();
-        assert!(!legacy.node_instance.framework.use_sim_time);
+        let omitted = runtime_config_from_json("camera_front").unwrap();
+        assert!(!omitted.node_instance.framework.use_sim_time);
     }
 
-    /// A runtime config without a `variant` key (legacy JSON) parses cleanly
-    /// and resolves to [`DEFAULT_VARIANT`]; a config with an explicit variant
-    /// round-trips that exact label.
+    /// A runtime config that omits the `variant` key resolves to
+    /// [`DEFAULT_VARIANT`]; a config with an explicit variant round-trips
+    /// that exact label.
     #[test]
     fn variant_round_trip_and_default_baseline() {
-        let legacy = runtime_config_from_json("camera_front").unwrap();
-        assert_eq!(legacy.variant, DEFAULT_VARIANT);
+        let omitted = runtime_config_from_json("camera_front").unwrap();
+        assert_eq!(omitted.variant, DEFAULT_VARIANT);
 
         let with_variant: RuntimeConfig = serde_json5::from_str(
             r#"{
