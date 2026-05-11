@@ -83,8 +83,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     // pipeline for an info-only test, and `real_build_and_spawn_instance`
     // takes it from there.
     let config = config::node::NodeConfigParser::from_path(node_dir.path().join("peppy.json5"))
-        .expect("parse config")
-        .into_resolved();
+        .expect("parse config");
     node_stack
         .push_config(config, false, node_dir.path())
         .expect("push_config should succeed");
@@ -368,8 +367,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
         }"#;
     write_peppy_json5(node_dir.path(), peppy_json5);
     let config = config::node::NodeConfigParser::from_path(node_dir.path().join("peppy.json5"))
-        .expect("parse config")
-        .into_resolved();
+        .expect("parse config");
     started_core_node
         .node_stack
         .push_config(config, false, node_dir.path())

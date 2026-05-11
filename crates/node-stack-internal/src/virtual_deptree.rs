@@ -187,7 +187,7 @@ mod tests {
         );
         let path = dir.join(config::consts::NODE_CONFIG_FILE);
         std::fs::write(&path, json5).unwrap();
-        NodeConfigParser::from_path(&path).unwrap().into_resolved()
+        NodeConfigParser::from_path(&path).unwrap()
     }
 
     fn key_of(info: &VirtualNodeInfo) -> NodeKey {

@@ -19,8 +19,7 @@ fn make_consumer_depend_on_provider(
     let topic_name = "stack_list_topic";
 
     let mut provider_cfg = NodeConfigParser::from_path(provider_peppy_json5)
-        .expect("provider peppy.json5 should read")
-        .into_resolved();
+        .expect("provider peppy.json5 should read");
 
     provider_cfg.execution.build_cmd = None;
 
@@ -46,8 +45,7 @@ fn make_consumer_depend_on_provider(
     );
 
     let mut consumer_cfg = NodeConfigParser::from_path(consumer_peppy_json5)
-        .expect("consumer peppy.json5 should read")
-        .into_resolved();
+        .expect("consumer peppy.json5 should read");
 
     consumer_cfg.execution.build_cmd = None;
 

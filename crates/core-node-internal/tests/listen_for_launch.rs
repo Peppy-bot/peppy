@@ -995,8 +995,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved();
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1041,8 +1040,7 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved();
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1090,8 +1088,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved();
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1170,8 +1167,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved();
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1343,8 +1339,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved();
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1426,8 +1421,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved();
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1506,8 +1500,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved();
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");

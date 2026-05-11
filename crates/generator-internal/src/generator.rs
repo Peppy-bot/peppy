@@ -63,8 +63,7 @@ pub fn generate_peppygen_lib(
     }
 
     let node_config = NodeConfigParser::from_path(&node_config_path)
-        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?
-        .into_resolved();
+        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
 
     let mut interfaces = collect_exposed_interfaces(&node_config, consumed_interfaces.len());
     // Add the consumed interfaces with resolved message formats

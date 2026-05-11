@@ -234,7 +234,7 @@ async fn handle_node_sync_request_inner(
                     .map_err(Into::into);
             }
         };
-        match materialize_repo_deps(parsed.manifest(), node_stack, &peppy_dirs).await {
+        match materialize_repo_deps(&parsed.manifest, node_stack, &peppy_dirs).await {
             Ok((resolved, provenance, stack_hits)) => (resolved, provenance, Some(stack_hits)),
             Err(reason) => {
                 return NodeSyncResponse::failure(reason)
@@ -272,10 +272,10 @@ async fn handle_node_sync_request_inner(
         match NodeConfigParser::from_path(&node_config_path) {
             Ok(node_config) => {
                 let dep_errors = node_stack::validate_dependency_specs(
-                    node_config.manifest(),
-                    node_config.interfaces(),
-                    node_config.manifest_name(),
-                    node_config.manifest_tag(),
+                    &node_config.manifest,
+                    &node_config.interfaces,
+                    node_config.manifest.name.as_str(),
+                    &node_config.manifest.tag,
                     resolve_dep,
                 );
 
@@ -346,8 +346,8 @@ async fn handle_node_sync_request_inner(
 
                     return NodeSyncResponse::failure(format!(
                         "`{}:{} {}",
-                        node_config.manifest_name(),
-                        node_config.manifest_tag(),
+                        node_config.manifest.name.as_str(),
+                        node_config.manifest.tag,
                         errors.join("; ")
                     ))
                     .encode()
@@ -356,8 +356,8 @@ async fn handle_node_sync_request_inner(
 
                 // Collect consumed interfaces with resolved message formats
                 let interfaces = match collect_consumed_interfaces(
-                    node_config.manifest(),
-                    node_config.interfaces(),
+                    &node_config.manifest,
+                    &node_config.interfaces,
                     resolve_dep,
                 ) {
                     Ok(v) => v,
@@ -370,8 +370,8 @@ async fn handle_node_sync_request_inner(
                         .map_err(Into::into);
                     }
                 };
-                let language = node_config.execution_language();
-                let root_manifest = node_config.manifest().clone();
+                let language = node_config.execution.language;
+                let root_manifest = node_config.manifest.clone();
                 (interfaces, language, root_manifest)
             }
             Err(e) => {
@@ -555,7 +555,7 @@ async fn materialize_repo_deps(
 
         // Push transitive deps onto the BFS queue, skipping anything we
         // already plan to visit. Stack-tier shadowing happens at pop time.
-        if let Some(child_deps) = parsed.manifest().depends_on.as_ref() {
+        if let Some(child_deps) = parsed.manifest.depends_on.as_ref() {
             for child in &child_deps.nodes {
                 let key = (child.name.as_str().to_owned(), child.tag.clone());
                 if !seen.contains(&key) {
@@ -564,8 +564,7 @@ async fn materialize_repo_deps(
             }
         }
 
-        let cfg = parsed.into_resolved();
-        resolved.insert((name.clone(), tag.clone()), cfg);
+        resolved.insert((name.clone(), tag.clone()), parsed);
         provenance.push(RepoResolvedEntry {
             name,
             tag,

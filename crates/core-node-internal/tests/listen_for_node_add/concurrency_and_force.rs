@@ -10,20 +10,12 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     // directory and processes the node config. build_cmd is not executed
     // during the add phase, so we use a benign no-op here.
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "slow_add_node",
-                tag: "0.1.0",
-            },
-            interfaces: {},
-            execution: {
-                language: "rust",
-                build_cmd: ["true"],
-                run_cmd: ["true"]
-            }
-        }"#;
-    write_peppy_json5(source_dir.path(), peppy_json5);
+    let peppy_json5 = node_config_with_execution(
+        "slow_add_node",
+        "0.1.0",
+        r#"{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }"#,
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
     // Create the .peppy/git.hash file so the first goal's background task does
     // not fail fast on git-hash verification (which would transition the action
@@ -100,20 +92,12 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     // directory and processes the node config. build_cmd is not executed
     // during the add phase, so we use a benign no-op here.
     let slow_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let slow_peppy_json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "slow_node",
-                tag: "0.1.0",
-            },
-            interfaces: {},
-            execution: {
-                language: "rust",
-                build_cmd: ["true"],
-                run_cmd: ["true"]
-            }
-        }"#;
-    write_peppy_json5(slow_source_dir.path(), slow_peppy_json5);
+    let slow_peppy_json5 = node_config_with_execution(
+        "slow_node",
+        "0.1.0",
+        r#"{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }"#,
+    );
+    write_peppy_json5(slow_source_dir.path(), &slow_peppy_json5);
 
     // Create the .peppy/git.hash file so the first goal's background task does
     // not fail fast on git-hash verification (same race as the rejection test).
@@ -151,20 +135,10 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
 
     // Create a fast node for the second goal.
     let fast_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let fast_peppy_json5 = format!(
-        r#"{{
-            peppy_schema: "node_v1",
-            manifest: {{
-                name: "{SECOND_NODE_NAME}",
-                tag: "{SECOND_NODE_TAG}",
-            }},
-            interfaces: {{}},
-            execution: {{
-                language: "rust",
-                build_cmd: ["true"],
-                run_cmd: ["true"]
-            }}
-        }}"#
+    let fast_peppy_json5 = node_config_with_execution(
+        SECOND_NODE_NAME,
+        SECOND_NODE_TAG,
+        r#"{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }"#,
     );
     write_peppy_json5(fast_source_dir.path(), &fast_peppy_json5);
 

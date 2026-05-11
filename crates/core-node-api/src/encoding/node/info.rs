@@ -215,9 +215,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("peppy.json5");
         std::fs::write(&path, config_json5).expect("write config");
-        NodeConfigParser::from_path(&path)
-            .expect("parse config")
-            .into_resolved()
+        NodeConfigParser::from_path(&path).expect("parse config")
     }
 
     #[test]

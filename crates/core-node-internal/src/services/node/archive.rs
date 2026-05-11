@@ -4,13 +4,13 @@
 //! bundle. `extract_tar_zst` itself is re-exported from `node_stack`.
 
 use config::consts::NODE_CONFIG_FILE;
-use config::node::{NodeConfigParser, ParsedNodeConfig};
+use config::node::{NodeConfig, NodeConfigParser};
 use std::path::{Path, PathBuf};
 
 pub(crate) use node_stack::extract_tar_zst;
 
 pub(crate) struct ResolvedLocalArchiveSource {
-    pub(crate) node_config: ParsedNodeConfig,
+    pub(crate) node_config: NodeConfig,
     pub(crate) source_path: PathBuf,
     pub(crate) temp_dir: tempfile::TempDir,
 }

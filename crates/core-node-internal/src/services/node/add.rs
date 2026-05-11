@@ -13,7 +13,7 @@ use crate::Result;
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
-use config::node::{NodeConfig, NodeConfigParser, ParsedNodeConfig};
+use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
@@ -131,7 +131,7 @@ impl Drop for CleanupDir {
 
 pub(crate) struct ResolvedNodeAddSource {
     pub(crate) source_path: PathBuf,
-    pub(crate) node_config: ParsedNodeConfig,
+    pub(crate) node_config: NodeConfig,
     pub(crate) cleanup_dir: Option<PathBuf>,
 }
 
@@ -158,7 +158,7 @@ fn shallow_validate_config(
     repo_url: &str,
     repo_relative_path: &Path,
     repo_ref: Option<&str>,
-) -> std::result::Result<ParsedNodeConfig, ShallowCheckError> {
+) -> std::result::Result<NodeConfig, ShallowCheckError> {
     let bare_dir = tempfile::tempdir().map_err(|e| {
         ShallowCheckError::ShallowFetchFailed(format!("Failed to create temp dir: {}", e))
     })?;
@@ -303,7 +303,7 @@ async fn resolve_git_source(
     .await
     .map_err(|e| format!("Failed to join shallow probe task: {}", e))?;
 
-    let validated_config: Option<ParsedNodeConfig> = match phase1_result {
+    let validated_config: Option<NodeConfig> = match phase1_result {
         Ok(config) => Some(config),
         Err(ShallowCheckError::InvalidConfig(msg)) => return Err(msg),
         Err(ShallowCheckError::ShallowFetchFailed(reason)) => {
@@ -676,15 +676,15 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
             {
                 let label = format!(
                     "{}_{}",
-                    resolved.node_config.manifest_name(),
-                    resolved.node_config.manifest_tag()
+                    resolved.node_config.manifest.name.as_str(),
+                    resolved.node_config.manifest.tag
                 );
                 return label;
             }
 
             let config_path = path.join(NODE_CONFIG_FILE);
             if let Ok(config) = NodeConfigParser::from_path(&config_path) {
-                return format!("{}_{}", config.manifest_name(), config.manifest_tag());
+                return format!("{}_{}", config.manifest.name.as_str(), config.manifest.tag);
             }
             path.file_name()
                 .and_then(|n| n.to_str())
@@ -818,7 +818,7 @@ pub(crate) async fn run_node_add(
         let mut resolved_cleanup_guard = CleanupDir::new(resolved.cleanup_dir.take());
 
         let root_source_path = resolved.source_path.clone();
-        let node_config: NodeConfig = resolved.node_config.into_resolved();
+        let node_config: NodeConfig = resolved.node_config;
         let root_execution_language = node_config.execution.language;
 
         // Auto-generate .peppy directory if missing (e.g. fresh clone never synced).

@@ -210,24 +210,7 @@ async fn listen_for_node_add_no_config_found() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            interfaces: {
-                topics: {
-                    emits: [{ name: "/example" }]
-                }
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let peppy_json5 = minimal_node_config(TARGET_NODE_NAME, TARGET_NODE_TAG, &[]);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     std::fs::remove_file(source_dir.path().join(NODE_CONFIG_FILE))
@@ -258,19 +241,8 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        peppy_schema: "node_v1",
-        manifest: {
-            name: "git_hash_mismatch_node",
-            tag: "0.1.0",
-        },
-        interfaces: {},
-        execution: {
-            language: "rust",
-            run_cmd: ["sleep", "10"]
-        }
-    }"#;
-    write_peppy_json5(source_dir.path(), peppy_json5);
+    let peppy_json5 = minimal_node_config("git_hash_mismatch_node", "0.1.0", &[]);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let peppy_dir = source_dir.path().join(config::consts::PEPPY_OUTPUT_DIR);
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
@@ -345,18 +317,9 @@ async fn listen_for_node_add_no_run_cmd_fails() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        peppy_schema: "node_v1",
-        manifest: {
-            name: "no_run_cmd_node",
-            tag: "0.1.0",
-        },
-        interfaces: {},
-        execution: {
-            language: "rust",
-        },
-    }"#;
-    write_peppy_json5(source_dir.path(), peppy_json5);
+    let peppy_json5 =
+        node_config_with_execution("no_run_cmd_node", "0.1.0", r#"{ language: "rust" }"#);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
@@ -541,20 +504,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     // Step 1: Add the dependency node that emits a topic with a DIFFERENT name
     // than what the dependent node will subscribe to.
     let dep_source_dir = tempfile::tempdir().expect("failed to create temp dep source dir");
-    let dep_peppy_json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "{DEPENDENCY_NODE_NAME}",
-                tag: "{DEPENDENCY_NODE_TAG}",
-            },
-            interfaces: {},
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"]
-            },
-        }"#
-    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
-    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
+    let dep_peppy_json5 = minimal_node_config(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG, &[]);
     write_peppy_json5(dep_source_dir.path(), &dep_peppy_json5);
 
     let dep_result = send_node_add_and_wait(
@@ -663,20 +613,7 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
             .expect("failed to create excluded dir");
     }
 
-    let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            interfaces: {},
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let peppy_json5 = minimal_node_config(TARGET_NODE_NAME, TARGET_NODE_TAG, &[]);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();

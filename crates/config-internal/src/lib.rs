@@ -79,10 +79,9 @@ pub mod node {
         ConsumedService, ConsumedTopic, ContainerConfig, DependsOn, EmittedTopic, Execution,
         ExposedAction, ExposedService, ExternalConsumedTopic, InterfaceKind, Interfaces,
         LinkedConsumedTopic, Manifest, MessageFormat, Name, NodeConfig, NodeConfigCreator,
-        NodeConfigParser, NodeDependency, ObjectKind, ObjectSchema, ParsedNodeConfig,
-        PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain,
-        TopicInterfaces, TypeToken, extract_parameter_refs, is_blocked_mount_source,
-        load_standalone_node_config,
+        NodeConfigParser, NodeDependency, ObjectKind, ObjectSchema, PeppygenLanguage,
+        PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces,
+        TypeToken, extract_parameter_refs, is_blocked_mount_source, load_standalone_node_config,
     };
 }
 

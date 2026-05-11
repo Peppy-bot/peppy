@@ -18,5 +18,4 @@ pub fn core_node_config() -> NodeConfig {
         }"#,
     )
     .expect("parse core node config")
-    .into_resolved()
 }

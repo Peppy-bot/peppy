@@ -84,6 +84,24 @@ fn minimal_node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
     )
 }
 
+/// Builds a `peppy.json5` document with a custom `execution` body. Use when
+/// the shape of `minimal_node_config` doesn't fit (e.g. a different
+/// `run_cmd`, an added `build_cmd`, or no `run_cmd` at all). The interfaces
+/// block is always `{}`.
+fn node_config_with_execution(name: &str, tag: &str, execution_body: &str) -> String {
+    format!(
+        r#"{{
+            peppy_schema: "node_v1",
+            manifest: {{
+                name: "{name}",
+                tag: "{tag}",
+            }},
+            interfaces: {{}},
+            execution: {execution_body}
+        }}"#
+    )
+}
+
 /// Creates a minimal node bundle (peppy.json5 + tar.zst) suitable for HTTP source tests.
 /// Returns the temp directory (must be kept alive) and the compressed bundle bytes.
 fn create_minimal_http_bundle(node_name: &str, node_tag: &str) -> (TempDir, Vec<u8>) {

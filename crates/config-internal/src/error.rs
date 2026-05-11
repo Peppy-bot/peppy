@@ -93,6 +93,7 @@ pub enum StructuredError {
     DuplicateName(String),
     InvalidName { name: String, allowed: String },
     EmptyName,
+    MissingExecutionLanguage,
 }
 
 impl StructuredError {
@@ -112,6 +113,7 @@ impl From<StructuredError> for ParsingError {
                 ParsingError::InvalidName(name, allowed)
             }
             StructuredError::EmptyName => ParsingError::EmptyName,
+            StructuredError::MissingExecutionLanguage => ParsingError::MissingExecutionLanguage,
         }
     }
 }

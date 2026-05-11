@@ -14,7 +14,7 @@ use super::cache as node_cache;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use chrono::Local;
 use config::consts::PeppyDirs;
-use config::node::ParsedNodeConfig;
+use config::node::NodeConfig;
 use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind};
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -252,7 +252,7 @@ type MaterializeOutput = (
     String,
     bool,
     RepoSourceKind,
-    Result<(PathBuf, ParsedNodeConfig), String>,
+    Result<(PathBuf, NodeConfig), String>,
 );
 
 /// Bundles the cache/IO dependencies threaded through the batch-resolution
@@ -339,7 +339,7 @@ async fn resolve_transitive_closure<'a>(
             }
         };
 
-        if let Some(deps) = parsed.manifest().depends_on.as_ref() {
+        if let Some(deps) = parsed.manifest.depends_on.as_ref() {
             for dep in &deps.nodes {
                 let dep_name = dep.name.as_str().to_owned();
                 let dep_tag = dep.tag.clone();
@@ -350,13 +350,11 @@ async fn resolve_transitive_closure<'a>(
             }
         }
 
-        let config_resolved = parsed.into_resolved();
-
         to_add.push(ResolvedBatchNode {
             name,
             tag,
             root_dir,
-            config_resolved,
+            config_resolved: parsed,
             source_kind,
             is_root,
         });

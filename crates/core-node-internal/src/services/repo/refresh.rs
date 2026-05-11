@@ -505,8 +505,8 @@ fn collect_node_entry(
         }
     };
 
-    let name = parsed.manifest_name().to_string();
-    let tag = parsed.manifest_tag().to_string();
+    let name = parsed.manifest.name.as_str().to_string();
+    let tag = parsed.manifest.tag.clone();
     let key = (name.clone(), tag.clone());
 
     if !seen.insert(key) {

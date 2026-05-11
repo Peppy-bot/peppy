@@ -61,20 +61,6 @@ impl Toolchain {
     }
 }
 
-/// Raw node configuration as deserialized from JSON5. Every section is
-/// required: a peppy node is always a self-contained config with a
-/// `manifest`, `interfaces` (use `interfaces: {}` for nodes with no
-/// topics/services/actions), and an `execution` block.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RawNodeConfig {
-    #[serde(deserialize_with = "deserialize_node_v1_schema")]
-    pub(crate) peppy_schema: PeppySchema,
-    pub(crate) manifest: Manifest,
-    pub(crate) interfaces: Interfaces,
-    pub(crate) execution: RawExecution,
-}
-
 /// Reject any `peppy_schema` value other than `node_v1` so a launcher
 /// document that happens to share a node-compatible field set can't
 /// slip through `NodeConfigParser`.
@@ -85,66 +71,10 @@ where
     PeppySchema::deserialize_expecting(deserializer, PeppySchema::NodeV1)
 }
 
-impl RawNodeConfig {
-    /// Converts into a resolved [`NodeConfig`].
-    pub(crate) fn into_resolved(self) -> crate::error::Result<NodeConfig> {
-        let execution = self.execution.into_execution()?;
-        Ok(NodeConfig {
-            peppy_schema: self.peppy_schema,
-            manifest: self.manifest,
-            interfaces: self.interfaces,
-            execution,
-        })
-    }
-}
-
-/// Opaque handle over a parsed and validated node configuration.
-///
-/// Produced by [`NodeConfigParser`] when parsing a `peppy.json5` file or content
-/// string. The inner [`NodeConfig`] is not accessible outside of the `config`
-/// crate; use the provided methods to inspect, or [`Self::into_resolved`] to
-/// take ownership of the underlying [`NodeConfig`].
-#[derive(Debug, Clone, Serialize)]
-pub struct ParsedNodeConfig(pub(crate) NodeConfig);
-
-impl ParsedNodeConfig {
-    /// Returns the underlying [`NodeConfig`].
-    pub fn into_resolved(self) -> NodeConfig {
-        self.0
-    }
-
-    /// Returns the node name from the manifest.
-    pub fn manifest_name(&self) -> &str {
-        self.0.manifest.name.as_str()
-    }
-
-    /// Returns the node tag from the manifest.
-    pub fn manifest_tag(&self) -> &str {
-        &self.0.manifest.tag
-    }
-
-    /// Returns the schema identifier.
-    pub fn peppy_schema(&self) -> PeppySchema {
-        self.0.peppy_schema
-    }
-
-    /// Returns a reference to the node's manifest.
-    pub fn manifest(&self) -> &Manifest {
-        &self.0.manifest
-    }
-
-    /// Returns the execution language.
-    pub fn execution_language(&self) -> PeppygenLanguage {
-        self.0.execution.language
-    }
-
-    /// Returns a reference to the node's interfaces.
-    pub fn interfaces(&self) -> &Interfaces {
-        &self.0.interfaces
-    }
-}
-
-/// Fully resolved node configuration with guaranteed `execution`.
+/// Fully resolved node configuration. Every section is required: a peppy
+/// node is always a self-contained config with a `manifest`, `interfaces`
+/// (use `interfaces: {}` for nodes with no topics/services/actions), and an
+/// `execution` block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
@@ -685,8 +615,7 @@ pub struct DependsOn {
     pub nodes: Vec<NodeDependency>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Execution {
     pub language: PeppygenLanguage,
     #[serde(default)]
@@ -699,36 +628,37 @@ pub struct Execution {
     pub container: Option<ContainerConfig>,
 }
 
-/// Intermediate execution config used during initial parsing of [`RawNodeConfig`].
-///
-/// Unlike [`Execution`], `language` is optional so the parser can emit a
-/// structured "missing execution.language" error rather than a raw serde
-/// derive failure.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RawExecution {
-    pub language: Option<PeppygenLanguage>,
-    #[serde(default)]
-    pub parameters: ParameterSchema,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub build_cmd: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_cmd: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container: Option<ContainerConfig>,
-}
+/// Custom deserialization for [`Execution`] so a missing `language` field
+/// produces a structured `MissingExecutionLanguage` error rather than the
+/// generic serde "missing field" message.
+impl<'de> Deserialize<'de> for Execution {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawExecution {
+            language: Option<PeppygenLanguage>,
+            #[serde(default)]
+            parameters: ParameterSchema,
+            build_cmd: Option<Vec<String>>,
+            run_cmd: Option<Vec<String>>,
+            container: Option<ContainerConfig>,
+        }
 
-impl RawExecution {
-    pub(crate) fn into_execution(self) -> crate::error::Result<Execution> {
-        let language = self
-            .language
-            .ok_or(ParsingError::MissingExecutionLanguage)?;
+        let raw = RawExecution::deserialize(deserializer)?;
+        let language = raw.language.ok_or_else(|| {
+            de::Error::custom(
+                crate::error::StructuredError::MissingExecutionLanguage.json5_message(),
+            )
+        })?;
         Ok(Execution {
             language,
-            parameters: self.parameters,
-            build_cmd: self.build_cmd,
-            run_cmd: self.run_cmd,
-            container: self.container,
+            parameters: raw.parameters,
+            build_cmd: raw.build_cmd,
+            run_cmd: raw.run_cmd,
+            container: raw.container,
         })
     }
 }
@@ -1740,24 +1670,6 @@ mod tests {
     /// the field names.
     #[test]
     fn node_config_rejects_non_node_schema() {
-        let json5 = r#"{
-            peppy_schema: "launcher_v1",
-            manifest: { name: "node", tag: "0.1.0" },
-            interfaces: {},
-            execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
-        }"#;
-        let err = serde_json5::from_str::<RawNodeConfig>(json5)
-            .expect_err("launcher_v1 schema must be rejected");
-        assert!(
-            err.to_string().contains("node_v1"),
-            "error should mention the expected schema, got: {err}"
-        );
-    }
-
-    /// `NodeConfig` is reachable through public deserialization paths that
-    /// bypass `RawNodeConfig`, so the schema guard must apply here too.
-    #[test]
-    fn node_config_rejects_launcher_schema() {
         let json5 = r#"{
             peppy_schema: "launcher_v1",
             manifest: { name: "node", tag: "0.1.0" },

@@ -255,8 +255,8 @@ async fn fetch_active_instances_for_local_source(
     let Ok(parsed) = NodeConfigParser::from_path(&config_path) else {
         return Ok(None);
     };
-    let node_name = parsed.manifest_name().to_owned();
-    let node_tag = parsed.manifest_tag().to_owned();
+    let node_name = parsed.manifest.name.as_str().to_owned();
+    let node_tag = parsed.manifest.tag.clone();
     fetch_active_instances_for_name_tag(messenger, core_node_name, node_name, node_tag, timeout)
         .await
 }

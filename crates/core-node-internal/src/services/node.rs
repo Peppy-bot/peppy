@@ -335,7 +335,7 @@ mod tests {
 
         let resolved = resolve_local_archive_source(&archive_path).unwrap();
 
-        assert_eq!(resolved.node_config.manifest_name(), "standalone");
+        assert_eq!(resolved.node_config.manifest.name.as_str(), "standalone");
         assert_eq!(resolved.source_path, resolved.temp_dir.path());
         assert!(resolved.source_path.join(NODE_CONFIG_FILE).is_file());
     }
@@ -353,7 +353,7 @@ mod tests {
 
         let resolved = resolve_local_archive_source(&archive_path).unwrap();
 
-        assert_eq!(resolved.node_config.manifest_name(), "standalone");
+        assert_eq!(resolved.node_config.manifest.name.as_str(), "standalone");
         assert_eq!(
             resolved
                 .source_path
