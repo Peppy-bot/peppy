@@ -102,19 +102,10 @@ fn format_refresh_line(feedback: &RepoRefreshFeedback) -> String {
         feedback.status_message.clone()
     } else if feedback.excluded {
         format!("Excluded {} ({})", feedback.path, feedback.source_type)
-    } else if feedback.variants.is_empty() {
+    } else {
         format!(
             "Found {}:{} ({}, {})",
             feedback.node_name, feedback.node_tag, feedback.source_type, feedback.path
-        )
-    } else {
-        format!(
-            "Found {}:{} ({}, {}) [variants: {}]",
-            feedback.node_name,
-            feedback.node_tag,
-            feedback.source_type,
-            feedback.path,
-            feedback.variants.join(", ")
         )
     }
 }

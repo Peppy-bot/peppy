@@ -160,7 +160,6 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(provider_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -179,7 +178,6 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(consumer_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -211,7 +209,6 @@ async fn node_list_command_succeeds() {
     assert!(
         output.contains("NODE")
             && output.contains("STAGE")
-            && output.contains("VARIANT")
             && output.contains("INSTANCES")
             && output.contains("PATH"),
         "table headers missing:\n{output}"
@@ -224,10 +221,6 @@ async fn node_list_command_succeeds() {
     assert!(
         provider_line.contains("Ready"),
         "provider row should be in Ready stage:\n{output}"
-    );
-    assert!(
-        provider_line.contains("default"),
-        "provider row should report the default variant:\n{output}"
     );
     // No instances were started, so the INSTANCES column must render as "0".
     assert!(
@@ -242,10 +235,6 @@ async fn node_list_command_succeeds() {
     assert!(
         consumer_line.contains("Ready"),
         "consumer row should be in Ready stage:\n{output}"
-    );
-    assert!(
-        consumer_line.contains("default"),
-        "consumer row should report the default variant:\n{output}"
     );
 
     assert!(
@@ -335,7 +324,6 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Add {
             source: Some(provider_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -353,7 +341,6 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Add {
             source: Some(consumer_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,

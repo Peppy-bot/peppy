@@ -41,73 +41,12 @@ The `source` attribute supports four formats:
 The repository source resolves nodes from a locally cached index. Run `peppy repo refresh` before launching to ensure the cache is up to date. If a node or tag is missing from the cache, the launch will fail with a "not found" error.
 :::
 
-### Variants
-
-Each deployment source can optionally include a `variant` field to select a specific variant of the node (e.g., a mock implementation or an architecture-specific build). The `variant` object supports three formats:
-
- - **Name**: Reference a variant by name — `{ name: "mock-rust" }`
- - **Git repository**: Fetch a variant from a git repo — requires `repo`, with optional `path` and `ref`
- - **URL**: Fetch a variant from an HTTP(S) URL — requires `url`, with optional `sha256`
-
-Examples:
-
-```json5
-// Named variant
-{
-  source: {
-    repo: "https://github.com/Peppy-bot/nodes_hub.git",
-    path: "rust/fake_openarm01_controller",
-    ref: "main",
-    variant: {
-      name: "mock-rust"
-    }
-  },
-  instances: [
-    { instance_id: "the_nervous_system" }
-  ]
-}
-```
-
-```json5
-// Git variant
-{
-  source: {
-    local: "./my_node",
-    variant: {
-      repo: "https://github.com/Peppy-bot/node_variants.git",
-      path: "mock",
-      ref: "v1.0.0"
-    }
-  },
-  instances: [
-    { instance_id: "my_node_1" }
-  ]
-}
-```
-
-```json5
-// URL variant
-{
-  source: {
-    local: "./my_node",
-    variant: {
-      url: "https://example.com/my_node_variant.tar.zst",
-      sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
-    }
-  },
-  instances: [
-    { instance_id: "my_node_1" }
-  ]
-}
-```
-
 ```json5
 // Repository source (long form)
 {
   source: {
     name: "openarm01_controller",
     tag: "0.1.0",
-    variant: { name: "mock-python" }
   },
   instances: [
     { instance_id: "the_nervous_system" }
@@ -120,7 +59,6 @@ Examples:
 {
   source: {
     name: "openarm01_controller:0.1.0",
-    variant: { name: "mock-python" }
   },
   instances: [
     { instance_id: "the_nervous_system" }
@@ -169,15 +107,15 @@ Verify that the node stack was configured correctly:
 $ peppy stack list
 Node stack
 
-┌─────────────────────────────────────────┬───────┬─────────┬────────────┬──────────────────────────────────────────────────────────────────────────┐
-│ NODE                                    │ STAGE │ VARIANT │ INSTANCES  │ PATH                                                                     │
-├─────────────────────────────────────────┼───────┼─────────┼────────────┼──────────────────────────────────────────────────────────────────────────┤
-│ core-node-adoring-wiles-7286:v0.8.0     │ Root  │ default │ 1 running  │ /Users/tuatini/workspace/peppy                                           │
-│ fake_openarm01_controller:0.1.0         │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_openarm01_controller_0.1.0.tar.zst │
-│ fake_robot_brain:0.1.0                  │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_robot_brain_0.1.0.tar.zst          │
-│ fake_uvc_camera:0.1.0                   │ Ready │ default │ 2 running  │ /Users/tuatini/.peppy/built_nodes/fake_uvc_camera_0.1.0.tar.zst           │
-│ fake_video_reconstruction:0.1.0         │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_video_reconstruction_0.1.0.tar.zst │
-└─────────────────────────────────────────┴───────┴─────────┴────────────┴──────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────┬───────┬────────────┬──────────────────────────────────────────────────────────────────────────┐
+│ NODE                                    │ STAGE │ INSTANCES  │ PATH                                                                     │
+├─────────────────────────────────────────┼───────┼────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ core-node-adoring-wiles-7286:v0.8.0     │ Root  │ 1 running  │ /Users/tuatini/workspace/peppy                                           │
+│ fake_openarm01_controller:0.1.0         │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_openarm01_controller_0.1.0.tar.zst │
+│ fake_robot_brain:0.1.0                  │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_robot_brain_0.1.0.tar.zst          │
+│ fake_uvc_camera:0.1.0                   │ Ready │ 2 running  │ /Users/tuatini/.peppy/built_nodes/fake_uvc_camera_0.1.0.tar.zst           │
+│ fake_video_reconstruction:0.1.0         │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_video_reconstruction_0.1.0.tar.zst │
+└─────────────────────────────────────────┴───────┴────────────┴──────────────────────────────────────────────────────────────────────────┘
 
 
 Dependencies

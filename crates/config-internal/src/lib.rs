@@ -76,14 +76,13 @@ pub mod fingerprint {
 pub mod node {
     pub use crate::internal::node::{
         ActionInterfaces, ArrayKind, ArraySchema, CallbackNameError, ConsumedAction,
-        ConsumedService, ConsumedTopic, ContainerConfig, DEFAULT_VARIANT_NAME, DependsOn,
-        EmittedTopic, Execution, ExposedAction, ExposedService, ExternalConsumedTopic,
-        InterfaceKind, Interfaces, LinkedConsumedTopic, Manifest, MergedVariant, MessageFormat,
-        Name, NodeConfig, NodeConfigCreator, NodeConfigParser, NodeDependency, ObjectKind,
-        ObjectSchema, ParsedNodeConfig, PeppyNodeConfig, PeppygenLanguage, PrimitiveSchema,
-        QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, Variant,
-        VariantConfig, VariantConfigParser, extract_parameter_refs, find_root_node_dir,
-        is_blocked_mount_source, load_standalone_node_config,
+        ConsumedService, ConsumedTopic, ContainerConfig, DependsOn, EmittedTopic, Execution,
+        ExposedAction, ExposedService, ExternalConsumedTopic, InterfaceKind, Interfaces,
+        LinkedConsumedTopic, Manifest, MessageFormat, Name, NodeConfig, NodeConfigCreator,
+        NodeConfigParser, NodeDependency, ObjectKind, ObjectSchema, ParsedNodeConfig,
+        PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain,
+        TopicInterfaces, TypeToken, extract_parameter_refs, is_blocked_mount_source,
+        load_standalone_node_config,
     };
 }
 
@@ -99,8 +98,7 @@ pub mod launcher {
     pub use crate::internal::launcher::{
         Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
         DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides, Name,
-        PeppyLauncher, PeppyLauncherParser, PeppySchema, VariantGitSource, VariantNameSource,
-        VariantSource, VariantUrlSource,
+        PeppyLauncher, PeppyLauncherParser, PeppySchema,
     };
 }
 
@@ -108,7 +106,7 @@ pub mod launcher {
 pub mod source {
     pub use crate::internal::source::{
         DeploymentGitSource, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
-        DeploymentUrlSource, VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
+        DeploymentUrlSource,
     };
 }
 

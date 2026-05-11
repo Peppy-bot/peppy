@@ -188,7 +188,7 @@ mod tests {
         let v = json!([
             {
                 "node_name": "openarm01_arm",
-                "variants": ["default", "mock-rust"],
+                "tag": "0.1.0",
                 "duplicate": false,
             }
         ]);

@@ -181,6 +181,7 @@ mod tests {
                     tag: "0.1.0",
                     {depends_on}
                 }},
+                interfaces: {{}},
                 execution: {{ language: "rust", run_cmd: ["./bin"] }}
             }}"#
         );

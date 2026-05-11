@@ -128,12 +128,12 @@ You should see something like:
 $ peppy stack list
 Node stack
 
-┌────────────────────────────────────────┬───────┬─────────┬───────────┬───────────────────────────────────────────────────────────┐
-│ NODE                                   │ STAGE │ VARIANT │ INSTANCES │ PATH                                                      │
-├────────────────────────────────────────┼───────┼─────────┼───────────┼───────────────────────────────────────────────────────────┤
-│ core-node-funny-chatterjee-6386:v0.8.0 │ Root  │ default │ 1 running │ /home/ubuntu/.peppy/bin                                   │
-│ hello_world:0.1.0                      │ Ready │ default │ 1 running │ /home/ubuntu/.peppy/built_nodes/hello_world_0.1.0.tar.zst │
-└────────────────────────────────────────┴───────┴─────────┴───────────┴───────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────────────┐
+│ NODE                                   │ STAGE │ INSTANCES │ PATH                                                      │
+├────────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────────────┤
+│ core-node-funny-chatterjee-6386:v0.8.0 │ Root  │ 1 running │ /home/ubuntu/.peppy/bin                                   │
+│ hello_world:0.1.0                      │ Ready │ 1 running │ /home/ubuntu/.peppy/built_nodes/hello_world_0.1.0.tar.zst │
+└────────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────────────┘
 
 
 Dependencies
@@ -172,7 +172,6 @@ Run cmd: uv run hello_world
 Node Stack Status
 --------------------------------------------------
 Stage:     Ready
-Variant:   default
 Instances: 2 tracked
            - suspicious-swanson-5880  [running]
            - flamboyant-penrose-9622  [running]
@@ -196,8 +195,6 @@ Config SHA256: 67505086f8ac099d0861cb5dfa539b1c8c3c9354ad90ed7713a5147c7cb43342
 ```
 
 This is usually the fastest way to answer "is my node built yet?" and "where is the log for this specific instance?". The `Add log` path is what `peppy node add` writes to; per-instance run logs are what `peppy node run` writes to. Build logs live under `~/.peppy/logs/build/` and are surfaced by `peppy node build` directly when it runs.
-
-The `Variant:` line shows the variant that was selected when the node was added. It prints `default` both when no variant override was passed (auto-resolved default variant) and when the node declares no variants at all (the root's own `execution` section is the default).
 
 `Exposed Interfaces` summarizes the topics, services, and actions the node publishes or consumes per its `peppy.json5`. `Config SHA256` is the fingerprint of the config that was fed through peppygen — it's what `peppy node add` checks against to refuse a stale snapshot and tell you to run `peppy node sync`.
 
@@ -223,11 +220,11 @@ If you run `peppy stack list` again, you'll see that only the core node remains:
 $ peppy stack list
 Node stack
 
-┌────────────────────────────────────────┬───────┬─────────┬───────────┬─────────────────────────┐
-│ NODE                                   │ STAGE │ VARIANT │ INSTANCES │ PATH                    │
-├────────────────────────────────────────┼───────┼─────────┼───────────┼─────────────────────────┤
-│ core-node-funny-chatterjee-6386:v0.8.0 │ Root  │ default │ 1 running │ /home/ubuntu/.peppy/bin │
-└────────────────────────────────────────┴───────┴─────────┴───────────┴─────────────────────────┘
+┌────────────────────────────────────────┬───────┬───────────┬─────────────────────────┐
+│ NODE                                   │ STAGE │ INSTANCES │ PATH                    │
+├────────────────────────────────────────┼───────┼───────────┼─────────────────────────┤
+│ core-node-funny-chatterjee-6386:v0.8.0 │ Root  │ 1 running │ /home/ubuntu/.peppy/bin │
+└────────────────────────────────────────┴───────┴───────────┴─────────────────────────┘
 
 
 Dependencies

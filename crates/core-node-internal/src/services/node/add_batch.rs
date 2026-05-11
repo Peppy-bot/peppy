@@ -15,9 +15,7 @@ use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use chrono::Local;
 use config::consts::PeppyDirs;
 use config::node::ParsedNodeConfig;
-use core_node_api::encoding::{
-    DepVariantOverride, NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind,
-};
+use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind};
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use node_stack::VirtualDeptree;
@@ -46,12 +44,8 @@ pub(crate) async fn run_repo_node_add(
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
 ) -> NodeAddResult {
-    let (root_name, root_tag, dep_variant_overrides) = match &goal.source {
-        NodeSource::RepoNode {
-            name,
-            tag,
-            dep_variant_overrides,
-        } => (name.clone(), tag.clone(), dep_variant_overrides.clone()),
+    let (root_name, root_tag) = match &goal.source {
+        NodeSource::RepoNode { name, tag } => (name.clone(), tag.clone()),
         _ => {
             return NodeAddResult::failure(
                 &log_path,
@@ -59,20 +53,6 @@ pub(crate) async fn run_repo_node_add(
             );
         }
     };
-
-    if let Some(root_override) = dep_variant_overrides
-        .iter()
-        .find(|ov| ov.name == root_name && ov.tag == root_tag)
-    {
-        return fail(
-            &log_file,
-            &log_path,
-            format!(
-                "Dependency variant override {}:{}@{} targets the root repo node; use the root variant field instead",
-                root_override.name, root_override.tag, root_override.variant
-            ),
-        );
-    }
 
     emit(
         &feedback_tx,
@@ -109,35 +89,10 @@ pub(crate) async fn run_repo_node_add(
         cache_generation,
         feedback_tx: &feedback_tx,
     };
-    let resolution = match resolve_transitive_closure(
-        resolution_ctx,
-        &root_name,
-        &root_tag,
-        &dep_variant_overrides,
-    )
-    .await
-    {
+    let resolution = match resolve_transitive_closure(resolution_ctx, &root_name, &root_tag).await {
         Ok(r) => r,
         Err(msg) => return fail(&log_file, &log_path, msg),
     };
-
-    // Warn about overrides that targeted nodes not actually in the tree.
-    for ov in &dep_variant_overrides {
-        let in_tree = resolution
-            .to_add
-            .iter()
-            .any(|n| n.name == ov.name && n.tag == ov.tag);
-        if !in_tree {
-            emit(
-                &feedback_tx,
-                FeedbackStream::Warning,
-                format!(
-                    "Dependency variant override for {}:{} ignored — not in the resolved dependency tree",
-                    ov.name, ov.tag
-                ),
-            );
-        }
-    }
 
     let tree_input: Vec<(PathBuf, config::node::NodeConfig)> = resolution
         .to_add
@@ -155,7 +110,6 @@ pub(crate) async fn run_repo_node_add(
         }
     };
 
-    // Build a (name, tag) -> ResolvedBatchNode lookup for variant info.
     let node_lookup: HashMap<(String, String), &ResolvedBatchNode> = resolution
         .to_add
         .iter()
@@ -216,7 +170,6 @@ pub(crate) async fn run_repo_node_add(
                 PreviousConfig {
                     config: guard.config().clone(),
                     config_path: guard.config_path().to_path_buf(),
-                    variant_name: guard.variant_name().map(ToString::to_string),
                 }
             });
 
@@ -283,10 +236,8 @@ struct ResolvedBatchNode {
     root_dir: PathBuf,
     config_resolved: config::node::NodeConfig,
     source_kind: RepoSourceKind,
-    /// Caller-requested variant for this node, if any.
-    variant_override: Option<String>,
     /// Only set to `true` for the root of the batch. Controls whether
-    /// the env_vars / force / root variant from the original goal apply.
+    /// the env_vars / force from the original goal apply.
     is_root: bool,
 }
 
@@ -318,7 +269,6 @@ async fn resolve_transitive_closure<'a>(
     ctx: BatchResolutionCtx<'a>,
     root_name: &str,
     root_tag: &str,
-    dep_overrides: &[DepVariantOverride],
 ) -> Result<Resolution, String> {
     let BatchResolutionCtx {
         peppy_dirs,
@@ -326,10 +276,6 @@ async fn resolve_transitive_closure<'a>(
         cache_generation,
         feedback_tx,
     } = ctx;
-    let override_map: HashMap<(String, String), String> = dep_overrides
-        .iter()
-        .map(|o| ((o.name.clone(), o.tag.clone()), o.variant.clone()))
-        .collect();
 
     let mut to_add: Vec<ResolvedBatchNode> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
@@ -393,26 +339,6 @@ async fn resolve_transitive_closure<'a>(
             }
         };
 
-        // Roots take their variant from goal.variant (handled later in
-        // run_single_batched_add); deps look at override_map.
-        let variant_override = if is_root {
-            None
-        } else {
-            override_map.get(&(name.clone(), tag.clone())).cloned()
-        };
-
-        // Enforce that an override points at a variant declared by this
-        // dep's manifest. (Root variant validation happens inside
-        // run_node_add itself.)
-        if let Some(ref v) = variant_override
-            && !parsed.variant_names().iter().any(|n| n == v)
-        {
-            return Err(format!(
-                "variant '{v}' not declared on dep {name}:{tag} (available: {:?})",
-                parsed.variant_names()
-            ));
-        }
-
         if let Some(deps) = parsed.manifest().depends_on.as_ref() {
             for dep in &deps.nodes {
                 let dep_name = dep.name.as_str().to_owned();
@@ -424,12 +350,9 @@ async fn resolve_transitive_closure<'a>(
             }
         }
 
-        // VirtualDeptree only reads `manifest.depends_on` from this config
-        // for the topological sort; execution is supplied by `run_node_add`
-        // later from the working dir. For variant-only nodes (no root-level
-        // execution) `into_resolved()` rightfully refuses, so we use the
-        // display-friendly fallback.
-        let config_resolved = parsed.clone().into_resolved_or_default();
+        let config_resolved = parsed
+            .into_resolved()
+            .map_err(|e| format!("Failed to resolve config for {}:{}: {}", name, tag, e))?;
 
         to_add.push(ResolvedBatchNode {
             name,
@@ -437,7 +360,6 @@ async fn resolve_transitive_closure<'a>(
             root_dir,
             config_resolved,
             source_kind,
-            variant_override,
             is_root,
         });
     }
@@ -473,15 +395,10 @@ async fn run_single_batched_add(
     );
 
     if node.is_root {
-        // Env vars / force / root variant only apply to the root entity.
+        // Env vars / force only apply to the root entity.
         sub_goal = sub_goal
             .with_env_vars(batch_goal.env_vars.clone())
             .with_force(batch_goal.force);
-        if let Some(ref v) = batch_goal.variant {
-            sub_goal = sub_goal.with_variant_source(v.clone());
-        }
-    } else if let Some(ref v) = node.variant_override {
-        sub_goal = sub_goal.with_variant_name(v.clone());
     }
 
     // Each sub-add gets its own log file derived from `{name}_{tag}`.
@@ -523,7 +440,6 @@ async fn run_single_batched_add(
 struct PreviousConfig {
     config: config::node::NodeConfig,
     config_path: PathBuf,
-    variant_name: Option<String>,
 }
 
 struct RollbackEntry {
@@ -535,8 +451,8 @@ struct RollbackEntry {
 /// Drop-based rollback: if the guard is dropped armed, every entry in
 /// `added` is undone in reverse order (so dependants go first, then
 /// deps). Entries that replaced an existing config restore the previous
-/// state via `push_config_with_variant`; entries that introduced a new
-/// slot are removed. On success, call [`RollbackGuard::disarm`].
+/// state via `push_config`; entries that introduced a new slot are
+/// removed. On success, call [`RollbackGuard::disarm`].
 struct RollbackGuard {
     node_stack: Arc<node_stack::NodeStack>,
     added: Vec<RollbackEntry>,
@@ -569,18 +485,18 @@ impl Drop for RollbackGuard {
                 previous,
             } = entry;
             match previous {
-                Some(prev) => match self.node_stack.push_config_with_variant(
-                    prev.config,
-                    false,
-                    prev.config_path,
-                    prev.variant_name,
-                ) {
-                    Ok(()) => debug!("Rolled back batched replacement of {}:{}", name, tag),
-                    Err(e) => warn!(
-                        "Batch-add rollback (restore previous) failed for {}:{} — {}",
-                        name, tag, e
-                    ),
-                },
+                Some(prev) => {
+                    match self
+                        .node_stack
+                        .push_config(prev.config, false, prev.config_path)
+                    {
+                        Ok(()) => debug!("Rolled back batched replacement of {}:{}", name, tag),
+                        Err(e) => warn!(
+                            "Batch-add rollback (restore previous) failed for {}:{} — {}",
+                            name, tag, e
+                        ),
+                    }
+                }
                 None => match self.node_stack.remove_config(&name, &tag) {
                     Ok(_) => debug!("Rolled back batched add of {}:{}", name, tag),
                     Err(e) => warn!("Batch-add rollback failed for {}:{} — {}", name, tag, e),

@@ -15,7 +15,6 @@ mod remove;
 mod run;
 mod stop;
 mod sync;
-pub(crate) mod variant;
 
 use config::consts::PeppyDirs;
 use config::node::NodeConfig;

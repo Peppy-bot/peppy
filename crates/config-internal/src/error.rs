@@ -74,13 +74,7 @@ pub enum ParsingError {
     #[error("Node config `execution.run_cmd` must not be empty")]
     EmptyRunCmd,
 
-    // -- node config: default variant
-    #[error(
-        "Node config with a 'default' variant must not define an `execution` section — the execution comes from the default variant"
-    )]
-    ExecutionWithDefaultVariant,
-    #[error("Node config must define an `execution` section (or declare a 'default' variant)")]
-    MissingExecution,
+    // -- node config: execution
     #[error("Node config `execution.language` is required when an execution block is defined")]
     MissingExecutionLanguage,
 
@@ -99,16 +93,6 @@ pub enum StructuredError {
     DuplicateName(String),
     InvalidName { name: String, allowed: String },
     EmptyName,
-}
-
-impl ParsingError {
-    /// Returns `true` when the error indicates that the `manifest` field is
-    /// absent from the config.  This is the hallmark of a **variant** config
-    /// (which deliberately omits `manifest`) and is used by the CLI to decide
-    /// whether to walk up the directory tree to locate the root node config.
-    pub fn is_missing_manifest(&self) -> bool {
-        matches!(self, ParsingError::CannotParseConfig(msg) if msg.contains("missing field `manifest`"))
-    }
 }
 
 impl StructuredError {

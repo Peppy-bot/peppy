@@ -130,10 +130,6 @@ pub struct SerializedNode {
     /// in-flight `Starting` instances.
     #[serde(default)]
     pub instances: Vec<SerializedInstance>,
-    /// Variant label selected at `node add` time, if any. `None` for the
-    /// synthetic root node and for non-variant add paths.
-    #[serde(default)]
-    pub variant_name: Option<String>,
 }
 
 impl SerializedNode {

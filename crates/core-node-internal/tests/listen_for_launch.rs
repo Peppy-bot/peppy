@@ -180,7 +180,7 @@ fn write_node_config_with_options(
               }},"#
         )
     } else {
-        String::new()
+        "interfaces: {},".to_string()
     };
 
     let depends_on = if expects_uvc_camera {
@@ -868,8 +868,8 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
     // Map both nodes into the user-repo cache. This is what the
     // `{ name, tag }` launcher shape resolves against.
     TestPackagesCache::new()
-        .fs_entry(BRAIN_NODE, NODE_TAG, &brain_dir, &[])
-        .fs_entry(ARM_NODE, NODE_TAG, &arm_dir, &[])
+        .fs_entry(BRAIN_NODE, NODE_TAG, &brain_dir)
+        .fs_entry(ARM_NODE, NODE_TAG, &arm_dir)
         .write(&peppy_dirs);
 
     let _ready_brain = AbortOnDrop(
@@ -1673,8 +1673,13 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
     // Create a temp bin directory with a `printout` script that sleeps
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
     let printout_path = bin_dir.path().join("printout");
-    std::fs::write(&printout_path, "#!/bin/sh\nsleep \"${1:-60}\"\n")
-        .expect("failed to write printout script");
+    std::fs::write(
+        &printout_path,
+        "#!/bin/sh
+sleep \"${1:-60}\"
+",
+    )
+    .expect("failed to write printout script");
 
     // Make it executable
     #[cfg(unix)]

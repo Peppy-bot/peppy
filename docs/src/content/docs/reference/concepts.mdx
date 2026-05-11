@@ -21,9 +21,8 @@ The manifest defines a node's identity:
 | Field | Description |
 |-------|-------------|
 | `name` | A validated identifier (ASCII letters, digits, `_`, `-`) |
-| `tag` | A version or variant identifier (e.g., `donut`, `v1.0.0`) |
+| `tag` | A version identifier (e.g., `v1.0.0`) |
 | `labels` | Optional metadata labels |
-| `variants` | Optional list of alternative node implementations |
 | `depends_on` | Optional dependency declarations on other nodes |
 
 A node is uniquely identified by its `name:tag` combination.

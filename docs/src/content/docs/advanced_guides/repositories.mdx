@@ -64,7 +64,7 @@ Syncs `repositories.json5` with the bundled default template. If the file does n
 peppy repo list
 ```
 
-Shows all discovered nodes grouped by the repository that provides them. Each group is headed by the repository's display label (path for `fs`, `url (ref: r)` for `git`) followed by the node count and source kind, then lists each node's name, tag, path, and available variants. Duplicate nodes (same `name:tag` provided by multiple repositories) are flagged so you can see which repository currently wins resolution.
+Shows all discovered nodes grouped by the repository that provides them. Each group is headed by the repository's display label (path for `fs`, `url (ref: r)` for `git`) followed by the node count and source kind, then lists each node's name, tag, and path. Duplicate nodes (same `name:tag` provided by multiple repositories) are flagged so you can see which repository currently wins resolution.
 
 ### Refresh the index
 
@@ -144,10 +144,9 @@ peppy node add uvc_camera:0.1.0
 
 This is the shortest form of `peppy node add`. It works for any node provided by any repository listed in `repositories.json5`, including the default [nodes_hub](https://github.com/Peppy-bot/nodes_hub) community repository. When several repositories provide the same `name:tag`, the [resolution rule from `repo refresh`](#refresh-the-index) applies — the repository with the lower `id` wins.
 
-Two constraints apply to this source shape:
+One constraint applies to this source shape:
 
 - `--ref` is rejected. The git ref (if any) is pinned once in `repositories.json5` when you register the repo, not per-add.
-- Dependency-level variant overrides with [`--variant <dep_name>:<dep_tag>@<variant_name>`](/advanced_guides/variants/#overriding-a-dependencys-variant) are only valid when the source is a `name:tag` reference. With a local path or a direct git/http URL, use the per-node `--variant` at the source level instead.
 
 If the node you want to add lives in a repository that is **not** in `repositories.json5`, keep using the full git URL or HTTP archive form shown in [Sharing nodes](/guides/sharing_nodes/).
 

@@ -45,6 +45,7 @@ fn write_node_config(
                     name: "{node_name}",
                     tag: "{node_tag}",
                 },
+                interfaces: {},
                 execution: {
                     language: "rust",
                     run_cmd: [{run_cmd_json5}]
@@ -121,7 +122,6 @@ async fn node_launch_command_succeed() {
         command: NodeCommands::Add {
             source: Some(node_a_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -358,7 +358,6 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         command: NodeCommands::Add {
             source: Some(node_a_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,

@@ -2,8 +2,7 @@ use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_acti
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::sync::{
-    self, AutoSyncParams, AutoSyncVariant, collect_consumed_interfaces, generate_peppygen_for_node,
-    stack_resolver,
+    self, AutoSyncParams, collect_consumed_interfaces, generate_peppygen_for_node, stack_resolver,
 };
 use super::{
     clone_with_progress, extract_tar_zst, format_bytes, generate_random_id,
@@ -14,7 +13,7 @@ use crate::Result;
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
-use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
+use config::node::{NodeConfig, NodeConfigParser, ParsedNodeConfig};
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
@@ -777,8 +776,6 @@ async fn resolve_node_add_source(
     }
 }
 
-use super::variant::{resolve_variant, variant_label};
-
 /// Encodes a rejected goal response, mapping encoding errors to `PeppyError`.
 fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
     super::encode_response_or_err(
@@ -810,83 +807,30 @@ pub(crate) async fn run_node_add(
 
     match AssertUnwindSafe(async {
         // Resolve source (git clone, HTTP download, or local config check).
-        let mut resolved = match resolve_node_add_source(&goal, &action_context.peppy_dirs, &feedback_tx).await {
-            Ok(r) => r,
-            Err(error_msg) => {
-                write_error_to_log(&log_file, &error_msg);
-                return NodeAddResult::failure(&log_path, error_msg);
-            }
-        };
-
-        // RAII guard: ensures resolved.cleanup_dir is removed on any early return
-        // (e.g. variant resolution failure) before process_node_add takes ownership.
-        let mut resolved_cleanup_guard = CleanupDir::new(resolved.cleanup_dir.take());
-
-        // Auto-resolve the default variant when no explicit variant is specified.
-        let effective_variant = match &goal.variant {
-            Some(v) => Some(v.clone()),
-            None if resolved.node_config.has_default_variant() => {
-                Some(NodeSource::Fs(DEFAULT_VARIANT_NAME.into()))
-            }
-            None => None,
-        };
-
-        // Capture the variant label alongside `effective_variant` so it can
-        // be persisted on the `NodeEntity` after `push_config` — the daemon
-        // reads it back out of the entity when answering `node_info`.
-        let variant_name: Option<String> = effective_variant.as_ref().map(variant_label);
-
-        // Capture the root source path before variant resolution may overwrite it.
-        // The .peppy/git.hash file is written by `peppy node sync` at the root
-        // level; non-local variant directories (Git/Http clones) won't have it.
-        let root_source_path = resolved.source_path.clone();
-        let root_execution_language = resolved.node_config.execution_language();
-
-        // If a variant is specified (or auto-resolved), resolve it from the root config.
-        let mut variant_cleanup_dir: Option<PathBuf> = None;
-        let mut variant_source_is_local = true;
-        let node_config: NodeConfig;
-        if let Some(ref variant_source) = effective_variant {
-            let label = variant_label(variant_source);
-            match resolve_variant(
-                variant_source,
-                &resolved.node_config,
-                &resolved.source_path,
-                &action_context.peppy_dirs,
-                None,
-            )
-            .await
-            {
-                Ok(v) => {
-                    if v.manifest_ignored {
-                        let _ = feedback_tx.send(FeedbackLine {
-                            stream: FeedbackStream::Stderr,
-                            line: format!(
-                                "Warning: variant '{}' defines a `manifest` section which will be ignored — only the root node's manifest is used",
-                                label
-                            ),
-                        });
-                    }
-                    node_config = v.merged_config;
-                    resolved.source_path = v.variant_source_path;
-                    variant_source_is_local = v.source_is_local;
-                    variant_cleanup_dir = v.cleanup_dir;
-                }
+        let mut resolved =
+            match resolve_node_add_source(&goal, &action_context.peppy_dirs, &feedback_tx).await {
+                Ok(r) => r,
                 Err(error_msg) => {
                     write_error_to_log(&log_file, &error_msg);
                     return NodeAddResult::failure(&log_path, error_msg);
                 }
+            };
+
+        // RAII guard: ensures resolved.cleanup_dir is removed on any early return
+        // before process_node_add takes ownership.
+        let mut resolved_cleanup_guard = CleanupDir::new(resolved.cleanup_dir.take());
+
+        let root_source_path = resolved.source_path.clone();
+        let root_execution_language = resolved.node_config.execution_language();
+
+        let node_config: NodeConfig = match resolved.node_config.into_resolved() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                let error_msg = e.to_string();
+                write_error_to_log(&log_file, &error_msg);
+                return NodeAddResult::failure(&log_path, error_msg);
             }
-        } else {
-            match resolved.node_config.into_resolved() {
-                Ok(cfg) => node_config = cfg,
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    write_error_to_log(&log_file, &error_msg);
-                    return NodeAddResult::failure(&log_path, error_msg);
-                }
-            }
-        }
+        };
 
         // Auto-generate .peppy directory if missing (e.g. fresh clone never synced).
         // Must run before git hash verification since sync also writes git.hash.
@@ -905,28 +849,7 @@ pub(crate) async fn run_node_add(
             let sync_node_stack = action_context.node_stack.clone();
             let sync_peppy_dirs = action_context.peppy_dirs.clone();
 
-            let sync_variant = if variant_source_is_local
-                && effective_variant.is_some()
-                && resolved.source_path != root_source_path
-            {
-                Some((
-                    resolved.source_path.clone(),
-                    node_config.execution.language,
-                    node_config.clone(),
-                ))
-            } else {
-                None
-            };
-
             let sync_result = tokio::task::spawn_blocking(move || {
-                let variant = sync_variant.as_ref().map(|(dir, language, cfg)| {
-                    AutoSyncVariant {
-                        dir,
-                        language: *language,
-                        merged_config: cfg,
-                    }
-                });
-
                 sync::auto_sync_if_missing(
                     AutoSyncParams {
                         node_dir: &sync_node_dir,
@@ -934,7 +857,6 @@ pub(crate) async fn run_node_add(
                         manifest: &sync_manifest,
                         interfaces: &sync_interfaces,
                         git_hash: &sync_git_hash,
-                        variant,
                     },
                     &sync_node_stack,
                     &sync_peppy_dirs,
@@ -960,9 +882,7 @@ pub(crate) async fn run_node_add(
         // Verify git hash for non-archive local FS sources.
         //
         // The .peppy/git.hash file is always written by `peppy node sync` at
-        // the root level (alongside the peppy.json5 that contains the manifest),
-        // regardless of whether the node has an execution block or uses variants.
-        // Verification always targets the root source path.
+        // the root level (alongside the peppy.json5 that contains the manifest).
         if goal.git_hash != STACK_LAUNCH_GIT_HASH
             && let NodeSource::Fs(original_path) = &goal.source
             && !is_supported_fs_archive(original_path)
@@ -977,9 +897,8 @@ pub(crate) async fn run_node_add(
 
         // Fingerprints are only generated locally by `peppy node sync`.
         // Git/Http sources never have them, so skip verification for remote sources.
-        let is_local_root =
+        let verify_codegen_fingerprint =
             matches!(&goal.source, NodeSource::Fs(_)) && goal.git_hash != STACK_LAUNCH_GIT_HASH;
-        let verify_codegen_fingerprint = is_local_root && variant_source_is_local;
 
         // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
         // now that we know the node name and tag from the resolved config.
@@ -993,9 +912,6 @@ pub(crate) async fn run_node_add(
             log_path
         };
 
-        // RAII guard: cleans up variant clone/download dir on any exit path.
-        let _variant_cleanup_guard = CleanupDir::new(variant_cleanup_dir);
-
         let ctx = ProcessNodeAddContext {
             action: action_context,
             feedback_tx,
@@ -1008,7 +924,6 @@ pub(crate) async fn run_node_add(
             source_path,
             verify_codegen_fingerprint,
             cleanup_dir,
-            variant_name,
             ctx,
         )
         .await
@@ -1226,7 +1141,6 @@ async fn process_node_add(
     source_path: PathBuf,
     verify_codegen_fingerprint: bool,
     cleanup_dir: Option<PathBuf>,
-    variant_name: Option<String>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
     // Reject any forbidden env vars early so the user gets a fast failure;
@@ -1267,45 +1181,6 @@ async fn process_node_add(
         };
     // RAII guard: cleans up the temp working dir on any exit path.
     let mut working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
-
-    // For variant adds (including auto-resolved default variants), write the
-    // merged config (root manifest + interfaces + variant execution) into the
-    // working directory so the peppygen generator finds a valid NodeConfig.
-    // Strip the variants list from the manifest — it is no longer relevant
-    // once the variant has been resolved and would trigger a validation error
-    // if a "default" variant is present alongside an execution.
-    if goal.variant.is_some() || node_config.manifest.has_default_variant() {
-        let mut write_config = node_config.clone();
-        write_config.manifest.variants = None;
-        let merged_config_str = config::json5_pretty::to_string_pretty(&write_config)
-            .map_err(|e| format!("Failed to serialize merged variant config: {}", e));
-        match merged_config_str {
-            Ok(content) => {
-                let config_path = working_dir.join(NODE_CONFIG_FILE);
-                if let Err(e) = std::fs::write(&config_path, &content) {
-                    let msg = format!("Failed to write merged variant config: {}", e);
-                    write_error_to_log(&ctx.log_file, &msg);
-                    return NodeAddResult::failure(&ctx.log_path, msg);
-                }
-                // Regenerate fingerprint for the new config
-                if let Err(e) = config::fingerprint::generate_node_config_fingerprint(
-                    &config_path,
-                    working_dir.join(PEPPYGEN_OUTPUT_PATH),
-                ) {
-                    let msg = format!(
-                        "Failed to regenerate fingerprint for merged variant config: {}",
-                        e
-                    );
-                    write_error_to_log(&ctx.log_file, &msg);
-                    return NodeAddResult::failure(&ctx.log_path, msg);
-                }
-            }
-            Err(msg) => {
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeAddResult::failure(&ctx.log_path, msg);
-            }
-        }
-    }
 
     if !excluded_dirs.is_empty() {
         let _ = ctx.feedback_tx.send(FeedbackLine {
@@ -1385,16 +1260,15 @@ async fn process_node_add(
 
     // Push the node config into the stack as an `Added` entity. Use the
     // working_dir copy of peppy.json5 rather than source_path because
-    // source_path may point at a transient variant directory (Git/Http
-    // clone) that is cleaned up after this function returns. The
-    // working_dir persists as long as the entity exists via WorkingDirGuard.
+    // source_path may point at a transient Git/Http clone that is cleaned
+    // up after this function returns. The working_dir persists as long as
+    // the entity exists via WorkingDirGuard.
     let config_path_for_stack = working_dir.join(NODE_CONFIG_FILE);
-    if let Err(e) = ctx.action.node_stack.push_config_with_variant(
-        node_config.clone(),
-        false,
-        &config_path_for_stack,
-        variant_name.clone(),
-    ) {
+    if let Err(e) =
+        ctx.action
+            .node_stack
+            .push_config(node_config.clone(), false, &config_path_for_stack)
+    {
         let msg = format!("Failed to add node config: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);

@@ -138,6 +138,7 @@ async fn listen_for_node_run_timeout() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "0.1.0",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -309,6 +310,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
@@ -427,6 +429,7 @@ async fn listen_for_node_run_writes_log_file() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
@@ -535,14 +538,16 @@ async fn listen_for_node_run_writes_log_file() {
     // Check that stdout marker is present with correct prefix
     assert!(
         log_content.contains(&format!("[stdout] {}", STDOUT_MARKER)),
-        "log file should contain stdout marker with [stdout] prefix, got:\n{}",
+        "log file should contain stdout marker with [stdout] prefix, got:
+{}",
         log_content
     );
 
     // Check that stderr marker is present with correct prefix
     assert!(
         log_content.contains(&format!("[stderr] {}", STDERR_MARKER)),
-        "log file should contain stderr marker with [stderr] prefix, got:\n{}",
+        "log file should contain stderr marker with [stderr] prefix, got:
+{}",
         log_content
     );
 }
@@ -563,6 +568,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -685,6 +691,7 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -836,6 +843,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "30"]
@@ -869,6 +877,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "30"]
@@ -1047,6 +1056,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["printout", "3"]
@@ -1134,8 +1144,13 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
     // Create a temp bin directory with a `printout` script.
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
     let printout_path = bin_dir.path().join("printout");
-    std::fs::write(&printout_path, "#!/bin/sh\nsleep \"${1:-3}\"\n")
-        .expect("failed to write printout script");
+    std::fs::write(
+        &printout_path,
+        "#!/bin/sh
+sleep \"${1:-3}\"
+",
+    )
+    .expect("failed to write printout script");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1190,6 +1205,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: [
@@ -1294,6 +1310,7 @@ async fn listen_for_node_run_with_container_success() {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
+        interfaces: {},
         execution: {
             language: "rust",
             container: {
@@ -1443,31 +1460,36 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("Executing apptainer run"),
-        "log file should contain the apptainer run command, got:\n{}",
+        "log file should contain the apptainer run command, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("Received env var hello_from_peppy"),
-        "log file should contain the env var output from the runscript, got:\n{}",
+        "log file should contain the env var output from the runscript, got:
+{}",
         log_content
     );
 
     // Verify that mount_paths are logged as bind mounts
     assert!(
         log_content.contains("bind_mounts:"),
-        "log file should contain bind_mounts info, got:\n{}",
+        "log file should contain bind_mounts info, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains(&mount_dir_str),
-        "log file should contain the mount directory path, got:\n{}",
+        "log file should contain the mount directory path, got:
+{}",
         log_content
     );
 
     // Verify the mount path was accessible inside the container
     assert!(
         log_content.contains("Mount path verified: mount_content"),
-        "log file should confirm mount path was accessible in container, got:\n{}",
+        "log file should confirm mount path was accessible in container, got:
+{}",
         log_content
     );
 }
@@ -1504,6 +1526,7 @@ async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns(
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
+        interfaces: {},
         execution: {
             language: "rust",
             container: {
@@ -1619,12 +1642,14 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         std::fs::read_to_string(log_path).expect("should be able to read instance start log");
     assert!(
         log_content.contains("auto-created missing bind mount source:"),
-        "feedback log should contain the auto-create warning, got:\n{}",
+        "feedback log should contain the auto-create warning, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains(&mount_dir_str),
-        "feedback log warning should reference the offending path {:?}, got:\n{}",
+        "feedback log warning should reference the offending path {:?}, got:
+{}",
         mount_dir_str,
         log_content
     );
@@ -1661,6 +1686,7 @@ async fn listen_for_node_run_container_failure_includes_stderr_in_error() {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
+        interfaces: {},
         execution: {
             language: "rust",
             container: {
@@ -1755,12 +1781,14 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("Executing apptainer run"),
-        "log file should contain the apptainer run command, got:\n{}",
+        "log file should contain the apptainer run command, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains(STDERR_MARKER),
-        "log file should contain the stderr marker from the container process, got:\n{}",
+        "log file should contain the stderr marker from the container process, got:
+{}",
         log_content
     );
 }
@@ -1782,6 +1810,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["nonexistent_binary_peppy_test_xyz"]
@@ -1860,17 +1889,20 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     );
     assert!(
         log_content.contains("[error]"),
-        "log file should contain an [error] entry, got:\n{}",
+        "log file should contain an [error] entry, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("Failed to start node"),
-        "log file should contain the failure message, got:\n{}",
+        "log file should contain the failure message, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("nonexistent_binary_peppy_test_xyz"),
-        "log file should contain the command that failed, got:\n{}",
+        "log file should contain the command that failed, got:
+{}",
         log_content
     );
 }
@@ -1897,6 +1929,7 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "300"]
@@ -2030,17 +2063,20 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
         std::fs::read_to_string(&stack_log_path).expect("should be able to read stack log");
     assert!(
         log_content.contains(TARGET_INSTANCE_ID),
-        "stack log should mention the instance id, got:\n{}",
+        "stack log should mention the instance id, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("health checks"),
-        "stack log should mention health checks, got:\n{}",
+        "stack log should mention health checks, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains(TARGET_NODE_NAME),
-        "stack log should mention the node name, got:\n{}",
+        "stack log should mention the node name, got:
+{}",
         log_content
     );
 }

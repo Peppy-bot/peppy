@@ -26,8 +26,6 @@ pub(super) async fn sync_node_async(
     path: Option<PathBuf>,
     include_repositories: bool,
 ) -> Result<()> {
-    // If the current directory doesn't contain a valid root config (e.g. we're
-    // inside a variant subdirectory), walk up to find the root node directory.
     let base_dir = match path {
         Some(p) => ctx.root_dir.join(p),
         None => ctx.root_dir.clone(),

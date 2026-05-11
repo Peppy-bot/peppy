@@ -5,8 +5,8 @@ mod common;
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, build_staged_node,
     create_tar_zst_from_dir, send_node_add_and_wait, send_node_add_and_wait_with_force,
-    send_node_add_and_wait_with_variant, spawn_real_running_instance, spawn_real_stuck_instance,
-    start_core_node_with_mock_messenger, wait_until_service_reachable, write_peppy_json5,
+    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    wait_until_service_reachable, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
@@ -75,6 +75,7 @@ fn minimal_node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
                 tag: "{tag}",
                 {depends_on}
             }},
+            interfaces: {{}},
             execution: {{
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -348,9 +349,6 @@ mod failures;
 
 #[path = "listen_for_node_add/replacement_and_lifecycle.rs"]
 mod replacement_and_lifecycle;
-
-#[path = "listen_for_node_add/variants.rs"]
-mod variants;
 
 #[path = "listen_for_node_add/concurrency_and_force.rs"]
 mod concurrency_and_force;

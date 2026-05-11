@@ -2,7 +2,6 @@ use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
     launcher::PeppySchema,
-    source::DeploymentSource,
 };
 use indexmap::IndexMap;
 use serde::{
@@ -62,20 +61,18 @@ impl Toolchain {
     }
 }
 
-/// Raw node configuration as deserialized from JSON5. The `execution` field is
-/// optional because configs with a `"default"` variant omit it — execution
-/// comes from the variant. Use [`RawNodeConfig::into_resolved`] to produce a
-/// [`NodeConfig`] with guaranteed `execution`.
+/// Raw node configuration as deserialized from JSON5. Every section is
+/// required: a peppy node is always a self-contained config with a
+/// `manifest`, `interfaces` (use `interfaces: {}` for nodes with no
+/// topics/services/actions), and an `execution` block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawNodeConfig {
     #[serde(deserialize_with = "deserialize_node_v1_schema")]
     pub(crate) peppy_schema: PeppySchema,
     pub(crate) manifest: Manifest,
-    #[serde(default)]
     pub(crate) interfaces: Interfaces,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) execution: Option<RawExecution>,
+    pub(crate) execution: RawExecution,
 }
 
 /// Reject any `peppy_schema` value other than `node_v1` so a launcher
@@ -88,25 +85,10 @@ where
     PeppySchema::deserialize_expecting(deserializer, PeppySchema::NodeV1)
 }
 
-/// Name reserved for the default variant.
-pub const DEFAULT_VARIANT_NAME: &str = "default";
-
 impl RawNodeConfig {
-    /// Returns `true` if the manifest contains a variant named `"default"`.
-    pub(crate) fn has_default_variant(&self) -> bool {
-        self.manifest.has_default_variant()
-    }
-
-    /// Converts into a resolved [`NodeConfig`] when execution is already present
-    /// (non-variant configs).
-    ///
-    /// Returns an error if `execution` is `None`
-    /// (e.g., for configs with a default variant that has not been resolved yet).
+    /// Converts into a resolved [`NodeConfig`].
     pub(crate) fn into_resolved(self) -> crate::error::Result<NodeConfig> {
-        let execution = self
-            .execution
-            .ok_or(ParsingError::MissingExecution)?
-            .into_execution()?;
+        let execution = self.execution.into_execution()?;
         Ok(NodeConfig {
             peppy_schema: self.peppy_schema,
             manifest: self.manifest,
@@ -125,45 +107,9 @@ impl RawNodeConfig {
 pub struct ParsedNodeConfig(pub(crate) RawNodeConfig);
 
 impl ParsedNodeConfig {
-    /// Returns `true` if the manifest contains a variant named `"default"`.
-    pub fn has_default_variant(&self) -> bool {
-        self.0.has_default_variant()
-    }
-
-    /// Returns `true` if the manifest declares one or more variants.
-    pub fn has_variants(&self) -> bool {
-        self.0
-            .manifest
-            .variants
-            .as_ref()
-            .is_some_and(|v| !v.is_empty())
-    }
-
-    /// Converts into a fully resolved [`NodeConfig`] when execution is already
-    /// present (non-variant configs).
-    ///
-    /// Returns an error if execution is absent (e.g. for configs with a default
-    /// variant that has not been resolved yet).
+    /// Converts into a fully resolved [`NodeConfig`].
     pub fn into_resolved(self) -> crate::error::Result<NodeConfig> {
         self.0.into_resolved()
-    }
-
-    /// Converts into a [`NodeConfig`], using a default `Execution` if none is
-    /// present. Intended for display-only paths (e.g. `node info`) where a
-    /// missing execution (due to failed variant resolution) should not prevent
-    /// returning useful information.
-    pub fn into_resolved_or_default(self) -> NodeConfig {
-        let execution = self
-            .0
-            .execution
-            .and_then(|raw| raw.into_execution().ok())
-            .unwrap_or_default();
-        NodeConfig {
-            peppy_schema: self.0.peppy_schema,
-            manifest: self.0.manifest,
-            interfaces: self.0.interfaces,
-            execution,
-        }
     }
 
     /// Returns the node name from the manifest.
@@ -181,106 +127,29 @@ impl ParsedNodeConfig {
         self.0.peppy_schema
     }
 
-    /// Looks up a variant by name in the manifest's variants list.
-    pub fn find_variant(&self, name: &str) -> Option<&Variant> {
-        self.0
-            .manifest
-            .variants
-            .as_ref()
-            .and_then(|variants| variants.iter().find(|v| v.name.as_str() == name))
-    }
-
-    /// Returns the names of all variants declared in the manifest.
-    pub fn variant_names(&self) -> Vec<String> {
-        self.0
-            .manifest
-            .variants
-            .as_ref()
-            .map(|variants| {
-                variants
-                    .iter()
-                    .map(|v| v.name.as_str().to_owned())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     /// Returns a reference to the node's manifest.
     pub fn manifest(&self) -> &Manifest {
         &self.0.manifest
     }
 
-    /// Returns the execution language, if an execution block is present and
-    /// specifies one.
-    ///
-    /// Configs with a default variant have no execution at the root level.
+    /// Returns the execution language.
     pub fn execution_language(&self) -> Option<PeppygenLanguage> {
-        self.0.execution.as_ref().and_then(|e| e.language)
+        self.0.execution.language
     }
 
     /// Returns a reference to the node's interfaces.
     pub fn interfaces(&self) -> &Interfaces {
         &self.0.interfaces
     }
-
-    /// Merges this config with a variant config, producing a fully resolved
-    /// [`NodeConfig`].
-    ///
-    /// Validates that any interfaces declared by the variant match the root's
-    /// interfaces. The merged config uses the root's peppy_schema, manifest,
-    /// and interfaces, combined with the variant's execution.
-    pub fn merge_variant(
-        &self,
-        variant_config: VariantConfig,
-        variant_label: &str,
-    ) -> Result<MergedVariant, String> {
-        if let Some(ref variant_interfaces) = variant_config.interfaces
-            && *variant_interfaces != Interfaces::default()
-            && !self.0.interfaces.matches_unordered(variant_interfaces)
-        {
-            return Err(format!(
-                "VariantInterfaceMismatch: variant '{}' defines interfaces that differ from the root node '{}:{}'",
-                variant_label,
-                self.0.manifest.name.as_str(),
-                self.0.manifest.tag,
-            ));
-        }
-
-        let manifest_ignored = variant_config.manifest.is_some();
-
-        let config = NodeConfig {
-            peppy_schema: self.0.peppy_schema,
-            manifest: self.0.manifest.clone(),
-            interfaces: self.0.interfaces.clone(),
-            execution: variant_config.execution,
-        };
-
-        Ok(MergedVariant {
-            config,
-            manifest_ignored,
-        })
-    }
-}
-
-/// Result of merging a [`ParsedNodeConfig`] with a [`VariantConfig`].
-#[derive(Debug)]
-pub struct MergedVariant {
-    /// The fully resolved merged config.
-    pub config: NodeConfig,
-    /// True when the variant's config defined a `manifest` section that was ignored.
-    pub manifest_ignored: bool,
 }
 
 /// Fully resolved node configuration with guaranteed `execution`.
-/// Produced from [`RawNodeConfig`] after variant resolution or after validation
-/// confirms that execution is present in the root config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
     #[serde(deserialize_with = "deserialize_node_v1_schema")]
     pub peppy_schema: PeppySchema,
     pub manifest: Manifest,
-    #[serde(default)]
     pub interfaces: Interfaces,
     pub execution: Execution,
 }
@@ -815,13 +684,6 @@ pub struct DependsOn {
     pub nodes: Vec<NodeDependency>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Variant {
-    pub name: Name,
-    pub source: DeploymentSource,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Execution {
@@ -838,9 +700,9 @@ pub struct Execution {
 
 /// Intermediate execution config used during initial parsing of [`RawNodeConfig`].
 ///
-/// Unlike [`Execution`], `language` is optional so that semantic validation
-/// (e.g. "execution not permitted with default variant") can run before
-/// strict field validation.
+/// Unlike [`Execution`], `language` is optional so the parser can emit a
+/// structured "missing execution.language" error rather than a raw serde
+/// derive failure.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawExecution {
@@ -878,26 +740,7 @@ pub struct Manifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub variants: Option<Vec<Variant>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depends_on: Option<DependsOn>,
-}
-
-impl Manifest {
-    /// Returns `true` if the manifest contains a variant named `"default"`.
-    pub fn has_default_variant(&self) -> bool {
-        self.default_variant_source().is_some()
-    }
-
-    /// Returns the deployment source for the `"default"` variant, if one exists.
-    pub fn default_variant_source(&self) -> Option<&DeploymentSource> {
-        self.variants.as_ref().and_then(|variants| {
-            variants
-                .iter()
-                .find(|v| v.name.as_str() == DEFAULT_VARIANT_NAME)
-                .map(|v| &v.source)
-        })
-    }
 }
 
 /// Top-level system directories that cannot be used as mount sources.
@@ -1251,57 +1094,6 @@ impl Interfaces {
     /// within each list and the order of fields within message formats.
     pub fn matches_unordered(&self, other: &Interfaces) -> bool {
         self.clone().normalized() == other.clone().normalized()
-    }
-}
-
-/// Trait shared by [`NodeConfig`] and [`VariantConfig`], providing access to
-/// common fields for validation and variant resolution.
-pub trait PeppyNodeConfig {
-    fn peppy_schema(&self) -> PeppySchema;
-    fn interfaces(&self) -> Option<&Interfaces>;
-    fn execution(&self) -> &Execution;
-}
-
-impl PeppyNodeConfig for NodeConfig {
-    fn peppy_schema(&self) -> PeppySchema {
-        self.peppy_schema
-    }
-
-    fn interfaces(&self) -> Option<&Interfaces> {
-        Some(&self.interfaces)
-    }
-
-    fn execution(&self) -> &Execution {
-        &self.execution
-    }
-}
-
-/// Configuration for a node variant. Unlike [`NodeConfig`], `manifest` and
-/// `interfaces` are optional — variants typically inherit these from the root
-/// node and only define their own `execution`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VariantConfig {
-    #[serde(deserialize_with = "deserialize_node_v1_schema")]
-    pub peppy_schema: PeppySchema,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manifest: Option<Manifest>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interfaces: Option<Interfaces>,
-    pub execution: Execution,
-}
-
-impl PeppyNodeConfig for VariantConfig {
-    fn peppy_schema(&self) -> PeppySchema {
-        self.peppy_schema
-    }
-
-    fn interfaces(&self) -> Option<&Interfaces> {
-        self.interfaces.as_ref()
-    }
-
-    fn execution(&self) -> &Execution {
-        &self.execution
     }
 }
 
@@ -1920,79 +1712,14 @@ mod tests {
     }
 
     #[test]
-    fn manifest_with_variants() {
-        let json5 = r#"{
-            name: "uvc_camera",
-            tag: "0.1.0",
-            variants: [
-                {
-                    name: "mujoco",
-                    source: { local: "./fake_robot_brain" }
-                },
-                {
-                    name: "isaac-sim",
-                    source: {
-                        repo: "https://github.com/Peppy-bot/nodes_hub.git",
-                        path: "robot_brain_etcher1",
-                        ref: "main"
-                    }
-                },
-                {
-                    name: "gazebo",
-                    source: {
-                        url: "https://example.com/fake_robot_brain.tar.zst",
-                        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
-                    }
-                }
-            ]
-        }"#;
-        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
-        let variants = manifest.variants.expect("variants should be Some");
-        assert_eq!(variants.len(), 3);
-        assert_eq!(variants[0].name.as_str(), "mujoco");
-        assert_eq!(variants[1].name.as_str(), "isaac-sim");
-        assert_eq!(variants[2].name.as_str(), "gazebo");
-    }
-
-    #[test]
-    fn manifest_without_variants() {
+    fn manifest_parses_minimal() {
         let json5 = r#"{
             name: "simple_node",
             tag: "0.1.0"
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
-        assert!(manifest.variants.is_none());
-    }
-
-    #[test]
-    fn variant_rejects_unknown_fields() {
-        let json5 = r#"{
-            name: "node",
-            tag: "0.1.0",
-            variants: [{ name: "v1", source: { local: "./x" }, extra: "bad" }]
-        }"#;
-        assert!(serde_json5::from_str::<Manifest>(json5).is_err());
-    }
-
-    #[test]
-    fn variant_config_omits_none_interfaces_on_serialize() {
-        let json5 = r#"{
-            peppy_schema: "node_v1",
-            execution: { language: "rust" }
-        }"#;
-        let config: VariantConfig =
-            serde_json5::from_str(json5).expect("minimal variant config should parse");
-        assert!(config.interfaces.is_none());
-
-        let serialized = serde_json5::to_string(&config).unwrap();
-        assert!(
-            !serialized.contains("interfaces"),
-            "interfaces should be omitted when None, got: {serialized}"
-        );
-        assert!(
-            !serialized.contains("manifest"),
-            "manifest should be omitted when None, got: {serialized}"
-        );
+        assert_eq!(manifest.name.as_str(), "simple_node");
+        assert_eq!(manifest.tag, "0.1.0");
     }
 
     #[test]
@@ -2000,6 +1727,7 @@ mod tests {
         let json5 = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "node", tag: "0.1.0" },
+            interfaces: {},
             execution: { language: "rust", run_cmd: ["./run"] },
             extra: "bad"
         }"#;
@@ -2018,20 +1746,6 @@ mod tests {
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
         }"#;
         let err = serde_json5::from_str::<RawNodeConfig>(json5)
-            .expect_err("launcher_v1 schema must be rejected");
-        assert!(
-            err.to_string().contains("node_v1"),
-            "error should mention the expected schema, got: {err}"
-        );
-    }
-
-    #[test]
-    fn variant_config_rejects_non_node_schema() {
-        let json5 = r#"{
-            peppy_schema: "launcher_v1",
-            execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
-        }"#;
-        let err = serde_json5::from_str::<VariantConfig>(json5)
             .expect_err("launcher_v1 schema must be rejected");
         assert!(
             err.to_string().contains("node_v1"),

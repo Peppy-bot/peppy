@@ -1194,7 +1194,6 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
             config: v1_config,
             config_path: config_path_v1.clone(),
             artifact_path: Some(artifact_v1.clone()),
-            variant_name: None,
         },
     );
     assert!(
@@ -1316,7 +1315,6 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
             config: stale_config,
             config_path: config_path_v1.clone(),
             artifact_path: Some(PathBuf::from("/tmp/sensor-v1.sif")),
-            variant_name: None,
         },
     );
     assert!(

@@ -24,6 +24,7 @@ async fn listen_for_node_list_returns_succeeds() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -84,7 +85,8 @@ async fn listen_for_node_list_returns_succeeds() {
     });
     assert!(
         has_root,
-        "graph_json should include root node entry with stage 'Root', got:\n{}",
+        "graph_json should include root node entry with stage 'Root', got:
+{}",
         response.graph_json
     );
 
@@ -95,7 +97,8 @@ async fn listen_for_node_list_returns_succeeds() {
     });
     assert!(
         has_added_node,
-        "graph_json should include added node entry with stage 'Added', got:\n{}",
+        "graph_json should include added node entry with stage 'Added', got:
+{}",
         response.graph_json
     );
 }
@@ -116,6 +119,7 @@ async fn listen_for_node_list_returns_dot_graph() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -161,7 +165,8 @@ async fn listen_for_node_list_returns_dot_graph() {
 
     assert!(
         dot_graph.contains("digraph"),
-        "dot_graph should be DOT format, got:\n{}",
+        "dot_graph should be DOT format, got:
+{}",
         dot_graph
     );
     assert!(
@@ -169,19 +174,22 @@ async fn listen_for_node_list_returns_dot_graph() {
             "{}:{}",
             started_core_node.core_node_name, started_core_node.core_node_tag
         )),
-        "dot_graph should include root node label, got:\n{}",
+        "dot_graph should include root node label, got:
+{}",
         dot_graph
     );
     assert!(
         dot_graph.contains(&format!("{TARGET_NODE_NAME}:{TARGET_NODE_TAG}")),
-        "dot_graph should include added node label, got:\n{}",
+        "dot_graph should include added node label, got:
+{}",
         dot_graph
     );
 
     let label_count = dot_graph.matches("label=").count();
     assert_eq!(
         label_count, 2,
-        "dot_graph should contain two node labels, got:\n{}",
+        "dot_graph should contain two node labels, got:
+{}",
         dot_graph
     );
 

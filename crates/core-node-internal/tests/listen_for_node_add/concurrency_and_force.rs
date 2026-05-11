@@ -16,6 +16,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
                 name: "slow_add_node",
                 tag: "0.1.0",
             },
+        interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
@@ -105,6 +106,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
                 name: "slow_node",
                 tag: "0.1.0",
             },
+        interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
@@ -156,6 +158,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
             }},
+            interfaces: {{}},
             execution: {{
                 language: "rust",
                 build_cmd: ["true"],

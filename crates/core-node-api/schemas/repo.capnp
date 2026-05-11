@@ -49,13 +49,11 @@ struct RepoRefreshFeedback {
     sourceType @2 :Text;
     # Absolute path (fs) or relative path within repo (git)
     path @3 :Text;
-    # Variant names declared by this node (empty if none)
-    variants @4 :List(Text);
     # True when this feedback represents an excluded repository
-    excluded @5 :Bool;
+    excluded @4 :Bool;
     # Non-empty when this feedback is a progress/status update (e.g.
     # "Cloning <url>"). When non-empty, the other fields are meaningless.
-    statusMessage @6 :Text;
+    statusMessage @5 :Text;
 }
 
 struct RepoRefreshResult {
@@ -78,14 +76,12 @@ struct RepoListNodeEntry {
     sourceType @2 :Text;
     # Absolute path (fs) or relative path within repo (git)
     path @3 :Text;
-    # Variant names declared by this node (empty if none)
-    variants @4 :List(Text);
     # True when another repo with higher priority already provides this node
-    duplicate @5 :Bool;
+    duplicate @4 :Bool;
     # Id of the owning repository (from repositories.json5)
-    repoId @6 :UInt32;
+    repoId @5 :UInt32;
     # Display label of the owning repository (path for fs, "url (ref: r)" for git)
-    repoLabel @7 :Text;
+    repoLabel @6 :Text;
 }
 
 struct RepoListResponse {

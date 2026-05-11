@@ -130,7 +130,7 @@ fn generate_peppygen_lib_minimal_config() {
       peppy_schema: "node_v1",
       manifest: { name: "minimal_node",
         tag: "0.1.0" },
-
+        interfaces: {},
       execution: { language: "python",
         build_cmd: ["uv", "sync"],
         run_cmd: ["uv", "run", "minimal_node"]
@@ -242,6 +242,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
+          interfaces: {},
           execution: {
             language: "python",
             build_cmd: ["uv", "sync"],
@@ -360,6 +361,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
+          interfaces: {},
           execution: {
             language: "python",
             build_cmd: ["uv", "sync"],
@@ -503,6 +505,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
+          interfaces: {},
           execution: {
             language: "python",
             build_cmd: ["uv", "sync"],

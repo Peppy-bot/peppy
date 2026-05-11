@@ -345,7 +345,6 @@ pub(crate) fn process_refresh(
                             &node.node_tag,
                             node.source_type,
                             &node.path,
-                            node.variants.clone(),
                         ));
                     }
                     all_nodes.push(node);
@@ -384,7 +383,6 @@ pub(crate) fn process_refresh(
                                     &node.node_tag,
                                     node.source_type,
                                     &node.path,
-                                    node.variants.clone(),
                                 ));
                             }
                             all_nodes.push(node);
@@ -509,7 +507,6 @@ fn collect_node_entry(
 
     let name = parsed.manifest_name().to_string();
     let tag = parsed.manifest_tag().to_string();
-    let variants = parsed.variant_names();
     let key = (name.clone(), tag.clone());
 
     if !seen.insert(key) {
@@ -524,7 +521,6 @@ fn collect_node_entry(
         source_type,
         path: node_path,
         source_uri: source_uri.map(|s| s.to_string()),
-        variants,
         duplicate: false,
         resolved_ref: resolved_ref.map(|s| s.to_string()),
         checksum: None,

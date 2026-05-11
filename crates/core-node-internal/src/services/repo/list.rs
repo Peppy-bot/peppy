@@ -133,7 +133,6 @@ fn handle_repo_list_request_inner(
                         node_tag: node.node_tag,
                         source_type: node.source_type,
                         path: node.path,
-                        variants: node.variants,
                         duplicate,
                         repo_id,
                         repo_label: repo_label.clone(),
@@ -170,15 +169,6 @@ fn handle_repo_list_request_inner(
                         .unwrap_or("");
                     let key = (name.to_string(), tag.to_string());
                     let duplicate = !global_seen.insert(key);
-                    let variants = cached
-                        .get("variants")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(|s| s.to_owned()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
                     let repo_label = format!("{repo_url} (ref: {resolved_ref})");
                     all_entries.push(RepoListNodeEntry {
                         node_name: name.to_string(),
@@ -189,7 +179,6 @@ fn handle_repo_list_request_inner(
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string(),
-                        variants,
                         duplicate,
                         repo_id,
                         repo_label,

@@ -109,6 +109,7 @@ async fn listen_for_node_build_runs_build_cmd() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["touch", "{BUILD_CMD_MARKER_FILE}"],
@@ -172,6 +173,7 @@ async fn listen_for_node_build_cmd_failure_fails_build() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["this_command_does_not_exist_12345"],
@@ -236,6 +238,7 @@ async fn listen_for_node_build_cmd_nonzero_exit_fails_build() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["sh", "-c", "exit 1"],
@@ -302,6 +305,7 @@ async fn listen_for_node_build_cmd_streams_stdout_and_stderr() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
@@ -369,6 +373,7 @@ async fn listen_for_node_build_writes_log_file() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
@@ -442,12 +447,14 @@ async fn listen_for_node_build_writes_log_file() {
 
     assert!(
         log_content.contains(&format!("[stdout] {}", STDOUT_MARKER)),
-        "log file should contain stdout marker with [stdout] prefix, got:\n{}",
+        "log file should contain stdout marker with [stdout] prefix, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains(&format!("[stderr] {}", STDERR_MARKER)),
-        "log file should contain stderr marker with [stderr] prefix, got:\n{}",
+        "log file should contain stderr marker with [stderr] prefix, got:
+{}",
         log_content
     );
 }
@@ -476,6 +483,7 @@ async fn listen_for_node_build_copies_files_to_storage() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -548,6 +556,7 @@ async fn listen_for_node_build_uses_env_overrides_for_path() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
@@ -585,8 +594,13 @@ async fn listen_for_node_build_uses_env_overrides_for_path() {
     // Create a temp bin directory with a `printout` script.
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
     let printout_path = bin_dir.path().join("printout");
-    std::fs::write(&printout_path, "#!/bin/sh\necho \"$@\"\n")
-        .expect("failed to write printout script");
+    std::fs::write(
+        &printout_path,
+        "#!/bin/sh
+echo \"$@\"
+",
+    )
+    .expect("failed to write printout script");
 
     #[cfg(unix)]
     {
@@ -649,6 +663,7 @@ async fn listen_for_node_build_injects_runtime_env_vars() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: [
@@ -701,6 +716,7 @@ async fn listen_for_node_build_with_container_success() {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
+        interfaces: {},
         execution: {
             language: "rust",
             container: {
@@ -818,7 +834,8 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("[stdout]") || log_content.contains("[stderr]"),
-        "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:\n{}",
+        "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:
+{}",
         log_content
     );
 }
@@ -837,6 +854,7 @@ async fn listen_for_node_build_container_build_failure_includes_stderr_in_error(
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
+        interfaces: {},
         execution: {
             language: "rust",
             container: {
@@ -909,7 +927,8 @@ From: nowhere
         std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("[stdout]") || log_content.contains("[stderr]"),
-        "log file should contain streamed build output, got:\n{}",
+        "log file should contain streamed build output, got:
+{}",
         log_content
     );
 
@@ -937,6 +956,7 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
@@ -997,17 +1017,20 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
     );
     assert!(
         log_content.contains("[error]"),
-        "log file should contain an [error] entry, got:\n{}",
+        "log file should contain an [error] entry, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("build_cmd failed"),
-        "log file should contain the failure message, got:\n{}",
+        "log file should contain the failure message, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("nonexistent_binary_peppy_test_xyz"),
-        "log file should contain the command that failed, got:\n{}",
+        "log file should contain the command that failed, got:
+{}",
         log_content
     );
 }

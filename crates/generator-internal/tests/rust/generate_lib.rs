@@ -62,7 +62,7 @@ fn generate_peppygen_lib_minimal_config() {
         name: "minimal_node",
         tag: "0.1.0"
       },
-
+        interfaces: {},
       execution: {
         language: "rust",
         run_cmd: ["./target/debug/minimal_node"]
@@ -323,6 +323,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
+          interfaces: {},
           execution: {
             language: "rust",
             run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
@@ -439,6 +440,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
+          interfaces: {},
           execution: {
             language: "rust",
             run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
@@ -580,6 +582,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
+          interfaces: {},
           execution: {
             language: "rust",
             run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]

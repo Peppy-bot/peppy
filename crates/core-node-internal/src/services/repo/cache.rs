@@ -42,8 +42,6 @@ pub struct NodeCacheEntry {
     pub checksum: Option<String>,
     /// Absolute path for FS entries; path-within-repo for Git entries.
     pub path: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub variants: Vec<String>,
     /// True when another repository with a higher-priority (lower) id
     /// already provides this `(name, tag)` pair — duplicates are kept
     /// in the file for `repo list` but are skipped during lookup.
@@ -433,7 +431,6 @@ mod tests {
             resolved_ref: None,
             checksum: None,
             path: "/tmp/foo".to_owned(),
-            variants: vec![],
             duplicate,
             repo_id,
         }
@@ -448,7 +445,6 @@ mod tests {
             resolved_ref: None,
             checksum: None,
             path: path.to_owned(),
-            variants: vec![],
             duplicate: false,
             repo_id: 0,
         }
@@ -468,7 +464,6 @@ mod tests {
             resolved_ref: resolved_ref.map(str::to_owned),
             checksum: None,
             path: "nodes/example".to_owned(),
-            variants: vec![],
             duplicate: false,
             repo_id: 0,
         }
@@ -488,7 +483,6 @@ mod tests {
             resolved_ref: None,
             checksum: checksum.map(str::to_owned),
             path: "nodes/example".to_owned(),
-            variants: vec![],
             duplicate: false,
             repo_id: 0,
         }
@@ -563,7 +557,6 @@ mod tests {
                 resolved_ref: Some("main".to_owned()),
                 checksum: None,
                 path: "nodes/a".to_owned(),
-                variants: vec!["sim".to_owned()],
                 duplicate: false,
                 repo_id: 0,
             },
@@ -575,7 +568,6 @@ mod tests {
                 resolved_ref: None,
                 checksum: None,
                 path: "/tmp/b".to_owned(),
-                variants: vec![],
                 duplicate: true,
                 repo_id: 0,
             },
@@ -585,7 +577,6 @@ mod tests {
         assert!(generation.is_some());
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].node_name, "a");
-        assert_eq!(loaded[0].variants, vec!["sim".to_owned()]);
         assert_eq!(loaded[0].resolved_ref.as_deref(), Some("main"));
         assert_eq!(loaded[1].node_name, "b");
         assert!(loaded[1].duplicate);
