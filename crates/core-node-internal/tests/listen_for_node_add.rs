@@ -313,7 +313,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
 }
 
 /// Creates a git repository containing a single invalid `peppy.json5`
-/// (missing required `execution` field and no default variant).
+/// (missing required `execution` field).
 fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
     let repo_path = base_path.join("invalid_config_repo.git");
     std::fs::create_dir_all(&repo_path).expect("create repo dir");
@@ -323,7 +323,7 @@ fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
 
     let config_rel = Path::new("nodes/bad_node/peppy.json5");
     std::fs::create_dir_all(repo_path.join("nodes/bad_node")).expect("create node dir");
-    // Invalid config: has manifest but no execution and no default variant.
+    // Invalid config: has manifest but no execution.
     std::fs::write(
         repo_path.join(config_rel),
         r#"{
