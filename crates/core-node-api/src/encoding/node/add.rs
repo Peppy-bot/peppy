@@ -766,6 +766,11 @@ pub struct NodeAddResult {
     pub error_message: Option<String>,
     pub node_name: Option<String>,
     pub node_tag: Option<String>,
+    /// Variant label of the added node. `Some` on success (always populated;
+    /// bare adds resolve to `"default"`), `None` on failure. Distinguishes
+    /// `(name, tag, variant_a)` from `(name, tag, variant_b)` in batch-add
+    /// results.
+    pub variant: Option<String>,
 }
 
 impl NodeAddResult {
@@ -773,6 +778,7 @@ impl NodeAddResult {
         log_path: impl Into<PathBuf>,
         node_name: impl Into<String>,
         node_tag: impl Into<String>,
+        variant: impl Into<String>,
     ) -> Self {
         Self {
             log_path: log_path.into(),
@@ -780,6 +786,7 @@ impl NodeAddResult {
             error_message: None,
             node_name: Some(node_name.into()),
             node_tag: Some(node_tag.into()),
+            variant: Some(variant.into()),
         }
     }
 
@@ -790,6 +797,7 @@ impl NodeAddResult {
             error_message: Some(error_message.into()),
             node_name: None,
             node_tag: None,
+            variant: None,
         }
     }
 
@@ -808,6 +816,7 @@ impl NodeAddResult {
             if let Some(ref node_tag) = self.node_tag {
                 result.set_node_tag(node_tag);
             }
+            result.set_variant(self.variant.as_deref().unwrap_or(""));
         }
         encode_message(&builder)
     }
@@ -822,6 +831,7 @@ impl NodeAddResult {
             error_message: optional_text(result.get_error_message()?.to_str()?),
             node_name: optional_text(result.get_node_name()?.to_str()?),
             node_tag: optional_text(result.get_node_tag()?.to_str()?),
+            variant: optional_text(result.get_variant()?.to_str()?),
         })
     }
 }

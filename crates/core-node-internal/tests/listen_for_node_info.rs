@@ -138,7 +138,12 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         .peppy_dirs
         .logs_dir_add()
         .join("recorded.log");
-    node_stack.set_add_log_path(TARGET_NODE_NAME, TARGET_NODE_TAG, recorded_add_log.clone());
+    node_stack.set_add_log_path(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        ::node_stack::DEFAULT_VARIANT,
+        recorded_add_log.clone(),
+    );
     let info_response = poll_node_info(
         &started_core_node,
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),

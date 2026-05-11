@@ -14,10 +14,16 @@ use super::common::{CORE_NODE, SERVER_INSTANCE, start_router_and_runner, wait_un
 /// verbatim. The handler decodes the inbound `ClockRequest` to assert wire
 /// shape, even though it ignores the value.
 async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockResponse) {
-    let mut endpoint =
-        ServiceMessenger::listen(&server, CORE_NODE, SERVER_INSTANCE, CORE_NODE, names::CLOCK)
-            .await
-            .expect("listen should succeed");
+    let mut endpoint = ServiceMessenger::listen(
+        &server,
+        CORE_NODE,
+        SERVER_INSTANCE,
+        config::runtime::DEFAULT_VARIANT,
+        CORE_NODE,
+        names::CLOCK,
+    )
+    .await
+    .expect("listen should succeed");
 
     tokio::spawn(async move {
         endpoint
@@ -82,6 +88,7 @@ async fn subscribe_clock_yields_typed_ticks() {
         &server,
         CORE_NODE,
         SERVER_INSTANCE,
+        config::runtime::DEFAULT_VARIANT,
         CORE_NODE,
         names::CLOCK,
         QoSProfile::SensorData,

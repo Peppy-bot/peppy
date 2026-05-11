@@ -30,6 +30,7 @@ pub async fn listen_for_node_stop(
         &messenger,
         &core_node_node,
         &core_instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::NODE_STOP,
     )
@@ -255,6 +256,7 @@ async fn send_shutdown_signal(
         SHUTDOWN_SERVICE,
         Some(core_node_node),
         Some(instance_id_str),
+        None,
         Payload::from_static(b"shutdown"),
         SHUTDOWN_TIMEOUT,
     )
@@ -278,7 +280,7 @@ fn remove_instance_from_registry(
     node_tag: &str,
     instance_id: &Name,
 ) -> std::result::Result<(), String> {
-    let Some(handle) = node_stack.find(node_name, node_tag) else {
+    let Some(handle) = node_stack.find_any_variant(node_name, node_tag) else {
         return Ok(());
     };
     let mut guard = handle.write();
@@ -334,14 +336,16 @@ pub(super) async fn stop_instance(
     // Reading it from the live entry (rather than after shutdown) avoids a
     // race with any concurrent registry mutation and matches the shape of
     // `handle_node_stop_request_inner`.
-    let pid = node_stack.find(node_name, node_tag).and_then(|handle| {
-        handle
-            .read()
-            .instances()
-            .iter()
-            .find(|inst| inst.instance_id() == instance_id)
-            .and_then(|inst| inst.pid())
-    });
+    let pid = node_stack
+        .find_any_variant(node_name, node_tag)
+        .and_then(|handle| {
+            handle
+                .read()
+                .instances()
+                .iter()
+                .find(|inst| inst.instance_id() == instance_id)
+                .and_then(|inst| inst.pid())
+        });
 
     send_shutdown_signal(
         messenger,

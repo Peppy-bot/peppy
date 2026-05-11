@@ -44,6 +44,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,
+        None,
         first_goal_payload,
         QoSProfile::default(),
         GOAL_TIMEOUT,
@@ -135,6 +136,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,
+        None,
         first_goal_payload,
         QoSProfile::default(),
         GOAL_TIMEOUT,
@@ -184,7 +186,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     );
 
     assert!(
-        node_stack.contains(SECOND_NODE_NAME, SECOND_NODE_TAG),
+        node_stack.contains_any_variant(SECOND_NODE_NAME, SECOND_NODE_TAG),
         "force-added node should be in the stack"
     );
 }

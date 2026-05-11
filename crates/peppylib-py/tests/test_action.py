@@ -34,6 +34,7 @@ async def test_action_messenger_communication():
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
+            "default",
             NODE_NAME,
             ACTION_NAME,
         )
@@ -117,6 +118,7 @@ async def test_cancel_goal_concurrent_with_feedback():
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
+            "default",
             NODE_NAME,
             ACTION_NAME,
         )
@@ -196,6 +198,7 @@ async def test_send_goal_honors_target_core_node():
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
+            "default",
             NODE_NAME,
             ACTION_NAME,
         )

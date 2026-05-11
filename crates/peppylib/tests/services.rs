@@ -29,6 +29,7 @@ async fn service_messenger_communication() {
         &server_handle,
         core_node,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         service_name,
     )
@@ -56,6 +57,7 @@ async fn service_messenger_communication() {
         service_name,
         Some(core_node),
         Some(instance_id),
+        None,
         request_payload,
         Duration::from_secs(2),
     )

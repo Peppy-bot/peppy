@@ -137,6 +137,16 @@ fn format_instance_segment(instance_id: &str) -> Option<String> {
     (instance_id != INSTANCE_ID_WILDCARD).then(|| instance_id.to_string())
 }
 
+/// Formats a variant label as a key-expression segment. `None` resolves to
+/// `*` (wildcard, i.e. "any variant of the target node"); a concrete label
+/// (including [`config::runtime::DEFAULT_VARIANT`]) is used verbatim. The
+/// target side of subscribe/expose key expressions always uses a concrete
+/// label so subscriber pattern counts stay constant; the caller side
+/// passes `None` to fan out across every variant.
+fn format_variant_segment(variant: Option<&str>) -> String {
+    variant.map(str::to_owned).unwrap_or_else(|| "*".to_owned())
+}
+
 impl MessengerHandle {
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
         Self { messenger }
@@ -202,12 +212,14 @@ impl MessengerHandle {
         to_topic: &str,
         to_core_node: Option<&str>,
         to_instance_id: Option<&str>,
+        to_variant: Option<&str>,
         qos: QoSProfile,
     ) -> Result<PmiSubscription> {
         let to_core_node = to_core_node.unwrap_or("*");
         let to_instance_id = to_instance_id.unwrap_or("*");
+        let to_variant = format_variant_segment(to_variant);
         let key_expr = format!(
-            "{as_core_node}/{to_core_node}/{as_instance_id}/{to_instance_id}/topic/{to_node_name}/{to_topic}"
+            "{as_core_node}/{to_core_node}/{as_instance_id}/{to_instance_id}/{to_variant}/topic/{to_node_name}/{to_topic}"
         );
         let subscription = {
             let messenger = self.messenger.lock().await;
@@ -218,18 +230,20 @@ impl MessengerHandle {
         Ok(subscription)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn emit_topic_message(
         &self,
         as_core_node: &str,
         as_instance_id: &str,
+        as_variant: &str,
         as_node_name: &str,
         as_topic_name: &str,
         qos: QoSProfile,
         payload: Payload,
     ) -> Result<()> {
         let key_expr = format!(
-            "*/{}/*/{}/topic/{}/{}",
-            as_core_node, as_instance_id, as_node_name, as_topic_name
+            "*/{}/*/{}/{}/topic/{}/{}",
+            as_core_node, as_instance_id, as_variant, as_node_name, as_topic_name
         );
         let msg = PmiMessage::new(&key_expr, payload.into_inner());
 
@@ -244,11 +258,12 @@ impl MessengerHandle {
         &self,
         bound_core_node: &str,
         as_instance_id: &str,
+        as_variant: &str,
         as_node_name: &str,
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
         let service_root = format!("service/{as_node_name}/{as_service_name}");
-        self.create_service_endpoint(bound_core_node, service_root, as_instance_id)
+        self.create_service_endpoint(bound_core_node, service_root, as_instance_id, as_variant)
             .await
     }
 
@@ -257,18 +272,29 @@ impl MessengerHandle {
         bound_core_node: &str,
         service_root: String,
         as_instance_id: &str,
+        as_variant: &str,
     ) -> Result<ServiceEndpoint> {
-        // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
-        // We need 4 subscription patterns to match all valid request combinations:
+        // Format: target_core_node/caller_core_node/target_instance/caller_instance/target_variant/service_root/request/id
+        // The receiver always knows its own variant, so the variant slot is
+        // a literal in every pattern: pattern count stays at 4 (broadcast vs.
+        // specific only applies to the caller-identity slots).
         let patterns = [
             // 1. Specific core node, specific instance
-            format!("{bound_core_node}/*/{as_instance_id}/*/{service_root}/request/**"),
+            format!(
+                "{bound_core_node}/*/{as_instance_id}/*/{as_variant}/{service_root}/request/**"
+            ),
             // 2. Specific core node, broadcast instance
-            format!("{bound_core_node}/*/{BROADCAST_MARKER}/*/{service_root}/request/**"),
+            format!(
+                "{bound_core_node}/*/{BROADCAST_MARKER}/*/{as_variant}/{service_root}/request/**"
+            ),
             // 3. Broadcast core node, specific instance
-            format!("{BROADCAST_MARKER}/*/{as_instance_id}/*/{service_root}/request/**"),
+            format!(
+                "{BROADCAST_MARKER}/*/{as_instance_id}/*/{as_variant}/{service_root}/request/**"
+            ),
             // 4. Broadcast core node, broadcast instance
-            format!("{BROADCAST_MARKER}/*/{BROADCAST_MARKER}/*/{service_root}/request/**"),
+            format!(
+                "{BROADCAST_MARKER}/*/{BROADCAST_MARKER}/*/{as_variant}/{service_root}/request/**"
+            ),
         ];
 
         let messenger = self.messenger.lock().await;
@@ -312,6 +338,7 @@ impl MessengerHandle {
         target_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
+        target_variant: Option<&str>,
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
@@ -343,7 +370,7 @@ impl MessengerHandle {
         let target_bound_instance_segment = format_instance_segment(&effective_target_instance);
         let request_id = generate_request_id();
 
-        // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
+        // Format: target_core_node/caller_core_node/target_instance/caller_instance/target_variant/service_root/request/id
         let target_core_node = target_bound_instance_segment
             .as_ref()
             .map(|_| effective_target_core_node.as_str())
@@ -351,12 +378,14 @@ impl MessengerHandle {
         let target_instance = target_bound_instance_segment
             .as_deref()
             .unwrap_or(BROADCAST_MARKER);
+        let target_variant_segment = format_variant_segment(target_variant);
         let request_topic = format!(
-            "{}/{}/{}/{}/{}/request/{request_id}",
+            "{}/{}/{}/{}/{}/{}/request/{request_id}",
             target_core_node,
             bound_core_node,
             target_instance,
             caller_target_instance_segment,
+            target_variant_segment,
             service_root
         );
 
@@ -481,6 +510,7 @@ impl MessengerHandle {
         as_node_name: &str,
         as_action_name: &str,
         as_instance_id: &str,
+        as_variant: &str,
     ) -> Result<ActionCreation> {
         let action_root = format!("action/{}/{}", as_node_name, as_action_name);
 
@@ -490,18 +520,38 @@ impl MessengerHandle {
 
         let bound_instance_segment =
             format_instance_segment(as_instance_id).unwrap_or_else(|| BROADCAST_MARKER.to_string());
+        // Feedback shape mirrors the action request shape: `as_variant`
+        // is the literal variant of THIS server, slotted before the
+        // action_root. The repeated `as_instance_id` after `feedback/`
+        // identifies the target server-side instance for per-goal scoping
+        // (mirroring the request-side `target_instance_id`).
         let feedback_topic_suffix = format!(
-            "*/{bound_core_node}/*/{bound_instance_segment}/{action_root}/feedback/{as_instance_id}"
+            "*/{bound_core_node}/*/{bound_instance_segment}/{as_variant}/{action_root}/feedback/{as_instance_id}"
         );
 
         let goal_service = self
-            .create_service_endpoint(bound_core_node, goal_service_root, as_instance_id)
+            .create_service_endpoint(
+                bound_core_node,
+                goal_service_root,
+                as_instance_id,
+                as_variant,
+            )
             .await?;
         let cancel_service = self
-            .create_service_endpoint(bound_core_node, cancel_service_root, as_instance_id)
+            .create_service_endpoint(
+                bound_core_node,
+                cancel_service_root,
+                as_instance_id,
+                as_variant,
+            )
             .await?;
         let result_service = self
-            .create_service_endpoint(bound_core_node, result_service_root, as_instance_id)
+            .create_service_endpoint(
+                bound_core_node,
+                result_service_root,
+                as_instance_id,
+                as_variant,
+            )
             .await?;
 
         // Per-goal feedback uses `Important` (Block on congestion, DataHigh

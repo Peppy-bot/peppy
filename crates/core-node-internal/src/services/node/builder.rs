@@ -36,6 +36,7 @@ pub async fn listen_for_node_build(
         messenger,
         core_node_name,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::NODE_BUILD_ACTION,
     )
@@ -67,6 +68,7 @@ impl ActionResult for NodeBuildResult {
 struct NodeBuildRun {
     node_name: String,
     node_tag: String,
+    node_variant: String,
     env_vars: Vec<(String, String)>,
     entity_handle: node_stack::EntityHandle,
     working_dir_guard: Arc<node_stack::WorkingDirGuard>,
@@ -89,7 +91,10 @@ pub(crate) async fn run_node_build_for_entity(
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
 ) -> NodeBuildResult {
-    let entity_handle = match action_context.node_stack.find(&node_name, &node_tag) {
+    let entity_handle = match action_context
+        .node_stack
+        .find_any_variant(&node_name, &node_tag)
+    {
         Some(handle) => handle,
         None => {
             let msg = format!("node `{}:{}` is not in the node stack", node_name, node_tag);
@@ -98,7 +103,7 @@ pub(crate) async fn run_node_build_for_entity(
         }
     };
 
-    let (working_dir_guard, captured_generation) = {
+    let (working_dir_guard, captured_generation, node_variant) = {
         let guard = entity_handle.read();
         if let Err(stage) = guard.stage().ensure_buildable() {
             let msg = format!(
@@ -108,8 +113,9 @@ pub(crate) async fn run_node_build_for_entity(
             write_error_to_log(&log_file, &msg);
             return NodeBuildResult::failure(&log_path, msg);
         }
+        let variant = guard.variant_name().to_owned();
         match guard.pending_working_dir() {
-            Some(g) => (g, guard.generation()),
+            Some(g) => (g, guard.generation(), variant),
             None => {
                 let msg = format!(
                     "node `{}:{}` has no staged working directory",
@@ -124,6 +130,7 @@ pub(crate) async fn run_node_build_for_entity(
     run_node_build(NodeBuildRun {
         node_name,
         node_tag,
+        node_variant,
         env_vars,
         entity_handle,
         working_dir_guard,
@@ -209,18 +216,19 @@ impl NodeBuildGoalHandler {
         let entity_handle = match self
             .context
             .node_stack
-            .find(&goal.node_name, &goal.node_tag)
+            .find_any_variant(&goal.node_name, &goal.node_tag)
         {
             Some(handle) => handle,
             None => {
                 let mut state_guard = state.lock().await;
                 *state_guard = ActionState::Rejected;
                 return encode_rejected_goal(format!(
-                    "node `{}:{}` is not in the node stack — run `peppy node add` first",
+                    "node `{}:{}` is not in the node stack: run `peppy node add` first",
                     goal.node_name, goal.node_tag
                 ));
             }
         };
+        let goal_variant = entity_handle.read().variant_name().to_owned();
 
         let pending = {
             let guard = entity_handle.read();
@@ -252,7 +260,10 @@ impl NodeBuildGoalHandler {
 
         let log_dir = self.context.peppy_dirs.logs_dir_build();
         let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-        let log_filename = format!("{}_{}_{}.log", goal.node_name, goal.node_tag, timestamp);
+        let log_filename = format!(
+            "{}_{}__{}_{}.log",
+            goal.node_name, goal.node_tag, goal_variant, timestamp
+        );
         let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
             Ok(result) => result,
             Err(error_msg) => {
@@ -277,6 +288,7 @@ impl NodeBuildGoalHandler {
         let node_stack_for_cancel = Arc::clone(&self.context.node_stack);
         let node_name_for_cancel = goal.node_name.clone();
         let node_tag_for_cancel = goal.node_tag.clone();
+        let node_variant_for_cancel = goal_variant.clone();
         let entity_handle_for_cancel = entity_handle.clone();
         let generation_for_cancel = captured_generation;
         let log_path_for_cancel = log_path.clone();
@@ -293,6 +305,7 @@ impl NodeBuildGoalHandler {
                 result = run_node_build(NodeBuildRun {
                     node_name: goal.node_name,
                     node_tag: goal.node_tag,
+                    node_variant: goal_variant,
                     env_vars: goal.env_vars,
                     entity_handle,
                     working_dir_guard,
@@ -306,6 +319,7 @@ impl NodeBuildGoalHandler {
                     let _ = node_stack_for_cancel.remove_config_if_matches(
                         &node_name_for_cancel,
                         &node_tag_for_cancel,
+                        &node_variant_for_cancel,
                         &entity_handle_for_cancel,
                         generation_for_cancel,
                     );
@@ -334,6 +348,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
     let NodeBuildRun {
         node_name,
         node_tag,
+        node_variant,
         env_vars: goal_env_vars,
         entity_handle,
         working_dir_guard,
@@ -354,6 +369,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
     let node_stack_for_panic = Arc::clone(&action_context.node_stack);
     let node_name_for_panic = node_name.clone();
     let node_tag_for_panic = node_tag.clone();
+    let node_variant_for_panic = node_variant.clone();
     let entity_handle_for_panic = entity_handle.clone();
     let generation_for_panic = captured_generation;
     let working_dir_detached = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -433,6 +449,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 let _ = action_context.node_stack.remove_config_if_matches(
                     &node_name,
                     &node_tag,
+                    &node_variant,
                     &entity_handle,
                     expected_generation,
                 );
@@ -459,6 +476,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 let _ = node_stack_for_panic.remove_config_if_matches(
                     &node_name_for_panic,
                     &node_tag_for_panic,
+                    &node_variant_for_panic,
                     &entity_handle_for_panic,
                     generation_for_panic,
                 );

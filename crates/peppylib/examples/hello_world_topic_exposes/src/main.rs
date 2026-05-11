@@ -32,6 +32,7 @@ async fn main() {
         &sender_handle,
         &core_node,
         &instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         topic_name,
         qos,

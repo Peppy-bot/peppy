@@ -47,7 +47,9 @@ fn push_config_creates_entity_in_added_stage() {
         .push_config(sensor_config(), false, &config_path)
         .expect("push_config should succeed");
 
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let guard = handle.read();
 
     if let NodeStage::Added { config_path: cp } = guard.stage() {
@@ -237,7 +239,9 @@ async fn push_config_resets_existing_entity_to_added() {
         .push_config(sensor_config(), false, &config_path_v2)
         .expect("second push_config should succeed");
 
-    let handle_after = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle_after = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let guard = handle_after.read();
     match guard.stage() {
         NodeStage::Added { config_path: cp } => {
@@ -321,7 +325,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
 
     // Initially the consumer depends on producer_a.
     let deps_a: Vec<String> = stack
-        .dependencies_of("consumer", "1.0.0")
+        .dependencies_of_any_variant("consumer", "1.0.0")
         .iter()
         .map(|h| h.read().config().manifest.name.as_str().to_owned())
         .collect();
@@ -338,7 +342,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
         .expect("second consumer push");
 
     let deps_b: Vec<String> = stack
-        .dependencies_of("consumer", "1.0.0")
+        .dependencies_of_any_variant("consumer", "1.0.0")
         .iter()
         .map(|h| h.read().config().manifest.name.as_str().to_owned())
         .collect();
@@ -409,7 +413,9 @@ async fn concurrent_builds_are_rejected_immediately() {
         )
         .expect("push_config should succeed");
 
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
 
     // Working directory with some content to archive.
     let working_dir = tempfile::tempdir().expect("tempdir working_dir");
@@ -507,7 +513,10 @@ async fn concurrent_builds_are_rejected_immediately() {
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
 
     // The on-disk archive exists exactly once.
-    let archive = peppy_dirs.built_nodes_dir().join("sensor_1.0.0.tar.zst");
+    let archive = peppy_dirs
+        .built_nodes_dir()
+        .join("sensor_1.0.0")
+        .join(format!("{}.tar.zst", node_stack::DEFAULT_VARIANT));
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 }
 
@@ -592,7 +601,9 @@ async fn build_runs_add_cmd_for_process_node() {
         )
         .expect("push_config should succeed");
 
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let h = build_harness();
 
     NodeEntity::build(
@@ -614,7 +625,13 @@ async fn build_runs_add_cmd_for_process_node() {
     drop(guard);
 
     // The archive exists and contains the marker file produced by build_cmd.
-    let archive = h.peppy_dirs.built_nodes_dir().join("sensor_1.0.0.tar.zst");
+    // Built artifacts live under `built_nodes/<name>_<tag>/<variant>.tar.zst`
+    // so per-variant cleanup is one directory.
+    let archive = h
+        .peppy_dirs
+        .built_nodes_dir()
+        .join("sensor_1.0.0")
+        .join(format!("{}.tar.zst", node_stack::DEFAULT_VARIANT));
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 
     // Decode the archive and look for the marker.
@@ -696,7 +713,9 @@ async fn prepare_and_spawn_rejects_when_not_built() {
     stack
         .push_config(sensor_config(), false, PathBuf::from("/tmp/sensor"))
         .expect("push_config should succeed");
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let (instance_id, h) = start_harness("test-inst-1");
 
     let err = NodeEntity::prepare_and_spawn(
@@ -1138,7 +1157,9 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
     stack
         .push_config(blocking_config, false, &config_path_v2)
         .expect("rebuild push_config should succeed");
-    let handle_after_push = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle_after_push = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let captured_generation = handle_after_push.read().generation();
 
     // Kick off the rebuild in a task. It will sit in `Building` until we
@@ -1187,6 +1208,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
         RestoreTarget {
             name: "sensor",
             tag: "1.0.0",
+            variant: node_stack::DEFAULT_VARIANT,
             expected_handle: &handle_after_push,
             expected_generation: captured_generation,
         },
@@ -1194,7 +1216,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
             config: v1_config,
             config_path: config_path_v1.clone(),
             artifact_path: Some(artifact_v1.clone()),
-            variant_name: None,
+            variant_name: node_stack::DEFAULT_VARIANT.to_owned(),
         },
     );
     assert!(
@@ -1212,7 +1234,9 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
         "build task should fail its Phase 3 commit after the restore drifted the generation, got Ok"
     );
 
-    let handle_final = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle_final = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let guard = handle_final.read();
     match guard.stage() {
         NodeStage::Ready {
@@ -1256,7 +1280,9 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
     stack
         .push_config(blocking_config, false, &config_path_v1)
         .expect("initial push_config should succeed");
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let stale_generation = handle.read().generation();
     let stale_config = handle.read().config().clone();
 
@@ -1309,6 +1335,7 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
         RestoreTarget {
             name: "sensor",
             tag: "1.0.0",
+            variant: node_stack::DEFAULT_VARIANT,
             expected_handle: &handle,
             expected_generation: stale_generation,
         },
@@ -1316,7 +1343,7 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
             config: stale_config,
             config_path: config_path_v1.clone(),
             artifact_path: Some(PathBuf::from("/tmp/sensor-v1.sif")),
-            variant_name: None,
+            variant_name: node_stack::DEFAULT_VARIANT.to_owned(),
         },
     );
     assert!(

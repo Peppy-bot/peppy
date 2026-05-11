@@ -43,6 +43,7 @@ async fn node_health_request_response_roundtrip() {
         peppylib::messaging::NODE_HEALTH_SERVICE,
         Some(&client.core_node_name),
         Some(&client.instance_id),
+        None,
         request_payload,
         Duration::from_secs(2),
     )

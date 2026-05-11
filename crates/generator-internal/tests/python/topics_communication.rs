@@ -119,6 +119,7 @@ async fn topics_communication() {
         },
         RECEIVER_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let receiver_runtime_config_path = temp_dir_proj2.path().join("peppy_runtime.json5");
@@ -202,6 +203,7 @@ if __name__ == "__main__":
         },
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the receiver
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let emitter_runtime_config_path = temp_dir_proj1.path().join("peppy_runtime.json5");

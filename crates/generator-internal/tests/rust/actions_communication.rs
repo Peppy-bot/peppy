@@ -167,6 +167,7 @@ async fn actions_communication() {
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
@@ -247,6 +248,7 @@ fn main() -> Result<()> {
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -486,6 +488,7 @@ async fn actions_communication_cancel_goal() {
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
@@ -562,6 +565,7 @@ fn main() -> Result<()> {
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -827,6 +831,7 @@ async fn actions_communication_drain_loop_until_end_signal() {
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
@@ -920,6 +925,7 @@ fn main() -> Result<()> {
         },
         BRAIN_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -1195,6 +1201,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream() {
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
@@ -1282,6 +1289,7 @@ fn main() -> Result<()> {
         },
         BRAIN_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -1545,6 +1553,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open() {
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
@@ -1643,6 +1652,7 @@ fn main() -> Result<()> {
         },
         BRAIN_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");

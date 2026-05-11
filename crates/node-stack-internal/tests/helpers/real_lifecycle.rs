@@ -126,7 +126,7 @@ pub async fn build_ready(
         .push_config(config, false, &config_path)
         .expect("test fixture: push_config should succeed");
     let handle = stack
-        .find(&name, &tag)
+        .find_any_variant(&name, &tag)
         .expect("test fixture: just-pushed entity should exist");
 
     NodeEntity::build(

@@ -92,7 +92,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
 
     assert_eq!(node_stack.len(), 2, "stack should be unchanged");
     let entity = node_stack
-        .find(NODE_NAME, NODE_TAG)
+        .find_any_variant(NODE_NAME, NODE_TAG)
         .expect("node should exist after v2 overwrite");
     let entity_guard = entity.read();
     assert_eq!(
@@ -269,7 +269,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
 
     assert_eq!(node_stack.len(), 3, "stack should be unchanged");
     assert!(
-        node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
+        node_stack.contains_any_variant(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still exist after failed overwrite"
     );
 
@@ -279,7 +279,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     // truly preserved the original revision rather than just the path.
     {
         let handle = node_stack
-            .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
+            .find_any_variant(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
             .expect("dependency entity should exist");
         let guard = handle.read();
         let services = guard
@@ -392,8 +392,8 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     );
 
     assert_eq!(node_stack.len(), 3, "root + two versions");
-    assert!(node_stack.contains(NODE_NAME, "1.0.0"));
-    assert!(node_stack.contains(NODE_NAME, "2.0.0"));
+    assert!(node_stack.contains_any_variant(NODE_NAME, "1.0.0"));
+    assert!(node_stack.contains_any_variant(NODE_NAME, "2.0.0"));
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_fingerprint_mismatch() {
@@ -464,7 +464,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
 
     // Node should not be in the stack
     assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        !node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG),
         "node should not be added when fingerprint mismatches"
     );
     assert_eq!(node_stack.len(), 1, "only root should exist");
@@ -520,6 +520,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,
+        None,
         first_goal_payload,
         QoSProfile::default(),
         GOAL_TIMEOUT,
@@ -544,7 +545,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     // separate goal.
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
+            if let Some(handle) = node_stack.find_any_variant(FIRST_NODE_NAME, FIRST_NODE_TAG) {
                 let guard = handle.read();
                 if matches!(guard.stage(), node_stack::NodeStage::Added { .. }) {
                     break;
@@ -593,11 +594,11 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
 
     // Verify both nodes are in the stack
     assert!(
-        node_stack.contains(FIRST_NODE_NAME, FIRST_NODE_TAG),
+        node_stack.contains_any_variant(FIRST_NODE_NAME, FIRST_NODE_TAG),
         "first node should be in stack (action completed even though result wasn't polled)"
     );
     assert!(
-        node_stack.contains(SECOND_NODE_NAME, SECOND_NODE_TAG),
+        node_stack.contains_any_variant(SECOND_NODE_NAME, SECOND_NODE_TAG),
         "second node should be in stack"
     );
     assert_eq!(node_stack.len(), 3, "root + first + second nodes");
@@ -667,6 +668,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         &instance_messenger,
         &started_core_node.core_node_name,
         INSTANCE_1,
+        config::runtime::DEFAULT_VARIANT,
         NODE_NAME,
         SHUTDOWN_SERVICE,
     )
@@ -700,6 +702,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         &instance_messenger,
         &started_core_node.core_node_name,
         INSTANCE_2,
+        config::runtime::DEFAULT_VARIANT,
         NODE_NAME,
         SHUTDOWN_SERVICE,
     )
@@ -976,6 +979,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         &instance_messenger,
         &started_core_node.core_node_name,
         INSTANCE_ID,
+        config::runtime::DEFAULT_VARIANT,
         DEPENDENCY_NODE_NAME,
         SHUTDOWN_SERVICE,
     )
@@ -1054,7 +1058,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         "running instance should have been stopped"
     );
     assert!(
-        node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
+        node_stack.contains_any_variant(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still be in the stack"
     );
 }
@@ -1189,6 +1193,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         &instance_messenger,
         &started_core_node.core_node_name,
         INSTANCE_ID,
+        config::runtime::DEFAULT_VARIANT,
         DEPENDENCY_NODE_NAME,
         SHUTDOWN_SERVICE,
     )
@@ -1266,7 +1271,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         "running instance should have been stopped before push_config rejected the overwrite"
     );
     assert!(
-        node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
+        node_stack.contains_any_variant(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still be in the stack after failed overwrite"
     );
 
@@ -1274,7 +1279,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     // is still exposed and the v2 `new_service` was never spliced in.
     {
         let handle = node_stack
-            .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
+            .find_any_variant(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
             .expect("dependency entity missing");
         let guard = handle.read();
         let exposes = guard
@@ -1417,6 +1422,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         &instance_messenger,
         &started_core_node.core_node_name,
         INSTANCE_ID,
+        config::runtime::DEFAULT_VARIANT,
         DEPENDENCY_NODE_NAME,
         SHUTDOWN_SERVICE,
     )
@@ -1481,7 +1487,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         "running instance should still be present when shutdown timed out"
     );
     assert!(
-        node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
+        node_stack.contains_any_variant(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still be in the stack"
     );
 }

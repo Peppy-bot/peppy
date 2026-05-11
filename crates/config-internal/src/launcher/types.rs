@@ -96,6 +96,12 @@ pub struct DeploymentInstance {
     pub env_vars: BTreeMap<String, String>,
     #[serde(default)]
     pub framework: FrameworkOverrides,
+    /// Variant of the parent deployment to launch this instance against.
+    /// `None` resolves to [`crate::runtime::DEFAULT_VARIANT`]. Per-instance
+    /// placement (rather than per-source) lets a single deployment block
+    /// fan out across multiple variants of the same `(name, tag)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<crate::source::VariantSource>,
 }
 
 /// Per-instance framework knobs. Distinct from `arguments`: those are

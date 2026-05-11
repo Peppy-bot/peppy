@@ -130,6 +130,9 @@ struct NodeAddResult {
     nodeName @3 :Text;
     # Tag of the added node (empty on failure)
     nodeTag @4 :Text;
+    # Variant label of the added node. Always populated; bare adds resolve
+    # to "default". Empty string only when `success = false`.
+    variant @5 :Text;
 }
 
 # Node Build Action — drives the build of a previously-added node
@@ -273,6 +276,11 @@ struct NodeRemoveRequest {
     stopInstances @1 :Bool;
     # Tag of the node to remove
     tag @2 :Text;
+    # Variant label of the node to remove. Empty string resolves to the
+    # literal "default" variant (NOT a wildcard). When more than one
+    # variant of `(name, tag)` exists in the stack, callers must specify
+    # the variant explicitly; the daemon rejects ambiguous bare requests.
+    variant @3 :Text;
 }
 
 struct NodeRemoveResponse {
@@ -299,6 +307,11 @@ struct NodeInfoRequest {
     nodeName @0 :Text;
     # Tag of the node to look up in the stack
     nodeTag @1 :Text;
+    # Variant label of the node to look up. Empty string resolves to the
+    # literal "default" variant. When the stack contains more than one
+    # variant for `(name, tag)`, callers must specify the variant
+    # explicitly; the daemon rejects ambiguous bare requests.
+    variant @2 :Text;
 }
 
 struct NodeInstanceInfo {
@@ -336,8 +349,8 @@ struct NodeInfoResponse {
             addLogPath @5 :Text;
             # Per-instance run log paths, aligned with `instances` (same order).
             runLogPaths @6 :List(Text);
-            # Variant label selected at `node add` time. Empty string when
-            # no variant applies (non-variant add paths).
+            # Variant label selected at `node add` time. Always populated;
+            # bare `name:tag` adds resolve to "default".
             variantName @7 :Text;
         }
     }

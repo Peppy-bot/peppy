@@ -302,6 +302,12 @@ impl PyNodeRunner {
     fn node_name(&self) -> &str {
         self.inner.processor().node_name()
     }
+
+    /// Get the variant label of this running node. Bare adds resolve to
+    /// `"default"`; explicit `--variant <name>` adds carry the given label.
+    fn variant(&self) -> &str {
+        self.inner.processor().variant()
+    }
 }
 
 /// Python wrapper for StandaloneConfig.

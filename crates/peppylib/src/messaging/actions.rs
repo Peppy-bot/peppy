@@ -210,6 +210,7 @@ pub struct ActionGoalHandle {
     action_name: String,
     target_core_node: Option<String>,
     target_instance_id: Option<String>,
+    target_variant: Option<String>,
     goal_id: String,
     goal_response: Message,
     feedback: Subscription,
@@ -224,6 +225,7 @@ impl std::fmt::Debug for ActionGoalHandle {
             .field("action_name", &self.action_name)
             .field("target_core_node", &self.target_core_node)
             .field("target_instance_id", &self.target_instance_id)
+            .field("target_variant", &self.target_variant)
             .field("goal_id", &self.goal_id)
             .finish_non_exhaustive()
     }
@@ -284,6 +286,7 @@ impl ActionMessenger {
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
+        as_variant: &str,
         as_node_name: &str,
         as_action_name: &str,
     ) -> Result<ActionCreation> {
@@ -293,6 +296,7 @@ impl ActionMessenger {
                 as_node_name,
                 as_action_name,
                 as_instance_id,
+                as_variant,
             )
             .await
     }
@@ -307,6 +311,7 @@ impl ActionMessenger {
         target_action_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
+        target_variant: Option<&str>,
     ) -> Result<bool> {
         match messenger
             .poll_service(
@@ -317,6 +322,7 @@ impl ActionMessenger {
                 target_action_name,
                 target_core_node,
                 target_instance_id,
+                target_variant,
                 Payload::from_static(SERVICE_PROBE_PAYLOAD),
                 PROBE_TIMEOUT,
             )
@@ -341,6 +347,7 @@ impl ActionMessenger {
         to_action_name: &str,
         target_core_instance_id: Option<&str>,
         target_instance_id: Option<&str>,
+        target_variant: Option<&str>,
         user_payload: Payload,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
@@ -349,14 +356,15 @@ impl ActionMessenger {
         let goal_payload = wrap_goal_payload(&goal_id, user_payload.as_ref())?;
         let feedback_topic = {
             let sender_core_node = target_core_instance_id.unwrap_or("*");
+            let target_variant_segment = target_variant.unwrap_or("*");
             match target_instance_id {
                 Some(target_instance_id) => {
                     format!(
-                        "{as_core_node}/{sender_core_node}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}/{goal_id}"
+                        "{as_core_node}/{sender_core_node}/{as_instance_id}/{target_instance_id}/{target_variant_segment}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}/{goal_id}"
                     )
                 }
                 None => format!(
-                    "{as_core_node}/{sender_core_node}/{as_instance_id}/*/action/{to_node_name}/{to_action_name}/feedback/*/{goal_id}"
+                    "{as_core_node}/{sender_core_node}/{as_instance_id}/*/{target_variant_segment}/action/{to_node_name}/{to_action_name}/feedback/*/{goal_id}"
                 ),
             }
         };
@@ -379,6 +387,7 @@ impl ActionMessenger {
                 &goal_service_name,
                 target_core_instance_id,
                 target_instance_id,
+                target_variant,
                 goal_payload,
                 goal_timeout,
             )
@@ -391,6 +400,7 @@ impl ActionMessenger {
             action_name: to_action_name.to_string(),
             target_core_node: target_core_instance_id.map(|name| name.to_string()),
             target_instance_id: target_instance_id.map(|id| id.to_string()),
+            target_variant: target_variant.map(|v| v.to_string()),
             goal_id,
             goal_response,
             feedback: Subscription::new(feedback_subscription),
@@ -410,6 +420,7 @@ impl ActionMessenger {
             &action_handle.action_name,
             action_handle.target_core_node.as_deref(),
             action_handle.target_instance_id.as_deref(),
+            action_handle.target_variant.as_deref(),
             cancel_timeout,
         )
         .await
@@ -427,6 +438,7 @@ impl ActionMessenger {
         action_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
+        target_variant: Option<&str>,
         cancel_timeout: Duration,
     ) -> Result<Message> {
         let cancel_service_name = format!("{action_name}/cancel");
@@ -440,6 +452,7 @@ impl ActionMessenger {
                 &cancel_service_name,
                 target_core_node,
                 target_instance_id,
+                target_variant,
                 Payload::new(),
                 cancel_timeout,
             )
@@ -459,6 +472,7 @@ impl ActionMessenger {
             &action_handle.action_name,
             action_handle.target_core_node.as_deref(),
             action_handle.target_instance_id.as_deref(),
+            action_handle.target_variant.as_deref(),
             result_timeout,
         )
         .await
@@ -476,6 +490,7 @@ impl ActionMessenger {
         action_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
+        target_variant: Option<&str>,
         result_timeout: Duration,
     ) -> Result<Message> {
         let result_service_name = format!("{action_name}/result");
@@ -489,6 +504,7 @@ impl ActionMessenger {
                 &result_service_name,
                 target_core_node,
                 target_instance_id,
+                target_variant,
                 Payload::new(),
                 result_timeout,
             )

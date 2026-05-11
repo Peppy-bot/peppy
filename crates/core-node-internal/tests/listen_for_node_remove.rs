@@ -54,10 +54,10 @@ async fn listen_for_node_remove_success() {
         add_response.error_message
     );
 
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
     let entity = node_stack
-        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .find_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node should exist in stack");
     assert_eq!(
         entity.read().instances().len(),
@@ -88,7 +88,7 @@ async fn listen_for_node_remove_success() {
     );
 
     assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        !node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG),
         "node should be removed from node stack"
     );
     assert_eq!(node_stack.len(), 1, "only root should remain");
@@ -225,7 +225,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         .expect("shutdown channel should not be dropped");
 
     assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        !node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG),
         "node should be removed from node stack"
     );
     assert_eq!(node_stack.len(), 1, "only root should remain");
@@ -339,11 +339,11 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
 
     assert_eq!(node_stack.len(), before_len, "stack should be unchanged");
     assert!(
-        node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG),
         "node should remain in node stack"
     );
     let entity = node_stack
-        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .find_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node entity should still exist in stack");
     {
         let entity_guard = entity.read();

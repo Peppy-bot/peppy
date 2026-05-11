@@ -115,6 +115,7 @@ impl Processor {
             },
             &node_name,
             "standalone-core",
+            config::runtime::DEFAULT_VARIANT,
         )?;
 
         Ok(Self {
@@ -161,6 +162,13 @@ impl Processor {
 
     pub fn node_name(&self) -> &str {
         self.runtime_config.node_name.as_str()
+    }
+
+    /// Variant label of this running node, populated from the daemon's
+    /// runtime config. Generated emitters slot this into the variant
+    /// segment of every emitted topic / service / action key expression.
+    pub fn variant(&self) -> &str {
+        &self.runtime_config.variant
     }
 
     pub fn messaging_host(&self) -> &str {

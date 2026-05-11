@@ -25,18 +25,22 @@ pub(super) fn validate_node_tag(node_tag: &str) -> std::io::Result<()> {
 /// Archives the contents of `source_dir` into a `.tar.zst` file in the
 /// peppy built nodes directory.
 ///
-/// The archive path follows the format: `<storage_dir>/<node_name>_<tag>.tar.zst`
+/// The archive path follows the format:
+/// `<storage_dir>/<node_name>_<tag>/<variant>.tar.zst`. Each `(name, tag)`
+/// gets its own directory so `rm -rf` cleans every variant at once.
 ///
 /// Uses zstd compression level 1 (fastest speed).
 pub(super) fn archive_dir_to_storage(
     source_dir: &Path,
     node_name: &str,
     node_tag: &str,
+    variant: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<PathBuf> {
     validate_node_tag(node_tag)?;
-    let storage_dir = peppy_dirs.built_nodes_dir();
-    let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
+    let storage_dir = built_nodes_variant_dir(peppy_dirs, node_name, node_tag);
+    std::fs::create_dir_all(&storage_dir)?;
+    let archive_name = format!("{}.tar.zst", variant);
     config::atomic_write::publish_atomic(&storage_dir.join(&archive_name), |tmp_path| {
         let file = File::create(tmp_path)?;
         let encoder = ZstdEncoder::new(file, 1)?;
@@ -51,26 +55,30 @@ pub(super) fn archive_dir_to_storage(
     })
 }
 
-/// Moves the built `.sif` container image from the working directory to peppy storage.
+/// Moves the built `.sif` container image from the working directory to
+/// peppy storage. The image is expected at
+/// `working_dir/{node_name}_{node_tag}.sif`, the conventional output path
+/// produced by `apptainer build` (see [`build_container_image`]).
 ///
-/// The image is expected at `working_dir/{node_name}_{node_tag}.sif`, which is the
-/// conventional output path produced by `apptainer build`.
-///
-/// Returns the final storage path: `<built_nodes_dir>/<node_name>_<tag>.sif`.
+/// Returns the final storage path:
+/// `<built_nodes_dir>/<node_name>_<tag>/<variant>.sif`.
 pub(super) fn move_sif_to_storage(
     working_dir: &Path,
     node_name: &str,
     node_tag: &str,
+    variant: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<PathBuf> {
     validate_node_tag(node_tag)?;
-    let sif_name = format!("{}_{}.sif", node_name, node_tag);
-    let sif_source = working_dir.join(&sif_name);
-    let storage_dir = peppy_dirs.built_nodes_dir();
+    let build_artifact_name = format!("{}_{}.sif", node_name, node_tag);
+    let sif_source = working_dir.join(&build_artifact_name);
+    let storage_dir = built_nodes_variant_dir(peppy_dirs, node_name, node_tag);
+    std::fs::create_dir_all(&storage_dir)?;
+    let storage_artifact_name = format!("{}.sif", variant);
 
     // Copy + rename (not rename alone) because the working dir may be on a
     // different filesystem than storage.
-    config::atomic_write::publish_atomic(&storage_dir.join(&sif_name), |tmp_path| {
+    config::atomic_write::publish_atomic(&storage_dir.join(&storage_artifact_name), |tmp_path| {
         std::fs::copy(&sif_source, tmp_path)
             .map(|_| ())
             .map_err(|e| {
@@ -84,6 +92,15 @@ pub(super) fn move_sif_to_storage(
                 )
             })
     })
+}
+
+/// Per-`(name, tag)` storage subdirectory under
+/// [`PeppyDirs::built_nodes_dir`]. Variants are filenames inside this
+/// directory.
+fn built_nodes_variant_dir(peppy_dirs: &PeppyDirs, node_name: &str, node_tag: &str) -> PathBuf {
+    peppy_dirs
+        .built_nodes_dir()
+        .join(format!("{}_{}", node_name, node_tag))
 }
 
 /// Inputs needed to drive an apptainer container build to completion.

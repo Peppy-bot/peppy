@@ -19,7 +19,7 @@ When you add a variant, peppy swaps the root node's execution with the variant's
 
 For example, if you have a `brain` node running a Rust-based controller, you can add a `mock` variant that runs a lightweight Python script instead — same interfaces, different execution. The rest of your stack doesn't notice the difference.
 
-Only one variant (or the root node itself) can be active in the stack at a time — adding a variant replaces any previous entry for that `name:tag`.
+Each `name:tag@variant` is a distinct entity in the stack: multiple variants of the same `name:tag` can run side by side. Consumers of the parent `name:tag` subscribe variant-agnostic and receive from every running variant; the received-message `variant` field lets user code disambiguate by source. The interface-consistency check at stack push enforces that every variant of a `(name, tag)` exposes structurally identical interfaces, so the variant-agnostic subscription is wire-safe.
 
 ## Variants — same interface, different implementations
 
@@ -461,25 +461,17 @@ In all cases, the positional argument (`./robot_brain`) is the root node — its
 Just like a regular `peppy node add`, adding a variant only stages it in the `Added` stage — it does **not** run the variant's `build_cmd` automatically. Chain the build with `peppy node add --variant mock ./robot_brain -b` (or run `peppy node build robot_brain:0.1.0` afterward).
 :::
 
-### Overriding a dependency's variant
+### Picking a transitive dependency's variant
 
-`--variant` is repeatable. Besides the root-level shapes shown above, each additional `--variant` can target a **transitive dependency** of the node you're adding using the shape `<dep_name>:<dep_tag>@<variant_name>`:
+Dependency lookups are variant-agnostic by design: the parent's manifest only declares `(name, tag)` and the launch graph fans out to every running variant of that pair at runtime. To pick a specific variant for a transitive dependency, **add the dependency at the desired variant first**, then add the parent:
 
 ```sh
-peppy node add my_robot:1.0.0 \
-  --variant mock \
-  --variant depth_camera:0.1.0@realsense \
-  --variant lidar:0.2.0@containerized
+peppy node add depth_camera:0.1.0 --variant realsense
+peppy node add lidar:0.2.0 --variant containerized
+peppy node add my_robot:1.0.0 --variant mock
 ```
 
-This tells peppy to pick the `realsense` variant of `depth_camera:0.1.0` and the `containerized` variant of `lidar:0.2.0` when it pulls in those transitive dependencies, while still applying the `mock` variant to the root `my_robot:1.0.0`.
-
-Two rules are enforced:
-
-- **At most one** root-form `--variant` per invocation — the root level only accepts a single execution. Dep overrides can repeat as many times as you need.
-- Duplicate overrides for the same `name:tag` are rejected.
-
-Dep-level `--variant` overrides are only valid when the source itself is a `name:tag` [repository reference](/advanced_guides/repositories/#using-a-repository-indexed-node) — that is the only shape that carries transitive dependencies peppy can rewrite. Passing a dep override with a local path or a git/http URL source is rejected.
+The parent (`my_robot:1.0.0@mock`) wires up to whichever variants of `depth_camera:0.1.0` and `lidar:0.2.0` are already in the stack. The interface-consistency check at stack push guarantees every variant of a `(name, tag)` exposes structurally identical interfaces, so the variant-agnostic dependency edge is wire-safe.
 
 :::tip
 You can also run a variant directly with `cargo run` / `uv run` from inside the variant's directory and peppy will merge it with the parent root on the fly — see [Running a variant in standalone mode](/guides/standalone_node/#running-a-variant-in-standalone-mode).

@@ -42,6 +42,7 @@ async fn shutdown_node() {
         SHUTDOWN_SERVICE,
         Some(&client.core_node_name),
         Some(&client.instance_id),
+        None,
         request_payload.clone(),
         Duration::from_secs(2),
     )

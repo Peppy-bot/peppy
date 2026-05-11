@@ -42,7 +42,7 @@ impl From<&NodeEntity> for SerializedNode {
                     state: i.state(),
                 })
                 .collect(),
-            variant_name: entity.variant_name().map(str::to_owned),
+            variant: entity.variant_name().to_owned(),
         }
     }
 }
@@ -275,22 +275,19 @@ pub struct NodeEntity {
     /// `take_pending_working_dir` clears the entity-side slot. Never
     /// persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
-    /// Variant label captured at `node add` time. `None` for nodes added
-    /// without a variant (no default variant, no `--variant` flag) and for
-    /// the synthetic root entity.
-    variant_name: Option<String>,
+    /// Variant label captured at `node add` time. Always populated; bare
+    /// `name:tag` adds resolve to [`crate::DEFAULT_VARIANT`]. The synthetic
+    /// root entity also uses [`crate::DEFAULT_VARIANT`].
+    variant_name: String,
 }
 
 impl NodeEntity {
     /// Creates a new `NodeEntity` in the [`NodeStage::Added`] stage. The
     /// `config_path` should point at the `peppy.json5` file that supplied
-    /// `config`. `variant_name` is the variant label selected at add time
-    /// (or `None` if no variant applies).
-    pub fn new<P: Into<PathBuf>>(
-        config: NodeConfig,
-        config_path: P,
-        variant_name: Option<String>,
-    ) -> Self {
+    /// `config`. `variant_name` is the variant label selected at add time;
+    /// callers must pass [`crate::DEFAULT_VARIANT`] when no variant was
+    /// requested explicitly.
+    pub fn new<P: Into<PathBuf>>(config: NodeConfig, config_path: P, variant_name: String) -> Self {
         Self {
             config,
             stage: NodeStage::Added {
@@ -352,10 +349,10 @@ impl NodeEntity {
         &self.stage
     }
 
-    /// Returns the variant label captured at `node add` time, if any. `None`
-    /// for the synthetic root entity and for nodes added without a variant.
-    pub fn variant_name(&self) -> Option<&str> {
-        self.variant_name.as_deref()
+    /// Returns the variant label captured at `node add` time. Always
+    /// populated; bare `name:tag` adds resolve to [`crate::DEFAULT_VARIANT`].
+    pub fn variant_name(&self) -> &str {
+        &self.variant_name
     }
 
     /// Returns the `peppy.json5` path that registered this entity. Always
@@ -404,7 +401,15 @@ impl NodeEntity {
     /// calling `NodeStack::remove_config`.
     pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
-        let (node_name, node_tag, config_path, container_opt, build_cmd, build_generation) = {
+        let (
+            node_name,
+            node_tag,
+            node_variant,
+            config_path,
+            container_opt,
+            build_cmd,
+            build_generation,
+        ) = {
             let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_buildable() {
                 return Err(Error::InvalidStageTransition {
@@ -421,6 +426,7 @@ impl NodeEntity {
             let snapshot = (
                 guard.config.manifest.name.as_str().to_owned(),
                 guard.config.manifest.tag.clone(),
+                guard.variant_name.clone(),
                 config_path.clone(),
                 guard.config.execution.container.clone(),
                 guard.config.execution.build_cmd.clone(),
@@ -498,12 +504,14 @@ impl NodeEntity {
                 let peppy_dirs = ctx.peppy_dirs.clone();
                 let node_name_pub = node_name.clone();
                 let node_tag_pub = node_tag.clone();
+                let node_variant_pub = node_variant.clone();
                 let join_res = tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
                     if is_container {
                         move_sif_to_storage(
                             &working_dir,
                             &node_name_pub,
                             &node_tag_pub,
+                            &node_variant_pub,
                             &peppy_dirs,
                         )
                     } else {
@@ -511,6 +519,7 @@ impl NodeEntity {
                             &working_dir,
                             &node_name_pub,
                             &node_tag_pub,
+                            &node_variant_pub,
                             &peppy_dirs,
                         )
                     }
@@ -978,7 +987,7 @@ impl NodeEntity {
             },
             generation: next_entity_generation(),
             pending_working_dir: None,
-            variant_name: None,
+            variant_name: crate::DEFAULT_VARIANT.to_owned(),
         }
     }
 
@@ -1002,7 +1011,7 @@ impl NodeEntity {
         config_path: PathBuf,
         artifact_path: Option<PathBuf>,
         instances: Vec<TrackedNodeInstance>,
-        variant_name: Option<String>,
+        variant_name: String,
     ) -> Self {
         let stage = match (artifact_path, instances.is_empty()) {
             (None, true) => NodeStage::Added { config_path },

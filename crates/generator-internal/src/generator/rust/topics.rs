@@ -126,12 +126,14 @@ pub fn build_topic_emit(
             let as_topic = #topic_literal;
             let as_node_name = node_runner.processor().node_name();
             let as_instance_id = node_runner.processor().bound_instance_id();
+            let as_variant = node_runner.processor().variant();
             let with_core_node = node_runner.processor().bound_core_node();
 
             peppylib::TopicMessenger::emit(
                 node_runner.messenger(),
                 with_core_node,
                 as_instance_id,
+                as_variant,
                 as_node_name,
                 as_topic,
                 qos,
@@ -172,6 +174,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
             node_runner: &crate::NodeRunner,
             target_core_node: Option<&str>,
             target_instance_id: Option<&str>,
+            target_variant: Option<&str>,
         ) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let node_name = #node_name_literal;
@@ -186,6 +189,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
                     topic_name,
                     target_core_node,
                     target_instance_id,
+                    target_variant,
                     qos,
                 );
                 let mut subscription = subscription_future.await.map_err(|source| {

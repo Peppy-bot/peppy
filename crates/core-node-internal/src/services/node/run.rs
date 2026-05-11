@@ -79,6 +79,7 @@ pub async fn listen_for_node_run(
         messenger,
         core_node_name,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::NODE_RUN_ACTION,
     )
@@ -465,7 +466,7 @@ async fn process_node_run(
         node_name, tag, instance_id_str
     );
 
-    let entity_handle = match ctx.action.node_stack.find(&node_name, &tag) {
+    let entity_handle = match ctx.action.node_stack.find_any_variant(&node_name, &tag) {
         Some(entity) => entity,
         None => {
             let msg = format!("Node '{}:{}' not found in node stack", node_name, tag);
@@ -933,6 +934,7 @@ async fn perform_health_check(
             NODE_HEALTH_SERVICE,
             Some(target.target_core_node),
             Some(target.target_instance_id),
+            None,
             request_payload.clone(),
             attempt_timeout,
         )
@@ -999,6 +1001,7 @@ async fn wait_for_ready_signal(
             NODE_READY_SERVICE,
             Some(target.target_core_node),
             Some(target.target_instance_id),
+            None,
             request_payload.clone(),
             attempt_timeout,
         )
@@ -1076,6 +1079,7 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 NODE_HEALTH_SERVICE,
                 Some(&p.target_core_node),
                 Some(&instance_id_str),
+                None,
                 request_payload.clone(),
                 p.timeout,
             )

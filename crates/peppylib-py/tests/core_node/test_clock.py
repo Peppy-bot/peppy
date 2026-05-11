@@ -89,6 +89,7 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
             server_handle,
             CORE_NODE,
             SERVER_INSTANCE,
+            "default",
             CORE_NODE,
             "clock",
             QoSProfile.SensorData,

@@ -23,6 +23,7 @@ pub async fn listen_for_node_init(
         messenger,
         core_node_node,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::NODE_INIT,
     )

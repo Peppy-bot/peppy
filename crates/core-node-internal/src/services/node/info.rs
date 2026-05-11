@@ -34,6 +34,7 @@ pub async fn listen_for_node_info(
         messenger,
         core_node_name,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::NODE_INFO,
     )
@@ -129,7 +130,7 @@ async fn handle_node_info_request_inner(
     // provoking the generic service-handler error log. Malformed requests
     // (decode failures above) still route to `InfoError::Invalid` and are
     // the only legitimate caller-fault path through this handler.
-    let Some(entity) = node_stack.find(&request.node_name, &request.node_tag) else {
+    let Some(entity) = node_stack.find_any_variant(&request.node_name, &request.node_tag) else {
         return NodeInfoResponse::NotInStack
             .encode()
             .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)));
@@ -139,7 +140,7 @@ async fn handle_node_info_request_inner(
         let guard = entity.read();
         let stage = guard.stage().to_serialized();
         let node_config = guard.config().clone();
-        let variant_name = guard.variant_name().map(str::to_owned);
+        let variant_name = guard.variant_name().to_owned();
         let tracked = guard.instances();
         let run_log_dir = peppy_dirs.logs_dir_run();
         let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
@@ -155,7 +156,8 @@ async fn handle_node_info_request_inner(
         (node_config, stage, instances, run_log_paths, variant_name)
     };
 
-    let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
+    let add_log_path =
+        node_stack.add_log_path(&request.node_name, &request.node_tag, &variant_name);
 
     let config_json = config::json5_pretty::to_string_pretty(&node_config)
         .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
@@ -168,7 +170,7 @@ async fn handle_node_info_request_inner(
         instances,
         add_log_path,
         run_log_paths,
-        variant_name,
+        variant: variant_name,
     }))
     .encode()
     .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))
@@ -235,7 +237,7 @@ async fn resolve_node_config_with_source_path(
             parse_node_config_from_http_with_path(url, sha256, peppy_dirs).await
         }
         NodeSource::RepoNode { name, tag, .. } => {
-            let resolved = repo_cache::resolve_repo_node_source(&name, &tag, peppy_dirs)?;
+            let resolved = repo_cache::resolve_repo_node_source(&name, &tag, None, peppy_dirs)?;
             // The packages cache only stores Fs/Git/Http entries, so the
             // resolved source should never be another RepoNode. Guard against
             // infinite recursion in case that invariant is ever broken.

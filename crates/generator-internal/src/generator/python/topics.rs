@@ -113,6 +113,7 @@ pub fn build_emitted_topic(
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
+    builder.line("node_runner.variant(),");
     builder.line("node_runner.node_name(),");
     builder.line("TOPIC_NAME,");
     builder.line("qos,");
@@ -191,7 +192,7 @@ fn build_consumed_topic_inner(
     // Generate on_next_message_received function
     builder.add_import("import peppylib");
     builder.blank_line();
-    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
+    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None, target_variant: Optional[str] = None) -> Tuple[str, Message]:");
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
     if let Some(node_name) = dependency_node_name {
@@ -205,6 +206,7 @@ fn build_consumed_topic_inner(
         builder.line("topic_name,");
         builder.line("target_core_node,");
         builder.line("target_instance_id,");
+        builder.line("target_variant,");
         builder.line("peppylib.QoSProfile.Standard,");
         builder.dedent();
         builder.line(")");
@@ -217,6 +219,7 @@ fn build_consumed_topic_inner(
         builder.line("topic_name,");
         builder.line("target_core_node,");
         builder.line("target_instance_id,");
+        builder.line("target_variant,");
         builder.line("peppylib.QoSProfile.Standard,");
         builder.dedent();
         builder.line(")");

@@ -43,7 +43,7 @@ async fn add_instance_creates_new_entity() {
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
     assert!(
-        stack.contains("sensor", "1.0.0"),
+        stack.contains_any_variant("sensor", "1.0.0"),
         "entity should be findable"
     );
 
@@ -51,7 +51,9 @@ async fn add_instance_creates_new_entity() {
     let _guard = fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", None).await;
     let instance_id = _guard.instance_id.clone();
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let entity_guard = entity.read();
     assert_eq!(
         entity_guard.instances().len(),
@@ -153,7 +155,9 @@ async fn add_instance_to_existing_entity() {
     let first_id = _g1.instance_id.clone();
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         1,
@@ -173,7 +177,9 @@ async fn add_instance_to_existing_entity() {
 
     assert_eq!(stack.len(), 2, "stack should still have root + one entity");
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let entity_guard = entity.read();
     assert_eq!(
         entity_guard.instances().len(),
@@ -241,7 +247,9 @@ async fn add_instance_with_specific_id() {
         "returned ID should match the provided one"
     );
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     assert_eq!(
         entity.read().instances()[0].instance_id(),
         &custom_id,
@@ -300,7 +308,9 @@ async fn remove_instance_from_entity_with_multiple_instances() {
             .await;
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         2,
@@ -313,7 +323,9 @@ async fn remove_instance_from_entity_with_multiple_instances() {
 
     // Entity should still exist with one instance
     assert_eq!(stack.len(), 2, "entity should still exist");
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let entity_guard = entity.read();
     assert_eq!(
         entity_guard.instances().len(),
@@ -361,7 +373,9 @@ async fn remove_last_instance_keeps_entity_in_graph() {
         fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", Some(&instance_id))
             .await;
     assert_eq!(stack.len(), 2, "stack should have root + one entity");
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         1,
@@ -375,7 +389,7 @@ async fn remove_last_instance_keeps_entity_in_graph() {
     // Entity stays in the graph with 0 instances; dependency edges are preserved
     assert_eq!(stack.len(), 2, "stack should still have root + entity");
     let entity = stack
-        .find("sensor", "1.0.0")
+        .find_any_variant("sensor", "1.0.0")
         .expect("entity should still exist");
     assert_eq!(
         entity.read().instances().len(),
@@ -430,7 +444,9 @@ async fn remove_nonexistent_instance_returns_false() {
     assert!(!removed, "should return false for non-existent entity");
 
     // Original instance should still be there
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         1,
@@ -511,15 +527,15 @@ fn reset_clears_all_except_core_node() {
 
     assert_eq!(stack.len(), 1, "stack should only have root after reset");
     assert!(
-        stack.contains("core", "1.0.0"),
+        stack.contains_any_variant("core", "1.0.0"),
         "root should still exist after reset"
     );
     assert!(
-        stack.find("sensor1", "1.0.0").is_none(),
+        stack.find_any_variant("sensor1", "1.0.0").is_none(),
         "sensor1 should not exist"
     );
     assert!(
-        stack.find("sensor2", "1.0.0").is_none(),
+        stack.find_any_variant("sensor2", "1.0.0").is_none(),
         "sensor2 should not exist"
     );
 }
@@ -559,7 +575,9 @@ async fn spawning_multiple_instances_on_same_entity() {
         "stack should have the core node + one entity"
     );
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         0,
@@ -576,7 +594,9 @@ async fn spawning_multiple_instances_on_same_entity() {
     )
     .await;
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         1,
@@ -598,7 +618,9 @@ async fn spawning_multiple_instances_on_same_entity() {
         "stack should still have the core node + one entity"
     );
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         2,
@@ -686,7 +708,9 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
     assert_eq!(stack.len(), 2, "stack should still have core node + sensor");
 
     // Entity should still exist (no instances since push_config doesn't create them)
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let entity_guard = entity.read();
     assert_eq!(
         entity_guard.instances().len(),
@@ -782,10 +806,10 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
 
     // Both entities should exist (with no instances since push_config doesn't create them)
     let entity_v1 = stack
-        .find("sensor", "1.0.0")
+        .find_any_variant("sensor", "1.0.0")
         .expect("v1 entity should exist");
     let entity_v2 = stack
-        .find("sensor", "2.0.0")
+        .find_any_variant("sensor", "2.0.0")
         .expect("v2 entity should exist");
 
     assert_eq!(
@@ -828,8 +852,8 @@ fn cannot_modify_root_node() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let _root_instance_id = stack.root().read().instances()[0].instance_id().clone();
 
-    // Try to remove the root's config — must error with CannotModifyRootNode.
-    let result = stack.remove_config("core", "1.0.0");
+    // Try to remove the root's config: must error with CannotModifyRootNode.
+    let result = stack.remove_config("core", "1.0.0", node_stack::DEFAULT_VARIANT);
     assert!(
         result.is_err(),
         "should not be able to remove root node via remove_config"
@@ -913,7 +937,7 @@ fn node_stack_wires_dependencies_for_dependants() {
         .push_config(dependent, false, PathBuf::from("/tmp"))
         .expect("dependent dependency is present");
 
-    let deps = stack.dependencies_of("brain", "1.0.0");
+    let deps = stack.dependencies_of_any_variant("brain", "1.0.0");
     assert!(
         deps.iter()
             .any(|entity| { entity.read().config().manifest.name.as_str() == "lidar" }),
@@ -1163,14 +1187,16 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
         "stack should still have core node + lidar + brain"
     );
 
-    let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("lidar", "1.0.0")
+        .expect("entity should exist");
     assert_eq!(
         entity.read().config_path(),
         PathBuf::from("/tmp/lidar_v1").as_path(),
         "entity should still point to the original snapshot config path"
     );
 
-    let dependents = stack.dependents_of("lidar", "1.0.0");
+    let dependents = stack.dependents_of_any_variant("lidar", "1.0.0");
     assert!(
         dependents
             .iter()
@@ -1218,7 +1244,9 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + sensor");
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     assert_eq!(
         entity.read().config().execution.run_cmd.as_ref().unwrap(),
         &vec!["./old_binary"],
@@ -1231,7 +1259,9 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
         .expect("should update config without error");
     assert_eq!(stack.len(), 2, "stack should still have core node + sensor");
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("sensor", "1.0.0")
+        .expect("entity should exist");
     let entity_guard = entity.read();
     assert_eq!(
         entity_guard.config().execution.run_cmd.as_ref().unwrap(),
@@ -1312,7 +1342,9 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
         .push_config(dependency_v1_updated, false, PathBuf::from("/tmp/lidar"))
         .expect("non-breaking config update should succeed even with dependents");
 
-    let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
+    let entity = stack
+        .find_any_variant("lidar", "1.0.0")
+        .expect("entity should exist");
     assert_eq!(
         entity.read().config().execution.run_cmd.as_ref().unwrap(),
         &vec!["./new_lidar"],
@@ -1320,7 +1352,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
     );
 
     // Dependency wiring should still be intact
-    let dependents = stack.dependents_of("lidar", "1.0.0");
+    let dependents = stack.dependents_of_any_variant("lidar", "1.0.0");
     assert!(
         dependents
             .iter()

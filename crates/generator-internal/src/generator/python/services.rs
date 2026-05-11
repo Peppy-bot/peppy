@@ -147,6 +147,7 @@ pub fn build_exposed_service(
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
+    builder.line("node_runner.variant(),");
     builder.line("node_runner.node_name(),");
     builder.line("SERVICE_NAME,");
     builder.dedent();
@@ -253,11 +254,11 @@ pub fn build_consumed_service(
 
     let signature = if has_request {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None, target_variant: Optional[str] = None){return_type}:"
         )
     } else {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None, target_variant: Optional[str] = None){return_type}:"
         )
     };
     builder.line(&signature);
@@ -297,6 +298,7 @@ pub fn build_consumed_service(
     builder.line("SERVICE_NAME,");
     builder.line("target_core_node,");
     builder.line("target_instance_id,");
+    builder.line("target_variant,");
     builder.line("request_payload,");
     builder.line("timeout,");
     builder.dedent();

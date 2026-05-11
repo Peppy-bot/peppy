@@ -341,6 +341,7 @@ pub fn build_exposed_service_method(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
+                    node_runner.processor().variant(),
                     node_runner.processor().node_name(),
                     #service_name_ref,
                 )
@@ -392,6 +393,7 @@ pub fn build_exposed_service_method(
                     node_runner.messenger(),
                     node_runner.core_node(),
                     service_instance_id.as_str(),
+                    node_runner.processor().variant(),
                     node_name,
                     service_name,
                 )

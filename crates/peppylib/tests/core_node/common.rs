@@ -45,6 +45,7 @@ pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name:
             service_name,
             Some(CORE_NODE),
             None,
+            None,
         )
         .await
         .expect("reachability check should succeed")

@@ -117,6 +117,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         topic,
         None, // Accepts any core node that emits
         None, // Accepts any instance id that emits
+        None,
         qos.clone(),
     )
     .await
@@ -132,6 +133,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         &emitter_handle,
         emitter_core_node,
         emitter_instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         topic,
         qos,
@@ -146,8 +148,12 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         .expect("Should receive the published message");
 
     let expected_key_expr = format!(
-        "*/{}/*/{}/topic/{}/{}",
-        emitter_core_node, emitter_instance_id, node_name, topic
+        "*/{}/*/{}/{}/topic/{}/{}",
+        emitter_core_node,
+        emitter_instance_id,
+        config::runtime::DEFAULT_VARIANT,
+        node_name,
+        topic
     );
 
     assert_eq!(received.key_expr(), expected_key_expr);
@@ -189,6 +195,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         topic,
         Some(emitter_core_node),
         Some(emitter_instance_id1),
+        None,
         qos.clone(),
     )
     .await
@@ -204,6 +211,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         topic,
         Some(emitter_core_node),
         Some(emitter_instance_id2),
+        None,
         qos.clone(),
     )
     .await
@@ -217,6 +225,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         &emitter_handle1,
         emitter_core_node,
         emitter_instance_id2,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         topic,
         qos,
@@ -276,6 +285,7 @@ async fn topic_publish_subscribe_with_target_core_node() {
         topic,
         Some(emitter_core_node1),
         Some(emitter_instance_id),
+        None,
         qos.clone(),
     )
     .await
@@ -291,6 +301,7 @@ async fn topic_publish_subscribe_with_target_core_node() {
         topic,
         Some(emitter_core_node2),
         Some(emitter_instance_id),
+        None,
         qos.clone(),
     )
     .await
@@ -304,6 +315,7 @@ async fn topic_publish_subscribe_with_target_core_node() {
         &emitter_handle1,
         emitter_core_node2,
         emitter_instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         topic,
         qos,
@@ -354,6 +366,7 @@ async fn topic_publish_reliable_5000hz_messages() {
         topic,
         None,
         None,
+        None,
         qos.clone(),
     )
     .await
@@ -375,6 +388,7 @@ async fn topic_publish_reliable_5000hz_messages() {
             &sender_handle,
             emitter_core_node,
             emitter_instance_id,
+            config::runtime::DEFAULT_VARIANT,
             node_name,
             topic,
             qos.clone(),
@@ -385,8 +399,12 @@ async fn topic_publish_reliable_5000hz_messages() {
     }
 
     let expected_key_expr = format!(
-        "*/{}/*/{}/topic/{}/{}",
-        emitter_core_node, emitter_instance_id, node_name, topic
+        "*/{}/*/{}/{}/topic/{}/{}",
+        emitter_core_node,
+        emitter_instance_id,
+        config::runtime::DEFAULT_VARIANT,
+        node_name,
+        topic
     );
 
     let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
@@ -463,6 +481,7 @@ async fn service_communication_poll_no_instance_id_target() {
             &service_expose_handle,
             listener_core_node1,
             listener_instance_id1,
+            config::runtime::DEFAULT_VARIANT,
             listener_node_name,
             listener_service_name,
         )
@@ -509,6 +528,7 @@ async fn service_communication_poll_no_instance_id_target() {
             &service_expose_handle,
             listener_core_node2,
             listener_instance_id2,
+            config::runtime::DEFAULT_VARIANT,
             listener_node_name,
             listener_service_name,
         )
@@ -573,6 +593,7 @@ async fn service_communication_poll_no_instance_id_target() {
             listener_service_name,
             None, // Here we don't specify any node
             None, // We don't specify any instance_id target either
+            None,
             request_payload.clone(),
             Duration::from_secs(2),
         )
@@ -642,6 +663,7 @@ async fn service_communication_poll_specific_instance_id() {
             &service_expose_handle,
             listener_core_node1,
             listener_instance_id1,
+            config::runtime::DEFAULT_VARIANT,
             listener_node_name,
             listener_service_name,
         )
@@ -677,6 +699,7 @@ async fn service_communication_poll_specific_instance_id() {
             &service_expose_handle,
             listener_core_node2,
             listener_instance_id2,
+            config::runtime::DEFAULT_VARIANT,
             listener_node_name,
             listener_service_name,
         )
@@ -739,6 +762,7 @@ async fn service_communication_poll_specific_instance_id() {
             listener_service_name,
             None,                        // Here we don't specify any target core node
             Some(listener_instance_id2), // We specify listener_instance_id2 as the target
+            None,
             request_payload.clone(),
             Duration::from_secs(1),
         )
@@ -804,6 +828,7 @@ async fn service_communication_poll_wrong_node() {
             &service_expose_handle,
             listener_core_node,
             listener_instance_id,
+            config::runtime::DEFAULT_VARIANT,
             listener_node_name,
             listener_service_name,
         )
@@ -856,6 +881,7 @@ async fn service_communication_poll_wrong_node() {
                 listener_service_name,
                 None,               // target_core_node
                 Some("wrong_node"), // Use a wrong instance_id here
+                None,
                 request_payload.clone(),
                 Duration::from_secs(1),
             )
@@ -936,6 +962,7 @@ async fn service_communication_poll_wrong_core_node() {
             &service_expose_handle,
             listener_core_node,
             listener_instance_id,
+            config::runtime::DEFAULT_VARIANT,
             listener_node_name,
             listener_service_name,
         )
@@ -987,6 +1014,7 @@ async fn service_communication_poll_wrong_core_node() {
             listener_service_name,
             Some("wrong_core_node"), // target_core_node - wrong one!
             None,                    // no specific target_instance_id
+            None,
             request_payload.clone(),
             Duration::from_millis(200),
         )
@@ -1046,6 +1074,7 @@ async fn service_communication_fails_service_not_started() {
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_service_name,
+            None,
             None,
             None,
             Payload::from_static(b"enable=true"),
@@ -1108,6 +1137,7 @@ async fn service_communication_fails_service_timeouts() {
             &service_expose_handle,
             listener_core_node,
             listener_instance_id,
+            config::runtime::DEFAULT_VARIANT,
             listener_node_name,
             listener_service_name,
         )
@@ -1173,6 +1203,7 @@ async fn service_communication_fails_service_timeouts() {
             listener_service_name,
             None,
             None,
+            None,
             request_payload.clone(),
             caller_success_timeout,
         )
@@ -1191,6 +1222,7 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_service_name,
+            None,
             None,
             None,
             request_payload,
@@ -1268,6 +1300,7 @@ async fn service_handle_request_processes_multiple_messages() {
             &service_expose_handle,
             listener_core_node,
             listener_instance_id,
+            config::runtime::DEFAULT_VARIANT,
             listener_node_name,
             listener_service_name,
         )
@@ -1313,6 +1346,7 @@ async fn service_handle_request_processes_multiple_messages() {
                 listener_service_name,
                 None,
                 Some(listener_instance_id),
+                None,
                 request_payload.clone(),
                 Duration::from_secs(2),
             )
@@ -1371,6 +1405,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
             &service_expose_handle,
             listener_core_node,
             listener_instance_id,
+            config::runtime::DEFAULT_VARIANT,
             listener_node_name,
             listener_service_name,
         )
@@ -1455,6 +1490,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         listener_service_name,
                         None,
                         Some(listener_instance_id),
+                        None,
                         request_payload.clone(),
                         Duration::from_secs(1),
                     )
@@ -1551,6 +1587,7 @@ async fn action_communication_no_instance_id_target() {
                 &action_handle,
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
+                config::runtime::DEFAULT_VARIANT,
                 listener_node_name,
                 listener_action_name,
             )
@@ -1652,6 +1689,7 @@ async fn action_communication_no_instance_id_target() {
             listener_action_name,
             None, // No target core_id
             None, // No target instance_id
+            None,
             goal_payload,
             QoSProfile::Reliable,
             Duration::from_millis(1000),
@@ -1737,6 +1775,7 @@ async fn action_communication_with_instance_id_target() {
                 &action_handle,
                 LISTENER_CORE_NODE1,
                 LISTENER_INSTANCE_ID1,
+                config::runtime::DEFAULT_VARIANT,
                 listener_node_name,
                 listener_action_name,
             )
@@ -1784,6 +1823,7 @@ async fn action_communication_with_instance_id_target() {
                 &action_handle,
                 LISTENER_CORE_NODE2,
                 LISTENER_INSTANCE_ID2,
+                config::runtime::DEFAULT_VARIANT,
                 listener_node_name,
                 listener_action_name,
             )
@@ -1885,6 +1925,7 @@ async fn action_communication_with_instance_id_target() {
             listener_action_name,
             Some(LISTENER_CORE_NODE2),
             Some(LISTENER_INSTANCE_ID2),
+            None,
             goal_payload,
             QoSProfile::Reliable,
             Duration::from_millis(1000),
@@ -1975,6 +2016,7 @@ async fn action_communication_goal_cancelled() {
                 &action_handle,
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
+                config::runtime::DEFAULT_VARIANT,
                 listener_node_name,
                 listener_action_name,
             )
@@ -2102,6 +2144,7 @@ async fn action_communication_goal_cancelled() {
         listener_action_name,
         Some(LISTENER_CORE_NODE),
         Some(LISTENER_INSTANCE_ID),
+        None,
         goal_payload,
         QoSProfile::Reliable,
         Duration::from_millis(1000),
@@ -2230,6 +2273,7 @@ async fn single_action_communication_multiple_polls() {
                 &action_handle,
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
+                config::runtime::DEFAULT_VARIANT,
                 listener_node_name,
                 listener_action_name,
             )
@@ -2370,6 +2414,7 @@ async fn single_action_communication_multiple_polls() {
                 listener_action_name,
                 None,
                 None,
+                None,
                 case.goal.clone(),
                 QoSProfile::Reliable,
                 Duration::from_millis(1000),
@@ -2468,6 +2513,7 @@ async fn service_communication_poll_wildcard_caller() {
             &service_expose_handle,
             listener_core_node,
             listener_instance_id,
+            config::runtime::DEFAULT_VARIANT,
             listener_node_name,
             listener_service_name,
         )
@@ -2518,6 +2564,7 @@ async fn service_communication_poll_wildcard_caller() {
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_service_name,
+            None,
             None,
             None,
             request_payload.clone(),

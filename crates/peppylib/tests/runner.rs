@@ -134,6 +134,7 @@ async fn daemon_runner_succeed() {
         },
         TEST_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .expect("runtime config should build");
     let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
@@ -176,6 +177,7 @@ async fn daemon_runner_succeed() {
             SHUTDOWN_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
+            None,
         )
         .await
         .expect("reachability check should succeed")
@@ -201,6 +203,7 @@ async fn daemon_runner_succeed() {
         NODE_HEALTH_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
+        None,
         health_request,
         Duration::from_secs(2),
     )
@@ -217,6 +220,7 @@ async fn daemon_runner_succeed() {
         SHUTDOWN_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
+        None,
         shutdown_payload.clone(),
         Duration::from_secs(2),
     )
@@ -338,6 +342,7 @@ async fn node_ready_but_not_healthy() {
         },
         TEST_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .expect("runtime config should build");
     let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
@@ -381,6 +386,7 @@ async fn node_ready_but_not_healthy() {
             NODE_READY_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
+            None,
         )
         .await
         .expect("reachability check should succeed")
@@ -404,6 +410,7 @@ async fn node_ready_but_not_healthy() {
         NODE_READY_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
+        None,
         ready_payload.clone(),
         Duration::from_secs(2),
     )
@@ -426,6 +433,7 @@ async fn node_ready_but_not_healthy() {
             SHUTDOWN_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
+            None,
         )
         .await
         .expect("reachability check should succeed")
@@ -449,6 +457,7 @@ async fn node_ready_but_not_healthy() {
             NODE_HEALTH_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
+            None,
         )
         .await
         .expect("reachability check should succeed"),
@@ -466,6 +475,7 @@ async fn node_ready_but_not_healthy() {
         NODE_HEALTH_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
+        None,
         health_request.clone(),
         Duration::from_millis(200),
     )
@@ -497,6 +507,7 @@ async fn node_ready_but_not_healthy() {
             NODE_HEALTH_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
+            None,
         )
         .await
         .expect("reachability check should succeed")
@@ -519,6 +530,7 @@ async fn node_ready_but_not_healthy() {
         NODE_HEALTH_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
+        None,
         health_request,
         Duration::from_secs(2),
     )
@@ -535,6 +547,7 @@ async fn node_ready_but_not_healthy() {
         SHUTDOWN_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
+        None,
         shutdown_payload.clone(),
         Duration::from_secs(2),
     )
@@ -591,6 +604,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         },
         TEST_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .expect("runtime config should build");
     let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
@@ -640,6 +654,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
             SHUTDOWN_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
+            None,
         )
         .await
         .expect("reachability check should succeed")
@@ -664,6 +679,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         SHUTDOWN_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
+        None,
         shutdown_payload,
         Duration::from_secs(2),
     )

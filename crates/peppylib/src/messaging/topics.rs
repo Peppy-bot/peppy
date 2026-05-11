@@ -41,6 +41,7 @@ impl TopicMessenger {
         to_topic: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
+        target_variant: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         let subscription = messenger
@@ -51,6 +52,7 @@ impl TopicMessenger {
                 to_topic,
                 target_core_node,
                 target_instance_id,
+                target_variant,
                 qos,
             )
             .await?;
@@ -62,6 +64,7 @@ impl TopicMessenger {
     /// Unlike [`subscribe`], this does not target a specific publisher node.
     /// Internally uses a wildcard for the node name, so messages from any
     /// node publishing on the given topic will be received.
+    #[allow(clippy::too_many_arguments)]
     pub async fn consume_external(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -69,6 +72,7 @@ impl TopicMessenger {
         to_topic: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
+        target_variant: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         let subscription = messenger
@@ -79,6 +83,7 @@ impl TopicMessenger {
                 to_topic,
                 target_core_node,
                 target_instance_id,
+                target_variant,
                 qos,
             )
             .await?;
@@ -86,10 +91,12 @@ impl TopicMessenger {
     }
 
     /// Publishes a payload to a topic on the specified core node.
+    #[allow(clippy::too_many_arguments)]
     pub async fn emit(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
+        as_variant: &str,
         as_node_name: &str,
         as_topic_name: &str,
         qos: QoSProfile,
@@ -99,6 +106,7 @@ impl TopicMessenger {
             .emit_topic_message(
                 as_core_node,
                 as_instance_id,
+                as_variant,
                 as_node_name,
                 as_topic_name,
                 qos,
@@ -113,19 +121,22 @@ impl TopicMessenger {
     /// [`emit`] for one-shot publishes where the per-call setup is in the
     /// noise.
     ///
-    /// The key follows the same `*/<core_node>/*/<instance>/topic/<node>/<topic>`
-    /// shape as [`MessengerHandle::emit_topic_message`] — keep this in sync if
-    /// that format changes.
+    /// The key follows the same
+    /// `*/<core_node>/*/<instance>/<variant>/topic/<node>/<topic>` shape as
+    /// [`MessengerHandle::emit_topic_message`] — keep this in sync if that
+    /// format changes.
     pub async fn declare_publisher(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
+        as_variant: &str,
         as_node_name: &str,
         as_topic_name: &str,
         qos: QoSProfile,
     ) -> Result<TopicPublisher> {
-        let topic =
-            format!("*/{as_core_node}/*/{as_instance_id}/topic/{as_node_name}/{as_topic_name}");
+        let topic = format!(
+            "*/{as_core_node}/*/{as_instance_id}/{as_variant}/topic/{as_node_name}/{as_topic_name}"
+        );
         let inner = messenger
             .declare_publisher(topic.clone(), qos.into())
             .await?;

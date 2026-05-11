@@ -80,7 +80,7 @@ pub struct PyTopicMessenger;
 impl PyTopicMessenger {
     /// Subscribe to a topic.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, to_topic, target_core_node, target_instance_id, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, to_topic, target_core_node, target_instance_id, target_variant, qos))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -91,6 +91,7 @@ impl PyTopicMessenger {
         to_topic: String,
         target_core_node: Option<String>,
         target_instance_id: Option<String>,
+        target_variant: Option<String>,
         qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
@@ -103,6 +104,7 @@ impl PyTopicMessenger {
                 &to_topic,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
+                target_variant.as_deref(),
                 qos.into(),
             )
             .await
@@ -116,7 +118,7 @@ impl PyTopicMessenger {
 
     /// Consume a topic from any node (external/unlinked topics).
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_topic, target_core_node, target_instance_id, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_topic, target_core_node, target_instance_id, target_variant, qos))]
     #[allow(clippy::too_many_arguments)]
     fn consume_external<'py>(
         py: Python<'py>,
@@ -126,6 +128,7 @@ impl PyTopicMessenger {
         to_topic: String,
         target_core_node: Option<String>,
         target_instance_id: Option<String>,
+        target_variant: Option<String>,
         qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
@@ -137,6 +140,7 @@ impl PyTopicMessenger {
                 &to_topic,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
+                target_variant.as_deref(),
                 qos.into(),
             )
             .await
@@ -156,6 +160,7 @@ impl PyTopicMessenger {
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
+        as_variant: String,
         as_node_name: String,
         as_topic_name: String,
         qos: PyQoSProfile,
@@ -167,6 +172,7 @@ impl PyTopicMessenger {
                 &handle,
                 &as_core_node,
                 &as_instance_id,
+                &as_variant,
                 &as_node_name,
                 &as_topic_name,
                 qos.into(),

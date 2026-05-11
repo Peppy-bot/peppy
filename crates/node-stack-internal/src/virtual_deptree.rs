@@ -21,9 +21,7 @@ use petgraph::algo::toposort;
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 
 use crate::error::{Error, Result};
-
-/// `(name, tag)` identifier used to address a node in the virtual dep tree.
-pub type NodeKey = (String, String);
+use crate::node_stack::NameTagKey;
 
 /// One node sitting in the virtual dependency tree.
 #[derive(Debug, Clone)]
@@ -33,10 +31,10 @@ pub struct VirtualNodeInfo {
 }
 
 impl VirtualNodeInfo {
-    pub fn key(&self) -> NodeKey {
-        (
-            self.config.manifest.name.as_str().to_owned(),
-            self.config.manifest.tag.clone(),
+    pub fn key(&self) -> NameTagKey {
+        NameTagKey::new(
+            self.config.manifest.name.as_str(),
+            &self.config.manifest.tag,
         )
     }
 }
@@ -45,12 +43,12 @@ impl VirtualNodeInfo {
 ///
 /// Construction validates uniqueness (no two inputs may share the same
 /// `name:tag`) and freedom from cycles. `depends_on` entries that don't match
-/// any node in the input set are silently ignored — those are external
+/// any node in the input set are silently ignored: those are external
 /// dependencies that the daemon will resolve via its persistent node stack.
 #[derive(Debug)]
 pub struct VirtualDeptree {
-    graph: StableDiGraph<NodeKey, ()>,
-    by_key: HashMap<NodeKey, NodeIndex>,
+    graph: StableDiGraph<NameTagKey, ()>,
+    by_key: HashMap<NameTagKey, NodeIndex>,
     infos: HashMap<NodeIndex, VirtualNodeInfo>,
 }
 
@@ -62,22 +60,19 @@ impl VirtualDeptree {
     ///   `name:tag`.
     /// - [`Error::VirtualDeptreeCycle`] when the resulting graph is not a DAG.
     pub fn build(nodes: Vec<(PathBuf, NodeConfig)>) -> Result<Self> {
-        let mut graph: StableDiGraph<NodeKey, ()> = StableDiGraph::new();
-        let mut by_key: HashMap<NodeKey, NodeIndex> = HashMap::with_capacity(nodes.len());
+        let mut graph: StableDiGraph<NameTagKey, ()> = StableDiGraph::new();
+        let mut by_key: HashMap<NameTagKey, NodeIndex> = HashMap::with_capacity(nodes.len());
         let mut infos: HashMap<NodeIndex, VirtualNodeInfo> = HashMap::with_capacity(nodes.len());
-        let mut origin_paths: HashMap<NodeKey, PathBuf> = HashMap::with_capacity(nodes.len());
+        let mut origin_paths: HashMap<NameTagKey, PathBuf> = HashMap::with_capacity(nodes.len());
 
         // First pass: register every input node and detect duplicates.
         for (root_dir, config) in nodes {
-            let key = (
-                config.manifest.name.as_str().to_owned(),
-                config.manifest.tag.clone(),
-            );
+            let key = NameTagKey::new(config.manifest.name.as_str(), &config.manifest.tag);
 
             if let Some(first) = origin_paths.get(&key) {
                 return Err(Error::DuplicateLocalNode {
-                    name: key.0,
-                    tag: key.1,
+                    name: key.name,
+                    tag: key.tag,
                     first: first.clone(),
                     second: root_dir,
                 });
@@ -94,7 +89,7 @@ impl VirtualDeptree {
         }
 
         // Second pass: add edges from each declared dependency that is also
-        // present in the input set. Unknown deps are skipped here — the daemon
+        // present in the input set. Unknown deps are skipped here: the daemon
         // will resolve them against its persistent node stack at sync time.
         for idx in graph.node_indices().collect::<Vec<_>>() {
             let info = &infos[&idx];
@@ -102,7 +97,7 @@ impl VirtualDeptree {
                 continue;
             };
             for dep in &depends_on.nodes {
-                let dep_key = (dep.name.as_str().to_owned(), dep.tag.clone());
+                let dep_key = NameTagKey::new(dep.name.as_str(), &dep.tag);
                 if let Some(dep_idx) = by_key.get(&dep_key) {
                     // Edge: dep -> dependant. Toposort returns a slice in
                     // dependency order (deps first).
@@ -117,9 +112,9 @@ impl VirtualDeptree {
             let key = graph
                 .node_weight(offending)
                 .cloned()
-                .unwrap_or_else(|| ("?".to_owned(), "?".to_owned()));
+                .unwrap_or_else(|| NameTagKey::new("?", "?"));
             return Err(Error::VirtualDeptreeCycle {
-                nodes: vec![format!("{}:{}", key.0, key.1)],
+                nodes: vec![key.label()],
             });
         }
 
@@ -149,7 +144,7 @@ impl VirtualDeptree {
     }
 
     /// Looks up a node by `(name, tag)`.
-    pub fn get(&self, key: &NodeKey) -> Option<&VirtualNodeInfo> {
+    pub fn get(&self, key: &NameTagKey) -> Option<&VirtualNodeInfo> {
         self.by_key.get(key).and_then(|idx| self.infos.get(idx))
     }
 }
@@ -192,7 +187,7 @@ mod tests {
             .unwrap()
     }
 
-    fn key_of(info: &VirtualNodeInfo) -> NodeKey {
+    fn key_of(info: &VirtualNodeInfo) -> NameTagKey {
         info.key()
     }
 
@@ -216,7 +211,7 @@ mod tests {
         assert_eq!(tree.len(), 2);
         let order = tree.topological_order();
         assert_eq!(order.len(), 2);
-        let names: Vec<String> = order.iter().map(|n| key_of(n).0).collect();
+        let names: Vec<String> = order.iter().map(|n| key_of(n).name).collect();
         assert!(names.contains(&"a".to_string()));
         assert!(names.contains(&"b".to_string()));
     }
@@ -240,7 +235,7 @@ mod tests {
         let order: Vec<String> = tree
             .topological_order()
             .iter()
-            .map(|n| key_of(n).0)
+            .map(|n| key_of(n).name)
             .collect();
         assert_eq!(
             order,
@@ -270,7 +265,7 @@ mod tests {
         let order: Vec<String> = tree
             .topological_order()
             .iter()
-            .map(|n| key_of(n).0)
+            .map(|n| key_of(n).name)
             .collect();
         assert_eq!(order.first().unwrap(), "a");
         assert_eq!(order.last().unwrap(), "d");
@@ -304,7 +299,7 @@ mod tests {
         assert_eq!(tree.len(), 1);
         let order = tree.topological_order();
         assert_eq!(order.len(), 1);
-        assert_eq!(key_of(order[0]).0, "a");
+        assert_eq!(key_of(order[0]).name, "a");
     }
 
     #[test]

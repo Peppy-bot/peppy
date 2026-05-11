@@ -115,6 +115,7 @@ pub struct PyActionGoalHandle {
     action_name: String,
     target_core_node: Option<String>,
     target_instance_id: Option<String>,
+    target_variant: Option<String>,
     goal_id: String,
 }
 
@@ -199,11 +200,13 @@ pub struct PyActionMessenger;
 impl PyActionMessenger {
     /// Expose an action server, returning the goal, cancel, result services and feedback publisher.
     #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
     fn expose<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
+        as_variant: String,
         as_node_name: String,
         as_action_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -213,6 +216,7 @@ impl PyActionMessenger {
                 &handle,
                 &as_core_node,
                 &as_instance_id,
+                &as_variant,
                 &as_node_name,
                 &as_action_name,
             )
@@ -232,7 +236,7 @@ impl PyActionMessenger {
     /// `goal_id`, wraps `user_payload`, and exposes the id on the returned
     /// handle via `goal_id`.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, to_action_name, target_core_node=None, target_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, to_action_name, target_core_node=None, target_instance_id=None, target_variant=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
@@ -243,6 +247,7 @@ impl PyActionMessenger {
         to_action_name: String,
         target_core_node: Option<String>,
         target_instance_id: Option<String>,
+        target_variant: Option<String>,
         user_payload: Vec<u8>,
         feedback_qos: PyQoSProfile,
         goal_timeout_secs: f64,
@@ -258,6 +263,7 @@ impl PyActionMessenger {
                 &to_action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
+                target_variant.as_deref(),
                 Payload::from(user_payload),
                 feedback_qos.into(),
                 goal_timeout,
@@ -285,6 +291,7 @@ impl PyActionMessenger {
                 action_name: to_action_name,
                 target_core_node,
                 target_instance_id,
+                target_variant,
                 goal_id,
             })
         })
@@ -309,6 +316,7 @@ impl PyActionMessenger {
         let action_name = goal_handle.action_name.clone();
         let target_core_node = goal_handle.target_core_node.clone();
         let target_instance_id = goal_handle.target_instance_id.clone();
+        let target_variant = goal_handle.target_variant.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let response = ActionMessenger::cancel_goal_with(
                 &handle,
@@ -318,6 +326,7 @@ impl PyActionMessenger {
                 &action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
+                target_variant.as_deref(),
                 cancel_timeout,
             )
             .await
@@ -345,6 +354,7 @@ impl PyActionMessenger {
         let action_name = goal_handle.action_name.clone();
         let target_core_node = goal_handle.target_core_node.clone();
         let target_instance_id = goal_handle.target_instance_id.clone();
+        let target_variant = goal_handle.target_variant.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let response = ActionMessenger::request_result_with(
                 &handle,
@@ -354,6 +364,7 @@ impl PyActionMessenger {
                 &action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
+                target_variant.as_deref(),
                 result_timeout,
             )
             .await
@@ -364,7 +375,7 @@ impl PyActionMessenger {
 
     /// Check whether an action server is reachable.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, target_action_name, target_core_node=None, target_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, target_action_name, target_core_node=None, target_instance_id=None, target_variant=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
@@ -375,6 +386,7 @@ impl PyActionMessenger {
         target_action_name: String,
         target_core_node: Option<String>,
         target_instance_id: Option<String>,
+        target_variant: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -386,6 +398,7 @@ impl PyActionMessenger {
                 &target_action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
+                target_variant.as_deref(),
             )
             .await
             .map_err(to_py_err)?;

@@ -55,6 +55,7 @@ async fn ready_node() {
             peppylib::messaging::NODE_READY_SERVICE,
             target_core_node,
             target_instance_id,
+            None,
             request_payload.clone(),
             Duration::from_secs(2),
         )

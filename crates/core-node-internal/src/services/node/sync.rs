@@ -28,6 +28,7 @@ pub async fn listen_for_node_sync(
         messenger,
         core_node_node,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::NODE_SYNC,
     )
@@ -255,7 +256,7 @@ async fn handle_node_sync_request_inner(
     // the request's `include_repositories` flag.
     let resolve_dep = |name: &str, tag: &str| -> Option<config::node::NodeConfig> {
         node_stack
-            .find(name, tag)
+            .find_any_variant(name, tag)
             .map(|e| e.read().config().clone())
             .or_else(|| {
                 repo_resolved
@@ -430,7 +431,7 @@ async fn handle_node_sync_request_inner(
                     if !seen.insert((name.clone(), tag.clone())) {
                         continue;
                     }
-                    if node_stack.find(&name, &tag).is_some() {
+                    if node_stack.contains_any_variant(&name, &tag) {
                         acc.push(format!("{}:{}", name, tag));
                     }
                 }
@@ -736,7 +737,7 @@ async fn materialize_repo_deps(
         // Stack tier wins — record the hit (de-duped via `seen` above)
         // and skip materialization for anything already pushed onto the
         // persistent NodeStack.
-        if node_stack.find(&name, &tag).is_some() {
+        if node_stack.contains_any_variant(&name, &tag) {
             stack_hits.push(format!("{}:{}", name, tag));
             continue;
         }
@@ -969,9 +970,13 @@ pub fn collect_consumed_interfaces(
 pub fn stack_resolver(
     node_stack: &NodeStack,
 ) -> impl Fn(&str, &str) -> Option<config::node::NodeConfig> + '_ {
+    // Variant-agnostic: returns any one variant's config under `(name, tag)`.
+    // The interface-consistency assertion at stack push guarantees every
+    // variant exposes identical interfaces, so any one is sound for
+    // dependency-spec validation.
     move |name, tag| {
         node_stack
-            .find(name, tag)
+            .find_any_variant(name, tag)
             .map(|e| e.read().config().clone())
     }
 }

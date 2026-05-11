@@ -28,6 +28,7 @@ pub async fn listen_for_node_remove(
         &messenger,
         &core_node_node,
         &core_instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::NODE_REMOVE,
     )
@@ -175,6 +176,7 @@ async fn handle_node_remove_request_inner(
                 SHUTDOWN_SERVICE,
                 Some(core_node_node),
                 Some(target.instance_id.as_str()),
+                None,
             )
         }))
         .await;
@@ -253,6 +255,7 @@ async fn handle_node_remove_request_inner(
                 SHUTDOWN_SERVICE,
                 Some(core_node_node),
                 Some(target.instance_id.as_str()),
+                None,
                 Payload::from_static(b"shutdown"),
                 SHUTDOWN_TIMEOUT,
             )
@@ -272,7 +275,7 @@ async fn handle_node_remove_request_inner(
     }
 
     for target in &targets {
-        let Some(handle) = node_stack.find(&target.node_name, &target.node_tag) else {
+        let Some(handle) = node_stack.find_any_variant(&target.node_name, &target.node_tag) else {
             // Entity was concurrently removed; nothing to stop. Treat as
             // success rather than failing the whole removal request.
             debug!(
@@ -292,7 +295,21 @@ async fn handle_node_remove_request_inner(
     }
 
     for target in &config_targets {
-        match node_stack.remove_config(&target.node_name, &target.node_tag) {
+        // Variant-agnostic remove for now: pick whichever variant is present
+        // for `(name, tag)` and remove that. Step 10 of the multi-variant
+        // rollout will let `peppy node remove` request a specific variant
+        // and propagate it through here.
+        let target_variant = node_stack
+            .find_any_variant(&target.node_name, &target.node_tag)
+            .map(|handle| handle.read().variant_name().to_owned());
+        let Some(target_variant) = target_variant else {
+            debug!(
+                "Node '{}:{}' already absent from node stack during remove_config",
+                target.node_name, target.node_tag
+            );
+            continue;
+        };
+        match node_stack.remove_config(&target.node_name, &target.node_tag, &target_variant) {
             Ok(true) => {}
             Ok(false) => {
                 // Concurrently removed — treat as success.

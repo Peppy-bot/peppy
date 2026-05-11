@@ -46,6 +46,8 @@ async def test_messenger_communication():
             sender_handle,
             core_node,
             instance_id,
+            "default",
+            "default",
             node_name,
             topic_name,
             qos,

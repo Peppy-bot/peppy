@@ -306,6 +306,7 @@ pub async fn run_instance_async(
         },
         node_name,
         core_node_name,
+        config::runtime::DEFAULT_VARIANT,
     )
     .map_err(Error::PeppyConfig)?;
 

@@ -23,6 +23,7 @@ pub async fn listen_for_repo_remove(
         messenger,
         core_node_name,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::REPO_REMOVE,
     )

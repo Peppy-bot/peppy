@@ -16,7 +16,7 @@ const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
     node_stack
-        .find(name, tag)
+        .find_any_variant(name, tag)
         .expect("entity should exist")
         .read()
         .artifact_path()
@@ -754,7 +754,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         build_result.error_message
     );
 
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG));
 
     let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(build_result.artifact_path.as_path(), root_path.as_path());

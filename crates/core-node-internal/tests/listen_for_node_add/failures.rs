@@ -289,9 +289,9 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
     assert!(!res.success, "add should fail on missing transitive dep");
     // Stack must be unchanged — no partial add.
     assert_eq!(node_stack.len(), pre_len, "stack should be unchanged");
-    assert!(!node_stack.contains("a", "0.1.0"));
-    assert!(!node_stack.contains("b", "0.1.0"));
-    assert!(!node_stack.contains("c", "0.1.0"));
+    assert!(!node_stack.contains_any_variant("a", "0.1.0"));
+    assert!(!node_stack.contains_any_variant("b", "0.1.0"));
+    assert!(!node_stack.contains_any_variant("c", "0.1.0"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -342,7 +342,7 @@ async fn listen_for_node_add_no_config_found() {
         "node_add should not succeed, the config file is missing",
     );
 
-    assert!(!node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(!node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 1, "root");
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -393,7 +393,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
         "error message should indicate git hash mismatch, got: {:?}",
         add_result.error_message
     );
-    assert!(!node_stack.contains("git_hash_mismatch_node", "0.1.0"));
+    assert!(!node_stack.contains_any_variant("git_hash_mismatch_node", "0.1.0"));
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_invalid_config_fails() {
@@ -608,7 +608,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     );
 
     assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        !node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG),
         "node should not be added when dependency is missing"
     );
     assert_eq!(node_stack.len(), 1, "only root should exist");
@@ -663,7 +663,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
         dep_result.error_message
     );
     assert!(
-        node_stack.contains(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG),
+        node_stack.contains_any_variant(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG),
         "dependency node should be in the stack"
     );
     assert_eq!(node_stack.len(), 2, "root + dependency");
@@ -732,7 +732,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     );
 
     assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        !node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG),
         "dependent node should not be added when interface is missing"
     );
     assert_eq!(node_stack.len(), 2, "root + dependency only");

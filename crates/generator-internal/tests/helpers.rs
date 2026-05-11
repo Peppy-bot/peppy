@@ -363,6 +363,7 @@ pub async fn wait_for_service_reachable_or_exit(
             target_service_name,
             ctx.target_core_node,
             target_instance_id,
+            None,
         )
         .await
         .unwrap_or_else(|err| {
@@ -418,6 +419,7 @@ pub async fn wait_for_action_service_reachable_or_exit(
             target_service_name,
             ctx.target_core_node,
             target_instance_id,
+            None,
         )
         .await
         .unwrap_or_else(|err| {
@@ -493,6 +495,7 @@ pub async fn send_shutdown(
         SHUTDOWN_SERVICE,
         target_core_node,
         Some(target_instance_id),
+        None,
         payload,
         timeout,
     )
@@ -525,6 +528,7 @@ pub async fn try_send_shutdown(
         SHUTDOWN_SERVICE,
         target_core_node,
         Some(target_instance_id),
+        None,
         payload,
         timeout,
     )

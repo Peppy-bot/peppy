@@ -257,6 +257,7 @@ impl RustGenerator {
                 timeout: std::time::Duration,
                 target_core_node: Option<&str>,
                 target_instance_id: Option<&str>,
+                target_variant: Option<&str>,
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
             ) -> crate::Result<Self> {
@@ -270,6 +271,7 @@ impl RustGenerator {
                     TARGET_ACTION_NAME,
                     target_core_node,
                     target_instance_id,
+                    target_variant,
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -1269,6 +1271,7 @@ impl LanguageGenerator for RustGenerator {
                 SERVICE_NAME,
                 target_core_node,
                 target_instance_id,
+                target_variant,
                 request_payload,
                 timeout,
             )
@@ -1350,6 +1353,7 @@ impl LanguageGenerator for RustGenerator {
             quote!(timeout: std::time::Duration),
             quote!(target_core_node: Option<&str>),
             quote!(target_instance_id: Option<&str>),
+            quote!(target_variant: Option<&str>),
         ];
         if !request_struct_params.is_empty() {
             fn_param_tokens.push(quote!(request: #request_struct_ident));

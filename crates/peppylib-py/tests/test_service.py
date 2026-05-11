@@ -32,6 +32,7 @@ async def test_service_messenger_communication():
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
+            "default",
             NODE_NAME,
             SERVICE_NAME,
         )
@@ -96,6 +97,7 @@ async def test_service_handler_exception_returns_service_error():
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
+            "default",
             NODE_NAME,
             SERVICE_NAME,
         )

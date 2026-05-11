@@ -91,6 +91,7 @@ async def spawn_stub_listener(server_handle, service_name: str, response_bytes: 
         server_handle,
         CORE_NODE,
         SERVER_INSTANCE,
+        "default",
         CORE_NODE,
         service_name,
     )

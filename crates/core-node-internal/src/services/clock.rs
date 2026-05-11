@@ -71,6 +71,7 @@ pub async fn listen_for_clock(
         messenger,
         core_node_node,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::CLOCK,
     )
@@ -159,6 +160,7 @@ pub async fn publish_clock(
         &messenger,
         core_node_name,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::CLOCK,
         QoSProfile::SensorData,
@@ -225,6 +227,7 @@ pub async fn subscribe_external_clock(
         node_name,
         names::CLOCK,
         Some(core_node_name),
+        None,
         None,
         QoSProfile::SensorData,
     )

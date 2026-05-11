@@ -291,10 +291,13 @@ pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 
 /// Looks up `(name, tag)` in the nodes cache and translates the matched
 /// entry into a concrete `NodeSource` (Fs / Git / Http) that downstream
-/// resolution can handle directly.
+/// resolution can handle directly. When `variant` is `Some`, the cache
+/// entry's `variants` list is checked and the function errors with a
+/// list of available variants on a miss.
 pub(crate) fn resolve_repo_node_source(
     name: &str,
     tag: &str,
+    variant: Option<&str>,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<NodeSource, String> {
     let (entries, _) =
@@ -306,6 +309,21 @@ pub(crate) fn resolve_repo_node_source(
             nodes_repo_cache_path(peppy_dirs).display()
         )
     })?;
+
+    if let Some(requested) = variant {
+        if entry.variants.is_empty() {
+            return Err(format!(
+                "repo-node `{id}` does not declare any variants, \
+                 but variant `{requested}` was requested"
+            ));
+        }
+        if !entry.variants.iter().any(|v| v == requested) {
+            return Err(format!(
+                "repo-node `{id}` has no variant `{requested}`; available: [{}]",
+                entry.variants.join(", ")
+            ));
+        }
+    }
 
     match entry.source_type {
         RepoSourceKind::Fs => Ok(NodeSource::Fs(PathBuf::from(&entry.path))),
@@ -600,7 +618,7 @@ mod tests {
         let entries = vec![mk_fs_entry("mynode", "1.0", "/tmp/mynode")];
         write_cache(&peppy_dirs, &entries).unwrap();
 
-        let src = resolve_repo_node_source("mynode", "1.0", &peppy_dirs).unwrap();
+        let src = resolve_repo_node_source("mynode", "1.0", None, &peppy_dirs).unwrap();
         assert_eq!(src, NodeSource::Fs(PathBuf::from("/tmp/mynode")));
     }
 
@@ -616,7 +634,7 @@ mod tests {
         )];
         write_cache(&peppy_dirs, &entries).unwrap();
 
-        let src = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap();
+        let src = resolve_repo_node_source("g", "1.0", None, &peppy_dirs).unwrap();
         match src {
             NodeSource::Git {
                 repo_url,
@@ -649,7 +667,7 @@ mod tests {
         )];
         write_cache(&peppy_dirs, &entries).unwrap();
 
-        let src = resolve_repo_node_source("u", "2.0", &peppy_dirs).unwrap();
+        let src = resolve_repo_node_source("u", "2.0", None, &peppy_dirs).unwrap();
         match src {
             NodeSource::Http { url, sha256 } => {
                 assert_eq!(url.as_str(), "https://example.com/archive.tzst");
@@ -666,7 +684,7 @@ mod tests {
         let entries = vec![mk_git_entry("g", "1.0", None, Some("main"))];
         write_cache(&peppy_dirs, &entries).unwrap();
 
-        let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
+        let err = resolve_repo_node_source("g", "1.0", None, &peppy_dirs).unwrap_err();
         assert!(err.contains("no source_uri"), "unexpected error: {err}");
     }
 
@@ -677,7 +695,7 @@ mod tests {
         let entries = vec![mk_git_entry("g", "1.0", Some(""), Some("main"))];
         write_cache(&peppy_dirs, &entries).unwrap();
 
-        let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
+        let err = resolve_repo_node_source("g", "1.0", None, &peppy_dirs).unwrap_err();
         assert!(err.contains("invalid git URL"), "unexpected error: {err}",);
     }
 
@@ -693,7 +711,7 @@ mod tests {
         )];
         write_cache(&peppy_dirs, &entries).unwrap();
 
-        let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
+        let err = resolve_repo_node_source("g", "1.0", None, &peppy_dirs).unwrap_err();
         assert!(err.contains("no resolved_ref"), "unexpected error: {err}");
     }
 
@@ -704,7 +722,7 @@ mod tests {
         let entries = vec![mk_url_entry("u", "1.0", None, None)];
         write_cache(&peppy_dirs, &entries).unwrap();
 
-        let err = resolve_repo_node_source("u", "1.0", &peppy_dirs).unwrap_err();
+        let err = resolve_repo_node_source("u", "1.0", None, &peppy_dirs).unwrap_err();
         assert!(err.contains("no source_uri"), "unexpected error: {err}");
     }
 
@@ -715,7 +733,7 @@ mod tests {
         let entries = vec![mk_url_entry("u", "1.0", Some("not://[invalid"), None)];
         write_cache(&peppy_dirs, &entries).unwrap();
 
-        let err = resolve_repo_node_source("u", "1.0", &peppy_dirs).unwrap_err();
+        let err = resolve_repo_node_source("u", "1.0", None, &peppy_dirs).unwrap_err();
         assert!(err.contains("invalid url"), "unexpected error: {err}");
     }
 
@@ -725,8 +743,49 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
         write_cache(&peppy_dirs, &[]).unwrap();
 
-        let err = resolve_repo_node_source("missing", "0.0", &peppy_dirs).unwrap_err();
+        let err = resolve_repo_node_source("missing", "0.0", None, &peppy_dirs).unwrap_err();
         assert!(err.contains("not found"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolve_with_known_variant_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let mut entry = mk_git_entry("g", "1.0", Some("https://x/repo.git"), Some("main"));
+        entry.variants = vec!["mock".to_owned(), "real".to_owned()];
+        write_cache(&peppy_dirs, &[entry]).unwrap();
+
+        resolve_repo_node_source("g", "1.0", Some("real"), &peppy_dirs)
+            .expect("known variant resolves");
+    }
+
+    #[test]
+    fn resolve_with_unknown_variant_lists_available() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let mut entry = mk_git_entry("g", "1.0", Some("https://x/repo.git"), Some("main"));
+        entry.variants = vec!["mock".to_owned(), "real".to_owned()];
+        write_cache(&peppy_dirs, &[entry]).unwrap();
+
+        let err = resolve_repo_node_source("g", "1.0", Some("ghost"), &peppy_dirs).unwrap_err();
+        assert!(err.contains("ghost"), "missing requested label: {err}");
+        assert!(err.contains("mock"), "missing available list: {err}");
+        assert!(err.contains("real"), "missing available list: {err}");
+    }
+
+    #[test]
+    fn resolve_with_variant_when_entry_has_none_errors_clearly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let entry = mk_git_entry("g", "1.0", Some("https://x/repo.git"), Some("main"));
+        // entry.variants intentionally empty
+        write_cache(&peppy_dirs, &[entry]).unwrap();
+
+        let err = resolve_repo_node_source("g", "1.0", Some("any"), &peppy_dirs).unwrap_err();
+        assert!(
+            err.contains("does not declare any variants"),
+            "unexpected error: {err}"
+        );
     }
 
     // -- launcher cache tests --

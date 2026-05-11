@@ -58,6 +58,18 @@ pub enum Error {
     },
     #[error("Cannot remove node `{node_name}`:{node_tag} because it still has instances")]
     CannotRemoveNodeWithInstances { node_name: String, node_tag: String },
+    #[error(
+        "Variant `{new_variant}` of `{node_name}:{node_tag}` exposes interfaces \
+         that disagree with the canonical variant `{canonical_variant}` already \
+         in the stack. All variants of the same `(name, tag)` must expose \
+         structurally identical interfaces (consumers subscribe variant-agnostic)."
+    )]
+    InterfaceMismatchAcrossVariants {
+        node_name: String,
+        node_tag: String,
+        canonical_variant: String,
+        new_variant: String,
+    },
 
     // -- lifecycle errors
     #[error("Invalid stage transition for `{node_name}`:{node_tag}: cannot go from {from} to {to}")]

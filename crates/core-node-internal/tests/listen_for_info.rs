@@ -23,6 +23,7 @@ async fn listen_for_info_success() {
         names::INFO,
         Some(&started.core_node_name),
         None,
+        None,
         request_payload,
         Duration::from_secs(5),
     )

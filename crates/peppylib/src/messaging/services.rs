@@ -227,6 +227,17 @@ impl ServiceEndpoint {
         let response_target_instance_segment = format_instance_segment(self.instance_id.as_str())
             .unwrap_or_else(|| BROADCAST_MARKER.to_string());
 
+        // Parse target_variant (fifth segment). Either the literal variant
+        // label of this server (when the caller pinned a specific variant)
+        // or `*` (caller didn't pin one and is fanning out across every
+        // variant). Either way, the segment is consumed but not propagated:
+        // the server already knows its own variant and the response routes
+        // back to the caller via the response topic.
+        let target_variant_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+            identifier: identifier.clone(),
+            reason: "missing target variant segment in request".to_string(),
+        })?;
+
         // Parse and validate service root segments
         let expected_root_segments: Vec<_> = self
             .service_root
@@ -286,13 +297,15 @@ impl ServiceEndpoint {
         }
 
         // Construct message_identifier preserving the original target values from the request
-        // This ensures all listeners receiving a broadcast see the same key_expr
+        // (including the variant slot) so all listeners receiving a broadcast
+        // see the same key_expr.
         let message_identifier = format!(
-            "{}/{}/{}/{}/{}/request/{request_id}",
+            "{}/{}/{}/{}/{}/{}/request/{request_id}",
             target_core_node_segment,
             caller_core_node_segment,
             target_instance_segment,
             caller_instance_segment,
+            target_variant_segment,
             self.service_root
         );
 
@@ -378,11 +391,18 @@ impl ServiceMessenger {
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
+        as_variant: &str,
         as_node_name: &str,
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
         messenger
-            .expose_service(as_core_node, as_instance_id, as_node_name, as_service_name)
+            .expose_service(
+                as_core_node,
+                as_instance_id,
+                as_variant,
+                as_node_name,
+                as_service_name,
+            )
             .await
     }
 
@@ -396,6 +416,7 @@ impl ServiceMessenger {
         target_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
+        target_variant: Option<&str>,
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
@@ -408,6 +429,7 @@ impl ServiceMessenger {
                 target_service_name,
                 target_core_node,
                 target_instance_id,
+                target_variant,
                 request_payload,
                 response_timeout,
             )
@@ -416,7 +438,7 @@ impl ServiceMessenger {
 
     /// Sends a lightweight probe to check whether a service is listening.
     ///
-    /// The probe is handled transparently by the service's request loop — the user
+    /// The probe is handled transparently by the service's request loop: the user
     /// handler is never invoked. Returns `true` if the service responds within
     /// [`PROBE_TIMEOUT`], `false` if unreachable.
     #[allow(clippy::too_many_arguments)]
@@ -428,6 +450,7 @@ impl ServiceMessenger {
         target_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
+        target_variant: Option<&str>,
     ) -> Result<bool> {
         match messenger
             .poll_service(
@@ -438,6 +461,7 @@ impl ServiceMessenger {
                 target_service_name,
                 target_core_node,
                 target_instance_id,
+                target_variant,
                 Payload::from_static(SERVICE_PROBE_PAYLOAD),
                 PROBE_TIMEOUT,
             )

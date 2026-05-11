@@ -92,7 +92,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
         .expect("dependent node should be added when dependency exists");
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
-    let dependencies = stack.dependencies_of("brain", "1.0.0");
+    let dependencies = stack.dependencies_of_any_variant("brain", "1.0.0");
     let dependency_names: Vec<_> = dependencies
         .iter()
         .map(|node| node.read().config().manifest.name.as_str().to_owned())
@@ -104,7 +104,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
     );
 
     let dependants = stack
-        .dependents_of("lidar", "1.0.0")
+        .dependents_of_any_variant("lidar", "1.0.0")
         .into_iter()
         .map(|node| node.read().config().manifest.name.as_str().to_owned())
         .collect::<Vec<_>>();

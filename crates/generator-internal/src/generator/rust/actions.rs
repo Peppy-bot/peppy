@@ -69,6 +69,7 @@ pub fn build_action_expose_method(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
+                node_runner.processor().variant(),
                 node_runner.processor().node_name(),
                 ACTION_NAME,
             )

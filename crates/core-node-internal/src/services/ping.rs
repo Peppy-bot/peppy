@@ -17,6 +17,7 @@ pub async fn listen_for_ping(
         messenger,
         core_node_node,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::PING,
     )

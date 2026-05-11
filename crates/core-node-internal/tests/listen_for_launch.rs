@@ -353,6 +353,7 @@ async fn send_launch_origin_and_wait(
         names::STACK_LAUNCH_ACTION,
         None,
         None,
+        None,
         goal_payload,
         config::node::QoSProfile::default(),
         goal_timeout,
@@ -556,13 +557,13 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         result.error_message
     );
 
-    assert!(node_stack.contains(FAKE_UVC_CAMERA, NODE_TAG));
-    assert!(node_stack.contains(FAKE_ROBOT_BRAIN, NODE_TAG));
-    assert!(node_stack.contains(FAKE_OPENARM01_CONTROLLER, NODE_TAG));
+    assert!(node_stack.contains_any_variant(FAKE_UVC_CAMERA, NODE_TAG));
+    assert!(node_stack.contains_any_variant(FAKE_ROBOT_BRAIN, NODE_TAG));
+    assert!(node_stack.contains_any_variant(FAKE_OPENARM01_CONTROLLER, NODE_TAG));
     assert_eq!(node_stack.len(), 4, "root + 3 deployed nodes");
 
     let uvc_camera = node_stack
-        .find(FAKE_UVC_CAMERA, NODE_TAG)
+        .find_any_variant(FAKE_UVC_CAMERA, NODE_TAG)
         .expect("fake_uvc_camera should be in stack");
     assert_eq!(
         uvc_camera.read().instances().len(),
@@ -571,7 +572,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     );
 
     let robot_brain = node_stack
-        .find(FAKE_ROBOT_BRAIN, NODE_TAG)
+        .find_any_variant(FAKE_ROBOT_BRAIN, NODE_TAG)
         .expect("fake_robot_brain should be in stack");
     assert_eq!(
         robot_brain.read().instances().len(),
@@ -580,7 +581,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     );
 
     let controller = node_stack
-        .find(FAKE_OPENARM01_CONTROLLER, NODE_TAG)
+        .find_any_variant(FAKE_OPENARM01_CONTROLLER, NODE_TAG)
         .expect("fake_openarm01_controller should be in stack");
     assert_eq!(
         controller.read().instances().len(),
@@ -698,12 +699,12 @@ async fn listen_for_launch_configuration_succeed() {
         result.error_message
     );
 
-    assert!(node_stack.contains(UVC_NODE_NAME, NODE_TAG));
-    assert!(node_stack.contains(ROBOT_NODE_NAME, NODE_TAG));
+    assert!(node_stack.contains_any_variant(UVC_NODE_NAME, NODE_TAG));
+    assert!(node_stack.contains_any_variant(ROBOT_NODE_NAME, NODE_TAG));
     assert_eq!(node_stack.len(), 3, "root + 2 deployed nodes");
 
     let uvc = node_stack
-        .find(UVC_NODE_NAME, NODE_TAG)
+        .find_any_variant(UVC_NODE_NAME, NODE_TAG)
         .expect("uvc_camera should be in stack");
     assert_eq!(
         uvc.read().instances().len(),
@@ -712,7 +713,7 @@ async fn listen_for_launch_configuration_succeed() {
     );
 
     let brain = node_stack
-        .find(ROBOT_NODE_NAME, NODE_TAG)
+        .find_any_variant(ROBOT_NODE_NAME, NODE_TAG)
         .expect("robot_brain should be in stack");
     assert_eq!(
         brain.read().instances().len(),
@@ -955,22 +956,22 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
     );
 
     assert!(
-        node_stack.contains(BRAIN_NODE, NODE_TAG),
+        node_stack.contains_any_variant(BRAIN_NODE, NODE_TAG),
         "brain should be in stack"
     );
     assert!(
-        node_stack.contains(ARM_NODE, NODE_TAG),
+        node_stack.contains_any_variant(ARM_NODE, NODE_TAG),
         "arm should be in stack"
     );
     assert_eq!(node_stack.len(), 3, "root + 2 repo-sourced nodes");
 
     let brain = node_stack
-        .find(BRAIN_NODE, NODE_TAG)
+        .find_any_variant(BRAIN_NODE, NODE_TAG)
         .expect("brain should be in stack");
     assert_eq!(brain.read().instances().len(), 1);
 
     let arm = node_stack
-        .find(ARM_NODE, NODE_TAG)
+        .find_any_variant(ARM_NODE, NODE_TAG)
         .expect("arm should be in stack");
     assert_eq!(arm.read().instances().len(), 1);
 }
@@ -1018,7 +1019,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
 
     assert!(!result.success, "launch should fail for invalid json5");
     assert!(
-        node_stack.contains(EXISTING_NODE, NODE_TAG),
+        node_stack.contains_any_variant(EXISTING_NODE, NODE_TAG),
         "stack should not be mutated on invalid json5"
     );
 }
@@ -1068,7 +1069,7 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
         "launch should fail when launch file path is a directory"
     );
     assert!(
-        node_stack.contains(EXISTING_NODE, NODE_TAG),
+        node_stack.contains_any_variant(EXISTING_NODE, NODE_TAG),
         "stack should not be mutated on invalid launch file path"
     );
 }
@@ -1127,7 +1128,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
         "launch should fail when a required deployment is missing"
     );
     assert!(
-        node_stack.contains(EXISTING_NODE, NODE_TAG),
+        node_stack.contains_any_variant(EXISTING_NODE, NODE_TAG),
         "stack should not apply a partial plan"
     );
 }
@@ -1207,7 +1208,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
         "launch should fail due to dependency mismatch"
     );
     assert!(
-        node_stack.contains("existing_node", NODE_TAG),
+        node_stack.contains_any_variant("existing_node", NODE_TAG),
         "stack should not be mutated on dependency failure"
     );
 }
@@ -1298,7 +1299,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     .await
     .expect("first launch should complete");
     assert!(result_a.success, "first launch should succeed");
-    assert!(node_stack.contains("node_a", NODE_TAG));
+    assert!(node_stack.contains_any_variant("node_a", NODE_TAG));
 
     let launch_b = r#"
     { peppy_schema: "launcher_v1", deployments: [ { source: { local: "./node_b" }, instances: [ { instance_id: "b1" } ] } ] }
@@ -1317,11 +1318,11 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     assert!(result_b.success, "second launch should succeed");
 
     assert!(
-        !node_stack.contains("node_a", NODE_TAG),
+        !node_stack.contains_any_variant("node_a", NODE_TAG),
         "second request should replace existing stack (remove node_a)"
     );
     assert!(
-        node_stack.contains("node_b", NODE_TAG),
+        node_stack.contains_any_variant("node_b", NODE_TAG),
         "second request should replace existing stack (add node_b)"
     );
 }
@@ -1402,11 +1403,11 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     );
 
     assert!(
-        node_stack.contains("existing_node", NODE_TAG),
+        node_stack.contains_any_variant("existing_node", NODE_TAG),
         "stack should be restored on failure"
     );
     assert!(
-        !node_stack.contains("node_b", NODE_TAG),
+        !node_stack.contains_any_variant("node_b", NODE_TAG),
         "node_b should not be present after failed launch"
     );
 }
@@ -1481,11 +1482,11 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
     );
 
     assert!(
-        node_stack.contains("existing_node", NODE_TAG),
+        node_stack.contains_any_variant("existing_node", NODE_TAG),
         "stack should be restored on build_cmd failure"
     );
     assert!(
-        !node_stack.contains("failing_node", NODE_TAG),
+        !node_stack.contains_any_variant("failing_node", NODE_TAG),
         "failing_node should not be present after failed launch"
     );
 }
@@ -1566,11 +1567,11 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     );
 
     assert!(
-        node_stack.contains("existing_node", NODE_TAG),
+        node_stack.contains_any_variant("existing_node", NODE_TAG),
         "stack should be restored on run_cmd failure"
     );
     assert!(
-        !node_stack.contains(NODE_NAME, NODE_TAG),
+        !node_stack.contains_any_variant(NODE_NAME, NODE_TAG),
         "{NODE_NAME} should not be present after failed launch"
     );
 
@@ -1841,7 +1842,7 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
         result.error_message
     );
     assert!(
-        node_stack.contains(ROBOT_NODE_NAME, NODE_TAG),
+        node_stack.contains_any_variant(ROBOT_NODE_NAME, NODE_TAG),
         "robot_brain_repo should be in stack"
     );
 }

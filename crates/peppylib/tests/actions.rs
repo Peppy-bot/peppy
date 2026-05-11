@@ -37,6 +37,7 @@ async fn action_messenger_communication() {
         &server_handle,
         core_node,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         action_name,
     )
@@ -106,6 +107,7 @@ async fn action_messenger_communication() {
         action_name,
         Some(core_node),
         Some(instance_id),
+        None,
         goal_payload,
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -172,6 +174,7 @@ async fn setup_goal_handshake(
         &server_handle,
         core_node,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         action_name,
     )
@@ -218,6 +221,7 @@ async fn setup_goal_handshake(
         action_name,
         Some(core_node),
         Some(instance_id),
+        None,
         Payload::from_static(b"goal data"),
         QoSProfile::Reliable,
         Duration::from_secs(2),

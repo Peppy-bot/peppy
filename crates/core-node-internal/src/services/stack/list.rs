@@ -20,6 +20,7 @@ pub async fn listen_for_stack_list(
         messenger,
         core_node_node,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::STACK_LIST,
     )

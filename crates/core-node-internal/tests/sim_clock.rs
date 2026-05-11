@@ -28,6 +28,7 @@ async fn sim_clock_service_returns_not_ready_until_first_tick() {
         names::CLOCK,
         Some(&started.core_node_name),
         None,
+        None,
         request_payload,
         Duration::from_secs(2),
     )
@@ -49,6 +50,7 @@ async fn sim_clock_service_serves_external_tick_after_publish() {
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
+        config::runtime::DEFAULT_VARIANT,
         &started.core_node_name,
         names::CLOCK,
         QoSProfile::SensorData,
@@ -82,6 +84,7 @@ async fn sim_clock_service_serves_external_tick_after_publish() {
             &started.core_node_name,
             names::CLOCK,
             Some(&started.core_node_name),
+            None,
             None,
             request_payload,
             attempt_timeout,

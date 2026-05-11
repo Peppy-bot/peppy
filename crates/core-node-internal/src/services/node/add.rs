@@ -51,6 +51,7 @@ pub async fn listen_for_node_add(
         messenger,
         core_node_name,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::NODE_ADD_ACTION,
     )
@@ -832,9 +833,14 @@ pub(crate) async fn run_node_add(
         };
 
         // Capture the variant label alongside `effective_variant` so it can
-        // be persisted on the `NodeEntity` after `push_config` — the daemon
-        // reads it back out of the entity when answering `node_info`.
-        let variant_name: Option<String> = effective_variant.as_ref().map(variant_label);
+        // be persisted on the `NodeEntity` after `push_config`. The daemon
+        // reads it back out of the entity when answering `node_info`. Bare
+        // `name:tag` adds (no variant) resolve to [`node_stack::DEFAULT_VARIANT`]
+        // so every entity in the stack always carries a populated variant.
+        let variant_name: String = effective_variant
+            .as_ref()
+            .map(variant_label)
+            .unwrap_or_else(|| node_stack::DEFAULT_VARIANT.to_owned());
 
         // Capture the root source path before variant resolution may overwrite it.
         // The .peppy/git.hash file is written by `peppy node sync` at the root
@@ -981,11 +987,15 @@ pub(crate) async fn run_node_add(
             matches!(&goal.source, NodeSource::Fs(_)) && goal.git_hash != STACK_LAUNCH_GIT_HASH;
         let verify_codegen_fingerprint = is_local_root && variant_source_is_local;
 
-        // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
-        // now that we know the node name and tag from the resolved config.
+        // Rename log file to the canonical
+        // {name}_{tag}__{variant}_{timestamp}.log format now that we know
+        // the node name, tag, and variant from the resolved config.
         let node_name = node_config.manifest.name.as_str();
         let node_tag = &node_config.manifest.tag;
-        let canonical_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
+        let canonical_filename = format!(
+            "{}_{}__{}_{}.log",
+            node_name, node_tag, variant_name, timestamp
+        );
         let canonical_log_path = log_dir.join(&canonical_filename);
         let log_path = if std::fs::rename(&log_path, &canonical_log_path).is_ok() {
             canonical_log_path
@@ -1160,9 +1170,10 @@ async fn handle_goal_request(
 async fn shutdown_existing_instances(
     node_name: &str,
     node_tag: &str,
+    variant: &str,
     ctx: &ProcessNodeAddContext,
 ) -> std::result::Result<(), String> {
-    let Some(entity) = ctx.action.node_stack.find(node_name, node_tag) else {
+    let Some(entity) = ctx.action.node_stack.find(node_name, node_tag, variant) else {
         return Ok(());
     };
 
@@ -1226,7 +1237,7 @@ async fn process_node_add(
     source_path: PathBuf,
     verify_codegen_fingerprint: bool,
     cleanup_dir: Option<PathBuf>,
-    variant_name: Option<String>,
+    variant_name: String,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
     // Reject any forbidden env vars early so the user gets a fast failure;
@@ -1328,7 +1339,7 @@ async fn process_node_add(
         |name, tag| {
             ctx.action
                 .node_stack
-                .find(name, tag)
+                .find_any_variant(name, tag)
                 .map(|e| e.read().config().clone())
         },
     );
@@ -1377,7 +1388,7 @@ async fn process_node_add(
     // config. `push_config` rejects replacements that still have live
     // instances (it would otherwise orphan them), so we shut them down
     // first to satisfy that precondition.
-    if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
+    if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &variant_name, &ctx).await {
         let msg = format!("Failed to shutdown existing node instances: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);
@@ -1400,12 +1411,16 @@ async fn process_node_add(
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    let entity_handle = match ctx.action.node_stack.find(&node_name, &node_tag) {
+    let entity_handle = match ctx
+        .action
+        .node_stack
+        .find(&node_name, &node_tag, &variant_name)
+    {
         Some(handle) => handle,
         None => {
             let msg = format!(
-                "internal error: just-pushed entity {}:{} disappeared from the stack",
-                node_name, node_tag
+                "internal error: just-pushed entity {}:{}@{} disappeared from the stack",
+                node_name, node_tag, variant_name
             );
             write_error_to_log(&ctx.log_file, &msg);
             return NodeAddResult::failure(&ctx.log_path, msg);
@@ -1422,15 +1437,21 @@ async fn process_node_add(
     ));
     {
         let mut guard = entity_handle.write();
-        ctx.action
-            .node_stack
-            .set_add_log_path(&node_name, &node_tag, ctx.log_path.clone());
+        ctx.action.node_stack.set_add_log_path(
+            &node_name,
+            &node_tag,
+            &variant_name,
+            ctx.log_path.clone(),
+        );
         guard.set_pending_working_dir(Arc::clone(&working_dir_guard));
     }
 
-    debug!("Added node {}:{} (pending build)", node_name, node_tag);
+    debug!(
+        "Added node {}:{}@{} (pending build)",
+        node_name, node_tag, variant_name
+    );
 
-    NodeAddResult::success(&ctx.log_path, node_name, node_tag)
+    NodeAddResult::success(&ctx.log_path, node_name, node_tag, variant_name)
 }
 
 #[cfg(test)]

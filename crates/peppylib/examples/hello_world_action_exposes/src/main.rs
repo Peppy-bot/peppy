@@ -354,6 +354,7 @@ async fn main() {
         &receiver_handle,
         &core_node_name,
         &as_instance_id,
+        config::runtime::DEFAULT_VARIANT,
         NODE_NAME,
         ACTION_NAME,
     )

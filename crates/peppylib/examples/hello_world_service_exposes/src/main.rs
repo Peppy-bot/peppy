@@ -73,6 +73,7 @@ async fn main() {
         &receiver_handle,
         &core_node,
         &instance_id,
+        config::runtime::DEFAULT_VARIANT,
         NODE_NAME,
         SERVICE_NAME,
     )

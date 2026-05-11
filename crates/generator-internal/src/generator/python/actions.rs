@@ -287,6 +287,7 @@ pub fn build_exposed_action(
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
+    builder.line("node_runner.variant(),");
     builder.line("node_runner.node_name(),");
     builder.line("ACTION_NAME,");
     builder.dedent();
@@ -748,9 +749,9 @@ pub fn build_consumed_action(
     // fire_goal @classmethod
     builder.line("@classmethod");
     if has_goal_request {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None, target_variant: Optional[str] = None) -> Self:");
     } else {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None, target_variant: Optional[str] = None) -> Self:");
     }
     builder.indent();
 
@@ -783,6 +784,7 @@ pub fn build_consumed_action(
     builder.line("TARGET_ACTION_NAME,");
     builder.line("target_core_node,");
     builder.line("target_instance_id,");
+    builder.line("target_variant,");
     builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");

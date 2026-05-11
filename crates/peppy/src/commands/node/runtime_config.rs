@@ -108,6 +108,7 @@ async fn print_runtime_config_async(
         },
         node_name,
         conn.core_node_name,
+        config::runtime::DEFAULT_VARIANT,
     )
     .map_err(Error::PeppyConfig)?;
 

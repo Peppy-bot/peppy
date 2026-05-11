@@ -111,7 +111,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
     let deps = stack
-        .dependencies_of("brain", "1.0.0")
+        .dependencies_of_any_variant("brain", "1.0.0")
         .into_iter()
         .map(|node| {
             let guard = node.read();
@@ -128,7 +128,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
     );
 
     let dependants = stack
-        .dependents_of("controller", "1.0.0")
+        .dependents_of_any_variant("controller", "1.0.0")
         .into_iter()
         .map(|node| node.read().config().manifest.name.as_str().to_owned())
         .collect::<Vec<_>>();

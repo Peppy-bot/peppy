@@ -37,7 +37,7 @@ async fn repo_node_add_single_no_deps_fs_source() {
         "add should succeed, err={:?}",
         res.error_message
     );
-    assert!(node_stack.contains("standalone", "0.1.0"));
+    assert!(node_stack.contains_any_variant("standalone", "0.1.0"));
     assert_eq!(node_stack.len(), 2, "root + standalone");
 }
 
@@ -86,9 +86,9 @@ async fn repo_node_add_chain_of_three_fs() {
         "add should succeed, err={:?}",
         res.error_message
     );
-    assert!(node_stack.contains("a", "0.1.0"));
-    assert!(node_stack.contains("b", "0.1.0"));
-    assert!(node_stack.contains("c", "0.1.0"));
+    assert!(node_stack.contains_any_variant("a", "0.1.0"));
+    assert!(node_stack.contains_any_variant("b", "0.1.0"));
+    assert!(node_stack.contains_any_variant("c", "0.1.0"));
     assert_eq!(node_stack.len(), 4, "root + a + b + c");
     assert_eq!(
         res.node_name.as_deref(),
@@ -143,7 +143,10 @@ async fn repo_node_add_diamond() {
         res.error_message
     );
     for name in ["a", "b", "c", "d"] {
-        assert!(node_stack.contains(name, "0.1.0"), "missing {name}");
+        assert!(
+            node_stack.contains_any_variant(name, "0.1.0"),
+            "missing {name}"
+        );
     }
     assert_eq!(
         node_stack.len(),
@@ -211,9 +214,9 @@ async fn repo_node_add_partial_stack_coverage() {
     // Stack: root + b + c + a = 4. B's stack entry is replaced in-place
     // by the fresh materialization (same key, same count), and c + a are
     // added as new entries.
-    assert!(node_stack.contains("a", "0.1.0"));
-    assert!(node_stack.contains("b", "0.1.0"));
-    assert!(node_stack.contains("c", "0.1.0"));
+    assert!(node_stack.contains_any_variant("a", "0.1.0"));
+    assert!(node_stack.contains_any_variant("b", "0.1.0"));
+    assert!(node_stack.contains_any_variant("c", "0.1.0"));
     assert_eq!(node_stack.len(), 4);
 }
 
@@ -292,11 +295,11 @@ async fn repo_node_add_does_not_materialize_nodes_outside_declared_tree() {
     // Stack = root + c + b + a = 4. c is replaced in-place when re-
     // materialized; b and a are new.
     assert_eq!(node_stack.len(), 4);
-    assert!(node_stack.contains("a", "0.1.0"));
-    assert!(node_stack.contains("b", "0.1.0"));
-    assert!(node_stack.contains("c", "0.1.0"));
+    assert!(node_stack.contains_any_variant("a", "0.1.0"));
+    assert!(node_stack.contains_any_variant("b", "0.1.0"));
+    assert!(node_stack.contains_any_variant("c", "0.1.0"));
     assert!(
-        !node_stack.contains("d", "0.1.0"),
+        !node_stack.contains_any_variant("d", "0.1.0"),
         "d must never be added — no manifest in the tree declares it"
     );
 }
@@ -390,7 +393,10 @@ async fn repo_node_add_deep_mixed_tree_stack_and_cache_at_multiple_levels() {
         "root + b + e (pre-populated) + d + c + a (newly added)"
     );
     for name in ["a", "b", "c", "d", "e"] {
-        assert!(node_stack.contains(name, "0.1.0"), "missing {name}");
+        assert!(
+            node_stack.contains_any_variant(name, "0.1.0"),
+            "missing {name}"
+        );
     }
 }
 
@@ -463,7 +469,7 @@ async fn repo_node_add_root_variant_only() {
         "add should succeed, err={:?}",
         res.error_message
     );
-    assert!(node_stack.contains("with_variants", "0.1.0"));
+    assert!(node_stack.contains_any_variant("with_variants", "0.1.0"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -542,8 +548,8 @@ async fn repo_node_add_dep_variants_only_no_root() {
         "add should succeed, err={:?}",
         res.error_message
     );
-    assert!(node_stack.contains("dep_with_variant", "0.1.0"));
-    assert!(node_stack.contains("target", "1.0.0"));
+    assert!(node_stack.contains_any_variant("dep_with_variant", "0.1.0"));
+    assert!(node_stack.contains_any_variant("target", "1.0.0"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -586,7 +592,7 @@ async fn repo_node_add_dep_override_on_unrelated_node_warns() {
         "add should succeed despite orphan override, err={:?}",
         res.error_message
     );
-    assert!(node_stack.contains("target", "1.0.0"));
+    assert!(node_stack.contains_any_variant("target", "1.0.0"));
 
     let mut feedback = Vec::new();
     while let Ok(f) = fb_rx.try_recv() {
@@ -721,10 +727,10 @@ async fn repo_node_add_re_add_swaps_dep_variant() {
         Some("mock-b".to_owned()),
         "dep variant should be swapped by the second add"
     );
-    assert!(node_stack.contains("target", "1.0.0"));
+    assert!(node_stack.contains_any_variant("target", "1.0.0"));
 }
 
 fn read_variant(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> Option<String> {
-    let handle = node_stack.find(name, tag)?;
-    handle.read().variant_name().map(str::to_owned)
+    let handle = node_stack.find_any_variant(name, tag)?;
+    Some(handle.read().variant_name().to_owned())
 }

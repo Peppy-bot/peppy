@@ -46,6 +46,7 @@ pub async fn listen_for_repo_refresh(
         messenger,
         core_node_name,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::REPO_REFRESH_ACTION,
     )

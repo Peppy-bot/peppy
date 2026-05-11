@@ -134,6 +134,7 @@ async fn services_communication_no_target_instance_id() {
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
@@ -195,6 +196,7 @@ if __name__ == "__main__":
         },
         UVC_CAMERA_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -424,6 +426,7 @@ async fn services_communication_exposed_service_without_request_body() {
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
@@ -484,6 +487,7 @@ if __name__ == "__main__":
         },
         UVC_CAMERA_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -695,6 +699,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
         },
         CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
@@ -756,6 +761,7 @@ if __name__ == "__main__":
         },
         UVC_CAMERA_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let exposer1_runtime_config_path = temp_dir_exposer1.path().join("peppy_runtime.json5");
@@ -821,6 +827,7 @@ if __name__ == "__main__":
         },
         UVC_CAMERA_NODE_NAME,
         TEST_CORE_NODE,
+        config::runtime::DEFAULT_VARIANT,
     )
     .unwrap();
     let exposer2_runtime_config_path = temp_dir_exposer2.path().join("peppy_runtime.json5");

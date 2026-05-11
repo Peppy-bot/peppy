@@ -182,13 +182,13 @@ pub(crate) async fn run_repo_node_add(
     let mut last_sub_log_path: Option<PathBuf> = None;
     for info in tree.topological_order() {
         let key = info.key();
-        let Some(node) = node_lookup.get(&key) else {
+        let Some(node) = node_lookup.get(&(key.name.clone(), key.tag.clone())) else {
             return fail(
                 &log_file,
                 &log_path,
                 format!(
-                    "internal error: topological order produced a node not in the batch ({}:{})",
-                    key.0, key.1
+                    "internal error: topological order produced a node not in the batch ({})",
+                    key.label()
                 ),
             );
         };
@@ -208,15 +208,19 @@ pub(crate) async fn run_repo_node_add(
         // in place. On rollback we re-install this config instead of
         // removing the slot, so an in-place replacement that later fails
         // elsewhere in the batch does not wipe the user's prior state.
+        let node_variant = node
+            .variant_override
+            .as_deref()
+            .unwrap_or(node_stack::DEFAULT_VARIANT);
         let previous = action_context
             .node_stack
-            .find(&node.name, &node.tag)
+            .find(&node.name, &node.tag, node_variant)
             .map(|handle| {
                 let guard = handle.read();
                 PreviousConfig {
                     config: guard.config().clone(),
                     config_path: guard.config_path().to_path_buf(),
-                    variant_name: guard.variant_name().map(ToString::to_string),
+                    variant_name: guard.variant_name().to_owned(),
                 }
             });
 
@@ -247,6 +251,7 @@ pub(crate) async fn run_repo_node_add(
         rollback.added.push(RollbackEntry {
             name: node.name.clone(),
             tag: node.tag.clone(),
+            variant: node_variant.to_owned(),
             previous,
         });
     }
@@ -264,7 +269,13 @@ pub(crate) async fn run_repo_node_add(
     );
 
     let effective_log = last_sub_log_path.unwrap_or(log_path);
-    NodeAddResult::success(effective_log, root_name, root_tag)
+    let root_variant = resolution
+        .to_add
+        .iter()
+        .find(|n| n.is_root)
+        .and_then(|n| n.variant_override.clone())
+        .unwrap_or_else(|| node_stack::DEFAULT_VARIANT.to_owned());
+    NodeAddResult::success(effective_log, root_name, root_tag, root_variant)
 }
 
 fn kind_label(kind: RepoSourceKind) -> &'static str {
@@ -484,10 +495,18 @@ async fn run_single_batched_add(
         sub_goal = sub_goal.with_variant_name(v.clone());
     }
 
-    // Each sub-add gets its own log file derived from `{name}_{tag}`.
+    // Each sub-add gets its own log file derived from
+    // `{name}_{tag}__{variant}`.
     let log_dir = action_context.peppy_dirs.logs_dir_add();
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-    let log_filename = format!("{}_{}_{}.log", node.name, node.tag, timestamp);
+    let log_variant = node
+        .variant_override
+        .as_deref()
+        .unwrap_or(node_stack::DEFAULT_VARIANT);
+    let log_filename = format!(
+        "{}_{}__{}_{}.log",
+        node.name, node.tag, log_variant, timestamp
+    );
     let (log_file, log_path) = create_action_log_file(&log_dir, &log_filename)
         .map_err(|e| format!("Failed to create sub-add log: {}", e))?;
 
@@ -517,18 +536,19 @@ async fn run_single_batched_add(
 
 /// Snapshot of a stack entity captured before the batch replaced it, so
 /// rollback can re-install the prior config instead of removing the slot.
-/// Artifact/stage state is intentionally omitted — a successful rollback
+/// Artifact/stage state is intentionally omitted: a successful rollback
 /// returns the entity to `Added` (pending build); any previously built
 /// artifact remains on disk and a follow-up `node build` rewires it.
 struct PreviousConfig {
     config: config::node::NodeConfig,
     config_path: PathBuf,
-    variant_name: Option<String>,
+    variant_name: String,
 }
 
 struct RollbackEntry {
     name: String,
     tag: String,
+    variant: String,
     previous: Option<PreviousConfig>,
 }
 
@@ -566,6 +586,7 @@ impl Drop for RollbackGuard {
             let RollbackEntry {
                 name,
                 tag,
+                variant,
                 previous,
             } = entry;
             match previous {
@@ -575,15 +596,21 @@ impl Drop for RollbackGuard {
                     prev.config_path,
                     prev.variant_name,
                 ) {
-                    Ok(()) => debug!("Rolled back batched replacement of {}:{}", name, tag),
+                    Ok(()) => debug!(
+                        "Rolled back batched replacement of {}:{}@{}",
+                        name, tag, variant
+                    ),
                     Err(e) => warn!(
-                        "Batch-add rollback (restore previous) failed for {}:{} — {}",
-                        name, tag, e
+                        "Batch-add rollback (restore previous) failed for {}:{}@{}: {}",
+                        name, tag, variant, e
                     ),
                 },
-                None => match self.node_stack.remove_config(&name, &tag) {
-                    Ok(_) => debug!("Rolled back batched add of {}:{}", name, tag),
-                    Err(e) => warn!("Batch-add rollback failed for {}:{} — {}", name, tag, e),
+                None => match self.node_stack.remove_config(&name, &tag, &variant) {
+                    Ok(_) => debug!("Rolled back batched add of {}:{}@{}", name, tag, variant),
+                    Err(e) => warn!(
+                        "Batch-add rollback failed for {}:{}@{}: {}",
+                        name, tag, variant, e
+                    ),
                 },
             }
         }

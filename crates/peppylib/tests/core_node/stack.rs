@@ -22,6 +22,7 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
         &server,
         CORE_NODE,
         SERVER_INSTANCE,
+        config::runtime::DEFAULT_VARIANT,
         CORE_NODE,
         names::STACK_LIST,
     )
@@ -76,7 +77,7 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
         }],
-        variant_name: Some("default".to_string()),
+        variant: "default".to_owned(),
     };
     let sensor = SerializedNode {
         name: "sensor".to_string(),
@@ -85,7 +86,7 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
         artifact_path: None,
         stage: Some(NodeStage::Added),
         instances: vec![],
-        variant_name: None,
+        variant: "default".to_owned(),
     };
     let graph = SerializedNodeGraph {
         nodes: vec![brain.clone(), sensor.clone()],
@@ -127,7 +128,7 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
         }],
-        variant_name: Some("default".to_string()),
+        variant: "default".to_owned(),
     };
     let sensor = SerializedNode {
         name: "sensor".to_string(),
@@ -136,7 +137,7 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
         artifact_path: None,
         stage: Some(NodeStage::Added),
         instances: vec![],
-        variant_name: None,
+        variant: "default".to_owned(),
     };
     let graph = SerializedNodeGraph {
         nodes: vec![brain.clone(), sensor.clone()],

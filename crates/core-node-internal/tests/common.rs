@@ -72,6 +72,7 @@ pub async fn wait_until_service_reachable(
             target_service_name,
             Some(target_core_node),
             Some(target_instance_id),
+            None,
         )
         .await
         {
@@ -105,6 +106,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         &started.core_node_name,
         names::CLOCK,
         Some(&started.core_node_name),
+        None,
         None,
         request_payload,
         Duration::from_secs(5),
@@ -149,6 +151,7 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         &started.core_node_name,
         names::CLOCK,
         Some(&started.core_node_name),
+        None,
         None,
         QoSProfile::SensorData,
     )
@@ -254,6 +257,7 @@ pub fn build_runtime_config_json5(
         },
         node_name,
         core_node_name,
+        config::runtime::DEFAULT_VARIANT,
     )
     .expect("runtime config should be valid");
     serde_json5::to_string(&runtime_config).expect("runtime config should serialize")
@@ -332,6 +336,7 @@ async fn send_node_run_and_wait_internal(
         core_node_name,
         names::NODE_RUN_ACTION,
         Some(core_node_name),
+        None,
         None,
         goal_payload,
         QoSProfile::default(),
@@ -528,6 +533,7 @@ async fn send_node_add_and_wait_internal<'a>(
         names::NODE_ADD_ACTION,
         Some(core_node_name),
         None,
+        None,
         goal_payload,
         QoSProfile::default(),
         goal_timeout,
@@ -652,6 +658,7 @@ pub async fn send_node_build_and_wait(
         core_node_name,
         names::NODE_BUILD_ACTION,
         Some(core_node_name),
+        None,
         None,
         goal_payload,
         QoSProfile::default(),
@@ -1509,7 +1516,7 @@ async fn spawn_real_running_instance_inner(
 ) -> TestRunningInstance {
     let handle = started
         .node_stack
-        .find(name, tag)
+        .find_any_variant(name, tag)
         .expect("spawn_real_running_instance: entity should exist");
     let (output_sinks, _feedback_tx, drain) =
         make_real_output_sinks(&started.peppy_dirs, instance_id);
@@ -1586,7 +1593,7 @@ pub async fn real_build_and_spawn_instance(
 
     let handle = started
         .node_stack
-        .find(name, tag)
+        .find_any_variant(name, tag)
         .expect("real_build_and_spawn_instance: entity should exist");
 
     let working_dir = TempDir::new().expect("working_dir tempdir");

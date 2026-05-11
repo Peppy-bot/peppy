@@ -32,6 +32,7 @@ async fn main() {
         topic_name,
         None,
         None,
+        None,
         qos,
     )
     .await

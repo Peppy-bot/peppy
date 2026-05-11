@@ -10,6 +10,11 @@ pub struct NodeRemoveRequest {
     pub node_name: String,
     pub tag: String,
     pub stop_instances: bool,
+    /// Variant label of the node to remove. `None` is wire-encoded as the
+    /// empty string, which the daemon resolves per the bare-form rule:
+    /// matches when exactly one variant of `(name, tag)` exists, otherwise
+    /// errors with the available variants.
+    pub variant: Option<String>,
 }
 
 impl NodeRemoveRequest {
@@ -18,11 +23,17 @@ impl NodeRemoveRequest {
             node_name: node_name.into(),
             tag: tag.into(),
             stop_instances: false,
+            variant: None,
         }
     }
 
     pub fn with_stop_instances(mut self, stop_instances: bool) -> Self {
         self.stop_instances = stop_instances;
+        self
+    }
+
+    pub fn with_variant(mut self, variant: impl Into<String>) -> Self {
+        self.variant = Some(variant.into());
         self
     }
 
@@ -33,6 +44,7 @@ impl NodeRemoveRequest {
             request.set_node_name(&self.node_name);
             request.set_stop_instances(self.stop_instances);
             request.set_tag(&self.tag);
+            request.set_variant(self.variant.as_deref().unwrap_or(""));
         }
         encode_message(&builder)
     }
@@ -44,6 +56,7 @@ impl NodeRemoveRequest {
             node_name: request.get_node_name()?.to_str()?.to_owned(),
             tag: request.get_tag()?.to_str()?.to_owned(),
             stop_instances: request.get_stop_instances(),
+            variant: optional_text(request.get_variant()?.to_str()?),
         })
     }
 }

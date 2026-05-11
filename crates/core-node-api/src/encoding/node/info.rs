@@ -21,6 +21,11 @@ use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_t
 pub struct NodeInfoRequest {
     pub node_name: String,
     pub node_tag: String,
+    /// Variant label of the node to look up. `None` is wire-encoded as the
+    /// empty string, which the daemon resolves per the bare-form rule:
+    /// matches when exactly one variant of `(name, tag)` exists, otherwise
+    /// errors with the available variants.
+    pub variant: Option<String>,
 }
 
 impl NodeInfoRequest {
@@ -28,7 +33,13 @@ impl NodeInfoRequest {
         Self {
             node_name: node_name.into(),
             node_tag: node_tag.into(),
+            variant: None,
         }
+    }
+
+    pub fn with_variant(mut self, variant: impl Into<String>) -> Self {
+        self.variant = Some(variant.into());
+        self
     }
 
     pub fn encode(&self) -> Result<Payload> {
@@ -37,6 +48,7 @@ impl NodeInfoRequest {
             let mut request = builder.init_root::<node_capnp::node_info_request::Builder>();
             request.set_node_name(&self.node_name);
             request.set_node_tag(&self.node_tag);
+            request.set_variant(self.variant.as_deref().unwrap_or(""));
         }
         encode_message(&builder)
     }
@@ -47,6 +59,7 @@ impl NodeInfoRequest {
         Ok(Self {
             node_name: request.get_node_name()?.to_str()?.to_owned(),
             node_tag: request.get_node_tag()?.to_str()?.to_owned(),
+            variant: optional_text(request.get_variant()?.to_str()?),
         })
     }
 }
@@ -73,9 +86,9 @@ pub struct NodeInfo {
     pub add_log_path: Option<PathBuf>,
     /// Per-instance run log paths, aligned with `instances` (same order).
     pub run_log_paths: Vec<PathBuf>,
-    /// Variant label captured at `node add` time, if any. `None` for
-    /// the synthetic root entity and for non-variant add paths.
-    pub variant_name: Option<String>,
+    /// Variant label captured at `node add` time. Always populated; bare
+    /// `name:tag` adds resolve to `"default"`.
+    pub variant: String,
 }
 
 /// Response payload for the `node_info` service.
@@ -138,7 +151,7 @@ impl NodeInfoResponse {
                             paths_builder.set(i as u32, path.to_string_lossy().as_ref());
                         }
                     }
-                    found.set_variant_name(info.variant_name.as_deref().unwrap_or(""));
+                    found.set_variant_name(&info.variant);
                 }
             }
         }
@@ -180,7 +193,7 @@ impl NodeInfoResponse {
                 for i in 0..run_log_paths_reader.len() {
                     run_log_paths.push(PathBuf::from(run_log_paths_reader.get(i)?.to_str()?));
                 }
-                let variant_name = optional_text(found.get_variant_name()?.to_str()?);
+                let variant = found.get_variant_name()?.to_str()?.to_owned();
                 Ok(NodeInfoResponse::Found(Box::new(NodeInfo {
                     config,
                     config_integrity,
@@ -188,7 +201,7 @@ impl NodeInfoResponse {
                     instances,
                     add_log_path,
                     run_log_paths,
-                    variant_name,
+                    variant,
                 })))
             }
         }
@@ -226,7 +239,7 @@ mod tests {
             .expect("resolve config")
     }
 
-    fn info_with_variant(variant_name: Option<String>) -> NodeInfo {
+    fn info_with_variant(variant: impl Into<String>) -> NodeInfo {
         NodeInfo {
             config: sample_config_for_roundtrip(),
             config_integrity: "0".repeat(64),
@@ -234,13 +247,13 @@ mod tests {
             instances: vec![],
             add_log_path: None,
             run_log_paths: vec![],
-            variant_name,
+            variant: variant.into(),
         }
     }
 
     #[test]
-    fn node_info_response_roundtrips_variant_name_some() {
-        let info = info_with_variant(Some("macos".to_string()));
+    fn node_info_response_roundtrips_named_variant() {
+        let info = info_with_variant("macos");
         let encoded = NodeInfoResponse::Found(Box::new(info))
             .encode()
             .expect("encoding should succeed");
@@ -248,15 +261,15 @@ mod tests {
 
         match decoded {
             NodeInfoResponse::Found(info) => {
-                assert_eq!(info.variant_name.as_deref(), Some("macos"));
+                assert_eq!(info.variant, "macos");
             }
             NodeInfoResponse::NotInStack => panic!("expected Found"),
         }
     }
 
     #[test]
-    fn node_info_response_roundtrips_variant_name_none() {
-        let info = info_with_variant(None);
+    fn node_info_response_roundtrips_default_variant() {
+        let info = info_with_variant("default");
         let encoded = NodeInfoResponse::Found(Box::new(info))
             .encode()
             .expect("encoding should succeed");
@@ -264,9 +277,28 @@ mod tests {
 
         match decoded {
             NodeInfoResponse::Found(info) => {
-                assert!(info.variant_name.is_none());
+                assert_eq!(info.variant, "default");
             }
             NodeInfoResponse::NotInStack => panic!("expected Found"),
         }
+    }
+
+    #[test]
+    fn node_info_request_round_trips_with_explicit_variant() {
+        let encoded = NodeInfoRequest::new("sensor", "0.1.0")
+            .with_variant("realsense_d405")
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeInfoRequest::decode(&encoded).expect("decoding should succeed");
+        assert_eq!(decoded.variant.as_deref(), Some("realsense_d405"));
+    }
+
+    #[test]
+    fn node_info_request_bare_form_decodes_with_no_variant() {
+        let encoded = NodeInfoRequest::new("sensor", "0.1.0")
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeInfoRequest::decode(&encoded).expect("decoding should succeed");
+        assert!(decoded.variant.is_none());
     }
 }

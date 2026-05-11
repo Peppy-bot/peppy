@@ -33,6 +33,7 @@ async fn topic_messenger_communication() {
         topic_name,
         None, // Accept messages from any core node
         None, // Accept messages from any instance
+        None,
         QoSProfile::Reliable,
     )
     .await
@@ -46,6 +47,7 @@ async fn topic_messenger_communication() {
         &sender_handle,
         core_node,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         topic_name,
         QoSProfile::Reliable,

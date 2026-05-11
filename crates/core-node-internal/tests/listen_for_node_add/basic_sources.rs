@@ -41,7 +41,7 @@ async fn listen_for_node_fs_add_success() {
         add_result.error_message
     );
 
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
     // `add` only adds the node to the NodeStack but doesn't spawn any instance
@@ -89,7 +89,7 @@ async fn listen_for_node_git_add_success() {
         add_result.error_message
     );
 
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
     assert_eq!(
@@ -133,7 +133,7 @@ async fn listen_for_node_git_add_with_ref_success() {
         "node_add should succeed, got error: {:?}",
         add_result_head.error_message
     );
-    assert!(node_stack.contains(TARGET_NODE_NAME, "0.2.0"));
+    assert!(node_stack.contains_any_variant(TARGET_NODE_NAME, "0.2.0"));
 
     let add_result_ref = send_node_add_and_wait(
         &started_core_node.caller_handle,
@@ -155,7 +155,7 @@ async fn listen_for_node_git_add_with_ref_success() {
         "node_add should succeed, got error: {:?}",
         add_result_ref.error_message
     );
-    assert!(node_stack.contains(TARGET_NODE_NAME, "0.1.0"));
+    assert!(node_stack.contains_any_variant(TARGET_NODE_NAME, "0.1.0"));
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_http_add_success() {
@@ -240,7 +240,7 @@ async fn listen_for_node_http_add_success() {
         add_result.error_message
     );
 
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
     assert_eq!(
@@ -290,7 +290,7 @@ async fn listen_for_node_http_add_rejects_wrong_sha256() {
         "error should mention checksum mismatch, got: {:?}",
         add_result.error_message
     );
-    assert!(!node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(!node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG));
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_http_add_accepts_correct_sha256() {
@@ -329,7 +329,7 @@ async fn listen_for_node_http_add_accepts_correct_sha256() {
         "node_add should succeed with correct sha256, got error: {:?}",
         add_result.error_message
     );
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert!(node_stack.contains_any_variant(TARGET_NODE_NAME, TARGET_NODE_TAG));
 }
 /// Adding a node from a git source whose config has a default variant with a
 /// local deployment source must succeed — fingerprint verification must not
@@ -433,10 +433,10 @@ async fn listen_for_node_git_add_with_default_local_variant_success() {
         add_result.error_message
     );
 
-    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+    assert!(node_stack.contains_any_variant(ROOT_NODE_NAME, ROOT_NODE_TAG));
 
     let entity = node_stack
-        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .find_any_variant(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
     let entity_guard = entity.read();
     let config = entity_guard.config();

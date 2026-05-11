@@ -15,7 +15,7 @@ use core_node_api::encoding::{
     LauncherOrigin, NodeAddGoal, NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeRunGoal,
     NodeRunLogEntry, NodeRunResult, NodeSource,
 };
-use node_stack::NodeStack;
+use node_stack::{NameTagKey, NodeStack};
 use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
@@ -95,6 +95,7 @@ pub async fn listen_for_stack_launch(
         messenger,
         core_node_name,
         instance_id,
+        config::runtime::DEFAULT_VARIANT,
         node_name,
         names::STACK_LAUNCH_ACTION,
     )
@@ -188,25 +189,6 @@ struct LaunchActionContext {
     daemon_use_sim_time: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct NodeKey {
-    name: String,
-    tag: String,
-}
-
-impl NodeKey {
-    fn new(name: impl Into<String>, tag: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            tag: tag.into(),
-        }
-    }
-
-    fn label(&self) -> String {
-        format!("{}:{}", self.name, self.tag)
-    }
-}
-
 #[derive(Clone)]
 struct PlannedDeployment {
     deployment: Deployment,
@@ -269,7 +251,7 @@ fn node_source_from_deployment_source(
             }
         }
         DeploymentSource::Repo(spec) => crate::services::repo::cache::resolve_repo_node_source(
-            &spec.name, &spec.tag, peppy_dirs,
+            &spec.name, &spec.tag, None, peppy_dirs,
         )?,
     };
 
@@ -649,11 +631,15 @@ async fn build_node_directly(
     ctx: &ProcessLaunchContext,
     node_name: String,
     node_tag: String,
+    node_variant: String,
     env_vars: Vec<(String, String)>,
 ) -> (std::result::Result<(), String>, Option<PathBuf>) {
     let log_dir = ctx.peppy_dirs.logs_dir_build();
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-    let log_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
+    let log_filename = format!(
+        "{}_{}__{}_{}.log",
+        node_name, node_tag, node_variant, timestamp
+    );
     let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
         Ok(pair) => pair,
         Err(e) => return (Err(e.to_string()), None),
@@ -913,7 +899,7 @@ async fn resolve_deployments(
 
     let mut planned: Vec<PlannedDeployment> = Vec::new();
     let mut planning_errors: Vec<String> = Vec::new();
-    let mut planned_keys: HashSet<NodeKey> = HashSet::new();
+    let mut planned_keys: HashSet<NameTagKey> = HashSet::new();
 
     for deployment in deployments.into_iter() {
         if deployment.instances.is_empty() {
@@ -961,7 +947,7 @@ async fn resolve_deployments(
         let node_name = config.manifest.name.as_str().to_owned();
         let node_tag = config.manifest.tag.clone();
 
-        let key = NodeKey::new(&node_name, &node_tag);
+        let key = NameTagKey::new(&node_name, &node_tag);
         if !planned_keys.insert(key.clone()) {
             planning_errors.push(format!(
                 "duplicate deployment for node {} (resolved from {})",
@@ -1007,7 +993,7 @@ async fn validate_and_order_dependencies(
     ctx: &ProcessLaunchContext,
     planned: &[PlannedDeployment],
     root_config: &config::node::NodeConfig,
-) -> std::result::Result<Vec<NodeKey>, LaunchResult> {
+) -> std::result::Result<Vec<NameTagKey>, LaunchResult> {
     publish_stdout(
         ctx,
         "Validating dependencies",
@@ -1015,23 +1001,23 @@ async fn validate_and_order_dependencies(
     )
     .await;
 
-    let root_key = NodeKey::new(
+    let root_key = NameTagKey::new(
         root_config.manifest.name.as_str(),
         root_config.manifest.tag.as_str(),
     );
 
-    let mut configs_by_key: HashMap<NodeKey, config::node::NodeConfig> = HashMap::new();
+    let mut configs_by_key: HashMap<NameTagKey, config::node::NodeConfig> = HashMap::new();
     configs_by_key.insert(root_key.clone(), root_config.clone());
     for item in planned {
         configs_by_key.insert(
-            NodeKey::new(&item.node_name, &item.node_tag),
+            NameTagKey::new(&item.node_name, &item.node_tag),
             item.config.clone(),
         );
     }
 
-    let planned_keys: HashSet<NodeKey> = planned
+    let planned_keys: HashSet<NameTagKey> = planned
         .iter()
-        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
+        .map(|p| NameTagKey::new(&p.node_name, &p.node_tag))
         .collect();
 
     // Validate all dependencies exist and expose the required interfaces.
@@ -1043,7 +1029,7 @@ async fn validate_and_order_dependencies(
                 &item.config.interfaces,
                 &item.node_name,
                 &item.node_tag,
-                |name, tag| configs_by_key.get(&NodeKey::new(name, tag)).cloned(),
+                |name, tag| configs_by_key.get(&NameTagKey::new(name, tag)).cloned(),
             )
         })
         .map(|e| e.to_string())
@@ -1056,12 +1042,12 @@ async fn validate_and_order_dependencies(
     }
 
     // Build the dependency graph for topological ordering.
-    let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
+    let mut deps_for: HashMap<NameTagKey, HashSet<NameTagKey>> = HashMap::new();
     for item in planned {
-        let dependant_key = NodeKey::new(&item.node_name, &item.node_tag);
+        let dependant_key = NameTagKey::new(&item.node_name, &item.node_tag);
         let mut deps = HashSet::new();
         for spec in node_stack::collect_dependency_specs(&item.config) {
-            let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag);
+            let dep_key = NameTagKey::new(&spec.node_name, &spec.node_tag);
             if dep_key != root_key && planned_keys.contains(&dep_key) {
                 deps.insert(dep_key);
             }
@@ -1092,15 +1078,15 @@ async fn validate_and_order_dependencies(
 /// Perform a stable topological sort.
 fn topological_sort(
     planned: &[PlannedDeployment],
-    deps_for: &HashMap<NodeKey, HashSet<NodeKey>>,
+    deps_for: &HashMap<NameTagKey, HashSet<NameTagKey>>,
     log_path: &PathBuf,
-) -> std::result::Result<Vec<NodeKey>, Box<LaunchResult>> {
-    let mut in_degree: HashMap<NodeKey, usize> = HashMap::new();
-    let mut dependents: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+) -> std::result::Result<Vec<NameTagKey>, Box<LaunchResult>> {
+    let mut in_degree: HashMap<NameTagKey, usize> = HashMap::new();
+    let mut dependents: HashMap<NameTagKey, Vec<NameTagKey>> = HashMap::new();
 
     for key in planned
         .iter()
-        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
+        .map(|p| NameTagKey::new(&p.node_name, &p.node_tag))
     {
         in_degree.entry(key.clone()).or_insert(0);
         dependents.entry(key).or_default();
@@ -1116,21 +1102,21 @@ fn topological_sort(
         }
     }
 
-    let order_index: HashMap<NodeKey, usize> = planned
+    let order_index: HashMap<NameTagKey, usize> = planned
         .iter()
         .enumerate()
-        .map(|(idx, p)| (NodeKey::new(&p.node_name, &p.node_tag), idx))
+        .map(|(idx, p)| (NameTagKey::new(&p.node_name, &p.node_tag), idx))
         .collect();
 
-    let mut ready: Vec<NodeKey> = in_degree
+    let mut ready: Vec<NameTagKey> = in_degree
         .iter()
         .filter(|(_, deg)| **deg == 0)
         .map(|(k, _)| k.clone())
         .collect();
     ready.sort_by_key(|k| order_index.get(k).copied().unwrap_or(usize::MAX));
 
-    let mut queue: VecDeque<NodeKey> = ready.into();
-    let mut ordered: Vec<NodeKey> = Vec::new();
+    let mut queue: VecDeque<NameTagKey> = ready.into();
+    let mut ordered: Vec<NameTagKey> = Vec::new();
 
     while let Some(node) = queue.pop_front() {
         ordered.push(node.clone());
@@ -1146,7 +1132,7 @@ fn topological_sort(
             }
         }
         // Keep stable ordering when multiple nodes become ready at once.
-        let mut drained: Vec<NodeKey> = queue.drain(..).collect();
+        let mut drained: Vec<NameTagKey> = queue.drain(..).collect();
         drained.sort_by_key(|k| order_index.get(k).copied().unwrap_or(usize::MAX));
         queue = drained.into();
     }
@@ -1207,8 +1193,8 @@ async fn snapshot_and_clear_stack(
 /// Step 5: Add every node to the node stack in dependency order.
 async fn add_nodes_to_stack(
     ctx: &ProcessLaunchContext,
-    ordered: &[NodeKey],
-    planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+    ordered: &[NameTagKey],
+    planned_by_key: &HashMap<NameTagKey, PlannedDeployment>,
     backup_stack: &NodeStack,
     add_log_paths: &mut Vec<NodeAddLogEntry>,
     build_log_paths: &mut Vec<NodeBuildLogEntry>,
@@ -1263,13 +1249,23 @@ async fn add_nodes_to_stack(
                 }
                 let node_name = result.node_name.clone().unwrap_or_else(|| key.name.clone());
                 let node_tag = result.node_tag.clone().unwrap_or_else(|| key.tag.clone());
+                let node_variant = result
+                    .variant
+                    .clone()
+                    .unwrap_or_else(|| node_stack::DEFAULT_VARIANT.to_owned());
 
                 // Stack launch chains directly from add into build, since the
-                // launcher's contract is "the stack is up and running" — an
+                // launcher's contract is "the stack is up and running": an
                 // `Added` entity isn't actually buildable from the user's
                 // perspective until `node build` has run.
-                let (build_result, build_log_path) =
-                    build_node_directly(ctx, node_name, node_tag, ctx.env_vars.clone()).await;
+                let (build_result, build_log_path) = build_node_directly(
+                    ctx,
+                    node_name,
+                    node_tag,
+                    node_variant,
+                    ctx.env_vars.clone(),
+                )
+                .await;
 
                 let build_failed = build_result.is_err();
                 if let Some(path) = build_log_path {
@@ -1298,8 +1294,8 @@ async fn add_nodes_to_stack(
 /// Step 6: Start every instance in dependency order.
 async fn start_node_instances(
     ctx: &ProcessLaunchContext,
-    ordered: &[NodeKey],
-    planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+    ordered: &[NameTagKey],
+    planned_by_key: &HashMap<NameTagKey, PlannedDeployment>,
     backup_stack: &NodeStack,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
 ) -> std::result::Result<(), LaunchResult> {
@@ -1331,12 +1327,18 @@ async fn start_node_instances(
                 arguments: instance.arguments.clone(),
                 framework: resolve_framework(&instance.framework, ctx.daemon_use_sim_time),
             };
+            let item_variant = item
+                .variant
+                .as_ref()
+                .map(crate::services::node::variant::variant_label)
+                .unwrap_or_else(|| config::runtime::DEFAULT_VARIANT.to_owned());
             let runtime_config = match RuntimeConfig::new(
                 messaging_host.as_str(),
                 messaging_port,
                 node_instance,
                 item.node_name.as_str(),
                 ctx.bound_core_node.as_str(),
+                &item_variant,
             ) {
                 Ok(cfg) => cfg,
                 Err(e) => {
@@ -1593,9 +1595,9 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     };
 
     // Build lookup map
-    let planned_by_key: HashMap<NodeKey, PlannedDeployment> = planned
+    let planned_by_key: HashMap<NameTagKey, PlannedDeployment> = planned
         .into_iter()
-        .map(|item| (NodeKey::new(&item.node_name, &item.node_tag), item))
+        .map(|item| (NameTagKey::new(&item.node_name, &item.node_tag), item))
         .collect();
 
     let mut add_log_paths: Vec<NodeAddLogEntry> = Vec::new();
