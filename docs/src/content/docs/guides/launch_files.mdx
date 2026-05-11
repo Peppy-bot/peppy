@@ -43,90 +43,96 @@ The repository source resolves nodes from a locally cached index. Run `peppy rep
 
 ### Variants
 
-Each deployment source can optionally include a `variant` field to select a specific variant of the node (e.g., a mock implementation or an architecture-specific build). The `variant` object supports three formats:
+Each instance can optionally include a `variant` field to pick which
+variant of the node it runs. Placing `variant` on the instance (rather
+than on the source) lets a single deployment block bring up multiple
+variants of the same `(name, tag)` side by side: each unique variant
+becomes a distinct entity in the stack, and consumers receive messages
+from every running variant.
 
- - **Name**: Reference a variant by name — `{ name: "mock-rust" }`
+The `variant` object supports three formats:
+
+ - **Name**: Reference a variant declared in the node's manifest — `{ name: "mock-rust" }`
  - **Git repository**: Fetch a variant from a git repo — requires `repo`, with optional `path` and `ref`
  - **URL**: Fetch a variant from an HTTP(S) URL — requires `url`, with optional `sha256`
 
 Examples:
 
 ```json5
-// Named variant
+// Named variant on a single instance
 {
   source: {
     repo: "https://github.com/Peppy-bot/nodes_hub.git",
     path: "rust/fake_openarm01_controller",
-    ref: "main",
-    variant: {
-      name: "mock-rust"
+    ref: "main"
+  },
+  instances: [
+    {
+      instance_id: "the_nervous_system",
+      variant: { name: "mock-rust" }
     }
-  },
-  instances: [
-    { instance_id: "the_nervous_system" }
   ]
 }
 ```
 
 ```json5
-// Git variant
+// Git variant — fetch the variant directly from a git repository
 {
-  source: {
-    local: "./my_node",
-    variant: {
-      repo: "https://github.com/Peppy-bot/node_variants.git",
-      path: "mock",
-      ref: "v1.0.0"
+  source: { local: "./my_node" },
+  instances: [
+    {
+      instance_id: "my_node_1",
+      variant: {
+        repo: "https://github.com/Peppy-bot/node_variants.git",
+        path: "mock",
+        ref: "v1.0.0"
+      }
     }
-  },
-  instances: [
-    { instance_id: "my_node_1" }
   ]
 }
 ```
 
 ```json5
-// URL variant
+// URL variant — fetch the variant from an HTTP archive
 {
-  source: {
-    local: "./my_node",
-    variant: {
-      url: "https://example.com/my_node_variant.tar.zst",
-      sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
+  source: { local: "./my_node" },
+  instances: [
+    {
+      instance_id: "my_node_1",
+      variant: {
+        url: "https://example.com/my_node_variant.tar.zst",
+        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
+      }
     }
-  },
-  instances: [
-    { instance_id: "my_node_1" }
   ]
 }
 ```
 
 ```json5
-// Repository source (long form)
+// Multiple variants of the same node, one deployment block
 {
-  source: {
-    name: "openarm01_controller",
-    tag: "0.1.0",
-    variant: { name: "mock-python" }
-  },
+  source: { name: "depth_camera:0.1.0" },
   instances: [
-    { instance_id: "the_nervous_system" }
+    {
+      instance_id: "torso_front_camera",
+      variant: { name: "realsense_d435" }
+    },
+    {
+      instance_id: "left_arm_camera",
+      variant: { name: "realsense_d405" }
+    },
+    {
+      instance_id: "right_arm_camera",
+      variant: { name: "realsense_d405" }
+    }
   ]
 }
 ```
 
-```json5
-// Repository source (combined shorthand — equivalent to the example above)
-{
-  source: {
-    name: "openarm01_controller:0.1.0",
-    variant: { name: "mock-python" }
-  },
-  instances: [
-    { instance_id: "the_nervous_system" }
-  ]
-}
-```
+The launcher fans this out into one `(name, tag, variant)` entity per
+unique variant: in the example above, `depth_camera:0.1.0@realsense_d435`
+runs alongside `depth_camera:0.1.0@realsense_d405`, with the two
+`realsense_d405` instances assigned to the same entity.
 
 :::caution
 The git `ref` and `deployment.source` tag share the same format but are independent values.
@@ -169,15 +175,15 @@ Verify that the node stack was configured correctly:
 $ peppy stack list
 Node stack
 
-┌─────────────────────────────────────────┬───────┬─────────┬────────────┬──────────────────────────────────────────────────────────────────────────┐
-│ NODE                                    │ STAGE │ VARIANT │ INSTANCES  │ PATH                                                                     │
-├─────────────────────────────────────────┼───────┼─────────┼────────────┼──────────────────────────────────────────────────────────────────────────┤
-│ core-node-adoring-wiles-7286:v0.8.0     │ Root  │ default │ 1 running  │ /Users/tuatini/workspace/peppy                                           │
-│ fake_openarm01_controller:0.1.0         │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_openarm01_controller_0.1.0.tar.zst │
-│ fake_robot_brain:0.1.0                  │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_robot_brain_0.1.0.tar.zst          │
-│ fake_uvc_camera:0.1.0                   │ Ready │ default │ 2 running  │ /Users/tuatini/.peppy/built_nodes/fake_uvc_camera_0.1.0.tar.zst           │
-│ fake_video_reconstruction:0.1.0         │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_video_reconstruction_0.1.0.tar.zst │
-└─────────────────────────────────────────┴───────┴─────────┴────────────┴──────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────┬───────┬─────────┬────────────┬──────────────────────────────────────────────────────────────────────────────────┐
+│ NODE                                    │ STAGE │ VARIANT │ INSTANCES  │ PATH                                                                             │
+├─────────────────────────────────────────┼───────┼─────────┼────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ core-node-adoring-wiles-7286:v0.8.0     │ Root  │ default │ 1 running  │ /Users/tuatini/workspace/peppy                                                   │
+│ fake_openarm01_controller:0.1.0         │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_openarm01_controller_0.1.0/default.tar.zst │
+│ fake_robot_brain:0.1.0                  │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_robot_brain_0.1.0/default.tar.zst          │
+│ fake_uvc_camera:0.1.0                   │ Ready │ default │ 2 running  │ /Users/tuatini/.peppy/built_nodes/fake_uvc_camera_0.1.0/default.tar.zst           │
+│ fake_video_reconstruction:0.1.0         │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_video_reconstruction_0.1.0/default.tar.zst │
+└─────────────────────────────────────────┴───────┴─────────┴────────────┴──────────────────────────────────────────────────────────────────────────────────┘
 
 
 Dependencies

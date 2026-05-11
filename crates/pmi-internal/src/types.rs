@@ -302,38 +302,43 @@ pub struct TopicMessage {
     key_expr: String,
     instance_id: String,
     core_node: String,
+    variant: String,
     payload: Payload,
 }
 
 impl TopicMessage {
     pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
-        let (core_node, instance_id) = Self::parse_key_expr(key_expr)?;
+        let (core_node, instance_id, variant) = Self::parse_key_expr(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id,
             core_node,
+            variant,
             payload: payload.into(),
         })
     }
 
     #[cfg(feature = "zenoh")]
     pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
-        let (core_node, instance_id) = Self::parse_key_expr(key_expr)?;
+        let (core_node, instance_id, variant) = Self::parse_key_expr(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id,
             core_node,
+            variant,
             payload: Payload::from_zbytes(zbytes),
         })
     }
 
-    /// Parses a key expression into its (core_node, instance_id) components.
+    /// Parses a key expression into its (core_node, instance_id, variant) components.
     ///
-    /// Key expression format: `target_core_node/caller_core_node/target_instance/caller_instance/...`
+    /// Key expression format: `target_core_node/caller_core_node/target_instance/caller_instance/caller_variant/...`
     /// - core_node is at segment index 1 (caller_core_node)
     /// - instance_id is at segment index 3 (caller_instance)
-    fn parse_key_expr(key_expr: &str) -> Result<(String, String)> {
-        let mut segments = key_expr.splitn(5, '/');
+    /// - variant is at segment index 4 (caller_variant); defaults to "default"
+    ///   when missing or empty for backward-compatibility with older shapes.
+    fn parse_key_expr(key_expr: &str) -> Result<(String, String, String)> {
+        let mut segments = key_expr.splitn(6, '/');
         let _target_core = segments.next();
         let core_node = segments
             .next()
@@ -348,7 +353,11 @@ impl TopicMessage {
         if instance_id.is_empty() {
             return Err(Error::InstanceIdNotFound(key_expr.to_string()));
         }
-        Ok((core_node.to_string(), instance_id.to_string()))
+        let variant = match segments.next() {
+            Some(v) if !v.is_empty() => v.to_string(),
+            _ => "default".to_string(),
+        };
+        Ok((core_node.to_string(), instance_id.to_string(), variant))
     }
 
     pub fn instance_id(&self) -> &str {
@@ -357,6 +366,10 @@ impl TopicMessage {
 
     pub fn core_node(&self) -> &str {
         &self.core_node
+    }
+
+    pub fn variant(&self) -> &str {
+        &self.variant
     }
 
     pub fn payload(&self) -> &Payload {

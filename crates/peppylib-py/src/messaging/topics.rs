@@ -15,6 +15,7 @@ pub struct PyTopicMessage {
     pub(crate) payload: Vec<u8>,
     pub(crate) instance_id: String,
     pub(crate) core_node: String,
+    pub(crate) variant: String,
 }
 
 #[pymethods]
@@ -38,6 +39,11 @@ impl PyTopicMessage {
     fn core_node(&self) -> &str {
         &self.core_node
     }
+
+    #[getter]
+    fn variant(&self) -> &str {
+        &self.variant
+    }
 }
 
 impl From<Message> for PyTopicMessage {
@@ -47,6 +53,7 @@ impl From<Message> for PyTopicMessage {
             payload: msg.payload().to_vec(),
             instance_id: msg.instance_id().to_string(),
             core_node: msg.core_node().to_string(),
+            variant: msg.variant().to_string(),
         }
     }
 }

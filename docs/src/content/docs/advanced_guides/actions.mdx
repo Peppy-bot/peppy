@@ -259,6 +259,7 @@ fn main() -> Result<()> {
             Duration::from_secs(5),       // timeout
             None,                          // target_core_node (None = any)
             None,                          // target_instance_id (None = any)
+            None,                          // target_variant (None = any)
             request,
             QoSProfile::SensorData,        // QoS for the feedback topic
         )
@@ -330,6 +331,26 @@ println!(
 ```
 
 After a goal is cancelled, requesting the result will fail with a timeout since the server stops processing that goal.
+
+## Variant targeting
+
+Like services and topics, `fire_goal` accepts an optional `target_variant`. When several variants of the same `name:tag` are running side by side (for example, two implementations of `arm_controller:0.1.0`), `Some("variant_name")` pins the goal to one variant; `None` lets any variant of the action server accept it. Pass `"default"` to target the baseline explicitly.
+
+```rust
+// Send the move_arm goal only to the production variant
+let mut goal = brain_move_arm::fire_goal(
+    &node_runner,
+    Duration::from_secs(5),
+    None,
+    None,
+    Some("production"),
+    request,
+    QoSProfile::SensorData,
+)
+.await?;
+```
+
+The `action_handle` carries the resolved variant, so subsequent `on_next_feedback_message`, `get_result`, and `cancel_goal` calls all stay pinned to the same server.
 
 ## Serial processing
 

@@ -774,10 +774,20 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .and_then(|n| n.to_str())
         .expect("should have file name");
     assert_eq!(
-        file_name,
-        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.sif"),
-        "stored image should be '<node_name>_<tag>.sif', got: {}",
+        file_name, "default.sif",
+        "stored image should be '<variant>.sif', got: {}",
         file_name
+    );
+    let parent_name = root_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .expect("should have parent dir name");
+    assert_eq!(
+        parent_name,
+        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}"),
+        "parent dir should be '<node_name>_<tag>', got: {}",
+        parent_name
     );
 
     assert!(

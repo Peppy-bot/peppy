@@ -34,6 +34,11 @@ impl Message {
     pub fn core_node(&self) -> &str {
         self.0.core_node()
     }
+
+    /// Get the variant of the sender (`"default"` baseline).
+    pub fn variant(&self) -> &str {
+        self.0.variant()
+    }
 }
 
 impl From<pmi::TopicMessage> for Message {

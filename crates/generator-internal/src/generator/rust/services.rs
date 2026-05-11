@@ -184,6 +184,7 @@ pub fn build_exposed_service_method(
     if use_service_name_const {
         helper_params.push(quote!(core_node: String));
         helper_params.push(quote!(instance_id: String));
+        helper_params.push(quote!(variant: String));
     } else if instance_from_request_context {
         let instance_ident =
             instance_binding_ident
@@ -250,9 +251,9 @@ pub fn build_exposed_service_method(
 
     if use_service_name_const {
         let request_construction = if has_payload && request_data_struct.is_some() {
-            quote!(let request = Request { instance_id, core_node, data: request_data };)
+            quote!(let request = Request { instance_id, core_node, variant, data: request_data };)
         } else {
-            quote!(let request = Request { instance_id, core_node };)
+            quote!(let request = Request { instance_id, core_node, variant };)
         };
         body_preamble.push(request_construction);
     }
@@ -302,8 +303,10 @@ pub fn build_exposed_service_method(
     if use_service_name_const {
         call_preamble.push(quote!(let core_node = message.core_node().to_string();));
         call_preamble.push(quote!(let instance_id = message.instance_id().to_string();));
+        call_preamble.push(quote!(let variant = message.variant().to_string();));
         helper_args.push(quote!(core_node));
         helper_args.push(quote!(instance_id));
+        helper_args.push(quote!(variant));
     } else if instance_from_request_context {
         call_preamble.push(quote!(let instance_id = message.instance_id().to_string();));
         helper_args.push(quote!(instance_id));

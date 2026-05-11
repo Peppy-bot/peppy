@@ -477,6 +477,38 @@ mod tests {
     }
 
     #[test]
+    fn node_add_result_round_trips_variant_on_success() {
+        let log = std::path::Path::new("/tmp/sensor.log");
+        let result = NodeAddResult::success(log, "sensor", "0.1.0", "realsense_d405");
+        let encoded = result.encode().expect("encoding should succeed");
+        let decoded = NodeAddResult::decode(&encoded).expect("decoding should succeed");
+        assert!(decoded.success);
+        assert_eq!(decoded.node_name.as_deref(), Some("sensor"));
+        assert_eq!(decoded.node_tag.as_deref(), Some("0.1.0"));
+        assert_eq!(decoded.variant.as_deref(), Some("realsense_d405"));
+    }
+
+    #[test]
+    fn node_add_result_round_trips_default_variant() {
+        let log = std::path::Path::new("/tmp/sensor.log");
+        let result = NodeAddResult::success(log, "sensor", "0.1.0", "default");
+        let encoded = result.encode().expect("encoding should succeed");
+        let decoded = NodeAddResult::decode(&encoded).expect("decoding should succeed");
+        assert_eq!(decoded.variant.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn node_add_result_failure_has_no_variant() {
+        let log = std::path::Path::new("/tmp/sensor.log");
+        let encoded = NodeAddResult::failure(log, "boom")
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeAddResult::decode(&encoded).expect("decoding should succeed");
+        assert!(!decoded.success);
+        assert!(decoded.variant.is_none());
+    }
+
+    #[test]
     fn node_add_goal_http_variant_roundtrips_sha256() {
         let url = url::Url::parse("https://example.com/variant.tar.zst").unwrap();
         let sha256 = "b".repeat(64);

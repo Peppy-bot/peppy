@@ -179,16 +179,17 @@ use peppygen::{NodeBuilder, Parameters, Result};
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
-        let (instance_id, frame) = uvc_camera_video_stream::on_next_message_received(
+        let (instance_id, variant, frame) = uvc_camera_video_stream::on_next_message_received(
             &node_runner,
             None, // target_core_node (None = any)
             None, // target_instance_id (None = any)
+            None, // target_variant (None = any)
         )
         .await?;
 
         println!(
-            "got {}x{} frame encoded as {} from {}",
-            frame.width, frame.height, frame.encoding, instance_id
+            "got {}x{} frame encoded as {} from {} (variant {})",
+            frame.width, frame.height, frame.encoding, instance_id, variant
         );
 
         Ok(())
@@ -200,9 +201,11 @@ The `on_next_message_received` function takes:
 - `node_runner` — the node runner reference.
 - `target_core_node` — optionally filter messages from a specific core node, or `None` for any.
 - `target_instance_id` — optionally filter messages from a specific instance, or `None` for any.
+- `target_variant` — optionally filter messages from a specific variant of the publishing node, or `None` for any.
 
 It returns a tuple of:
 - `instance_id` — the instance that published the message.
+- `variant` — the variant of the publishing node (`"default"` for the baseline).
 - `message` — the deserialized message, with fields matching the topic's `message_format`.
 
 ### Receiving messages continuously
@@ -229,13 +232,17 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
             &node_runner,
             None,
             None,
+            None,
         )
         .await;
 
         match result {
-            Ok((instance_id, frame)) => {
+            Ok((instance_id, variant, frame)) => {
                 tokio::spawn(async move {
-                    println!("got {}x{} frame from {}", frame.width, frame.height, instance_id);
+                    println!(
+                        "got {}x{} frame from {} (variant {})",
+                        frame.width, frame.height, instance_id, variant
+                    );
                 });
             }
             Err(e) => {
@@ -256,13 +263,34 @@ When multiple instances of the same node are publishing, you can control which p
 
 ```rust
 // Only receive from a specific camera instance
-let (instance_id, frame) = uvc_camera_video_stream::on_next_message_received(
+let (instance_id, variant, frame) = uvc_camera_video_stream::on_next_message_received(
     &node_runner,
     None,
     Some("my-camera-instance"),
+    None,
 )
 .await?;
 ```
+
+## Variant targeting
+
+When several variants of the same `name:tag` publish on a topic, you can pin the subscription to one variant. For example, two `depth_camera:0.1.0` instances may run side by side — one `realsense_d435`, one `realsense_d405` — and a downstream consumer might only care about one of them:
+
+- **`None`** (default) — messages from any variant are received.
+- **`Some("variant_name")`** — only messages from the named variant are received; pass `"default"` to target the baseline explicitly.
+
+```rust
+// Subscribe only to the d435 stream
+let (instance_id, variant, frame) = depth_camera_video_stream::on_next_message_received(
+    &node_runner,
+    None,
+    None,
+    Some("realsense_d435"),
+)
+.await?;
+```
+
+The returned `variant` field tells you which variant produced each message, which is useful when subscribing variant-agnostic and routing on the receiving side.
 
 ## Message format types
 

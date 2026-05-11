@@ -220,6 +220,7 @@ pub fn build_consumed_service(
             &[
                 ("core_node", "str"),
                 ("instance_id", "str"),
+                ("variant", "str"),
                 ("data", "ResponseData"),
             ],
         );
@@ -308,7 +309,7 @@ pub fn build_consumed_service(
     if has_response {
         builder.line("payload = response_message.payload");
         builder.line("response_data = _deserialize_response(payload)");
-        builder.line("return Response(core_node=response_message.core_node, instance_id=response_message.instance_id, data=response_data)");
+        builder.line("return Response(core_node=response_message.core_node, instance_id=response_message.instance_id, variant=response_message.variant, data=response_data)");
     }
 
     builder.dedent();

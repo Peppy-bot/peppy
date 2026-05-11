@@ -321,8 +321,13 @@ pub enum NodeCommands {
         node_ref: (String, String, Option<String>),
         /// Variant to look up. Equivalent to the `@variant` suffix; if
         /// both are given they must agree.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "all_variants")]
         variant: Option<String>,
+        /// Print info for every variant of `(name, tag)` in the stack.
+        /// Mutually exclusive with `--variant` and the `@variant`
+        /// shorthand.
+        #[arg(long = "all-variants")]
+        all_variants: bool,
     },
 }
 
@@ -460,11 +465,24 @@ impl Command for NodeCommand {
             NodeCommands::Info {
                 node_ref: (node_name, node_tag, ref_variant),
                 variant,
+                all_variants,
             } => {
-                let variant = reconcile_variant(&node_name, &node_tag, ref_variant, variant)?;
-                let label = format_variant_label(&node_name, &node_tag, variant.as_deref());
-                info!("Getting node info for {label}...");
-                info::node_info(ctx, node_name, node_tag, variant)
+                if all_variants && (ref_variant.is_some() || variant.is_some()) {
+                    return Err(crate::error::Error::ExecutionFailed(
+                        "`--all-variants` cannot be combined with `--variant` or the \
+                         `@variant` shorthand"
+                            .to_owned(),
+                    ));
+                }
+                if all_variants {
+                    info!("Getting node info for {node_name}:{node_tag} (all variants)...");
+                    info::node_info_all_variants(ctx, node_name, node_tag)
+                } else {
+                    let variant = reconcile_variant(&node_name, &node_tag, ref_variant, variant)?;
+                    let label = format_variant_label(&node_name, &node_tag, variant.as_deref());
+                    info!("Getting node info for {label}...");
+                    info::node_info(ctx, node_name, node_tag, variant)
+                }
             }
         }
     }

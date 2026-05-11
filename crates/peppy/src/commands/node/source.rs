@@ -173,7 +173,13 @@ pub fn parse_variant_source(variant: &str) -> Result<NodeSource> {
         });
     }
 
-    // Plain string = variant name (looked up in root manifest)
+    if variant.contains(':') || variant.contains('@') {
+        return Err(Error::ExecutionFailed(format!(
+            "invalid --variant '{variant}': expected a plain variant name, a git URL, or an http archive URL. \
+             To pin a transitive dependency to a specific variant, run a separate `peppy node add <dep>:<tag> --variant <name>` first."
+        )));
+    }
+
     Ok(NodeSource::Fs(PathBuf::from(variant)))
 }
 

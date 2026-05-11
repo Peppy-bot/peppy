@@ -16,6 +16,7 @@ pub struct PyServiceRequestContext {
     payload: Vec<u8>,
     instance_id: String,
     core_node: String,
+    variant: String,
 }
 
 #[pymethods]
@@ -40,6 +41,11 @@ impl PyServiceRequestContext {
         &self.core_node
     }
 
+    #[getter]
+    fn variant(&self) -> &str {
+        &self.variant
+    }
+
     /// Returns the underlying message as a `TopicMessage`.
     #[getter]
     fn message(&self) -> PyTopicMessage {
@@ -48,6 +54,7 @@ impl PyServiceRequestContext {
             payload: self.payload.clone(),
             instance_id: self.instance_id.clone(),
             core_node: self.core_node.clone(),
+            variant: self.variant.clone(),
         }
     }
 }
@@ -62,6 +69,7 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
             payload: message.payload().to_vec(),
             instance_id: message.instance_id().to_string(),
             core_node: message.core_node().to_string(),
+            variant: message.variant().to_string(),
         }
     }
 }

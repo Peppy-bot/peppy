@@ -279,6 +279,7 @@ impl PyActionMessenger {
                 payload: resp.payload().to_vec(),
                 instance_id: resp.instance_id().to_string(),
                 core_node: resp.core_node().to_string(),
+                variant: resp.variant().to_string(),
             };
             let goal_id = goal_handle.goal_id().to_string();
 

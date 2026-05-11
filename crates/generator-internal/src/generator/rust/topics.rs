@@ -175,7 +175,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
             target_core_node: Option<&str>,
             target_instance_id: Option<&str>,
             target_variant: Option<&str>,
-        ) -> crate::Result<(String, #args_struct_ident)> {
+        ) -> crate::Result<(String, String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let node_name = #node_name_literal;
             let qos = peppylib::config::QoSProfile::Standard;
@@ -209,8 +209,9 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
 
             let payload = message.payload();
             let instance_id = message.instance_id().to_string();
+            let variant = message.variant().to_string();
             let message = #helper_fn_ident(payload.as_ref())?;
-            Ok((instance_id, message))
+            Ok((instance_id, variant, message))
         }
 
         #helper_fn_tokens
@@ -256,7 +257,7 @@ pub fn build_external_consumed_topic_callback(
             node_runner: &crate::NodeRunner,
             target_core_node: Option<&str>,
             target_instance_id: Option<&str>,
-        ) -> crate::Result<(String, #args_struct_ident)> {
+        ) -> crate::Result<(String, String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let qos = peppylib::config::QoSProfile::Standard;
 
@@ -287,8 +288,9 @@ pub fn build_external_consumed_topic_callback(
 
             let payload = message.payload();
             let instance_id = message.instance_id().to_string();
+            let variant = message.variant().to_string();
             let message = #helper_fn_ident(payload.as_ref())?;
-            Ok((instance_id, message))
+            Ok((instance_id, variant, message))
         }
 
         #helper_fn_tokens

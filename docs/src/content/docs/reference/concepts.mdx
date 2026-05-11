@@ -21,12 +21,12 @@ The manifest defines a node's identity:
 | Field | Description |
 |-------|-------------|
 | `name` | A validated identifier (ASCII letters, digits, `_`, `-`) |
-| `tag` | A version or variant identifier (e.g., `donut`, `v1.0.0`) |
+| `tag` | A version identifier (e.g., `donut`, `v1.0.0`) |
 | `labels` | Optional metadata labels |
 | `variants` | Optional list of alternative node implementations |
 | `depends_on` | Optional dependency declarations on other nodes |
 
-A node is uniquely identified by its `name:tag` combination.
+A node entity in the stack is uniquely identified by the triple `name:tag@variant`. The `variant` slot is always populated and falls back to the literal `"default"` when no alternative implementation is selected. Several variants of the same `name:tag` may run side by side; consumers that subscribe variant-agnostic receive from every running variant. The canonical written form is `name:tag@variant`, with `@default` suppressed in user-facing output.
 
 ### Execution
 

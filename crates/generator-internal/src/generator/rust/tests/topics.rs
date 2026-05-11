@@ -388,7 +388,7 @@ fn consumed_topic() {
             "pub async fn on_next_message_received(",
             "target_core_node: Option<&str>",
             "target_instance_id: Option<&str>",
-            "-> crate::Result<(String, Message)>",
+            "-> crate::Result<(String, String, Message)>",
         ],
     );
 
@@ -529,7 +529,7 @@ fn external_consumed_topic() {
             "pub async fn on_next_message_received(",
             "target_core_node: Option<&str>",
             "target_instance_id: Option<&str>",
-            "-> crate::Result<(String, Message)>",
+            "-> crate::Result<(String, String, Message)>",
         ],
     );
 

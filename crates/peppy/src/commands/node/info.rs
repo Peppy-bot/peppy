@@ -79,6 +79,91 @@ async fn node_info_async(
     Ok(())
 }
 
+/// Read-only sibling of [`node_info`]: prints the info block for every
+/// variant of `(name, tag)` currently in the stack, sorted by variant
+/// label. The bare-form ambiguity rule that gates `peppy node remove`
+/// does not apply here because the operation is non-destructive.
+pub fn node_info_all_variants(
+    ctx: &Arc<AppContext>,
+    node_name: String,
+    node_tag: String,
+) -> Result<()> {
+    crate::commands::block_on(node_info_all_variants_async(ctx, node_name, node_tag))
+}
+
+async fn node_info_all_variants_async(
+    ctx: &Arc<AppContext>,
+    node_name: String,
+    node_tag: String,
+) -> Result<()> {
+    use core_node_api::SerializedNodeGraph;
+    use core_node_api::encoding::StackListRequest;
+    use peppylib::core_node::transport::poll_stack_list;
+
+    let conn = ctx.connect_to_daemon().await?;
+
+    let stack_response = poll_stack_list(
+        &StackListRequest::new(false),
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to list stack: {e}")))?;
+
+    let graph: SerializedNodeGraph = serde_json::from_str(&stack_response.graph_json)
+        .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))?;
+
+    let mut variants: Vec<String> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.name == node_name && n.tag == node_tag)
+        .map(|n| n.variant.clone())
+        .collect();
+    if variants.is_empty() {
+        return Err(Error::ExecutionFailed(format!(
+            "Node `{node_name}:{node_tag}` is not in the node stack"
+        )));
+    }
+    variants.sort();
+
+    let mut out = String::new();
+    for variant in variants {
+        let response = poll_node_info(
+            &NodeInfoRequest::new(node_name.clone(), node_tag.clone()).with_variant(&variant),
+            conn.messenger,
+            &conn.core_node_name,
+            CALLER_INSTANCE_ID,
+            &conn.core_node_name,
+            REQUEST_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            Error::ExecutionFailed(format!(
+                "Failed to get node info for {node_name}:{node_tag}@{variant}: {e}"
+            ))
+        })?;
+        if let NodeInfoResponse::Found(info) = response {
+            if info.instances.len() != info.run_log_paths.len() {
+                return Err(Error::ExecutionFailed(format!(
+                    "daemon returned mismatched node_info lengths for variant `{variant}`: \
+                     {} instances vs {} run log paths",
+                    info.instances.len(),
+                    info.run_log_paths.len(),
+                )));
+            }
+            format_node_info(&mut out, &info);
+        }
+        // Variants race a concurrent remove; silently skip the variant
+        // if it disappeared between the list and the info call rather
+        // than failing the whole report.
+    }
+    print!("{}", out);
+    Ok(())
+}
+
 fn format_node_info(out: &mut String, response: &NodeInfo) {
     use std::fmt::Write as _;
     let config = &response.config;

@@ -13,6 +13,7 @@ async def receive_messages(node_runner: NodeRunner):
     while True:
         (
             instance_id,
+            _variant,
             message,
         ) = await hello_world_param_message_stream.on_next_message_received(node_runner)
         print(f"Received from {instance_id}: {message.message}")

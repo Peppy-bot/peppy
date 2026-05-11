@@ -196,6 +196,7 @@ fn main() -> Result<()> {
             Duration::from_secs(5), // timeout
             None,                   // target_core_node (None = any)
             None,                   // target_instance_id (None = any)
+            None,                   // target_variant (None = any)
             request,
         )
         .await?;
@@ -217,10 +218,12 @@ The `poll` function takes:
 - `timeout` — maximum time to wait for a response.
 - `target_core_node` — optionally target a specific core node, or `None` for any.
 - `target_instance_id` — optionally target a specific instance, or `None` for any.
+- `target_variant` — optionally target a specific variant of the exposing node (e.g. `Some("realsense_d435")`), or `None` to match any variant.
 - `request` — the request payload.
 
 The response contains:
 - `instance_id` — the instance that handled the request.
+- `variant` — the variant of the node that handled the request (`"default"` for the baseline).
 - `data` — the deserialized response payload.
 
 For a service without a request body, `poll` does not take a request argument:
@@ -231,6 +234,7 @@ use peppygen::consumed_services::uvc_camera_get_camera_info;
 let response = uvc_camera_get_camera_info::poll(
     &node_runner,
     Duration::from_secs(5),
+    None,
     None,
     None,
 ).await?;
@@ -252,10 +256,32 @@ let response = uvc_camera_enable_camera::poll(
     Duration::from_secs(5),
     None,
     Some("my-camera-instance"),
+    None,
     request,
 )
 .await?;
 ```
+
+## Variant targeting
+
+When several variants of the same `name:tag` are running side by side (for example, two `depth_camera:0.1.0` instances, one `realsense_d435` and one `realsense_d405`), `target_variant` lets you steer the call to the implementation you want:
+
+- **`None`** (default) — any variant of the exposing node may answer.
+- **`Some("variant_name")`** — only the named variant will answer; pass `"default"` to target the baseline explicitly.
+
+```rust
+// Pin the call to the d435 variant
+let response = depth_camera_get_depth_frame::poll(
+    &node_runner,
+    Duration::from_secs(5),
+    None,
+    None,
+    Some("realsense_d435"),
+)
+.await?;
+```
+
+The response `variant` field tells you which variant actually produced the answer.
 
 ## Error handling
 

@@ -104,3 +104,32 @@ impl NodeRemoveResponse {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_remove_request_round_trips_with_explicit_variant() {
+        let encoded = NodeRemoveRequest::new("sensor", "0.1.0")
+            .with_variant("realsense_d405")
+            .with_stop_instances(true)
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeRemoveRequest::decode(&encoded).expect("decoding should succeed");
+        assert_eq!(decoded.node_name, "sensor");
+        assert_eq!(decoded.tag, "0.1.0");
+        assert!(decoded.stop_instances);
+        assert_eq!(decoded.variant.as_deref(), Some("realsense_d405"));
+    }
+
+    #[test]
+    fn node_remove_request_bare_form_decodes_with_no_variant() {
+        let encoded = NodeRemoveRequest::new("sensor", "0.1.0")
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeRemoveRequest::decode(&encoded).expect("decoding should succeed");
+        assert!(decoded.variant.is_none());
+        assert!(!decoded.stop_instances);
+    }
+}

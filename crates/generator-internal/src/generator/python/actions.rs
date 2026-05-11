@@ -647,6 +647,7 @@ pub fn build_consumed_action(
         &[
             ("core_node", "str"),
             ("instance_id", "str"),
+            ("variant", "str"),
             ("data", "CancelResponseData"),
         ],
     );
@@ -659,13 +660,18 @@ pub fn build_consumed_action(
             &[
                 ("core_node", "str"),
                 ("instance_id", "str"),
+                ("variant", "str"),
                 ("data", "ResultResponseData"),
             ],
         );
     } else {
         builder.dataclass(
             "ResultResponse",
-            &[("core_node", "str"), ("instance_id", "str")],
+            &[
+                ("core_node", "str"),
+                ("instance_id", "str"),
+                ("variant", "str"),
+            ],
         );
     }
 
@@ -818,7 +824,7 @@ pub fn build_consumed_action(
 
     builder.line("payload = response.payload");
     builder.line("cancel_response_data = _deserialize_cancel_response(payload)");
-    builder.line("return CancelResponse(core_node=response.core_node, instance_id=response.instance_id, data=cancel_response_data)");
+    builder.line("return CancelResponse(core_node=response.core_node, instance_id=response.instance_id, variant=response.variant, data=cancel_response_data)");
 
     builder.dedent();
     builder.blank_line();
@@ -852,10 +858,10 @@ pub fn build_consumed_action(
     if has_result_response {
         builder.line("payload = response.payload");
         builder.line("result_response_data = _deserialize_result_response(payload)");
-        builder.line("return ResultResponse(core_node=response.core_node, instance_id=response.instance_id, data=result_response_data)");
+        builder.line("return ResultResponse(core_node=response.core_node, instance_id=response.instance_id, variant=response.variant, data=result_response_data)");
     } else {
         builder.line(
-            "return ResultResponse(core_node=response.core_node, instance_id=response.instance_id)",
+            "return ResultResponse(core_node=response.core_node, instance_id=response.instance_id, variant=response.variant)",
         );
     }
 

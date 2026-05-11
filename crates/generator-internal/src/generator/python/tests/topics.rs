@@ -515,7 +515,7 @@ fn consumed_topic() {
             "node_runner: peppylib.NodeRunner",
             "target_core_node: Optional[str] = None",
             "target_instance_id: Optional[str] = None",
-            ") -> Tuple[str, Message]:",
+            ") -> Tuple[str, str, Message]:",
         ],
     );
 
@@ -538,8 +538,9 @@ fn consumed_topic() {
             "raw_message = await subscription.on_next_message()",
             "payload = raw_message.payload",
             "instance_id = raw_message.instance_id",
+            "variant = raw_message.variant",
             "message = _deserialize_payload(payload)",
-            "return instance_id, message",
+            "return instance_id, variant, message",
         ],
     );
 }
@@ -707,7 +708,7 @@ fn external_consumed_topic() {
             "node_runner: peppylib.NodeRunner",
             "target_core_node: Optional[str] = None",
             "target_instance_id: Optional[str] = None",
-            ") -> Tuple[str, Message]:",
+            ") -> Tuple[str, str, Message]:",
         ],
     );
 
@@ -728,8 +729,9 @@ fn external_consumed_topic() {
             "raw_message = await subscription.on_next_message()",
             "payload = raw_message.payload",
             "instance_id = raw_message.instance_id",
+            "variant = raw_message.variant",
             "message = _deserialize_payload(payload)",
-            "return instance_id, message",
+            "return instance_id, variant, message",
         ],
     );
 }

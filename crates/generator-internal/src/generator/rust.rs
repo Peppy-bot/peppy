@@ -352,6 +352,7 @@ impl RustGenerator {
                     Ok(#response_ident {
                         instance_id: response.instance_id().to_string(),
                         core_node: response.core_node().to_string(),
+                        variant: response.variant().to_string(),
                         data: response_data,
                     })
                 }
@@ -370,6 +371,7 @@ impl RustGenerator {
                     Ok(#response_ident {
                         instance_id: response.instance_id().to_string(),
                         core_node: response.core_node().to_string(),
+                        variant: response.variant().to_string(),
                     })
                 }
             }
@@ -1312,6 +1314,7 @@ impl LanguageGenerator for RustGenerator {
                     Ok(#response_struct_ident {
                         instance_id: response_message.instance_id().to_string(),
                         core_node: response_message.core_node().to_string(),
+                        variant: response_message.variant().to_string(),
                         data: response_data,
                     })
                 };

@@ -8,14 +8,16 @@ use crate::services::node::{
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
-use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
+use config::launcher::{
+    Deployment, DeploymentInstance, DeploymentSource, PeppyLauncherParser, VariantSource,
+};
 use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     LauncherOrigin, NodeAddGoal, NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeRunGoal,
     NodeRunLogEntry, NodeRunResult, NodeSource,
 };
-use node_stack::{NameTagKey, NodeStack};
+use node_stack::{DEFAULT_VARIANT, EntityKey, NameTagKey, NodeStack};
 use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
@@ -189,14 +191,82 @@ struct LaunchActionContext {
     daemon_use_sim_time: bool,
 }
 
+/// One variant of a deployment, planned end-to-end. A single `Deployment`
+/// block fans out into one [`PlannedDeployment`] per unique
+/// `instance.variant`: the daemon adds one entity per variant under
+/// `(name, tag)`, then starts every instance bound to that variant.
 #[derive(Clone)]
 struct PlannedDeployment {
-    deployment: Deployment,
     source: NodeSource,
     variant: Option<NodeSource>,
     node_name: String,
     node_tag: String,
     config: config::node::NodeConfig,
+    /// Subset of the deployment's instances assigned to this variant.
+    instances: Vec<DeploymentInstance>,
+}
+
+/// Converts a [`VariantSource`] (launcher schema) into the [`NodeSource`]
+/// shape `peppy node add` understands.
+fn variant_source_to_node_source(
+    variant: &VariantSource,
+) -> std::result::Result<NodeSource, String> {
+    match variant {
+        VariantSource::Name(v) => Ok(NodeSource::Fs(std::path::PathBuf::from(&v.name))),
+        VariantSource::Git(v) => {
+            let repo_url = git_url_from_repo(&v.repo)?;
+            Ok(NodeSource::Git {
+                repo_url,
+                repo_path: v.path.clone().unwrap_or_default(),
+                repo_ref: v.ref_.clone(),
+            })
+        }
+        VariantSource::Url(v) => {
+            let url = url::Url::parse(&v.url)
+                .map_err(|e| format!("invalid variant HTTP URL `{}`: {e}", v.url))?;
+            Ok(NodeSource::Http {
+                url,
+                sha256: v.sha256.clone(),
+            })
+        }
+    }
+}
+
+/// Resolves a [`VariantSource`] to the variant label that names the
+/// entity slot: the literal `name` for a `Name` variant, or the
+/// daemon-side default ([`DEFAULT_VARIANT`]) for any other shape (the
+/// add path then computes the actual label from the resolved variant
+/// source).
+fn variant_label_for(variant: Option<&VariantSource>) -> String {
+    match variant {
+        Some(VariantSource::Name(v)) => v.name.clone(),
+        // Git/Http variants don't carry a stable user-facing label at
+        // this stage — the add path inspects the resolved source and
+        // names them. For pre-add planning purposes (uniqueness of a
+        // `(name, tag, variant)` slot) we fall back to a stable string
+        // derived from the variant identity.
+        Some(other) => format!("__variant_{}", variant_identity_key(Some(other))),
+        None => DEFAULT_VARIANT.to_owned(),
+    }
+}
+
+/// Stable identity for grouping a deployment's instances by variant.
+/// Captures the union of all `VariantSource` shapes (name / git / http)
+/// in a way that's comparable as a HashMap key.
+fn variant_identity_key(variant: Option<&VariantSource>) -> String {
+    match variant {
+        None => String::new(),
+        Some(VariantSource::Name(v)) => format!("name:{}", v.name),
+        Some(VariantSource::Git(v)) => format!(
+            "git:{}|{}|{}",
+            v.repo,
+            v.path.as_deref().unwrap_or(""),
+            v.ref_.as_deref().unwrap_or("")
+        ),
+        Some(VariantSource::Url(v)) => {
+            format!("url:{}|{}", v.url, v.sha256.as_deref().unwrap_or(""))
+        }
+    }
 }
 
 fn deployment_label(deployment: &Deployment) -> String {
@@ -222,42 +292,36 @@ fn node_source_from_deployment_source(
     deployment: &Deployment,
     nodes_directory: &std::path::Path,
     peppy_dirs: &PeppyDirs,
-) -> std::result::Result<(NodeSource, Option<NodeSource>), String> {
-    let source = match &deployment.source {
+) -> std::result::Result<NodeSource, String> {
+    match &deployment.source {
         DeploymentSource::Local(spec) => {
             let resolved = if spec.local.is_absolute() {
                 spec.local.clone()
             } else {
                 nodes_directory.join(&spec.local)
             };
-            NodeSource::Fs(resolved)
+            Ok(NodeSource::Fs(resolved))
         }
         DeploymentSource::Git(spec) => {
             let repo_url = git_url_from_repo(&spec.repo)?;
-            NodeSource::Git {
+            Ok(NodeSource::Git {
                 repo_url,
                 repo_path: spec.path.clone(),
                 repo_ref: Some(spec.ref_.clone()),
-            }
+            })
         }
         DeploymentSource::Url(spec) => {
             let url = url::Url::parse(&spec.url)
                 .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.url))?;
-            NodeSource::Http {
+            Ok(NodeSource::Http {
                 url,
                 sha256: Some(spec.sha256.clone()),
-            }
+            })
         }
         DeploymentSource::Repo(spec) => crate::services::repo::cache::resolve_repo_node_source(
             &spec.name, &spec.tag, None, peppy_dirs,
-        )?,
-    };
-
-    // Variants moved from `source` to per-`instances` entries. Callers
-    // resolve each instance's variant individually; this function returns
-    // a variant of `None` so the existing PlannedDeployment shape stays
-    // backwards compatible until the per-variant fan-out lands.
-    Ok((source, None))
+        ),
+    }
 }
 
 /// Marker git_hash used for stack-launch operations.
@@ -871,7 +935,7 @@ async fn resolve_deployments(
 
     let mut planned: Vec<PlannedDeployment> = Vec::new();
     let mut planning_errors: Vec<String> = Vec::new();
-    let mut planned_keys: HashSet<NameTagKey> = HashSet::new();
+    let mut planned_keys: HashSet<EntityKey> = HashSet::new();
 
     for deployment in deployments.into_iter() {
         if deployment.instances.is_empty() {
@@ -882,10 +946,10 @@ async fn resolve_deployments(
             continue;
         }
 
-        let (source, variant) =
+        let source =
             match node_source_from_deployment_source(&deployment, nodes_directory, &ctx.peppy_dirs)
             {
-                Ok(result) => result,
+                Ok(s) => s,
                 Err(err) => {
                     planning_errors.push(format!(
                         "failed to resolve source for deployment {}: {err}",
@@ -919,36 +983,86 @@ async fn resolve_deployments(
         let node_name = config.manifest.name.as_str().to_owned();
         let node_tag = config.manifest.tag.clone();
 
-        let key = NameTagKey::new(&node_name, &node_tag);
-        if !planned_keys.insert(key.clone()) {
-            planning_errors.push(format!(
-                "duplicate deployment for node {} (resolved from {})",
-                key.label(),
-                deployment_label(&deployment)
-            ));
+        // Fan out: group instances by their variant so each unique
+        // `(name, tag, variant)` slot becomes one PlannedDeployment.
+        // Order is preserved by first-occurrence so the launch order is
+        // deterministic across runs.
+        let mut groups: Vec<(String, Option<VariantSource>, Vec<DeploymentInstance>)> = Vec::new();
+        for instance in deployment.instances.iter() {
+            let key = variant_identity_key(instance.variant.as_ref());
+            if let Some(slot) = groups.iter_mut().find(|(k, _, _)| k == &key) {
+                slot.2.push(instance.clone());
+            } else {
+                groups.push((key, instance.variant.clone(), vec![instance.clone()]));
+            }
+        }
+
+        let mut group_failed = false;
+        let mut group_planned: Vec<PlannedDeployment> = Vec::with_capacity(groups.len());
+        for (_, variant_src, instances) in groups {
+            let variant_node_source = match variant_src
+                .as_ref()
+                .map(variant_source_to_node_source)
+                .transpose()
+            {
+                Ok(v) => v,
+                Err(err) => {
+                    planning_errors.push(format!(
+                        "failed to resolve variant source for deployment {}: {err}",
+                        deployment_label(&deployment)
+                    ));
+                    group_failed = true;
+                    break;
+                }
+            };
+
+            // Disallow two PlannedDeployments for the same `(name, tag,
+            // variant)` slot across the whole launcher: they would both
+            // try to add the same entity, and the second push would
+            // collide with the first.
+            let entity_key = node_stack::EntityKey::new(
+                &node_name,
+                &node_tag,
+                variant_label_for(variant_src.as_ref()).as_str(),
+            );
+            if !planned_keys.insert(entity_key.clone()) {
+                planning_errors.push(format!(
+                    "duplicate deployment for node {} (resolved from {})",
+                    entity_key.label(),
+                    deployment_label(&deployment)
+                ));
+                group_failed = true;
+                break;
+            }
+
+            group_planned.push(PlannedDeployment {
+                source: source.clone(),
+                variant: variant_node_source,
+                node_name: node_name.clone(),
+                node_tag: node_tag.clone(),
+                config: config.clone(),
+                instances,
+            });
+        }
+        if group_failed {
             continue;
         }
 
         publish_stdout(
             ctx,
             format!(
-                "Deployment {} resolved to {}:{}",
+                "Deployment {} resolved to {}:{} ({} variant{})",
                 deployment_label(&deployment),
                 node_name,
-                node_tag
+                node_tag,
+                group_planned.len(),
+                if group_planned.len() == 1 { "" } else { "s" },
             ),
             LaunchFeedbackStep::LauncherStep,
         )
         .await;
 
-        planned.push(PlannedDeployment {
-            deployment,
-            source,
-            variant,
-            node_name,
-            node_tag,
-            config,
-        });
+        planned.extend(group_planned);
     }
 
     if !planning_errors.is_empty() {
@@ -1285,7 +1399,7 @@ async fn start_node_instances(
             continue;
         };
 
-        for instance in &item.deployment.instances {
+        for instance in &item.instances {
             let instance_id = instance.instance_id.as_str();
             publish_stdout(
                 ctx,

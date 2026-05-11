@@ -153,17 +153,20 @@ pub fn build_action_handle_method(
             let declared = factory.declare_from_wire(wire).await?;
             let core_node = message.core_node().to_string();
             let instance_id = message.instance_id().to_string();
+            let variant = message.variant().to_string();
         },
         _ if has_payload => quote! {
             let message = request_context.message();
             let payload = message.payload();
             let core_node = message.core_node().to_string();
             let instance_id = message.instance_id().to_string();
+            let variant = message.variant().to_string();
         },
         _ => quote! {
             let message = request_context.message();
             let core_node = message.core_node().to_string();
             let instance_id = message.instance_id().to_string();
+            let variant = message.variant().to_string();
         },
     };
 
@@ -177,18 +180,20 @@ pub fn build_action_handle_method(
             #handler_ref,
             core_node,
             instance_id,
+            variant,
         )),
         (ActionHandleRole::Goal, false) => quote!({
             let _ = declared.user_payload;
-            #helper_name(#handler_ref, core_node, instance_id)
+            #helper_name(#handler_ref, core_node, instance_id, variant)
         }),
         (_, true) => quote!(#helper_name(
             payload.as_ref(),
             #handler_ref,
             core_node,
             instance_id,
+            variant,
         )),
-        (_, false) => quote!(#helper_name(#handler_ref, core_node, instance_id)),
+        (_, false) => quote!(#helper_name(#handler_ref, core_node, instance_id, variant)),
     };
 
     let post_outcome = match role {
@@ -271,9 +276,9 @@ pub fn build_action_payload_handler(
         .unwrap_or_else(|| quote!(()));
 
     let request_construction = if request_data_struct.is_some() {
-        quote!(let request = #request_struct { instance_id, core_node, data: request_data };)
+        quote!(let request = #request_struct { instance_id, core_node, variant, data: request_data };)
     } else {
-        quote!(let request = #request_struct { instance_id, core_node };)
+        quote!(let request = #request_struct { instance_id, core_node, variant };)
     };
 
     let response_serialization = if let Some(spec) = response_spec {
@@ -313,6 +318,7 @@ pub fn build_action_payload_handler(
                 handler: &F,
                 core_node: String,
                 instance_id: String,
+                variant: String,
             ) -> crate::Result<peppylib::Payload>
             where
                 F: Fn(#request_struct) -> crate::Result<#response_ty>,
@@ -331,6 +337,7 @@ pub fn build_action_payload_handler(
                 handler: &F,
                 core_node: String,
                 instance_id: String,
+                variant: String,
             ) -> crate::Result<peppylib::Payload>
             where
                 F: Fn(#request_struct) -> crate::Result<#response_ty>,

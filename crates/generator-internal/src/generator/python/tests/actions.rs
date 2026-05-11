@@ -973,7 +973,7 @@ fn consumed_action_without_response_payload() {
     // get_result should return without data
     assert_contains_all(
         &rendered,
-        &["return ResultResponse(core_node=response.core_node, instance_id=response.instance_id)"],
+        &["return ResultResponse(core_node=response.core_node, instance_id=response.instance_id, variant=response.variant)"],
     );
 }
 
