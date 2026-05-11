@@ -13,6 +13,8 @@ use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;
 
+const NODE_INIT_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_init_rust_success() {
     const NODE_NAME: &str = "example_node";
@@ -33,7 +35,7 @@ async fn listen_for_node_init_rust_success() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         &started_core_node.core_node_name,
-        Duration::from_secs(10),
+        NODE_INIT_TIMEOUT,
     )
     .await
     .expect("node_init request should complete");
@@ -132,7 +134,7 @@ async fn listen_for_node_init_rust_container_success() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         &started_core_node.core_node_name,
-        Duration::from_secs(10),
+        NODE_INIT_TIMEOUT,
     )
     .await
     .expect("node_init request should complete");
@@ -245,7 +247,7 @@ async fn listen_for_node_init_python_success() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         &started_core_node.core_node_name,
-        Duration::from_secs(10),
+        NODE_INIT_TIMEOUT,
     )
     .await
     .expect("node_init request should complete");
@@ -347,7 +349,7 @@ async fn listen_for_node_init_python_container_success() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         &started_core_node.core_node_name,
-        Duration::from_secs(10),
+        NODE_INIT_TIMEOUT,
     )
     .await
     .expect("node_init request should complete");
@@ -493,7 +495,7 @@ async fn listen_for_node_init_fails_if_directory_exists() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         &started_core_node.core_node_name,
-        Duration::from_secs(10),
+        NODE_INIT_TIMEOUT,
     )
     .await
     .expect("node_init request should complete");

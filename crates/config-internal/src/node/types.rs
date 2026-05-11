@@ -1451,6 +1451,83 @@ mod tests {
     }
 
     #[test]
+    fn exposed_action_supports_optional_payloads() {
+        let json5 = r#"{
+            name: "move_arm",
+            goal_service: {
+                request_message_format: {
+                    feedback_frequency: "u32",
+                    desired_position: { $type: "array", $items: "f64", $length: 3 },
+                    desired_orientation: { $type: "array", $items: "f64", $length: 4 },
+                },
+                response_message_format: {
+                    accepted: "bool",
+                },
+            },
+            result_service: {
+                response_message_format: {
+                    success: "bool",
+                    message: "string",
+                    final_joint_positions: { $type: "array", $items: "f64" },
+                    final_ee_position: { $type: "array", $items: "f64", $length: 3 },
+                    action_time: "f64",
+                },
+            },
+        }"#;
+
+        let action: ExposedAction =
+            serde_json5::from_str(json5).expect("action with omitted optional payloads must parse");
+
+        assert_eq!(action.name, "move_arm");
+        assert!(
+            action.feedback_topic.is_none(),
+            "feedback_topic is optional"
+        );
+
+        let result = action
+            .result_service
+            .as_ref()
+            .expect("result_service is present");
+        assert!(
+            result.request_message_format.is_none(),
+            "result_service.request_message_format is optional"
+        );
+        assert!(
+            result.response_message_format.is_some(),
+            "result_service.response_message_format was provided"
+        );
+
+        let goal = action
+            .goal_service
+            .as_ref()
+            .expect("goal_service is present");
+        assert!(goal.request_message_format.is_some());
+        assert!(goal.response_message_format.is_some());
+    }
+
+    #[test]
+    fn exposed_action_accepts_empty_message_format_object() {
+        let json5 = r#"{
+            name: "calibrate",
+            goal_service: {
+                request_message_format: {},
+                response_message_format: { accepted: "bool" },
+            },
+        }"#;
+
+        let action: ExposedAction =
+            serde_json5::from_str(json5).expect("empty `{}` message format must parse");
+        let goal = action.goal_service.expect("goal_service is present");
+        let request = goal
+            .request_message_format
+            .expect("request_message_format is Some when `{}` is given explicitly");
+        assert!(
+            request.0.is_empty(),
+            "empty `{{}}` deserializes to an empty MessageFormat"
+        );
+    }
+
+    #[test]
     fn type_tokens_in_message_format() {
         // A snippet similar to the camera stream message_format
         let json5 = r#"{
