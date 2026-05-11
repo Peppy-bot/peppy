@@ -71,9 +71,6 @@ impl Processor {
         peppy_config: impl AsRef<Path>,
         config: &StandaloneConfig,
     ) -> Result<Self> {
-        // Load the node config, transparently merging with the parent when
-        // `peppy_config` points at a variant subdirectory (variants omit the
-        // `manifest` section and inherit it from their parent).
         let node_config: NodeConfig = load_standalone_node_config(peppy_config.as_ref())?;
 
         let arguments: BTreeMap<String, AnyType> = match &config.parameters {
@@ -207,7 +204,7 @@ mod tests {
                 name: "uvc_camera",
                 tag: "0.1.0",
             },
-        interfaces: {},
+            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -307,7 +304,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -360,7 +357,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -415,7 +412,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -470,7 +467,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -535,7 +532,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -600,7 +597,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -648,7 +645,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -673,7 +670,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -701,7 +698,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -733,7 +730,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -761,7 +758,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -793,7 +790,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool", name: "string" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -828,7 +825,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -861,7 +858,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -898,7 +895,7 @@ mod tests {
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
-        interfaces: {},
+            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {

@@ -10,7 +10,7 @@ pub fn core_node_config() -> NodeConfig {
                 name: "core",
                 tag: "1.0.0",
             },
-        interfaces: {},
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["core"]
@@ -19,5 +19,4 @@ pub fn core_node_config() -> NodeConfig {
     )
     .expect("parse core node config")
     .into_resolved()
-    .expect("test config has execution")
 }

@@ -56,9 +56,9 @@ pub struct NodeCacheEntry {
 
 /// One entry as it appears in `launchers.json5`. Launchers live in the
 /// same kind of repositories as nodes (FS or Git), but they don't carry
-/// a tag, variants, or a checksum — they're just the location of a
-/// launcher `.json5` file (any filename; identified by
-/// `peppy_schema: "launcher_v1"` and keyed by file stem).
+/// a tag or a checksum — they're just the location of a launcher
+/// `.json5` file (any filename; identified by `peppy_schema:
+/// "launcher_v1"` and keyed by file stem).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LauncherCacheEntry {
     /// Name of the launcher (file stem of the `.json5` file).

@@ -98,18 +98,19 @@ impl RawNodeConfig {
     }
 }
 
-/// Opaque handle over a parsed node configuration.
+/// Opaque handle over a parsed and validated node configuration.
 ///
 /// Produced by [`NodeConfigParser`] when parsing a `peppy.json5` file or content
-/// string. The raw fields are not accessible outside of the `config` crate;
-/// use the provided methods to inspect or resolve the config.
+/// string. The inner [`NodeConfig`] is not accessible outside of the `config`
+/// crate; use the provided methods to inspect, or [`Self::into_resolved`] to
+/// take ownership of the underlying [`NodeConfig`].
 #[derive(Debug, Clone, Serialize)]
-pub struct ParsedNodeConfig(pub(crate) RawNodeConfig);
+pub struct ParsedNodeConfig(pub(crate) NodeConfig);
 
 impl ParsedNodeConfig {
-    /// Converts into a fully resolved [`NodeConfig`].
-    pub fn into_resolved(self) -> crate::error::Result<NodeConfig> {
-        self.0.into_resolved()
+    /// Returns the underlying [`NodeConfig`].
+    pub fn into_resolved(self) -> NodeConfig {
+        self.0
     }
 
     /// Returns the node name from the manifest.
@@ -133,7 +134,7 @@ impl ParsedNodeConfig {
     }
 
     /// Returns the execution language.
-    pub fn execution_language(&self) -> Option<PeppygenLanguage> {
+    pub fn execution_language(&self) -> PeppygenLanguage {
         self.0.execution.language
     }
 

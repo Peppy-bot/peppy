@@ -467,8 +467,7 @@ mod tests {
         std::fs::write(&path, config_json5).expect("write config");
         let config = NodeConfigParser::from_path(&path)
             .expect("parse config")
-            .into_resolved()
-            .expect("resolve config");
+            .into_resolved();
         NodeInfo {
             config,
             config_integrity: "0".repeat(64),

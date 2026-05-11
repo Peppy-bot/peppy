@@ -138,8 +138,8 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
 ///
 /// A complete `.peppy` directory contains:
 /// - `git.hash` (non-empty)
-/// - `libs/peppygen/peppy.json5.sha256` (when `has_execution_language` is true)
-fn needs_sync(node_root_dir: &std::path::Path, has_execution_language: bool) -> bool {
+/// - `libs/peppygen/peppy.json5.sha256` (non-empty)
+fn needs_sync(node_root_dir: &std::path::Path) -> bool {
     let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
     if !peppy_dir.exists() {
         return true;
@@ -151,13 +151,10 @@ fn needs_sync(node_root_dir: &std::path::Path, has_execution_language: bool) -> 
         _ => return true,
     }
 
-    // fingerprint file required when execution language is present;
-    // must be a regular non-empty file
-    if has_execution_language {
-        match std::fs::metadata(peppy_dir.join("libs/peppygen/peppy.json5.sha256")) {
-            Ok(meta) if meta.is_file() && meta.len() > 0 => {}
-            _ => return true,
-        }
+    // peppygen fingerprint must be a regular non-empty file
+    match std::fs::metadata(peppy_dir.join("libs/peppygen/peppy.json5.sha256")) {
+        Ok(meta) if meta.is_file() && meta.len() > 0 => {}
+        _ => return true,
     }
 
     false
@@ -422,53 +419,45 @@ async fn handle_node_sync_request_inner(
     });
 
     // Generate peppygen for the root node.
-    if let Some(language) = language {
-        match tokio::task::spawn_blocking(move || -> Result<()> {
-            remove_previous_peppy_dir(&node_root_dir);
-            generate_peppygen_for_node(
-                language,
-                &node_root_dir,
-                consumed_interfaces,
-                &git_hash,
-                &peppy_dirs,
-                generator::CrateDeployMode::default(),
-                None,
-            )
-        })
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(crate::Error::GeneratorError(e))) => {
-                return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
-                    .encode()
-                    .map_err(Into::into);
-            }
-            Ok(Err(crate::Error::Io(e))) => {
-                return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
-                    .encode()
-                    .map_err(Into::into);
-            }
-            Ok(Err(e)) => {
-                return NodeSyncResponse::failure(format!("Failed to sync node: {}", e))
-                    .encode()
-                    .map_err(Into::into);
-            }
-            Err(e) => {
-                return NodeSyncResponse::failure(format!(
-                    "Failed to generate peppygen (generate task failed): {}",
-                    e
-                ))
+    match tokio::task::spawn_blocking(move || -> Result<()> {
+        remove_previous_peppy_dir(&node_root_dir);
+        generate_peppygen_for_node(
+            language,
+            &node_root_dir,
+            consumed_interfaces,
+            &git_hash,
+            &peppy_dirs,
+            generator::CrateDeployMode::default(),
+            None,
+        )
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(crate::Error::GeneratorError(e))) => {
+            return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
                 .encode()
                 .map_err(Into::into);
-            }
-        };
-    } else {
-        return NodeSyncResponse::failure(
-            "Node config is missing an `execution.language` block".to_owned(),
-        )
-        .encode()
-        .map_err(Into::into);
-    }
+        }
+        Ok(Err(crate::Error::Io(e))) => {
+            return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
+                .encode()
+                .map_err(Into::into);
+        }
+        Ok(Err(e)) => {
+            return NodeSyncResponse::failure(format!("Failed to sync node: {}", e))
+                .encode()
+                .map_err(Into::into);
+        }
+        Err(e) => {
+            return NodeSyncResponse::failure(format!(
+                "Failed to generate peppygen (generate task failed): {}",
+                e
+            ))
+            .encode()
+            .map_err(Into::into);
+        }
+    };
 
     NodeSyncResponse::success_with_provenance(resolved_from_stack, repo_resolved_provenance)
         .encode()
@@ -575,9 +564,7 @@ async fn materialize_repo_deps(
             }
         }
 
-        let cfg = parsed
-            .into_resolved()
-            .map_err(|e| format!("Failed to resolve config for {}:{}: {}", name, tag, e))?;
+        let cfg = parsed.into_resolved();
         resolved.insert((name.clone(), tag.clone()), cfg);
         provenance.push(RepoResolvedEntry {
             name,
@@ -781,7 +768,7 @@ pub fn stack_resolver(
 /// Parameters for [`auto_sync_if_missing`].
 pub struct AutoSyncParams<'a> {
     pub node_dir: &'a std::path::Path,
-    pub execution_language: Option<config::node::PeppygenLanguage>,
+    pub execution_language: config::node::PeppygenLanguage,
     pub manifest: &'a config::node::Manifest,
     pub interfaces: &'a config::node::Interfaces,
     pub git_hash: &'a str,
@@ -801,7 +788,7 @@ pub fn auto_sync_if_missing(
     peppy_dirs: &PeppyDirs,
 ) -> crate::Result<()> {
     let peppy_dir = params.node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
-    if needs_sync(params.node_dir, params.execution_language.is_some()) {
+    if needs_sync(params.node_dir) {
         // Back up existing .peppy so we can restore it on failure.
         let backup_dir = params.node_dir.join(format!(
             ".peppy-backup-{}-{}",
@@ -818,34 +805,26 @@ pub fn auto_sync_if_missing(
         };
 
         let gen_result: crate::Result<()> = (|| {
-            if let Some(language) = params.execution_language {
-                let consumed = collect_consumed_interfaces(
-                    params.manifest,
-                    params.interfaces,
-                    stack_resolver(node_stack),
-                )
-                .map_err(|reason| {
-                    crate::Error::Io(std::io::Error::other(format!(
-                        "failed to resolve consumed interfaces: {}",
-                        reason
-                    )))
-                })?;
-                generate_peppygen_for_node(
-                    language,
-                    params.node_dir,
-                    consumed,
-                    params.git_hash,
-                    peppy_dirs,
-                    generator::CrateDeployMode::default(),
-                    None,
-                )?;
-            } else {
-                std::fs::create_dir_all(&peppy_dir)
-                    .and_then(|()| {
-                        std::fs::write(peppy_dir.join("git.hash"), params.git_hash.as_bytes())
-                    })
-                    .map_err(crate::Error::from)?;
-            }
+            let consumed = collect_consumed_interfaces(
+                params.manifest,
+                params.interfaces,
+                stack_resolver(node_stack),
+            )
+            .map_err(|reason| {
+                crate::Error::Io(std::io::Error::other(format!(
+                    "failed to resolve consumed interfaces: {}",
+                    reason
+                )))
+            })?;
+            generate_peppygen_for_node(
+                params.execution_language,
+                params.node_dir,
+                consumed,
+                params.git_hash,
+                peppy_dirs,
+                generator::CrateDeployMode::default(),
+                None,
+            )?;
             Ok(())
         })();
 
@@ -926,15 +905,14 @@ mod tests {
     #[test]
     fn needs_sync_returns_true_when_dir_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(needs_sync(tmp.path(), true));
-        assert!(needs_sync(tmp.path(), false));
+        assert!(needs_sync(tmp.path()));
     }
 
     #[test]
     fn needs_sync_returns_true_when_git_hash_missing() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".peppy")).unwrap();
-        assert!(needs_sync(tmp.path(), false));
+        assert!(needs_sync(tmp.path()));
     }
 
     #[test]
@@ -943,17 +921,16 @@ mod tests {
         let peppy = tmp.path().join(".peppy");
         std::fs::create_dir_all(&peppy).unwrap();
         std::fs::write(peppy.join("git.hash"), b"").unwrap();
-        assert!(needs_sync(tmp.path(), false));
+        assert!(needs_sync(tmp.path()));
     }
 
     #[test]
-    fn needs_sync_returns_true_when_fingerprint_missing_with_execution_language() {
+    fn needs_sync_returns_true_when_fingerprint_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy = tmp.path().join(".peppy");
         std::fs::create_dir_all(&peppy).unwrap();
         std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
-        // has_execution_language = true but no fingerprint file
-        assert!(needs_sync(tmp.path(), true));
+        assert!(needs_sync(tmp.path()));
     }
 
     #[test]
@@ -964,16 +941,6 @@ mod tests {
         std::fs::create_dir_all(&peppygen).unwrap();
         std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
         std::fs::write(peppygen.join("peppy.json5.sha256"), b"deadbeef").unwrap();
-        assert!(!needs_sync(tmp.path(), true));
-    }
-
-    #[test]
-    fn needs_sync_ignores_fingerprint_when_no_execution_language() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy = tmp.path().join(".peppy");
-        std::fs::create_dir_all(&peppy).unwrap();
-        std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
-        // No fingerprint file, but has_execution_language = false
-        assert!(!needs_sync(tmp.path(), false));
+        assert!(!needs_sync(tmp.path()));
     }
 }

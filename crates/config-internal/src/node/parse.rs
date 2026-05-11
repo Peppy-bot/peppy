@@ -50,12 +50,10 @@ impl NodeConfigParser {
     /// Takes a JSON5 content as parameter
     pub fn from_content(content: &str) -> Result<ParsedNodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        let config: RawNodeConfig = crate::error::deserialize_json5_with_path(content)?;
-
-        let execution = config.execution.clone().into_execution()?;
-        validate_execution(&execution)?;
-
-        Ok(ParsedNodeConfig(config))
+        let raw: RawNodeConfig = crate::error::deserialize_json5_with_path(content)?;
+        let resolved = raw.into_resolved()?;
+        validate_execution(&resolved.execution)?;
+        Ok(ParsedNodeConfig(resolved))
     }
 }
 
@@ -64,7 +62,7 @@ impl NodeConfigParser {
 /// Used by `peppylib`'s standalone mode so Rust and Python nodes can
 /// `cargo run` / `python -m` directly from a node directory.
 pub fn load_standalone_node_config(path: impl AsRef<Path>) -> Result<NodeConfig> {
-    NodeConfigParser::from_path(path)?.into_resolved()
+    Ok(NodeConfigParser::from_path(path)?.into_resolved())
 }
 
 #[cfg(test)]
@@ -132,7 +130,7 @@ mod tests {
         assert_eq!(config.0.manifest.tag, "2.1.0");
         assert_eq!(
             config.0.execution.language,
-            Some(crate::node::PeppygenLanguage::Rust)
+            crate::node::PeppygenLanguage::Rust
         );
         assert_eq!(
             config.0.execution.run_cmd.as_ref().unwrap(),

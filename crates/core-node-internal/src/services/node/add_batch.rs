@@ -350,9 +350,7 @@ async fn resolve_transitive_closure<'a>(
             }
         }
 
-        let config_resolved = parsed
-            .into_resolved()
-            .map_err(|e| format!("Failed to resolve config for {}:{}: {}", name, tag, e))?;
+        let config_resolved = parsed.into_resolved();
 
         to_add.push(ResolvedBatchNode {
             name,

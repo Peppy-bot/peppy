@@ -17,8 +17,7 @@ use tracing_subscriber::fmt::MakeWriter;
 fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node::NodeConfig)) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5)
         .expect("peppy.json5 should read")
-        .into_resolved()
-        .expect("test node should resolve");
+        .into_resolved();
     modify(&mut cfg);
     let content =
         config::json5_pretty::to_string_pretty(&cfg).expect("peppy.json5 should serialize");

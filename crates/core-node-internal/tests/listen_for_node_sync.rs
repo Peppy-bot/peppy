@@ -1149,7 +1149,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
                 tag: "0.1.0",
                 labels: ["camera"],
             },
-        interfaces: {},
+            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -1259,7 +1259,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
                 name: "example_node",
                 tag: "0.1.0",
             },
-        interfaces: {},
+            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]

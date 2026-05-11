@@ -196,7 +196,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn looks_like_git_url_matches_variants() {
+    fn looks_like_git_url_matches_git_url_forms() {
         // Ends with .git
         assert!(looks_like_git_url("https://github.com/org/repo.git"));
         // .git followed by subpath

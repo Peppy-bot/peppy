@@ -62,7 +62,7 @@ fn generate_peppygen_lib_minimal_config() {
         name: "minimal_node",
         tag: "0.1.0"
       },
-        interfaces: {},
+      interfaces: {},
       execution: {
         language: "rust",
         run_cmd: ["./target/debug/minimal_node"]

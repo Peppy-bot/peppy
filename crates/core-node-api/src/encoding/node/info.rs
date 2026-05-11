@@ -218,7 +218,6 @@ mod tests {
         NodeConfigParser::from_path(&path)
             .expect("parse config")
             .into_resolved()
-            .expect("resolve config")
     }
 
     #[test]

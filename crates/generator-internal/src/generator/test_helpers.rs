@@ -21,7 +21,7 @@ pub const STUB_NODE_CONFIG: &str = r#"{
     name: "generated_node",
     tag: "0.1.0",
   },
-        interfaces: {},
+  interfaces: {},
   execution: {
     language: "rust",
     run_cmd: ["./target/release/generated_node"]

@@ -720,9 +720,6 @@ async fn resolve_node_add_source(
                 });
             }
 
-            // Git hash verification is deferred to run_node_add (after variant
-            // resolution) so that the check uses the final source_path — which
-            // may be a variant subdirectory that has no .peppy at the root level.
             let config_path = path.join(NODE_CONFIG_FILE);
             let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
                 format!(
@@ -821,16 +818,8 @@ pub(crate) async fn run_node_add(
         let mut resolved_cleanup_guard = CleanupDir::new(resolved.cleanup_dir.take());
 
         let root_source_path = resolved.source_path.clone();
-        let root_execution_language = resolved.node_config.execution_language();
-
-        let node_config: NodeConfig = match resolved.node_config.into_resolved() {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                let error_msg = e.to_string();
-                write_error_to_log(&log_file, &error_msg);
-                return NodeAddResult::failure(&log_path, error_msg);
-            }
-        };
+        let node_config: NodeConfig = resolved.node_config.into_resolved();
+        let root_execution_language = node_config.execution.language;
 
         // Auto-generate .peppy directory if missing (e.g. fresh clone never synced).
         // Must run before git hash verification since sync also writes git.hash.

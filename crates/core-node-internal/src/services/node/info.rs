@@ -179,7 +179,7 @@ pub async fn resolve_node_config(
         resolve_node_config_with_source_path(source, peppy_dirs, None).await?;
     let _cleanup_guard = super::add::CleanupDir::new(cleanup_dir);
 
-    raw.into_resolved().map_err(|e| e.to_string())
+    Ok(raw.into_resolved())
 }
 
 /// Resolves a node config and returns both the config and the source directory path.

@@ -958,7 +958,7 @@ fn dependency_fails_when_node_name_mismatches() {
               name: "lidar",
               tag: "1.0.0",
             },
-        interfaces: {},
+            interfaces: {},
             execution: {
               language: "rust",
               run_cmd: ["lidar"]
@@ -1025,7 +1025,7 @@ fn dependency_fails_when_node_tag_mismatches() {
               name: "lidar",
               tag: "2.0.0",
             },
-        interfaces: {},
+            interfaces: {},
             execution: {
               language: "rust",
               run_cmd: ["lidar"]
@@ -1191,7 +1191,7 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
               name: "sensor",
               tag: "1.0.0",
             },
-        interfaces: {},
+            interfaces: {},
             execution: {
               language: "rust",
               run_cmd: ["./old_binary"]
@@ -1207,7 +1207,7 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
               name: "sensor",
               tag: "1.0.0",
             },
-        interfaces: {},
+            interfaces: {},
             execution: {
               language: "rust",
               run_cmd: ["./new_binary"]
@@ -1259,7 +1259,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
               name: "lidar",
               tag: "1.0.0",
             },
-        interfaces: {},
+            interfaces: {},
             execution: {
               language: "rust",
               run_cmd: ["./old_lidar"]
@@ -1297,7 +1297,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
               name: "lidar",
               tag: "1.0.0",
             },
-        interfaces: {},
+            interfaces: {},
             execution: {
               language: "rust",
               run_cmd: ["./new_lidar"]

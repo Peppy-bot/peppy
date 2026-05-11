@@ -13,8 +13,7 @@ use peppy::context::AppContext;
 fn add_emitted_topic(peppy_json5: &Path) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5)
         .expect("peppy.json5 should read")
-        .into_resolved()
-        .expect("should resolve");
+        .into_resolved();
 
     let topic_ifaces = cfg.interfaces.topics.get_or_insert_with(Default::default);
     let topics = topic_ifaces.emits.get_or_insert_with(Vec::new);
