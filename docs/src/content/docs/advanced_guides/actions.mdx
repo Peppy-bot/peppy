@@ -100,9 +100,9 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
 }
 ```
 
-Every payload on `goal_service` and `result_service` is optional: any of `goal_service.request_message_format`, `goal_service.response_message_format`, `result_service.request_message_format`, and `result_service.response_message_format` can be omitted (or set to `{}`) when the corresponding payload is empty. For example, a `calibrate` action can omit `goal_service.request_message_format` because it has no goal parameters, and a `result_service` that only needs to signal completion can omit `request_message_format`. The `feedback_topic` block itself is also optional, so actions that don't stream progress can leave it out entirely.
+Every payload on `goal_service` and `result_service` is optional: any of `goal_service.request_message_format`, `goal_service.response_message_format`, `result_service.request_message_format`, and `result_service.response_message_format` can be omitted (or set to `{}`) when the corresponding payload is empty. For example, a `calibrate` action can omit `goal_service.request_message_format` because it has no goal parameters, and a `result_service` that only needs to signal completion can omit `request_message_format`.
 
-The `feedback_topic.message_format`, in contrast, is required when `feedback_topic` is present: every feedback message carries a non-empty payload, since empty payloads are reserved as the framework's per-goal end-of-stream signal (see [Receiving feedback](#receiving-feedback)). Code generation will fail if `feedback_topic` is declared without a `message_format`.
+The `feedback_topic` block is optional: actions that don't stream progress can omit it entirely. When you do declare `feedback_topic`, however, its `message_format` is required and cannot be empty: every feedback message must carry a non-empty payload, since empty payloads are reserved as the framework's per-goal end-of-stream signal (see [Receiving feedback](#receiving-feedback)). Code generation will fail if `feedback_topic` is declared without a `message_format`.
 
 ### Handling goals
 
