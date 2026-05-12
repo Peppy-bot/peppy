@@ -23,6 +23,7 @@ PEPPY_CONFIG = """{
     name: "test_node",
     tag: "0.1.0",
   },
+  interfaces: {},
   execution: {
     language: "python",
     parameters: {
