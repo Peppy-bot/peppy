@@ -616,7 +616,7 @@ EOF
         fi
     fi
 
-    render_progress 85 "Configuring service"
+    render_progress 80 "Configuring service"
     if [ -z "${PEPPY_NO_SERVICE_INSTALL:-}" ]; then
         # Stop and remove existing service before installing the new one
         "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
@@ -657,26 +657,55 @@ EOF
         # Refresh repository indexes so nodes are discoverable immediately.
         # The service manager returns as soon as the daemon process is
         # launched, so wait a bounded amount for it to bind its messaging
-        # listener and write its state file before giving up.
-        REPO_UPDATE_DEADLINE_SECS=120
-        REPO_UPDATE_ELAPSED_SECS=0
-        REPO_UPDATE_CAPTURED=""
+        # listener and write its state file before giving up. We probe
+        # readiness with `repo list` (a cheap daemon call that fails fast
+        # when the listener isn't up) so the actual `repo update` can run
+        # exactly once with its output streamed live to the terminal —
+        # capturing it via $(...) buffers everything until the command
+        # exits, which makes the long refresh look like a hang.
+        REPO_READY_DEADLINE_SECS=120
+        REPO_READY_ELAPSED_SECS=0
+        REPO_READY_CAPTURED=""
+        render_progress 85 "Starting daemon"
         while : ; do
-            if REPO_UPDATE_CAPTURED=$("$PEPPY_BIN_DIR/peppy" repo update 2>&1); then
-                printf '%s\n' "$REPO_UPDATE_CAPTURED"
+            if REPO_READY_CAPTURED=$("$PEPPY_BIN_DIR/peppy" repo list 2>&1 >/dev/null); then
                 break
             fi
-            if [ "$REPO_UPDATE_ELAPSED_SECS" -ge "$REPO_UPDATE_DEADLINE_SECS" ]; then
-                if [ -n "$REPO_UPDATE_CAPTURED" ]; then
-                    printf '%s\n' "$REPO_UPDATE_CAPTURED" >&2
+            if [ "$REPO_READY_ELAPSED_SECS" -ge "$REPO_READY_DEADLINE_SECS" ]; then
+                flush_progress_line
+                if [ -n "$REPO_READY_CAPTURED" ]; then
+                    printf '%s\n' "$REPO_READY_CAPTURED" >&2
                 fi
-                echo "error: repository update failed." >&2
+                echo "error: peppy daemon did not become ready in time." >&2
                 echo "       You can retry manually: $PEPPY_BIN_DIR/peppy repo update" >&2
                 exit 1
             fi
+            REPO_READY_ELAPSED_SECS=$((REPO_READY_ELAPSED_SECS + 2))
+            # Update the bar label with the timeout deadline so the user
+            # sees the wait isn't a hang and knows when we'll give up.
+            # Gated on TTY because non-TTY `render_progress` prints a full
+            # new line per call, which would spam logs every 2s.
+            if $IS_TTY; then
+                render_progress 85 "Starting daemon (timeout in $((REPO_READY_DEADLINE_SECS - REPO_READY_ELAPSED_SECS))s)"
+            fi
             sleep 2
-            REPO_UPDATE_ELAPSED_SECS=$((REPO_UPDATE_ELAPSED_SECS + 2))
         done
+
+        # Daemon is ready: hand the terminal off to `peppy repo update` so
+        # it can draw its own dim, in-place scrolling window (the same
+        # `ScrollingOutput` widget used by `peppy node add`). `flush_progress_line`
+        # terminates the `Refreshing repositories` bar with a newline so the
+        # cursor is on a fresh row before peppy's first write — without it,
+        # peppy's `[INFO]` line writes on top of the progress bar and its
+        # subsequent `MoveUp`/`Clear` cursor moves operate on rows we've
+        # already drawn into.
+        render_progress 90 "Refreshing repositories"
+        flush_progress_line
+        if ! "$PEPPY_BIN_DIR/peppy" repo update; then
+            echo "error: repository update failed." >&2
+            echo "       You can retry manually: $PEPPY_BIN_DIR/peppy repo update" >&2
+            exit 1
+        fi
     else
         flush_progress_line
         echo "No service install because PEPPY_NO_SERVICE_INSTALL is set"
@@ -686,7 +715,7 @@ EOF
     PATH_ALREADY_PRESENT=false
     PATH_UPDATE_FILE=""
 
-    render_progress 92 "Configuring shell PATH"
+    render_progress 95 "Configuring shell PATH"
     if [ -n "${PEPPY_NO_PATH_UPDATE:-}" ]; then
         flush_progress_line
         echo "No path update because PEPPY_NO_PATH_UPDATE is set"
