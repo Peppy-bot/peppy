@@ -411,7 +411,6 @@ async fn listen_for_node_add_fingerprint_mismatch() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -490,7 +489,6 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -567,7 +565,6 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -626,7 +623,6 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -759,7 +755,6 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -1330,7 +1325,6 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -1367,7 +1361,6 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
                     ]
                 },
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]

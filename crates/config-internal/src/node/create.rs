@@ -25,7 +25,6 @@ struct LauncherConfigTemplate;
     name: "{{ name }}",
     tag: "0.1.0"
   },
-  interfaces: {},
   execution: {
     language: "rust",
     run_cmd: {{ run_cmd | safe }}
@@ -105,7 +104,6 @@ mod tests {
                 name: "a_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["./target/release/a_node"],

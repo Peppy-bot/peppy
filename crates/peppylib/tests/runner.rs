@@ -109,7 +109,6 @@ async fn daemon_runner_succeed() {
         name: "test_node",
         tag: "0.1.0",
       },
-      interfaces: {},
       execution: {
         language: "rust",
         parameters: {
@@ -255,7 +254,6 @@ async fn standalone_runner_succeed() {
         name: "test_node",
         tag: "0.1.0",
       },
-      interfaces: {},
       execution: {
         language: "rust",
         parameters: {
@@ -315,7 +313,6 @@ async fn node_ready_but_not_healthy() {
         name: "test_node",
         tag: "0.1.0",
       },
-      interfaces: {},
       execution: {
         language: "rust",
         parameters: {
@@ -569,7 +566,6 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         name: "test_node",
         tag: "0.1.0",
       },
-      interfaces: {},
       execution: {
         language: "rust",
         parameters: {
@@ -705,7 +701,6 @@ async fn node_runner_exposes_messenger_and_metadata() {
         name: "test_node",
         tag: "0.1.0",
       },
-      interfaces: {},
       execution: {
         language: "rust",
         parameters: {

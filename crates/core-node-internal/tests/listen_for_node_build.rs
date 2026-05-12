@@ -109,7 +109,6 @@ async fn listen_for_node_build_runs_build_cmd() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["touch", "{BUILD_CMD_MARKER_FILE}"],
@@ -173,7 +172,6 @@ async fn listen_for_node_build_cmd_failure_fails_build() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["this_command_does_not_exist_12345"],
@@ -238,7 +236,6 @@ async fn listen_for_node_build_cmd_nonzero_exit_fails_build() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["sh", "-c", "exit 1"],
@@ -305,7 +302,6 @@ async fn listen_for_node_build_cmd_streams_stdout_and_stderr() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
@@ -373,7 +369,6 @@ async fn listen_for_node_build_writes_log_file() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
@@ -483,7 +478,6 @@ async fn listen_for_node_build_copies_files_to_storage() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -556,7 +550,6 @@ async fn listen_for_node_build_uses_env_overrides_for_path() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
@@ -663,7 +656,6 @@ async fn listen_for_node_build_injects_runtime_env_vars() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: [
@@ -716,7 +708,6 @@ async fn listen_for_node_build_with_container_success() {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
-        interfaces: {},
         execution: {
             language: "rust",
             container: {
@@ -854,7 +845,6 @@ async fn listen_for_node_build_container_build_failure_includes_stderr_in_error(
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
-        interfaces: {},
         execution: {
             language: "rust",
             container: {
@@ -956,7 +946,6 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],

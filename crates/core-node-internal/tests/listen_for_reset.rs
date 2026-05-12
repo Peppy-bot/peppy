@@ -39,7 +39,6 @@ async fn listen_for_node_reset_clears_node_stack() {
                 name: "{TARGET_NODE_A_NAME}",
                 tag: "{TARGET_NODE_A_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -72,7 +71,6 @@ async fn listen_for_node_reset_clears_node_stack() {
                 name: "{TARGET_NODE_B_NAME}",
                 tag: "{TARGET_NODE_B_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]

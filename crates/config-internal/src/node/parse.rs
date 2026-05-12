@@ -87,7 +87,6 @@ mod tests {
                 name: "test_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["./target/release/test_node"],
@@ -179,7 +178,6 @@ mod tests {
                 name: "container_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 container: {
@@ -200,7 +198,6 @@ mod tests {
                 name: "bad_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["./bin"],
@@ -224,7 +221,6 @@ mod tests {
                 name: "bare_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
             },
@@ -244,7 +240,6 @@ mod tests {
                 name: "empty_cmd_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: [],
@@ -288,7 +283,6 @@ mod tests {
                 name: "bad_mount_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 container: {
@@ -319,7 +313,6 @@ mod tests {
                 name: "bad_mount_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 container: {
@@ -347,7 +340,6 @@ mod tests {
                 name: "good_mount_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 container: {
@@ -372,7 +364,6 @@ mod tests {
                 name: "no_mount_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 container: {
@@ -396,7 +387,6 @@ mod tests {
                 name: "camera_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -424,7 +414,6 @@ mod tests {
                 name: "camera_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -455,7 +444,6 @@ mod tests {
                 name: "bad_ref_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -487,7 +475,6 @@ mod tests {
                 name: "bad_type_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -521,7 +508,6 @@ mod tests {
                 name: "dynamic_mount_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -549,7 +535,6 @@ mod tests {
                 name: "container_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 container: {
@@ -571,7 +556,6 @@ mod tests {
                 name: "container_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 container: {
@@ -606,7 +590,6 @@ mod tests {
                 name: "container_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 container: {
@@ -641,7 +624,6 @@ mod tests {
                 name: "test_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 run_cmd: ["./bin"],
             },
@@ -662,7 +644,6 @@ mod tests {
                 name: "test_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: { wrong: "type" },
@@ -684,7 +665,6 @@ mod tests {
         let json5 = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
-            interfaces: {},
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(tmp.path(), json5).unwrap();
@@ -707,7 +687,6 @@ mod tests {
         let json5 = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "my_node", tag: "0.1.0" },
-            interfaces: {},
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(tmp.path(), json5).unwrap();

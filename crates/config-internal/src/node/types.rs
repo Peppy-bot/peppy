@@ -71,16 +71,16 @@ where
     PeppySchema::deserialize_expecting(deserializer, PeppySchema::NodeV1)
 }
 
-/// Fully resolved node configuration. Every section is required: a peppy
-/// node is always a self-contained config with a `manifest`, `interfaces`
-/// (use `interfaces: {}` for nodes with no topics/services/actions), and an
-/// `execution` block.
+/// Fully resolved node configuration. A peppy node always has a `manifest`
+/// and an `execution` block; `interfaces` is optional and defaults to empty
+/// for nodes with no topics/services/actions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
     #[serde(deserialize_with = "deserialize_node_v1_schema")]
     pub peppy_schema: PeppySchema,
     pub manifest: Manifest,
+    #[serde(default)]
     pub interfaces: Interfaces,
     pub execution: Execution,
 }
@@ -1658,7 +1658,6 @@ mod tests {
         let json5 = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "node", tag: "0.1.0" },
-            interfaces: {},
             execution: { language: "rust", run_cmd: ["./run"] },
             extra: "bad"
         }"#;
@@ -1673,7 +1672,6 @@ mod tests {
         let json5 = r#"{
             peppy_schema: "launcher_v1",
             manifest: { name: "node", tag: "0.1.0" },
-            interfaces: {},
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
         }"#;
         let err = serde_json5::from_str::<NodeConfig>(json5)

@@ -367,7 +367,6 @@ async fn listen_for_node_add_dependency_not_resolved() {
                 ]
             },
         },
-        interfaces: {},
         execution: {
             language: "rust",
             run_cmd: ["sleep", "10"],

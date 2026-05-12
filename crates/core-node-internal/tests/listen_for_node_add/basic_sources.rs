@@ -15,7 +15,6 @@ async fn listen_for_node_fs_add_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]

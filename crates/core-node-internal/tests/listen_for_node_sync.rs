@@ -377,7 +377,6 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                     ]
                 },
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["cargo", "build", "--release"],
@@ -1149,7 +1148,6 @@ async fn listen_for_node_sync_generates_rust_parameters() {
                 tag: "0.1.0",
                 labels: ["camera"],
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {

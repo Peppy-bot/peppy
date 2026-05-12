@@ -180,7 +180,7 @@ fn write_node_config_with_options(
               }},"#
         )
     } else {
-        "interfaces: {},".to_string()
+        String::new()
     };
 
     let depends_on = if expects_uvc_camera {
