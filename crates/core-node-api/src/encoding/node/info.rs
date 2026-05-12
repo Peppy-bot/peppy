@@ -209,7 +209,6 @@ mod tests {
         let config_json5 = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "sensor_node", tag: "0.1.0" },
-            interfaces: {},
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
         let dir = tempfile::tempdir().expect("tempdir");

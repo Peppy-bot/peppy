@@ -138,7 +138,6 @@ async fn listen_for_node_run_timeout() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -310,7 +309,6 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
@@ -429,7 +427,6 @@ async fn listen_for_node_run_writes_log_file() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
@@ -568,7 +565,6 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -691,7 +687,6 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 parameters: {
@@ -843,7 +838,6 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "30"]
@@ -877,7 +871,6 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "30"]
@@ -1056,7 +1049,6 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["printout", "3"]
@@ -1205,7 +1197,6 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: [
@@ -1310,7 +1301,6 @@ async fn listen_for_node_run_with_container_success() {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
-        interfaces: {},
         execution: {
             language: "rust",
             container: {
@@ -1526,7 +1516,6 @@ async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns(
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
-        interfaces: {},
         execution: {
             language: "rust",
             container: {
@@ -1686,7 +1675,6 @@ async fn listen_for_node_run_container_failure_includes_stderr_in_error() {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
-        interfaces: {},
         execution: {
             language: "rust",
             container: {
@@ -1810,7 +1798,6 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["nonexistent_binary_peppy_test_xyz"]
@@ -1929,7 +1916,6 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "300"]

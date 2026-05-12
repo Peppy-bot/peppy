@@ -71,7 +71,6 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
                 name: "fs_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -171,7 +170,6 @@ async fn node_info_has_instance_ids() {
                 name: "instance_ids_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
@@ -359,7 +357,6 @@ async fn node_info_reports_not_in_stack_and_recovers() {
                 name: "fs_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]

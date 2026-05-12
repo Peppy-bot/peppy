@@ -38,7 +38,6 @@ fn write_node_config(
                     name: "{node_name}",
                     tag: "{node_tag}",
                 },
-                interfaces: {},
                 execution: {
                     language: "rust",
                     run_cmd: [{run_cmd_json5}]
