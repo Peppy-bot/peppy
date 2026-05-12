@@ -793,7 +793,7 @@ impl NodeStack {
         target: RestoreTarget<'_>,
         snapshot: EntitySnapshot,
     ) -> bool {
-        let guard = self.shared.write();
+        let mut guard = self.shared.write();
         let key = NodeKey::new(target.name, target.tag);
 
         if guard.is_root(&key) {
@@ -804,10 +804,10 @@ impl NodeStack {
             return false;
         };
 
-        let Some(current) = guard.graph.node_weight(index) else {
+        let Some(current) = guard.graph.node_weight(index).cloned() else {
             return false;
         };
-        if !Arc::ptr_eq(current, target.expected_handle) {
+        if !Arc::ptr_eq(&current, target.expected_handle) {
             return false;
         }
         {
@@ -830,6 +830,12 @@ impl NodeStack {
             Vec::new(),
         );
         *current.write() = restored;
+
+        // The failed rebuild may have rewired outgoing edges to match the new
+        // config's dependencies. Now that the snapshot's config is back in
+        // place, the edges must match the snapshot's dependency list too —
+        // otherwise `dependencies_of()` would report a stale view.
+        guard.rewire_dependencies(index);
         true
     }
 

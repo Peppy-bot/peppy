@@ -18,7 +18,7 @@ use config::node::NodeConfig;
 use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind};
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
-use node_stack::VirtualDeptree;
+use node_stack::{VirtualDeptree, WorkingDirGuard};
 use parking_lot::Mutex as StdMutex;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -162,6 +162,13 @@ pub(crate) async fn run_repo_node_add(
         // in place. On rollback we re-install this config instead of
         // removing the slot, so an in-place replacement that later fails
         // elsewhere in the batch does not wipe the user's prior state.
+        //
+        // We also clone the previous entity's `pending_working_dir` Arc so
+        // its `WorkingDirGuard` stays alive through the sub-add. The
+        // sub-add's `push_config` drops the previous entity (and its only
+        // owning reference to the guard) — without this clone the guard
+        // would drop and the temp dir backing `config_path` would be
+        // removed before rollback ever runs.
         let previous = action_context
             .node_stack
             .find(&node.name, &node.tag)
@@ -170,6 +177,7 @@ pub(crate) async fn run_repo_node_add(
                 PreviousConfig {
                     config: guard.config().clone(),
                     config_path: guard.config_path().to_path_buf(),
+                    working_dir: guard.pending_working_dir(),
                 }
             });
 
@@ -433,9 +441,16 @@ async fn run_single_batched_add(
 /// Artifact/stage state is intentionally omitted — a successful rollback
 /// returns the entity to `Added` (pending build); any previously built
 /// artifact remains on disk and a follow-up `node build` rewires it.
+///
+/// `working_dir` keeps the previous entity's `WorkingDirGuard` alive across
+/// the sub-add: `config_path` points inside that temp dir, so without
+/// holding the guard the directory would be removed when the sub-add
+/// replaces the entity and rollback would re-install a config at a path
+/// that no longer exists.
 struct PreviousConfig {
-    config: config::node::NodeConfig,
+    config: NodeConfig,
     config_path: PathBuf,
+    working_dir: Option<Arc<WorkingDirGuard>>,
 }
 
 struct RollbackEntry {
@@ -482,11 +497,24 @@ impl Drop for RollbackGuard {
             } = entry;
             match previous {
                 Some(prev) => {
-                    match self
-                        .node_stack
-                        .push_config(prev.config, false, prev.config_path)
-                    {
-                        Ok(()) => debug!("Rolled back batched replacement of {}:{}", name, tag),
+                    let PreviousConfig {
+                        config,
+                        config_path,
+                        working_dir,
+                    } = prev;
+                    match self.node_stack.push_config(config, false, config_path) {
+                        Ok(()) => {
+                            // Reattach the previous working-dir guard so the
+                            // restored entity owns the temp dir its
+                            // `config_path` lives inside, mirroring the
+                            // post-`push_config` step in the add path.
+                            if let Some(guard) = working_dir
+                                && let Some(handle) = self.node_stack.find(&name, &tag)
+                            {
+                                handle.write().set_pending_working_dir(guard);
+                            }
+                            debug!("Rolled back batched replacement of {}:{}", name, tag)
+                        }
                         Err(e) => warn!(
                             "Batch-add rollback (restore previous) failed for {}:{} — {}",
                             name, tag, e

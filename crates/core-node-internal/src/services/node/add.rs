@@ -303,8 +303,12 @@ async fn resolve_git_source(
     .await
     .map_err(|e| format!("Failed to join shallow probe task: {}", e))?;
 
-    let validated_config: Option<NodeConfig> = match phase1_result {
-        Ok(config) => Some(config),
+    // The shallow probe is only a preflight hint: if it rejects the config,
+    // fail fast; otherwise proceed to the full clone and reparse the config
+    // from the actual checkout. Never use the probe's parsed value as the
+    // final NodeConfig — the clone is the source of truth.
+    match phase1_result {
+        Ok(_) => {}
         Err(ShallowCheckError::InvalidConfig(msg)) => return Err(msg),
         Err(ShallowCheckError::ShallowFetchFailed(reason)) => {
             let _ = feedback_tx.send(FeedbackLine {
@@ -314,9 +318,8 @@ async fn resolve_git_source(
                     reason
                 ),
             });
-            None
         }
-    };
+    }
 
     // --- Phase 2: Full clone (only reached if config is valid or probe fell back) ---
     let checkout_dir = tempfile::tempdir()
@@ -326,6 +329,7 @@ async fn resolve_git_source(
     let clone_checkout_dir = checkout_dir.clone();
     let clone_repo_url = repo_url_str.clone();
     let clone_repo_ref = repo_ref.map(str::to_owned);
+    let clone_feedback_tx = feedback_tx.clone();
     if let Err(err) = tokio::task::spawn_blocking(move || {
         clone_with_progress(
             &clone_repo_url,
@@ -333,7 +337,7 @@ async fn resolve_git_source(
             &clone_checkout_dir,
             false,
             &mut |line| {
-                let _ = feedback_tx.send(FeedbackLine {
+                let _ = clone_feedback_tx.send(FeedbackLine {
                     stream: FeedbackStream::Stdout,
                     line: line.to_owned(),
                 });
@@ -365,20 +369,24 @@ async fn resolve_git_source(
         .map(PathBuf::from)
         .ok_or_else(|| "Invalid repo_path: node config has no parent directory".to_string())?;
 
-    // Reuse the config from Phase 1 if available; otherwise parse from disk (fallback path).
-    let node_config = if let Some(config) = validated_config {
-        config
-    } else {
-        match NodeConfigParser::from_path(&config_path) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                std::fs::remove_dir_all(&checkout_dir).ok();
-                return Err(format!(
-                    "Failed to parse node config at {}: {}",
-                    config_path.display(),
-                    e
-                ));
-            }
+    // Always parse the config from the cloned checkout. The shallow probe
+    // earlier in this function is only a preflight hint — its result is not
+    // trusted as the final config, since the probe and the clone could in
+    // principle disagree (e.g. a force-push between the two fetches).
+    let node_config = match NodeConfigParser::from_path(&config_path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            let msg = format!(
+                "Failed to parse node config at {}: {}",
+                config_path.display(),
+                e
+            );
+            let _ = feedback_tx.send(FeedbackLine {
+                stream: FeedbackStream::Stderr,
+                line: msg.clone(),
+            });
+            std::fs::remove_dir_all(&checkout_dir).ok();
+            return Err(msg);
         }
     };
 
