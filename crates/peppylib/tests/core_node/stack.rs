@@ -76,7 +76,6 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
         }],
-        variant_name: Some("default".to_string()),
     };
     let sensor = SerializedNode {
         name: "sensor".to_string(),
@@ -85,7 +84,6 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
         artifact_path: None,
         stage: Some(NodeStage::Added),
         instances: vec![],
-        variant_name: None,
     };
     let graph = SerializedNodeGraph {
         nodes: vec![brain.clone(), sensor.clone()],
@@ -127,7 +125,6 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
         }],
-        variant_name: Some("default".to_string()),
     };
     let sensor = SerializedNode {
         name: "sensor".to_string(),
@@ -136,7 +133,6 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
         artifact_path: None,
         stage: Some(NodeStage::Added),
         instances: vec![],
-        variant_name: None,
     };
     let graph = SerializedNodeGraph {
         nodes: vec![brain.clone(), sensor.clone()],

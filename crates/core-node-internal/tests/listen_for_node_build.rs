@@ -442,12 +442,14 @@ async fn listen_for_node_build_writes_log_file() {
 
     assert!(
         log_content.contains(&format!("[stdout] {}", STDOUT_MARKER)),
-        "log file should contain stdout marker with [stdout] prefix, got:\n{}",
+        "log file should contain stdout marker with [stdout] prefix, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains(&format!("[stderr] {}", STDERR_MARKER)),
-        "log file should contain stderr marker with [stderr] prefix, got:\n{}",
+        "log file should contain stderr marker with [stderr] prefix, got:
+{}",
         log_content
     );
 }
@@ -585,8 +587,13 @@ async fn listen_for_node_build_uses_env_overrides_for_path() {
     // Create a temp bin directory with a `printout` script.
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
     let printout_path = bin_dir.path().join("printout");
-    std::fs::write(&printout_path, "#!/bin/sh\necho \"$@\"\n")
-        .expect("failed to write printout script");
+    std::fs::write(
+        &printout_path,
+        "#!/bin/sh
+echo \"$@\"
+",
+    )
+    .expect("failed to write printout script");
 
     #[cfg(unix)]
     {
@@ -818,7 +825,8 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("[stdout]") || log_content.contains("[stderr]"),
-        "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:\n{}",
+        "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:
+{}",
         log_content
     );
 }
@@ -909,7 +917,8 @@ From: nowhere
         std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("[stdout]") || log_content.contains("[stderr]"),
-        "log file should contain streamed build output, got:\n{}",
+        "log file should contain streamed build output, got:
+{}",
         log_content
     );
 
@@ -997,17 +1006,20 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
     );
     assert!(
         log_content.contains("[error]"),
-        "log file should contain an [error] entry, got:\n{}",
+        "log file should contain an [error] entry, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("build_cmd failed"),
-        "log file should contain the failure message, got:\n{}",
+        "log file should contain the failure message, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("nonexistent_binary_peppy_test_xyz"),
-        "log file should contain the command that failed, got:\n{}",
+        "log file should contain the command that failed, got:
+{}",
         log_content
     );
 }

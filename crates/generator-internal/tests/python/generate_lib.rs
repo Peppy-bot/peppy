@@ -130,7 +130,6 @@ fn generate_peppygen_lib_minimal_config() {
       peppy_schema: "node_v1",
       manifest: { name: "minimal_node",
         tag: "0.1.0" },
-
       execution: { language: "python",
         build_cmd: ["uv", "sync"],
         run_cmd: ["uv", "run", "minimal_node"]

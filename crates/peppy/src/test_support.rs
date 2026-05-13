@@ -15,10 +15,7 @@ use tracing_subscriber::fmt::MakeWriter;
 
 /// Reads a node config, applies a mutation, writes it back, and regenerates the fingerprint.
 fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node::NodeConfig)) {
-    let mut cfg = NodeConfigParser::from_path(peppy_json5)
-        .expect("peppy.json5 should read")
-        .into_resolved()
-        .expect("test node should resolve");
+    let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
     modify(&mut cfg);
     let content =
         config::json5_pretty::to_string_pretty(&cfg).expect("peppy.json5 should serialize");

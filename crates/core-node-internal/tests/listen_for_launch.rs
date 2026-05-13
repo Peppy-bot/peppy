@@ -868,8 +868,8 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
     // Map both nodes into the user-repo cache. This is what the
     // `{ name, tag }` launcher shape resolves against.
     TestPackagesCache::new()
-        .fs_entry(BRAIN_NODE, NODE_TAG, &brain_dir, &[])
-        .fs_entry(ARM_NODE, NODE_TAG, &arm_dir, &[])
+        .fs_entry(BRAIN_NODE, NODE_TAG, &brain_dir)
+        .fs_entry(ARM_NODE, NODE_TAG, &arm_dir)
         .write(&peppy_dirs);
 
     let _ready_brain = AbortOnDrop(
@@ -995,9 +995,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1042,9 +1040,7 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1092,9 +1088,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1173,9 +1167,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1347,9 +1339,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1431,9 +1421,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1512,9 +1500,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1673,8 +1659,13 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
     // Create a temp bin directory with a `printout` script that sleeps
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
     let printout_path = bin_dir.path().join("printout");
-    std::fs::write(&printout_path, "#!/bin/sh\nsleep \"${1:-60}\"\n")
-        .expect("failed to write printout script");
+    std::fs::write(
+        &printout_path,
+        "#!/bin/sh
+sleep \"${1:-60}\"
+",
+    )
+    .expect("failed to write printout script");
 
     // Make it executable
     #[cfg(unix)]

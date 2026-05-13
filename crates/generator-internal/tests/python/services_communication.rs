@@ -280,6 +280,22 @@ if __name__ == "__main__":
     )
     .await;
 
+    // Verify broadcast reachability before spawning the consumer.
+    // The targeted probe above confirms the exposer individually, but the
+    // broadcast subscription pattern may not be fully propagated in the
+    // Zenoh routing table yet. This probe exercises the broadcast path,
+    // ensuring the exposer's broadcast subscription is active before the
+    // consumer sends its broadcast poll (instance_id=None).
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        "enable_camera",
+        None,
+        &mut exposer_child,
+        &user_node_exposer,
+    )
+    .await;
+
     let mut consumer_child = spawn_python_run(
         &user_node_consumer,
         &[(RUNTIME_CONFIG_VAR_NAME, &user_node_consumer_config_str)],
@@ -546,6 +562,22 @@ if __name__ == "__main__":
         UVC_CAMERA_NODE_NAME,
         "get_system_status",
         Some(exposer_instance_id),
+        &mut exposer_child,
+        &user_node_exposer,
+    )
+    .await;
+
+    // Verify broadcast reachability before spawning the consumer.
+    // The targeted probe above confirms the exposer individually, but the
+    // broadcast subscription pattern may not be fully propagated in the
+    // Zenoh routing table yet. This probe exercises the broadcast path,
+    // ensuring the exposer's broadcast subscription is active before the
+    // consumer sends its broadcast poll (instance_id=None).
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        "get_system_status",
+        None,
         &mut exposer_child,
         &user_node_exposer,
     )

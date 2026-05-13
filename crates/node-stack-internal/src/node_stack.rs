@@ -70,7 +70,6 @@ pub struct EntitySnapshot {
     pub config: NodeConfig,
     pub config_path: PathBuf,
     pub artifact_path: Option<PathBuf>,
-    pub variant_name: Option<String>,
 }
 
 fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
@@ -347,7 +346,6 @@ impl NodeStackInner {
         config: NodeConfig,
         allow_missing_dependencies: bool,
         config_path: P,
-        variant_name: Option<String>,
     ) -> Result<Option<EntitySnapshot>> {
         let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
         let config_path = config_path.into();
@@ -409,8 +407,7 @@ impl NodeStackInner {
                 }
 
                 if (interfaces_changed || dependencies_changed) && !allow_missing_dependencies {
-                    let candidate =
-                        NodeEntity::new(config.clone(), config_path.clone(), variant_name.clone());
+                    let candidate = NodeEntity::new(config.clone(), config_path.clone());
                     self.validate_dependencies(&candidate)?;
                 }
 
@@ -424,13 +421,12 @@ impl NodeStackInner {
                     config: guard.config().clone(),
                     config_path: guard.config_path().to_path_buf(),
                     artifact_path: guard.artifact_path().map(|p| p.to_path_buf()),
-                    variant_name: guard.variant_name().map(str::to_owned),
                 };
 
                 // Replace the entity in-place under the still-held write
                 // lock. The same `Arc` handle is preserved so any external
                 // readers see the new state.
-                *guard = NodeEntity::new(config, config_path, variant_name);
+                *guard = NodeEntity::new(config, config_path);
 
                 (previous_snapshot, interfaces_changed, dependencies_changed)
             };
@@ -442,7 +438,7 @@ impl NodeStackInner {
             Ok(Some(previous_snapshot))
         } else {
             // Entity doesn't exist, create new one in the Added stage.
-            let entity = NodeEntity::new(config, config_path, variant_name);
+            let entity = NodeEntity::new(config, config_path);
             self.insert_entity(entity, !allow_missing_dependencies)?;
             Ok(None)
         }
@@ -646,28 +642,8 @@ impl NodeStack {
         allow_missing_dependencies: bool,
         config_path: P,
     ) -> Result<()> {
-        self.push_config_with_variant(config, allow_missing_dependencies, config_path, None)
-    }
-
-    /// Like [`Self::push_config`] but also records the variant label that
-    /// was selected at `node add` time. The variant is stored as
-    /// first-class state on the resulting [`NodeEntity`] and exposed via
-    /// [`NodeEntity::variant_name`]. Passing `None` is equivalent to
-    /// [`Self::push_config`].
-    pub fn push_config_with_variant<P: Into<PathBuf>>(
-        &self,
-        config: NodeConfig,
-        allow_missing_dependencies: bool,
-        config_path: P,
-        variant_name: Option<String>,
-    ) -> Result<()> {
-        self.push_config_capturing_previous(
-            config,
-            allow_missing_dependencies,
-            config_path,
-            variant_name,
-        )
-        .map(|_| ())
+        self.push_config_capturing_previous(config, allow_missing_dependencies, config_path)
+            .map(|_| ())
     }
 
     /// Like [`Self::push_config`] but additionally returns the snapshot of
@@ -682,15 +658,9 @@ impl NodeStack {
         config: NodeConfig,
         allow_missing_dependencies: bool,
         config_path: P,
-        variant_name: Option<String>,
     ) -> Result<Option<EntitySnapshot>> {
         let mut guard = self.shared.write();
-        guard.push_config_impl(
-            config,
-            allow_missing_dependencies,
-            config_path,
-            variant_name,
-        )
+        guard.push_config_impl(config, allow_missing_dependencies, config_path)
     }
 
     pub fn snapshot(&self) -> Vec<EntityHandle> {
@@ -823,7 +793,7 @@ impl NodeStack {
         target: RestoreTarget<'_>,
         snapshot: EntitySnapshot,
     ) -> bool {
-        let guard = self.shared.write();
+        let mut guard = self.shared.write();
         let key = NodeKey::new(target.name, target.tag);
 
         if guard.is_root(&key) {
@@ -834,10 +804,10 @@ impl NodeStack {
             return false;
         };
 
-        let Some(current) = guard.graph.node_weight(index) else {
+        let Some(current) = guard.graph.node_weight(index).cloned() else {
             return false;
         };
-        if !Arc::ptr_eq(current, target.expected_handle) {
+        if !Arc::ptr_eq(&current, target.expected_handle) {
             return false;
         }
         {
@@ -858,9 +828,14 @@ impl NodeStack {
             snapshot.config_path,
             snapshot.artifact_path,
             Vec::new(),
-            snapshot.variant_name,
         );
         *current.write() = restored;
+
+        // The failed rebuild may have rewired outgoing edges to match the new
+        // config's dependencies. Now that the snapshot's config is back in
+        // place, the edges must match the snapshot's dependency list too —
+        // otherwise `dependencies_of()` would report a stale view.
+        guard.rewire_dependencies(index);
         true
     }
 
@@ -908,7 +883,6 @@ impl NodeStack {
             let config_path = source_guard.config_path().to_path_buf();
             let artifact_path = source_guard.artifact_path().map(|p| p.to_path_buf());
             let instances: Vec<TrackedNodeInstance> = source_guard.instances().to_vec();
-            let variant_name = source_guard.variant_name().map(str::to_owned);
 
             // Reject transient lifecycle state from the source: snapshot
             // replay only makes sense for entities that are quiescent (no
@@ -951,13 +925,7 @@ impl NodeStack {
             // Materialize the entity directly in the appropriate stage. The
             // `from_snapshot` constructor bypasses the lifecycle because the
             // source artifact already exists on disk.
-            let entity = NodeEntity::from_snapshot(
-                config,
-                config_path,
-                artifact_path,
-                instances,
-                variant_name,
-            );
+            let entity = NodeEntity::from_snapshot(config, config_path, artifact_path, instances);
             prepared.push((format!("{}:{}", name, tag), entity));
         }
 

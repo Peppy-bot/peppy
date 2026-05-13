@@ -79,7 +79,6 @@ async fn node_stop_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,

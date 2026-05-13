@@ -181,13 +181,13 @@ Now we need to make sure our nodes are started. If we take a look at our node st
 $ peppy stack list
 Node stack
 
-┌──────────────────────────────────────┬───────┬─────────┬─────────────┬────────────────────────────────────────────────────────────────┐
-│ NODE                                 │ STAGE │ VARIANT │ INSTANCES   │ PATH                                                           │
-├──────────────────────────────────────┼───────┼─────────┼─────────────┼────────────────────────────────────────────────────────────────┤
-│ core-node-sweet-germain-4388:v0.8.0  │ Root  │ default │ 1 running   │ /Users/tuatini/workspace/peppy                                 │
-│ hello_receiver:0.1.0                 │ Ready │ default │ 0 instances │ /Users/tuatini/.peppy/built_nodes/hello_receiver_0.1.0.tar.zst │
-│ hello_world_param:0.1.0              │ Ready │ default │ 0 instances │ /Users/tuatini/.peppy/built_nodes/hello_world_param_0.1.0.tar.zst │
-└──────────────────────────────────────┴───────┴─────────┴─────────────┴────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────┬───────┬─────────────┬────────────────────────────────────────────────────────────────┐
+│ NODE                                 │ STAGE │ INSTANCES   │ PATH                                                           │
+├──────────────────────────────────────┼───────┼─────────────┼────────────────────────────────────────────────────────────────┤
+│ core-node-sweet-germain-4388:v0.8.0  │ Root  │ 1 running   │ /Users/tuatini/workspace/peppy                                 │
+│ hello_receiver:0.1.0                 │ Ready │ 0 instances │ /Users/tuatini/.peppy/built_nodes/hello_receiver_0.1.0.tar.zst │
+│ hello_world_param:0.1.0              │ Ready │ 0 instances │ /Users/tuatini/.peppy/built_nodes/hello_world_param_0.1.0.tar.zst │
+└──────────────────────────────────────┴───────┴─────────────┴────────────────────────────────────────────────────────────────┘
 
 
 Dependencies
@@ -253,13 +253,13 @@ We can see the messages from both instances!
 $ peppy stack list
 Node stack
 
-┌──────────────────────────────────────┬───────┬─────────┬────────────┬────────────────────────────────────────────────────────────────┐
-│ NODE                                 │ STAGE │ VARIANT │ INSTANCES  │ PATH                                                           │
-├──────────────────────────────────────┼───────┼─────────┼────────────┼────────────────────────────────────────────────────────────────┤
-│ core-node-sweet-germain-4388:v0.8.0  │ Root  │ default │ 1 running  │ /Users/tuatini/workspace/peppy                                 │
-│ hello_receiver:0.1.0                 │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/hello_receiver_0.1.0.tar.zst │
-│ hello_world_param:0.1.0              │ Ready │ default │ 2 running  │ /Users/tuatini/.peppy/built_nodes/hello_world_param_0.1.0.tar.zst │
-└──────────────────────────────────────┴───────┴─────────┴────────────┴────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────┬───────┬────────────┬────────────────────────────────────────────────────────────────┐
+│ NODE                                 │ STAGE │ INSTANCES  │ PATH                                                           │
+├──────────────────────────────────────┼───────┼────────────┼────────────────────────────────────────────────────────────────┤
+│ core-node-sweet-germain-4388:v0.8.0  │ Root  │ 1 running  │ /Users/tuatini/workspace/peppy                                 │
+│ hello_receiver:0.1.0                 │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/hello_receiver_0.1.0.tar.zst │
+│ hello_world_param:0.1.0              │ Ready │ 2 running  │ /Users/tuatini/.peppy/built_nodes/hello_world_param_0.1.0.tar.zst │
+└──────────────────────────────────────┴───────┴────────────┴────────────────────────────────────────────────────────────────┘
 
 
 Dependencies

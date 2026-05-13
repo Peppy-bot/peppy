@@ -46,8 +46,8 @@ fn peppy_output(
 fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
     let node_config = NodeConfigParser::from_path(node_dir.join("peppy.json5"))
         .expect("failed to parse peppy.json5");
-    let node_name = node_config.manifest().name.as_str().to_string();
-    let node_ref = format!("{}:{}", node_name, node_config.manifest().tag);
+    let node_name = node_config.manifest.name.as_str().to_string();
+    let node_ref = format!("{}:{}", node_name, node_config.manifest.tag);
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let serve = rt
@@ -127,8 +127,8 @@ pub fn run_snippet_with_deps(
             .unwrap_or_else(|e| panic!("failed to parse {}: {e}", dep_config_path.display()));
         let dep_ref = format!(
             "{}:{}",
-            dep_config.manifest().name.as_str(),
-            dep_config.manifest().tag
+            dep_config.manifest.name.as_str(),
+            dep_config.manifest.tag
         );
         sync_and_add_node(peppy, &setup.daemon_state_path, &dep_dir, dep);
         build_node(peppy, &setup.daemon_state_path, &dep_dir, &dep_ref);

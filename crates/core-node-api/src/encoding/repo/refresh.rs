@@ -1,9 +1,7 @@
 use capnp::message::Builder;
 
 use crate::encoding::repo::add::RepoSourceKind;
-use crate::encoding::{
-    capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
-};
+use crate::encoding::{decode_message, encode_message, encode_message_non_empty, optional_text};
 use crate::repo_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
 
@@ -81,8 +79,6 @@ pub struct RepoRefreshFeedback {
     pub source_type: RepoSourceKind,
     /// Absolute path (fs) or relative path within repo (git)
     pub path: String,
-    /// Variant names declared by this node (empty if none).
-    pub variants: Vec<String>,
     /// `true` when this feedback represents an excluded repository.
     pub excluded: bool,
     /// Non-empty when this feedback is a progress/status update emitted
@@ -97,14 +93,12 @@ impl RepoRefreshFeedback {
         node_tag: impl Into<String>,
         source_type: RepoSourceKind,
         path: impl Into<String>,
-        variants: Vec<String>,
     ) -> Self {
         Self {
             node_name: node_name.into(),
             node_tag: node_tag.into(),
             source_type,
             path: path.into(),
-            variants,
             excluded: false,
             status_message: String::new(),
         }
@@ -117,7 +111,6 @@ impl RepoRefreshFeedback {
             node_tag: String::new(),
             source_type,
             path: identity.into(),
-            variants: Vec::new(),
             excluded: true,
             status_message: String::new(),
         }
@@ -130,7 +123,6 @@ impl RepoRefreshFeedback {
             node_tag: String::new(),
             source_type: RepoSourceKind::Fs,
             path: String::new(),
-            variants: Vec::new(),
             excluded: false,
             status_message: message.into(),
         }
@@ -146,12 +138,6 @@ impl RepoRefreshFeedback {
             feedback.set_path(&self.path);
             feedback.set_excluded(self.excluded);
             feedback.set_status_message(&self.status_message);
-            let variant_count =
-                capnp_list_len(self.variants.len(), "RepoRefreshFeedback.variants")?;
-            let mut variants_builder = feedback.init_variants(variant_count);
-            for (i, v) in self.variants.iter().enumerate() {
-                variants_builder.set(i as u32, v);
-            }
         }
         encode_message_non_empty(&builder)
     }
@@ -163,17 +149,11 @@ impl RepoRefreshFeedback {
         let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
             crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
         })?;
-        let variants_reader = feedback.get_variants()?;
-        let mut variants = Vec::with_capacity(variants_reader.len() as usize);
-        for i in 0..variants_reader.len() {
-            variants.push(variants_reader.get(i)?.to_str()?.to_owned());
-        }
         Ok(Self {
             node_name: feedback.get_node_name()?.to_str()?.to_owned(),
             node_tag: feedback.get_node_tag()?.to_str()?.to_owned(),
             source_type,
             path: feedback.get_path()?.to_str()?.to_owned(),
-            variants,
             excluded: feedback.get_excluded(),
             status_message: feedback.get_status_message()?.to_str()?.to_owned(),
         })

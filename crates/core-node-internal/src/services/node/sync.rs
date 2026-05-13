@@ -3,8 +3,7 @@ use crate::names;
 use crate::services::node::cache as node_cache;
 use crate::services::repo::cache as repo_cache;
 use config::consts::PeppyDirs;
-use config::node::{NodeConfigParser, VariantConfigParser};
-use config::source::DeploymentSource;
+use config::node::NodeConfigParser;
 use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse, RepoResolvedEntry};
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use node_stack::NodeStack;
@@ -139,8 +138,8 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
 ///
 /// A complete `.peppy` directory contains:
 /// - `git.hash` (non-empty)
-/// - `libs/peppygen/peppy.json5.sha256` (when `has_execution_language` is true)
-fn needs_sync(node_root_dir: &std::path::Path, has_execution_language: bool) -> bool {
+/// - `libs/peppygen/peppy.json5.sha256` (non-empty)
+fn needs_sync(node_root_dir: &std::path::Path) -> bool {
     let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
     if !peppy_dir.exists() {
         return true;
@@ -152,13 +151,10 @@ fn needs_sync(node_root_dir: &std::path::Path, has_execution_language: bool) -> 
         _ => return true,
     }
 
-    // fingerprint file required when execution language is present;
-    // must be a regular non-empty file
-    if has_execution_language {
-        match std::fs::metadata(peppy_dir.join("libs/peppygen/peppy.json5.sha256")) {
-            Ok(meta) if meta.is_file() && meta.len() > 0 => {}
-            _ => return true,
-        }
+    // peppygen fingerprint must be a regular non-empty file
+    match std::fs::metadata(peppy_dir.join("libs/peppygen/peppy.json5.sha256")) {
+        Ok(meta) if meta.is_file() && meta.len() > 0 => {}
+        _ => return true,
     }
 
     false
@@ -238,7 +234,7 @@ async fn handle_node_sync_request_inner(
                     .map_err(Into::into);
             }
         };
-        match materialize_repo_deps(parsed.manifest(), node_stack, &peppy_dirs).await {
+        match materialize_repo_deps(&parsed.manifest, node_stack, &peppy_dirs).await {
             Ok((resolved, provenance, stack_hits)) => (resolved, provenance, Some(stack_hits)),
             Err(reason) => {
                 return NodeSyncResponse::failure(reason)
@@ -265,14 +261,7 @@ async fn handle_node_sync_request_inner(
     };
 
     // Validate dependencies before generation and collect consumed interfaces
-    let (
-        consumed_interfaces,
-        language,
-        variants,
-        root_manifest,
-        root_interfaces,
-        root_peppy_schema,
-    ) = if !node_config_path.exists() {
+    let (consumed_interfaces, language, root_manifest) = if !node_config_path.exists() {
         return NodeSyncResponse::failure(format!(
             "Node config file does not exist: {}",
             node_config_path.display()
@@ -283,10 +272,10 @@ async fn handle_node_sync_request_inner(
         match NodeConfigParser::from_path(&node_config_path) {
             Ok(node_config) => {
                 let dep_errors = node_stack::validate_dependency_specs(
-                    node_config.manifest(),
-                    node_config.interfaces(),
-                    node_config.manifest_name(),
-                    node_config.manifest_tag(),
+                    &node_config.manifest,
+                    &node_config.interfaces,
+                    node_config.manifest.name.as_str(),
+                    &node_config.manifest.tag,
                     resolve_dep,
                 );
 
@@ -357,8 +346,8 @@ async fn handle_node_sync_request_inner(
 
                     return NodeSyncResponse::failure(format!(
                         "`{}:{} {}",
-                        node_config.manifest_name(),
-                        node_config.manifest_tag(),
+                        node_config.manifest.name.as_str(),
+                        node_config.manifest.tag,
                         errors.join("; ")
                     ))
                     .encode()
@@ -367,8 +356,8 @@ async fn handle_node_sync_request_inner(
 
                 // Collect consumed interfaces with resolved message formats
                 let interfaces = match collect_consumed_interfaces(
-                    node_config.manifest(),
-                    node_config.interfaces(),
+                    &node_config.manifest,
+                    &node_config.interfaces,
                     resolve_dep,
                 ) {
                     Ok(v) => v,
@@ -381,19 +370,9 @@ async fn handle_node_sync_request_inner(
                         .map_err(Into::into);
                     }
                 };
-                let language = node_config.execution_language();
-                let variants = node_config.manifest().variants.clone();
-                let root_manifest = node_config.manifest().clone();
-                let root_interfaces = node_config.interfaces().clone();
-                let root_peppy_schema = node_config.peppy_schema();
-                (
-                    interfaces,
-                    language,
-                    variants,
-                    root_manifest,
-                    root_interfaces,
-                    root_peppy_schema,
-                )
+                let language = node_config.execution.language;
+                let root_manifest = node_config.manifest.clone();
+                (interfaces, language, root_manifest)
             }
             Err(e) => {
                 return NodeSyncResponse::failure(format!("Failed to parse node config: {}", e))
@@ -439,236 +418,46 @@ async fn handle_node_sync_request_inner(
             .unwrap_or_default()
     });
 
-    let node_root_dir_for_variants = node_root_dir.clone();
-    let git_hash_for_variants = git_hash.clone();
-    let consumed_interfaces_for_variants = consumed_interfaces.clone();
-    let peppy_dirs_for_variants = peppy_dirs.clone();
-
-    // Generate peppygen for the root node (skip if execution is absent, e.g. default-variant nodes).
-    if let Some(language) = language {
-        match tokio::task::spawn_blocking(move || -> Result<()> {
-            remove_previous_peppy_dir(&node_root_dir);
-            generate_peppygen_for_node(
-                language,
-                &node_root_dir,
-                consumed_interfaces,
-                &git_hash,
-                &peppy_dirs,
-                generator::CrateDeployMode::default(),
-                None,
-            )
-        })
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(crate::Error::GeneratorError(e))) => {
-                return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
-                    .encode()
-                    .map_err(Into::into);
-            }
-            Ok(Err(crate::Error::Io(e))) => {
-                return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
-                    .encode()
-                    .map_err(Into::into);
-            }
-            Ok(Err(e)) => {
-                return NodeSyncResponse::failure(format!("Failed to sync node: {}", e))
-                    .encode()
-                    .map_err(Into::into);
-            }
-            Err(e) => {
-                return NodeSyncResponse::failure(format!(
-                    "Failed to generate peppygen (generate task failed): {}",
-                    e
-                ))
+    // Generate peppygen for the root node.
+    match tokio::task::spawn_blocking(move || -> Result<()> {
+        remove_previous_peppy_dir(&node_root_dir);
+        generate_peppygen_for_node(
+            language,
+            &node_root_dir,
+            consumed_interfaces,
+            &git_hash,
+            &peppy_dirs,
+            generator::CrateDeployMode::default(),
+            None,
+        )
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(crate::Error::GeneratorError(e))) => {
+            return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
                 .encode()
                 .map_err(Into::into);
-            }
-        };
-    } else {
-        // Variant-only node: no peppygen at root, but .peppy/git.hash must
-        // still exist alongside the manifest so that `node add` can verify
-        // the source is in sync. Wrapped in spawn_blocking because
-        // `remove_previous_peppy_dir` calls `remove_dir_all` synchronously.
-        match tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            remove_previous_peppy_dir(&node_root_dir);
-            let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
-            std::fs::create_dir_all(&peppy_dir)?;
-            std::fs::write(peppy_dir.join("git.hash"), git_hash.as_bytes())
-        })
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                return NodeSyncResponse::failure(format!(
-                    "Failed to write git hash at root for variant-only node: {}",
-                    e
-                ))
-                .encode()
-                .map_err(Into::into);
-            }
-            Err(e) => {
-                return NodeSyncResponse::failure(format!(
-                    "Failed to write git hash at root for variant-only node (task failed): {}",
-                    e
-                ))
-                .encode()
-                .map_err(Into::into);
-            }
         }
-    }
-
-    // Sync variants: each variant gets its own .peppy directory using the root's interfaces
-    if let Some(variants) = variants {
-        for variant in &variants {
-            let DeploymentSource::Local(local) = &variant.source else {
-                debug!(
-                    "Skipping non-local variant '{}' during sync",
-                    variant.name.as_str()
-                );
-                continue;
-            };
-
-            let variant_dir = if local.local.is_relative() {
-                node_root_dir_for_variants.join(&local.local)
-            } else {
-                local.local.clone()
-            };
-            let variant_dir = variant_dir.canonicalize().unwrap_or(variant_dir);
-
-            if !variant_dir.exists() {
-                return NodeSyncResponse::failure(format!(
-                    "Variant '{}' source directory does not exist: {}",
-                    variant.name.as_str(),
-                    variant_dir.display()
-                ))
+        Ok(Err(crate::Error::Io(e))) => {
+            return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
                 .encode()
                 .map_err(Into::into);
-            }
-
-            let variant_config_path = variant_dir.join(config::consts::NODE_CONFIG_FILE);
-            let variant_config = match VariantConfigParser::from_path(&variant_config_path) {
-                Ok(vc) => vc,
-                Err(e) => {
-                    return NodeSyncResponse::failure(format!(
-                        "Failed to parse variant '{}' config: {}",
-                        variant.name.as_str(),
-                        e
-                    ))
-                    .encode()
-                    .map_err(Into::into);
-                }
-            };
-
-            let variant_language = variant_config.execution.language;
-
-            // Write a merged NodeConfig (root manifest + root interfaces + variant execution)
-            // so the generator can read it as a standard NodeConfig.
-            // Strip the variants list — it is no longer relevant once resolved and
-            // would trigger a validation error with a "default" variant + execution.
-            let mut merged_manifest = root_manifest.clone();
-            merged_manifest.variants = None;
-            let merged_config = config::node::NodeConfig {
-                peppy_schema: root_peppy_schema,
-                manifest: merged_manifest,
-                interfaces: root_interfaces.clone(),
-                execution: variant_config.execution,
-            };
-            let merged_json5 = match config::json5_pretty::to_string_pretty(&merged_config) {
-                Ok(json) => json,
-                Err(e) => {
-                    return NodeSyncResponse::failure(format!(
-                        "Failed to serialize merged config for variant '{}': {}",
-                        variant.name.as_str(),
-                        e
-                    ))
-                    .encode()
-                    .map_err(Into::into);
-                }
-            };
-            // Write the merged config to a temporary file so the generator can
-            // read a full NodeConfig without overwriting the user's peppy.json5.
-            let variant_merged_config_file = match tempfile::Builder::new()
-                .prefix(".peppy-merged-")
-                .suffix(".json5")
-                .tempfile()
-            {
-                Ok(mut f) => {
-                    if let Err(e) = std::io::Write::write_all(&mut f, merged_json5.as_bytes()) {
-                        return NodeSyncResponse::failure(format!(
-                            "Failed to write merged config for variant '{}': {}",
-                            variant.name.as_str(),
-                            e
-                        ))
-                        .encode()
-                        .map_err(Into::into);
-                    }
-                    f
-                }
-                Err(e) => {
-                    return NodeSyncResponse::failure(format!(
-                        "Failed to create temp file for variant '{}': {}",
-                        variant.name.as_str(),
-                        e
-                    ))
-                    .encode()
-                    .map_err(Into::into);
-                }
-            };
-            let variant_merged_config_path = variant_merged_config_file.path().to_path_buf();
-
-            let variant_interfaces = consumed_interfaces_for_variants.clone();
-            let variant_git_hash = git_hash_for_variants.clone();
-            let variant_peppy_dirs = peppy_dirs_for_variants.clone();
-
-            match tokio::task::spawn_blocking(move || -> Result<()> {
-                // Keep the temp file alive for the duration of generation;
-                // it is automatically deleted when `_merged_config` is dropped.
-                let _merged_config = variant_merged_config_file;
-                remove_previous_peppy_dir(&variant_dir);
-                generate_peppygen_for_node(
-                    variant_language,
-                    &variant_dir,
-                    variant_interfaces,
-                    &variant_git_hash,
-                    &variant_peppy_dirs,
-                    generator::CrateDeployMode::default(),
-                    Some(&variant_merged_config_path),
-                )?;
-                // Re-fingerprint using the variant's own peppy.json5 so that
-                // node-add verification (which reads the variant's config) finds
-                // a matching hash.
-                config::fingerprint::generate_node_config_fingerprint(
-                    variant_dir.join(config::consts::NODE_CONFIG_FILE),
-                    variant_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH),
-                )
-                .map_err(generator::GeneratorError::Config)?;
-                Ok(())
-            })
-            .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    return NodeSyncResponse::failure(format!(
-                        "Failed to generate peppygen for variant '{}': {}",
-                        variant.name.as_str(),
-                        e
-                    ))
-                    .encode()
-                    .map_err(Into::into);
-                }
-                Err(e) => {
-                    return NodeSyncResponse::failure(format!(
-                        "Failed to generate peppygen for variant '{}' (task failed): {}",
-                        variant.name.as_str(),
-                        e
-                    ))
-                    .encode()
-                    .map_err(Into::into);
-                }
-            }
         }
-    }
+        Ok(Err(e)) => {
+            return NodeSyncResponse::failure(format!("Failed to sync node: {}", e))
+                .encode()
+                .map_err(Into::into);
+        }
+        Err(e) => {
+            return NodeSyncResponse::failure(format!(
+                "Failed to generate peppygen (generate task failed): {}",
+                e
+            ))
+            .encode()
+            .map_err(Into::into);
+        }
+    };
 
     NodeSyncResponse::success_with_provenance(resolved_from_stack, repo_resolved_provenance)
         .encode()
@@ -766,7 +555,7 @@ async fn materialize_repo_deps(
 
         // Push transitive deps onto the BFS queue, skipping anything we
         // already plan to visit. Stack-tier shadowing happens at pop time.
-        if let Some(child_deps) = parsed.manifest().depends_on.as_ref() {
+        if let Some(child_deps) = parsed.manifest.depends_on.as_ref() {
             for child in &child_deps.nodes {
                 let key = (child.name.as_str().to_owned(), child.tag.clone());
                 if !seen.contains(&key) {
@@ -775,8 +564,7 @@ async fn materialize_repo_deps(
             }
         }
 
-        let cfg = parsed.into_resolved_or_default();
-        resolved.insert((name.clone(), tag.clone()), cfg);
+        resolved.insert((name.clone(), tag.clone()), parsed);
         provenance.push(RepoResolvedEntry {
             name,
             tag,
@@ -979,30 +767,16 @@ pub fn stack_resolver(
 /// Parameters for [`auto_sync_if_missing`].
 pub struct AutoSyncParams<'a> {
     pub node_dir: &'a std::path::Path,
-    pub execution_language: Option<config::node::PeppygenLanguage>,
+    pub execution_language: config::node::PeppygenLanguage,
     pub manifest: &'a config::node::Manifest,
     pub interfaces: &'a config::node::Interfaces,
     pub git_hash: &'a str,
-    pub variant: Option<AutoSyncVariant<'a>>,
-}
-
-pub struct AutoSyncVariant<'a> {
-    pub dir: &'a std::path::Path,
-    pub language: config::node::PeppygenLanguage,
-    /// The fully merged node config (root manifest + variant execution).
-    /// Needed because the variant's own `peppy.json5` lacks a `manifest`.
-    pub merged_config: &'a config::node::NodeConfig,
 }
 
 /// Auto-generates the `.peppy` directory for a node that has never been synced.
 ///
 /// When the `.peppy` directory is entirely absent (e.g. fresh clone), this
-/// function generates peppygen (if the node has an execution block) or writes
-/// just the `git.hash` file (variant-only nodes without execution at root).
-///
-/// If a variant is provided and its `.peppy` directory is also absent,
-/// generates peppygen for the variant and re-fingerprints using the variant's
-/// own `peppy.json5`.
+/// function generates peppygen.
 ///
 /// Directories whose `.peppy` already exists and contains all required files
 /// are skipped (no-op). If `.peppy` exists but is incomplete (e.g. missing
@@ -1012,9 +786,8 @@ pub fn auto_sync_if_missing(
     node_stack: &NodeStack,
     peppy_dirs: &PeppyDirs,
 ) -> crate::Result<()> {
-    // Sync root
     let peppy_dir = params.node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
-    if needs_sync(params.node_dir, params.execution_language.is_some()) {
+    if needs_sync(params.node_dir) {
         // Back up existing .peppy so we can restore it on failure.
         let backup_dir = params.node_dir.join(format!(
             ".peppy-backup-{}-{}",
@@ -1031,35 +804,26 @@ pub fn auto_sync_if_missing(
         };
 
         let gen_result: crate::Result<()> = (|| {
-            if let Some(language) = params.execution_language {
-                let consumed = collect_consumed_interfaces(
-                    params.manifest,
-                    params.interfaces,
-                    stack_resolver(node_stack),
-                )
-                .map_err(|reason| {
-                    crate::Error::Io(std::io::Error::other(format!(
-                        "failed to resolve consumed interfaces: {}",
-                        reason
-                    )))
-                })?;
-                generate_peppygen_for_node(
-                    language,
-                    params.node_dir,
-                    consumed,
-                    params.git_hash,
-                    peppy_dirs,
-                    generator::CrateDeployMode::default(),
-                    None,
-                )?;
-            } else {
-                // Variant-only node (no execution at root): just write git.hash
-                std::fs::create_dir_all(&peppy_dir)
-                    .and_then(|()| {
-                        std::fs::write(peppy_dir.join("git.hash"), params.git_hash.as_bytes())
-                    })
-                    .map_err(crate::Error::from)?;
-            }
+            let consumed = collect_consumed_interfaces(
+                params.manifest,
+                params.interfaces,
+                stack_resolver(node_stack),
+            )
+            .map_err(|reason| {
+                crate::Error::Io(std::io::Error::other(format!(
+                    "failed to resolve consumed interfaces: {}",
+                    reason
+                )))
+            })?;
+            generate_peppygen_for_node(
+                params.execution_language,
+                params.node_dir,
+                consumed,
+                params.git_hash,
+                peppy_dirs,
+                generator::CrateDeployMode::default(),
+                None,
+            )?;
             Ok(())
         })();
 
@@ -1075,114 +839,6 @@ pub fn auto_sync_if_missing(
                 // A failure here must be surfaced rather than silently
                 // ignored: leaving the backup behind would still trip the
                 // recursive copy described above.
-                if had_backup {
-                    std::fs::remove_dir_all(&backup_dir).map_err(|e| {
-                        crate::Error::Io(std::io::Error::other(format!(
-                            "failed to clean up .peppy backup at {}: {}",
-                            backup_dir.display(),
-                            e
-                        )))
-                    })?;
-                }
-            }
-            Err(e) => {
-                // Generation failed — remove partial .peppy and restore backup.
-                let _ = std::fs::remove_dir_all(&peppy_dir);
-                if had_backup && let Err(restore_err) = std::fs::rename(&backup_dir, &peppy_dir) {
-                    tracing::error!(
-                        "Failed to restore .peppy backup from {}: {}",
-                        backup_dir.display(),
-                        restore_err,
-                    );
-                }
-                return Err(e);
-            }
-        }
-    }
-
-    // Sync variant
-    if let Some(v) = params.variant
-        && needs_sync(v.dir, true)
-    {
-        // Write the merged config (root manifest + variant execution) to a
-        // temp file so the generator can parse a full NodeConfig. The
-        // variant's own peppy.json5 lacks a `manifest` field.
-        // Strip variant declarations from the manifest to avoid the
-        // ExecutionWithDefaultVariant validation error when the generator
-        // re-parses the config.
-        let mut config_for_gen = v.merged_config.clone();
-        config_for_gen.manifest.variants = None;
-        let merged_json5 = config::json5_pretty::to_string_pretty(&config_for_gen)
-            .map_err(|e| crate::Error::Io(std::io::Error::other(e)))?;
-        // Keep the temp file alive while `merged_config_path` is in use;
-        // it is automatically deleted when `tmp` is dropped.
-        let mut tmp = tempfile::Builder::new()
-            .prefix(".peppy-merged-")
-            .suffix(".json5")
-            .tempfile()
-            .map_err(crate::Error::from)?;
-        std::io::Write::write_all(&mut tmp, merged_json5.as_bytes()).map_err(crate::Error::from)?;
-        let merged_config_path = tmp.path().to_path_buf();
-
-        // Resolve consumed interfaces *before* touching the filesystem: an
-        // error here must not leave the variant's `.peppy` dir missing.
-        // Doing this after the rename would short-circuit past the
-        // `gen_result` restore path below.
-        let consumed = collect_consumed_interfaces(
-            params.manifest,
-            params.interfaces,
-            stack_resolver(node_stack),
-        )
-        .map_err(|reason| {
-            crate::Error::Io(std::io::Error::other(format!(
-                "failed to resolve consumed interfaces: {}",
-                reason
-            )))
-        })?;
-
-        // Back up existing .peppy so we can restore it on failure.
-        let peppy_dir = v.dir.join(config::consts::PEPPY_OUTPUT_DIR);
-        let backup_dir = v.dir.join(format!(
-            ".peppy-backup-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        let had_backup = match std::fs::rename(&peppy_dir, &backup_dir) {
-            Ok(()) => true,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => return Err(crate::Error::Io(e)),
-        };
-        let gen_result: crate::Result<()> = (|| {
-            generate_peppygen_for_node(
-                v.language,
-                v.dir,
-                consumed,
-                params.git_hash,
-                peppy_dirs,
-                generator::CrateDeployMode::default(),
-                Some(&merged_config_path),
-            )?;
-
-            // Re-fingerprint using the variant's own peppy.json5 so that
-            // node-add verification (which reads the variant's config) finds
-            // a matching hash.
-            config::fingerprint::generate_node_config_fingerprint(
-                v.dir.join(config::consts::NODE_CONFIG_FILE),
-                v.dir.join(config::consts::PEPPYGEN_OUTPUT_PATH),
-            )
-            .map_err(generator::GeneratorError::Config)?;
-            Ok(())
-        })();
-
-        match gen_result {
-            Ok(()) => {
-                // Clean up the backup synchronously — see the matching comment
-                // in the root-sync branch above for why a background thread
-                // would race with the subsequent recursive copy. A failure
-                // here must be surfaced for the same reason.
                 if had_backup {
                     std::fs::remove_dir_all(&backup_dir).map_err(|e| {
                         crate::Error::Io(std::io::Error::other(format!(
@@ -1248,15 +904,14 @@ mod tests {
     #[test]
     fn needs_sync_returns_true_when_dir_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(needs_sync(tmp.path(), true));
-        assert!(needs_sync(tmp.path(), false));
+        assert!(needs_sync(tmp.path()));
     }
 
     #[test]
     fn needs_sync_returns_true_when_git_hash_missing() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".peppy")).unwrap();
-        assert!(needs_sync(tmp.path(), false));
+        assert!(needs_sync(tmp.path()));
     }
 
     #[test]
@@ -1265,17 +920,16 @@ mod tests {
         let peppy = tmp.path().join(".peppy");
         std::fs::create_dir_all(&peppy).unwrap();
         std::fs::write(peppy.join("git.hash"), b"").unwrap();
-        assert!(needs_sync(tmp.path(), false));
+        assert!(needs_sync(tmp.path()));
     }
 
     #[test]
-    fn needs_sync_returns_true_when_fingerprint_missing_with_execution_language() {
+    fn needs_sync_returns_true_when_fingerprint_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy = tmp.path().join(".peppy");
         std::fs::create_dir_all(&peppy).unwrap();
         std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
-        // has_execution_language = true but no fingerprint file
-        assert!(needs_sync(tmp.path(), true));
+        assert!(needs_sync(tmp.path()));
     }
 
     #[test]
@@ -1286,94 +940,6 @@ mod tests {
         std::fs::create_dir_all(&peppygen).unwrap();
         std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
         std::fs::write(peppygen.join("peppy.json5.sha256"), b"deadbeef").unwrap();
-        assert!(!needs_sync(tmp.path(), true));
-    }
-
-    #[test]
-    fn needs_sync_ignores_fingerprint_when_no_execution_language() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy = tmp.path().join(".peppy");
-        std::fs::create_dir_all(&peppy).unwrap();
-        std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
-        // No fingerprint file, but has_execution_language = false
-        assert!(!needs_sync(tmp.path(), false));
-    }
-
-    #[test]
-    fn auto_sync_variant_restores_peppy_on_generation_failure() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root_dir = tmp.path().join("root_node");
-        let variant_dir = root_dir.join("variants").join("default");
-        std::fs::create_dir_all(&variant_dir).unwrap();
-
-        // Root .peppy is complete so root sync is skipped.
-        let root_peppy = root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
-        std::fs::create_dir_all(&root_peppy).unwrap();
-        std::fs::write(root_peppy.join("git.hash"), b"abc123").unwrap();
-
-        // Variant .peppy has git.hash and a marker file but NO fingerprint,
-        // so needs_sync(variant_dir, true) returns true.
-        let variant_peppy = variant_dir.join(config::consts::PEPPY_OUTPUT_DIR);
-        std::fs::create_dir_all(variant_peppy.join("libs/peppygen")).unwrap();
-        std::fs::write(variant_peppy.join("git.hash"), b"old_hash").unwrap();
-        std::fs::write(variant_peppy.join("marker"), b"should_survive").unwrap();
-
-        // Do NOT create peppy.json5 in variant_dir — the re-fingerprint
-        // step reads it and will fail with NotFound, exercising the
-        // backup-restore path.
-
-        let config = config::node::NodeConfigParser::from_content(
-            r#"{
-                peppy_schema: "node_v1",
-                manifest: { name: "test_node", tag: "0.1.0" },
-                execution: { language: "rust", run_cmd: ["sleep", "10"] },
-                interfaces: {
-                    topics: {
-                        emits: [{
-                            name: "hello",
-                            qos_profile: "sensor_data",
-                            message_format: { message: "string" },
-                        }],
-                    },
-                },
-            }"#,
-        )
-        .unwrap()
-        .into_resolved()
-        .unwrap();
-
-        let peppy_dirs = PeppyDirs::new(tmp.path().join("peppy_root"));
-        let node_stack = NodeStack::new(config.clone(), None, &root_dir);
-
-        let result = auto_sync_if_missing(
-            AutoSyncParams {
-                node_dir: &root_dir,
-                execution_language: None,
-                manifest: &config.manifest,
-                interfaces: &config.interfaces,
-                git_hash: "new_hash",
-                variant: Some(AutoSyncVariant {
-                    dir: &variant_dir,
-                    language: config::node::PeppygenLanguage::Rust,
-                    merged_config: &config,
-                }),
-            },
-            &node_stack,
-            &peppy_dirs,
-        );
-
-        assert!(
-            result.is_err(),
-            "should fail because variant peppy.json5 is missing"
-        );
-        assert!(
-            variant_peppy.join("marker").exists(),
-            "sentinel should survive — old .peppy must be restored on failure"
-        );
-        assert_eq!(
-            std::fs::read_to_string(variant_peppy.join("git.hash")).unwrap(),
-            "old_hash",
-            "git.hash should be the pre-failure value"
-        );
+        assert!(!needs_sync(tmp.path()));
     }
 }

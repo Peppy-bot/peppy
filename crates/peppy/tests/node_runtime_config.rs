@@ -59,7 +59,6 @@ async fn node_runtime_config_command_outputs_valid_config() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -171,7 +170,6 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,

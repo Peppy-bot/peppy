@@ -181,15 +181,13 @@ mod tests {
                     tag: "0.1.0",
                     {depends_on}
                 }},
+                interfaces: {{}},
                 execution: {{ language: "rust", run_cmd: ["./bin"] }}
             }}"#
         );
         let path = dir.join(config::consts::NODE_CONFIG_FILE);
         std::fs::write(&path, json5).unwrap();
-        NodeConfigParser::from_path(&path)
-            .unwrap()
-            .into_resolved()
-            .unwrap()
+        NodeConfigParser::from_path(&path).unwrap()
     }
 
     fn key_of(info: &VirtualNodeInfo) -> NodeKey {

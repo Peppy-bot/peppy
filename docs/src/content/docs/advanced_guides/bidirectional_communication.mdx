@@ -452,7 +452,7 @@ PeppyOS has three communication patterns — topics, services, and actions — b
 | Data flow | One-way: publisher → subscriber | Two-way: request then response | Multi-step: goal, feedback, result |
 | Initiator | Publisher pushes; subscriber listens passively | Consumer actively calls the exposer | Consumer orchestrates the full lifecycle |
 | Coupling | None — subscriber does not call the publisher | Inherent — consumer targets a specific service | Inherent — built on services, same constraint |
-| External variant? | Yes — passive listening needs no dependency | No — calling requires a target node | No — same as services |
+| External form? | Yes — passive listening needs no dependency | No — calling requires a target node | No — same as services |
 
 A topic subscriber is **passive**: it declares a message format and waits for data to arrive, without knowing or addressing the publisher.
 That is why removing `depends_on` works — there is nothing to call.

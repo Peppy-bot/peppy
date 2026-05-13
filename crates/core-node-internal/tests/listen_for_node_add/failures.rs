@@ -1,8 +1,5 @@
 use super::*;
-use common::{
-    TestPackagesCache, send_node_add_and_wait_with_dep_overrides, write_plain_peppy_json5,
-};
-use core_node_api::encoding::DepVariantOverride;
+use common::{TestPackagesCache, write_plain_peppy_json5};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repo_node_add_fails_when_packages_cache_missing() {
@@ -46,7 +43,7 @@ async fn repo_node_add_fails_when_root_node_unknown() {
     write_plain_peppy_json5(&some_dir, &minimal_node_config("other", "0.1.0", &[]));
 
     TestPackagesCache::new()
-        .fs_entry("other", "0.1.0", &some_dir, &[])
+        .fs_entry("other", "0.1.0", &some_dir)
         .write(&started.peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -86,7 +83,7 @@ async fn repo_node_add_fails_when_dep_missing_in_cache() {
 
     // Target is in the cache, but missing_dep is not.
     TestPackagesCache::new()
-        .fs_entry("target", "1.0.0", &target_dir, &[])
+        .fs_entry("target", "1.0.0", &target_dir)
         .write(&started.peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -130,8 +127,8 @@ async fn repo_node_add_fails_on_cycle() {
     );
 
     TestPackagesCache::new()
-        .fs_entry("a", "0.1.0", &a_dir, &[])
-        .fs_entry("b", "0.1.0", &b_dir, &[])
+        .fs_entry("a", "0.1.0", &a_dir)
+        .fs_entry("b", "0.1.0", &b_dir)
         .write(&started.peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -150,96 +147,6 @@ async fn repo_node_add_fails_on_cycle() {
 
     assert!(!res.success, "add should fail on cycle");
     assert_eq!(node_stack.len(), 1, "nothing should have been added");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn repo_node_add_fails_on_unknown_dep_variant() {
-    let started = start_core_node_with_mock_messenger().await;
-    let node_stack = started.node_stack.clone();
-
-    let tmp = TempDir::new().unwrap();
-    let dep_dir = tmp.path().join("dep");
-    write_plain_peppy_json5(&dep_dir, &minimal_node_config("dep", "0.1.0", &[]));
-    let target_dir = tmp.path().join("target");
-    write_plain_peppy_json5(
-        &target_dir,
-        &minimal_node_config("target", "1.0.0", &[("dep", "0.1.0")]),
-    );
-
-    TestPackagesCache::new()
-        .fs_entry("dep", "0.1.0", &dep_dir, &[])
-        .fs_entry("target", "1.0.0", &target_dir, &[])
-        .write(&started.peppy_dirs);
-
-    let res = send_node_add_and_wait_with_dep_overrides(
-        &started.caller_handle,
-        &started.core_node_name,
-        NodeAddSource::RepoNode {
-            name: "target",
-            tag: "1.0.0",
-        },
-        None,
-        vec![DepVariantOverride {
-            name: "dep".into(),
-            tag: "0.1.0".into(),
-            variant: "nonexistent".into(),
-        }],
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add should complete");
-
-    assert!(!res.success, "add should fail for unknown variant override");
-    let err = res.error_message.unwrap_or_default();
-    assert!(
-        err.contains("variant 'nonexistent'") && err.contains("dep:0.1.0"),
-        "expected unknown-variant error; got: {err}"
-    );
-    assert_eq!(node_stack.len(), 1);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn repo_node_add_rejects_root_target_dep_variant_override() {
-    let started = start_core_node_with_mock_messenger().await;
-    let node_stack = started.node_stack.clone();
-
-    let tmp = TempDir::new().unwrap();
-    let target_dir = tmp.path().join("target");
-    write_plain_peppy_json5(&target_dir, &minimal_node_config("target", "1.0.0", &[]));
-
-    TestPackagesCache::new()
-        .fs_entry("target", "1.0.0", &target_dir, &[])
-        .write(&started.peppy_dirs);
-
-    let res = send_node_add_and_wait_with_dep_overrides(
-        &started.caller_handle,
-        &started.core_node_name,
-        NodeAddSource::RepoNode {
-            name: "target",
-            tag: "1.0.0",
-        },
-        None,
-        vec![DepVariantOverride {
-            name: "target".into(),
-            tag: "1.0.0".into(),
-            variant: "sim".into(),
-        }],
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add should complete");
-
-    assert!(!res.success, "root-target dep override should be rejected");
-    let err = res.error_message.unwrap_or_default();
-    assert!(
-        err.contains("targets the root repo node") && err.contains("target:1.0.0@sim"),
-        "expected root-target override error; got: {err}"
-    );
-    assert_eq!(node_stack.len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -266,9 +173,9 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
     );
 
     TestPackagesCache::new()
-        .fs_entry("a", "0.1.0", &a_dir, &[])
-        .fs_entry("b", "0.1.0", &b_dir, &[])
-        .fs_entry("c", "0.1.0", &c_dir, &[])
+        .fs_entry("a", "0.1.0", &a_dir)
+        .fs_entry("b", "0.1.0", &b_dir)
+        .fs_entry("c", "0.1.0", &c_dir)
         .write(&started.peppy_dirs);
 
     let pre_len = node_stack.len();
@@ -303,24 +210,7 @@ async fn listen_for_node_add_no_config_found() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            interfaces: {
-                topics: {
-                    emits: [{ name: "/example" }]
-                }
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let peppy_json5 = minimal_node_config(TARGET_NODE_NAME, TARGET_NODE_TAG, &[]);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     std::fs::remove_file(source_dir.path().join(NODE_CONFIG_FILE))
@@ -351,18 +241,8 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        peppy_schema: "node_v1",
-        manifest: {
-            name: "git_hash_mismatch_node",
-            tag: "0.1.0",
-        },
-        execution: {
-            language: "rust",
-            run_cmd: ["sleep", "10"]
-        }
-    }"#;
-    write_peppy_json5(source_dir.path(), peppy_json5);
+    let peppy_json5 = minimal_node_config("git_hash_mismatch_node", "0.1.0", &[]);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let peppy_dir = source_dir.path().join(config::consts::PEPPY_OUTPUT_DIR);
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
@@ -437,17 +317,9 @@ async fn listen_for_node_add_no_run_cmd_fails() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        peppy_schema: "node_v1",
-        manifest: {
-            name: "no_run_cmd_node",
-            tag: "0.1.0",
-        },
-        execution: {
-            language: "rust",
-        },
-    }"#;
-    write_peppy_json5(source_dir.path(), peppy_json5);
+    let peppy_json5 =
+        node_config_with_execution("no_run_cmd_node", "0.1.0", r#"{ language: "rust" }"#);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
@@ -631,19 +503,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     // Step 1: Add the dependency node that emits a topic with a DIFFERENT name
     // than what the dependent node will subscribe to.
     let dep_source_dir = tempfile::tempdir().expect("failed to create temp dep source dir");
-    let dep_peppy_json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "{DEPENDENCY_NODE_NAME}",
-                tag: "{DEPENDENCY_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"]
-            },
-        }"#
-    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
-    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
+    let dep_peppy_json5 = minimal_node_config(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG, &[]);
     write_peppy_json5(dep_source_dir.path(), &dep_peppy_json5);
 
     let dep_result = send_node_add_and_wait(
@@ -752,19 +612,7 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
             .expect("failed to create excluded dir");
     }
 
-    let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let peppy_json5 = minimal_node_config(TARGET_NODE_NAME, TARGET_NODE_TAG, &[]);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
