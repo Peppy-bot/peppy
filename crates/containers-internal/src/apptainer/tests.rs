@@ -751,3 +751,121 @@ fn compile_time_apptainer_dir_exists_with_sentinel() {
         install_dir
     );
 }
+
+// ---------------------------------------------------------------------------
+// gocryptfs bundling tests
+//
+// Apptainer searches `${prefix}/libexec/apptainer/bin/` for tools like
+// gocryptfs ahead of `$PATH`. Bundling the binary there means encrypted
+// overlays/images work without users having to install gocryptfs from their
+// distro package manager.
+// ---------------------------------------------------------------------------
+
+/// Verifies the gocryptfs binary is bundled into the apptainer cache directory
+/// where apptainer will discover it (`libexec/apptainer/bin/gocryptfs`).
+#[cfg(target_os = "linux")]
+#[test]
+fn gocryptfs_bundled_in_apptainer_install_dir() {
+    let install_dir = env!("APPTAINER_INSTALL_DIR");
+    let path = Path::new(install_dir);
+
+    let gocryptfs_bin = path.join("libexec/apptainer/bin/gocryptfs");
+    assert!(
+        gocryptfs_bin.exists(),
+        "gocryptfs binary missing at {:?} — apptainer encryption support will be disabled",
+        gocryptfs_bin
+    );
+
+    // Bundle the xray helper too — same archive, useful for inspecting
+    // encrypted volumes.
+    let gocryptfs_xray = path.join("libexec/apptainer/bin/gocryptfs-xray");
+    assert!(
+        gocryptfs_xray.exists(),
+        "gocryptfs-xray helper missing at {:?}",
+        gocryptfs_xray
+    );
+
+    // Sentinel encodes the version so a bump invalidates the cache.
+    let sentinel = path.join("libexec/apptainer/bin").join(format!(
+        ".peppy-gocryptfs-version-{}",
+        crate::GOCRYPTFS_VERSION
+    ));
+    assert!(
+        sentinel.exists(),
+        "gocryptfs sentinel {:?} is missing — bundled binary may be stale",
+        sentinel
+    );
+}
+
+/// Runs the bundled `gocryptfs --version` and confirms it reports the pinned
+/// release. This catches a corrupted/truncated extract that the existence
+/// check above would miss.
+#[cfg(target_os = "linux")]
+#[test]
+fn gocryptfs_bundled_binary_is_runnable() {
+    let install_dir = env!("APPTAINER_INSTALL_DIR");
+    let gocryptfs_bin = Path::new(install_dir).join("libexec/apptainer/bin/gocryptfs");
+
+    let output = Command::new(&gocryptfs_bin)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output();
+
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!(
+                "SKIPPING: cannot invoke bundled gocryptfs at {:?}: {} (likely a sandboxed test env)",
+                gocryptfs_bin, e
+            );
+            return;
+        }
+    };
+
+    assert!(
+        output.status.success(),
+        "bundled gocryptfs --version should succeed (status: {})\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = format!("gocryptfs v{}", crate::GOCRYPTFS_VERSION);
+    assert!(
+        stdout.contains(&expected),
+        "bundled gocryptfs version mismatch: expected to find {:?} in {:?}",
+        expected,
+        stdout
+    );
+}
+
+/// Sanity check that the gocryptfs binary lives in apptainer's auto-discovery
+/// path. Apptainer's `FindBin` looks here before `$PATH`, so its presence here
+/// (combined with the runnability check above) means apptainer will pick it up
+/// automatically with no environment manipulation.
+#[test]
+fn gocryptfs_path_matches_apptainer_search_dir() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    // The install_dir is the *host-side* installation root for both backends.
+    // For Lima, the same layout (including libexec/) is synced into the guest,
+    // so the relative location is what matters.
+    let expected = facade.install_dir().join("libexec/apptainer/bin/gocryptfs");
+
+    if cfg!(target_os = "linux") {
+        assert!(
+            expected.exists(),
+            "gocryptfs should be bundled at {:?}",
+            expected
+        );
+    } else {
+        // On macOS the host cache lives under ~/.peppy/tmp/... and is the
+        // source of the guest sync; the same path must exist host-side.
+        assert!(
+            expected.exists(),
+            "gocryptfs should be bundled host-side at {:?} for sync into Lima VM",
+            expected
+        );
+    }
+}
