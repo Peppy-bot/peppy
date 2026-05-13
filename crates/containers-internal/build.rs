@@ -368,9 +368,10 @@ mod apptainer_build {
     fn ensure_gocryptfs_installed(install_dir: &Path, target_arch: &str) -> bool {
         let bin_dir = install_dir.join("libexec/apptainer/bin");
         let gocryptfs_bin = bin_dir.join("gocryptfs");
+        let gocryptfs_xray_bin = bin_dir.join("gocryptfs-xray");
         let sentinel = gocryptfs_sentinel_path(install_dir);
 
-        if sentinel.exists() && gocryptfs_bin.exists() {
+        if sentinel.exists() && gocryptfs_bin.exists() && gocryptfs_xray_bin.exists() {
             return true;
         }
 
@@ -1092,7 +1093,7 @@ echo "=== Apptainer build complete ==="
         // avoiding mtime bumps that trigger unnecessary recompilation.
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
         let sentinel_path = out_install_dir.join(".copy-source");
-        let sentinel_content = format!("{}", cache_dir.display());
+        let sentinel_content = format!("{}\ngocryptfs={}", cache_dir.display(), GOCRYPTFS_VERSION);
         let needs_copy = !sentinel_path.exists()
             || std::fs::read_to_string(&sentinel_path)
                 .map_or(true, |s| s.trim() != sentinel_content.trim());

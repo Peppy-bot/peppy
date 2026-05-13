@@ -813,13 +813,21 @@ fn gocryptfs_bundled_binary_is_runnable() {
 
     let output = match output {
         Ok(o) => o,
-        Err(e) => {
-            eprintln!(
-                "SKIPPING: cannot invoke bundled gocryptfs at {:?}: {} (likely a sandboxed test env)",
-                gocryptfs_bin, e
-            );
-            return;
-        }
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
+                eprintln!(
+                    "SKIPPING: cannot invoke bundled gocryptfs at {:?}: {} (likely a sandboxed test env)",
+                    gocryptfs_bin, e
+                );
+                return;
+            }
+            _ => panic!(
+                "unexpected error invoking bundled gocryptfs at {:?}: {} (kind: {:?})",
+                gocryptfs_bin,
+                e,
+                e.kind()
+            ),
+        },
     };
 
     assert!(
