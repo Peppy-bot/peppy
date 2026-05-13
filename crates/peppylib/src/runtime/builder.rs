@@ -507,7 +507,6 @@ mod tests {
             r#"{{
                 peppy_schema: "node_v1",
                 manifest: {{ name: "test_node", tag: "0.1.0" }},
-                interfaces: {{}},
                 execution: {{ language: "rust", parameters: {{ {parameters} }}, run_cmd: ["./test"] }},
             }}"#,
         );
