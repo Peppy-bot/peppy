@@ -1257,7 +1257,6 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
                 name: "example_node",
                 tag: "0.1.0",
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]

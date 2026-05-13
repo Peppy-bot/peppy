@@ -43,8 +43,8 @@ where
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
     // -- General yaml syntax
-    #[error("Cannot read: {0}")]
-    CannotRead(String),
+    #[error("Cannot read {0}: {1}")]
+    CannotRead(String, std::io::ErrorKind),
     #[error("Cannot parse configuration: {0}")]
     CannotParseConfig(String),
     #[error("Empty content found in: {0}")]
