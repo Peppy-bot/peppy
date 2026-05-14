@@ -8,7 +8,11 @@ edition.workspace = true
 clap = { version = "4", features = ["derive"] }
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# `preserve_order` keeps `serde_json::Map` backed by `IndexMap` so that
+# round-tripping a `NodeConfig` through `json5_pretty::to_string_pretty`
+# preserves `MessageFormat` field order; the capnp wire layout is keyed
+# off that order, so losing it breaks producer/consumer schema compat.
+serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_json5 = "0.2"
 serde_path_to_error = "0.1"
 tracing = "0.1"

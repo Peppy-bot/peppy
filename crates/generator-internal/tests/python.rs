@@ -9,3 +9,5 @@ mod generate_lib;
 mod services_communication;
 #[path = "python/topics_communication.rs"]
 mod topics_communication;
+#[path = "python/wire_compat.rs"]
+mod wire_compat;
