@@ -404,7 +404,7 @@ if __name__ == "__main__":
     )
     .await;
 
-    send_shutdown(
+    try_send_shutdown(
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
