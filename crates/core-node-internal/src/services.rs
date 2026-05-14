@@ -14,8 +14,8 @@ use crate::Result;
 use config::{
     DefaultValue, ParameterSpec,
     consts::PeppyDirs,
-    launcher::PeppySchema,
     node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage, TypeToken},
+    schema::PeppySchema,
 };
 use futures::future::{BoxFuture, FutureExt, try_join_all};
 use names_generator2::get_random;

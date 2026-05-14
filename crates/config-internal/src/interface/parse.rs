@@ -28,7 +28,7 @@ mod tests {
     use super::*;
     use crate::{
         error::{Error, ParsingError},
-        launcher::PeppySchema,
+        schema::PeppySchema,
     };
     use tempfile::NamedTempFile;
 

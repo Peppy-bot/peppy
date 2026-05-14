@@ -1,7 +1,7 @@
 use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
-    launcher::PeppySchema,
+    schema::PeppySchema,
 };
 use indexmap::IndexMap;
 use serde::{
@@ -611,8 +611,20 @@ pub struct NodeDependency {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct InterfaceDependency {
+    pub name: Name,
+    pub tag: String,
+    pub local_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DependsOn {
     pub nodes: Vec<NodeDependency>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<InterfaceDependency>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -818,6 +830,15 @@ fn parameter_spec_display(spec: &ParameterSpec) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ConformsToItem {
+    pub name: Name,
+    pub tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Interfaces {
@@ -827,6 +848,8 @@ pub struct Interfaces {
     pub services: Option<ServiceInterfaces>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actions: Option<ActionInterfaces>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conforms_to: Option<Vec<ConformsToItem>>,
 }
 
 /// Puts a value into canonical form so that derived `PartialEq` becomes
@@ -906,6 +929,10 @@ impl Normalize for EmittedTopic {
 }
 
 impl Normalize for LinkedConsumedTopic {
+    fn normalize(&mut self) {}
+}
+
+impl Normalize for ConformsToItem {
     fn normalize(&mut self) {}
 }
 
@@ -1017,6 +1044,13 @@ impl Normalize for Interfaces {
         normalize_opt_default(&mut self.topics);
         normalize_opt_default(&mut self.services);
         normalize_opt_default(&mut self.actions);
+        normalize_opt_vec(&mut self.conforms_to, |a, b| {
+            a.name
+                .as_str()
+                .cmp(b.name.as_str())
+                .then_with(|| a.tag.cmp(&b.tag))
+                .then_with(|| a.sha256.cmp(&b.sha256))
+        });
     }
 }
 
@@ -1618,6 +1652,75 @@ mod tests {
         assert_eq!(deps.nodes[0].local_id, "lidar");
         assert_eq!(deps.nodes[1].name.as_str(), "nav_system");
         assert_eq!(deps.nodes[1].local_id, "navigation");
+        assert!(deps.interfaces.is_empty());
+    }
+
+    #[test]
+    fn depends_on_with_interfaces_full() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [
+                { name: "depth_camera", tag: "0.1.0", sha256: "aaa", local_id: "depth_camera" }
+            ]
+        }"#;
+        let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
+        assert!(deps.nodes.is_empty());
+        assert_eq!(deps.interfaces.len(), 1);
+        assert_eq!(deps.interfaces[0].name.as_str(), "depth_camera");
+        assert_eq!(deps.interfaces[0].tag, "0.1.0");
+        assert_eq!(deps.interfaces[0].local_id, "depth_camera");
+        assert_eq!(deps.interfaces[0].sha256.as_deref(), Some("aaa"));
+    }
+
+    #[test]
+    fn depends_on_with_interfaces_no_sha256() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [
+                { name: "depth_camera", tag: "0.1.0", local_id: "depth_camera" }
+            ]
+        }"#;
+        let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
+        assert_eq!(deps.interfaces.len(), 1);
+        assert!(deps.interfaces[0].sha256.is_none());
+    }
+
+    #[test]
+    fn depends_on_interfaces_requires_name() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [{ tag: "0.1.0", local_id: "depth_camera" }]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    }
+
+    #[test]
+    fn depends_on_interfaces_requires_tag() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [{ name: "depth_camera", local_id: "depth_camera" }]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    }
+
+    #[test]
+    fn depends_on_interfaces_requires_local_id() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [{ name: "depth_camera", tag: "0.1.0" }]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    }
+
+    #[test]
+    fn depends_on_interfaces_rejects_unknown_fields() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [
+                { name: "depth_camera", tag: "0.1.0", local_id: "depth_camera", extra: "bad" }
+            ]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
     }
 
     #[test]
@@ -1628,6 +1731,102 @@ mod tests {
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert!(manifest.depends_on.is_none());
+    }
+
+    #[test]
+    fn interfaces_with_conforms_to_full() {
+        let json5 = r#"{
+            conforms_to: [
+                { name: "depth_camera", tag: "0.1.0", sha256: "aaaa" }
+            ]
+        }"#;
+        let interfaces: Interfaces = serde_json5::from_str(json5).expect("should parse");
+        let items = interfaces.conforms_to.expect("conforms_to should be Some");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name.as_str(), "depth_camera");
+        assert_eq!(items[0].tag, "0.1.0");
+        assert_eq!(items[0].sha256.as_deref(), Some("aaaa"));
+    }
+
+    #[test]
+    fn interfaces_with_conforms_to_no_sha256() {
+        let json5 = r#"{
+            conforms_to: [
+                { name: "depth_camera", tag: "0.1.0" }
+            ]
+        }"#;
+        let interfaces: Interfaces = serde_json5::from_str(json5).expect("should parse");
+        let items = interfaces.conforms_to.expect("conforms_to should be Some");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name.as_str(), "depth_camera");
+        assert_eq!(items[0].tag, "0.1.0");
+        assert!(items[0].sha256.is_none());
+    }
+
+    #[test]
+    fn interfaces_without_conforms_to() {
+        let json5 = r#"{}"#;
+        let interfaces: Interfaces = serde_json5::from_str(json5).expect("should parse");
+        assert!(interfaces.conforms_to.is_none());
+    }
+
+    #[test]
+    fn interfaces_conforms_to_requires_name() {
+        let json5 = r#"{
+            conforms_to: [
+                { tag: "0.1.0" }
+            ]
+        }"#;
+        assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
+    }
+
+    #[test]
+    fn interfaces_conforms_to_requires_tag() {
+        let json5 = r#"{
+            conforms_to: [
+                { name: "depth_camera" }
+            ]
+        }"#;
+        assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
+    }
+
+    #[test]
+    fn interfaces_conforms_to_rejects_unknown_fields() {
+        let json5 = r#"{
+            conforms_to: [
+                { name: "depth_camera", tag: "0.1.0", extra: "bad" }
+            ]
+        }"#;
+        assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
+    }
+
+    #[test]
+    fn interfaces_conforms_to_normalization_sorts_by_name() {
+        let item_a = ConformsToItem {
+            name: Name::new("alpha").unwrap(),
+            tag: "0.1.0".into(),
+            sha256: None,
+        };
+        let item_b = ConformsToItem {
+            name: Name::new("beta").unwrap(),
+            tag: "0.1.0".into(),
+            sha256: Some("aaaa".into()),
+        };
+
+        let interfaces_a = Interfaces {
+            topics: None,
+            services: None,
+            actions: None,
+            conforms_to: Some(vec![item_a.clone(), item_b.clone()]),
+        };
+        let interfaces_b = Interfaces {
+            topics: None,
+            services: None,
+            actions: None,
+            conforms_to: Some(vec![item_b, item_a]),
+        };
+
+        assert!(interfaces_a.matches_unordered(&interfaces_b));
     }
 
     #[test]

@@ -55,6 +55,7 @@ fn make_consumer_depend_on_provider(
             tag: "0.1.0".to_string(),
             local_id: provider_name.to_string(),
         }],
+        interfaces: vec![],
     });
 
     consumer_cfg.interfaces.topics = Some(TopicInterfaces {

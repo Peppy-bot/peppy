@@ -1,4 +1,9 @@
-use crate::{common::AnyType, error::ParsingError};
+use crate::{
+    common::AnyType,
+    error::{ParsingError, StructuredError},
+    internal::interface::validate_named_items,
+    schema::PeppySchema,
+};
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
@@ -6,7 +11,6 @@ use serde::{
 use std::{
     collections::{BTreeMap, HashSet},
     convert::TryFrom,
-    fmt,
 };
 
 pub use crate::source::{
@@ -14,60 +18,62 @@ pub use crate::source::{
     DeploymentUrlSource,
 };
 
-/// Schema identifier embedded at the root of node and launcher `.json5`
-/// documents. The schema tag tells the daemon which document shape it is
-/// reading so the strict deserializer can reject mixed-up files (e.g. a
-/// launcher that claims to be a node config). Node files are always named
-/// `peppy.json5`; launcher files conventionally use `peppy_launcher.json5`
-/// for standalone projects but may use any `.json5` filename when discovered
-/// through a repository.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PeppySchema {
-    NodeV1,
-    LauncherV1,
-    InterfaceV1,
+#[derive(Debug, Clone, Serialize)]
+pub struct PeppyLauncher {
+    pub peppy_schema: PeppySchema,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deployments: Vec<Deployment>,
 }
 
-impl fmt::Display for PeppySchema {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            PeppySchema::NodeV1 => "node_v1",
-            PeppySchema::LauncherV1 => "launcher_v1",
-            PeppySchema::InterfaceV1 => "interface_v1",
-        };
-        f.write_str(s)
-    }
-}
-
-impl PeppySchema {
-    /// Deserialize a `peppy_schema` field and reject any value other
-    /// than `expected`. Used as the core of the per-document-shape
-    /// `#[serde(deserialize_with = ...)]` guards.
-    pub(crate) fn deserialize_expecting<'de, D>(
-        deserializer: D,
-        expected: Self,
-    ) -> Result<Self, D::Error>
+/// Custom deserialization for [`PeppyLauncher`] that, after the default
+/// shape parse, cross-checks every `interface_bindings` value against the
+/// set of `instance_id`s declared across all deployments. A binding that
+/// points at an unknown instance is rejected with a structured
+/// [`StructuredError::UnknownInstanceId`] so callers see a path-aware
+/// message instead of a generic serde error.
+impl<'de> Deserialize<'de> for PeppyLauncher {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let schema = Self::deserialize(deserializer)?;
-        if schema != expected {
-            return Err(de::Error::custom(format!(
-                "expected peppy_schema '{expected}', got '{schema}'"
-            )));
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawPeppyLauncher {
+            #[serde(deserialize_with = "deserialize_launcher_v1_schema")]
+            peppy_schema: PeppySchema,
+            #[serde(default)]
+            deployments: Vec<Deployment>,
         }
-        Ok(schema)
-    }
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PeppyLauncher {
-    #[serde(deserialize_with = "deserialize_launcher_v1_schema")]
-    pub peppy_schema: PeppySchema,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deployments: Vec<Deployment>,
+        let raw = RawPeppyLauncher::deserialize(deserializer)?;
+
+        let known_ids: HashSet<&str> = raw
+            .deployments
+            .iter()
+            .flat_map(|d| d.instances.iter())
+            .map(|i| i.instance_id.as_str())
+            .collect();
+
+        for deployment in &raw.deployments {
+            for instance in &deployment.instances {
+                for (binding, target) in &instance.interface_bindings {
+                    if !known_ids.contains(target.as_str()) {
+                        let err = StructuredError::UnknownInstanceId {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            binding: binding.clone(),
+                            instance_id: target.clone(),
+                        };
+                        return Err(de::Error::custom(err.json5_message()));
+                    }
+                }
+            }
+        }
+
+        Ok(PeppyLauncher {
+            peppy_schema: raw.peppy_schema,
+            deployments: raw.deployments,
+        })
+    }
 }
 
 /// Reject any `peppy_schema` value other than `launcher_v1` so a node
@@ -98,6 +104,31 @@ pub struct DeploymentInstance {
     pub env_vars: BTreeMap<String, String>,
     #[serde(default)]
     pub framework: FrameworkOverrides,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_interface_bindings",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub interface_bindings: BTreeMap<String, String>,
+}
+
+/// Each key names a binding slot declared by the deployed node and each
+/// value points at an `instance_id` defined elsewhere in the launcher.
+/// Both sides are validated for non-emptiness and intra-collection
+/// duplicates via [`validate_named_items`]; the value's existence as an
+/// `instance_id` is checked later at the [`PeppyLauncher`] level once all
+/// deployments have been parsed.
+fn deserialize_interface_bindings<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let map = BTreeMap::<String, String>::deserialize(deserializer)?;
+    validate_named_items(map.keys().map(String::as_str), "binding").map_err(de::Error::custom)?;
+    validate_named_items(map.values().map(String::as_str), "binding target")
+        .map_err(de::Error::custom)?;
+    Ok(map)
 }
 
 /// Per-instance framework knobs. Distinct from `arguments`: those are
@@ -317,6 +348,133 @@ mod tests {
         let serialized = serde_json5::to_string(&with_sim).unwrap();
         let reparsed: DeploymentInstance = serde_json5::from_str(&serialized).unwrap();
         assert_eq!(reparsed.framework.use_sim_time, Some(true));
+    }
+
+    /// A binding's value pointing at an `instance_id` defined in a sibling
+    /// deployment must resolve; the bindings on the consumer instance
+    /// round-trip with the exact keys/values that were written.
+    #[test]
+    fn interface_bindings_resolve_against_siblings() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {
+                    source: { local: "./left" },
+                    instances: [{ instance_id: "cam_wrist_left", arguments: {} }]
+                },
+                {
+                    source: { local: "./right" },
+                    instances: [{ instance_id: "cam_wrist_right", arguments: {} }]
+                },
+                {
+                    source: { local: "./torso" },
+                    instances: [{ instance_id: "cam_torso", arguments: {} }]
+                },
+                {
+                    source: { local: "./backbone" },
+                    instances: [{
+                        instance_id: "backbone",
+                        interface_bindings: {
+                            wrist_left_camera: "cam_wrist_left",
+                            wrist_right_camera: "cam_wrist_right",
+                            torso_camera: "cam_torso",
+                        }
+                    }]
+                }
+            ]
+        }"#;
+        let launcher: PeppyLauncher = serde_json5::from_str(json5).expect("launcher should parse");
+        let backbone = &launcher.deployments[3].instances[0];
+        assert_eq!(backbone.instance_id, "backbone");
+        assert_eq!(backbone.interface_bindings.len(), 3);
+        assert_eq!(
+            backbone
+                .interface_bindings
+                .get("torso_camera")
+                .map(String::as_str),
+            Some("cam_torso")
+        );
+    }
+
+    #[test]
+    fn interface_bindings_default_to_empty_when_omitted() {
+        let instance: DeploymentInstance =
+            serde_json5::from_str("{ instance_id: \"camera_front\" }").unwrap();
+        assert!(instance.interface_bindings.is_empty());
+    }
+
+    /// A binding value that doesn't match any `instance_id` declared across
+    /// the launcher must surface as a structured `UnknownInstanceId` error,
+    /// not a generic serde message.
+    #[test]
+    fn interface_bindings_reject_unknown_instance_id() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {
+                    source: { local: "./backbone" },
+                    instances: [{
+                        instance_id: "backbone",
+                        interface_bindings: {
+                            torso_camera: "does_not_exist"
+                        }
+                    }]
+                }
+            ]
+        }"#;
+        let err = serde_json5::from_str::<PeppyLauncher>(json5)
+            .expect_err("unknown instance_id must be rejected");
+        let parsing_err = ParsingError::from(err);
+        let ParsingError::UnknownInstanceId {
+            owner_instance_id,
+            binding,
+            instance_id,
+        } = parsing_err
+        else {
+            panic!("expected UnknownInstanceId, got {parsing_err:?}");
+        };
+        assert_eq!(owner_instance_id, "backbone");
+        assert_eq!(binding, "torso_camera");
+        assert_eq!(instance_id, "does_not_exist");
+    }
+
+    #[test]
+    fn interface_bindings_reject_empty_key() {
+        let json5 = r#"{
+            instance_id: "backbone",
+            interface_bindings: { "": "cam_torso" }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("empty binding key must be rejected");
+        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn interface_bindings_reject_empty_value() {
+        let json5 = r#"{
+            instance_id: "backbone",
+            interface_bindings: { torso_camera: "" }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("empty binding value must be rejected");
+        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn interface_bindings_reject_duplicate_values() {
+        let json5 = r#"{
+            instance_id: "backbone",
+            interface_bindings: {
+                a: "cam_torso",
+                b: "cam_torso"
+            }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("duplicate binding target must be rejected");
+        assert!(
+            err.to_string().contains("duplicate"),
+            "unexpected error: {err}"
+        );
     }
 
     /// The launcher rejects unknown framework keys so a typo (e.g.
