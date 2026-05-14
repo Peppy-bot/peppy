@@ -16,7 +16,7 @@ use crate::services::repo::cache::NodeCacheEntry;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::RepoSourceKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 use url::Url;
@@ -49,7 +49,12 @@ pub(crate) async fn materialize_entry(
     on_feedback: MaterializeFeedback,
 ) -> Result<(PathBuf, NodeConfig), String> {
     let root_dir = match entry.source_type {
-        RepoSourceKind::Fs => PathBuf::from(&entry.path),
+        RepoSourceKind::Fs => parent_dir_of(&entry.path).map_err(|e| {
+            format!(
+                "Fs cache entry for {}:{} has no parent directory in path {:?}: {}",
+                entry.node_name, entry.node_tag, entry.path, e
+            )
+        })?,
         RepoSourceKind::Git => {
             let url = entry
                 .source_uri
@@ -71,13 +76,21 @@ pub(crate) async fn materialize_entry(
             })
             .await
             .map_err(|e| format!("git cache task failed: {}", e))??;
-            let repo_relative_path = sanitize_repo_path(&entry.path).map_err(|e| {
+            // `entry.path` is the repo-relative path of `peppy.json5`;
+            // the materialized root directory is its parent.
+            let manifest_relative = sanitize_repo_path(&entry.path).map_err(|e| {
                 format!(
                     "Git cache entry for {}:{} has unsafe path {:?}: {}",
                     entry.node_name, entry.node_tag, entry.path, e
                 )
             })?;
-            checkout.join(repo_relative_path)
+            let dir_relative = manifest_relative.parent().ok_or_else(|| {
+                format!(
+                    "Git cache entry for {}:{} has no parent directory in path {:?}",
+                    entry.node_name, entry.node_tag, entry.path
+                )
+            })?;
+            checkout.join(dir_relative)
         }
         RepoSourceKind::Url => {
             let url_str = entry
@@ -102,4 +115,14 @@ pub(crate) async fn materialize_entry(
         )
     })?;
     Ok((root_dir, parsed))
+}
+
+/// Resolve the parent directory of `entry.path`. The cache stores the
+/// `peppy.json5` file path; consumers that need the source root take
+/// its parent.
+fn parent_dir_of(path: &str) -> Result<PathBuf, String> {
+    Path::new(path)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "path has no parent".to_owned())
 }

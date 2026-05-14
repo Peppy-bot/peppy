@@ -11,6 +11,7 @@ mod internal {
     pub mod consts;
     pub mod encoding;
     pub mod fingerprint;
+    pub mod interface;
     pub mod json5_pretty;
     pub mod launcher;
     pub mod node;
@@ -98,6 +99,13 @@ pub mod launcher {
         Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
         DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides, Name,
         PeppyLauncher, PeppyLauncherParser, PeppySchema,
+    };
+}
+
+// -- interface --
+pub mod interface {
+    pub use crate::internal::interface::{
+        Interfaces, Manifest, PeppyInterface, PeppyInterfaceParser,
     };
 }
 

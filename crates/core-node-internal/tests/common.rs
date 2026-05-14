@@ -780,19 +780,26 @@ impl TestPackagesCache {
         Self::default()
     }
 
+    /// `absolute_path` is the directory containing `peppy.json5`. The
+    /// cache stores the manifest file path (path-points-at-file
+    /// convention), so we join `NODE_CONFIG_FILE` here.
     pub fn fs_entry(mut self, name: &str, tag: &str, absolute_path: impl AsRef<Path>) -> Self {
+        let manifest_path = absolute_path.as_ref().join(NODE_CONFIG_FILE);
         let mut m = serde_json::Map::new();
         m.insert("node_name".into(), serde_json::Value::String(name.into()));
         m.insert("node_tag".into(), serde_json::Value::String(tag.into()));
         m.insert("source_type".into(), serde_json::Value::String("fs".into()));
         m.insert(
             "path".into(),
-            serde_json::Value::String(absolute_path.as_ref().to_string_lossy().into_owned()),
+            serde_json::Value::String(manifest_path.to_string_lossy().into_owned()),
         );
         self.entries.push(serde_json::Value::Object(m));
         self
     }
 
+    /// `path_in_repo` is the directory containing `peppy.json5` within
+    /// the checked-out repo. We join `NODE_CONFIG_FILE` so the cache
+    /// records the manifest file path.
     pub fn git_entry(
         mut self,
         name: &str,
@@ -801,6 +808,7 @@ impl TestPackagesCache {
         resolved_ref: &str,
         path_in_repo: &str,
     ) -> Self {
+        let manifest_path = Path::new(path_in_repo).join(NODE_CONFIG_FILE);
         let mut m = serde_json::Map::new();
         m.insert("node_name".into(), serde_json::Value::String(name.into()));
         m.insert("node_tag".into(), serde_json::Value::String(tag.into()));
@@ -818,7 +826,7 @@ impl TestPackagesCache {
         );
         m.insert(
             "path".into(),
-            serde_json::Value::String(path_in_repo.into()),
+            serde_json::Value::String(manifest_path.to_string_lossy().into_owned()),
         );
         self.entries.push(serde_json::Value::Object(m));
         self

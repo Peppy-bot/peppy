@@ -58,10 +58,8 @@ const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 /// config, serialise it to JSON5, then write the result to disk for the
 /// generator to re-parse from a file.
 fn write_producer_config_via_round_trip(producer_config_json5: &str, producer_dir: &Path) {
-    let parsed = NodeConfigParser::from_content(producer_config_json5)
-        .expect("producer config parses")
-        .into_resolved()
-        .expect("producer config resolves");
+    let parsed =
+        NodeConfigParser::from_content(producer_config_json5).expect("producer config parses");
     let pretty = json5_pretty::to_string_pretty(&parsed).expect("producer config pretty-prints");
     fs::write(producer_dir.join(NODE_CONFIG_FILE), pretty).expect("write producer peppy.json5");
 }
@@ -74,8 +72,6 @@ fn write_producer_config_via_round_trip(producer_config_json5: &str, producer_di
 fn parse_producer_config_in_memory(producer_config_json5: &str) -> config::node::NodeConfig {
     NodeConfigParser::from_content(producer_config_json5)
         .expect("producer config parses for consumer view")
-        .into_resolved()
-        .expect("producer config resolves for consumer view")
 }
 
 fn build_runtime_config(

@@ -201,12 +201,21 @@ async fn refresh_fs_discovers_nodes() {
     let discovered: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
     assert_eq!(discovered.len(), 1, "should receive 1 discovered feedback");
-    assert_eq!(discovered[0].node_name, "my_sensor");
-    assert_eq!(discovered[0].node_tag, "1.0.0");
-    assert_eq!(discovered[0].source_type, RepoSourceKind::Fs);
+    let RepoRefreshFeedback::Discovered {
+        item_name,
+        item_tag,
+        source_type,
+        ..
+    } = discovered[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "my_sensor");
+    assert_eq!(item_tag, "1.0.0");
+    assert_eq!(*source_type, RepoSourceKind::Fs);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -233,13 +242,15 @@ async fn refresh_multiple_nodes() {
         "should find exactly 2 nodes"
     );
 
-    let discovered: Vec<&RepoRefreshFeedback> = result
+    let names: Vec<&str> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter_map(|f| match f {
+            RepoRefreshFeedback::Discovered { item_name, .. } => Some(item_name.as_str()),
+            _ => None,
+        })
         .collect();
-    assert_eq!(discovered.len(), 2, "should receive 2 discovered feedbacks");
-    let names: Vec<&str> = discovered.iter().map(|f| f.node_name.as_str()).collect();
+    assert_eq!(names.len(), 2, "should receive 2 discovered feedbacks");
     assert!(names.contains(&"node_a"), "should contain node_a");
     assert!(names.contains(&"node_b"), "should contain node_b");
 }
@@ -278,19 +289,28 @@ async fn refresh_deduplication() {
     let discovered: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
     assert_eq!(
         discovered.len(),
         1,
         "should receive exactly 1 feedback for deduplicated node"
     );
-    assert_eq!(discovered[0].node_name, "dup_node");
-    assert_eq!(discovered[0].node_tag, "0.1.0");
+    let RepoRefreshFeedback::Discovered {
+        item_name,
+        item_tag,
+        path,
+        ..
+    } = discovered[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "dup_node");
+    assert_eq!(item_tag, "0.1.0");
     assert!(
-        discovered[0].path.contains("repo_a"),
+        path.contains("repo_a"),
         "first listed repo should take precedence, path was: {}",
-        discovered[0].path
+        path
     );
 }
 
@@ -403,7 +423,7 @@ async fn refresh_cache_written() {
 
     assert_eq!(git_entry["node_name"], "git_node");
     assert_eq!(git_entry["node_tag"], "1.0.0");
-    assert_eq!(git_entry["path"], "nodes/git_node");
+    assert_eq!(git_entry["path"], "nodes/git_node/peppy.json5");
     assert_eq!(git_entry["source_uri"], git_repo_url);
     let resolved_ref = git_entry
         .get("resolved_ref")
@@ -415,10 +435,11 @@ async fn refresh_cache_written() {
     );
 }
 
-/// When two repositories provide the same node, the cache should contain both
-/// entries — the first as non-duplicate and the second marked as duplicate.
-/// The total_nodes_found count should only reflect unique (non-duplicate) nodes
-/// and feedback should only be emitted for non-duplicates.
+/// When two repositories provide the same node, the cache should contain
+/// both entries. Both carry a `sha256` content fingerprint, and lookup
+/// picks the entry from the highest-priority (lowest-id) repository.
+/// `total_nodes_found` reflects the unique `(name, tag)` count; feedback
+/// is emitted once per unique node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_cache_includes_duplicates() {
     let started = start_core_node_with_real_messenger().await;
@@ -447,29 +468,33 @@ async fn refresh_cache_includes_duplicates() {
         "unique node count should be 2 (shared_node + unique_node)"
     );
 
-    // Feedback should only contain non-duplicate entries
-    let discovered: Vec<&RepoRefreshFeedback> = result
+    // Feedback is emitted once per unique (name, tag) — the second
+    // repo's shared_node is silently cached but not re-announced.
+    let feedback_names: Vec<&str> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter_map(|f| match f {
+            RepoRefreshFeedback::Discovered { item_name, .. } => Some(item_name.as_str()),
+            _ => None,
+        })
         .collect();
     assert_eq!(
-        discovered.len(),
+        feedback_names.len(),
         2,
         "should receive 2 discovered feedbacks (one per unique node)"
     );
-    let feedback_names: Vec<&str> = discovered.iter().map(|f| f.node_name.as_str()).collect();
     assert!(feedback_names.contains(&"shared_node"));
     assert!(feedback_names.contains(&"unique_node"));
 
-    // Cache should contain all 3 entries (including the duplicate)
+    // Cache keeps both `shared_node` entries (no `duplicate` flag; the
+    // `sha256` field tells them apart for users who need to pick one).
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
     let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
     assert_eq!(
         entries.len(),
         3,
-        "cache should contain 3 entries (2 unique + 1 duplicate)"
+        "cache should contain 3 entries (both shared_node copies + unique_node)"
     );
 
     let shared_entries: Vec<&serde_json::Value> = entries
@@ -481,24 +506,31 @@ async fn refresh_cache_includes_duplicates() {
         2,
         "shared_node should appear twice in cache"
     );
-
-    let primary = shared_entries
-        .iter()
-        .find(|e| e.get("duplicate").is_none())
-        .expect("should have a non-duplicate shared_node");
     assert!(
-        primary["path"].as_str().unwrap().contains("dup_cache_a"),
-        "primary should be from repo_a (higher priority)"
+        shared_entries
+            .iter()
+            .any(|e| e["path"].as_str().unwrap().contains("dup_cache_a")),
+        "one entry should be from repo_a"
     );
-
-    let dup = shared_entries
-        .iter()
-        .find(|e| e.get("duplicate").and_then(|v| v.as_bool()) == Some(true))
-        .expect("should have a duplicate shared_node");
     assert!(
-        dup["path"].as_str().unwrap().contains("dup_cache_b"),
-        "duplicate should be from repo_b"
+        shared_entries
+            .iter()
+            .any(|e| e["path"].as_str().unwrap().contains("dup_cache_b")),
+        "other entry should be from repo_b"
     );
+    for entry in &shared_entries {
+        assert!(
+            entry.get("duplicate").is_none(),
+            "no entry should carry the legacy `duplicate` flag"
+        );
+        assert!(
+            entry
+                .get("sha256")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty()),
+            "each entry should carry a non-empty sha256 fingerprint"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -558,12 +590,15 @@ async fn refresh_excludes_fs_repo_with_feedback() {
         "only node_a should be counted"
     );
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
+        .collect();
     let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
 
     assert_eq!(
@@ -571,11 +606,18 @@ async fn refresh_excludes_fs_repo_with_feedback() {
         1,
         "should receive 1 excluded feedback"
     );
-    assert_eq!(excluded_feedbacks[0].source_type, RepoSourceKind::Fs);
+    let RepoRefreshFeedback::Excluded {
+        source_type,
+        identity,
+    } = excluded_feedbacks[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(*source_type, RepoSourceKind::Fs);
     assert!(
-        excluded_feedbacks[0].path.contains("repo_b"),
-        "excluded feedback path should reference repo_b, got: {}",
-        excluded_feedbacks[0].path
+        identity.contains("repo_b"),
+        "excluded feedback identity should reference repo_b, got: {}",
+        identity
     );
 
     assert_eq!(
@@ -583,7 +625,10 @@ async fn refresh_excludes_fs_repo_with_feedback() {
         1,
         "should receive 1 discovered feedback"
     );
-    assert_eq!(discovered_feedbacks[0].node_name, "node_a");
+    let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "node_a");
 }
 
 /// Excluding a subdirectory within an FS repo should prune that subtree
@@ -622,23 +667,36 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
     let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
-    assert_eq!(discovered_feedbacks[0].node_name, "keep_node");
+    let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "keep_node");
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
+        .collect();
     assert_eq!(
         excluded_feedbacks.len(),
         1,
         "should receive 1 excluded feedback for subdirectory exclusion"
     );
-    assert_eq!(excluded_feedbacks[0].source_type, RepoSourceKind::Fs);
+    let RepoRefreshFeedback::Excluded {
+        source_type,
+        identity,
+    } = excluded_feedbacks[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(*source_type, RepoSourceKind::Fs);
     assert!(
-        excluded_feedbacks[0].path.contains("secret_node"),
-        "excluded feedback path should reference secret_node, got: {}",
-        excluded_feedbacks[0].path
+        identity.contains("secret_node"),
+        "excluded feedback identity should reference secret_node, got: {}",
+        identity
     );
 }
 
@@ -679,8 +737,11 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
         "only keep_node should be counted"
     );
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
+        .collect();
     assert_eq!(
         excluded_feedbacks.len(),
         2,
@@ -690,10 +751,13 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
     let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
-    assert_eq!(discovered_feedbacks[0].node_name, "keep_node");
+    let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "keep_node");
 }
 
 /// Excluded repos should not appear in the nodes.json5 cache.
@@ -763,16 +827,255 @@ async fn refresh_excludes_git_repo() {
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
+        .collect();
     assert_eq!(excluded_feedbacks.len(), 1);
-    assert_eq!(excluded_feedbacks[0].source_type, RepoSourceKind::Git);
+    let RepoRefreshFeedback::Excluded { source_type, .. } = excluded_feedbacks[0] else {
+        unreachable!()
+    };
+    assert_eq!(*source_type, RepoSourceKind::Git);
 
     let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
-    assert_eq!(discovered_feedbacks[0].node_name, "fs_node");
+    let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "fs_node");
+}
+
+/// End-to-end coverage of interface discovery: refresh writes
+/// `interfaces.json5` with the expected shape (interface_name + tag +
+/// sha256), the result reports the interface count, and feedback
+/// includes the discovered interface tagged with kind = Interface.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_discovers_interfaces() {
+    use core_node::interfaces_repo_cache_path;
+    use core_node_api::encoding::RepoItemKind;
+
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("iface_repo");
+    let iface_dir = repo_dir.join("uvc_camera");
+    std::fs::create_dir_all(&iface_dir).expect("create iface dir");
+    let manifest_body = r#"{
+  peppy_schema: "interface_v1",
+  manifest: { name: "uvc_camera", tag: "0.1.0", labels: ["uvc", "camera"] },
+  interfaces: {}
+}"#;
+    std::fs::write(iface_dir.join("peppy.json5"), manifest_body).expect("write interface manifest");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(result.result.total_interfaces_found, 1);
+
+    let Some(RepoRefreshFeedback::Discovered {
+        item_name,
+        item_tag,
+        sha256,
+        ..
+    }) = result.feedbacks.iter().find(|f| {
+        matches!(
+            f,
+            RepoRefreshFeedback::Discovered {
+                kind: RepoItemKind::Interface,
+                ..
+            }
+        )
+    })
+    else {
+        panic!("interface discovery feedback")
+    };
+    assert_eq!(item_name, "uvc_camera");
+    assert_eq!(item_tag, "0.1.0");
+    assert!(
+        !sha256.is_empty(),
+        "feedback should carry the sha256 fingerprint"
+    );
+
+    let cache_path = interfaces_repo_cache_path(&started.peppy_dirs);
+    assert!(cache_path.exists(), "interfaces cache should be written");
+    let content = std::fs::read_to_string(&cache_path).expect("read interfaces cache");
+    let entries: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse interfaces cache");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["interface_name"], "uvc_camera");
+    assert_eq!(entries[0]["tag"], "0.1.0");
+    assert_eq!(entries[0]["source_type"], "fs");
+    assert!(
+        entries[0]["path"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("uvc_camera/peppy.json5")),
+        "path should point at the manifest file: {:?}",
+        entries[0]["path"]
+    );
+    assert!(
+        entries[0]["sha256"].as_str().is_some_and(|s| !s.is_empty()),
+        "sha256 should be non-empty"
+    );
+}
+
+/// End-to-end coverage of node discovery: refresh writes `nodes.json5`
+/// with the expected shape (node_name + node_tag + sha256), the result
+/// reports the node count, and feedback includes the discovered node
+/// tagged with kind = Node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_discovers_nodes() {
+    use core_node_api::encoding::RepoItemKind;
+
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("node_repo");
+    create_node_dir(&repo_dir, "my_sensor", "1.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(result.result.total_nodes_found, 1);
+
+    let Some(RepoRefreshFeedback::Discovered {
+        item_name,
+        item_tag,
+        sha256,
+        ..
+    }) = result.feedbacks.iter().find(|f| {
+        matches!(
+            f,
+            RepoRefreshFeedback::Discovered {
+                kind: RepoItemKind::Node,
+                ..
+            }
+        )
+    })
+    else {
+        panic!("node discovery feedback")
+    };
+    assert_eq!(item_name, "my_sensor");
+    assert_eq!(item_tag, "1.0.0");
+    assert!(
+        !sha256.is_empty(),
+        "feedback should carry the sha256 fingerprint"
+    );
+
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
+    assert!(cache_path.exists(), "nodes cache should be written");
+    let content = std::fs::read_to_string(&cache_path).expect("read nodes cache");
+    let entries: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse nodes cache");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["node_name"], "my_sensor");
+    assert_eq!(entries[0]["node_tag"], "1.0.0");
+    assert_eq!(entries[0]["source_type"], "fs");
+    assert!(
+        entries[0]["path"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("peppy.json5")),
+        "path should point at the manifest file: {:?}",
+        entries[0]["path"]
+    );
+    assert!(
+        entries[0]["sha256"].as_str().is_some_and(|s| !s.is_empty()),
+        "sha256 should be non-empty"
+    );
+}
+
+/// End-to-end coverage of launcher discovery: refresh writes
+/// `launchers.json5` with the expected shape (launcher_name + sha256),
+/// the result reports the launcher count, and feedback includes the
+/// discovered launcher tagged with kind = Launcher.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_discovers_launchers() {
+    use core_node::launchers_repo_cache_path;
+    use core_node_api::encoding::RepoItemKind;
+
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("launcher_repo");
+    std::fs::create_dir_all(&repo_dir).expect("create launcher repo dir");
+    let manifest_body = r#"{
+  peppy_schema: "launcher_v1",
+  deployments: []
+}"#;
+    std::fs::write(repo_dir.join("openarm01_teleop.json5"), manifest_body)
+        .expect("write launcher manifest");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(result.result.total_launchers_found, 1);
+
+    let Some(RepoRefreshFeedback::Discovered {
+        item_name,
+        item_tag,
+        sha256,
+        ..
+    }) = result.feedbacks.iter().find(|f| {
+        matches!(
+            f,
+            RepoRefreshFeedback::Discovered {
+                kind: RepoItemKind::Launcher,
+                ..
+            }
+        )
+    })
+    else {
+        panic!("launcher discovery feedback")
+    };
+    assert_eq!(item_name, "openarm01_teleop");
+    assert!(
+        item_tag.is_empty(),
+        "launcher feedback should not carry a tag"
+    );
+    assert!(
+        !sha256.is_empty(),
+        "feedback should carry the sha256 fingerprint"
+    );
+
+    let cache_path = launchers_repo_cache_path(&started.peppy_dirs);
+    assert!(cache_path.exists(), "launchers cache should be written");
+    let content = std::fs::read_to_string(&cache_path).expect("read launchers cache");
+    let entries: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse launchers cache");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["launcher_name"], "openarm01_teleop");
+    assert_eq!(entries[0]["source_type"], "fs");
+    assert!(
+        entries[0]["path"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("openarm01_teleop.json5")),
+        "path should point at the .json5 file: {:?}",
+        entries[0]["path"]
+    );
+    assert!(
+        entries[0]["sha256"].as_str().is_some_and(|s| !s.is_empty()),
+        "sha256 should be non-empty"
+    );
 }

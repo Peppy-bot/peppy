@@ -26,6 +26,7 @@ pub use crate::source::{
 pub enum PeppySchema {
     NodeV1,
     LauncherV1,
+    InterfaceV1,
 }
 
 impl fmt::Display for PeppySchema {
@@ -33,6 +34,7 @@ impl fmt::Display for PeppySchema {
         let s = match self {
             PeppySchema::NodeV1 => "node_v1",
             PeppySchema::LauncherV1 => "launcher_v1",
+            PeppySchema::InterfaceV1 => "interface_v1",
         };
         f.write_str(s)
     }
