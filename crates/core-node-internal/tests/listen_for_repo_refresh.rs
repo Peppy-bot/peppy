@@ -857,3 +857,138 @@ async fn refresh_discovers_interfaces() {
         "sha256 should be non-empty"
     );
 }
+
+/// End-to-end coverage of node discovery: refresh writes `nodes.json5`
+/// with the expected shape (node_name + node_tag + sha256), the result
+/// reports the node count, and feedback includes the discovered node
+/// tagged with kind = Node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_discovers_nodes() {
+    use core_node_api::encoding::RepoItemKind;
+
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("node_repo");
+    create_node_dir(&repo_dir, "my_sensor", "1.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(result.result.total_nodes_found, 1);
+
+    let discovered: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .collect();
+    let node_fb = discovered
+        .iter()
+        .find(|f| f.kind == Some(RepoItemKind::Node))
+        .expect("node discovery feedback");
+    assert_eq!(node_fb.item_name, "my_sensor");
+    assert_eq!(node_fb.item_tag, "1.0.0");
+    assert!(
+        !node_fb.sha256.is_empty(),
+        "feedback should carry the sha256 fingerprint"
+    );
+
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
+    assert!(cache_path.exists(), "nodes cache should be written");
+    let content = std::fs::read_to_string(&cache_path).expect("read nodes cache");
+    let entries: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse nodes cache");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["node_name"], "my_sensor");
+    assert_eq!(entries[0]["node_tag"], "1.0.0");
+    assert_eq!(entries[0]["source_type"], "fs");
+    assert!(
+        entries[0]["path"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("peppy.json5")),
+        "path should point at the manifest file: {:?}",
+        entries[0]["path"]
+    );
+    assert!(
+        entries[0]["sha256"].as_str().is_some_and(|s| !s.is_empty()),
+        "sha256 should be non-empty"
+    );
+}
+
+/// End-to-end coverage of launcher discovery: refresh writes
+/// `launchers.json5` with the expected shape (launcher_name + sha256),
+/// the result reports the launcher count, and feedback includes the
+/// discovered launcher tagged with kind = Launcher.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_discovers_launchers() {
+    use core_node::launchers_repo_cache_path;
+    use core_node_api::encoding::RepoItemKind;
+
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("launcher_repo");
+    std::fs::create_dir_all(&repo_dir).expect("create launcher repo dir");
+    let manifest_body = r#"{
+  peppy_schema: "launcher_v1",
+  deployments: []
+}"#;
+    std::fs::write(repo_dir.join("openarm01_teleop.json5"), manifest_body)
+        .expect("write launcher manifest");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(result.result.total_launchers_found, 1);
+
+    let discovered: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .collect();
+    let launcher_fb = discovered
+        .iter()
+        .find(|f| f.kind == Some(RepoItemKind::Launcher))
+        .expect("launcher discovery feedback");
+    assert_eq!(launcher_fb.item_name, "openarm01_teleop");
+    assert!(
+        launcher_fb.item_tag.is_empty(),
+        "launcher feedback should not carry a tag"
+    );
+    assert!(
+        !launcher_fb.sha256.is_empty(),
+        "feedback should carry the sha256 fingerprint"
+    );
+
+    let cache_path = launchers_repo_cache_path(&started.peppy_dirs);
+    assert!(cache_path.exists(), "launchers cache should be written");
+    let content = std::fs::read_to_string(&cache_path).expect("read launchers cache");
+    let entries: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse launchers cache");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["launcher_name"], "openarm01_teleop");
+    assert_eq!(entries[0]["source_type"], "fs");
+    assert!(
+        entries[0]["path"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("openarm01_teleop.json5")),
+        "path should point at the .json5 file: {:?}",
+        entries[0]["path"]
+    );
+    assert!(
+        entries[0]["sha256"].as_str().is_some_and(|s| !s.is_empty()),
+        "sha256 should be non-empty"
+    );
+}

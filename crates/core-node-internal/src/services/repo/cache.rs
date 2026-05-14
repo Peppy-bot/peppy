@@ -717,9 +717,8 @@ mod tests {
         assert_eq!(hit.repo_id, 2);
     }
 
-    /// With the `duplicate` flag removed, lookup falls back to repo
-    /// priority alone — the highest-priority entry (lowest id) wins
-    /// among entries that share `(name, tag)`.
+    /// Lookup falls back to repo priority alone — the highest-priority entry
+    /// (lowest id) wins among entries that share `(name, tag)`.
     #[test]
     fn lookup_returns_highest_priority_when_multiple_match() {
         let entries = vec![mk_entry("a", "0.1.0", 7), mk_entry("a", "0.1.0", 3)];
@@ -1026,13 +1025,12 @@ mod tests {
         assert!(err.contains("launchers.json5"), "got: {err}");
     }
 
-    /// With `duplicate` removed, `lookup_launcher` falls back to repo
-    /// priority: the entry from the lowest-id repository wins among
-    /// launchers that share a name. We test this at the `lookup`
-    /// boundary directly because `repo_id` is derived from
-    /// `repositories.json5` at read time (`#[serde(skip)]` on the
-    /// struct), so round-tripping through `write_launcher_cache` would
-    /// erase it.
+    /// `lookup_launcher` resolves name collisions by repo priority: the
+    /// entry from the lowest-id repository wins among launchers that
+    /// share a name. We test this at the `lookup` boundary directly
+    /// because `repo_id` is derived from `repositories.json5` at read
+    /// time (`#[serde(skip)]` on the struct), so round-tripping through
+    /// `write_launcher_cache` would erase it.
     #[test]
     fn lookup_launcher_picks_lowest_repo_id() {
         let entries = vec![

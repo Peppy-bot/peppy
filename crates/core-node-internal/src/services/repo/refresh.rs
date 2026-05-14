@@ -1336,9 +1336,8 @@ mod tests {
     }
 
     /// Two repositories ship `uvc_camera@0.1.0` with different content;
-    /// both entries are kept in the cache (no `duplicate` flag), with
-    /// `sha256` letting the user pick one. Feedback fires only once
-    /// for the higher-priority repo.
+    /// both entries are kept in the cache, with `sha256` letting the user
+    /// pick one. Feedback fires only once for the higher-priority repo.
     #[test]
     fn process_refresh_keeps_same_name_tag_with_different_sha256() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1439,44 +1438,6 @@ mod tests {
         assert_eq!(walked.launchers[0].launcher_name, "teleop");
         assert_eq!(walked.interfaces.len(), 1, "one interface");
         assert_eq!(walked.interfaces[0].interface_name, "uvc_camera");
-    }
-
-    /// Node and launcher entries now also carry a `sha256` matching the
-    /// raw manifest bytes. Locks in the field on the on-disk shape.
-    #[test]
-    fn node_and_launcher_entries_carry_sha256() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-
-        let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("nodes/my_sensor"), "my_sensor", "1.0.0");
-        let launcher_path = repo.join("teleop.json5");
-        write_launcher_json5(&launcher_path);
-
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
-
-        let RefreshedRepos {
-            nodes, launchers, ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
-
-        let node_bytes = std::fs::read(repo.join("nodes/my_sensor/peppy.json5")).unwrap();
-        assert_eq!(nodes.len(), 1);
-        assert!(
-            nodes[0].path.ends_with("nodes/my_sensor/peppy.json5"),
-            "node path now points at the manifest file: {}",
-            nodes[0].path
-        );
-        assert_eq!(nodes[0].sha256, fingerprint_for_bytes(&node_bytes));
-
-        let launcher_bytes = std::fs::read(&launcher_path).unwrap();
-        assert_eq!(launchers.len(), 1);
-        assert_eq!(launchers[0].sha256, fingerprint_for_bytes(&launcher_bytes));
     }
 
     /// Process_refresh discovers launcher files (any `.json5` filename
