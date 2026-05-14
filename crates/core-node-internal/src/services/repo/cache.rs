@@ -426,7 +426,10 @@ pub fn load_interface_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<InterfaceCache
             e
         })
         .filter(|e| {
-            let ok = !e.interface_name.is_empty() && !e.tag.is_empty() && !e.path.is_empty();
+            let ok = !e.interface_name.is_empty()
+                && !e.tag.is_empty()
+                && !e.path.is_empty()
+                && !e.sha256.is_empty();
             if !ok {
                 warn!(
                     "Skipping malformed interfaces.json5 entry: {:?}:{:?}",

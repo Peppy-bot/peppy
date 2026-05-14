@@ -599,7 +599,18 @@ fn try_collect_node_entry(
     seen: &mut HashSet<(String, String)>,
     nodes: &mut Vec<NodeCacheEntry>,
 ) -> bool {
-    let parsed = match NodeConfigParser::from_path(ctx.config_path) {
+    let content = match std::str::from_utf8(ctx.bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!(
+                "Skipping non-utf8 node .json5 at {}: {}",
+                ctx.config_path.display(),
+                e
+            );
+            return false;
+        }
+    };
+    let parsed = match NodeConfigParser::from_content(content) {
         Ok(parsed) => parsed,
         Err(e) => {
             debug!(
@@ -644,7 +655,18 @@ fn collect_launcher_entry(
     // The schema field already matched LauncherV1; a strict parse
     // catches structural problems (unknown fields, malformed
     // deployments) that the cheap peek can't.
-    let parsed = match PeppyLauncherParser::from_path(ctx.config_path) {
+    let content = match std::str::from_utf8(ctx.bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!(
+                "Skipping non-utf8 launcher .json5 at {}: {}",
+                ctx.config_path.display(),
+                e
+            );
+            return;
+        }
+    };
+    let parsed = match PeppyLauncherParser::from_content(content) {
         Ok(parsed) if parsed.peppy_schema == PeppySchema::LauncherV1 => parsed,
         Ok(_) => return,
         Err(e) => {
