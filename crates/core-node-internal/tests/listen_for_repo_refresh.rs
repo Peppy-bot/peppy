@@ -201,12 +201,21 @@ async fn refresh_fs_discovers_nodes() {
     let discovered: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
     assert_eq!(discovered.len(), 1, "should receive 1 discovered feedback");
-    assert_eq!(discovered[0].item_name, "my_sensor");
-    assert_eq!(discovered[0].item_tag, "1.0.0");
-    assert_eq!(discovered[0].source_type, RepoSourceKind::Fs);
+    let RepoRefreshFeedback::Discovered {
+        item_name,
+        item_tag,
+        source_type,
+        ..
+    } = discovered[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "my_sensor");
+    assert_eq!(item_tag, "1.0.0");
+    assert_eq!(*source_type, RepoSourceKind::Fs);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -233,13 +242,15 @@ async fn refresh_multiple_nodes() {
         "should find exactly 2 nodes"
     );
 
-    let discovered: Vec<&RepoRefreshFeedback> = result
+    let names: Vec<&str> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter_map(|f| match f {
+            RepoRefreshFeedback::Discovered { item_name, .. } => Some(item_name.as_str()),
+            _ => None,
+        })
         .collect();
-    assert_eq!(discovered.len(), 2, "should receive 2 discovered feedbacks");
-    let names: Vec<&str> = discovered.iter().map(|f| f.item_name.as_str()).collect();
+    assert_eq!(names.len(), 2, "should receive 2 discovered feedbacks");
     assert!(names.contains(&"node_a"), "should contain node_a");
     assert!(names.contains(&"node_b"), "should contain node_b");
 }
@@ -278,19 +289,28 @@ async fn refresh_deduplication() {
     let discovered: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
     assert_eq!(
         discovered.len(),
         1,
         "should receive exactly 1 feedback for deduplicated node"
     );
-    assert_eq!(discovered[0].item_name, "dup_node");
-    assert_eq!(discovered[0].item_tag, "0.1.0");
+    let RepoRefreshFeedback::Discovered {
+        item_name,
+        item_tag,
+        path,
+        ..
+    } = discovered[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "dup_node");
+    assert_eq!(item_tag, "0.1.0");
     assert!(
-        discovered[0].path.contains("repo_a"),
+        path.contains("repo_a"),
         "first listed repo should take precedence, path was: {}",
-        discovered[0].path
+        path
     );
 }
 
@@ -450,17 +470,19 @@ async fn refresh_cache_includes_duplicates() {
 
     // Feedback is emitted once per unique (name, tag) — the second
     // repo's shared_node is silently cached but not re-announced.
-    let discovered: Vec<&RepoRefreshFeedback> = result
+    let feedback_names: Vec<&str> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter_map(|f| match f {
+            RepoRefreshFeedback::Discovered { item_name, .. } => Some(item_name.as_str()),
+            _ => None,
+        })
         .collect();
     assert_eq!(
-        discovered.len(),
+        feedback_names.len(),
         2,
         "should receive 2 discovered feedbacks (one per unique node)"
     );
-    let feedback_names: Vec<&str> = discovered.iter().map(|f| f.item_name.as_str()).collect();
     assert!(feedback_names.contains(&"shared_node"));
     assert!(feedback_names.contains(&"unique_node"));
 
@@ -568,12 +590,15 @@ async fn refresh_excludes_fs_repo_with_feedback() {
         "only node_a should be counted"
     );
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
+        .collect();
     let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
 
     assert_eq!(
@@ -581,11 +606,18 @@ async fn refresh_excludes_fs_repo_with_feedback() {
         1,
         "should receive 1 excluded feedback"
     );
-    assert_eq!(excluded_feedbacks[0].source_type, RepoSourceKind::Fs);
+    let RepoRefreshFeedback::Excluded {
+        source_type,
+        identity,
+    } = excluded_feedbacks[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(*source_type, RepoSourceKind::Fs);
     assert!(
-        excluded_feedbacks[0].path.contains("repo_b"),
-        "excluded feedback path should reference repo_b, got: {}",
-        excluded_feedbacks[0].path
+        identity.contains("repo_b"),
+        "excluded feedback identity should reference repo_b, got: {}",
+        identity
     );
 
     assert_eq!(
@@ -593,7 +625,10 @@ async fn refresh_excludes_fs_repo_with_feedback() {
         1,
         "should receive 1 discovered feedback"
     );
-    assert_eq!(discovered_feedbacks[0].item_name, "node_a");
+    let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "node_a");
 }
 
 /// Excluding a subdirectory within an FS repo should prune that subtree
@@ -632,23 +667,36 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
     let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
-    assert_eq!(discovered_feedbacks[0].item_name, "keep_node");
+    let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "keep_node");
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
+        .collect();
     assert_eq!(
         excluded_feedbacks.len(),
         1,
         "should receive 1 excluded feedback for subdirectory exclusion"
     );
-    assert_eq!(excluded_feedbacks[0].source_type, RepoSourceKind::Fs);
+    let RepoRefreshFeedback::Excluded {
+        source_type,
+        identity,
+    } = excluded_feedbacks[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(*source_type, RepoSourceKind::Fs);
     assert!(
-        excluded_feedbacks[0].path.contains("secret_node"),
-        "excluded feedback path should reference secret_node, got: {}",
-        excluded_feedbacks[0].path
+        identity.contains("secret_node"),
+        "excluded feedback identity should reference secret_node, got: {}",
+        identity
     );
 }
 
@@ -689,8 +737,11 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
         "only keep_node should be counted"
     );
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
+        .collect();
     assert_eq!(
         excluded_feedbacks.len(),
         2,
@@ -700,10 +751,13 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
     let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
-    assert_eq!(discovered_feedbacks[0].item_name, "keep_node");
+    let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "keep_node");
 }
 
 /// Excluded repos should not appear in the nodes.json5 cache.
@@ -773,18 +827,27 @@ async fn refresh_excludes_git_repo() {
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
+        .collect();
     assert_eq!(excluded_feedbacks.len(), 1);
-    assert_eq!(excluded_feedbacks[0].source_type, RepoSourceKind::Git);
+    let RepoRefreshFeedback::Excluded { source_type, .. } = excluded_feedbacks[0] else {
+        unreachable!()
+    };
+    assert_eq!(*source_type, RepoSourceKind::Git);
 
     let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
         .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
-    assert_eq!(discovered_feedbacks[0].item_name, "fs_node");
+    let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
+        unreachable!()
+    };
+    assert_eq!(item_name, "fs_node");
 }
 
 /// End-to-end coverage of interface discovery: refresh writes
@@ -820,19 +883,27 @@ async fn refresh_discovers_interfaces() {
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_interfaces_found, 1);
 
-    let discovered: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
-        .collect();
-    let iface_fb = discovered
-        .iter()
-        .find(|f| f.kind == Some(RepoItemKind::Interface))
-        .expect("interface discovery feedback");
-    assert_eq!(iface_fb.item_name, "uvc_camera");
-    assert_eq!(iface_fb.item_tag, "0.1.0");
+    let Some(RepoRefreshFeedback::Discovered {
+        item_name,
+        item_tag,
+        sha256,
+        ..
+    }) = result.feedbacks.iter().find(|f| {
+        matches!(
+            f,
+            RepoRefreshFeedback::Discovered {
+                kind: RepoItemKind::Interface,
+                ..
+            }
+        )
+    })
+    else {
+        panic!("interface discovery feedback")
+    };
+    assert_eq!(item_name, "uvc_camera");
+    assert_eq!(item_tag, "0.1.0");
     assert!(
-        !iface_fb.sha256.is_empty(),
+        !sha256.is_empty(),
         "feedback should carry the sha256 fingerprint"
     );
 
@@ -883,19 +954,27 @@ async fn refresh_discovers_nodes() {
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
 
-    let discovered: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
-        .collect();
-    let node_fb = discovered
-        .iter()
-        .find(|f| f.kind == Some(RepoItemKind::Node))
-        .expect("node discovery feedback");
-    assert_eq!(node_fb.item_name, "my_sensor");
-    assert_eq!(node_fb.item_tag, "1.0.0");
+    let Some(RepoRefreshFeedback::Discovered {
+        item_name,
+        item_tag,
+        sha256,
+        ..
+    }) = result.feedbacks.iter().find(|f| {
+        matches!(
+            f,
+            RepoRefreshFeedback::Discovered {
+                kind: RepoItemKind::Node,
+                ..
+            }
+        )
+    })
+    else {
+        panic!("node discovery feedback")
+    };
+    assert_eq!(item_name, "my_sensor");
+    assert_eq!(item_tag, "1.0.0");
     assert!(
-        !node_fb.sha256.is_empty(),
+        !sha256.is_empty(),
         "feedback should carry the sha256 fingerprint"
     );
 
@@ -953,22 +1032,30 @@ async fn refresh_discovers_launchers() {
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_launchers_found, 1);
 
-    let discovered: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| !f.excluded && f.status_message.is_empty())
-        .collect();
-    let launcher_fb = discovered
-        .iter()
-        .find(|f| f.kind == Some(RepoItemKind::Launcher))
-        .expect("launcher discovery feedback");
-    assert_eq!(launcher_fb.item_name, "openarm01_teleop");
+    let Some(RepoRefreshFeedback::Discovered {
+        item_name,
+        item_tag,
+        sha256,
+        ..
+    }) = result.feedbacks.iter().find(|f| {
+        matches!(
+            f,
+            RepoRefreshFeedback::Discovered {
+                kind: RepoItemKind::Launcher,
+                ..
+            }
+        )
+    })
+    else {
+        panic!("launcher discovery feedback")
+    };
+    assert_eq!(item_name, "openarm01_teleop");
     assert!(
-        launcher_fb.item_tag.is_empty(),
+        item_tag.is_empty(),
         "launcher feedback should not carry a tag"
     );
     assert!(
-        !launcher_fb.sha256.is_empty(),
+        !sha256.is_empty(),
         "feedback should carry the sha256 fingerprint"
     );
 

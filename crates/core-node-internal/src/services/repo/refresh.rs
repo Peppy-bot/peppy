@@ -11,8 +11,8 @@ use config::interface::PeppyInterfaceParser;
 use config::launcher::{PeppyLauncherParser, PeppySchema};
 use config::node::NodeConfigParser;
 use core_node_api::encoding::{
-    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
-    RepoSourceKind,
+    RepoItemKind, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
+    RepoSource, RepoSourceKind,
 };
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
@@ -332,10 +332,10 @@ pub(crate) fn process_refresh(
         .collect();
 
     for repo in &excluded_repos {
-        on_feedback(RepoRefreshFeedback::new_excluded(
-            repo.source_type,
-            &repo.identity,
-        ));
+        on_feedback(RepoRefreshFeedback::Excluded {
+            source_type: repo.source_type,
+            identity: repo.identity.clone(),
+        });
     }
 
     for entry in &repos {
@@ -361,10 +361,9 @@ pub(crate) fn process_refresh(
                     debug!("Skipping non-existent FS repository: {}", path.display());
                     continue;
                 }
-                on_feedback(RepoRefreshFeedback::new_progress(format!(
-                    "Scanning {}",
-                    path.display()
-                )));
+                on_feedback(RepoRefreshFeedback::Progress {
+                    message: format!("Scanning {}", path.display()),
+                });
                 walk_directory(&path, RepoSourceKind::Fs, None, None, &exclusions.fs_paths)
             }
             RepoSource::Git { repo_url, repo_ref } => {
@@ -372,10 +371,9 @@ pub(crate) fn process_refresh(
                     .as_deref()
                     .map(|r| format!(" (ref {})", r))
                     .unwrap_or_default();
-                on_feedback(RepoRefreshFeedback::new_progress(format!(
-                    "Cloning {}{}",
-                    repo_url, ref_suffix
-                )));
+                on_feedback(RepoRefreshFeedback::Progress {
+                    message: format!("Cloning {}{}", repo_url, ref_suffix),
+                });
                 match clone_and_walk_git_repo(
                     &repo_url,
                     repo_ref.as_deref(),
@@ -394,37 +392,41 @@ pub(crate) fn process_refresh(
         for node in walked.nodes {
             let key = (node.node_name.clone(), node.node_tag.clone());
             if global_seen_nodes.insert(key) {
-                on_feedback(RepoRefreshFeedback::new_node(
-                    &node.node_name,
-                    &node.node_tag,
-                    node.source_type,
-                    &node.path,
-                    &node.sha256,
-                ));
+                on_feedback(RepoRefreshFeedback::Discovered {
+                    kind: RepoItemKind::Node,
+                    item_name: node.node_name.clone(),
+                    item_tag: node.node_tag.clone(),
+                    source_type: node.source_type,
+                    path: node.path.clone(),
+                    sha256: node.sha256.clone(),
+                });
             }
             all_nodes.push(node);
         }
         for launcher in walked.launchers {
             if global_seen_launchers.insert(launcher.launcher_name.clone()) {
-                on_feedback(RepoRefreshFeedback::new_launcher(
-                    &launcher.launcher_name,
-                    launcher.source_type,
-                    &launcher.path,
-                    &launcher.sha256,
-                ));
+                on_feedback(RepoRefreshFeedback::Discovered {
+                    kind: RepoItemKind::Launcher,
+                    item_name: launcher.launcher_name.clone(),
+                    item_tag: String::new(),
+                    source_type: launcher.source_type,
+                    path: launcher.path.clone(),
+                    sha256: launcher.sha256.clone(),
+                });
             }
             all_launchers.push(launcher);
         }
         for interface in walked.interfaces {
             let key = (interface.interface_name.clone(), interface.tag.clone());
             if global_seen_interfaces.insert(key) {
-                on_feedback(RepoRefreshFeedback::new_interface(
-                    &interface.interface_name,
-                    &interface.tag,
-                    interface.source_type,
-                    &interface.path,
-                    &interface.sha256,
-                ));
+                on_feedback(RepoRefreshFeedback::Discovered {
+                    kind: RepoItemKind::Interface,
+                    item_name: interface.interface_name.clone(),
+                    item_tag: interface.tag.clone(),
+                    source_type: interface.source_type,
+                    path: interface.path.clone(),
+                    sha256: interface.sha256.clone(),
+                });
             }
             all_interfaces.push(interface);
         }
@@ -787,7 +789,9 @@ pub(crate) fn clone_shallow(
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) -> std::result::Result<git2::Repository, String> {
     clone_with_progress(repo_url, repo_ref, dst, true, &mut |line| {
-        on_feedback(RepoRefreshFeedback::new_progress(line.to_owned()));
+        on_feedback(RepoRefreshFeedback::Progress {
+            message: line.to_owned(),
+        });
     })
 }
 
@@ -1399,20 +1403,24 @@ mod tests {
 
         // Only one discovery feedback for this (name, tag) — the
         // higher-priority repo (lower id) wins.
-        let discovered: Vec<&RepoRefreshFeedback> = feedbacks
+        let discovered_paths: Vec<&str> = feedbacks
             .iter()
-            .filter(|f| !f.excluded && f.status_message.is_empty())
-            .filter(|f| f.item_name == "uvc_camera")
+            .filter_map(|f| match f {
+                RepoRefreshFeedback::Discovered {
+                    item_name, path, ..
+                } if item_name == "uvc_camera" => Some(path.as_str()),
+                _ => None,
+            })
             .collect();
         assert_eq!(
-            discovered.len(),
+            discovered_paths.len(),
             1,
             "feedback fires once per unique (name, tag)"
         );
         assert!(
-            discovered[0].path.contains("repo_a"),
+            discovered_paths[0].contains("repo_a"),
             "first listed repo should win the feedback: {}",
-            discovered[0].path
+            discovered_paths[0]
         );
     }
 
@@ -1723,24 +1731,27 @@ mod tests {
         let mut feedbacks: Vec<RepoRefreshFeedback> = Vec::new();
         let _ = process_refresh(&peppy_dirs, &mut |fb| feedbacks.push(fb)).unwrap();
 
-        let progress: Vec<&RepoRefreshFeedback> = feedbacks
+        let progress_messages: Vec<&str> = feedbacks
             .iter()
-            .filter(|f| !f.status_message.is_empty())
+            .filter_map(|f| match f {
+                RepoRefreshFeedback::Progress { message } => Some(message.as_str()),
+                _ => None,
+            })
             .collect();
         assert!(
-            progress
-                .iter()
-                .any(|f| f.status_message.starts_with("Scanning ")),
+            progress_messages.iter().any(|m| m.starts_with("Scanning ")),
             "expected a 'Scanning …' progress feedback, got: {:?}",
             feedbacks
         );
 
-        let discovered: Vec<&RepoRefreshFeedback> = feedbacks
+        let discovered_names: Vec<&str> = feedbacks
             .iter()
-            .filter(|f| !f.excluded && f.status_message.is_empty())
+            .filter_map(|f| match f {
+                RepoRefreshFeedback::Discovered { item_name, .. } => Some(item_name.as_str()),
+                _ => None,
+            })
             .collect();
-        assert_eq!(discovered.len(), 1);
-        assert_eq!(discovered[0].item_name, "node_a");
+        assert_eq!(discovered_names, vec!["node_a"]);
     }
 
     #[test]

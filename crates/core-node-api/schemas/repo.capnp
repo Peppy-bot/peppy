@@ -43,27 +43,33 @@ struct RepoRefreshGoalResponse {
 }
 
 struct RepoRefreshFeedback {
-    # Name of the discovered item (node, launcher, or interface).
-    itemName @0 :Text;
-    # Tag of the discovered item. Empty for launchers (which have no tag).
-    itemTag @1 :Text;
-    # Kind of item being reported: "node", "launcher", or "interface".
-    # Empty when `excluded` is true or `statusMessage` is non-empty.
-    kind @6 :Text;
-    # "fs", "git", or "url"
-    sourceType @2 :Text;
-    # Absolute path (fs) or relative path within repo (git). For node and
-    # interface items this points at the manifest file itself, matching
-    # launcher semantics.
-    path @3 :Text;
-    # SHA-256 of the manifest file bytes. Empty when this feedback is an
-    # exclusion or a progress update.
-    sha256 @7 :Text;
-    # True when this feedback represents an excluded repository
-    excluded @4 :Bool;
-    # Non-empty when this feedback is a progress/status update (e.g.
-    # "Cloning <url>"). When non-empty, the other fields are meaningless.
-    statusMessage @5 :Text;
+    payload :union {
+        # A discovered node, launcher, or interface manifest.
+        discovered :group {
+            # Kind of item being reported: "node", "launcher", or "interface".
+            kind @0 :Text;
+            # Name of the discovered item.
+            itemName @1 :Text;
+            # Tag of the discovered item. Empty for launchers (which have no tag).
+            itemTag @2 :Text;
+            # "fs", "git", or "url"
+            sourceType @3 :Text;
+            # Absolute path (fs) or relative path within repo (git). Points
+            # at the manifest file itself.
+            path @4 :Text;
+            # SHA-256 of the manifest file bytes.
+            sha256 @5 :Text;
+        }
+        # A repository that was skipped (e.g. listed in excluded_repositories.json5).
+        excluded :group {
+            # "fs", "git", or "url"
+            sourceType @6 :Text;
+            # Repository identity (URL or fs path).
+            identity @7 :Text;
+        }
+        # A free-form status update emitted during the scan (e.g. "Cloning <url>").
+        progress @8 :Text;
+    }
 }
 
 struct RepoRefreshResult {

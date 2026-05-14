@@ -98,25 +98,32 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
 }
 
 fn format_refresh_line(feedback: &RepoRefreshFeedback) -> String {
-    if !feedback.status_message.is_empty() {
-        return feedback.status_message.clone();
-    }
-    if feedback.excluded {
-        return format!("Excluded {} ({})", feedback.path, feedback.source_type);
-    }
-    let kind = feedback
-        .kind
-        .map(|k| k.to_string())
-        .unwrap_or_else(|| "item".to_string());
-    if feedback.item_tag.is_empty() {
-        format!(
-            "Found {} {} ({}, {})",
-            kind, feedback.item_name, feedback.source_type, feedback.path
-        )
-    } else {
-        format!(
+    match feedback {
+        RepoRefreshFeedback::Progress { message } => message.clone(),
+        RepoRefreshFeedback::Excluded {
+            source_type,
+            identity,
+        } => format!("Excluded {} ({})", identity, source_type),
+        RepoRefreshFeedback::Discovered {
+            kind,
+            item_name,
+            item_tag,
+            source_type,
+            path,
+            ..
+        } if item_tag.is_empty() => {
+            format!("Found {} {} ({}, {})", kind, item_name, source_type, path)
+        }
+        RepoRefreshFeedback::Discovered {
+            kind,
+            item_name,
+            item_tag,
+            source_type,
+            path,
+            ..
+        } => format!(
             "Found {} {}:{} ({}, {})",
-            kind, feedback.item_name, feedback.item_tag, feedback.source_type, feedback.path
-        )
+            kind, item_name, item_tag, source_type, path
+        ),
     }
 }

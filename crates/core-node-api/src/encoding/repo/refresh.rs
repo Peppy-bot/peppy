@@ -104,172 +104,108 @@ impl std::fmt::Display for RepoItemKind {
     }
 }
 
-/// Feedback message for the RepoRefresh action. Carries one of three kinds
-/// of payload, disambiguated by `excluded` / `status_message` / `kind`:
-///   - a discovered item (`kind` set, `item_name`/`item_tag`/`path`/`sha256` populated),
-///   - an excluded repository (`excluded == true`, `path` carries the identity),
-///   - a progress update (`status_message` non-empty).
+/// Feedback message for the RepoRefresh action.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepoRefreshFeedback {
-    pub item_name: String,
-    pub item_tag: String,
-    /// `Some` when reporting a discovered item; `None` for excluded /
-    /// progress feedback.
-    pub kind: Option<RepoItemKind>,
-    pub source_type: RepoSourceKind,
-    /// For node and interface items, the absolute (fs) or repo-relative
-    /// (git) path to the manifest file. For launchers, the same. For
-    /// exclusions, the repository identity.
-    pub path: String,
-    /// SHA-256 of the manifest bytes. Empty for exclusion / progress.
-    pub sha256: String,
-    pub excluded: bool,
-    /// Non-empty when this feedback is a progress/status update emitted
-    /// during the scan (e.g. "Cloning <url>"). When non-empty, the other
-    /// fields are meaningless.
-    pub status_message: String,
+pub enum RepoRefreshFeedback {
+    /// A node, launcher, or interface manifest discovered in a repository.
+    Discovered {
+        kind: RepoItemKind,
+        item_name: String,
+        /// Empty for launchers (which have no tag).
+        item_tag: String,
+        source_type: RepoSourceKind,
+        /// Absolute path (fs) or repo-relative path (git) to the manifest file.
+        path: String,
+        /// SHA-256 of the manifest file bytes.
+        sha256: String,
+    },
+    /// A repository that was skipped (listed in excluded_repositories.json5).
+    Excluded {
+        source_type: RepoSourceKind,
+        /// Repository identity (URL or fs path).
+        identity: String,
+    },
+    /// Free-form status update emitted during the scan (e.g. "Cloning <url>").
+    Progress { message: String },
 }
 
 impl RepoRefreshFeedback {
-    pub fn new_node(
-        item_name: impl Into<String>,
-        item_tag: impl Into<String>,
-        source_type: RepoSourceKind,
-        path: impl Into<String>,
-        sha256: impl Into<String>,
-    ) -> Self {
-        Self::new_item(
-            RepoItemKind::Node,
-            item_name,
-            item_tag,
-            source_type,
-            path,
-            sha256,
-        )
-    }
-
-    pub fn new_launcher(
-        item_name: impl Into<String>,
-        source_type: RepoSourceKind,
-        path: impl Into<String>,
-        sha256: impl Into<String>,
-    ) -> Self {
-        Self::new_item(
-            RepoItemKind::Launcher,
-            item_name,
-            String::new(),
-            source_type,
-            path,
-            sha256,
-        )
-    }
-
-    pub fn new_interface(
-        item_name: impl Into<String>,
-        item_tag: impl Into<String>,
-        source_type: RepoSourceKind,
-        path: impl Into<String>,
-        sha256: impl Into<String>,
-    ) -> Self {
-        Self::new_item(
-            RepoItemKind::Interface,
-            item_name,
-            item_tag,
-            source_type,
-            path,
-            sha256,
-        )
-    }
-
-    fn new_item(
-        kind: RepoItemKind,
-        item_name: impl Into<String>,
-        item_tag: impl Into<String>,
-        source_type: RepoSourceKind,
-        path: impl Into<String>,
-        sha256: impl Into<String>,
-    ) -> Self {
-        Self {
-            item_name: item_name.into(),
-            item_tag: item_tag.into(),
-            kind: Some(kind),
-            source_type,
-            path: path.into(),
-            sha256: sha256.into(),
-            excluded: false,
-            status_message: String::new(),
-        }
-    }
-
-    /// Create a feedback entry representing an excluded repository.
-    pub fn new_excluded(source_type: RepoSourceKind, identity: impl Into<String>) -> Self {
-        Self {
-            item_name: String::new(),
-            item_tag: String::new(),
-            kind: None,
-            source_type,
-            path: identity.into(),
-            sha256: String::new(),
-            excluded: true,
-            status_message: String::new(),
-        }
-    }
-
-    /// Create a progress feedback carrying a free-form status message.
-    pub fn new_progress(message: impl Into<String>) -> Self {
-        Self {
-            item_name: String::new(),
-            item_tag: String::new(),
-            kind: None,
-            source_type: RepoSourceKind::Fs,
-            path: String::new(),
-            sha256: String::new(),
-            excluded: false,
-            status_message: message.into(),
-        }
-    }
-
     pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
-            let mut feedback = builder.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
-            feedback.set_item_name(&self.item_name);
-            feedback.set_item_tag(&self.item_tag);
-            feedback.set_kind(self.kind.map(|k| k.as_str()).unwrap_or(""));
-            feedback.set_source_type(self.source_type.as_str());
-            feedback.set_path(&self.path);
-            feedback.set_sha256(&self.sha256);
-            feedback.set_excluded(self.excluded);
-            feedback.set_status_message(&self.status_message);
+            let feedback = builder.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
+            let payload = feedback.init_payload();
+            match self {
+                Self::Discovered {
+                    kind,
+                    item_name,
+                    item_tag,
+                    source_type,
+                    path,
+                    sha256,
+                } => {
+                    let mut d = payload.init_discovered();
+                    d.set_kind(kind.as_str());
+                    d.set_item_name(item_name);
+                    d.set_item_tag(item_tag);
+                    d.set_source_type(source_type.as_str());
+                    d.set_path(path);
+                    d.set_sha256(sha256);
+                }
+                Self::Excluded {
+                    source_type,
+                    identity,
+                } => {
+                    let mut e = payload.init_excluded();
+                    e.set_source_type(source_type.as_str());
+                    e.set_identity(identity);
+                }
+                Self::Progress { message } => {
+                    let mut p = payload;
+                    p.set_progress(message.as_str());
+                }
+            }
         }
         encode_message_non_empty(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
+        use repo_capnp::repo_refresh_feedback::payload::Which;
         let reader = decode_message(data)?;
         let feedback = reader.get_root::<repo_capnp::repo_refresh_feedback::Reader>()?;
-        let source_type_str = feedback.get_source_type()?.to_str()?;
-        let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
-            crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
-        })?;
-        let kind_str = feedback.get_kind()?.to_str()?;
-        let kind = if kind_str.is_empty() {
-            None
-        } else {
-            Some(RepoItemKind::parse(kind_str).ok_or_else(|| {
-                crate::Error::Decoding(format!("unknown repo item kind: {kind_str}"))
-            })?)
-        };
-        Ok(Self {
-            item_name: feedback.get_item_name()?.to_str()?.to_owned(),
-            item_tag: feedback.get_item_tag()?.to_str()?.to_owned(),
-            kind,
-            source_type,
-            path: feedback.get_path()?.to_str()?.to_owned(),
-            sha256: feedback.get_sha256()?.to_str()?.to_owned(),
-            excluded: feedback.get_excluded(),
-            status_message: feedback.get_status_message()?.to_str()?.to_owned(),
-        })
+        match feedback.get_payload().which()? {
+            Which::Discovered(d) => {
+                let kind_str = d.get_kind()?.to_str()?;
+                let kind = RepoItemKind::parse(kind_str).ok_or_else(|| {
+                    crate::Error::Decoding(format!("unknown repo item kind: {kind_str}"))
+                })?;
+                let source_type_str = d.get_source_type()?.to_str()?;
+                let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
+                    crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
+                })?;
+                Ok(Self::Discovered {
+                    kind,
+                    item_name: d.get_item_name()?.to_str()?.to_owned(),
+                    item_tag: d.get_item_tag()?.to_str()?.to_owned(),
+                    source_type,
+                    path: d.get_path()?.to_str()?.to_owned(),
+                    sha256: d.get_sha256()?.to_str()?.to_owned(),
+                })
+            }
+            Which::Excluded(e) => {
+                let source_type_str = e.get_source_type()?.to_str()?;
+                let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
+                    crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
+                })?;
+                Ok(Self::Excluded {
+                    source_type,
+                    identity: e.get_identity()?.to_str()?.to_owned(),
+                })
+            }
+            Which::Progress(p) => Ok(Self::Progress {
+                message: p?.to_str()?.to_owned(),
+            }),
+        }
     }
 }
 
