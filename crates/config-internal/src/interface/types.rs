@@ -1,6 +1,6 @@
 use crate::{
-    launcher::PeppySchema,
     node::{EmittedTopic, ExposedAction, ExposedService, Name},
+    schema::PeppySchema,
 };
 use serde::{
     Deserialize, Serialize,

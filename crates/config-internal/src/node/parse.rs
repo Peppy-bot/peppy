@@ -701,7 +701,7 @@ mod tests {
             execution,
         } = merged;
 
-        assert_eq!(peppy_schema, crate::launcher::PeppySchema::NodeV1);
+        assert_eq!(peppy_schema, crate::schema::PeppySchema::NodeV1);
         assert_eq!(manifest.name.as_str(), "my_node");
         assert_eq!(manifest.tag, "0.1.0");
         assert_eq!(interfaces, crate::node::Interfaces::default());

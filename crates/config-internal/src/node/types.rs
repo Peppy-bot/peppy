@@ -1,7 +1,7 @@
 use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
-    launcher::PeppySchema,
+    schema::PeppySchema,
 };
 use indexmap::IndexMap;
 use serde::{

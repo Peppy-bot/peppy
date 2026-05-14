@@ -17,6 +17,7 @@ mod internal {
     pub mod node;
     pub mod repo_node_id;
     pub mod runtime;
+    pub mod schema;
     pub mod source;
 }
 
@@ -98,8 +99,13 @@ pub mod launcher {
     pub use crate::internal::launcher::{
         Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
         DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides, Name,
-        PeppyLauncher, PeppyLauncherParser, PeppySchema,
+        PeppyLauncher, PeppyLauncherParser,
     };
+}
+
+// -- schema --
+pub mod schema {
+    pub use crate::internal::schema::PeppySchema;
 }
 
 // -- interface --

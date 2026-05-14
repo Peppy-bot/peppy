@@ -8,8 +8,9 @@ use crate::services::repo::normalize_repo_entries;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
 use config::interface::PeppyInterfaceParser;
-use config::launcher::{PeppyLauncherParser, PeppySchema};
+use config::launcher::PeppyLauncherParser;
 use config::node::NodeConfigParser;
+use config::schema::PeppySchema;
 use core_node_api::encoding::{
     RepoItemKind, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSource, RepoSourceKind,

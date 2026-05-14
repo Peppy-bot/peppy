@@ -28,7 +28,7 @@ impl PeppyLauncherParser {
 
 #[cfg(test)]
 mod tests {
-    use crate::launcher::{DeploymentSource, PeppySchema};
+    use crate::{launcher::DeploymentSource, schema::PeppySchema};
     use tempfile::tempdir;
 
     use super::PeppyLauncherParser;
