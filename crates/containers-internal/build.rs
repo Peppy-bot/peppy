@@ -9,6 +9,19 @@ mod apptainer_build {
     /// call sites (host build, Lima guest build) consume this constant.
     const APPTAINER_SHA256: &str =
         "36d67d57ef959397fa4f59169cf7deb92220537160e761e0c1cff84624ad81e3";
+
+    /// Pinned gocryptfs version. Apptainer auto-discovers gocryptfs in
+    /// `${prefix}/libexec/apptainer/bin/` (ahead of `$PATH`) and uses it for
+    /// encrypted overlay/image support. Shipping it alongside apptainer means
+    /// users don't need to install it via the system package manager.
+    const GOCRYPTFS_VERSION: &str = "2.6.1";
+    /// SHA-256 of `gocryptfs_v{GOCRYPTFS_VERSION}_linux-static_amd64.tar.gz`.
+    const GOCRYPTFS_AMD64_SHA256: &str =
+        "49b8c0eb0f6373b6ac99c394a52909d8478e74c08d0961527c1162967cc28c44";
+    /// SHA-256 of `gocryptfs_v{GOCRYPTFS_VERSION}_linux-static_arm64.tar.gz`.
+    const GOCRYPTFS_ARM64_SHA256: &str =
+        "64576d550ab8af3f1dc729e93779540c5ecc00967d0185aae51a29a3755d86d0";
+
     const LIMA_VERSION: &str = "2.1.1";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
         "b6b0e6701189cd8c4e549cc39e6d054dc681487798b9b774ad2cbd30c08b2bd8";
@@ -309,6 +322,201 @@ mod apptainer_build {
         }
         std::fs::remove_file(tarball).ok();
         false
+    }
+
+    // -----------------------------------------------------------------------
+    // gocryptfs — bundled prebuilt static linux binary
+    //
+    // Apptainer searches `${prefix}/libexec/apptainer/bin/` for tools like
+    // gocryptfs before falling back to `$PATH`. Dropping the binary there
+    // means encrypted overlay/image support works out of the box without
+    // requiring users to install gocryptfs via their distro package manager.
+    // -----------------------------------------------------------------------
+
+    /// Map a Rust target arch to gocryptfs's release naming convention.
+    fn gocryptfs_arch(target_arch: &str) -> Option<&'static str> {
+        match target_arch {
+            "x86_64" => Some("amd64"),
+            "aarch64" => Some("arm64"),
+            _ => None,
+        }
+    }
+
+    fn gocryptfs_sha256(target_arch: &str) -> Option<&'static str> {
+        match target_arch {
+            "x86_64" => Some(GOCRYPTFS_AMD64_SHA256),
+            "aarch64" => Some(GOCRYPTFS_ARM64_SHA256),
+            _ => None,
+        }
+    }
+
+    fn gocryptfs_archive_url(version: &str, arch: &str) -> String {
+        format!(
+            "https://github.com/rfjakob/gocryptfs/releases/download/v{version}/gocryptfs_v{version}_linux-static_{arch}.tar.gz"
+        )
+    }
+
+    fn gocryptfs_sentinel_path(install_dir: &Path) -> PathBuf {
+        install_dir
+            .join("libexec/apptainer/bin")
+            .join(format!(".peppy-gocryptfs-version-{}", GOCRYPTFS_VERSION))
+    }
+
+    /// Ensure `<install_dir>/libexec/apptainer/bin/gocryptfs` exists and matches
+    /// the pinned [`GOCRYPTFS_VERSION`]. Idempotent: returns immediately when
+    /// the sentinel + binary are already in place.
+    fn ensure_gocryptfs_installed(install_dir: &Path, target_arch: &str) -> bool {
+        let bin_dir = install_dir.join("libexec/apptainer/bin");
+        let gocryptfs_bin = bin_dir.join("gocryptfs");
+        let gocryptfs_xray_bin = bin_dir.join("gocryptfs-xray");
+        let sentinel = gocryptfs_sentinel_path(install_dir);
+
+        if sentinel.exists() && gocryptfs_bin.exists() && gocryptfs_xray_bin.exists() {
+            return true;
+        }
+
+        let Some(arch) = gocryptfs_arch(target_arch) else {
+            println!(
+                "cargo:warning=Skipping gocryptfs bundle: unsupported target arch {}",
+                target_arch
+            );
+            return false;
+        };
+        let Some(expected_sha256) = gocryptfs_sha256(target_arch) else {
+            println!(
+                "cargo:warning=Skipping gocryptfs bundle: no pinned SHA-256 for {}",
+                target_arch
+            );
+            return false;
+        };
+
+        println!(
+            "cargo:warning=Installing gocryptfs {} ({}) into {:?}",
+            GOCRYPTFS_VERSION, arch, bin_dir
+        );
+
+        let downloads_dir = build_helpers::cache_dir("downloads");
+        let archive_path = downloads_dir.join(format!(
+            "gocryptfs_v{}_linux-static_{}.tar.gz",
+            GOCRYPTFS_VERSION, arch
+        ));
+
+        // Serialize concurrent download/extract attempts so parallel target
+        // builds don't race on the shared archive in the downloads cache.
+        let lock_path = downloads_dir.join(format!(".gocryptfs-{}.lock", arch));
+        let _lock = build_helpers::acquire_file_lock(&lock_path);
+
+        if !download_gocryptfs_archive(&archive_path, GOCRYPTFS_VERSION, arch, expected_sha256) {
+            return false;
+        }
+
+        if let Err(e) = std::fs::create_dir_all(&bin_dir) {
+            println!(
+                "cargo:warning=Failed to create gocryptfs install directory {:?}: {}",
+                bin_dir, e
+            );
+            return false;
+        }
+
+        if !extract_gocryptfs_binaries(&archive_path, &bin_dir) {
+            return false;
+        }
+
+        // Clean up the archive — only useful for the one-shot install.
+        std::fs::remove_file(&archive_path).ok();
+
+        if !gocryptfs_bin.exists() {
+            println!(
+                "cargo:warning=gocryptfs extracted but binary missing at {:?}",
+                gocryptfs_bin
+            );
+            return false;
+        }
+
+        // Sentinel marks the cache as up-to-date for the pinned version.
+        std::fs::write(
+            &sentinel,
+            format!("version={}\narch={}\n", GOCRYPTFS_VERSION, arch),
+        )
+        .unwrap_or_else(|e| panic!("Failed to write gocryptfs sentinel {:?}: {}", sentinel, e));
+
+        true
+    }
+
+    fn download_gocryptfs_archive(
+        dest: &Path,
+        version: &str,
+        arch: &str,
+        expected_sha256: &str,
+    ) -> bool {
+        // Reuse an already-downloaded archive when its checksum still matches.
+        if dest.exists() && build_helpers::verify_sha256(dest, expected_sha256, "gocryptfs archive")
+        {
+            return true;
+        }
+
+        let url = gocryptfs_archive_url(version, arch);
+        let status = Command::new("curl")
+            .args(["-fsSL", &url, "-o"])
+            .arg(dest)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                if !build_helpers::verify_sha256(dest, expected_sha256, "gocryptfs archive") {
+                    std::fs::remove_file(dest).ok();
+                    return false;
+                }
+                true
+            }
+            Ok(s) => {
+                println!(
+                    "cargo:warning=Failed to download gocryptfs from {} (exit: {})",
+                    url, s
+                );
+                false
+            }
+            Err(e) => {
+                println!(
+                    "cargo:warning=Failed to invoke curl for gocryptfs download: {}",
+                    e
+                );
+                false
+            }
+        }
+    }
+
+    /// Extract `gocryptfs` and `gocryptfs-xray` from the release tarball
+    /// directly into `dest_dir` (flattening the archive's flat layout).
+    fn extract_gocryptfs_binaries(archive: &Path, dest_dir: &Path) -> bool {
+        // The gocryptfs release tarball is flat (no leading directory), so a
+        // simple `tar -xzf` into the target dir places the binaries directly.
+        // Restrict to the two binaries — we don't need the manpages.
+        let status = Command::new("tar")
+            .args(["-xzf"])
+            .arg(archive)
+            .arg("-C")
+            .arg(dest_dir)
+            .args(["gocryptfs", "gocryptfs-xray"])
+            .status();
+
+        match status {
+            Ok(s) if s.success() => true,
+            Ok(s) => {
+                println!(
+                    "cargo:warning=Failed to extract gocryptfs binaries (exit: {})",
+                    s
+                );
+                false
+            }
+            Err(e) => {
+                println!(
+                    "cargo:warning=Failed to invoke tar for gocryptfs extract: {}",
+                    e
+                );
+                false
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -632,6 +840,7 @@ echo "=== Apptainer build complete ==="
         println!("cargo:rustc-env=LIMA_TEMPLATE={}", LIMA_TEMPLATE);
         println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
         println!("cargo:rustc-env=LIMA_VERSION={}", LIMA_VERSION);
+        println!("cargo:rustc-env=GOCRYPTFS_VERSION={}", GOCRYPTFS_VERSION);
         println!(
             "cargo:rustc-env=GUEST_APPTAINER_DIR={}",
             GUEST_APPTAINER_DIR
@@ -743,6 +952,12 @@ echo "=== Apptainer build complete ==="
                 "Apptainer build for {} completed but bin/apptainer missing",
                 target
             );
+            assert!(
+                ensure_gocryptfs_installed(&target_cache, target),
+                "Failed to install gocryptfs {} for {}",
+                GOCRYPTFS_VERSION,
+                target
+            );
             write_cache_sentinel(&target_cache, APPTAINER_VERSION);
         }
     }
@@ -783,6 +998,14 @@ echo "=== Apptainer build complete ==="
                 "cargo:warning=Using cached apptainer installation from {:?}",
                 cache_dir
             );
+            // The apptainer cache may pre-date gocryptfs bundling; ensure the
+            // binary is present even when we short-circuit the rest of the build.
+            assert!(
+                ensure_gocryptfs_installed(&cache_dir, arch),
+                "Failed to install gocryptfs {} into cached apptainer dir at {:?}",
+                GOCRYPTFS_VERSION,
+                cache_dir
+            );
             return cache_dir;
         }
 
@@ -791,6 +1014,12 @@ echo "=== Apptainer build complete ==="
             force_remove_dir(&cache_dir);
             copy_dir_recursive(&macos_cache, &cache_dir)
                 .expect("Failed to copy macOS apptainer cache");
+            assert!(
+                ensure_gocryptfs_installed(&cache_dir, arch),
+                "Failed to install gocryptfs {} into apptainer cache for {}",
+                GOCRYPTFS_VERSION,
+                arch
+            );
             write_cache_sentinel(&cache_dir, APPTAINER_VERSION);
             return cache_dir;
         }
@@ -811,6 +1040,12 @@ echo "=== Apptainer build complete ==="
             cache_dir.join("bin/apptainer").exists(),
             "Apptainer source build completed but bin/apptainer not found in {:?}",
             cache_dir
+        );
+        assert!(
+            ensure_gocryptfs_installed(&cache_dir, arch),
+            "Failed to install gocryptfs {} for {}",
+            GOCRYPTFS_VERSION,
+            arch
         );
         write_cache_sentinel(&cache_dir, APPTAINER_VERSION);
 
@@ -858,7 +1093,7 @@ echo "=== Apptainer build complete ==="
         // avoiding mtime bumps that trigger unnecessary recompilation.
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
         let sentinel_path = out_install_dir.join(".copy-source");
-        let sentinel_content = format!("{}", cache_dir.display());
+        let sentinel_content = format!("{}\ngocryptfs={}", cache_dir.display(), GOCRYPTFS_VERSION);
         let needs_copy = !sentinel_path.exists()
             || std::fs::read_to_string(&sentinel_path)
                 .map_or(true, |s| s.trim() != sentinel_content.trim());

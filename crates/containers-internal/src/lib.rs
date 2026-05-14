@@ -10,3 +10,10 @@ pub use error::{Error, Result};
 pub const APPTAINER_VERSION: &str = env!("APPTAINER_VERSION");
 /// Pinned Lima version bundled at build time.
 pub const LIMA_VERSION: &str = env!("LIMA_VERSION");
+/// Pinned gocryptfs version shipped alongside the apptainer install.
+///
+/// Apptainer auto-discovers gocryptfs in `libexec/apptainer/bin/` and uses it
+/// for encrypted overlay/image support, so bundling it lets that feature work
+/// without requiring users to install gocryptfs via their distro package
+/// manager.
+pub const GOCRYPTFS_VERSION: &str = env!("GOCRYPTFS_VERSION");
