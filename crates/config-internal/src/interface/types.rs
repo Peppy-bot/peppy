@@ -103,7 +103,7 @@ where
 /// Rejects empty/whitespace names and duplicates within a single list. Both
 /// states would otherwise survive parsing because the underlying item types
 /// default `name` to `""` for ergonomics in node configs.
-fn validate_named_items<'a>(
+pub(crate) fn validate_named_items<'a>(
     names: impl Iterator<Item = &'a str>,
     kind: &'static str,
 ) -> Result<(), String> {

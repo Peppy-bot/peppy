@@ -78,6 +78,16 @@ pub enum ParsingError {
     #[error("Node config `execution.language` is required when an execution block is defined")]
     MissingExecutionLanguage,
 
+    // -- launcher: interface bindings
+    #[error(
+        "interface binding `{binding}` on instance `{owner_instance_id}` refers to unknown instance_id `{instance_id}`"
+    )]
+    UnknownInstanceId {
+        owner_instance_id: String,
+        binding: String,
+        instance_id: String,
+    },
+
     // -- container config: mount paths
     #[error(
         "Invalid mount path `{0}`: top-level system directories ({1}) cannot be used as mount sources — use a subdirectory instead (e.g., /tmp/my_app)"
@@ -91,9 +101,17 @@ pub enum ParsingError {
 pub enum StructuredError {
     InvalidDeploymentSource(String),
     DuplicateName(String),
-    InvalidName { name: String, allowed: String },
+    InvalidName {
+        name: String,
+        allowed: String,
+    },
     EmptyName,
     MissingExecutionLanguage,
+    UnknownInstanceId {
+        owner_instance_id: String,
+        binding: String,
+        instance_id: String,
+    },
 }
 
 impl StructuredError {
@@ -114,6 +132,15 @@ impl From<StructuredError> for ParsingError {
             }
             StructuredError::EmptyName => ParsingError::EmptyName,
             StructuredError::MissingExecutionLanguage => ParsingError::MissingExecutionLanguage,
+            StructuredError::UnknownInstanceId {
+                owner_instance_id,
+                binding,
+                instance_id,
+            } => ParsingError::UnknownInstanceId {
+                owner_instance_id,
+                binding,
+                instance_id,
+            },
         }
     }
 }

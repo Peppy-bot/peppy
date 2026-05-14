@@ -7,4 +7,5 @@ mod types;
 // Filenames are not fixed; any `.json5` whose body carries the
 // `interface_v1` schema tag is an interface.
 pub use parse::PeppyInterfaceParser;
+pub(crate) use types::validate_named_items;
 pub use types::{Interfaces, Manifest, PeppyInterface};
