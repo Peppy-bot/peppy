@@ -611,8 +611,20 @@ pub struct NodeDependency {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct InterfaceDependency {
+    pub name: Name,
+    pub tag: String,
+    pub local_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DependsOn {
     pub nodes: Vec<NodeDependency>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<InterfaceDependency>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -1640,6 +1652,75 @@ mod tests {
         assert_eq!(deps.nodes[0].local_id, "lidar");
         assert_eq!(deps.nodes[1].name.as_str(), "nav_system");
         assert_eq!(deps.nodes[1].local_id, "navigation");
+        assert!(deps.interfaces.is_empty());
+    }
+
+    #[test]
+    fn depends_on_with_interfaces_full() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [
+                { name: "depth_camera", tag: "0.1.0", sha256: "aaa", local_id: "depth_camera" }
+            ]
+        }"#;
+        let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
+        assert!(deps.nodes.is_empty());
+        assert_eq!(deps.interfaces.len(), 1);
+        assert_eq!(deps.interfaces[0].name.as_str(), "depth_camera");
+        assert_eq!(deps.interfaces[0].tag, "0.1.0");
+        assert_eq!(deps.interfaces[0].local_id, "depth_camera");
+        assert_eq!(deps.interfaces[0].sha256.as_deref(), Some("aaa"));
+    }
+
+    #[test]
+    fn depends_on_with_interfaces_no_sha256() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [
+                { name: "depth_camera", tag: "0.1.0", local_id: "depth_camera" }
+            ]
+        }"#;
+        let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
+        assert_eq!(deps.interfaces.len(), 1);
+        assert!(deps.interfaces[0].sha256.is_none());
+    }
+
+    #[test]
+    fn depends_on_interfaces_requires_name() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [{ tag: "0.1.0", local_id: "depth_camera" }]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    }
+
+    #[test]
+    fn depends_on_interfaces_requires_tag() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [{ name: "depth_camera", local_id: "depth_camera" }]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    }
+
+    #[test]
+    fn depends_on_interfaces_requires_local_id() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [{ name: "depth_camera", tag: "0.1.0" }]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    }
+
+    #[test]
+    fn depends_on_interfaces_rejects_unknown_fields() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [
+                { name: "depth_camera", tag: "0.1.0", local_id: "depth_camera", extra: "bad" }
+            ]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
     }
 
     #[test]
