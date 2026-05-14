@@ -8,6 +8,6 @@ pub use add::{RepoAddRequest, RepoAddResponse, RepoSource, RepoSourceKind};
 pub use exclude::{RepoExcludeRequest, RepoExcludeResponse};
 pub use list::{RepoListNodeEntry, RepoListRequest, RepoListResponse};
 pub use refresh::{
-    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
+    RepoItemKind, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
 };
 pub use remove::{RepoRemoveRequest, RepoRemoveResponse};

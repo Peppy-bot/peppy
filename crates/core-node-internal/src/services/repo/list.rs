@@ -110,22 +110,9 @@ fn handle_repo_list_request_inner(
                     continue;
                 }
                 let repo_label = path.to_string_lossy().into_owned();
-                let mut repo_seen = HashSet::new();
-                let mut discovered = Vec::new();
-                let mut launchers_seen = HashSet::new();
-                let mut launchers = Vec::new();
-                walk_directory(
-                    &path,
-                    RepoSourceKind::Fs,
-                    None,
-                    None,
-                    &mut repo_seen,
-                    &mut discovered,
-                    &mut launchers_seen,
-                    &mut launchers,
-                    &exclusions.fs_paths,
-                );
-                for node in discovered {
+                let walked =
+                    walk_directory(&path, RepoSourceKind::Fs, None, None, &exclusions.fs_paths);
+                for node in walked.nodes {
                     let key = (node.node_name.clone(), node.node_tag.clone());
                     let duplicate = !global_seen.insert(key);
                     all_entries.push(RepoListNodeEntry {

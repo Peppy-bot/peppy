@@ -70,16 +70,59 @@ impl RepoRefreshGoalResponse {
     }
 }
 
-/// Feedback message for the RepoRefresh action.
-/// Represents a single discovered node or an excluded repository.
+/// Kind of item reported by a `RepoRefreshFeedback`. Carried on the wire
+/// as a lowercase string so the schema stays human-readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RepoItemKind {
+    Node,
+    Launcher,
+    Interface,
+}
+
+impl RepoItemKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RepoItemKind::Node => "node",
+            RepoItemKind::Launcher => "launcher",
+            RepoItemKind::Interface => "interface",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "node" => Some(RepoItemKind::Node),
+            "launcher" => Some(RepoItemKind::Launcher),
+            "interface" => Some(RepoItemKind::Interface),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for RepoItemKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Feedback message for the RepoRefresh action. Carries one of three kinds
+/// of payload, disambiguated by `excluded` / `status_message` / `kind`:
+///   - a discovered item (`kind` set, `item_name`/`item_tag`/`path`/`sha256` populated),
+///   - an excluded repository (`excluded == true`, `path` carries the identity),
+///   - a progress update (`status_message` non-empty).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRefreshFeedback {
-    pub node_name: String,
-    pub node_tag: String,
+    pub item_name: String,
+    pub item_tag: String,
+    /// `Some` when reporting a discovered item; `None` for excluded /
+    /// progress feedback.
+    pub kind: Option<RepoItemKind>,
     pub source_type: RepoSourceKind,
-    /// Absolute path (fs) or relative path within repo (git)
+    /// For node and interface items, the absolute (fs) or repo-relative
+    /// (git) path to the manifest file. For launchers, the same. For
+    /// exclusions, the repository identity.
     pub path: String,
-    /// `true` when this feedback represents an excluded repository.
+    /// SHA-256 of the manifest bytes. Empty for exclusion / progress.
+    pub sha256: String,
     pub excluded: bool,
     /// Non-empty when this feedback is a progress/status update emitted
     /// during the scan (e.g. "Cloning <url>"). When non-empty, the other
@@ -88,17 +131,71 @@ pub struct RepoRefreshFeedback {
 }
 
 impl RepoRefreshFeedback {
-    pub fn new(
-        node_name: impl Into<String>,
-        node_tag: impl Into<String>,
+    pub fn new_node(
+        item_name: impl Into<String>,
+        item_tag: impl Into<String>,
         source_type: RepoSourceKind,
         path: impl Into<String>,
+        sha256: impl Into<String>,
+    ) -> Self {
+        Self::new_item(
+            RepoItemKind::Node,
+            item_name,
+            item_tag,
+            source_type,
+            path,
+            sha256,
+        )
+    }
+
+    pub fn new_launcher(
+        item_name: impl Into<String>,
+        source_type: RepoSourceKind,
+        path: impl Into<String>,
+        sha256: impl Into<String>,
+    ) -> Self {
+        Self::new_item(
+            RepoItemKind::Launcher,
+            item_name,
+            String::new(),
+            source_type,
+            path,
+            sha256,
+        )
+    }
+
+    pub fn new_interface(
+        item_name: impl Into<String>,
+        item_tag: impl Into<String>,
+        source_type: RepoSourceKind,
+        path: impl Into<String>,
+        sha256: impl Into<String>,
+    ) -> Self {
+        Self::new_item(
+            RepoItemKind::Interface,
+            item_name,
+            item_tag,
+            source_type,
+            path,
+            sha256,
+        )
+    }
+
+    fn new_item(
+        kind: RepoItemKind,
+        item_name: impl Into<String>,
+        item_tag: impl Into<String>,
+        source_type: RepoSourceKind,
+        path: impl Into<String>,
+        sha256: impl Into<String>,
     ) -> Self {
         Self {
-            node_name: node_name.into(),
-            node_tag: node_tag.into(),
+            item_name: item_name.into(),
+            item_tag: item_tag.into(),
+            kind: Some(kind),
             source_type,
             path: path.into(),
+            sha256: sha256.into(),
             excluded: false,
             status_message: String::new(),
         }
@@ -107,10 +204,12 @@ impl RepoRefreshFeedback {
     /// Create a feedback entry representing an excluded repository.
     pub fn new_excluded(source_type: RepoSourceKind, identity: impl Into<String>) -> Self {
         Self {
-            node_name: String::new(),
-            node_tag: String::new(),
+            item_name: String::new(),
+            item_tag: String::new(),
+            kind: None,
             source_type,
             path: identity.into(),
+            sha256: String::new(),
             excluded: true,
             status_message: String::new(),
         }
@@ -119,10 +218,12 @@ impl RepoRefreshFeedback {
     /// Create a progress feedback carrying a free-form status message.
     pub fn new_progress(message: impl Into<String>) -> Self {
         Self {
-            node_name: String::new(),
-            node_tag: String::new(),
+            item_name: String::new(),
+            item_tag: String::new(),
+            kind: None,
             source_type: RepoSourceKind::Fs,
             path: String::new(),
+            sha256: String::new(),
             excluded: false,
             status_message: message.into(),
         }
@@ -132,10 +233,12 @@ impl RepoRefreshFeedback {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
-            feedback.set_node_name(&self.node_name);
-            feedback.set_node_tag(&self.node_tag);
+            feedback.set_item_name(&self.item_name);
+            feedback.set_item_tag(&self.item_tag);
+            feedback.set_kind(self.kind.map(|k| k.as_str()).unwrap_or(""));
             feedback.set_source_type(self.source_type.as_str());
             feedback.set_path(&self.path);
+            feedback.set_sha256(&self.sha256);
             feedback.set_excluded(self.excluded);
             feedback.set_status_message(&self.status_message);
         }
@@ -149,11 +252,21 @@ impl RepoRefreshFeedback {
         let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
             crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
         })?;
+        let kind_str = feedback.get_kind()?.to_str()?;
+        let kind = if kind_str.is_empty() {
+            None
+        } else {
+            Some(RepoItemKind::parse(kind_str).ok_or_else(|| {
+                crate::Error::Decoding(format!("unknown repo item kind: {kind_str}"))
+            })?)
+        };
         Ok(Self {
-            node_name: feedback.get_node_name()?.to_str()?.to_owned(),
-            node_tag: feedback.get_node_tag()?.to_str()?.to_owned(),
+            item_name: feedback.get_item_name()?.to_str()?.to_owned(),
+            item_tag: feedback.get_item_tag()?.to_str()?.to_owned(),
+            kind,
             source_type,
             path: feedback.get_path()?.to_str()?.to_owned(),
+            sha256: feedback.get_sha256()?.to_str()?.to_owned(),
             excluded: feedback.get_excluded(),
             status_message: feedback.get_status_message()?.to_str()?.to_owned(),
         })
@@ -167,15 +280,21 @@ pub struct RepoRefreshResult {
     pub error_message: Option<String>,
     pub total_nodes_found: u32,
     pub total_launchers_found: u32,
+    pub total_interfaces_found: u32,
 }
 
 impl RepoRefreshResult {
-    pub fn success(total_nodes_found: u32, total_launchers_found: u32) -> Self {
+    pub fn success(
+        total_nodes_found: u32,
+        total_launchers_found: u32,
+        total_interfaces_found: u32,
+    ) -> Self {
         Self {
             success: true,
             error_message: None,
             total_nodes_found,
             total_launchers_found,
+            total_interfaces_found,
         }
     }
 
@@ -185,6 +304,7 @@ impl RepoRefreshResult {
             error_message: Some(message.into()),
             total_nodes_found: 0,
             total_launchers_found: 0,
+            total_interfaces_found: 0,
         }
     }
 
@@ -198,6 +318,7 @@ impl RepoRefreshResult {
             }
             result.set_total_nodes_found(self.total_nodes_found);
             result.set_total_launchers_found(self.total_launchers_found);
+            result.set_total_interfaces_found(self.total_interfaces_found);
         }
         encode_message(&builder)
     }
@@ -210,6 +331,7 @@ impl RepoRefreshResult {
             error_message: optional_text(result.get_error_message()?.to_str()?),
             total_nodes_found: result.get_total_nodes_found(),
             total_launchers_found: result.get_total_launchers_found(),
+            total_interfaces_found: result.get_total_interfaces_found(),
         })
     }
 }

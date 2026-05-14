@@ -78,7 +78,7 @@ mod tests {
         let result = PeppyInterfaceParser::from_path("/path/does/not/exist.json5");
         assert!(matches!(
             result.unwrap_err(),
-            Error::Parsing(ParsingError::CannotRead(_))
+            Error::Parsing(ParsingError::CannotRead(..))
         ));
     }
 

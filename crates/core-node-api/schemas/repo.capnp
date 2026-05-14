@@ -43,12 +43,22 @@ struct RepoRefreshGoalResponse {
 }
 
 struct RepoRefreshFeedback {
-    nodeName @0 :Text;
-    nodeTag @1 :Text;
+    # Name of the discovered item (node, launcher, or interface).
+    itemName @0 :Text;
+    # Tag of the discovered item. Empty for launchers (which have no tag).
+    itemTag @1 :Text;
+    # Kind of item being reported: "node", "launcher", or "interface".
+    # Empty when `excluded` is true or `statusMessage` is non-empty.
+    kind @6 :Text;
     # "fs", "git", or "url"
     sourceType @2 :Text;
-    # Absolute path (fs) or relative path within repo (git)
+    # Absolute path (fs) or relative path within repo (git). For node and
+    # interface items this points at the manifest file itself, matching
+    # launcher semantics.
     path @3 :Text;
+    # SHA-256 of the manifest file bytes. Empty when this feedback is an
+    # exclusion or a progress update.
+    sha256 @7 :Text;
     # True when this feedback represents an excluded repository
     excluded @4 :Bool;
     # Non-empty when this feedback is a progress/status update (e.g.
@@ -61,6 +71,7 @@ struct RepoRefreshResult {
     errorMessage @1 :Text;
     totalNodesFound @2 :UInt32;
     totalLaunchersFound @3 :UInt32;
+    totalInterfacesFound @4 :UInt32;
 }
 
 # ── Repo List (request-response) ────────────────────────────────

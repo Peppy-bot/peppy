@@ -18,4 +18,10 @@
     url: "https://github.com/Peppy-bot/openarm01_nodes.git",
     ref: "main"
   },
+  {
+    id: 1003,
+    type: "git",
+    url: "https://github.com/Peppy-bot/interfaces_hub",
+    ref: "main"
+  },
 ]

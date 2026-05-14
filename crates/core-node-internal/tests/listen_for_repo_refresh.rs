@@ -204,8 +204,8 @@ async fn refresh_fs_discovers_nodes() {
         .filter(|f| !f.excluded && f.status_message.is_empty())
         .collect();
     assert_eq!(discovered.len(), 1, "should receive 1 discovered feedback");
-    assert_eq!(discovered[0].node_name, "my_sensor");
-    assert_eq!(discovered[0].node_tag, "1.0.0");
+    assert_eq!(discovered[0].item_name, "my_sensor");
+    assert_eq!(discovered[0].item_tag, "1.0.0");
     assert_eq!(discovered[0].source_type, RepoSourceKind::Fs);
 }
 
@@ -239,7 +239,7 @@ async fn refresh_multiple_nodes() {
         .filter(|f| !f.excluded && f.status_message.is_empty())
         .collect();
     assert_eq!(discovered.len(), 2, "should receive 2 discovered feedbacks");
-    let names: Vec<&str> = discovered.iter().map(|f| f.node_name.as_str()).collect();
+    let names: Vec<&str> = discovered.iter().map(|f| f.item_name.as_str()).collect();
     assert!(names.contains(&"node_a"), "should contain node_a");
     assert!(names.contains(&"node_b"), "should contain node_b");
 }
@@ -285,8 +285,8 @@ async fn refresh_deduplication() {
         1,
         "should receive exactly 1 feedback for deduplicated node"
     );
-    assert_eq!(discovered[0].node_name, "dup_node");
-    assert_eq!(discovered[0].node_tag, "0.1.0");
+    assert_eq!(discovered[0].item_name, "dup_node");
+    assert_eq!(discovered[0].item_tag, "0.1.0");
     assert!(
         discovered[0].path.contains("repo_a"),
         "first listed repo should take precedence, path was: {}",
@@ -403,7 +403,7 @@ async fn refresh_cache_written() {
 
     assert_eq!(git_entry["node_name"], "git_node");
     assert_eq!(git_entry["node_tag"], "1.0.0");
-    assert_eq!(git_entry["path"], "nodes/git_node");
+    assert_eq!(git_entry["path"], "nodes/git_node/peppy.json5");
     assert_eq!(git_entry["source_uri"], git_repo_url);
     let resolved_ref = git_entry
         .get("resolved_ref")
@@ -415,10 +415,11 @@ async fn refresh_cache_written() {
     );
 }
 
-/// When two repositories provide the same node, the cache should contain both
-/// entries — the first as non-duplicate and the second marked as duplicate.
-/// The total_nodes_found count should only reflect unique (non-duplicate) nodes
-/// and feedback should only be emitted for non-duplicates.
+/// When two repositories provide the same node, the cache should contain
+/// both entries. Both carry a `sha256` content fingerprint, and lookup
+/// picks the entry from the highest-priority (lowest-id) repository.
+/// `total_nodes_found` reflects the unique `(name, tag)` count; feedback
+/// is emitted once per unique node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_cache_includes_duplicates() {
     let started = start_core_node_with_real_messenger().await;
@@ -447,7 +448,8 @@ async fn refresh_cache_includes_duplicates() {
         "unique node count should be 2 (shared_node + unique_node)"
     );
 
-    // Feedback should only contain non-duplicate entries
+    // Feedback is emitted once per unique (name, tag) — the second
+    // repo's shared_node is silently cached but not re-announced.
     let discovered: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
@@ -458,18 +460,19 @@ async fn refresh_cache_includes_duplicates() {
         2,
         "should receive 2 discovered feedbacks (one per unique node)"
     );
-    let feedback_names: Vec<&str> = discovered.iter().map(|f| f.node_name.as_str()).collect();
+    let feedback_names: Vec<&str> = discovered.iter().map(|f| f.item_name.as_str()).collect();
     assert!(feedback_names.contains(&"shared_node"));
     assert!(feedback_names.contains(&"unique_node"));
 
-    // Cache should contain all 3 entries (including the duplicate)
+    // Cache keeps both `shared_node` entries (no `duplicate` flag; the
+    // `sha256` field tells them apart for users who need to pick one).
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
     let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
     assert_eq!(
         entries.len(),
         3,
-        "cache should contain 3 entries (2 unique + 1 duplicate)"
+        "cache should contain 3 entries (both shared_node copies + unique_node)"
     );
 
     let shared_entries: Vec<&serde_json::Value> = entries
@@ -481,24 +484,31 @@ async fn refresh_cache_includes_duplicates() {
         2,
         "shared_node should appear twice in cache"
     );
-
-    let primary = shared_entries
-        .iter()
-        .find(|e| e.get("duplicate").is_none())
-        .expect("should have a non-duplicate shared_node");
     assert!(
-        primary["path"].as_str().unwrap().contains("dup_cache_a"),
-        "primary should be from repo_a (higher priority)"
+        shared_entries
+            .iter()
+            .any(|e| e["path"].as_str().unwrap().contains("dup_cache_a")),
+        "one entry should be from repo_a"
     );
-
-    let dup = shared_entries
-        .iter()
-        .find(|e| e.get("duplicate").and_then(|v| v.as_bool()) == Some(true))
-        .expect("should have a duplicate shared_node");
     assert!(
-        dup["path"].as_str().unwrap().contains("dup_cache_b"),
-        "duplicate should be from repo_b"
+        shared_entries
+            .iter()
+            .any(|e| e["path"].as_str().unwrap().contains("dup_cache_b")),
+        "other entry should be from repo_b"
     );
+    for entry in &shared_entries {
+        assert!(
+            entry.get("duplicate").is_none(),
+            "no entry should carry the legacy `duplicate` flag"
+        );
+        assert!(
+            entry
+                .get("sha256")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty()),
+            "each entry should carry a non-empty sha256 fingerprint"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -583,7 +593,7 @@ async fn refresh_excludes_fs_repo_with_feedback() {
         1,
         "should receive 1 discovered feedback"
     );
-    assert_eq!(discovered_feedbacks[0].node_name, "node_a");
+    assert_eq!(discovered_feedbacks[0].item_name, "node_a");
 }
 
 /// Excluding a subdirectory within an FS repo should prune that subtree
@@ -625,7 +635,7 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
         .filter(|f| !f.excluded && f.status_message.is_empty())
         .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
-    assert_eq!(discovered_feedbacks[0].node_name, "keep_node");
+    assert_eq!(discovered_feedbacks[0].item_name, "keep_node");
 
     let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
         result.feedbacks.iter().filter(|f| f.excluded).collect();
@@ -693,7 +703,7 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
         .filter(|f| !f.excluded && f.status_message.is_empty())
         .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
-    assert_eq!(discovered_feedbacks[0].node_name, "keep_node");
+    assert_eq!(discovered_feedbacks[0].item_name, "keep_node");
 }
 
 /// Excluded repos should not appear in the nodes.json5 cache.
@@ -774,5 +784,76 @@ async fn refresh_excludes_git_repo() {
         .filter(|f| !f.excluded && f.status_message.is_empty())
         .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
-    assert_eq!(discovered_feedbacks[0].node_name, "fs_node");
+    assert_eq!(discovered_feedbacks[0].item_name, "fs_node");
+}
+
+/// End-to-end coverage of interface discovery: refresh writes
+/// `interfaces.json5` with the expected shape (interface_name + tag +
+/// sha256), the result reports the interface count, and feedback
+/// includes the discovered interface tagged with kind = Interface.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_discovers_interfaces() {
+    use core_node::interfaces_repo_cache_path;
+    use core_node_api::encoding::RepoItemKind;
+
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("iface_repo");
+    let iface_dir = repo_dir.join("uvc_camera");
+    std::fs::create_dir_all(&iface_dir).expect("create iface dir");
+    let manifest_body = r#"{
+  peppy_schema: "interface_v1",
+  manifest: { name: "uvc_camera", tag: "0.1.0" },
+  interfaces: {}
+}"#;
+    std::fs::write(iface_dir.join("peppy.json5"), manifest_body).expect("write interface manifest");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(result.result.total_interfaces_found, 1);
+
+    let discovered: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .collect();
+    let iface_fb = discovered
+        .iter()
+        .find(|f| f.kind == Some(RepoItemKind::Interface))
+        .expect("interface discovery feedback");
+    assert_eq!(iface_fb.item_name, "uvc_camera");
+    assert_eq!(iface_fb.item_tag, "0.1.0");
+    assert!(
+        !iface_fb.sha256.is_empty(),
+        "feedback should carry the sha256 fingerprint"
+    );
+
+    let cache_path = interfaces_repo_cache_path(&started.peppy_dirs);
+    assert!(cache_path.exists(), "interfaces cache should be written");
+    let content = std::fs::read_to_string(&cache_path).expect("read interfaces cache");
+    let entries: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse interfaces cache");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["interface_name"], "uvc_camera");
+    assert_eq!(entries[0]["tag"], "0.1.0");
+    assert_eq!(entries[0]["source_type"], "fs");
+    assert!(
+        entries[0]["path"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("uvc_camera/peppy.json5")),
+        "path should point at the manifest file: {:?}",
+        entries[0]["path"]
+    );
+    assert!(
+        entries[0]["sha256"].as_str().is_some_and(|s| !s.is_empty()),
+        "sha256 should be non-empty"
+    );
 }

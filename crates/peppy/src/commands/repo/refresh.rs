@@ -91,21 +91,32 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
     }
 
     info!(
-        "Repository refresh complete. {} node(s), {} launcher(s) found.",
-        result.total_nodes_found, result.total_launchers_found
+        "Repository refresh complete. {} node(s), {} launcher(s), {} interface(s) found.",
+        result.total_nodes_found, result.total_launchers_found, result.total_interfaces_found
     );
     Ok(())
 }
 
 fn format_refresh_line(feedback: &RepoRefreshFeedback) -> String {
     if !feedback.status_message.is_empty() {
-        feedback.status_message.clone()
-    } else if feedback.excluded {
-        format!("Excluded {} ({})", feedback.path, feedback.source_type)
+        return feedback.status_message.clone();
+    }
+    if feedback.excluded {
+        return format!("Excluded {} ({})", feedback.path, feedback.source_type);
+    }
+    let kind = feedback
+        .kind
+        .map(|k| k.to_string())
+        .unwrap_or_else(|| "item".to_string());
+    if feedback.item_tag.is_empty() {
+        format!(
+            "Found {} {} ({}, {})",
+            kind, feedback.item_name, feedback.source_type, feedback.path
+        )
     } else {
         format!(
-            "Found {}:{} ({}, {})",
-            feedback.node_name, feedback.node_tag, feedback.source_type, feedback.path
+            "Found {} {}:{} ({}, {})",
+            kind, feedback.item_name, feedback.item_tag, feedback.source_type, feedback.path
         )
     }
 }

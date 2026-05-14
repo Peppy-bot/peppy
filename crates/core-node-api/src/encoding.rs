@@ -27,8 +27,8 @@ pub use node::{
 };
 pub use ping::{PingRequest, PingResponse};
 pub use repo::{
-    RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoListNodeEntry,
-    RepoListRequest, RepoListResponse, RepoRefreshFeedback, RepoRefreshGoal,
+    RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoItemKind,
+    RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoRefreshFeedback, RepoRefreshGoal,
     RepoRefreshGoalResponse, RepoRefreshResult, RepoRemoveRequest, RepoRemoveResponse, RepoSource,
     RepoSourceKind,
 };

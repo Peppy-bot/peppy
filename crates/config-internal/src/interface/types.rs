@@ -270,8 +270,8 @@ mod tests {
             manifest: { name: "x", tag: "0.1.0" },
             interfaces: {}
         }"#;
-        let err = serde_json5::from_str::<PeppyInterface>(json5)
-            .expect_err("node_v1 must be rejected");
+        let err =
+            serde_json5::from_str::<PeppyInterface>(json5).expect_err("node_v1 must be rejected");
         assert!(
             err.to_string().contains("interface_v1"),
             "error should mention expected schema, got: {err}"
@@ -350,8 +350,8 @@ mod tests {
                 topics: [ { qos_profile: "standard" } ]
             }
         }"#;
-        let err =
-            serde_json5::from_str::<PeppyInterface>(json5).expect_err("empty name must be rejected");
+        let err = serde_json5::from_str::<PeppyInterface>(json5)
+            .expect_err("empty name must be rejected");
         assert!(err.to_string().contains("empty"), "error: {err}");
     }
 

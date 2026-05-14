@@ -431,7 +431,9 @@ async fn node_sync_with_include_repositories_prints_provenance() {
         "node_name": "uvc_camera",
         "node_tag": "0.1.0",
         "source_type": "fs",
-        "path": camera_dir.path().to_string_lossy(),
+        // `path` now points at the manifest file itself; the daemon's
+        // materialize step derives the directory via `.parent()`.
+        "path": camera_dir.path().join("peppy.json5").to_string_lossy(),
     }]);
     std::fs::write(
         nodes_repo_cache_path(&peppy_dirs),
