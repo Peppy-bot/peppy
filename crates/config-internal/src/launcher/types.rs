@@ -11,16 +11,16 @@ use std::{
 
 pub use crate::source::{
     DeploymentGitSource, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
-    DeploymentUrlSource, VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
+    DeploymentUrlSource,
 };
 
 /// Schema identifier embedded at the root of node and launcher `.json5`
-/// documents. The variant tells the daemon which document shape it is reading
-/// so the strict deserializer can reject mixed-up files (e.g. a launcher that
-/// claims to be a node config). Node files are always named `peppy.json5`;
-/// launcher files conventionally use `peppy_launcher.json5` for standalone
-/// projects but may use any `.json5` filename when discovered through a
-/// repository.
+/// documents. The schema tag tells the daemon which document shape it is
+/// reading so the strict deserializer can reject mixed-up files (e.g. a
+/// launcher that claims to be a node config). Node files are always named
+/// `peppy.json5`; launcher files conventionally use `peppy_launcher.json5`
+/// for standalone projects but may use any `.json5` filename when discovered
+/// through a repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeppySchema {

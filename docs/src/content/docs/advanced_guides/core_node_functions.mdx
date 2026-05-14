@@ -95,7 +95,7 @@ The second argument is a timeout. Rust accepts anything that converts to `Option
 - `graph` — the node graph, with every node's metadata and its running instances.
 - `dot_graph` — an optional Graphviz DOT rendering, populated only when the second argument (`with_dot_graph`) is `true`. Pass `false` to skip the rendering when you only need the structured graph.
 
-Each node entry carries its `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), optional `variant_name`, and its `instances`.
+Each node entry carries its `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), and its `instances`.
 Each instance has an `instance_id` and a `state` (`starting` or `running`).
 The graph's `edges` list the dependency relationships, with each edge pointing from one node entry to another.
 

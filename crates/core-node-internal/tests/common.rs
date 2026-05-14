@@ -425,8 +425,6 @@ async fn send_node_add_and_wait_internal<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
-    variant: Option<NodeSource>,
-    dep_variant_overrides: Vec<core_node_api::encoding::DepVariantOverride>,
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
@@ -435,18 +433,7 @@ async fn send_node_add_and_wait_internal<'a>(
 ) -> Result<NodeAddResult, String> {
     let source = source.into();
 
-    // Dep-variant overrides are only representable on RepoNode sources.
-    // If a test supplies them with any other source kind, that is a bug in
-    // the test — fail loudly instead of silently dropping them and
-    // running down the wrong code path.
-    if !dep_variant_overrides.is_empty() && !matches!(source, NodeAddSource::RepoNode { .. }) {
-        return Err(format!(
-            "dep_variant_overrides only allowed with RepoNode sources, got {:?}",
-            source
-        ));
-    }
-
-    let mut goal = match &source {
+    let goal = match &source {
         NodeAddSource::Path(path) => {
             // For directory sources, ensure the git hash file exists. Archive sources must
             // already contain the expected git hash within the bundle.
@@ -469,10 +456,6 @@ async fn send_node_add_and_wait_internal<'a>(
                         )
                     })?;
                 }
-
-                // git.hash verification always targets the root source path
-                // (alongside the peppy.json5 with the manifest), so no
-                // provisioning is needed in variant directories.
             }
             NodeAddGoal::new(path, TEST_GIT_HASH, result_timeout.as_secs())
         }
@@ -494,22 +477,13 @@ async fn send_node_add_and_wait_internal<'a>(
             result_timeout.as_secs(),
         ),
         NodeAddSource::RepoNode { name, tag } => {
-            let mut src = NodeSource::repo_node(*name, *tag)
+            let src = NodeSource::repo_node(*name, *tag)
                 .map_err(|e| format!("invalid repo-node source in test: {e}"))?;
-            if !dep_variant_overrides.is_empty() {
-                src = src
-                    .with_dep_variant_overrides(dep_variant_overrides.clone())
-                    .map_err(|e| format!("invalid dep-variant override in test: {e}"))?;
-            }
             NodeAddGoal::from_source(src, TEST_GIT_HASH, result_timeout.as_secs())
         }
     }
     .with_env_vars(env_vars)
     .with_force(force);
-
-    if let Some(v) = variant {
-        goal = goal.with_variant_source(v);
-    }
 
     let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
         ("*", "*")
@@ -761,8 +735,6 @@ pub async fn send_node_add_and_wait<'a>(
         messenger,
         core_node_name,
         source,
-        None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -785,62 +757,10 @@ pub async fn send_node_add_and_wait_with_env<'a>(
         messenger,
         core_node_name,
         source,
-        None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,
         env_vars,
-        false,
-    )
-    .await
-}
-
-pub async fn send_node_add_and_wait_with_variant<'a>(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
-    source: impl Into<NodeAddSource<'a>>,
-    variant: &str,
-    goal_timeout: Duration,
-    result_timeout: Duration,
-    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-) -> Result<NodeAddResult, String> {
-    send_node_add_and_wait_internal(
-        messenger,
-        core_node_name,
-        source,
-        Some(NodeSource::Fs(PathBuf::from(variant))),
-        Vec::new(),
-        goal_timeout,
-        result_timeout,
-        feedback_tx,
-        Vec::new(),
-        false,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-pub async fn send_node_add_and_wait_with_dep_overrides<'a>(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
-    source: impl Into<NodeAddSource<'a>>,
-    variant: Option<&str>,
-    dep_overrides: Vec<core_node_api::encoding::DepVariantOverride>,
-    goal_timeout: Duration,
-    result_timeout: Duration,
-    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-) -> Result<NodeAddResult, String> {
-    send_node_add_and_wait_internal(
-        messenger,
-        core_node_name,
-        source,
-        variant.map(|v| NodeSource::Fs(PathBuf::from(v))),
-        dep_overrides,
-        goal_timeout,
-        result_timeout,
-        feedback_tx,
-        Vec::new(),
         false,
     )
     .await
@@ -860,13 +780,7 @@ impl TestPackagesCache {
         Self::default()
     }
 
-    pub fn fs_entry(
-        mut self,
-        name: &str,
-        tag: &str,
-        absolute_path: impl AsRef<Path>,
-        variants: &[&str],
-    ) -> Self {
+    pub fn fs_entry(mut self, name: &str, tag: &str, absolute_path: impl AsRef<Path>) -> Self {
         let mut m = serde_json::Map::new();
         m.insert("node_name".into(), serde_json::Value::String(name.into()));
         m.insert("node_tag".into(), serde_json::Value::String(tag.into()));
@@ -875,17 +789,6 @@ impl TestPackagesCache {
             "path".into(),
             serde_json::Value::String(absolute_path.as_ref().to_string_lossy().into_owned()),
         );
-        if !variants.is_empty() {
-            m.insert(
-                "variants".into(),
-                serde_json::Value::Array(
-                    variants
-                        .iter()
-                        .map(|v| serde_json::Value::String((*v).into()))
-                        .collect(),
-                ),
-            );
-        }
         self.entries.push(serde_json::Value::Object(m));
         self
     }
@@ -897,7 +800,6 @@ impl TestPackagesCache {
         repo_url: &str,
         resolved_ref: &str,
         path_in_repo: &str,
-        variants: &[&str],
     ) -> Self {
         let mut m = serde_json::Map::new();
         m.insert("node_name".into(), serde_json::Value::String(name.into()));
@@ -918,17 +820,6 @@ impl TestPackagesCache {
             "path".into(),
             serde_json::Value::String(path_in_repo.into()),
         );
-        if !variants.is_empty() {
-            m.insert(
-                "variants".into(),
-                serde_json::Value::Array(
-                    variants
-                        .iter()
-                        .map(|v| serde_json::Value::String((*v).into()))
-                        .collect(),
-                ),
-            );
-        }
         self.entries.push(serde_json::Value::Object(m));
         self
     }
@@ -988,8 +879,6 @@ pub async fn send_node_add_then_build<'a>(
         messenger,
         core_node_name,
         source,
-        None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         None,
@@ -1037,8 +926,6 @@ pub async fn send_node_add_and_wait_with_force<'a>(
         messenger,
         core_node_name,
         source,
-        None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,

@@ -14,7 +14,7 @@ use super::super::sanitize_repo_path;
 use super::{ensure_bundle, ensure_checkout};
 use crate::services::repo::cache::NodeCacheEntry;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
-use config::node::{NodeConfigParser, ParsedNodeConfig};
+use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::RepoSourceKind;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -47,7 +47,7 @@ pub(crate) async fn materialize_entry(
     peppy_dirs: &PeppyDirs,
     cache_generation: Option<SystemTime>,
     on_feedback: MaterializeFeedback,
-) -> Result<(PathBuf, ParsedNodeConfig), String> {
+) -> Result<(PathBuf, NodeConfig), String> {
     let root_dir = match entry.source_type {
         RepoSourceKind::Fs => PathBuf::from(&entry.path),
         RepoSourceKind::Git => {

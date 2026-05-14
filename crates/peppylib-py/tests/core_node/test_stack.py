@@ -22,7 +22,6 @@ def _sample_graph_json() -> str:
         "artifact_path": None,
         "stage": "Ready",
         "instances": [{"instance_id": "i1", "state": "running"}],
-        "variant_name": "default",
     }
     sensor = {
         "name": "sensor",
@@ -31,7 +30,6 @@ def _sample_graph_json() -> str:
         "artifact_path": None,
         "stage": "Added",
         "instances": [],
-        "variant_name": None,
     }
     graph = {
         "nodes": [brain, sensor],

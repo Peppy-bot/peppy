@@ -8,7 +8,7 @@ use crate::services::node::{
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
-use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, VariantSource};
+use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
@@ -211,24 +211,17 @@ impl NodeKey {
 struct PlannedDeployment {
     deployment: Deployment,
     source: NodeSource,
-    variant: Option<NodeSource>,
     node_name: String,
     node_tag: String,
     config: config::node::NodeConfig,
 }
 
 fn deployment_label(deployment: &Deployment) -> String {
-    let base = match &deployment.source {
+    match &deployment.source {
         DeploymentSource::Local(spec) => format!("local:{}", spec.local.display()),
         DeploymentSource::Git(spec) => format!("git:{}@{}:{}", spec.repo, spec.ref_, spec.path),
         DeploymentSource::Url(spec) => format!("url:{}", spec.url),
         DeploymentSource::Repo(spec) => format!("repo:{}:{}", spec.name, spec.tag),
-    };
-    match deployment.source.variant() {
-        Some(VariantSource::Name(v)) => format!("{base} [variant:{name}]", name = v.name),
-        Some(VariantSource::Git(v)) => format!("{base} [variant:git:{}]", v.repo),
-        Some(VariantSource::Url(v)) => format!("{base} [variant:url:{}]", v.url),
-        None => base,
     }
 }
 
@@ -242,7 +235,7 @@ fn node_source_from_deployment_source(
     deployment: &Deployment,
     nodes_directory: &std::path::Path,
     peppy_dirs: &PeppyDirs,
-) -> std::result::Result<(NodeSource, Option<NodeSource>), String> {
+) -> std::result::Result<NodeSource, String> {
     let source = match &deployment.source {
         DeploymentSource::Local(spec) => {
             let resolved = if spec.local.is_absolute() {
@@ -273,37 +266,7 @@ fn node_source_from_deployment_source(
         )?,
     };
 
-    let variant = deployment
-        .source
-        .variant()
-        .map(variant_source_to_node_source)
-        .transpose()?;
-
-    Ok((source, variant))
-}
-
-fn variant_source_to_node_source(
-    variant: &VariantSource,
-) -> std::result::Result<NodeSource, String> {
-    match variant {
-        VariantSource::Name(v) => Ok(NodeSource::Fs(std::path::PathBuf::from(&v.name))),
-        VariantSource::Git(v) => {
-            let repo_url = git_url_from_repo(&v.repo)?;
-            Ok(NodeSource::Git {
-                repo_url,
-                repo_path: v.path.clone().unwrap_or_default(),
-                repo_ref: v.ref_.clone(),
-            })
-        }
-        VariantSource::Url(v) => {
-            let url = url::Url::parse(&v.url)
-                .map_err(|e| format!("invalid variant HTTP URL `{}`: {e}", v.url))?;
-            Ok(NodeSource::Http {
-                url,
-                sha256: v.sha256.clone(),
-            })
-        }
-    }
+    Ok(source)
 }
 
 /// Marker git_hash used for stack-launch operations.
@@ -924,7 +887,7 @@ async fn resolve_deployments(
             continue;
         }
 
-        let (source, variant) =
+        let source =
             match node_source_from_deployment_source(&deployment, nodes_directory, &ctx.peppy_dirs)
             {
                 Ok(result) => result,
@@ -986,7 +949,6 @@ async fn resolve_deployments(
         planned.push(PlannedDeployment {
             deployment,
             source,
-            variant,
             node_name,
             node_tag,
             config,
@@ -1235,11 +1197,6 @@ async fn add_nodes_to_stack(
         let node_add_goal =
             NodeAddGoal::for_internal_execution(item.source.clone(), STACK_LAUNCH_GIT_HASH)
                 .with_env_vars(ctx.env_vars.clone());
-
-        let node_add_goal = match item.variant {
-            Some(ref variant) => node_add_goal.with_variant_source(variant.clone()),
-            None => node_add_goal,
-        };
 
         let (result, log_path) = add_node_directly(ctx, node_add_goal).await;
 

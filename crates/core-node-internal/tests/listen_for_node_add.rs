@@ -5,8 +5,8 @@ mod common;
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, build_staged_node,
     create_tar_zst_from_dir, send_node_add_and_wait, send_node_add_and_wait_with_force,
-    send_node_add_and_wait_with_variant, spawn_real_running_instance, spawn_real_stuck_instance,
-    start_core_node_with_mock_messenger, wait_until_service_reachable, write_peppy_json5,
+    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    wait_until_service_reachable, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
@@ -75,10 +75,29 @@ fn minimal_node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
                 tag: "{tag}",
                 {depends_on}
             }},
+            interfaces: {{}},
             execution: {{
                 language: "rust",
                 run_cmd: ["sleep", "10"]
             }}
+        }}"#
+    )
+}
+
+/// Builds a `peppy.json5` document with a custom `execution` body. Use when
+/// the shape of `minimal_node_config` doesn't fit (e.g. a different
+/// `run_cmd`, an added `build_cmd`, or no `run_cmd` at all). The interfaces
+/// block is always `{}`.
+fn node_config_with_execution(name: &str, tag: &str, execution_body: &str) -> String {
+    format!(
+        r#"{{
+            peppy_schema: "node_v1",
+            manifest: {{
+                name: "{name}",
+                tag: "{tag}",
+            }},
+            interfaces: {{}},
+            execution: {execution_body}
         }}"#
     )
 }
@@ -294,7 +313,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
 }
 
 /// Creates a git repository containing a single invalid `peppy.json5`
-/// (missing required `execution` field and no default variant).
+/// (missing required `execution` field).
 fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
     let repo_path = base_path.join("invalid_config_repo.git");
     std::fs::create_dir_all(&repo_path).expect("create repo dir");
@@ -304,7 +323,7 @@ fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
 
     let config_rel = Path::new("nodes/bad_node/peppy.json5");
     std::fs::create_dir_all(repo_path.join("nodes/bad_node")).expect("create node dir");
-    // Invalid config: has manifest but no execution and no default variant.
+    // Invalid config: has manifest but no execution.
     std::fs::write(
         repo_path.join(config_rel),
         r#"{
@@ -348,9 +367,6 @@ mod failures;
 
 #[path = "listen_for_node_add/replacement_and_lifecycle.rs"]
 mod replacement_and_lifecycle;
-
-#[path = "listen_for_node_add/variants.rs"]
-mod variants;
 
 #[path = "listen_for_node_add/concurrency_and_force.rs"]
 mod concurrency_and_force;
