@@ -803,7 +803,7 @@ async fn refresh_discovers_interfaces() {
     std::fs::create_dir_all(&iface_dir).expect("create iface dir");
     let manifest_body = r#"{
   peppy_schema: "interface_v1",
-  manifest: { name: "uvc_camera", tag: "0.1.0" },
+  manifest: { name: "uvc_camera", tag: "0.1.0", labels: ["uvc", "camera"] },
   interfaces: {}
 }"#;
     std::fs::write(iface_dir.join("peppy.json5"), manifest_body).expect("write interface manifest");

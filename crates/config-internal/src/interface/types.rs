@@ -31,13 +31,16 @@ pub struct PeppyInterface {
 }
 
 /// Identity of an interface document. Interfaces do not have build/runtime
-/// concerns, so the manifest is intentionally narrower than a node manifest:
-/// `labels` and `depends_on` are rejected.
+/// concerns, so the manifest is narrower than a node manifest: `depends_on`
+/// is rejected because an interface is a passive contract. `labels` are
+/// allowed as descriptive metadata to help discovery and filtering.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: Name,
     pub tag: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
 }
 
 /// The body of an interface document. Each section is a flat list of items
@@ -315,20 +318,26 @@ mod tests {
         assert!(serde_json5::from_str::<PeppyInterface>(json5).is_err());
     }
 
-    /// Same reasoning as `depends_on` — `labels` are a deployment concern,
-    /// not part of an interface contract.
+    /// `labels` are descriptive metadata on the manifest — accepted so
+    /// catalog tooling can filter interfaces (e.g., `vendor`, `domain`)
+    /// without changing the contract itself.
     #[test]
-    fn rejects_manifest_labels() {
+    fn accepts_manifest_labels() {
         let json5 = r#"{
             peppy_schema: "interface_v1",
             manifest: {
                 name: "x",
                 tag: "0.1.0",
-                labels: ["a"]
+                labels: ["a", "b"]
             },
             interfaces: {}
         }"#;
-        assert!(serde_json5::from_str::<PeppyInterface>(json5).is_err());
+        let parsed: PeppyInterface =
+            serde_json5::from_str(json5).expect("labels should be accepted");
+        assert_eq!(
+            parsed.manifest.labels.as_deref(),
+            Some(["a".to_string(), "b".to_string()].as_slice())
+        );
     }
 
     #[test]
@@ -432,6 +441,7 @@ mod tests {
             manifest: Manifest {
                 name: Name::new("camera").unwrap(),
                 tag: "1.2.3".to_string(),
+                labels: Some(vec!["vendor".to_string(), "sensor".to_string()]),
             },
             interfaces: Interfaces {
                 topics: vec![EmittedTopic {
