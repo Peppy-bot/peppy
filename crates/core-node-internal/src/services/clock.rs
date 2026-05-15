@@ -160,6 +160,8 @@ pub async fn publish_clock(
         core_node_name,
         instance_id,
         node_name,
+        "_",
+        "_",
         names::CLOCK,
         QoSProfile::SensorData,
     )
@@ -223,6 +225,8 @@ pub async fn subscribe_external_clock(
         core_node_name,
         instance_id,
         node_name,
+        "_",
+        "_",
         names::CLOCK,
         Some(core_node_name),
         None,

@@ -147,6 +147,8 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         caller_core_node,
         caller_instance_id,
         &started.core_node_name,
+        "_",
+        "_",
         names::CLOCK,
         Some(&started.core_node_name),
         None,

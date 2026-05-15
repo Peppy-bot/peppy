@@ -15,9 +15,10 @@ mod type_mapping;
 
 use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
 use super::types::{
-    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, LanguageGenerator,
-    cancel_action_response_format, non_empty_message_format, validate_fixed_length_array_items,
-    validate_generated_type_name_collisions, validate_message_format_field_names,
+    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, InterfaceOrigin,
+    LanguageGenerator, cancel_action_response_format, non_empty_message_format,
+    validate_fixed_length_array_items, validate_generated_type_name_collisions,
+    validate_message_format_field_names,
 };
 use crate::error::{Error, Result};
 use config::encoding::MessageFormatMapper;
@@ -41,11 +42,41 @@ pub struct PythonGenerator {
     parameters: config::ParameterSchema,
     schemas: HashMap<String, CapnpSchema>,
     is_container: bool,
+    /// See [`super::rust::RustGenerator::current_origin`]: scratch slot
+    /// threaded by `register_with` before each producer-side `add_*` call.
+    current_origin: Option<InterfaceOrigin>,
 }
 
 impl PythonGenerator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn current_origin(&self) -> Option<&InterfaceOrigin> {
+        self.current_origin.as_ref()
+    }
+
+    /// See [`super::rust::RustGenerator::artifact_module_path`] — same idea:
+    /// build the nested path from the optional conforms_to origin, falling
+    /// back to a single-segment leaf when no origin is set.
+    fn artifact_module_path(&self, leaf_name: &str) -> Vec<String> {
+        match self.current_origin() {
+            Some(origin) => vec![
+                origin.iface_name.clone(),
+                crate::generator::naming::sanitize_iface_tag(&origin.iface_tag),
+                leaf_name.to_string(),
+            ],
+            None => vec![leaf_name.to_string()],
+        }
+    }
+
+    fn make_artifact(
+        &self,
+        leaf_name: &str,
+        kind: InterfaceKind,
+        code_output: String,
+    ) -> InterfaceArtifact {
+        InterfaceArtifact::from_kind_nested(self.artifact_module_path(leaf_name), kind, code_output)
     }
 
     /// Sets the node parameters for code generation.
@@ -117,6 +148,10 @@ impl PythonGenerator {
 }
 
 impl LanguageGenerator for PythonGenerator {
+    fn set_current_origin(&mut self, origin: Option<InterfaceOrigin>) {
+        self.current_origin = origin;
+    }
+
     fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
         let schema_info = topic
             .message_format
@@ -124,12 +159,8 @@ impl LanguageGenerator for PythonGenerator {
             .map(|fmt| self.register_schema(&topic.name, fmt))
             .transpose()?;
 
-        let code = topics::build_emitted_topic(topic, schema_info.as_ref())?;
-        self.push_section(InterfaceArtifact::from_kind(
-            &topic.name,
-            InterfaceKind::EmittedTopic,
-            code,
-        ));
+        let code = topics::build_emitted_topic(topic, schema_info.as_ref(), self.current_origin())?;
+        self.push_section(self.make_artifact(&topic.name, InterfaceKind::EmittedTopic, code));
         Ok(())
     }
 
@@ -148,11 +179,7 @@ impl LanguageGenerator for PythonGenerator {
             request_schema_info.as_ref(),
             response_schema_info.as_ref(),
         )?;
-        self.push_section(InterfaceArtifact::from_kind(
-            &service.name,
-            InterfaceKind::ExposedService,
-            code,
-        ));
+        self.push_section(self.make_artifact(&service.name, InterfaceKind::ExposedService, code));
         Ok(())
     }
 
@@ -202,11 +229,7 @@ impl LanguageGenerator for PythonGenerator {
             result_response_schema_info.as_ref(),
             feedback_schema_info.as_ref(),
         )?;
-        self.push_section(InterfaceArtifact::from_kind(
-            &action.name,
-            InterfaceKind::ExposedAction,
-            code,
-        ));
+        self.push_section(self.make_artifact(&action.name, InterfaceKind::ExposedAction, code));
         Ok(())
     }
 
@@ -225,11 +248,7 @@ impl LanguageGenerator for PythonGenerator {
         let code =
             topics::build_consumed_topic(topic, &arguments, &schema_info, dependency_node_name)?;
         let module_label = module_name_from_components(&linked.local_node_id, &linked.name);
-        self.push_section(InterfaceArtifact::from_kind(
-            &module_label,
-            InterfaceKind::ConsumedTopic,
-            code,
-        ));
+        self.push_section(self.make_artifact(&module_label, InterfaceKind::ConsumedTopic, code));
         Ok(())
     }
 
@@ -237,11 +256,7 @@ impl LanguageGenerator for PythonGenerator {
         let schema_info = self.register_schema(name, &arguments)?;
         let code = topics::build_external_consumed_topic(name, &arguments, &schema_info)?;
         let module_label = name.trim().to_string();
-        self.push_section(InterfaceArtifact::from_kind(
-            &module_label,
-            InterfaceKind::ConsumedTopic,
-            code,
-        ));
+        self.push_section(self.make_artifact(&module_label, InterfaceKind::ConsumedTopic, code));
         Ok(())
     }
 
@@ -270,11 +285,7 @@ impl LanguageGenerator for PythonGenerator {
             dependency_node_name,
         )?;
         let module_label = module_name_from_components(&service.local_node_id, &service.name);
-        self.push_section(InterfaceArtifact::from_kind(
-            &module_label,
-            InterfaceKind::ConsumedService,
-            code,
-        ));
+        self.push_section(self.make_artifact(&module_label, InterfaceKind::ConsumedService, code));
         Ok(())
     }
 
@@ -320,11 +331,7 @@ impl LanguageGenerator for PythonGenerator {
             dependency_node_name,
         )?;
         let module_label = module_name_from_components(&action.local_node_id, &action.name);
-        self.push_section(InterfaceArtifact::from_kind(
-            &module_label,
-            InterfaceKind::ConsumedAction,
-            code,
-        ));
+        self.push_section(self.make_artifact(&module_label, InterfaceKind::ConsumedAction, code));
         Ok(())
     }
 

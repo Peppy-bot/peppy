@@ -29,12 +29,34 @@ pub struct ConsumedActionMessage {
     pub result_response: Option<MessageFormat>,
 }
 
+/// Identifies the `conforms_to` interface a producer artifact was pulled from.
+///
+/// `None` on a producer variant means the artifact is the node's own (native)
+/// declaration; `Some` means it was contributed by a [`PeppyInterface`] pulled
+/// via `interfaces.conforms_to`. The pair `(iface_name, iface_tag)` drives both
+/// the generated module nesting (`emitted_topics::{iface_name}::{iface_tag}::{topic}`)
+/// and the two extra Zenoh segments on the wire path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceOrigin {
+    pub iface_name: String,
+    pub iface_tag: String,
+}
+
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
 #[derive(Debug, Clone)]
 pub enum InterfaceVariant {
-    EmittedTopic(EmittedTopic),
-    ExposedService(ExposedService),
-    ExposedAction(ExposedAction),
+    EmittedTopic {
+        topic: EmittedTopic,
+        origin: Option<InterfaceOrigin>,
+    },
+    ExposedService {
+        service: ExposedService,
+        origin: Option<InterfaceOrigin>,
+    },
+    ExposedAction {
+        action: ExposedAction,
+        origin: Option<InterfaceOrigin>,
+    },
     ConsumedTopic {
         topic: ConsumedTopic,
         message_format: MessageFormat,
@@ -77,8 +99,14 @@ impl DeploymentInterface {
     }
 }
 
+#[derive(Clone)]
 pub struct InterfaceArtifact {
-    pub node_name: String,
+    /// Module path under the category dir, leaf-last. Native artifacts have a
+    /// single segment (the topic/service/action name); artifacts pulled in via
+    /// `interfaces.conforms_to` have three segments
+    /// (`[iface_name, iface_tag, leaf_name]`) so they nest as
+    /// `emitted_topics/{iface_name}/{iface_tag}/{leaf_name}.rs`.
+    pub module_path: Vec<String>,
     pub kind: InterfaceKind,
     pub code_output: String,
 }
@@ -86,15 +114,44 @@ pub struct InterfaceArtifact {
 impl InterfaceArtifact {
     pub fn from_kind(node_name: &str, kind: InterfaceKind, code_output: String) -> Self {
         Self {
-            node_name: node_name.to_string(),
+            module_path: vec![node_name.to_string()],
             kind,
             code_output,
         }
+    }
+
+    /// Creates an artifact whose generated module nests under
+    /// `{iface_name}/{iface_tag}/{leaf_name}` — used for symbols pulled in via
+    /// `interfaces.conforms_to`.
+    pub fn from_kind_nested(
+        module_path: Vec<String>,
+        kind: InterfaceKind,
+        code_output: String,
+    ) -> Self {
+        Self {
+            module_path,
+            kind,
+            code_output,
+        }
+    }
+
+    /// Returns the leaf segment (the topic/service/action name). Panics on an
+    /// empty `module_path`, which would be a generator bug.
+    pub fn leaf_name(&self) -> &str {
+        self.module_path
+            .last()
+            .map(String::as_str)
+            .expect("InterfaceArtifact::module_path must not be empty")
     }
 }
 
 /// Collects deployment interfaces and produces generated artifacts when finalized.
 pub trait LanguageGenerator {
+    /// Sets the `conforms_to` origin used by the next `add_*` call for an
+    /// exposed/emitted item. `register_with` resets this to `None` on every
+    /// invocation, so test callsites that bypass `register_with` see the
+    /// default "native" behavior.
+    fn set_current_origin(&mut self, origin: Option<InterfaceOrigin>);
     fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()>;
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()>;
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()>;
@@ -134,9 +191,24 @@ pub trait LanguageGenerator {
 impl DeploymentInterface {
     pub fn register_with<B: LanguageGenerator + ?Sized>(&self, backend: &mut B) -> Result<()> {
         match self.interface() {
-            InterfaceVariant::EmittedTopic(topic) => backend.add_emitted_topic(topic),
-            InterfaceVariant::ExposedService(service) => backend.add_exposed_service(service),
-            InterfaceVariant::ExposedAction(action) => backend.add_exposed_action(action),
+            InterfaceVariant::EmittedTopic { topic, origin } => {
+                backend.set_current_origin(origin.clone());
+                let result = backend.add_emitted_topic(topic);
+                backend.set_current_origin(None);
+                result
+            }
+            InterfaceVariant::ExposedService { service, origin } => {
+                backend.set_current_origin(origin.clone());
+                let result = backend.add_exposed_service(service);
+                backend.set_current_origin(None);
+                result
+            }
+            InterfaceVariant::ExposedAction { action, origin } => {
+                backend.set_current_origin(origin.clone());
+                let result = backend.add_exposed_action(action);
+                backend.set_current_origin(None);
+                result
+            }
             InterfaceVariant::ConsumedTopic {
                 topic,
                 message_format,

@@ -3,6 +3,8 @@ mod helpers;
 
 #[path = "python/actions_communication.rs"]
 mod actions_communication;
+#[path = "python/conforms_to.rs"]
+mod conforms_to;
 #[path = "python/generate_lib.rs"]
 mod generate_lib;
 #[path = "python/services_communication.rs"]

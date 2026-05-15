@@ -29,11 +29,12 @@ async fn main() {
         &core_node,
         &instance_id,
         node_name,
+        "_",
+        "_",
         topic_name,
         None,
         None,
-        qos,
-    )
+        qos)
     .await
     .expect("Should subscribe to the topic");
 

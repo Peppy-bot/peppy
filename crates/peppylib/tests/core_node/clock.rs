@@ -83,6 +83,8 @@ async fn subscribe_clock_yields_typed_ticks() {
         CORE_NODE,
         SERVER_INSTANCE,
         CORE_NODE,
+        "_",
+        "_",
         names::CLOCK,
         QoSProfile::SensorData,
         canned.encode().expect("encode tick"),

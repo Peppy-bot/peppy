@@ -54,6 +54,7 @@ pub(crate) fn emit_capnp_schema_loader(
 pub fn build_emitted_topic(
     topic: &EmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
+    origin: Option<&crate::generator::types::InterfaceOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
@@ -108,12 +109,21 @@ pub fn build_emitted_topic(
         builder.line("payload = b\"\"");
     }
 
+    let (iface_name_lit, iface_tag_lit) = match origin {
+        Some(o) => (
+            format!("\"{}\"", o.iface_name),
+            format!("\"{}\"", o.iface_tag),
+        ),
+        None => (String::from("\"_\""), String::from("\"_\"")),
+    };
     builder.line("await peppylib.TopicMessenger.emit(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("node_runner.node_name(),");
+    builder.line(&format!("{iface_name_lit},"));
+    builder.line(&format!("{iface_tag_lit},"));
     builder.line("TOPIC_NAME,");
     builder.line("qos,");
     builder.line("payload,");
@@ -202,6 +212,11 @@ fn build_consumed_topic_inner(
         builder.line("node_runner.bound_core_node(),");
         builder.line("node_runner.bound_instance_id(),");
         builder.line("node_name,");
+        // Consumer-side discovery of the publisher's interface namespace is the
+        // follow-up PR; for now we subscribe with wildcards so the iface
+        // segments match any publisher.
+        builder.line("\"*\",");
+        builder.line("\"*\",");
         builder.line("topic_name,");
         builder.line("target_core_node,");
         builder.line("target_instance_id,");

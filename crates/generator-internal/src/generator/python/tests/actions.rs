@@ -509,7 +509,7 @@ fn expose_two_actions() {
 
     let artifact_map: HashMap<_, _> = artifacts
         .into_iter()
-        .map(|artifact| (artifact.node_name, artifact.code_output))
+        .map(|artifact| (artifact.leaf_name().to_string(), artifact.code_output))
         .collect();
 
     let move_arm = artifact_map

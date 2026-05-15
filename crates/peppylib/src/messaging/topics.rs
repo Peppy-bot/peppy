@@ -38,6 +38,8 @@ impl TopicMessenger {
         as_core_node: &str,
         as_instance_id: &str,
         to_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         to_topic: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
@@ -48,6 +50,8 @@ impl TopicMessenger {
                 as_core_node,
                 as_instance_id,
                 to_node_name,
+                iface_name,
+                iface_tag,
                 to_topic,
                 target_core_node,
                 target_instance_id,
@@ -61,7 +65,10 @@ impl TopicMessenger {
     ///
     /// Unlike [`subscribe`], this does not target a specific publisher node.
     /// Internally uses a wildcard for the node name, so messages from any
-    /// node publishing on the given topic will be received.
+    /// node publishing on the given topic will be received. External
+    /// consumers can't know the producer's interface namespace, so this uses
+    /// wildcards (`*`) for the two iface segments — matching whatever the
+    /// publisher wrote.
     pub async fn consume_external(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -76,6 +83,8 @@ impl TopicMessenger {
                 as_core_node,
                 as_instance_id,
                 "*",
+                "*",
+                "*",
                 to_topic,
                 target_core_node,
                 target_instance_id,
@@ -86,11 +95,14 @@ impl TopicMessenger {
     }
 
     /// Publishes a payload to a topic on the specified core node.
+    #[allow(clippy::too_many_arguments)]
     pub async fn emit(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         as_topic_name: &str,
         qos: QoSProfile,
         payload: Payload,
@@ -100,6 +112,8 @@ impl TopicMessenger {
                 as_core_node,
                 as_instance_id,
                 as_node_name,
+                iface_name,
+                iface_tag,
                 as_topic_name,
                 qos,
                 payload,
@@ -113,19 +127,27 @@ impl TopicMessenger {
     /// [`emit`] for one-shot publishes where the per-call setup is in the
     /// noise.
     ///
-    /// The key follows the same `*/<core_node>/*/<instance>/topic/<node>/<topic>`
+    /// The key follows the same
+    /// `*/<core_node>/*/<instance>/topic/<node>/<iface_name>/<iface_tag>/<topic>`
     /// shape as [`MessengerHandle::emit_topic_message`] — keep this in sync if
     /// that format changes.
+    #[allow(clippy::too_many_arguments)]
     pub async fn declare_publisher(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         as_topic_name: &str,
         qos: QoSProfile,
     ) -> Result<TopicPublisher> {
-        let topic =
-            format!("*/{as_core_node}/*/{as_instance_id}/topic/{as_node_name}/{as_topic_name}");
+        // Normalize the tag here so the pre-bound publisher key matches the
+        // one `emit_topic_message` would have built dynamically.
+        let iface_tag = iface_tag.replace('-', "_");
+        let topic = format!(
+            "*/{as_core_node}/*/{as_instance_id}/topic/{as_node_name}/{iface_name}/{iface_tag}/{as_topic_name}"
+        );
         let inner = messenger
             .declare_publisher(topic.clone(), qos.into())
             .await?;

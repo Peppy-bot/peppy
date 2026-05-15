@@ -61,6 +61,22 @@ const SERVICE_PROBE_PAYLOAD: &[u8] = b"\0peppy_service_probe\0";
 /// Timeout for reachability probes sent by `is_reachable`.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// Sentinel passed as `iface_name`/`iface_tag` by callers that aren't part of
+/// a `conforms_to` interface — i.e. the node's own (native) topics, services,
+/// and actions. The two-segment placeholder keeps the wire key shape stable
+/// (`topic/{node}/{iface_name}/{iface_tag}/{leaf}`) regardless of conformance.
+pub const NATIVE_IFACE_SEGMENT: &str = "_";
+
+/// Normalizes an interface tag for use as a Zenoh wire-path segment.
+///
+/// Tags allow ASCII letters/digits/`_`/`-`; identifier syntax in generated code
+/// does not allow hyphens, so we convert `-` → `_` once at this boundary. The
+/// generator passes the raw tag through unchanged so the wire and code agree
+/// after this normalization.
+fn normalize_iface_segment(value: &str) -> String {
+    value.replace('-', "_")
+}
+
 fn is_service_ack_payload(payload: &[u8]) -> bool {
     payload == SERVICE_ACK_PAYLOAD
 }
@@ -199,6 +215,8 @@ impl MessengerHandle {
         as_core_node: &str,
         as_instance_id: &str,
         to_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         to_topic: &str,
         to_core_node: Option<&str>,
         to_instance_id: Option<&str>,
@@ -206,8 +224,9 @@ impl MessengerHandle {
     ) -> Result<PmiSubscription> {
         let to_core_node = to_core_node.unwrap_or("*");
         let to_instance_id = to_instance_id.unwrap_or("*");
+        let iface_tag = normalize_iface_segment(iface_tag);
         let key_expr = format!(
-            "{as_core_node}/{to_core_node}/{as_instance_id}/{to_instance_id}/topic/{to_node_name}/{to_topic}"
+            "{as_core_node}/{to_core_node}/{as_instance_id}/{to_instance_id}/topic/{to_node_name}/{iface_name}/{iface_tag}/{to_topic}"
         );
         let subscription = {
             let messenger = self.messenger.lock().await;
@@ -218,18 +237,22 @@ impl MessengerHandle {
         Ok(subscription)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn emit_topic_message(
         &self,
         as_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         as_topic_name: &str,
         qos: QoSProfile,
         payload: Payload,
     ) -> Result<()> {
+        let iface_tag = normalize_iface_segment(iface_tag);
         let key_expr = format!(
-            "*/{}/*/{}/topic/{}/{}",
-            as_core_node, as_instance_id, as_node_name, as_topic_name
+            "*/{}/*/{}/topic/{}/{}/{}/{}",
+            as_core_node, as_instance_id, as_node_name, iface_name, iface_tag, as_topic_name
         );
         let msg = PmiMessage::new(&key_expr, payload.into_inner());
 

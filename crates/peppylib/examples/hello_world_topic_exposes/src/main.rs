@@ -33,10 +33,11 @@ async fn main() {
         &core_node,
         &instance_id,
         node_name,
+        "_",
+        "_",
         topic_name,
         qos,
-        payload,
-    )
+        payload)
     .await
     .expect("Should send the payload");
     println!("Payload sent");

@@ -38,6 +38,15 @@ pub(crate) fn sanitize_component(raw: &str) -> String {
     out
 }
 
+/// Sanitizes an `iface_tag` for use as a generated module segment and as a
+/// Zenoh wire-path segment. Currently this is just a hyphen→underscore
+/// conversion; the rest of [`sanitize_component`]'s heuristics would lose
+/// information (e.g. case) without buying us anything, since interface tags
+/// are already constrained to letters/digits/underscores/hyphens.
+pub fn sanitize_iface_tag(raw: &str) -> String {
+    raw.replace('-', "_")
+}
+
 /// Returns `None` when the trimmed string is empty, otherwise `Some(value)`.
 pub(crate) fn non_empty_str(value: &str) -> Option<&str> {
     if value.trim().is_empty() {

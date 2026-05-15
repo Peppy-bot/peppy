@@ -3,6 +3,8 @@ mod helpers;
 
 #[path = "rust/actions_communication.rs"]
 mod actions_communication;
+#[path = "rust/conforms_to.rs"]
+mod conforms_to;
 #[path = "rust/generate_lib.rs"]
 mod generate_lib;
 #[path = "rust/services_communication.rs"]

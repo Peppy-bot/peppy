@@ -50,6 +50,8 @@ async fn sim_clock_service_serves_external_tick_after_publish() {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         &started.core_node_name,
+        "_",
+        "_",
         names::CLOCK,
         QoSProfile::SensorData,
     )

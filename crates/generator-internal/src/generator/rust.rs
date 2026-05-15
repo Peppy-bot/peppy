@@ -15,8 +15,8 @@ mod type_mapping;
 pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
-    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, LanguageGenerator,
-    cancel_action_response_format, non_empty_message_format,
+    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, InterfaceOrigin,
+    LanguageGenerator, cancel_action_response_format, non_empty_message_format,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
@@ -57,11 +57,47 @@ pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
     parameters: config::ParameterSchema,
+    /// Scratch slot threaded by [`super::types::DeploymentInterface::register_with`]
+    /// before each producer-side `add_*` call. `None` means the next artifact is
+    /// the node's own (native) declaration; `Some` means it was pulled in via a
+    /// `conforms_to` entry and should nest under `{iface_name}/{iface_tag}`.
+    current_origin: Option<InterfaceOrigin>,
 }
 
 impl RustGenerator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn current_origin(&self) -> Option<&InterfaceOrigin> {
+        self.current_origin.as_ref()
+    }
+
+    /// Builds the `module_path` for an artifact whose leaf segment is
+    /// `leaf_name`. When the generator is in "conformed" mode (a
+    /// `current_origin` has been set by `register_with`), the path nests under
+    /// `{iface_name}/{iface_tag}` so the artifact lands at
+    /// `<category>/<iface_name>/<iface_tag>/<leaf_name>.rs`. When `current_origin`
+    /// is `None`, the path is just `[leaf_name]` — preserving today's flat
+    /// layout for the node's own native declarations.
+    fn artifact_module_path(&self, leaf_name: &str) -> Vec<String> {
+        match self.current_origin() {
+            Some(origin) => vec![
+                origin.iface_name.clone(),
+                crate::generator::naming::sanitize_iface_tag(&origin.iface_tag),
+                leaf_name.to_string(),
+            ],
+            None => vec![leaf_name.to_string()],
+        }
+    }
+
+    fn make_artifact(
+        &self,
+        leaf_name: &str,
+        kind: InterfaceKind,
+        code_output: String,
+    ) -> InterfaceArtifact {
+        InterfaceArtifact::from_kind_nested(self.artifact_module_path(leaf_name), kind, code_output)
     }
 
     /// Sets the node parameters for code generation.
@@ -495,6 +531,10 @@ impl SchemaInfo {
 }
 
 impl LanguageGenerator for RustGenerator {
+    fn set_current_origin(&mut self, origin: Option<InterfaceOrigin>) {
+        self.current_origin = origin;
+    }
+
     fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
@@ -525,6 +565,7 @@ impl LanguageGenerator for RustGenerator {
             encoding.as_ref(),
             topic,
             &fn_name_str,
+            self.current_origin(),
         );
 
         let tokens: TokenStream = quote! {
@@ -538,7 +579,7 @@ impl LanguageGenerator for RustGenerator {
             module_label = String::from("topic");
         }
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
             InterfaceKind::EmittedTopic,
             rendered,
@@ -651,7 +692,7 @@ impl LanguageGenerator for RustGenerator {
             #( #service_tokens )*
         };
         let rendered = render_tokens(tokens);
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
             InterfaceKind::ExposedService,
             rendered,
@@ -942,7 +983,7 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&action.name),
             InterfaceKind::ExposedAction,
             rendered,
@@ -1050,7 +1091,7 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
             InterfaceKind::ConsumedTopic,
             rendered,
@@ -1127,7 +1168,7 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
             InterfaceKind::ConsumedTopic,
             rendered,
@@ -1386,7 +1427,7 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
             InterfaceKind::ConsumedService,
             rendered,
@@ -1539,7 +1580,7 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
         let module_label = raw_module_label(&action.local_node_id, &action.name);
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
             InterfaceKind::ConsumedAction,
             rendered,

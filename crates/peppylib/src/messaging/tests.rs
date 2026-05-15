@@ -114,6 +114,8 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         subscriber_core_node,
         subscriber_instance_id,
         node_name,
+        "_",
+        "_",
         topic,
         None, // Accepts any core node that emits
         None, // Accepts any instance id that emits
@@ -133,6 +135,8 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         emitter_core_node,
         emitter_instance_id,
         node_name,
+        "_",
+        "_",
         topic,
         qos,
         payload.clone(),
@@ -146,7 +150,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         .expect("Should receive the published message");
 
     let expected_key_expr = format!(
-        "*/{}/*/{}/topic/{}/{}",
+        "*/{}/*/{}/topic/{}/_/_/{}",
         emitter_core_node, emitter_instance_id, node_name, topic
     );
 
@@ -186,6 +190,8 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         subscriber_core_node,
         subscriber_instance_id1,
         node_name,
+        "_",
+        "_",
         topic,
         Some(emitter_core_node),
         Some(emitter_instance_id1),
@@ -201,6 +207,8 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         subscriber_core_node,
         subscriber_instance_id2,
         node_name,
+        "_",
+        "_",
         topic,
         Some(emitter_core_node),
         Some(emitter_instance_id2),
@@ -218,6 +226,8 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         emitter_core_node,
         emitter_instance_id2,
         node_name,
+        "_",
+        "_",
         topic,
         qos,
         payload.clone(),
@@ -273,6 +283,8 @@ async fn topic_publish_subscribe_with_target_core_node() {
         subscriber_core_node1,
         subscriber_instance_id,
         node_name,
+        "_",
+        "_",
         topic,
         Some(emitter_core_node1),
         Some(emitter_instance_id),
@@ -288,6 +300,8 @@ async fn topic_publish_subscribe_with_target_core_node() {
         subscriber_core_node2,
         subscriber_instance_id,
         node_name,
+        "_",
+        "_",
         topic,
         Some(emitter_core_node2),
         Some(emitter_instance_id),
@@ -305,6 +319,8 @@ async fn topic_publish_subscribe_with_target_core_node() {
         emitter_core_node2,
         emitter_instance_id,
         node_name,
+        "_",
+        "_",
         topic,
         qos,
         payload.clone(),
@@ -351,6 +367,8 @@ async fn topic_publish_reliable_5000hz_messages() {
         subscriber_core_node,
         subscriber_instance_id,
         node_name,
+        "_",
+        "_",
         topic,
         None,
         None,
@@ -376,6 +394,8 @@ async fn topic_publish_reliable_5000hz_messages() {
             emitter_core_node,
             emitter_instance_id,
             node_name,
+            "_",
+            "_",
             topic,
             qos.clone(),
             payload,
@@ -385,7 +405,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     }
 
     let expected_key_expr = format!(
-        "*/{}/*/{}/topic/{}/{}",
+        "*/{}/*/{}/topic/{}/_/_/{}",
         emitter_core_node, emitter_instance_id, node_name, topic
     );
 

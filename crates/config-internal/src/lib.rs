@@ -77,9 +77,9 @@ pub mod fingerprint {
 // -- node --
 pub mod node {
     pub use crate::internal::node::{
-        ActionInterfaces, ArrayKind, ArraySchema, CallbackNameError, ConsumedAction,
-        ConsumedService, ConsumedTopic, ContainerConfig, DependsOn, EmittedTopic, Execution,
-        ExposedAction, ExposedService, ExternalConsumedTopic, InterfaceKind, Interfaces,
+        ActionInterfaces, ArrayKind, ArraySchema, CallbackNameError, ConformsToItem,
+        ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig, DependsOn, EmittedTopic,
+        Execution, ExposedAction, ExposedService, ExternalConsumedTopic, InterfaceKind, Interfaces,
         LinkedConsumedTopic, Manifest, MessageFormat, Name, NodeConfig, NodeConfigCreator,
         NodeConfigParser, NodeDependency, ObjectKind, ObjectSchema, PeppygenLanguage,
         PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces,
