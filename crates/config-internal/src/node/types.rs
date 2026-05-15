@@ -1636,11 +1636,11 @@ mod tests {
     fn manifest_with_depends_on() {
         let json5 = r#"{
             name: "slam",
-            tag: "0.1.0",
+            tag: "v1",
             depends_on: {
                 nodes: [
-                    { name: "lidar_driver", tag: "0.1.0", local_id: "lidar" },
-                    { name: "nav_system", tag: "0.1.0", local_id: "navigation" }
+                    { name: "lidar_driver", tag: "v1", local_id: "lidar" },
+                    { name: "nav_system", tag: "v1", local_id: "navigation" }
                 ]
             }
         }"#;
@@ -1648,7 +1648,7 @@ mod tests {
         let deps = manifest.depends_on.expect("depends_on should be Some");
         assert_eq!(deps.nodes.len(), 2);
         assert_eq!(deps.nodes[0].name.as_str(), "lidar_driver");
-        assert_eq!(deps.nodes[0].tag, "0.1.0");
+        assert_eq!(deps.nodes[0].tag, "v1");
         assert_eq!(deps.nodes[0].local_id, "lidar");
         assert_eq!(deps.nodes[1].name.as_str(), "nav_system");
         assert_eq!(deps.nodes[1].local_id, "navigation");
@@ -1660,14 +1660,14 @@ mod tests {
         let json5 = r#"{
             nodes: [],
             interfaces: [
-                { name: "depth_camera", tag: "0.1.0", sha256: "aaa", local_id: "depth_camera" }
+                { name: "depth_camera", tag: "v1", sha256: "aaa", local_id: "depth_camera" }
             ]
         }"#;
         let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
         assert!(deps.nodes.is_empty());
         assert_eq!(deps.interfaces.len(), 1);
         assert_eq!(deps.interfaces[0].name.as_str(), "depth_camera");
-        assert_eq!(deps.interfaces[0].tag, "0.1.0");
+        assert_eq!(deps.interfaces[0].tag, "v1");
         assert_eq!(deps.interfaces[0].local_id, "depth_camera");
         assert_eq!(deps.interfaces[0].sha256.as_deref(), Some("aaa"));
     }
@@ -1677,7 +1677,7 @@ mod tests {
         let json5 = r#"{
             nodes: [],
             interfaces: [
-                { name: "depth_camera", tag: "0.1.0", local_id: "depth_camera" }
+                { name: "depth_camera", tag: "v1", local_id: "depth_camera" }
             ]
         }"#;
         let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
@@ -1689,7 +1689,7 @@ mod tests {
     fn depends_on_interfaces_requires_name() {
         let json5 = r#"{
             nodes: [],
-            interfaces: [{ tag: "0.1.0", local_id: "depth_camera" }]
+            interfaces: [{ tag: "v1", local_id: "depth_camera" }]
         }"#;
         assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
     }
@@ -1707,7 +1707,7 @@ mod tests {
     fn depends_on_interfaces_requires_local_id() {
         let json5 = r#"{
             nodes: [],
-            interfaces: [{ name: "depth_camera", tag: "0.1.0" }]
+            interfaces: [{ name: "depth_camera", tag: "v1" }]
         }"#;
         assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
     }
@@ -1717,7 +1717,7 @@ mod tests {
         let json5 = r#"{
             nodes: [],
             interfaces: [
-                { name: "depth_camera", tag: "0.1.0", local_id: "depth_camera", extra: "bad" }
+                { name: "depth_camera", tag: "v1", local_id: "depth_camera", extra: "bad" }
             ]
         }"#;
         assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
@@ -1727,7 +1727,7 @@ mod tests {
     fn manifest_without_depends_on() {
         let json5 = r#"{
             name: "simple_node",
-            tag: "0.1.0"
+            tag: "v1"
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert!(manifest.depends_on.is_none());
@@ -1737,14 +1737,14 @@ mod tests {
     fn interfaces_with_conforms_to_full() {
         let json5 = r#"{
             conforms_to: [
-                { name: "depth_camera", tag: "0.1.0", sha256: "aaaa" }
+                { name: "depth_camera", tag: "v1", sha256: "aaaa" }
             ]
         }"#;
         let interfaces: Interfaces = serde_json5::from_str(json5).expect("should parse");
         let items = interfaces.conforms_to.expect("conforms_to should be Some");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name.as_str(), "depth_camera");
-        assert_eq!(items[0].tag, "0.1.0");
+        assert_eq!(items[0].tag, "v1");
         assert_eq!(items[0].sha256.as_deref(), Some("aaaa"));
     }
 
@@ -1752,14 +1752,14 @@ mod tests {
     fn interfaces_with_conforms_to_no_sha256() {
         let json5 = r#"{
             conforms_to: [
-                { name: "depth_camera", tag: "0.1.0" }
+                { name: "depth_camera", tag: "v1" }
             ]
         }"#;
         let interfaces: Interfaces = serde_json5::from_str(json5).expect("should parse");
         let items = interfaces.conforms_to.expect("conforms_to should be Some");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name.as_str(), "depth_camera");
-        assert_eq!(items[0].tag, "0.1.0");
+        assert_eq!(items[0].tag, "v1");
         assert!(items[0].sha256.is_none());
     }
 
@@ -1774,7 +1774,7 @@ mod tests {
     fn interfaces_conforms_to_requires_name() {
         let json5 = r#"{
             conforms_to: [
-                { tag: "0.1.0" }
+                { tag: "v1" }
             ]
         }"#;
         assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
@@ -1794,7 +1794,7 @@ mod tests {
     fn interfaces_conforms_to_rejects_unknown_fields() {
         let json5 = r#"{
             conforms_to: [
-                { name: "depth_camera", tag: "0.1.0", extra: "bad" }
+                { name: "depth_camera", tag: "v1", extra: "bad" }
             ]
         }"#;
         assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
@@ -1804,12 +1804,12 @@ mod tests {
     fn interfaces_conforms_to_normalization_sorts_by_name() {
         let item_a = ConformsToItem {
             name: Name::new("alpha").unwrap(),
-            tag: "0.1.0".into(),
+            tag: "v1".into(),
             sha256: None,
         };
         let item_b = ConformsToItem {
             name: Name::new("beta").unwrap(),
-            tag: "0.1.0".into(),
+            tag: "v1".into(),
             sha256: Some("aaaa".into()),
         };
 
@@ -1833,9 +1833,9 @@ mod tests {
     fn depends_on_rejects_unknown_fields() {
         let json5 = r#"{
             name: "node",
-            tag: "0.1.0",
+            tag: "v1",
             depends_on: {
-                nodes: [{ name: "dep", tag: "0.1.0", local_id: "d", extra: "bad" }]
+                nodes: [{ name: "dep", tag: "v1", local_id: "d", extra: "bad" }]
             }
         }"#;
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
@@ -1845,18 +1845,18 @@ mod tests {
     fn manifest_parses_minimal() {
         let json5 = r#"{
             name: "simple_node",
-            tag: "0.1.0"
+            tag: "v1"
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert_eq!(manifest.name.as_str(), "simple_node");
-        assert_eq!(manifest.tag, "0.1.0");
+        assert_eq!(manifest.tag, "v1");
     }
 
     #[test]
     fn node_config_rejects_unknown_fields() {
         let json5 = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "node", tag: "0.1.0" },
+            manifest: { name: "node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./run"] },
             extra: "bad"
         }"#;
@@ -1870,7 +1870,7 @@ mod tests {
     fn node_config_rejects_non_node_schema() {
         let json5 = r#"{
             peppy_schema: "launcher_v1",
-            manifest: { name: "node", tag: "0.1.0" },
+            manifest: { name: "node", tag: "v1" },
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
         }"#;
         let err = serde_json5::from_str::<NodeConfig>(json5)

@@ -8,7 +8,7 @@ const NODE_EXAMPLE: &str = r#"
   peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
-    tag: "0.1.0",
+    tag: "v1",
     labels: [
       "uvc",
       "camera",
@@ -43,7 +43,7 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
   peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
-    tag: "0.1.0",
+    tag: "v1",
   },
   interfaces: {},
   execution: {
@@ -64,7 +64,7 @@ const NESTED_STRUCT_COLLISION_NODE_EXAMPLE: &str = r#"
   peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
-    tag: "0.1.0",
+    tag: "v1",
     labels: [
       "uvc",
       "camera",
@@ -102,7 +102,7 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
   peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
-    tag: "0.1.0",
+    tag: "v1",
     labels: [
       "uvc",
       "camera",
@@ -131,7 +131,7 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
   peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
-    tag: "0.1.0",
+    tag: "v1",
     labels: [
       "uvc",
       "camera",
@@ -158,7 +158,7 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
   peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
-    tag: "0.1.0",
+    tag: "v1",
     labels: [
       "uvc",
       "camera",

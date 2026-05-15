@@ -31,7 +31,7 @@ fn node_remove_command_succeeds() {
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_node";
-    let node_tag = "0.1.0";
+    let node_tag = "v1";
 
     let node_ctx = Arc::new(
         AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
@@ -169,7 +169,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_running_node";
-    let node_tag = "0.1.0";
+    let node_tag = "v1";
     let instance_id = "test_remove_running_instance";
 
     let node_ctx = Arc::new(
@@ -313,7 +313,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_stop_instances_node";
-    let node_tag = "0.1.0";
+    let node_tag = "v1";
     let instance_id = "test_remove_stop_instances_instance";
 
     let node_ctx = Arc::new(

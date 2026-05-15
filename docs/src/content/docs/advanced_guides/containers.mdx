@@ -73,7 +73,7 @@ A container node includes a `container` block inside its `execution` section ins
       peppy_schema: "node_v1",
       manifest: {
         name: "my_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       interfaces: {},
       execution: {
@@ -91,7 +91,7 @@ A container node includes a `container` block inside its `execution` section ins
       peppy_schema: "node_v1",
       manifest: {
         name: "my_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       interfaces: {},
       execution: {
@@ -116,7 +116,7 @@ Compare this with a standard process node, which defines `build_cmd` and `run_cm
       peppy_schema: "node_v1",
       manifest: {
         name: "my_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       interfaces: {},
       execution: {
@@ -133,7 +133,7 @@ Compare this with a standard process node, which defines `build_cmd` and `run_cm
       peppy_schema: "node_v1",
       manifest: {
         name: "my_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       interfaces: {},
       execution: {
@@ -226,7 +226,7 @@ Adding a container node works the same as a regular node — first stage it, the
 
 ```sh
 peppy node add ./my_node
-peppy node build my_node:0.1.0
+peppy node build my_node:v1
 ```
 
 You can also combine both steps with `peppy node add ./my_node --build` (shorthand `-b`). If you've just edited `peppy.json5`, add `--sync`/`-s` as well — e.g. `peppy node add ./my_node -sb` to sync, add, and build in one shot.
@@ -264,7 +264,7 @@ Add a `mount_paths` array to the `container` block inside `execution` in `peppy.
   peppy_schema: "node_v1",
   manifest: {
     name: "my_node",
-    tag: "0.1.0",
+    tag: "v1",
   },
   interfaces: {},
   execution: {
@@ -307,7 +307,7 @@ Mount paths can reference runtime [parameters](/getting_started/parameters/) usi
   peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
-    tag: "0.1.0",
+    tag: "v1",
   },
   interfaces: {},
   execution: {
@@ -368,7 +368,7 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
   peppy_schema: "node_v1",
   manifest: {
     name: "my_node",
-    tag: "0.1.0",
+    tag: "v1",
   },
   interfaces: {},
   execution: {

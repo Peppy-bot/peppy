@@ -129,7 +129,7 @@ async fn node_stop_command_succeeds() {
     let node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
@@ -152,7 +152,7 @@ async fn node_stop_command_succeeds() {
         command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(node_name.to_string()),
-            tag: Some("0.1.0".to_string()),
+            tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
@@ -180,7 +180,7 @@ async fn node_stop_command_succeeds() {
     let node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
@@ -230,7 +230,7 @@ async fn node_stop_command_succeeds() {
     let node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",

@@ -390,23 +390,22 @@ mod tests {
     #[test]
     fn repo_source_parses_name_and_tag_fields() {
         let src: DeploymentSource =
-            serde_json5::from_str("{ name: \"robot_brain\", tag: \"0.1.0\" }").unwrap();
+            serde_json5::from_str("{ name: \"robot_brain\", tag: \"v1\" }").unwrap();
         let DeploymentSource::Repo(repo) = src else {
             panic!("expected repo source");
         };
         assert_eq!(repo.name, "robot_brain");
-        assert_eq!(repo.tag, "0.1.0");
+        assert_eq!(repo.tag, "v1");
     }
 
     #[test]
     fn repo_source_parses_combined_name_tag() {
-        let src: DeploymentSource =
-            serde_json5::from_str("{ name: \"robot_brain:0.1.0\" }").unwrap();
+        let src: DeploymentSource = serde_json5::from_str("{ name: \"robot_brain:v1\" }").unwrap();
         let DeploymentSource::Repo(repo) = src else {
             panic!("expected repo source");
         };
         assert_eq!(repo.name, "robot_brain");
-        assert_eq!(repo.tag, "0.1.0");
+        assert_eq!(repo.tag, "v1");
     }
 
     #[test]
@@ -422,8 +421,7 @@ mod tests {
     #[test]
     fn repo_source_rejects_empty_name() {
         let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"\", tag: \"0.1.0\" }")
-                .unwrap_err();
+            serde_json5::from_str::<DeploymentSource>("{ name: \"\", tag: \"v1\" }").unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
         };
@@ -433,7 +431,7 @@ mod tests {
     #[test]
     fn repo_source_rejects_combined_with_separate_tag() {
         let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:0.1.0\", tag: \"0.1.0\" }")
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:v1\", tag: \"v1\" }")
                 .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
@@ -444,7 +442,7 @@ mod tests {
     #[test]
     fn repo_source_rejects_multiple_colons() {
         let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:0.1:extra\" }").unwrap_err();
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:v1:extra\" }").unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
         };
@@ -452,20 +450,37 @@ mod tests {
     }
 
     #[test]
-    fn repo_source_rejects_traversal_tag() {
+    fn repo_source_rejects_dot_in_tag() {
         let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"..\" }")
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"v1.2\" }")
                 .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
         };
-        assert!(msg.contains("must not start with '.'"), "unexpected: {msg}");
+        assert!(
+            msg.contains("disallowed character") && msg.contains("'.'"),
+            "unexpected: {msg}"
+        );
+    }
+
+    #[test]
+    fn repo_source_rejects_tag_not_starting_with_letter() {
+        let err: serde_json5::Error =
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"0.1.0\" }")
+                .unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(
+            msg.contains("must start with an ASCII letter"),
+            "unexpected: {msg}"
+        );
     }
 
     #[test]
     fn repo_source_rejects_invalid_name_char() {
         let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo/bar\", tag: \"0.1.0\" }")
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo/bar\", tag: \"v1\" }")
                 .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
@@ -479,7 +494,7 @@ mod tests {
     #[test]
     fn repo_source_rejects_mixed_with_local() {
         let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(
-            "{ name: \"foo\", tag: \"0.1.0\", local: \"./x\" }",
+            "{ name: \"foo\", tag: \"v1\", local: \"./x\" }",
         )
         .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
@@ -491,7 +506,7 @@ mod tests {
     #[test]
     fn repo_source_rejects_mixed_with_git_fields() {
         let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(
-            "{ repo: \"https://github.com/org/repo.git\", name: \"foo\", tag: \"0.1.0\" }",
+            "{ repo: \"https://github.com/org/repo.git\", name: \"foo\", tag: \"v1\" }",
         )
         .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {

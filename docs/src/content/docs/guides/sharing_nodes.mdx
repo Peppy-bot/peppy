@@ -12,7 +12,7 @@ As an example, we'll try to pull the `uvc_camera` node from [this repo](https://
 Because `nodes_hub` ships as one of the default [repositories](/advanced_guides/repositories/), `uvc_camera` is already in the index — so you can add it by `name:tag` without referring to the git URL at all:
 
 ```sh
-peppy node add uvc_camera:0.1.0
+peppy node add uvc_camera:v1
 ```
 
 ### Adding a node from an unindexed repository
@@ -28,13 +28,13 @@ peppy node add --ref main https://github.com/some-user/custom_nodes.git/uvc_came
 ```
 
 :::note
-When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node run uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`. `--ref` is only accepted with a full git URL — for `name:tag` sources the ref is pinned once in `repositories.json5` when the repo is registered.
+When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node run uvc_camera:v1` corresponds to the tag found in `peppy.json5`. `--ref` is only accepted with a full git URL — for `name:tag` sources the ref is pinned once in `repositories.json5` when the repo is registered.
 :::
 
 
 Now that this node is added, we can start it:
 ```sh
-peppy node run uvc_camera:0.1.0 device_path=/dev/video0 video.camera_encoding="mjpeg" video.topic_encoding="rgb8" video.frame_rate=25 video.resolution.width=1280 video.resolution.height=720
+peppy node run uvc_camera:v1 device_path=/dev/video0 video.camera_encoding="mjpeg" video.topic_encoding="rgb8" video.frame_rate=25 video.resolution.width=1280 video.resolution.height=720
 ```
 
 and inspect its logs:
@@ -66,7 +66,7 @@ peppy node add https://github.com/Peppy-bot/example_nodes.git/rust/fake_video_re
 
 Start the node:
 ```sh
-peppy node run fake_video_reconstruction:0.1.0 video_duration_seconds=5
+peppy node run fake_video_reconstruction:v1 video_duration_seconds=5
 ```
 
 If we look at the logs of the started `fake_video_reconstruction` node:

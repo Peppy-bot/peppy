@@ -23,7 +23,7 @@ struct LauncherConfigTemplate;
   peppy_schema: "node_v1",
   manifest: {
     name: "{{ name }}",
-    tag: "0.1.0"
+    tag: "v1"
   },
   execution: {
     language: "rust",
@@ -102,7 +102,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "a_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",

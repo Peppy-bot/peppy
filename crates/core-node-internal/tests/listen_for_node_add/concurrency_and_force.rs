@@ -12,7 +12,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = node_config_with_execution(
         "slow_add_node",
-        "0.1.0",
+        "v1",
         r#"{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }"#,
     );
     write_peppy_json5(source_dir.path(), &peppy_json5);
@@ -83,7 +83,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_force_overrides_in_progress_action() {
     const SECOND_NODE_NAME: &str = "force_add_node";
-    const SECOND_NODE_TAG: &str = "0.1.0";
+    const SECOND_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -94,7 +94,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     let slow_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let slow_peppy_json5 = node_config_with_execution(
         "slow_node",
-        "0.1.0",
+        "v1",
         r#"{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }"#,
     );
     write_peppy_json5(slow_source_dir.path(), &slow_peppy_json5);

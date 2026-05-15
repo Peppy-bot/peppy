@@ -94,7 +94,7 @@ async fn node_launch_command_succeed() {
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let node_a_name = "launch_succeed_node_a";
     let node_b_name = "launch_succeed_node_b";
-    let node_tag = "0.1.0";
+    let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let node_a_path = write_node_config(
         nodes_dir.path(),
@@ -323,7 +323,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let node_a_name = "launch_node_a";
     let node_b_name = "launch_node_b";
-    let node_tag = "0.1.0";
+    let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let node_a_path = write_node_config(
         nodes_dir.path(),

@@ -273,7 +273,11 @@ async fn parse_node_config_from_git_with_path(
     tokio::task::spawn_blocking(move || {
         let repo_relative_path = sanitize_repo_path(&repo_path)?;
 
-        let temp_dir = tempfile::tempdir()
+        // Unique prefix so concurrent tests/processes can identify temp dirs
+        // owned by this code path (e.g. when asserting cleanup behavior).
+        let temp_dir = tempfile::Builder::new()
+            .prefix("peppy-git-clone-")
+            .tempdir()
             .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
 
         let repo_url_bstring = repo_url.to_bstring();
@@ -353,38 +357,19 @@ mod tests {
     use std::collections::BTreeSet;
     use std::io::Write;
 
-    fn temp_entries(root: &std::path::Path) -> BTreeSet<PathBuf> {
+    /// Lists entries in `root` whose file name starts with `prefix`. Used to
+    /// scope cleanup assertions to a single code path's temp dirs, avoiding
+    /// races with parallel tests that create `.tmp`-prefixed dirs.
+    fn temp_entries_with_prefix(root: &std::path::Path, prefix: &str) -> BTreeSet<PathBuf> {
         std::fs::read_dir(root)
             .unwrap()
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(prefix))
+            })
             .collect()
-    }
-
-    fn contains_config_marker(path: &std::path::Path, marker: &str) -> bool {
-        let mut stack = vec![path.to_path_buf()];
-        while let Some(current) = stack.pop() {
-            let Ok(metadata) = std::fs::metadata(&current) else {
-                continue;
-            };
-            if metadata.is_dir() {
-                let Ok(entries) = std::fs::read_dir(&current) else {
-                    continue;
-                };
-                for entry in entries.flatten() {
-                    stack.push(entry.path());
-                }
-                continue;
-            }
-
-            if current.file_name().and_then(|name| name.to_str()) == Some(NODE_CONFIG_FILE)
-                && let Ok(contents) = std::fs::read_to_string(&current)
-                && contents.contains(marker)
-            {
-                return true;
-            }
-        }
-
-        false
     }
 
     fn create_http_node_bundle(name: &str, tag: &str) -> Vec<u8> {
@@ -435,9 +420,12 @@ mod tests {
         let repo_url =
             gix_url::Url::try_from(git_repo_path.as_path()).expect("git repo path should parse");
 
-        // Snapshot temp dir entries before the call.
+        // Only dirs created by `parse_node_config_from_git_with_path` carry
+        // this prefix, so the snapshot diff is immune to parallel tests
+        // creating their own `.tmp`-prefixed temp dirs.
         let temp_root = std::env::temp_dir();
-        let entries_before = temp_entries(&temp_root);
+        let prefix = "peppy-git-clone-";
+        let entries_before = temp_entries_with_prefix(&temp_root, prefix);
 
         // Use a ref that doesn't exist → clone succeeds, checkout_repo_ref fails.
         let result = parse_node_config_from_git_with_path(
@@ -454,14 +442,8 @@ mod tests {
             "error should mention the failed checkout"
         );
 
-        // Verify no test-specific temp directories were leaked.
-        let marker = "uvc_camera";
-        let entries_after = temp_entries(&temp_root);
-        let leaked: Vec<_> = entries_after
-            .difference(&entries_before)
-            .filter(|path| contains_config_marker(path, marker))
-            .cloned()
-            .collect();
+        let entries_after = temp_entries_with_prefix(&temp_root, prefix);
+        let leaked: Vec<_> = entries_after.difference(&entries_before).cloned().collect();
         assert!(
             leaked.is_empty(),
             "temp directory should be cleaned up on error; leaked entries: {:?}",
@@ -471,7 +453,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_node_config_rejects_http_checksum_mismatch() {
-        let bundle = create_http_node_bundle("http_checksum_node", "0.1.0");
+        let bundle = create_http_node_bundle("http_checksum_node", "v1");
         let actual_sha256: String = Sha256::digest(&bundle)
             .iter()
             .map(|b| format!("{:02x}", b))

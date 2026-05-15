@@ -110,7 +110,7 @@ async fn node_run_command_succeeds() {
     let node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
@@ -144,7 +144,7 @@ async fn node_run_command_succeeds() {
         command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(node_name.to_string()),
-            tag: Some("0.1.0".to_string()),
+            tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
@@ -181,7 +181,7 @@ async fn node_run_command_succeeds() {
     let node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
@@ -258,7 +258,7 @@ async fn node_run_command_with_args_succeeds() {
     let peppy_config = r#"{
   peppy_schema: "node_v1",
   manifest: { name: "test_run_args_node",
-    tag: "0.1.0" },
+    tag: "v1" },
   interfaces: {
     topics: {
       emits: [
@@ -330,7 +330,7 @@ async fn node_run_command_with_args_succeeds() {
     let node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
@@ -370,7 +370,7 @@ async fn node_run_command_with_args_succeeds() {
         command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(node_name.to_string()),
-            tag: Some("0.1.0".to_string()),
+            tag: Some("v1".to_string()),
             args,
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
@@ -411,7 +411,7 @@ async fn node_run_command_with_args_succeeds() {
     let node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
@@ -525,7 +525,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     let node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
@@ -567,7 +567,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(node_name.to_string()),
-            tag: Some("0.1.0".to_string()),
+            tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(custom_instance_id.to_string()),
             idle_timeout: 60,
@@ -609,7 +609,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     let node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
@@ -700,7 +700,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     // Pre-state: the node is in the stack and is in the `Added` stage
     // (not yet built).
     let info_response = poll_node_info(
-        &NodeInfoRequest::new(node_name, "0.1.0"),
+        &NodeInfoRequest::new(node_name, "v1"),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -739,7 +739,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(node_name.to_string()),
-            tag: Some("0.1.0".to_string()),
+            tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
@@ -782,7 +782,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     let node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .expect("graph should contain the added node");
     assert_eq!(
         node.instance_count(),
@@ -861,7 +861,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
 
     // Sanity check: node is in `Ready` stage before we run `-b`.
     let info_response = poll_node_info(
-        &NodeInfoRequest::new(node_name, "0.1.0"),
+        &NodeInfoRequest::new(node_name, "v1"),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -900,7 +900,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(node_name.to_string()),
-            tag: Some("0.1.0".to_string()),
+            tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
@@ -938,7 +938,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     let node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .expect("graph should contain the added node");
     assert_eq!(
         node.instance_count(),

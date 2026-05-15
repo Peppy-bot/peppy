@@ -11,10 +11,10 @@ fn service_dependency_resolved_when_dependency_added_first() {
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                  { name: "lidar", tag: "v1", local_id: "lidar" }
                 ]
               },
             },
@@ -41,7 +41,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
             peppy_schema: "node_v1",
             manifest: {
               name: "lidar",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 services: {
@@ -89,7 +89,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
     let deps = stack
-        .dependencies_of("brain", "1.0.0")
+        .dependencies_of("brain", "v1")
         .into_iter()
         .map(|node| {
             let guard = node.read();
@@ -101,12 +101,12 @@ fn service_dependency_resolved_when_dependency_added_first() {
         .collect::<Vec<_>>();
     assert_eq!(
         deps,
-        vec![("lidar".to_string(), "1.0.0".to_string())],
+        vec![("lidar".to_string(), "v1".to_string())],
         "dependency edge should be wired for services"
     );
 
     let dependants = stack
-        .dependents_of("lidar", "1.0.0")
+        .dependents_of("lidar", "v1")
         .into_iter()
         .map(|node| node.read().config().manifest.name.as_str().to_owned())
         .collect::<Vec<_>>();
@@ -124,10 +124,10 @@ fn service_dependency_fails_when_dependency_is_missing() {
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                  { name: "lidar", tag: "v1", local_id: "lidar" }
                 ]
               },
             },
@@ -162,7 +162,7 @@ fn service_dependency_fails_when_dependency_is_missing() {
         panic!("expected MissingDependency error, got {:?}", result);
     };
     assert_eq!(dependency, "lidar");
-    assert_eq!(dependency_tag, "1.0.0");
+    assert_eq!(dependency_tag, "v1");
     assert_eq!(stack.len(), 1, "stack should only have core node");
 }
 
@@ -175,10 +175,10 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                  { name: "lidar", tag: "v1", local_id: "lidar" }
                 ]
               },
             },
@@ -206,7 +206,7 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
             peppy_schema: "node_v1",
             manifest: {
               name: "lidar",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 services: {
@@ -252,7 +252,7 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
         panic!("expected MissingInterface error, got {:?}", result);
     };
     assert_eq!(dependency, "lidar");
-    assert_eq!(dependency_tag, "1.0.0");
+    assert_eq!(dependency_tag, "v1");
     assert_eq!(interface_kind, "Service");
     assert_eq!(interface_name, "reset_sensor");
     assert_eq!(
@@ -269,7 +269,7 @@ fn service_dependency_fails_when_local_node_id_is_undeclared() {
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: []
               },

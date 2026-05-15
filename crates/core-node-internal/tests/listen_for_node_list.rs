@@ -11,7 +11,7 @@ use std::time::Duration;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_list_returns_succeeds() {
     const TARGET_NODE_NAME: &str = "list_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -105,7 +105,7 @@ async fn listen_for_node_list_returns_succeeds() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_list_returns_dot_graph() {
     const TARGET_NODE_NAME: &str = "list_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();

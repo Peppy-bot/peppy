@@ -135,7 +135,7 @@ fn node_add_command_succeeds() {
     let added_node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
@@ -285,7 +285,7 @@ fn node_add_command_with_run_arg_succeeds() {
     let added_node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
@@ -460,7 +460,7 @@ fn node_add_after_failed_sync_succeeds() {
     let added_node = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
@@ -604,7 +604,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     let node_before = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the node after first add. Got: {:?}",
@@ -658,7 +658,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     let node_after = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the node after re-add. Got: {:?}",
@@ -793,7 +793,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     let node_before = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the node after first add. Got: {:?}",
@@ -883,7 +883,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     let node_after = graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the node after git re-add. Got: {:?}",
@@ -1044,7 +1044,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     graph
         .nodes
         .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .find(|n| n.name == node_name && n.tag == "v1")
         .expect("graph should contain the added node");
 }
 

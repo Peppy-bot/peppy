@@ -22,7 +22,7 @@ mod container_e2e_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn container_e2e_rust_init_add_start() {
         const NODE_NAME: &str = "rust_e2e_node";
-        const NODE_TAG: &str = "0.1.0";
+        const NODE_TAG: &str = "v1";
         const INSTANCE_ID: &str = "rust_e2e_instance";
 
         let started = start_core_node_with_real_messenger_and_timeouts(
@@ -187,7 +187,7 @@ mod container_e2e_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn container_e2e_python_init_add_start() {
         const NODE_NAME: &str = "python_e2e_node";
-        const NODE_TAG: &str = "0.1.0";
+        const NODE_TAG: &str = "v1";
         const INSTANCE_ID: &str = "python_e2e_instance";
 
         let started = start_core_node_with_real_messenger_and_timeouts(

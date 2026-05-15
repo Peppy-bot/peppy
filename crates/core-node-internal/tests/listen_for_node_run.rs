@@ -32,7 +32,7 @@ fn create_node_config_dir(peppy_json5: &str) -> TempDir {
 async fn listen_for_node_run_success() {
     // These must match the values used in create_test_node()
     const TARGET_NODE_NAME: &str = "runnable_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
     let started_core_node = start_core_node_with_real_messenger().await;
@@ -136,7 +136,7 @@ async fn listen_for_node_run_timeout() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -195,7 +195,7 @@ async fn listen_for_node_run_timeout() {
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
-        "0.1.0",
+        "v1",
         &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
@@ -259,7 +259,7 @@ async fn listen_for_node_run_not_found() {
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
-        "0.1.0",
+        "v1",
         &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
@@ -295,7 +295,7 @@ async fn listen_for_node_run_not_found() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_streams_stdout_and_stderr() {
     const TARGET_NODE_NAME: &str = "stream_output_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "stream_output_instance";
     const STDOUT_MARKER: &str = "peppy_start_stdout_marker";
     const STDERR_MARKER: &str = "peppy_start_stderr_marker";
@@ -413,7 +413,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_writes_log_file() {
     const TARGET_NODE_NAME: &str = "log_file_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "log_file_instance";
     const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
     const STDERR_MARKER: &str = "peppy_logfile_stderr_marker";
@@ -552,7 +552,7 @@ async fn listen_for_node_run_writes_log_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_reports_all_missing_parameters() {
     const TARGET_NODE_NAME: &str = "params_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "params_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -674,7 +674,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided() {
     const TARGET_NODE_NAME: &str = "partial_params_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "partial_params_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -822,10 +822,10 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     use peppylib::ActionMessenger;
 
     const FIRST_NODE_NAME: &str = "abandoned_start_node";
-    const FIRST_NODE_TAG: &str = "0.1.0";
+    const FIRST_NODE_TAG: &str = "v1";
     const FIRST_INSTANCE_ID: &str = "abandoned_start_instance";
     const SECOND_NODE_NAME: &str = "second_start_node";
-    const SECOND_NODE_TAG: &str = "0.1.0";
+    const SECOND_NODE_TAG: &str = "v1";
     const SECOND_INSTANCE_ID: &str = "second_start_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -1037,7 +1037,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_uses_env_overrides_for_path() {
     const TARGET_NODE_NAME: &str = "env_path_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "env_path_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -1185,7 +1185,7 @@ sleep \"${1:-3}\"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_injects_runtime_env_vars() {
     const TARGET_NODE_NAME: &str = "runtime_env_start_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "runtime_env_start_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -1282,7 +1282,7 @@ async fn listen_for_node_run_with_container_success() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "container_start_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "container_start_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -1496,7 +1496,7 @@ async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns(
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "container_mount_create_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "container_mount_create_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -1659,7 +1659,7 @@ async fn listen_for_node_run_container_failure_includes_stderr_in_error() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "failing_container_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "failing_container_instance";
     const STDERR_MARKER: &str = "peppy_container_fatal_error_marker";
 
@@ -1784,7 +1784,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_logs_error_on_spawn_failure() {
     const TARGET_NODE_NAME: &str = "spawn_failure_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "spawn_failure_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -1897,7 +1897,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_remove_node_on_unhealthy_node() {
     const TARGET_NODE_NAME: &str = "health_monitor_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "health_monitor_instance";
 
     // Use fast health monitor settings so the test completes quickly:

@@ -68,7 +68,7 @@ async fn setup_stub(
 async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
     let brain = SerializedNode {
         name: "brain".to_string(),
-        tag: "0.1.0".to_string(),
+        tag: "v1".to_string(),
         config_path: "/tmp/brain.json5".to_string(),
         artifact_path: None,
         stage: Some(NodeStage::Ready),
@@ -79,7 +79,7 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
     };
     let sensor = SerializedNode {
         name: "sensor".to_string(),
-        tag: "0.1.0".to_string(),
+        tag: "v1".to_string(),
         config_path: "/tmp/sensor.json5".to_string(),
         artifact_path: None,
         stage: Some(NodeStage::Added),
@@ -117,7 +117,7 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
 async fn stack_list_returns_none_dot_graph_when_not_requested() {
     let brain = SerializedNode {
         name: "brain".to_string(),
-        tag: "0.1.0".to_string(),
+        tag: "v1".to_string(),
         config_path: "/tmp/brain.json5".to_string(),
         artifact_path: None,
         stage: Some(NodeStage::Ready),
@@ -128,7 +128,7 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
     };
     let sensor = SerializedNode {
         name: "sensor".to_string(),
-        tag: "0.1.0".to_string(),
+        tag: "v1".to_string(),
         config_path: "/tmp/sensor.json5".to_string(),
         artifact_path: None,
         stage: Some(NodeStage::Added),

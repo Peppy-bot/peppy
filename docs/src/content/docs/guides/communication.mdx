@@ -23,7 +23,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       peppy_schema: "node_v1",
       manifest: {
         name: "controller",
-        tag: "0.1.0",
+        tag: "v1",
       },
       interfaces: {
         topics: {
@@ -53,7 +53,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       peppy_schema: "node_v1",
       manifest: {
         name: "controller",
-        tag: "0.1.0",
+        tag: "v1",
       },
       interfaces: {
         topics: {
@@ -168,7 +168,7 @@ You can combine both steps into a single command with `peppy node add . --sync` 
 :::note
 Make sure `hello_world_param` is already in the node stack, otherwise you might get the following error:
 ```sh
-Error: `hello_receiver:0.1.0 depends on `hello_world_param:0.1.0`, but it does not exist in the stack
+Error: `hello_receiver:v1` depends on `hello_world_param:v1`, but it does not exist in the stack
 ```
 The `node add` and `node sync` both require the consumed nodes to be present in the node stack to 
 generate the proper interfaces for the programming language they are written in.
@@ -185,29 +185,29 @@ Node stack
 │ NODE                                 │ STAGE │ INSTANCES   │ PATH                                                           │
 ├──────────────────────────────────────┼───────┼─────────────┼────────────────────────────────────────────────────────────────┤
 │ core-node-sweet-germain-4388:v0.8.0  │ Root  │ 1 running   │ /Users/tuatini/workspace/peppy                                 │
-│ hello_receiver:0.1.0                 │ Ready │ 0 instances │ /Users/tuatini/.peppy/built_nodes/hello_receiver_0.1.0.tar.zst │
-│ hello_world_param:0.1.0              │ Ready │ 0 instances │ /Users/tuatini/.peppy/built_nodes/hello_world_param_0.1.0.tar.zst │
+│ hello_receiver:v1                 │ Ready │ 0 instances │ /Users/tuatini/.peppy/built_nodes/hello_receiver_v1.tar.zst │
+│ hello_world_param:v1              │ Ready │ 0 instances │ /Users/tuatini/.peppy/built_nodes/hello_world_param_v1.tar.zst │
 └──────────────────────────────────────┴───────┴─────────────┴────────────────────────────────────────────────────────────────┘
 
 
 Dependencies
-  - hello_receiver:0.1.0 -> hello_world_param:0.1.0
+  - hello_receiver:v1 -> hello_world_param:v1
 ```
 
-We need to make sure that at least one instance is started for `hello_receiver:0.1.0` and another one for `hello_world_param:0.1.0`.
+We need to make sure that at least one instance is started for `hello_receiver:v1` and another one for `hello_world_param:v1`.
 The order in which the nodes are started does not affect the node communication.
-Let's start a `hello_world_param:0.1.0` instance:
+Let's start a `hello_world_param:v1` instance:
 ```sh
-peppy node run hello_world_param:0.1.0 name=planet
+peppy node run hello_world_param:v1 name=planet
 ```
 
 Since our node requires a `name`, we provide it with that argument on startup.
 Now let's start the `hello_receiver` node:
 ```sh
-❯ peppy node run hello_receiver:0.1.0
-Running node hello_receiver:0.1.0...
-Starting node hello_receiver:0.1.0 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
-Calling node_start for hello_receiver:0.1.0 (instance_id=vigorous-buck-8117)...
+❯ peppy node run hello_receiver:v1
+Running node hello_receiver:v1...
+Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
+Calling node_start for hello_receiver:v1 (instance_id=vigorous-buck-8117)...
 Log file: /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
@@ -222,16 +222,16 @@ If we open it up:
 [2026-01-24T10:02:57.244] [stdout] Received from gifted-moser-9365: hello planet count 9
 ```
 
-We can see the messages received from the `hello_world_param:0.1.0` instance!
+We can see the messages received from the `hello_world_param:v1` instance!
 
 ## Starting a second instance with different parameters
 
 Now let's push things a little further. Imagine we need a second instance with different parameters—we can start one like this:
 ```sh
-❯ peppy node run hello_world_param:0.1.0 name=you
-Running node hello_world_param:0.1.0...
-Starting node hello_world_param:0.1.0 with instance_id 'admiring-black-0614' and 1 argument(s)...
-Calling node_start for hello_world_param:0.1.0 (instance_id=admiring-black-0614)...
+❯ peppy node run hello_world_param:v1 name=you
+Running node hello_world_param:v1...
+Starting node hello_world_param:v1 with instance_id 'admiring-black-0614' and 1 argument(s)...
+Calling node_start for hello_world_param:v1 (instance_id=admiring-black-0614)...
 Log file: /Users/tuatini/.peppy/logs/run/admiring-black-0614.log
 Started node instance 'admiring-black-0614' (pid: 78063)
 ```
@@ -257,13 +257,13 @@ Node stack
 │ NODE                                 │ STAGE │ INSTANCES  │ PATH                                                           │
 ├──────────────────────────────────────┼───────┼────────────┼────────────────────────────────────────────────────────────────┤
 │ core-node-sweet-germain-4388:v0.8.0  │ Root  │ 1 running  │ /Users/tuatini/workspace/peppy                                 │
-│ hello_receiver:0.1.0                 │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/hello_receiver_0.1.0.tar.zst │
-│ hello_world_param:0.1.0              │ Ready │ 2 running  │ /Users/tuatini/.peppy/built_nodes/hello_world_param_0.1.0.tar.zst │
+│ hello_receiver:v1                 │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/hello_receiver_v1.tar.zst │
+│ hello_world_param:v1              │ Ready │ 2 running  │ /Users/tuatini/.peppy/built_nodes/hello_world_param_v1.tar.zst │
 └──────────────────────────────────────┴───────┴────────────┴────────────────────────────────────────────────────────────────┘
 
 
 Dependencies
-  - hello_receiver:0.1.0 -> hello_world_param:0.1.0
+  - hello_receiver:v1 -> hello_world_param:v1
 ```
 
 ---

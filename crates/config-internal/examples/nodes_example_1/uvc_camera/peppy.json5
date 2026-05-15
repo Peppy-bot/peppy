@@ -3,7 +3,7 @@
   peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
-    tag: "0.1.0",
+    tag: "v1",
     // Labels are useful if the node is published with `peppy node publish`
     labels: [
       "uvc",

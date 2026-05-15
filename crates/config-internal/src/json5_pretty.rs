@@ -145,10 +145,10 @@ mod tests {
 
     #[test]
     fn unquoted_keys_for_simple_identifiers() {
-        let v = json!({ "node_name": "foo", "node_tag": "0.1.0" });
+        let v = json!({ "node_name": "foo", "node_tag": "v1" });
         let s = to_string_pretty(&v).unwrap();
         assert!(s.contains("node_name: \"foo\""), "got: {s}");
-        assert!(s.contains("node_tag: \"0.1.0\""), "got: {s}");
+        assert!(s.contains("node_tag: \"v1\""), "got: {s}");
     }
 
     #[test]
@@ -188,7 +188,7 @@ mod tests {
         let v = json!([
             {
                 "node_name": "openarm01_arm",
-                "tag": "0.1.0",
+                "tag": "v1",
                 "duplicate": false,
             }
         ]);

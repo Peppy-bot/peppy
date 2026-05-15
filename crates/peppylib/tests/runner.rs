@@ -107,7 +107,7 @@ async fn daemon_runner_succeed() {
       peppy_schema: "node_v1",
       manifest: {
         name: "test_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       execution: {
         language: "rust",
@@ -252,7 +252,7 @@ async fn standalone_runner_succeed() {
       peppy_schema: "node_v1",
       manifest: {
         name: "test_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       execution: {
         language: "rust",
@@ -311,7 +311,7 @@ async fn node_ready_but_not_healthy() {
       peppy_schema: "node_v1",
       manifest: {
         name: "test_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       execution: {
         language: "rust",
@@ -564,7 +564,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
       peppy_schema: "node_v1",
       manifest: {
         name: "test_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       execution: {
         language: "rust",
@@ -699,7 +699,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
       peppy_schema: "node_v1",
       manifest: {
         name: "test_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       execution: {
         language: "rust",

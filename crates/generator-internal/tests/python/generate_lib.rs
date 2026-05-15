@@ -12,7 +12,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: {
     name: "test_node",
-    tag: "0.1.0"
+    tag: "v1"
   },
   interfaces: {
     topics: {
@@ -129,7 +129,7 @@ fn generate_peppygen_lib_minimal_config() {
     let minimal_config = r#"{
       peppy_schema: "node_v1",
       manifest: { name: "minimal_node",
-        tag: "0.1.0" },
+        tag: "v1" },
       execution: { language: "python",
         build_cmd: ["uv", "sync"],
         run_cmd: ["uv", "run", "minimal_node"]
@@ -186,7 +186,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           interfaces: {
             topics: {
@@ -239,7 +239,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           execution: {
             language: "python",
@@ -301,7 +301,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           interfaces: {
             services: {
@@ -357,7 +357,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           execution: {
             language: "python",
@@ -432,7 +432,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           interfaces: {
             actions: {
@@ -500,7 +500,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           execution: {
             language: "python",

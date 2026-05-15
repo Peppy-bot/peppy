@@ -96,7 +96,7 @@ async fn stage_node_for_build<'a>(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_runs_build_cmd() {
     const TARGET_NODE_NAME: &str = "add_cmd_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -161,7 +161,7 @@ async fn listen_for_node_build_runs_build_cmd() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_cmd_failure_fails_build() {
     const TARGET_NODE_NAME: &str = "add_cmd_fail_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
@@ -225,7 +225,7 @@ async fn listen_for_node_build_cmd_failure_fails_build() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_cmd_nonzero_exit_fails_build() {
     const TARGET_NODE_NAME: &str = "add_cmd_exit_fail_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
@@ -289,7 +289,7 @@ async fn listen_for_node_build_cmd_nonzero_exit_fails_build() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_cmd_streams_stdout_and_stderr() {
     const TARGET_NODE_NAME: &str = "stream_output_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const STDOUT_MARKER: &str = "peppy_add_stdout_marker";
     const STDERR_MARKER: &str = "peppy_add_stderr_marker";
 
@@ -356,7 +356,7 @@ async fn listen_for_node_build_cmd_streams_stdout_and_stderr() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_writes_log_file() {
     const TARGET_NODE_NAME: &str = "log_file_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
     const STDERR_MARKER: &str = "peppy_logfile_stderr_marker";
 
@@ -457,7 +457,7 @@ async fn listen_for_node_build_writes_log_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_copies_files_to_storage() {
     const TARGET_NODE_NAME: &str = "copy_test_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -537,7 +537,7 @@ async fn listen_for_node_build_copies_files_to_storage() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_uses_env_overrides_for_path() {
     const TARGET_NODE_NAME: &str = "the_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
     const STDERR_MARKER: &str = "peppy_logfile_stderr_marker";
 
@@ -646,7 +646,7 @@ echo \"$@\"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_injects_runtime_env_vars() {
     const TARGET_NODE_NAME: &str = "runtime_env_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -696,7 +696,7 @@ async fn listen_for_node_build_injects_runtime_env_vars() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_with_container_success() {
     const TARGET_NODE_NAME: &str = "container_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -834,7 +834,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_container_build_failure_includes_stderr_in_error() {
     const TARGET_NODE_NAME: &str = "broken_container_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
@@ -935,7 +935,7 @@ From: nowhere
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_logs_error_on_spawn_failure() {
     const TARGET_NODE_NAME: &str = "add_spawn_failure_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 

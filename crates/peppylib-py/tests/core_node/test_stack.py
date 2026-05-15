@@ -17,7 +17,7 @@ def _sample_graph_json() -> str:
     """Matches the two-node brain→sensor graph used in the Rust stack tests."""
     brain = {
         "name": "brain",
-        "tag": "0.1.0",
+        "tag": "v1",
         "config_path": "/tmp/brain.json5",
         "artifact_path": None,
         "stage": "Ready",
@@ -25,7 +25,7 @@ def _sample_graph_json() -> str:
     }
     sensor = {
         "name": "sensor",
-        "tag": "0.1.0",
+        "tag": "v1",
         "config_path": "/tmp/sensor.json5",
         "artifact_path": None,
         "stage": "Added",

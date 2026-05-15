@@ -709,11 +709,11 @@ mod tests {
     #[test]
     fn lookup_picks_lowest_repo_id() {
         let entries = vec![
-            mk_entry("a", "0.1.0", 5),
-            mk_entry("a", "0.1.0", 2),
-            mk_entry("a", "0.1.0", 9),
+            mk_entry("a", "v1", 5),
+            mk_entry("a", "v1", 2),
+            mk_entry("a", "v1", 9),
         ];
-        let hit = lookup(&entries, "a", "0.1.0").unwrap();
+        let hit = lookup(&entries, "a", "v1").unwrap();
         assert_eq!(hit.repo_id, 2);
     }
 
@@ -721,8 +721,8 @@ mod tests {
     /// (lowest id) wins among entries that share `(name, tag)`.
     #[test]
     fn lookup_returns_highest_priority_when_multiple_match() {
-        let entries = vec![mk_entry("a", "0.1.0", 7), mk_entry("a", "0.1.0", 3)];
-        let hit = lookup(&entries, "a", "0.1.0").unwrap();
+        let entries = vec![mk_entry("a", "v1", 7), mk_entry("a", "v1", 3)];
+        let hit = lookup(&entries, "a", "v1").unwrap();
         assert_eq!(hit.repo_id, 3);
     }
 
@@ -730,15 +730,15 @@ mod tests {
     /// matches exactly, bypassing the repo-priority tiebreak.
     #[test]
     fn lookup_by_sha256_returns_exact_match() {
-        let mut older = mk_entry("a", "0.1.0", 1);
+        let mut older = mk_entry("a", "v1", 1);
         older.sha256 = "aaaa".to_owned();
-        let mut newer = mk_entry("a", "0.1.0", 9);
+        let mut newer = mk_entry("a", "v1", 9);
         newer.sha256 = "bbbb".to_owned();
         let entries = vec![older, newer];
 
-        let hit = lookup_by_sha256(&entries, "a", "0.1.0", "bbbb").unwrap();
+        let hit = lookup_by_sha256(&entries, "a", "v1", "bbbb").unwrap();
         assert_eq!(hit.repo_id, 9);
-        assert!(lookup_by_sha256(&entries, "a", "0.1.0", "zzzz").is_none());
+        assert!(lookup_by_sha256(&entries, "a", "v1", "zzzz").is_none());
     }
 
     #[test]
@@ -757,7 +757,7 @@ mod tests {
         let input = vec![
             NodeCacheEntry {
                 node_name: "a".to_owned(),
-                node_tag: "0.1.0".to_owned(),
+                node_tag: "v1".to_owned(),
                 source_type: RepoSourceKind::Git,
                 source_uri: Some("https://example.com/repo.git".to_owned()),
                 resolved_ref: Some("main".to_owned()),
@@ -768,7 +768,7 @@ mod tests {
             },
             NodeCacheEntry {
                 node_name: "b".to_owned(),
-                node_tag: "0.2.0".to_owned(),
+                node_tag: "v2".to_owned(),
                 source_type: RepoSourceKind::Fs,
                 source_uri: None,
                 resolved_ref: None,
@@ -1119,7 +1119,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let entries = vec![mk_interface_entry(
             "uvc_camera",
-            "0.1.0",
+            "v1",
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
             RepoSourceKind::Git,
             Some("https://github.com/Peppy-bot/interfaces_hub"),
@@ -1138,7 +1138,7 @@ mod tests {
         let arr = parsed.as_array().expect("expected array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["interface_name"], "uvc_camera");
-        assert_eq!(arr[0]["tag"], "0.1.0");
+        assert_eq!(arr[0]["tag"], "v1");
         assert_eq!(
             arr[0]["sha256"],
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
@@ -1155,7 +1155,7 @@ mod tests {
         let entries = vec![
             mk_interface_entry(
                 "uvc_camera",
-                "0.1.0",
+                "v1",
                 "bbbb",
                 RepoSourceKind::Git,
                 Some("https://example.com/b"),
@@ -1165,7 +1165,7 @@ mod tests {
             ),
             mk_interface_entry(
                 "uvc_camera",
-                "0.1.0",
+                "v1",
                 "aaaa",
                 RepoSourceKind::Git,
                 Some("https://example.com/a"),
@@ -1174,7 +1174,7 @@ mod tests {
                 1,
             ),
         ];
-        let hit = lookup_interface(&entries, "uvc_camera", "0.1.0").unwrap();
+        let hit = lookup_interface(&entries, "uvc_camera", "v1").unwrap();
         assert_eq!(hit.repo_id, 1);
         assert_eq!(hit.sha256, "aaaa");
     }
@@ -1186,7 +1186,7 @@ mod tests {
         let entries = vec![
             mk_interface_entry(
                 "uvc_camera",
-                "0.1.0",
+                "v1",
                 "aaaa",
                 RepoSourceKind::Fs,
                 None,
@@ -1196,7 +1196,7 @@ mod tests {
             ),
             mk_interface_entry(
                 "uvc_camera",
-                "0.1.0",
+                "v1",
                 "bbbb",
                 RepoSourceKind::Fs,
                 None,
@@ -1205,8 +1205,8 @@ mod tests {
                 9,
             ),
         ];
-        let hit = lookup_interface_by_sha256(&entries, "uvc_camera", "0.1.0", "bbbb").unwrap();
+        let hit = lookup_interface_by_sha256(&entries, "uvc_camera", "v1", "bbbb").unwrap();
         assert_eq!(hit.repo_id, 9);
-        assert!(lookup_interface_by_sha256(&entries, "uvc_camera", "0.1.0", "zzzz").is_none());
+        assert!(lookup_interface_by_sha256(&entries, "uvc_camera", "v1", "zzzz").is_none());
     }
 }

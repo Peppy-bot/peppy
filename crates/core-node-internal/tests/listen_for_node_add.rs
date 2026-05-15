@@ -223,7 +223,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
             peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
-                tag: "0.1.0",
+                tag: "v1",
             },
             interfaces: {
                 topics: {
@@ -268,7 +268,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
             peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
-                tag: "0.2.0",
+                tag: "v2",
             },
             interfaces: {
                 services: {
@@ -330,7 +330,7 @@ fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bad_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             interfaces: {},
         }"#,

@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn node_add_goal_repo_node_source_roundtrips() {
-        let encoded = NodeAddGoal::new_repo_node("camera", "0.1.0", "hash", 42)
+        let encoded = NodeAddGoal::new_repo_node("camera", "v1", "hash", 42)
             .expect("repo_node constructor should accept valid inputs")
             .encode()
             .expect("encoding should succeed");
@@ -348,7 +348,7 @@ mod tests {
             decoded.source,
             NodeSource::RepoNode {
                 name: "camera".to_owned(),
-                tag: "0.1.0".to_owned(),
+                tag: "v1".to_owned(),
             }
         );
     }
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn decode_repo_node_rejects_empty_name() {
-        assert!(NodeSource::decode_repo_node("", "0.1.0").is_err());
+        assert!(NodeSource::decode_repo_node("", "v1").is_err());
     }
 
     #[test]
@@ -387,7 +387,7 @@ mod tests {
             "name with space",
         ] {
             assert!(
-                NodeSource::decode_repo_node(name, "0.1.0").is_err(),
+                NodeSource::decode_repo_node(name, "v1").is_err(),
                 "name `{name}` should be rejected"
             );
         }

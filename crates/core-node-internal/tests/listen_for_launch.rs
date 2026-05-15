@@ -46,7 +46,7 @@ const LAUNCHER_EXAMPLE1: &str = r#"
       source: {
         repo: "${UVC_CAMERA_REPO}",
         path: "uvc_camera",
-        ref: "0.1.0"
+        ref: "v1"
       },
       instances: [
         {
@@ -186,7 +186,7 @@ fn write_node_config_with_options(
     let depends_on = if expects_uvc_camera {
         r#"depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
                     ]
                 },"#
     } else {
@@ -429,7 +429,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     const FAKE_UVC_CAMERA: &str = "fake_uvc_camera";
     const FAKE_ROBOT_BRAIN: &str = "fake_robot_brain";
     const FAKE_OPENARM01_CONTROLLER: &str = "fake_openarm01_controller";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -593,7 +593,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
 async fn listen_for_launch_configuration_succeed() {
     const UVC_NODE_NAME: &str = "uvc_camera";
     const ROBOT_NODE_NAME: &str = "robot_brain";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -836,7 +836,7 @@ async fn listen_for_launch_configuration_succeed() {
 async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
     const BRAIN_NODE: &str = "repo_brain";
     const ARM_NODE: &str = "repo_arm";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -979,7 +979,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
 async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_error_and_does_not_mutate_stack()
  {
     const EXISTING_NODE: &str = "existing_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -1024,7 +1024,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
     const EXISTING_NODE: &str = "existing_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -1072,7 +1072,7 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_config_missing_required_deployment_does_not_apply_partial_plan() {
     const EXISTING_NODE: &str = "existing_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -1130,7 +1130,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
 async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rejected() {
     const UVC_NODE_NAME: &str = "uvc_camera";
     const ROBOT_NODE_NAME: &str = "robot_brain";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -1206,7 +1206,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_launch_config_second_request_replaces_existing_stack() {
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -1320,7 +1320,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healthy() {
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     // Use a short health timeout so the test doesn't take too long.
     let started_core_node = start_core_node_with_health_timeout(Duration::from_secs(2)).await;
@@ -1403,7 +1403,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores_stack() {
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -1464,7 +1464,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
         .error_message
         .expect("error_message should be set on build_cmd failure");
     assert!(
-        error_message.contains("failing_node:0.1.0"),
+        error_message.contains("failing_node:v1"),
         "error message should contain the node name:tag, got: {error_message}"
     );
 
@@ -1481,7 +1481,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     const NODE_NAME: &str = "failing_start_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
     const INSTANCE_ID: &str = "fs1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -1618,7 +1618,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
     // `. "$HOME/.cargo/env"`), but that only affects their shell, not the daemon. We model this by
     // passing a PATH override in the goal on the second attempt.
     const NODE_NAME: &str = "node_b";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
     const INSTANCE_ID: &str = "b1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -1737,7 +1737,7 @@ sleep \"${1:-60}\"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_resolves_launcher_from_repository_cache() {
     const ROBOT_NODE_NAME: &str = "robot_brain_repo";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
     const LAUNCHER_NAME: &str = "robot_brain_demo";
 
     let started_core_node = start_core_node_with_mock_messenger().await;

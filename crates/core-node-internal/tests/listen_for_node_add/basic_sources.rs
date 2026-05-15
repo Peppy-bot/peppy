@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_fs_add_success() {
     const TARGET_NODE_NAME: &str = "runnable_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -60,7 +60,7 @@ async fn listen_for_node_git_add_success() {
     let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
 
     const TARGET_NODE_NAME: &str = "uvc_camera";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_REPO_PATH: &str = "nodes/uvc_camera";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -133,7 +133,7 @@ async fn listen_for_node_git_add_with_ref_success() {
         "node_add should succeed, got error: {:?}",
         add_result_head.error_message
     );
-    assert!(node_stack.contains(TARGET_NODE_NAME, "0.2.0"));
+    assert!(node_stack.contains(TARGET_NODE_NAME, "v2"));
 
     let add_result_ref = send_node_add_and_wait(
         &started_core_node.caller_handle,
@@ -155,12 +155,12 @@ async fn listen_for_node_git_add_with_ref_success() {
         "node_add should succeed, got error: {:?}",
         add_result_ref.error_message
     );
-    assert!(node_stack.contains(TARGET_NODE_NAME, "0.1.0"));
+    assert!(node_stack.contains(TARGET_NODE_NAME, "v1"));
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_http_add_success() {
     const TARGET_NODE_NAME: &str = "http_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -254,7 +254,7 @@ async fn listen_for_node_http_add_success() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_http_add_rejects_wrong_sha256() {
     const TARGET_NODE_NAME: &str = "http_sha_bad";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -295,7 +295,7 @@ async fn listen_for_node_http_add_rejects_wrong_sha256() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_http_add_accepts_correct_sha256() {
     const TARGET_NODE_NAME: &str = "http_sha_ok";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -390,7 +390,7 @@ async fn listen_for_node_git_add_emits_clone_feedback() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_http_add_emits_download_feedback() {
     const TARGET_NODE_NAME: &str = "http_dl_feedback_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 

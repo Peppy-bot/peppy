@@ -58,7 +58,7 @@ async fn poll_node_info(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     const TARGET_NODE_NAME: &str = "fs_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "fs_instance";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -69,7 +69,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "fs_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -157,7 +157,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_has_instance_ids() {
     const TARGET_NODE_NAME: &str = "instance_ids_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID_1: &str = "instance_one";
     const TARGET_INSTANCE_ID_2: &str = "instance_two";
 
@@ -168,7 +168,7 @@ async fn node_info_has_instance_ids() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "instance_ids_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -329,7 +329,7 @@ async fn node_info_has_instance_ids() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_reports_not_in_stack_and_recovers() {
     const TARGET_NODE_NAME: &str = "fs_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
@@ -337,7 +337,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
     // successful response channel. No error log, no transport fault.
     let response = poll_node_info_raw(
         &started_core_node,
-        &NodeInfoRequest::new("ghost_node", "9.9.9"),
+        &NodeInfoRequest::new("ghost_node", "v999"),
         Duration::from_secs(2),
     )
     .await
@@ -355,7 +355,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "fs_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",

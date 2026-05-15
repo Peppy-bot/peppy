@@ -21,11 +21,13 @@ The manifest defines a node's identity:
 | Field | Description |
 |-------|-------------|
 | `name` | A validated identifier (ASCII letters, digits, `_`, `-`) |
-| `tag` | A version identifier (e.g., `v1.0.0`) |
+| `tag` | A short contract identifier (e.g., `v1`, `donut`). Must start with an ASCII letter; allowed chars are letters, digits, `_`, `-`. Dots are forbidden. |
 | `labels` | Optional metadata labels |
 | `depends_on` | Optional dependency declarations on other nodes |
 
 A node is uniquely identified by its `name:tag` combination.
+
+Tags are **not** semver. Bumping a tag always means "incompatible with the previous one" — there is no notion of a backward-compatible patch or minor release. Pick a label that identifies the contract (`v1`, `v2`, `donut`), not a version number.
 
 ### Execution
 

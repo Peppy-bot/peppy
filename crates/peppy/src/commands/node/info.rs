@@ -456,7 +456,7 @@ mod tests {
                 peppy_schema: "node_v1",
                 manifest: {{
                     name: "sensor_node",
-                    tag: "0.1.0",
+                    tag: "v1",
                 }},
                 interfaces: {{}},
                 execution: {execution_json5}
@@ -514,7 +514,7 @@ mod tests {
         // Logs section grouped under <name>:<tag>
         assert!(out.contains("\nLogs\n"), "Logs heading missing:\n{out}");
         assert!(
-            out.contains("sensor_node:0.1.0"),
+            out.contains("sensor_node:v1"),
             "node:tag heading missing:\n{out}"
         );
         assert!(

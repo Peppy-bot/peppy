@@ -21,7 +21,7 @@ PEPPY_CONFIG = """{
   peppy_schema: "node_v1",
   manifest: {
     name: "test_node",
-    tag: "0.1.0",
+    tag: "v1",
   },
   execution: {
     language: "python",
