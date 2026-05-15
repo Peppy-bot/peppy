@@ -14,7 +14,9 @@ use core_node_api::encoding::{
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
-use peppylib::messaging::{MessengerHandle, TopicMessenger};
+use peppylib::messaging::{
+    MessengerHandle, NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, TopicMessenger,
+};
 use peppylib::runtime::{TaskHandle, spawn};
 use peppylib::{ActionMessenger, PeppyError, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
@@ -147,8 +149,8 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         caller_core_node,
         caller_instance_id,
         &started.core_node_name,
-        "_",
-        "_",
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         names::CLOCK,
         Some(&started.core_node_name),
         None,

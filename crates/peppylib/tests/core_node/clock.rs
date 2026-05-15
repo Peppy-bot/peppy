@@ -3,7 +3,10 @@ use std::time::Duration;
 use config::node::QoSProfile;
 use core_node_api::encoding::{ClockResponse, ClockTick};
 use core_node_api::names;
-use peppylib::messaging::{MessengerHandle, ServiceMessenger, TopicMessenger};
+use peppylib::messaging::{
+    MessengerHandle, NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, ServiceMessenger,
+    TopicMessenger,
+};
 use peppylib::{subscribe_clock, synchronize};
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
@@ -83,8 +86,8 @@ async fn subscribe_clock_yields_typed_ticks() {
         CORE_NODE,
         SERVER_INSTANCE,
         CORE_NODE,
-        "_",
-        "_",
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         names::CLOCK,
         QoSProfile::SensorData,
         canned.encode().expect("encode tick"),

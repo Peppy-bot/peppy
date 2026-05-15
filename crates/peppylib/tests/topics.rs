@@ -1,5 +1,7 @@
 use config::node::QoSProfile;
-use peppylib::messaging::{MessengerHandle, TopicMessenger};
+use peppylib::messaging::{
+    MessengerHandle, NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, TopicMessenger,
+};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::time::Duration;
@@ -30,8 +32,8 @@ async fn topic_messenger_communication() {
         core_node,
         instance_id,
         node_name,
-        "_",
-        "_",
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         topic_name,
         None, // Accept messages from any core node
         None, // Accept messages from any instance
@@ -49,8 +51,8 @@ async fn topic_messenger_communication() {
         core_node,
         instance_id,
         node_name,
-        "_",
-        "_",
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         topic_name,
         QoSProfile::Reliable,
         payload.clone(),
