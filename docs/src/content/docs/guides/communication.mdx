@@ -168,7 +168,7 @@ You can combine both steps into a single command with `peppy node add . --sync` 
 :::note
 Make sure `hello_world_param` is already in the node stack, otherwise you might get the following error:
 ```sh
-Error: `hello_receiver:v1 depends on `hello_world_param:v1`, but it does not exist in the stack
+Error: `hello_receiver:v1` depends on `hello_world_param:v1`, but it does not exist in the stack
 ```
 The `node add` and `node sync` both require the consumed nodes to be present in the node stack to 
 generate the proper interfaces for the programming language they are written in.
