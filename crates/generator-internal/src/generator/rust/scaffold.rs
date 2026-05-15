@@ -8,6 +8,7 @@ use crate::{
     error::{Error, Result},
     generator::{
         naming::{sanitize_component, unique_module_name},
+        scaffold_tree::{ModuleTree, build_module_tree},
         types::{CapnpSchema, InterfaceArtifact, ModuleCategory},
     },
 };
@@ -65,40 +66,6 @@ pub fn add_artifacts_to_lib(
     }
 
     Ok(())
-}
-
-/// Recursive tree of artifacts: a directory contains nested subtrees keyed
-/// by their next path segment, and at the leaf level we keep the single
-/// artifact whose final segment matches.
-#[derive(Default)]
-struct ModuleTree {
-    /// Sub-directories keyed by their (raw) segment. Sanitized on write.
-    children: BTreeMap<String, ModuleTree>,
-    /// Leaf artifacts produced at this level. Multiple artifacts at the same
-    /// leaf segment are allowed (e.g. an action that registers helper symbols);
-    /// they are concatenated into one rendered file.
-    leaves: BTreeMap<String, Vec<InterfaceArtifact>>,
-}
-
-fn build_module_tree(artifacts: Vec<InterfaceArtifact>) -> ModuleTree {
-    let mut root = ModuleTree::default();
-    for artifact in artifacts {
-        insert_into_tree(&mut root, &artifact.module_path.clone(), artifact);
-    }
-    root
-}
-
-fn insert_into_tree(node: &mut ModuleTree, path: &[String], artifact: InterfaceArtifact) {
-    match path {
-        [] => unreachable!("InterfaceArtifact::module_path must not be empty"),
-        [leaf] => {
-            node.leaves.entry(leaf.clone()).or_default().push(artifact);
-        }
-        [segment, rest @ ..] => {
-            let child = node.children.entry(segment.clone()).or_default();
-            insert_into_tree(child, rest, artifact);
-        }
-    }
 }
 
 /// Generates and writes the parameters struct to the library.

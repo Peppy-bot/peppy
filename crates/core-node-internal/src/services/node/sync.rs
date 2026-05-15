@@ -791,7 +791,6 @@ pub fn resolve_conforms_to(
         return Ok(Vec::new());
     }
 
-    // (1) Duplicate raw `(name, tag)` check.
     let mut seen_raw: HashSet<(String, String)> = HashSet::new();
     for item in items {
         let key = (item.name.as_str().to_string(), item.tag.clone());
@@ -804,10 +803,9 @@ pub fn resolve_conforms_to(
         }
     }
 
-    // (2) Sanitize-collision check — distinct raw tags that share a sanitized
-    // form (e.g. `v1` and `v-1`) would generate to the same module path on
-    // disk and the same Zenoh wire-path segments. Refuse them up front rather
-    // than silently merging.
+    // Distinct raw tags that share a sanitized form (e.g. `v1` and `v-1`)
+    // would generate to the same module path on disk and the same Zenoh
+    // wire-path segments. Refuse them up front rather than silently merging.
     let mut seen_sanitized: HashMap<(String, String), (String, String)> = HashMap::new();
     for item in items {
         let sanitized_tag = item.tag.replace('-', "_");
@@ -828,8 +826,6 @@ pub fn resolve_conforms_to(
         }
     }
 
-    // (3) Load cache once; surface the same "run repo refresh" suggestion as
-    // the node-dep miss path.
     let cache = repo_cache::load_interface_cache(peppy_dirs)
         .map_err(|e| format!("failed to load interface cache: {e}"))?;
 
@@ -850,9 +846,10 @@ pub fn resolve_conforms_to(
             })?,
         };
 
-        // (4) Re-fingerprint the on-disk content. If the user pinned a sha256,
-        // the lookup above already verified it; this guards against drift for
-        // unpinned entries (the cached entry says X but the file says Y).
+        // Re-fingerprint the on-disk content to guard against drift between
+        // the cached entry (recorded at `peppy repo refresh`) and what's on
+        // disk now — for both pinned and unpinned entries, since the cache
+        // entry's sha256 reflects the last-refreshed bytes, not live bytes.
         let bytes = std::fs::read(&entry.path).map_err(|e| {
             format!(
                 "failed to read cached interface `{name}:{tag}` at {}: {e}",
@@ -868,8 +865,6 @@ pub fn resolve_conforms_to(
             ));
         }
 
-        // (5) Parse via the canonical parser and wrap each producer-side
-        // item with the conforms-to origin.
         let content = std::str::from_utf8(&bytes)
             .map_err(|e| format!("cached interface `{name}:{tag}` is not UTF-8: {e}"))?;
         let parsed = config::interface::PeppyInterfaceParser::from_content(content)

@@ -1,6 +1,7 @@
 use config::consts::DEFAULT_MESSAGING_PORT;
 use config::node::QoSProfile;
 use names_generator2::get_random;
+use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::{MessengerHandle, Payload, TopicMessenger};
 use rand::rng;
 
@@ -33,11 +34,12 @@ async fn main() {
         &core_node,
         &instance_id,
         node_name,
-        "_",
-        "_",
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         topic_name,
         qos,
-        payload)
+        payload,
+    )
     .await
     .expect("Should send the payload");
     println!("Payload sent");

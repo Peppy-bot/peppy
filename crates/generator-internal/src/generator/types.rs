@@ -42,6 +42,18 @@ pub struct InterfaceOrigin {
     pub iface_tag: String,
 }
 
+impl InterfaceOrigin {
+    /// Module path for an artifact contributed by this origin:
+    /// `[iface_name, sanitized_tag, leaf_name]`.
+    pub fn module_path_for(&self, leaf_name: &str) -> Vec<String> {
+        vec![
+            self.iface_name.clone(),
+            crate::generator::naming::sanitize_iface_tag(&self.iface_tag),
+            leaf_name.to_string(),
+        ]
+    }
+}
+
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
 #[derive(Debug, Clone)]
 pub enum InterfaceVariant {
@@ -128,6 +140,27 @@ impl InterfaceArtifact {
         kind: InterfaceKind,
         code_output: String,
     ) -> Self {
+        Self {
+            module_path,
+            kind,
+            code_output,
+        }
+    }
+
+    /// Builds an artifact for `leaf_name`, nesting under
+    /// `{iface_name}/{iface_tag}/{leaf_name}` when contributed via
+    /// `interfaces.conforms_to`, or a single-segment `[leaf_name]` for the
+    /// node's own (native) declarations.
+    pub fn for_leaf(
+        origin: Option<&InterfaceOrigin>,
+        leaf_name: &str,
+        kind: InterfaceKind,
+        code_output: String,
+    ) -> Self {
+        let module_path = match origin {
+            Some(o) => o.module_path_for(leaf_name),
+            None => vec![leaf_name.to_string()],
+        };
         Self {
             module_path,
             kind,

@@ -2,6 +2,7 @@ use super::identifiers::is_python_keyword;
 use crate::error::Result;
 use crate::generator::common::{cache_sibling_path, copy_dir_recursive};
 use crate::generator::naming::{sanitize_component, unique_module_name};
+use crate::generator::scaffold_tree::{ModuleTree, build_module_tree};
 #[cfg(test)]
 use crate::generator::types::InterfaceKind;
 use crate::generator::types::{CapnpSchema, InterfaceArtifact, ModuleCategory};
@@ -215,34 +216,6 @@ pub fn add_artifacts_to_lib(to_path: &Path, artifacts: Vec<InterfaceArtifact>) -
     }
 
     Ok(())
-}
-
-#[derive(Default)]
-struct ModuleTree {
-    children: BTreeMap<String, ModuleTree>,
-    leaves: BTreeMap<String, Vec<InterfaceArtifact>>,
-}
-
-fn build_module_tree(artifacts: Vec<InterfaceArtifact>) -> ModuleTree {
-    let mut root = ModuleTree::default();
-    for artifact in artifacts {
-        let path = artifact.module_path.clone();
-        insert_into_tree(&mut root, &path, artifact);
-    }
-    root
-}
-
-fn insert_into_tree(node: &mut ModuleTree, path: &[String], artifact: InterfaceArtifact) {
-    match path {
-        [] => unreachable!("InterfaceArtifact::module_path must not be empty"),
-        [leaf] => {
-            node.leaves.entry(leaf.clone()).or_default().push(artifact);
-        }
-        [segment, rest @ ..] => {
-            let child = node.children.entry(segment.clone()).or_default();
-            insert_into_tree(child, rest, artifact);
-        }
-    }
 }
 
 /// Recursive worker mirroring the Rust scaffold layout. Writes one `.py` per

@@ -56,27 +56,13 @@ impl PythonGenerator {
         self.current_origin.as_ref()
     }
 
-    /// See [`super::rust::RustGenerator::artifact_module_path`] — same idea:
-    /// build the nested path from the optional conforms_to origin, falling
-    /// back to a single-segment leaf when no origin is set.
-    fn artifact_module_path(&self, leaf_name: &str) -> Vec<String> {
-        match self.current_origin() {
-            Some(origin) => vec![
-                origin.iface_name.clone(),
-                crate::generator::naming::sanitize_iface_tag(&origin.iface_tag),
-                leaf_name.to_string(),
-            ],
-            None => vec![leaf_name.to_string()],
-        }
-    }
-
     fn make_artifact(
         &self,
         leaf_name: &str,
         kind: InterfaceKind,
         code_output: String,
     ) -> InterfaceArtifact {
-        InterfaceArtifact::from_kind_nested(self.artifact_module_path(leaf_name), kind, code_output)
+        InterfaceArtifact::for_leaf(self.current_origin(), leaf_name, kind, code_output)
     }
 
     /// Sets the node parameters for code generation.

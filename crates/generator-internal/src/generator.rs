@@ -1,5 +1,6 @@
 pub mod common;
 pub(crate) mod naming;
+pub(crate) mod scaffold_tree;
 #[cfg(test)]
 #[macro_use]
 mod test_helpers;

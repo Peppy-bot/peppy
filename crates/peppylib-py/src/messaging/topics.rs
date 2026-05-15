@@ -1,6 +1,8 @@
 use super::{PyMessengerHandle, to_py_err};
 use crate::config::PyQoSProfile;
-use peppylib::messaging::{Subscription, TopicMessenger};
+use peppylib::messaging::{
+    NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, Subscription, TopicMessenger,
+};
 use peppylib::types::{Message, Payload};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -100,8 +102,8 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &to_node_name,
-                "_",
-                "_",
+                NATIVE_IFACE_SEGMENT_NAME,
+                NATIVE_IFACE_SEGMENT_TAG,
                 &to_topic,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -170,8 +172,8 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
-                "_",
-                "_",
+                NATIVE_IFACE_SEGMENT_NAME,
+                NATIVE_IFACE_SEGMENT_TAG,
                 &as_topic_name,
                 qos.into(),
                 Payload::from(payload),

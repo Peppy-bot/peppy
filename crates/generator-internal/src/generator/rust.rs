@@ -73,31 +73,13 @@ impl RustGenerator {
         self.current_origin.as_ref()
     }
 
-    /// Builds the `module_path` for an artifact whose leaf segment is
-    /// `leaf_name`. When the generator is in "conformed" mode (a
-    /// `current_origin` has been set by `register_with`), the path nests under
-    /// `{iface_name}/{iface_tag}` so the artifact lands at
-    /// `<category>/<iface_name>/<iface_tag>/<leaf_name>.rs`. When `current_origin`
-    /// is `None`, the path is just `[leaf_name]` — preserving today's flat
-    /// layout for the node's own native declarations.
-    fn artifact_module_path(&self, leaf_name: &str) -> Vec<String> {
-        match self.current_origin() {
-            Some(origin) => vec![
-                origin.iface_name.clone(),
-                crate::generator::naming::sanitize_iface_tag(&origin.iface_tag),
-                leaf_name.to_string(),
-            ],
-            None => vec![leaf_name.to_string()],
-        }
-    }
-
     fn make_artifact(
         &self,
         leaf_name: &str,
         kind: InterfaceKind,
         code_output: String,
     ) -> InterfaceArtifact {
-        InterfaceArtifact::from_kind_nested(self.artifact_module_path(leaf_name), kind, code_output)
+        InterfaceArtifact::for_leaf(self.current_origin(), leaf_name, kind, code_output)
     }
 
     /// Sets the node parameters for code generation.

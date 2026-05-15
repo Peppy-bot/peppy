@@ -1,4 +1,4 @@
-use super::MessengerHandle;
+use super::{MessengerHandle, normalize_iface_segment};
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
@@ -144,7 +144,7 @@ impl TopicMessenger {
     ) -> Result<TopicPublisher> {
         // Normalize the tag here so the pre-bound publisher key matches the
         // one `emit_topic_message` would have built dynamically.
-        let iface_tag = iface_tag.replace('-', "_");
+        let iface_tag = normalize_iface_segment(iface_tag);
         let topic = format!(
             "*/{as_core_node}/*/{as_instance_id}/topic/{as_node_name}/{iface_name}/{iface_tag}/{as_topic_name}"
         );

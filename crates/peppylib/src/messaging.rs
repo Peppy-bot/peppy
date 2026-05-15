@@ -23,6 +23,7 @@ use pmi::{
 };
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -61,20 +62,29 @@ const SERVICE_PROBE_PAYLOAD: &[u8] = b"\0peppy_service_probe\0";
 /// Timeout for reachability probes sent by `is_reachable`.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Sentinel passed as `iface_name`/`iface_tag` by callers that aren't part of
-/// a `conforms_to` interface — i.e. the node's own (native) topics, services,
-/// and actions. The two-segment placeholder keeps the wire key shape stable
+/// Sentinel passed as `iface_name` by callers that aren't part of a
+/// `conforms_to` interface — i.e. the node's own (native) topics, services,
+/// and actions. The placeholder keeps the wire key shape stable
 /// (`topic/{node}/{iface_name}/{iface_tag}/{leaf}`) regardless of conformance.
-pub const NATIVE_IFACE_SEGMENT: &str = "_";
+pub const NATIVE_IFACE_SEGMENT_NAME: &str = "_";
+
+/// Sentinel passed as `iface_tag` for native (non-`conforms_to`) artifacts.
+/// Paired with [`NATIVE_IFACE_SEGMENT_NAME`].
+pub const NATIVE_IFACE_SEGMENT_TAG: &str = "_";
 
 /// Normalizes an interface tag for use as a Zenoh wire-path segment.
 ///
 /// Tags allow ASCII letters/digits/`_`/`-`; identifier syntax in generated code
 /// does not allow hyphens, so we convert `-` → `_` once at this boundary. The
 /// generator passes the raw tag through unchanged so the wire and code agree
-/// after this normalization.
-fn normalize_iface_segment(value: &str) -> String {
-    value.replace('-', "_")
+/// after this normalization. Hyphen-free tags (the common case — native
+/// callers pass `NATIVE_IFACE_SEGMENT_TAG`) skip the allocation.
+pub(crate) fn normalize_iface_segment(value: &str) -> Cow<'_, str> {
+    if value.contains('-') {
+        Cow::Owned(value.replace('-', "_"))
+    } else {
+        Cow::Borrowed(value)
+    }
 }
 
 fn is_service_ack_payload(payload: &[u8]) -> bool {
