@@ -791,35 +791,29 @@ pub fn resolve_conforms_to(
         return Ok(Vec::new());
     }
 
-    let mut seen_raw: HashSet<(String, String)> = HashSet::new();
-    for item in items {
-        let key = (item.name.as_str().to_string(), item.tag.clone());
-        if !seen_raw.insert(key) {
-            return Err(format!(
-                "duplicate `conforms_to` entry `{}:{}`",
-                item.name.as_str(),
-                item.tag
-            ));
-        }
-    }
-
-    // Distinct raw tags that share a sanitized form (e.g. `v1` and `v-1`)
-    // would generate to the same module path on disk and the same Zenoh
-    // wire-path segments. Refuse them up front rather than silently merging.
-    let mut seen_sanitized: HashMap<(String, String), (String, String)> = HashMap::new();
+    // Sanitized-key collisions strictly dominate raw-key duplicates (an exact
+    // raw dup collides post-sanitize too), so one pass catches both. Compare
+    // the prior raw tag to distinguish "duplicate" from "collides after
+    // hyphen→underscore normalization" (e.g. `v1` vs `v-1`) — both would
+    // generate to the same module path and wire segments.
+    let mut seen: HashMap<(String, String), String> = HashMap::new();
     for item in items {
         let sanitized_tag = item.tag.replace('-', "_");
         let key = (item.name.as_str().to_string(), sanitized_tag);
-        if let Some(prior) = seen_sanitized.insert(
-            key.clone(),
-            (item.name.as_str().to_string(), item.tag.clone()),
-        ) {
+        if let Some(prior_tag) = seen.insert(key, item.tag.clone()) {
+            if prior_tag == item.tag {
+                return Err(format!(
+                    "duplicate `conforms_to` entry `{}:{}`",
+                    item.name.as_str(),
+                    item.tag
+                ));
+            }
             return Err(format!(
                 "`conforms_to` entries `{}:{}` and `{}:{}` collide after \
                  tag normalization (hyphens become underscores); rename one \
                  to disambiguate",
-                prior.0,
-                prior.1,
+                item.name.as_str(),
+                prior_tag,
                 item.name.as_str(),
                 item.tag
             ));
