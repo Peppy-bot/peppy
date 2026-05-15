@@ -52,6 +52,26 @@ impl InterfaceOrigin {
             leaf_name.to_string(),
         ]
     }
+
+    /// Namespaces `local` with `iface_name` + sanitized tag so a leaf name
+    /// shared across conformed origins produces distinct schema keys.
+    pub fn scoped_schema_key(&self, local: &str) -> String {
+        format!(
+            "{}_{}_{}",
+            self.iface_name,
+            crate::generator::naming::sanitize_iface_tag(&self.iface_tag),
+            local
+        )
+    }
+}
+
+/// Builds a schema key scoped to `origin` when `Some`, falling back to the
+/// raw `local` key when the artifact is the node's own (native) declaration.
+pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> String {
+    match origin {
+        Some(o) => o.scoped_schema_key(local),
+        None => local.to_string(),
+    }
 }
 
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
@@ -140,6 +160,10 @@ impl InterfaceArtifact {
         kind: InterfaceKind,
         code_output: String,
     ) -> Self {
+        debug_assert!(
+            !module_path.is_empty(),
+            "from_kind_nested called with empty module_path; leaf_name() would panic",
+        );
         Self {
             module_path,
             kind,

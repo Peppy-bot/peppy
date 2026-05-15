@@ -16,7 +16,7 @@ mod type_mapping;
 use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, InterfaceOrigin,
-    LanguageGenerator, cancel_action_response_format, non_empty_message_format,
+    LanguageGenerator, cancel_action_response_format, non_empty_message_format, scoped_schema_key,
     validate_fixed_length_array_items, validate_generated_type_name_collisions,
     validate_message_format_field_names,
 };
@@ -133,10 +133,11 @@ impl LanguageGenerator for PythonGenerator {
         topic: &EmittedTopic,
         origin: Option<&InterfaceOrigin>,
     ) -> Result<()> {
+        let scoped_key = scoped_schema_key(origin, &topic.name);
         let schema_info = topic
             .message_format
             .as_ref()
-            .map(|fmt| self.register_schema(&topic.name, fmt))
+            .map(|fmt| self.register_schema(&scoped_key, fmt))
             .transpose()?;
 
         let code = topics::build_emitted_topic(topic, schema_info.as_ref(), origin)?;
@@ -155,11 +156,11 @@ impl LanguageGenerator for PythonGenerator {
         origin: Option<&InterfaceOrigin>,
     ) -> Result<()> {
         let request_schema_info = self.register_optional_schema(
-            format!("{}_request", service.name),
+            scoped_schema_key(origin, &format!("{}_request", service.name)),
             service.request_message_format.as_ref(),
         )?;
         let response_schema_info = self.register_optional_schema(
-            format!("{}_response", service.name),
+            scoped_schema_key(origin, &format!("{}_response", service.name)),
             service.response_message_format.as_ref(),
         )?;
 
@@ -183,14 +184,14 @@ impl LanguageGenerator for PythonGenerator {
         origin: Option<&InterfaceOrigin>,
     ) -> Result<()> {
         let goal_request_schema_info = self.register_optional_schema(
-            format!("{}_goal_request", action.name),
+            scoped_schema_key(origin, &format!("{}_goal_request", action.name)),
             action
                 .goal_service
                 .as_ref()
                 .and_then(|goal_service| goal_service.request_message_format.as_ref()),
         )?;
         let goal_response_schema_info = self.register_optional_schema(
-            format!("{}_goal_response", action.name),
+            scoped_schema_key(origin, &format!("{}_goal_response", action.name)),
             action
                 .goal_service
                 .as_ref()
@@ -199,20 +200,23 @@ impl LanguageGenerator for PythonGenerator {
 
         let cancel_response_schema_info = if action.goal_service.is_some() {
             let cancel_format = cancel_action_response_format();
-            Some(self.register_schema(&format!("{}_cancel_response", action.name), &cancel_format)?)
+            Some(self.register_schema(
+                &scoped_schema_key(origin, &format!("{}_cancel_response", action.name)),
+                &cancel_format,
+            )?)
         } else {
             None
         };
 
         let result_response_schema_info = self.register_optional_schema(
-            format!("{}_result_response", action.name),
+            scoped_schema_key(origin, &format!("{}_result_response", action.name)),
             action
                 .result_service
                 .as_ref()
                 .and_then(|result_service| result_service.response_message_format.as_ref()),
         )?;
         let feedback_schema_info = self.register_optional_schema(
-            format!("{}_feedback", action.name),
+            scoped_schema_key(origin, &format!("{}_feedback", action.name)),
             action
                 .feedback_topic
                 .as_ref()

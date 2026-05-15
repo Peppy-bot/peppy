@@ -16,7 +16,7 @@ pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
     CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, InterfaceOrigin,
-    LanguageGenerator, cancel_action_response_format, non_empty_message_format,
+    LanguageGenerator, cancel_action_response_format, non_empty_message_format, scoped_schema_key,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
@@ -525,8 +525,9 @@ impl LanguageGenerator for RustGenerator {
             &mut context,
             None,
         )?;
+        let scoped_key = scoped_schema_key(origin, &fn_name_str);
         let encoding = self.prepare_message_encoding(
-            &fn_name_str,
+            &scoped_key,
             &schema_prefix,
             format_artifacts.as_ref(),
             &params,
@@ -590,8 +591,9 @@ impl LanguageGenerator for RustGenerator {
             &mut context,
             Some(&generic_response_ident),
         )?;
+        let scoped_request_key = scoped_schema_key(origin, &fn_name_str);
         let encoding = self.prepare_message_encoding(
-            &fn_name_str,
+            &scoped_request_key,
             &struct_prefix,
             request_wire_artifacts.as_ref(),
             &wire_params,
@@ -619,7 +621,7 @@ impl LanguageGenerator for RustGenerator {
 
         let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
-            let schema_key = format!("{fn_name_str}_response");
+            let schema_key = scoped_schema_key(origin, &format!("{fn_name_str}_response"));
             let schema_info =
                 self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
             Some(ServiceResponseSpec {
@@ -734,8 +736,9 @@ impl LanguageGenerator for RustGenerator {
                 goal_request_data_struct.as_ref(),
             );
 
+            let scoped_goal_key = scoped_schema_key(origin, &label);
             let encoding = self.prepare_message_encoding(
-                &label,
+                &scoped_goal_key,
                 &schema_struct_prefix,
                 request_artifacts.as_ref(),
                 &goal_data_params,
@@ -743,7 +746,7 @@ impl LanguageGenerator for RustGenerator {
 
             let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
                 let response_schema_prefix = format!("{schema_struct_prefix}Response");
-                let schema_key = format!("{label}_response");
+                let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
                 let schema_info =
                     self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
                 Some(ServiceResponseSpec {
@@ -815,7 +818,7 @@ impl LanguageGenerator for RustGenerator {
 
             let cancel_response_spec =
                 if let Some(return_artifacts) = cancel_response_artifacts.as_ref() {
-                    let schema_key = format!("{cancel_label}_response");
+                    let schema_key = scoped_schema_key(origin, &format!("{cancel_label}_response"));
                     let schema_info = self.register_schema(
                         &schema_key,
                         &format!("{cancel_schema_prefix}Response"),
@@ -878,7 +881,7 @@ impl LanguageGenerator for RustGenerator {
             )?;
 
             let result_response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
-                let schema_key = format!("{label}_response");
+                let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
                 let schema_info = self.register_schema(
                     &schema_key,
                     &format!("{schema_struct_prefix}Response"),
@@ -935,7 +938,7 @@ impl LanguageGenerator for RustGenerator {
                 None,
             )?;
             let encoding = self.prepare_message_encoding(
-                &format!("emit_{base_name}_feedback"),
+                &scoped_schema_key(origin, &format!("emit_{base_name}_feedback")),
                 &struct_prefix,
                 format_artifacts.as_ref(),
                 &params,

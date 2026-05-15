@@ -154,6 +154,7 @@ impl PyTopicMessenger {
 
     /// Emit (publish) a message to a topic.
     #[staticmethod]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_node_name, iface_name, iface_tag, as_topic_name, qos, payload))]
     #[allow(clippy::too_many_arguments)]
     fn emit<'py>(
         py: Python<'py>,

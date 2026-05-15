@@ -9,8 +9,8 @@ use super::types::InterfaceArtifact;
 use std::collections::BTreeMap;
 
 /// Recursive tree of artifacts: a directory contains nested subtrees keyed
-/// by their next path segment, and at the leaf level we keep the single
-/// artifact whose final segment matches.
+/// by their next path segment, and at the leaf level a single segment may
+/// map to multiple [`InterfaceArtifact`] entries (see [`Self::leaves`]).
 #[derive(Default)]
 pub(crate) struct ModuleTree {
     /// Sub-directories keyed by their (raw) segment. Sanitized on write.

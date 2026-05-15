@@ -1285,7 +1285,7 @@ mod conforms_to_tests {
     #[test]
     fn sha256_drift_is_rejected() {
         let tmp = TempDir::new().unwrap();
-        let mut entry = seed_interface(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        let entry = seed_interface(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
         // Rewrite the underlying file so its fingerprint no longer matches
         // the cache's `sha256` — i.e. the cache thinks the file is X but it
         // is now Y. resolve_conforms_to must catch this.
@@ -1296,8 +1296,6 @@ mod conforms_to_tests {
         .unwrap();
         // Keep the stale (pre-rewrite) sha256 in the cache entry. We need to
         // ensure load_interface_cache trusts it.
-        let stale_sha = entry.sha256.clone();
-        entry.sha256 = stale_sha;
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
         let cfg = interfaces_with_conforms(vec![ConformsToItem {
