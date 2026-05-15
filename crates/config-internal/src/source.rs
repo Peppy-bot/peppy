@@ -452,13 +452,27 @@ mod tests {
     #[test]
     fn repo_source_rejects_dot_in_tag() {
         let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"0.1.0\" }")
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"v1.2\" }")
                 .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
         };
         assert!(
             msg.contains("disallowed character") && msg.contains("'.'"),
+            "unexpected: {msg}"
+        );
+    }
+
+    #[test]
+    fn repo_source_rejects_tag_not_starting_with_letter() {
+        let err: serde_json5::Error =
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"0.1.0\" }")
+                .unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(
+            msg.contains("must start with an ASCII letter"),
             "unexpected: {msg}"
         );
     }

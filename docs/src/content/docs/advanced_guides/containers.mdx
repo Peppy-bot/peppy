@@ -226,7 +226,7 @@ Adding a container node works the same as a regular node — first stage it, the
 
 ```sh
 peppy node add ./my_node
-peppy node build my_node:0.1.0
+peppy node build my_node:v1
 ```
 
 You can also combine both steps with `peppy node add ./my_node --build` (shorthand `-b`). If you've just edited `peppy.json5`, add `--sync`/`-s` as well — e.g. `peppy node add ./my_node -sb` to sync, add, and build in one shot.

@@ -162,7 +162,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
 By default, the `node add` and `node sync` commands require the target node to already be in the node stack so the proper interfaces can be generated.
 If the target node is missing, you will see an error like:
 ```
-Error: `web_video_stream:0.1.0` depends on `uvc_camera:0.1.0`, but it does not exist in the stack
+Error: `web_video_stream:v1` depends on `uvc_camera:v1`, but it does not exist in the stack
 ```
 Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back to the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) for dependencies that aren't in the stack.
 :::

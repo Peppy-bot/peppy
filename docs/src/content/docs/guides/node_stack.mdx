@@ -30,8 +30,8 @@ The output of this command provides some useful information:
 
 ```
 Adding node from /private/tmp/hello_world...
-Log file: ~/.peppy/logs/add/hello_world_0.1.0_20260121_224824_699.log
-Added node hello_world:0.1.0 to the node stack
+Log file: ~/.peppy/logs/add/hello_world_v1_20260121_224824_699.log
+Added node hello_world:v1 to the node stack
 ```
 This gives you access to the log file for debugging in case the `add` command fails.
 When a node is added to the node stack, a copy is made in the peppy cache under `~/.peppy/built_nodes/` to "snapshot" the node based on its name and tag.
@@ -43,7 +43,7 @@ Re-adding a node with the same name and tag overrides the one that was previousl
 An added node has no runnable artifact until it's built. Building runs the node's `build_cmd` (for example `uv sync` for Python or `cargo build --release` for Rust) against the snapshot that `peppy node add` staged:
 
 ```sh
-peppy node build hello_world:0.1.0
+peppy node build hello_world:v1
 ```
 
 The format is `<node_name>:<tag>` for a node that is already part of the node stack. While the build is running the node sits in the `Building` stage; once it completes, it moves to `Ready` and can be run.
@@ -68,9 +68,9 @@ The format is `<node_name>:<tag>` for a node that is already part of the node st
 The output looks like:
 
 ```
-Building node hello_world:0.1.0...
-Log file: ~/.peppy/logs/build/hello_world_0.1.0_20260121_224901_312.log
-Built node hello_world:0.1.0. Artifact: ~/.peppy/built_nodes/hello_world_0.1.0.tar.zst
+Building node hello_world:v1...
+Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312.log
+Built node hello_world:v1. Artifact: ~/.peppy/built_nodes/hello_world_v1.tar.zst
 ```
 
 The artifact is a `.tar.zst` archive. When you start an instance with `peppy node run`, the daemon extracts it into a per-instance directory and executes `run_cmd` there.
@@ -80,7 +80,7 @@ The artifact is a `.tar.zst` archive. When you start an instance with `peppy nod
 Start your node:
 
 ```sh
-peppy node run hello_world:0.1.0
+peppy node run hello_world:v1
 ```
 This will run the `run_cmd` command from the `peppy.json5` process configuration.
 The format is `<node_name>:<tag>` for a node that is already part of the node stack.
@@ -132,7 +132,7 @@ Node stack
 │ NODE                                   │ STAGE │ INSTANCES │ PATH                                                      │
 ├────────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────────────┤
 │ core-node-funny-chatterjee-6386:v0.8.0 │ Root  │ 1 running │ /home/ubuntu/.peppy/bin                                   │
-│ hello_world:0.1.0                      │ Ready │ 1 running │ /home/ubuntu/.peppy/built_nodes/hello_world_0.1.0.tar.zst │
+│ hello_world:v1                      │ Ready │ 1 running │ /home/ubuntu/.peppy/built_nodes/hello_world_v1.tar.zst │
 └────────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────────────┘
 
 
@@ -154,11 +154,11 @@ The `INSTANCES` column aggregates per-instance state (`starting`, `running`) for
 When you need more than the one-line view from `stack list`, `peppy node info` dumps the node's stage, its currently-tracked instances with their individual states, and the paths to its add log and per-instance run logs. It takes a `<node_name>:<node_tag>` reference to a node **that has already been added to the stack** — it doesn't touch the filesystem or any git/http source, so run `peppy node add` first if the node isn't in the stack yet:
 
 ```sh
-peppy node info hello_world:0.1.0
+peppy node info hello_world:v1
 ```
 
 ```
-[INFO] Getting node info for hello_world:0.1.0...
+[INFO] Getting node info for hello_world:v1...
 
 Node Information
 ==================================================
@@ -178,8 +178,8 @@ Instances: 2 tracked
 
 Logs
 --------------------------------------------------
-hello_world:0.1.0
-  Add log: /home/ubuntu/.peppy/logs/add/hello_world_0.1.0_20260416_101124_613.log
+hello_world:v1
+  Add log: /home/ubuntu/.peppy/logs/add/hello_world_v1_20260416_101124_613.log
   Run logs:
     - suspicious-swanson-5880: /home/ubuntu/.peppy/logs/run/suspicious-swanson-5880.log
     - flamboyant-penrose-9622: /home/ubuntu/.peppy/logs/run/flamboyant-penrose-9622.log
@@ -206,13 +206,13 @@ When you're done, you can stop your node:
 peppy node stop <instance-id>
 ```
 
-This stops **one instance** of the `hello_world:0.1.0` node, but the node itself still remains in the node stack.
+This stops **one instance** of the `hello_world:v1` node, but the node itself still remains in the node stack.
 
 ## Removing your node
 
 To remove the node from the node stack, run:
 ```sh
-peppy node remove hello_world:0.1.0
+peppy node remove hello_world:v1
 ```
 
 If you run `peppy stack list` again, you'll see that only the core node remains:

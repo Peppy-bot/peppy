@@ -139,7 +139,7 @@ peppy repo exclude /home/user/projects/private-nodes
 Once a node appears in `peppy repo list`, you can add it by its `name:tag` without supplying a path or URL — peppy resolves the source through the cached index at `~/.peppy/cache/nodes.json5`:
 
 ```sh
-peppy node add uvc_camera:0.1.0
+peppy node add uvc_camera:v1
 ```
 
 This is the shortest form of `peppy node add`. It works for any node provided by any repository listed in `repositories.json5`, including the default [nodes_hub](https://github.com/Peppy-bot/nodes_hub) community repository. When several repositories provide the same `name:tag`, the [resolution rule from `repo refresh`](#refresh-the-index) applies — the repository with the lower `id` wins.
@@ -173,16 +173,16 @@ Example output when both layers contribute:
 Syncing node from /workspace/my_robot_brain via daemon 'core-node-...'
 Synced node interfaces at /workspace/my_robot_brain
 Synchronized from node stack:
-  - already_added_dep:0.1.0
+  - already_added_dep:v1
 Synchronized from repositories:
-  - uvc_camera:0.1.0 (git)
-  - lidar_sensor:1.0.0 (fs)
+  - uvc_camera:v1 (git)
+  - lidar_sensor:v1 (fs)
 ```
 
 A dependency that is missing from **both** the node stack and every configured repository is a hard failure:
 
 ```text
-dep `gps_module:2.0.0` not found in node stack or repository cache; run `peppy repo refresh`
+dep `gps_module:v2` not found in node stack or repository cache; run `peppy repo refresh`
 ```
 
 ### Tip: register your local workspace as a repository

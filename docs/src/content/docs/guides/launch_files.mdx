@@ -58,7 +58,7 @@ The repository source resolves nodes from a locally cached index. Run `peppy rep
 // Repository source (combined shorthand — equivalent to the example above)
 {
   source: {
-    name: "openarm01_controller:0.1.0",
+    name: "openarm01_controller:v1",
   },
   instances: [
     { instance_id: "the_nervous_system" }
@@ -111,17 +111,17 @@ Node stack
 │ NODE                                    │ STAGE │ INSTANCES  │ PATH                                                                     │
 ├─────────────────────────────────────────┼───────┼────────────┼──────────────────────────────────────────────────────────────────────────┤
 │ core-node-adoring-wiles-7286:v0.8.0     │ Root  │ 1 running  │ /Users/tuatini/workspace/peppy                                           │
-│ fake_openarm01_controller:0.1.0         │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_openarm01_controller_0.1.0.tar.zst │
-│ fake_robot_brain:0.1.0                  │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_robot_brain_0.1.0.tar.zst          │
-│ fake_uvc_camera:0.1.0                   │ Ready │ 2 running  │ /Users/tuatini/.peppy/built_nodes/fake_uvc_camera_0.1.0.tar.zst           │
-│ fake_video_reconstruction:0.1.0         │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_video_reconstruction_0.1.0.tar.zst │
+│ fake_openarm01_controller:v1         │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_openarm01_controller_v1.tar.zst │
+│ fake_robot_brain:v1                  │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_robot_brain_v1.tar.zst          │
+│ fake_uvc_camera:v1                   │ Ready │ 2 running  │ /Users/tuatini/.peppy/built_nodes/fake_uvc_camera_v1.tar.zst           │
+│ fake_video_reconstruction:v1         │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_video_reconstruction_v1.tar.zst │
 └─────────────────────────────────────────┴───────┴────────────┴──────────────────────────────────────────────────────────────────────────┘
 
 
 Dependencies
-  - fake_robot_brain:0.1.0 -> fake_openarm01_controller:0.1.0
-  - fake_robot_brain:0.1.0 -> fake_uvc_camera:0.1.0
-  - fake_video_reconstruction:0.1.0 -> fake_uvc_camera:0.1.0
+  - fake_robot_brain:v1 -> fake_openarm01_controller:v1
+  - fake_robot_brain:v1 -> fake_uvc_camera:v1
+  - fake_video_reconstruction:v1 -> fake_uvc_camera:v1
 ```
 
 The output confirms that all nodes have been added to the stack along with their dependency relationships.

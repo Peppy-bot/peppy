@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn validate_node_tag_accepts_safe_tags() {
-        for tag in ["v1", "v123", "latest", "v2-rc1", "abc_def", "A1", "0"] {
+        for tag in ["v1", "v123", "latest", "v2-rc1", "abc_def", "A1", "donut"] {
             assert!(
                 validate_node_tag(tag).is_ok(),
                 "expected {:?} to be accepted",
@@ -349,7 +349,7 @@ mod tests {
     fn validate_node_tag_rejects_unsafe_tags() {
         for tag in [
             "", "..", ".", ".hidden", "../etc", "foo/bar", "a\\b", "a b", "tag$", "/abs", "1.2.3",
-            "v1.0",
+            "v1.0", "1", "0", "1v",
         ] {
             assert!(
                 validate_node_tag(tag).is_err(),
