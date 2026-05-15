@@ -212,8 +212,8 @@ mod tests {
 
     #[test]
     fn looks_like_repo_node_ref_accepts_name_tag() {
-        assert!(looks_like_repo_node_ref("uvc_camera:0.1.0"));
-        assert!(looks_like_repo_node_ref("node:1.0.0"));
+        assert!(looks_like_repo_node_ref("uvc_camera:v1"));
+        assert!(looks_like_repo_node_ref("node:donut"));
     }
 
     #[test]
@@ -240,11 +240,11 @@ mod tests {
 
     #[test]
     fn parse_node_source_recognizes_name_tag() {
-        let src = parse_node_source("some_node:1.2.3", None).unwrap();
+        let src = parse_node_source("some_node:v123", None).unwrap();
         let NodeSource::RepoNode { name, tag } = &src else {
             panic!("expected RepoNode, got {:?}", src);
         };
         assert_eq!(name, "some_node");
-        assert_eq!(tag, "1.2.3");
+        assert_eq!(tag, "v123");
     }
 }

@@ -147,7 +147,7 @@ mod tests {
         let path = dir.path().join("anything.json5");
         let json5 = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "n", tag: "0.1.0" },
+            manifest: { name: "n", tag: "v1" },
             interfaces: {},
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
         }"#;

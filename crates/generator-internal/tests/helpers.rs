@@ -27,7 +27,7 @@ pub const STUB_NODE_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: {
     name: "generated_node",
-    tag: "0.1.0"
+    tag: "v1"
   },
   execution: {
     language: "rust",
@@ -537,7 +537,7 @@ pub async fn try_send_shutdown(
 pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: { name: "generated_node",
-    tag: "0.1.0" },
+    tag: "v1" },
   execution: { language: "python",
     run_cmd: ["uv", "run", "python", "main.py"]
   }

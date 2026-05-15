@@ -21,7 +21,7 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
   peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
-    tag: "0.1.0",
+    tag: "v1",
   },
   interfaces: {
     topics: {
@@ -133,10 +133,10 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
   peppy_schema: "node_v1",
   manifest: {
     name: "web_video_stream",
-    tag: "0.1.0",
+    tag: "v1",
     depends_on: {
       nodes: [
-        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
+        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" },
       ]
     },
   },

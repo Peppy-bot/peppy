@@ -86,7 +86,7 @@ async fn service_reset_command_resets_node_stack() {
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let node_name = "reset_test_node";
-    let node_tag = "0.1.0";
+    let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let node_path = write_node_config(
         nodes_dir.path(),

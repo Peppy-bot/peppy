@@ -8,7 +8,7 @@ pub fn core_node_config() -> NodeConfig {
             peppy_schema: "node_v1",
             manifest: {
                 name: "core",
-                tag: "1.0.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",

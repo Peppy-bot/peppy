@@ -1030,8 +1030,8 @@ mod tests {
 
         let repo_a = tmp.path().join("repo_a");
         let repo_b = tmp.path().join("repo_b");
-        write_peppy_json5(&repo_a.join("node_a"), "node_a", "1.0.0");
-        write_peppy_json5(&repo_b.join("node_b"), "node_b", "1.0.0");
+        write_peppy_json5(&repo_a.join("node_a"), "node_a", "v1");
+        write_peppy_json5(&repo_b.join("node_b"), "node_b", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1077,8 +1077,8 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("keep_node"), "keep_node", "1.0.0");
-        write_peppy_json5(&repo.join("secret_node"), "secret_node", "1.0.0");
+        write_peppy_json5(&repo.join("keep_node"), "keep_node", "v1");
+        write_peppy_json5(&repo.join("secret_node"), "secret_node", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1127,7 +1127,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "1.0.0");
+        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1162,7 +1162,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "1.0.0");
+        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1188,7 +1188,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "1.0.0");
+        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1256,7 +1256,7 @@ mod tests {
 
         let repo = tmp.path().join("repo");
         let iface_path = repo.join("uvc_camera/peppy.json5");
-        let bytes = write_interface_json5(&iface_path, "uvc_camera", "0.1.0");
+        let bytes = write_interface_json5(&iface_path, "uvc_camera", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1270,7 +1270,7 @@ mod tests {
         assert_eq!(interfaces.len(), 1, "exactly one interface expected");
         let iface = &interfaces[0];
         assert_eq!(iface.interface_name, "uvc_camera");
-        assert_eq!(iface.tag, "0.1.0");
+        assert_eq!(iface.tag, "v1");
         assert_eq!(iface.source_type, RepoSourceKind::Fs);
         assert!(
             iface.path.ends_with("uvc_camera/peppy.json5"),
@@ -1293,7 +1293,7 @@ mod tests {
         let src = src_tmp.path();
         let repo = git2::Repository::init(src).expect("init repo");
         let iface_rel = Path::new("uvc_camera/peppy.json5");
-        write_interface_json5(&src.join(iface_rel), "uvc_camera", "0.1.0");
+        write_interface_json5(&src.join(iface_rel), "uvc_camera", "v1");
 
         let signature =
             git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
@@ -1330,7 +1330,7 @@ mod tests {
         assert_eq!(interfaces.len(), 1, "exactly one interface expected");
         let iface = &interfaces[0];
         assert_eq!(iface.interface_name, "uvc_camera");
-        assert_eq!(iface.tag, "0.1.0");
+        assert_eq!(iface.tag, "v1");
         assert_eq!(iface.source_type, RepoSourceKind::Git);
         assert_eq!(iface.path, "uvc_camera/peppy.json5");
         assert_eq!(iface.resolved_ref.as_deref(), Some(branch.as_str()));
@@ -1357,7 +1357,7 @@ mod tests {
             repo_a.join("uvc_camera/peppy.json5"),
             r#"{
   peppy_schema: "interface_v1",
-  manifest: { name: "uvc_camera", tag: "0.1.0" },
+  manifest: { name: "uvc_camera", tag: "v1" },
   interfaces: {}
 }"#,
         )
@@ -1368,7 +1368,7 @@ mod tests {
             r#"{
   // Same identity, different content fingerprint via extra whitespace.
   peppy_schema: "interface_v1",
-  manifest:    { name: "uvc_camera", tag: "0.1.0" },
+  manifest:    { name: "uvc_camera", tag: "v1" },
   interfaces:  {}
 }"#,
         )
@@ -1432,12 +1432,12 @@ mod tests {
     fn walk_directory_dispatches_by_schema() {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path().join("mixed");
-        write_peppy_json5(&repo.join("nodes/my_sensor"), "my_sensor", "1.0.0");
+        write_peppy_json5(&repo.join("nodes/my_sensor"), "my_sensor", "v1");
         write_launcher_json5(&repo.join("teleop.json5"));
         write_interface_json5(
             &repo.join("interfaces/uvc_camera.json5"),
             "uvc_camera",
-            "0.1.0",
+            "v1",
         );
 
         let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
@@ -1467,7 +1467,7 @@ mod tests {
         write_launcher_json5(&repo_a.join("nested").join("demo.json5"));
         write_launcher_json5(&repo_b.join("openarm01_sim_teleop.json5"));
         // Throw a node into repo_a too so we exercise the mixed walk.
-        write_peppy_json5(&repo_a.join("node_a"), "node_a", "1.0.0");
+        write_peppy_json5(&repo_a.join("node_a"), "node_a", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1552,7 +1552,7 @@ mod tests {
         // in the repo and must not be misclassified.
         std::fs::write(
             repo.join("manifest.json5"),
-            r#"{ peppy_schema: "node_v1", manifest: { name: "x", tag: "1.0.0" }, interfaces: {}, execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] } }"#,
+            r#"{ peppy_schema: "node_v1", manifest: { name: "x", tag: "v1" }, interfaces: {}, execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] } }"#,
         )
         .unwrap();
 
@@ -1719,7 +1719,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "1.0.0");
+        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
 
         write_repos(
             &peppy_dirs,

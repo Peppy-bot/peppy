@@ -179,7 +179,7 @@ async fn refresh_fs_discovers_nodes() {
     let started = start_core_node_with_real_messenger().await;
 
     let repo_dir = started.peppy_dirs.root().join("test_repo");
-    create_node_dir(&repo_dir, "my_sensor", "1.0.0");
+    create_node_dir(&repo_dir, "my_sensor", "v1");
 
     write_repositories_json5(
         &started,
@@ -214,7 +214,7 @@ async fn refresh_fs_discovers_nodes() {
         unreachable!()
     };
     assert_eq!(item_name, "my_sensor");
-    assert_eq!(item_tag, "1.0.0");
+    assert_eq!(item_tag, "v1");
     assert_eq!(*source_type, RepoSourceKind::Fs);
 }
 
@@ -223,8 +223,8 @@ async fn refresh_multiple_nodes() {
     let started = start_core_node_with_real_messenger().await;
 
     let repo_dir = started.peppy_dirs.root().join("multi_repo");
-    create_node_dir(&repo_dir, "node_a", "1.0.0");
-    create_node_dir(&repo_dir, "node_b", "2.0.0");
+    create_node_dir(&repo_dir, "node_a", "v1");
+    create_node_dir(&repo_dir, "node_b", "v2");
 
     write_repositories_json5(
         &started,
@@ -265,8 +265,8 @@ async fn refresh_deduplication() {
 
     let repo_dir_a = started.peppy_dirs.root().join("repo_a");
     let repo_dir_b = started.peppy_dirs.root().join("repo_b");
-    create_node_dir(&repo_dir_a, "dup_node", "0.1.0");
-    create_node_dir(&repo_dir_b, "dup_node", "0.1.0");
+    create_node_dir(&repo_dir_a, "dup_node", "v1");
+    create_node_dir(&repo_dir_b, "dup_node", "v1");
 
     // repo_a listed first (lower id), should take precedence
     write_repositories_json5(
@@ -283,7 +283,7 @@ async fn refresh_deduplication() {
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
         result.result.total_nodes_found, 1,
-        "dup_node:0.1.0 should appear exactly once"
+        "dup_node:v1 should appear exactly once"
     );
 
     let discovered: Vec<&RepoRefreshFeedback> = result
@@ -306,7 +306,7 @@ async fn refresh_deduplication() {
         unreachable!()
     };
     assert_eq!(item_name, "dup_node");
-    assert_eq!(item_tag, "0.1.0");
+    assert_eq!(item_tag, "v1");
     assert!(
         path.contains("repo_a"),
         "first listed repo should take precedence, path was: {}",
@@ -321,7 +321,7 @@ async fn refresh_url_skipped() {
     let started = start_core_node_with_mock_messenger().await;
 
     let repo_dir = started.peppy_dirs.root().join("fs_repo");
-    create_node_dir(&repo_dir, "real_node", "0.1.0");
+    create_node_dir(&repo_dir, "real_node", "v1");
 
     write_repositories_json5(
         &started,
@@ -349,7 +349,7 @@ async fn refresh_cache_written() {
 
     // FS repo with a single node
     let repo_dir = started.peppy_dirs.root().join("cached_repo");
-    create_node_dir(&repo_dir, "cached_node", "2.0.0");
+    create_node_dir(&repo_dir, "cached_node", "v2");
 
     // Local git repo with a node in a subfolder
     let git_repo_path = started.peppy_dirs.root().join("git_test_repo.git");
@@ -362,7 +362,7 @@ async fn refresh_cache_written() {
     std::fs::create_dir_all(&node_subdir).expect("create git node dir");
     std::fs::write(
         node_subdir.join(NODE_CONFIG_FILE),
-        minimal_peppy_json5("git_node", "1.0.0"),
+        minimal_peppy_json5("git_node", "v1"),
     )
     .expect("write git node peppy.json5");
 
@@ -415,14 +415,14 @@ async fn refresh_cache_written() {
         .expect("should have a git entry");
 
     assert_eq!(fs_entry["node_name"], "cached_node");
-    assert_eq!(fs_entry["node_tag"], "2.0.0");
+    assert_eq!(fs_entry["node_tag"], "v2");
     assert!(
         fs_entry.get("resolved_ref").is_none(),
         "fs entries should not carry a resolved_ref in the cache"
     );
 
     assert_eq!(git_entry["node_name"], "git_node");
-    assert_eq!(git_entry["node_tag"], "1.0.0");
+    assert_eq!(git_entry["node_tag"], "v1");
     assert_eq!(git_entry["path"], "nodes/git_node/peppy.json5");
     assert_eq!(git_entry["source_uri"], git_repo_url);
     let resolved_ref = git_entry
@@ -446,10 +446,10 @@ async fn refresh_cache_includes_duplicates() {
 
     let repo_dir_a = started.peppy_dirs.root().join("dup_cache_a");
     let repo_dir_b = started.peppy_dirs.root().join("dup_cache_b");
-    create_node_dir(&repo_dir_a, "shared_node", "1.0.0");
-    create_node_dir(&repo_dir_b, "shared_node", "1.0.0");
+    create_node_dir(&repo_dir_a, "shared_node", "v1");
+    create_node_dir(&repo_dir_b, "shared_node", "v1");
     // unique node only in repo_b
-    create_node_dir(&repo_dir_b, "unique_node", "1.0.0");
+    create_node_dir(&repo_dir_b, "unique_node", "v1");
 
     write_repositories_json5(
         &started,
@@ -563,8 +563,8 @@ async fn refresh_excludes_fs_repo_with_feedback() {
 
     let repo_a = started.peppy_dirs.root().join("repo_a");
     let repo_b = started.peppy_dirs.root().join("repo_b");
-    create_node_dir(&repo_a, "node_a", "1.0.0");
-    create_node_dir(&repo_b, "node_b", "1.0.0");
+    create_node_dir(&repo_a, "node_a", "v1");
+    create_node_dir(&repo_b, "node_b", "v1");
 
     write_repositories_json5(
         &started,
@@ -638,8 +638,8 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
     let started = start_core_node_with_real_messenger().await;
 
     let repo = started.peppy_dirs.root().join("mixed_repo");
-    create_node_dir(&repo, "keep_node", "1.0.0");
-    create_node_dir(&repo, "secret_node", "1.0.0");
+    create_node_dir(&repo, "keep_node", "v1");
+    create_node_dir(&repo, "secret_node", "v1");
 
     write_repositories_json5(
         &started,
@@ -652,7 +652,7 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
         &started,
         &format!(
             r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo.join("secret_node_1.0.0").display()
+            repo.join("secret_node_v1").display()
         ),
     );
 
@@ -708,9 +708,9 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
 
     let repo_a = started.peppy_dirs.root().join("repo_a");
     let repo_b = started.peppy_dirs.root().join("repo_b");
-    create_node_dir(&repo_a, "keep_node", "1.0.0");
-    create_node_dir(&repo_a, "secret_node", "1.0.0");
-    create_node_dir(&repo_b, "other_node", "1.0.0");
+    create_node_dir(&repo_a, "keep_node", "v1");
+    create_node_dir(&repo_a, "secret_node", "v1");
+    create_node_dir(&repo_b, "other_node", "v1");
 
     write_repositories_json5(
         &started,
@@ -725,7 +725,7 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
         &format!(
             r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
             repo_b.display(),
-            repo_a.join("secret_node_1.0.0").display()
+            repo_a.join("secret_node_v1").display()
         ),
     );
 
@@ -767,8 +767,8 @@ async fn refresh_excluded_repos_not_in_cache() {
 
     let repo_a = started.peppy_dirs.root().join("cache_repo_a");
     let repo_b = started.peppy_dirs.root().join("cache_repo_b");
-    create_node_dir(&repo_a, "cached_node", "1.0.0");
-    create_node_dir(&repo_b, "excluded_node", "1.0.0");
+    create_node_dir(&repo_a, "cached_node", "v1");
+    create_node_dir(&repo_b, "excluded_node", "v1");
 
     write_repositories_json5(
         &started,
@@ -808,7 +808,7 @@ async fn refresh_excludes_git_repo() {
     let started = start_core_node_with_real_messenger().await;
 
     let repo = started.peppy_dirs.root().join("fs_repo");
-    create_node_dir(&repo, "fs_node", "1.0.0");
+    create_node_dir(&repo, "fs_node", "v1");
 
     write_repositories_json5(
         &started,
@@ -866,7 +866,7 @@ async fn refresh_discovers_interfaces() {
     std::fs::create_dir_all(&iface_dir).expect("create iface dir");
     let manifest_body = r#"{
   peppy_schema: "interface_v1",
-  manifest: { name: "uvc_camera", tag: "0.1.0", labels: ["uvc", "camera"] },
+  manifest: { name: "uvc_camera", tag: "v1", labels: ["uvc", "camera"] },
   interfaces: {}
 }"#;
     std::fs::write(iface_dir.join("peppy.json5"), manifest_body).expect("write interface manifest");
@@ -901,7 +901,7 @@ async fn refresh_discovers_interfaces() {
         panic!("interface discovery feedback")
     };
     assert_eq!(item_name, "uvc_camera");
-    assert_eq!(item_tag, "0.1.0");
+    assert_eq!(item_tag, "v1");
     assert!(
         !sha256.is_empty(),
         "feedback should carry the sha256 fingerprint"
@@ -914,7 +914,7 @@ async fn refresh_discovers_interfaces() {
         serde_json5::from_str(&content).expect("parse interfaces cache");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["interface_name"], "uvc_camera");
-    assert_eq!(entries[0]["tag"], "0.1.0");
+    assert_eq!(entries[0]["tag"], "v1");
     assert_eq!(entries[0]["source_type"], "fs");
     assert!(
         entries[0]["path"]
@@ -940,7 +940,7 @@ async fn refresh_discovers_nodes() {
     let started = start_core_node_with_real_messenger().await;
 
     let repo_dir = started.peppy_dirs.root().join("node_repo");
-    create_node_dir(&repo_dir, "my_sensor", "1.0.0");
+    create_node_dir(&repo_dir, "my_sensor", "v1");
 
     write_repositories_json5(
         &started,
@@ -972,7 +972,7 @@ async fn refresh_discovers_nodes() {
         panic!("node discovery feedback")
     };
     assert_eq!(item_name, "my_sensor");
-    assert_eq!(item_tag, "1.0.0");
+    assert_eq!(item_tag, "v1");
     assert!(
         !sha256.is_empty(),
         "feedback should carry the sha256 fingerprint"
@@ -985,7 +985,7 @@ async fn refresh_discovers_nodes() {
         serde_json5::from_str(&content).expect("parse nodes cache");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["node_name"], "my_sensor");
-    assert_eq!(entries[0]["node_tag"], "1.0.0");
+    assert_eq!(entries[0]["node_tag"], "v1");
     assert_eq!(entries[0]["source_type"], "fs");
     assert!(
         entries[0]["path"]

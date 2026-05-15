@@ -196,19 +196,19 @@ mod tests {
 
     #[test]
     fn node_info_request_roundtrips_name_tag() {
-        let encoded = NodeInfoRequest::new("sensor_node", "0.1.0")
+        let encoded = NodeInfoRequest::new("sensor_node", "v1")
             .encode()
             .expect("encoding should succeed");
         let decoded = NodeInfoRequest::decode(&encoded).expect("decoding should succeed");
 
         assert_eq!(decoded.node_name, "sensor_node");
-        assert_eq!(decoded.node_tag, "0.1.0");
+        assert_eq!(decoded.node_tag, "v1");
     }
 
     fn sample_config_for_roundtrip() -> NodeConfig {
         let config_json5 = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "sensor_node", tag: "0.1.0" },
+            manifest: { name: "sensor_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
         let dir = tempfile::tempdir().expect("tempdir");

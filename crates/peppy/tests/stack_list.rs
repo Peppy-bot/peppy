@@ -52,7 +52,7 @@ fn make_consumer_depend_on_provider(
     consumer_cfg.manifest.depends_on = Some(DependsOn {
         nodes: vec![NodeDependency {
             name: ConfigName::new(provider_name).expect("valid provider name"),
-            tag: "0.1.0".to_string(),
+            tag: "v1".to_string(),
             local_id: provider_name.to_string(),
         }],
         interfaces: vec![],
@@ -194,8 +194,8 @@ async fn node_list_command_succeeds() {
         .await
         .expect("node list command should succeed");
 
-    let provider_label = format!("{provider_name}:0.1.0");
-    let consumer_label = format!("{consumer_name}:0.1.0");
+    let provider_label = format!("{provider_name}:v1");
+    let consumer_label = format!("{consumer_name}:v1");
 
     // [INFO] prefixes are a side-effect of the tracing formatter; the table
     // output must not include them.
@@ -372,8 +372,8 @@ async fn node_list_command_with_dot_representation_succeeds() {
     );
 
     // Verify the DOT graph contains both nodes.
-    let provider_label_fragment = format!("{provider_name}:0.1.0\\n[Ready] (0 instances)");
-    let consumer_label_fragment = format!("{consumer_name}:0.1.0\\n[Ready] (0 instances)");
+    let provider_label_fragment = format!("{provider_name}:v1\\n[Ready] (0 instances)");
+    let consumer_label_fragment = format!("{consumer_name}:v1\\n[Ready] (0 instances)");
     assert!(
         dot_graph.contains(&provider_label_fragment),
         "DOT graph should contain provider label fragment '{}'. DOT:\n{}",

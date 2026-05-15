@@ -96,8 +96,8 @@ async fn list_finds_nodes_in_fs_repo() {
     let started = start_core_node_with_mock_messenger().await;
 
     let repo_dir = started.peppy_dirs.root().join("test_repo");
-    create_node_dir(&repo_dir, "my_sensor", "1.0.0");
-    create_node_dir(&repo_dir, "my_actuator", "2.0.0");
+    create_node_dir(&repo_dir, "my_sensor", "v1");
+    create_node_dir(&repo_dir, "my_actuator", "v2");
 
     write_repositories_json5(
         &started,
@@ -144,7 +144,7 @@ async fn list_reads_git_nodes_from_cache() {
         &serde_json::to_string(&serde_json::json!([
             {
                 "node_name": "git_sensor",
-                "node_tag": "1.0.0",
+                "node_tag": "v1",
                 "source_type": "git",
                 "source_uri": git_url,
                 "resolved_ref": "main",
@@ -152,7 +152,7 @@ async fn list_reads_git_nodes_from_cache() {
             },
             {
                 "node_name": "git_actuator",
-                "node_tag": "2.0.0",
+                "node_tag": "v2",
                 "source_type": "git",
                 "source_uri": git_url,
                 "resolved_ref": "main",
@@ -173,7 +173,7 @@ async fn list_reads_git_nodes_from_cache() {
         .iter()
         .find(|n| n.node_name == "git_sensor")
         .expect("should find git_sensor");
-    assert_eq!(sensor.node_tag, "1.0.0");
+    assert_eq!(sensor.node_tag, "v1");
     assert_eq!(sensor.source_type, RepoSourceKind::Git);
     assert_eq!(sensor.path, "nodes/git_sensor");
     assert_eq!(sensor.repo_id, 1);
@@ -184,7 +184,7 @@ async fn list_reads_git_nodes_from_cache() {
         .iter()
         .find(|n| n.node_name == "git_actuator")
         .expect("should find git_actuator");
-    assert_eq!(actuator.node_tag, "2.0.0");
+    assert_eq!(actuator.node_tag, "v2");
     assert_eq!(actuator.source_type, RepoSourceKind::Git);
     assert_eq!(actuator.path, "nodes/git_actuator");
     assert_eq!(actuator.repo_id, 1);
@@ -199,9 +199,9 @@ async fn list_marks_cross_repo_duplicates_fs() {
 
     let repo_a = started.peppy_dirs.root().join("list_dup_a");
     let repo_b = started.peppy_dirs.root().join("list_dup_b");
-    create_node_dir(&repo_a, "shared", "1.0.0");
-    create_node_dir(&repo_b, "shared", "1.0.0");
-    create_node_dir(&repo_b, "unique_b", "1.0.0");
+    create_node_dir(&repo_a, "shared", "v1");
+    create_node_dir(&repo_b, "shared", "v1");
+    create_node_dir(&repo_b, "unique_b", "v1");
 
     write_repositories_json5(
         &started,
@@ -265,7 +265,7 @@ async fn list_marks_git_duplicate_of_fs() {
     let started = start_core_node_with_mock_messenger().await;
 
     let repo_dir = started.peppy_dirs.root().join("fs_repo");
-    create_node_dir(&repo_dir, "overlapping", "1.0.0");
+    create_node_dir(&repo_dir, "overlapping", "v1");
 
     let git_url = "https://github.com/example/nodes.git";
 
@@ -283,7 +283,7 @@ async fn list_marks_git_duplicate_of_fs() {
         &started,
         &serde_json::to_string(&serde_json::json!([{
             "node_name": "overlapping",
-            "node_tag": "1.0.0",
+            "node_tag": "v1",
             "source_type": "git",
             "source_uri": git_url,
             "resolved_ref": "main",
@@ -348,8 +348,8 @@ async fn list_excludes_fs_repo() {
 
     let repo_a = started.peppy_dirs.root().join("repo_a");
     let repo_b = started.peppy_dirs.root().join("repo_b");
-    create_node_dir(&repo_a, "node_a", "1.0.0");
-    create_node_dir(&repo_b, "node_b", "1.0.0");
+    create_node_dir(&repo_a, "node_a", "v1");
+    create_node_dir(&repo_b, "node_b", "v1");
 
     write_repositories_json5(
         &started,
@@ -379,8 +379,8 @@ async fn list_excludes_fs_subdirectory() {
     let started = start_core_node_with_mock_messenger().await;
 
     let repo = started.peppy_dirs.root().join("mixed_repo");
-    create_node_dir(&repo, "keep_node", "1.0.0");
-    create_node_dir(&repo, "secret_node", "1.0.0");
+    create_node_dir(&repo, "keep_node", "v1");
+    create_node_dir(&repo, "secret_node", "v1");
 
     write_repositories_json5(
         &started,
@@ -392,7 +392,7 @@ async fn list_excludes_fs_subdirectory() {
     write_excluded_repositories_json5(
         &started,
         &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo.join("secret_node_1.0.0").to_string_lossy() }
+            { "id": 1, "type": "fs", "path": repo.join("secret_node_v1").to_string_lossy() }
         ]))
         .unwrap(),
     );
@@ -409,7 +409,7 @@ async fn list_excludes_git_repo() {
     let started = start_core_node_with_mock_messenger().await;
 
     let repo_dir = started.peppy_dirs.root().join("fs_repo");
-    create_node_dir(&repo_dir, "fs_node", "1.0.0");
+    create_node_dir(&repo_dir, "fs_node", "v1");
 
     let git_url = "https://github.com/example/excluded.git";
 
@@ -425,7 +425,7 @@ async fn list_excludes_git_repo() {
         &started,
         &serde_json::to_string(&serde_json::json!([{
             "node_name": "git_node",
-            "node_tag": "1.0.0",
+            "node_tag": "v1",
             "source_type": "git",
             "source_uri": git_url,
             "path": "nodes/git_node"

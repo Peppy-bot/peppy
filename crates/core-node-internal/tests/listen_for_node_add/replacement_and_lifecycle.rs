@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents() {
     const NODE_NAME: &str = "overwrite_node";
-    const NODE_TAG: &str = "1.0.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -120,9 +120,9 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents() {
     const DEPENDENCY_NODE_NAME: &str = "lidar";
-    const DEPENDENCY_NODE_TAG: &str = "1.0.0";
+    const DEPENDENCY_NODE_TAG: &str = "v1";
     const DEPENDENT_NODE_NAME: &str = "brain";
-    const DEPENDENT_NODE_TAG: &str = "1.0.0";
+    const DEPENDENT_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -319,7 +319,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "{NODE_NAME}",
-                tag: "1.0.0",
+                tag: "v1",
             },
             interfaces: {
                 services: {
@@ -357,7 +357,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "{NODE_NAME}",
-                tag: "2.0.0",
+                tag: "v2",
             },
             interfaces: {
                 services: {
@@ -392,13 +392,13 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     );
 
     assert_eq!(node_stack.len(), 3, "root + two versions");
-    assert!(node_stack.contains(NODE_NAME, "1.0.0"));
-    assert!(node_stack.contains(NODE_NAME, "2.0.0"));
+    assert!(node_stack.contains(NODE_NAME, "v1"));
+    assert!(node_stack.contains(NODE_NAME, "v2"));
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_fingerprint_mismatch() {
     const TARGET_NODE_NAME: &str = "fingerprint_mismatch_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -474,9 +474,9 @@ async fn listen_for_node_add_fingerprint_mismatch() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     const FIRST_NODE_NAME: &str = "abandoned_node";
-    const FIRST_NODE_TAG: &str = "0.1.0";
+    const FIRST_NODE_TAG: &str = "v1";
     const SECOND_NODE_NAME: &str = "second_node";
-    const SECOND_NODE_TAG: &str = "0.1.0";
+    const SECOND_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -609,7 +609,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     use tokio::sync::{Mutex, Notify, oneshot};
 
     const NODE_NAME: &str = "readd_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
     const INSTANCE_1: &str = "readd_instance_1";
     const INSTANCE_2: &str = "readd_instance_2";
 
@@ -850,9 +850,9 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
     use tokio::sync::{Mutex, Notify, oneshot};
 
     const DEPENDENCY_NODE_NAME: &str = "lidar_dep";
-    const DEPENDENCY_NODE_TAG: &str = "1.0.0";
+    const DEPENDENCY_NODE_TAG: &str = "v1";
     const DEPENDENT_NODE_NAME: &str = "brain_dep";
-    const DEPENDENT_NODE_TAG: &str = "1.0.0";
+    const DEPENDENT_NODE_TAG: &str = "v1";
     const INSTANCE_ID: &str = "lidar_dep_instance";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -1066,9 +1066,9 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     use std::sync::Arc;
 
     const DEPENDENCY_NODE_NAME: &str = "lidar_iface";
-    const DEPENDENCY_NODE_TAG: &str = "1.0.0";
+    const DEPENDENCY_NODE_TAG: &str = "v1";
     const DEPENDENT_NODE_NAME: &str = "brain_iface";
-    const DEPENDENT_NODE_TAG: &str = "1.0.0";
+    const DEPENDENT_NODE_TAG: &str = "v1";
     const INSTANCE_ID: &str = "lidar_iface_instance";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -1307,9 +1307,9 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
     use tokio::sync::Notify;
 
     const DEPENDENCY_NODE_NAME: &str = "lidar_stuck";
-    const DEPENDENCY_NODE_TAG: &str = "1.0.0";
+    const DEPENDENCY_NODE_TAG: &str = "v1";
     const DEPENDENT_NODE_NAME: &str = "brain_stuck";
-    const DEPENDENT_NODE_TAG: &str = "1.0.0";
+    const DEPENDENT_NODE_TAG: &str = "v1";
     const INSTANCE_ID: &str = "lidar_stuck_instance";
 
     let started_core_node = start_core_node_with_mock_messenger().await;

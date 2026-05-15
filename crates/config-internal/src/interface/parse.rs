@@ -36,7 +36,7 @@ mod tests {
     fn from_content_parses_interface() {
         let json5 = r#"{
             peppy_schema: "interface_v1",
-            manifest: { name: "depth_camera", tag: "0.1.0" },
+            manifest: { name: "depth_camera", tag: "v1" },
             interfaces: {
                 topics: [
                     { name: "video_stream", qos_profile: "sensor_data" }
@@ -54,7 +54,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let json5 = r#"{
             peppy_schema: "interface_v1",
-            manifest: { name: "ping", tag: "0.1.0" },
+            manifest: { name: "ping", tag: "v1" },
             interfaces: {}
         }"#;
         std::fs::write(tmp.path(), json5).unwrap();

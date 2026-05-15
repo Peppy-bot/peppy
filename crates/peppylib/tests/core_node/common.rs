@@ -23,7 +23,7 @@ pub(crate) fn write_standalone_peppy_config(dir: &TempDir) -> PathBuf {
         &path,
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "test_node", tag: "0.1.0" },
+            manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/test_node"] },
         }"#,
     )

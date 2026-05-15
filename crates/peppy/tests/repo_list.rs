@@ -47,11 +47,11 @@ fn repo_list_finds_nodes_in_fs_repo() {
 
     // Create a repo directory with a node
     let repo_dir = serve.temp_dir().join("test_repo");
-    let node_dir = repo_dir.join("my_sensor_1.0.0");
+    let node_dir = repo_dir.join("my_sensor_v1");
     std::fs::create_dir_all(&node_dir).expect("create node dir");
     std::fs::write(
         node_dir.join(NODE_CONFIG_FILE),
-        minimal_peppy_json5("my_sensor", "1.0.0"),
+        minimal_peppy_json5("my_sensor", "v1"),
     )
     .expect("write peppy.json5");
 
@@ -94,7 +94,7 @@ fn repo_list_finds_nodes_in_fs_repo() {
     assert!(
         cached.iter().any(|n| {
             n.get("node_name").and_then(|v| v.as_str()) == Some("my_sensor")
-                && n.get("node_tag").and_then(|v| v.as_str()) == Some("1.0.0")
+                && n.get("node_tag").and_then(|v| v.as_str()) == Some("v1")
         }),
         "cache should contain my_sensor/1.0.0, got: {cache_content}"
     );

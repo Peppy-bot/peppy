@@ -404,7 +404,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
         camera_dir.path().join("peppy.json5"),
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "uvc_camera", tag: "0.1.0" },
+            manifest: { name: "uvc_camera", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [
@@ -429,7 +429,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     std::fs::create_dir_all(peppy_dirs.cache_dir()).expect("create cache dir");
     let packages_json = serde_json::json!([{
         "node_name": "uvc_camera",
-        "node_tag": "0.1.0",
+        "node_tag": "v1",
         "source_type": "fs",
         // `path` now points at the manifest file itself; the daemon's
         // materialize step derives the directory via `.parent()`.
@@ -450,8 +450,8 @@ async fn node_sync_with_include_repositories_prints_provenance() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
-                depends_on: { nodes: [{ name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }] }
+                tag: "v1",
+                depends_on: { nodes: [{ name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }] }
             },
             interfaces: {
                 topics: {
@@ -486,7 +486,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
         logs
     );
     assert!(
-        logs.contains("uvc_camera:0.1.0 (fs)"),
+        logs.contains("uvc_camera:v1 (fs)"),
         "verbose output should list the repo-resolved dep with its source kind. Logs:\n{}",
         logs
     );

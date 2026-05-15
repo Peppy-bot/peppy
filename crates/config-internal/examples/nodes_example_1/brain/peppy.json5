@@ -4,7 +4,7 @@
   peppy_schema: "node_v1",
   manifest: {
     name: "brain",
-    tag: "0.1.0",
+    tag: "v1",
     labels: [
       "brain"
     ],
@@ -12,12 +12,12 @@
       nodes: [
         {
           name: "uvc_camera",
-          tag: "0.1.0",
+          tag: "v1",
           local_id: "uvc_camera"
         },
         {
           name: "controller",
-          tag: "0.1.0",
+          tag: "v1",
           local_id: "controller"
         },
       ]

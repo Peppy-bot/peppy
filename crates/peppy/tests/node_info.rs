@@ -162,7 +162,7 @@ fn fetch_info(
 #[test]
 fn node_info_shows_dependencies_from_consumed_interfaces() {
     const NODE_NAME: &str = "consumer_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let peppy_json5 = r#"{
             peppy_schema: "node_v1",
@@ -171,10 +171,10 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
                 tag: "{NODE_TAG}",
                 depends_on: {
                     nodes: [
-                        { name: "camera_node", tag: "0.1.0", local_id: "camera_node" },
-                        { name: "lidar_node", tag: "0.1.0", local_id: "lidar_node" },
-                        { name: "config_node", tag: "0.1.0", local_id: "config_node" },
-                        { name: "navigation_node", tag: "0.1.0", local_id: "navigation_node" }
+                        { name: "camera_node", tag: "v1", local_id: "camera_node" },
+                        { name: "lidar_node", tag: "v1", local_id: "lidar_node" },
+                        { name: "config_node", tag: "v1", local_id: "config_node" },
+                        { name: "navigation_node", tag: "v1", local_id: "navigation_node" }
                     ]
                 }
             },
@@ -210,7 +210,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     // `consumer_node` consumes, so the add resolves cleanly.
     let camera_node = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "camera_node", tag: "0.1.0" },
+            manifest: { name: "camera_node", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [
@@ -223,7 +223,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
         }"#;
     let lidar_node = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "lidar_node", tag: "0.1.0" },
+            manifest: { name: "lidar_node", tag: "v1" },
             interfaces: {
                 topics: { emits: [{ name: "point_cloud" }] }
             },
@@ -231,7 +231,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
         }"#;
     let config_node = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "config_node", tag: "0.1.0" },
+            manifest: { name: "config_node", tag: "v1" },
             interfaces: {
                 services: { exposes: [{ name: "get_config" }] }
             },
@@ -239,7 +239,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
         }"#;
     let navigation_node = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "navigation_node", tag: "0.1.0" },
+            manifest: { name: "navigation_node", tag: "v1" },
             interfaces: {
                 actions: { exposes: [{ name: "go_to_pose" }] }
             },
@@ -323,7 +323,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
 #[test]
 fn node_info_no_dependencies_when_no_consumes() {
     const NODE_NAME: &str = "standalone_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let peppy_json5 = r#"{
             peppy_schema: "node_v1",
@@ -419,7 +419,7 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
 
     let response = rt
         .block_on(poll_node_info(
-            &NodeInfoRequest::new("ghost_node", "9.9.9"),
+            &NodeInfoRequest::new("ghost_node", "v999"),
             &caller_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -430,7 +430,7 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
 
     assert!(
         matches!(response, NodeInfoResponse::NotInStack),
-        "expected NotInStack for ghost_node:9.9.9, got: {response:?}"
+        "expected NotInStack for ghost_node:v999, got: {response:?}"
     );
 
     let logs = log_capture.logs();

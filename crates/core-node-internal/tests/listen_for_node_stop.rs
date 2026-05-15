@@ -28,7 +28,7 @@ fn is_process_running(pid: u32) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_stop_success() {
     const TARGET_NODE_NAME: &str = "stoppable_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "stoppable_instance";
 
     let started_core_node = start_core_node_with_mock_messenger().await;

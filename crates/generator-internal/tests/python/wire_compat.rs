@@ -108,7 +108,7 @@ const ACTION_PRODUCER_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: {
     name: "producer",
-    tag: "0.1.0"
+    tag: "v1"
   },
   interfaces: {
     actions: {
@@ -145,10 +145,10 @@ const ACTION_CONSUMER_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: {
     name: "consumer",
-    tag: "0.1.0",
+    tag: "v1",
     depends_on: {
       nodes: [
-        { name: "producer", tag: "0.1.0", local_id: "producer" }
+        { name: "producer", tag: "v1", local_id: "producer" }
       ]
     }
   },
@@ -476,7 +476,7 @@ const SERVICE_PRODUCER_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: {
     name: "producer",
-    tag: "0.1.0"
+    tag: "v1"
   },
   interfaces: {
     services: {
@@ -504,10 +504,10 @@ const SERVICE_CONSUMER_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: {
     name: "consumer",
-    tag: "0.1.0",
+    tag: "v1",
     depends_on: {
       nodes: [
-        { name: "producer", tag: "0.1.0", local_id: "producer" }
+        { name: "producer", tag: "v1", local_id: "producer" }
       ]
     }
   },
@@ -793,7 +793,7 @@ const TOPIC_PRODUCER_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: {
     name: "producer",
-    tag: "0.1.0"
+    tag: "v1"
   },
   interfaces: {
     topics: {
@@ -821,10 +821,10 @@ const TOPIC_CONSUMER_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: {
     name: "consumer",
-    tag: "0.1.0",
+    tag: "v1",
     depends_on: {
       nodes: [
-        { name: "producer", tag: "0.1.0", local_id: "producer" }
+        { name: "producer", tag: "v1", local_id: "producer" }
       ]
     }
   },

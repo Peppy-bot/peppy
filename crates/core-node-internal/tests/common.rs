@@ -998,7 +998,7 @@ pub async fn send_node_run_and_wait_with_env(
 /// Each call creates a completely new node with its own peppygen generation
 /// and cargo build, ensuring isolation between tests.
 pub fn create_test_node() -> PathBuf {
-    init_test_node_project("example_node", "0.1.0", true)
+    init_test_node_project("example_node", "v1", true)
 }
 
 /// Creates a fresh test node in a new temp directory.

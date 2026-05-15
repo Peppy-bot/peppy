@@ -227,10 +227,10 @@ mod tests {
     #[test]
     fn table_renders_headers_and_rows() {
         let nodes = vec![
-            node("sensor", "0.1.0", NodeStage::Added, vec![]),
+            node("sensor", "v1", NodeStage::Added, vec![]),
             node(
                 "brain",
-                "0.1.0",
+                "v1",
                 NodeStage::Ready,
                 vec![("i1", InstanceState::Running)],
             ),
@@ -240,8 +240,8 @@ mod tests {
         for header in HEADERS {
             assert!(out.contains(header), "missing header {}:\n{}", header, out);
         }
-        assert!(out.contains("sensor:0.1.0"), "missing sensor row:\n{}", out);
-        assert!(out.contains("brain:0.1.0"), "missing brain row:\n{}", out);
+        assert!(out.contains("sensor:v1"), "missing sensor row:\n{}", out);
+        assert!(out.contains("brain:v1"), "missing brain row:\n{}", out);
         assert!(
             out.contains("1 running"),
             "instances column missing:\n{}",
@@ -259,7 +259,7 @@ mod tests {
     fn mixed_running_and_starting_instances_render_with_breakdown() {
         let nodes = vec![node(
             "brain",
-            "0.1.0",
+            "v1",
             NodeStage::Ready,
             vec![
                 ("r1", InstanceState::Running),
@@ -288,15 +288,15 @@ mod tests {
 
     #[test]
     fn edges_render_as_arrows() {
-        let from = node("brain", "0.1.0", NodeStage::Ready, vec![]);
-        let to = node("sensor", "0.1.0", NodeStage::Ready, vec![]);
+        let from = node("brain", "v1", NodeStage::Ready, vec![]);
+        let to = node("sensor", "v1", NodeStage::Ready, vec![]);
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),
         }];
         let out = format_stack_list(&[from, to], &edges);
         assert!(
-            out.contains("brain:0.1.0 -> sensor:0.1.0"),
+            out.contains("brain:v1 -> sensor:v1"),
             "edge line missing:\n{}",
             out
         );

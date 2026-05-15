@@ -12,7 +12,7 @@ async fn repo_node_add_fails_when_packages_cache_missing() {
         &started.core_node_name,
         NodeAddSource::RepoNode {
             name: "ghost",
-            tag: "0.1.0",
+            tag: "v1",
         },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
@@ -40,10 +40,10 @@ async fn repo_node_add_fails_when_root_node_unknown() {
 
     let tmp = TempDir::new().unwrap();
     let some_dir = tmp.path().join("other");
-    write_plain_peppy_json5(&some_dir, &minimal_node_config("other", "0.1.0", &[]));
+    write_plain_peppy_json5(&some_dir, &minimal_node_config("other", "v1", &[]));
 
     TestPackagesCache::new()
-        .fs_entry("other", "0.1.0", &some_dir)
+        .fs_entry("other", "v1", &some_dir)
         .write(&started.peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -51,7 +51,7 @@ async fn repo_node_add_fails_when_root_node_unknown() {
         &started.core_node_name,
         NodeAddSource::RepoNode {
             name: "ghost",
-            tag: "0.1.0",
+            tag: "v1",
         },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
@@ -63,7 +63,7 @@ async fn repo_node_add_fails_when_root_node_unknown() {
     assert!(!res.success, "add should fail when root node unknown");
     let err = res.error_message.unwrap_or_default();
     assert!(
-        err.contains("ghost:0.1.0") && err.contains("missing"),
+        err.contains("ghost:v1") && err.contains("missing"),
         "error should list the missing root; got: {err}"
     );
     assert_eq!(node_stack.len(), 1);
@@ -78,12 +78,12 @@ async fn repo_node_add_fails_when_dep_missing_in_cache() {
     let target_dir = tmp.path().join("target");
     write_plain_peppy_json5(
         &target_dir,
-        &minimal_node_config("target", "1.0.0", &[("missing_dep", "9.9.9")]),
+        &minimal_node_config("target", "v1", &[("missing_dep", "v999")]),
     );
 
     // Target is in the cache, but missing_dep is not.
     TestPackagesCache::new()
-        .fs_entry("target", "1.0.0", &target_dir)
+        .fs_entry("target", "v1", &target_dir)
         .write(&started.peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -91,7 +91,7 @@ async fn repo_node_add_fails_when_dep_missing_in_cache() {
         &started.core_node_name,
         NodeAddSource::RepoNode {
             name: "target",
-            tag: "1.0.0",
+            tag: "v1",
         },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
@@ -103,7 +103,7 @@ async fn repo_node_add_fails_when_dep_missing_in_cache() {
     assert!(!res.success, "add should fail when dep missing");
     let err = res.error_message.unwrap_or_default();
     assert!(
-        err.contains("missing_dep:9.9.9"),
+        err.contains("missing_dep:v999"),
         "error should mention missing dep; got: {err}"
     );
     assert_eq!(node_stack.len(), 1, "nothing should have been added");
@@ -117,18 +117,12 @@ async fn repo_node_add_fails_on_cycle() {
     let tmp = TempDir::new().unwrap();
     let a_dir = tmp.path().join("a");
     let b_dir = tmp.path().join("b");
-    write_plain_peppy_json5(
-        &a_dir,
-        &minimal_node_config("a", "0.1.0", &[("b", "0.1.0")]),
-    );
-    write_plain_peppy_json5(
-        &b_dir,
-        &minimal_node_config("b", "0.1.0", &[("a", "0.1.0")]),
-    );
+    write_plain_peppy_json5(&a_dir, &minimal_node_config("a", "v1", &[("b", "v1")]));
+    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "v1", &[("a", "v1")]));
 
     TestPackagesCache::new()
-        .fs_entry("a", "0.1.0", &a_dir)
-        .fs_entry("b", "0.1.0", &b_dir)
+        .fs_entry("a", "v1", &a_dir)
+        .fs_entry("b", "v1", &b_dir)
         .write(&started.peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -136,7 +130,7 @@ async fn repo_node_add_fails_on_cycle() {
         &started.core_node_name,
         NodeAddSource::RepoNode {
             name: "a",
-            tag: "0.1.0",
+            tag: "v1",
         },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
@@ -156,7 +150,7 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
 
     let tmp = TempDir::new().unwrap();
     let b_dir = tmp.path().join("b");
-    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "0.1.0", &[]));
+    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "v1", &[]));
 
     // C declares a dep on `ghost_dep` that is NOT in the cache. The
     // resolver collects this as a "missing" dep and must fail cleanly
@@ -164,18 +158,18 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
     let c_dir = tmp.path().join("c");
     write_plain_peppy_json5(
         &c_dir,
-        &minimal_node_config("c", "0.1.0", &[("ghost_dep", "9.9.9")]),
+        &minimal_node_config("c", "v1", &[("ghost_dep", "v999")]),
     );
     let a_dir = tmp.path().join("a");
     write_plain_peppy_json5(
         &a_dir,
-        &minimal_node_config("a", "0.1.0", &[("b", "0.1.0"), ("c", "0.1.0")]),
+        &minimal_node_config("a", "v1", &[("b", "v1"), ("c", "v1")]),
     );
 
     TestPackagesCache::new()
-        .fs_entry("a", "0.1.0", &a_dir)
-        .fs_entry("b", "0.1.0", &b_dir)
-        .fs_entry("c", "0.1.0", &c_dir)
+        .fs_entry("a", "v1", &a_dir)
+        .fs_entry("b", "v1", &b_dir)
+        .fs_entry("c", "v1", &c_dir)
         .write(&started.peppy_dirs);
 
     let pre_len = node_stack.len();
@@ -184,7 +178,7 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
         &started.core_node_name,
         NodeAddSource::RepoNode {
             name: "a",
-            tag: "0.1.0",
+            tag: "v1",
         },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
@@ -196,15 +190,15 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
     assert!(!res.success, "add should fail on missing transitive dep");
     // Stack must be unchanged — no partial add.
     assert_eq!(node_stack.len(), pre_len, "stack should be unchanged");
-    assert!(!node_stack.contains("a", "0.1.0"));
-    assert!(!node_stack.contains("b", "0.1.0"));
-    assert!(!node_stack.contains("c", "0.1.0"));
+    assert!(!node_stack.contains("a", "v1"));
+    assert!(!node_stack.contains("b", "v1"));
+    assert!(!node_stack.contains("c", "v1"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_no_config_found() {
     const TARGET_NODE_NAME: &str = "runnable_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -241,7 +235,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = minimal_node_config("git_hash_mismatch_node", "0.1.0", &[]);
+    let peppy_json5 = minimal_node_config("git_hash_mismatch_node", "v1", &[]);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let peppy_dir = source_dir.path().join(config::consts::PEPPY_OUTPUT_DIR);
@@ -273,7 +267,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
         "error message should indicate git hash mismatch, got: {:?}",
         add_result.error_message
     );
-    assert!(!node_stack.contains("git_hash_mismatch_node", "0.1.0"));
+    assert!(!node_stack.contains("git_hash_mismatch_node", "v1"));
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_invalid_config_fails() {
@@ -318,7 +312,7 @@ async fn listen_for_node_add_no_run_cmd_fails() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 =
-        node_config_with_execution("no_run_cmd_node", "0.1.0", r#"{ language: "rust" }"#);
+        node_config_with_execution("no_run_cmd_node", "v1", r#"{ language: "rust" }"#);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -360,10 +354,10 @@ async fn listen_for_node_add_dependency_not_resolved() {
         peppy_schema: "node_v1",
         manifest: {
             name: "consumer_node",
-            tag: "1.0.0",
+            tag: "v1",
             depends_on: {
                 nodes: [
-                    { name: "non_existent_node", tag: "1.0.0", local_id: "non_existent_node" }
+                    { name: "non_existent_node", tag: "v1", local_id: "non_existent_node" }
                 ]
             },
         },
@@ -416,7 +410,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     // BEFORE running build_cmd. This mimics real nodes (e.g. fake_video_reconstruction) where
     // `cargo build` fails because peppygen interfaces are incomplete when dependencies are missing.
     const TARGET_NODE_NAME: &str = "add_cmd_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -429,7 +423,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
           tag: "TARGET_NODE_TAG",
           depends_on: {
             nodes: [
-              { name: "fake_uvc_camera", tag: "0.1.0", local_id: "fake_uvc_camera" }
+              { name: "fake_uvc_camera", tag: "v1", local_id: "fake_uvc_camera" }
             ]
           },
         },
@@ -487,15 +481,15 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exists() {
-    // The dependency node (fake_uvc_camera:0.1.0) exists in the stack but emits a
+    // The dependency node (fake_uvc_camera:v1) exists in the stack but emits a
     // DIFFERENT topic name than what the dependent node subscribes to. The node add should
     // fail with a MissingInterface error BEFORE running build_cmd. This mimics the real
     // scenario where `fake_uvc_camera` is added first, but `fake_video_reconstruction`
     // fails because the interface names don't match.
     const DEPENDENCY_NODE_NAME: &str = "fake_uvc_camera";
-    const DEPENDENCY_NODE_TAG: &str = "0.1.0";
+    const DEPENDENCY_NODE_TAG: &str = "v1";
     const TARGET_NODE_NAME: &str = "fake_video_reconstruction";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -600,7 +594,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
     const TARGET_NODE_NAME: &str = "excluded_dirs_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 

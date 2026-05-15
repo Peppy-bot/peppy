@@ -44,7 +44,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
       peppy_schema: "node_v1",
       manifest: {
         name: "robot_arm",
-        tag: "0.1.0",
+        tag: "v1",
         // No depends_on — robot_arm does not depend on arm_controller
       },
       interfaces: {
@@ -98,7 +98,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
       peppy_schema: "node_v1",
       manifest: {
         name: "robot_arm",
-        tag: "0.1.0",
+        tag: "v1",
         // No depends_on — robot_arm does not depend on arm_controller
       },
       interfaces: {
@@ -157,10 +157,10 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
       peppy_schema: "node_v1",
       manifest: {
         name: "arm_controller",
-        tag: "0.1.0",
+        tag: "v1",
         depends_on: {
           nodes: [
-            { name: "robot_arm", tag: "0.1.0", local_id: "robot_arm" },
+            { name: "robot_arm", tag: "v1", local_id: "robot_arm" },
           ]
         },
       },
@@ -202,10 +202,10 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
       peppy_schema: "node_v1",
       manifest: {
         name: "arm_controller",
-        tag: "0.1.0",
+        tag: "v1",
         depends_on: {
           nodes: [
-            { name: "robot_arm", tag: "0.1.0", local_id: "robot_arm" },
+            { name: "robot_arm", tag: "v1", local_id: "robot_arm" },
           ]
         },
       },

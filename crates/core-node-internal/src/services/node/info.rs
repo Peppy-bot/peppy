@@ -471,7 +471,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_node_config_rejects_http_checksum_mismatch() {
-        let bundle = create_http_node_bundle("http_checksum_node", "0.1.0");
+        let bundle = create_http_node_bundle("http_checksum_node", "v1");
         let actual_sha256: String = Sha256::digest(&bundle)
             .iter()
             .map(|b| format!("{:02x}", b))

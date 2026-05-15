@@ -9,10 +9,10 @@ async fn repo_node_add_single_no_deps_fs_source() {
 
     let tmp = TempDir::new().unwrap();
     let node_dir = tmp.path().join("standalone");
-    write_plain_peppy_json5(&node_dir, &minimal_node_config("standalone", "0.1.0", &[]));
+    write_plain_peppy_json5(&node_dir, &minimal_node_config("standalone", "v1", &[]));
 
     TestPackagesCache::new()
-        .fs_entry("standalone", "0.1.0", &node_dir)
+        .fs_entry("standalone", "v1", &node_dir)
         .write(&peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -20,7 +20,7 @@ async fn repo_node_add_single_no_deps_fs_source() {
         &started.core_node_name,
         NodeAddSource::RepoNode {
             name: "standalone",
-            tag: "0.1.0",
+            tag: "v1",
         },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
@@ -34,7 +34,7 @@ async fn repo_node_add_single_no_deps_fs_source() {
         "add should succeed, err={:?}",
         res.error_message
     );
-    assert!(node_stack.contains("standalone", "0.1.0"));
+    assert!(node_stack.contains("standalone", "v1"));
     assert_eq!(node_stack.len(), 2, "root + standalone");
 }
 
@@ -48,20 +48,14 @@ async fn repo_node_add_chain_of_three_fs() {
     let a_dir = tmp.path().join("a");
     let b_dir = tmp.path().join("b");
     let c_dir = tmp.path().join("c");
-    write_plain_peppy_json5(&a_dir, &minimal_node_config("a", "0.1.0", &[]));
-    write_plain_peppy_json5(
-        &b_dir,
-        &minimal_node_config("b", "0.1.0", &[("a", "0.1.0")]),
-    );
-    write_plain_peppy_json5(
-        &c_dir,
-        &minimal_node_config("c", "0.1.0", &[("b", "0.1.0")]),
-    );
+    write_plain_peppy_json5(&a_dir, &minimal_node_config("a", "v1", &[]));
+    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "v1", &[("a", "v1")]));
+    write_plain_peppy_json5(&c_dir, &minimal_node_config("c", "v1", &[("b", "v1")]));
 
     TestPackagesCache::new()
-        .fs_entry("a", "0.1.0", &a_dir)
-        .fs_entry("b", "0.1.0", &b_dir)
-        .fs_entry("c", "0.1.0", &c_dir)
+        .fs_entry("a", "v1", &a_dir)
+        .fs_entry("b", "v1", &b_dir)
+        .fs_entry("c", "v1", &c_dir)
         .write(&peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -69,7 +63,7 @@ async fn repo_node_add_chain_of_three_fs() {
         &started.core_node_name,
         NodeAddSource::RepoNode {
             name: "c",
-            tag: "0.1.0",
+            tag: "v1",
         },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
@@ -83,9 +77,9 @@ async fn repo_node_add_chain_of_three_fs() {
         "add should succeed, err={:?}",
         res.error_message
     );
-    assert!(node_stack.contains("a", "0.1.0"));
-    assert!(node_stack.contains("b", "0.1.0"));
-    assert!(node_stack.contains("c", "0.1.0"));
+    assert!(node_stack.contains("a", "v1"));
+    assert!(node_stack.contains("b", "v1"));
+    assert!(node_stack.contains("c", "v1"));
     assert_eq!(node_stack.len(), 4, "root + a + b + c");
     assert_eq!(
         res.node_name.as_deref(),
@@ -105,19 +99,19 @@ async fn repo_node_add_diamond() {
     let b = tmp.path().join("b");
     let c = tmp.path().join("c");
     let d = tmp.path().join("d");
-    write_plain_peppy_json5(&a, &minimal_node_config("a", "0.1.0", &[]));
-    write_plain_peppy_json5(&b, &minimal_node_config("b", "0.1.0", &[("a", "0.1.0")]));
-    write_plain_peppy_json5(&c, &minimal_node_config("c", "0.1.0", &[("a", "0.1.0")]));
+    write_plain_peppy_json5(&a, &minimal_node_config("a", "v1", &[]));
+    write_plain_peppy_json5(&b, &minimal_node_config("b", "v1", &[("a", "v1")]));
+    write_plain_peppy_json5(&c, &minimal_node_config("c", "v1", &[("a", "v1")]));
     write_plain_peppy_json5(
         &d,
-        &minimal_node_config("d", "0.1.0", &[("b", "0.1.0"), ("c", "0.1.0")]),
+        &minimal_node_config("d", "v1", &[("b", "v1"), ("c", "v1")]),
     );
 
     TestPackagesCache::new()
-        .fs_entry("a", "0.1.0", &a)
-        .fs_entry("b", "0.1.0", &b)
-        .fs_entry("c", "0.1.0", &c)
-        .fs_entry("d", "0.1.0", &d)
+        .fs_entry("a", "v1", &a)
+        .fs_entry("b", "v1", &b)
+        .fs_entry("c", "v1", &c)
+        .fs_entry("d", "v1", &d)
         .write(&peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -125,7 +119,7 @@ async fn repo_node_add_diamond() {
         &started.core_node_name,
         NodeAddSource::RepoNode {
             name: "d",
-            tag: "0.1.0",
+            tag: "v1",
         },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
@@ -140,7 +134,7 @@ async fn repo_node_add_diamond() {
         res.error_message
     );
     for name in ["a", "b", "c", "d"] {
-        assert!(node_stack.contains(name, "0.1.0"), "missing {name}");
+        assert!(node_stack.contains(name, "v1"), "missing {name}");
     }
     assert_eq!(
         node_stack.len(),
@@ -159,11 +153,11 @@ async fn repo_node_add_partial_stack_coverage() {
     let b_dir = tmp.path().join("b");
     let c_dir = tmp.path().join("c");
     let a_dir = tmp.path().join("a");
-    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "0.1.0", &[]));
-    write_plain_peppy_json5(&c_dir, &minimal_node_config("c", "0.1.0", &[]));
+    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "v1", &[]));
+    write_plain_peppy_json5(&c_dir, &minimal_node_config("c", "v1", &[]));
     write_plain_peppy_json5(
         &a_dir,
-        &minimal_node_config("a", "0.1.0", &[("b", "0.1.0"), ("c", "0.1.0")]),
+        &minimal_node_config("a", "v1", &[("b", "v1"), ("c", "v1")]),
     );
 
     // Pre-populate the stack with dep B by adding it directly first.
@@ -181,9 +175,9 @@ async fn repo_node_add_partial_stack_coverage() {
     assert_eq!(node_stack.len(), 2, "root + b");
 
     TestPackagesCache::new()
-        .fs_entry("a", "0.1.0", &a_dir)
-        .fs_entry("b", "0.1.0", &b_dir)
-        .fs_entry("c", "0.1.0", &c_dir)
+        .fs_entry("a", "v1", &a_dir)
+        .fs_entry("b", "v1", &b_dir)
+        .fs_entry("c", "v1", &c_dir)
         .write(&peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -191,7 +185,7 @@ async fn repo_node_add_partial_stack_coverage() {
         &started.core_node_name,
         NodeAddSource::RepoNode {
             name: "a",
-            tag: "0.1.0",
+            tag: "v1",
         },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
@@ -208,9 +202,9 @@ async fn repo_node_add_partial_stack_coverage() {
     // Stack: root + b + c + a = 4. B's stack entry is replaced in-place
     // by the fresh materialization (same key, same count), and c + a are
     // added as new entries.
-    assert!(node_stack.contains("a", "0.1.0"));
-    assert!(node_stack.contains("b", "0.1.0"));
-    assert!(node_stack.contains("c", "0.1.0"));
+    assert!(node_stack.contains("a", "v1"));
+    assert!(node_stack.contains("b", "v1"));
+    assert!(node_stack.contains("c", "v1"));
     assert_eq!(node_stack.len(), 4);
 }
 
@@ -228,7 +222,7 @@ async fn repo_node_add_does_not_materialize_nodes_outside_declared_tree() {
 
     let tmp = TempDir::new().unwrap();
     let c_dir = tmp.path().join("c");
-    write_plain_peppy_json5(&c_dir, &minimal_node_config("c", "0.1.0", &[]));
+    write_plain_peppy_json5(&c_dir, &minimal_node_config("c", "v1", &[]));
 
     // Pre-add c directly so it's already in the stack.
     let pre = send_node_add_and_wait(
@@ -248,23 +242,17 @@ async fn repo_node_add_does_not_materialize_nodes_outside_declared_tree() {
     // references `d`, so the resolver must never look it up. If it did,
     // the batch would fail with "Dependencies missing from packages cache".
     let b_dir = tmp.path().join("b");
-    write_plain_peppy_json5(
-        &b_dir,
-        &minimal_node_config("b", "0.1.0", &[("c", "0.1.0")]),
-    );
+    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "v1", &[("c", "v1")]));
     let a_dir = tmp.path().join("a");
-    write_plain_peppy_json5(
-        &a_dir,
-        &minimal_node_config("a", "0.1.0", &[("b", "0.1.0")]),
-    );
+    write_plain_peppy_json5(&a_dir, &minimal_node_config("a", "v1", &[("b", "v1")]));
 
     TestPackagesCache::new()
-        .fs_entry("a", "0.1.0", &a_dir)
-        .fs_entry("b", "0.1.0", &b_dir)
+        .fs_entry("a", "v1", &a_dir)
+        .fs_entry("b", "v1", &b_dir)
         // NB: intentionally no entry for `d` — a correct resolver only
         // walks deps declared by the resolved manifests, and none of them
         // mention `d`.
-        .fs_entry("c", "0.1.0", &c_dir)
+        .fs_entry("c", "v1", &c_dir)
         .write(&peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -272,7 +260,7 @@ async fn repo_node_add_does_not_materialize_nodes_outside_declared_tree() {
         &started.core_node_name,
         NodeAddSource::RepoNode {
             name: "a",
-            tag: "0.1.0",
+            tag: "v1",
         },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
@@ -289,11 +277,11 @@ async fn repo_node_add_does_not_materialize_nodes_outside_declared_tree() {
     // Stack = root + c + b + a = 4. c is replaced in-place when re-
     // materialized; b and a are new.
     assert_eq!(node_stack.len(), 4);
-    assert!(node_stack.contains("a", "0.1.0"));
-    assert!(node_stack.contains("b", "0.1.0"));
-    assert!(node_stack.contains("c", "0.1.0"));
+    assert!(node_stack.contains("a", "v1"));
+    assert!(node_stack.contains("b", "v1"));
+    assert!(node_stack.contains("c", "v1"));
     assert!(
-        !node_stack.contains("d", "0.1.0"),
+        !node_stack.contains("d", "v1"),
         "d must never be added — no manifest in the tree declares it"
     );
 }
@@ -320,8 +308,8 @@ async fn repo_node_add_deep_mixed_tree_stack_and_cache_at_multiple_levels() {
     let tmp = TempDir::new().unwrap();
     let b_dir = tmp.path().join("b");
     let e_dir = tmp.path().join("e");
-    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "0.1.0", &[]));
-    write_plain_peppy_json5(&e_dir, &minimal_node_config("e", "0.1.0", &[]));
+    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "v1", &[]));
+    write_plain_peppy_json5(&e_dir, &minimal_node_config("e", "v1", &[]));
 
     // Pre-populate stack with b and e.
     for dir in [&b_dir, &e_dir] {
@@ -344,22 +332,22 @@ async fn repo_node_add_deep_mixed_tree_stack_and_cache_at_multiple_levels() {
     let d_dir = tmp.path().join("d");
     let c_dir = tmp.path().join("c");
     let a_dir = tmp.path().join("a");
-    write_plain_peppy_json5(&d_dir, &minimal_node_config("d", "0.1.0", &[]));
+    write_plain_peppy_json5(&d_dir, &minimal_node_config("d", "v1", &[]));
     write_plain_peppy_json5(
         &c_dir,
-        &minimal_node_config("c", "0.1.0", &[("d", "0.1.0"), ("e", "0.1.0")]),
+        &minimal_node_config("c", "v1", &[("d", "v1"), ("e", "v1")]),
     );
     write_plain_peppy_json5(
         &a_dir,
-        &minimal_node_config("a", "0.1.0", &[("b", "0.1.0"), ("c", "0.1.0")]),
+        &minimal_node_config("a", "v1", &[("b", "v1"), ("c", "v1")]),
     );
 
     TestPackagesCache::new()
-        .fs_entry("a", "0.1.0", &a_dir)
-        .fs_entry("b", "0.1.0", &b_dir)
-        .fs_entry("c", "0.1.0", &c_dir)
-        .fs_entry("d", "0.1.0", &d_dir)
-        .fs_entry("e", "0.1.0", &e_dir)
+        .fs_entry("a", "v1", &a_dir)
+        .fs_entry("b", "v1", &b_dir)
+        .fs_entry("c", "v1", &c_dir)
+        .fs_entry("d", "v1", &d_dir)
+        .fs_entry("e", "v1", &e_dir)
         .write(&peppy_dirs);
 
     let res = send_node_add_and_wait(
@@ -367,7 +355,7 @@ async fn repo_node_add_deep_mixed_tree_stack_and_cache_at_multiple_levels() {
         &started.core_node_name,
         NodeAddSource::RepoNode {
             name: "a",
-            tag: "0.1.0",
+            tag: "v1",
         },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
@@ -387,6 +375,6 @@ async fn repo_node_add_deep_mixed_tree_stack_and_cache_at_multiple_levels() {
         "root + b + e (pre-populated) + d + c + a (newly added)"
     );
     for name in ["a", "b", "c", "d", "e"] {
-        assert!(node_stack.contains(name, "0.1.0"), "missing {name}");
+        assert!(node_stack.contains(name, "v1"), "missing {name}");
     }
 }

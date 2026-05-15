@@ -85,7 +85,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "test_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -94,7 +94,7 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "test_node");
-        assert_eq!(config.manifest.tag, "0.1.0");
+        assert_eq!(config.manifest.tag, "v1");
         assert_eq!(
             config.execution.run_cmd.as_ref().unwrap(),
             &vec!["./target/release/test_node"]
@@ -108,7 +108,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "camera_driver",
-                tag: "2.1.0",
+                tag: "v21",
             },
             interfaces: {
                 topics: {
@@ -124,7 +124,7 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "camera_driver");
-        assert_eq!(config.manifest.tag, "2.1.0");
+        assert_eq!(config.manifest.tag, "v21");
         assert_eq!(
             config.execution.language,
             crate::node::PeppygenLanguage::Rust
@@ -176,7 +176,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -196,7 +196,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bad_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -219,7 +219,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bare_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -238,7 +238,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "empty_cmd_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -281,7 +281,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bad_mount_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -311,7 +311,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bad_mount_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -338,7 +338,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "good_mount_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -362,7 +362,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "no_mount_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -385,7 +385,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "camera_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -412,7 +412,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "camera_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -442,7 +442,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bad_ref_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -473,7 +473,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bad_type_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -506,7 +506,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "dynamic_mount_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -533,7 +533,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -554,7 +554,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -588,7 +588,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -622,7 +622,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "test_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 run_cmd: ["./bin"],
@@ -642,7 +642,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "test_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -664,7 +664,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let json5 = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
+            manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(tmp.path(), json5).unwrap();
@@ -686,7 +686,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let json5 = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
+            manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(tmp.path(), json5).unwrap();
@@ -703,7 +703,7 @@ mod tests {
 
         assert_eq!(peppy_schema, crate::schema::PeppySchema::NodeV1);
         assert_eq!(manifest.name.as_str(), "my_node");
-        assert_eq!(manifest.tag, "0.1.0");
+        assert_eq!(manifest.tag, "v1");
         assert_eq!(interfaces, crate::node::Interfaces::default());
         assert_eq!(
             execution.run_cmd.as_deref(),

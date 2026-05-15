@@ -27,7 +27,7 @@ async fn listen_for_node_sync_success() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "example_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             interfaces: {
                 topics: {
@@ -276,7 +276,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    // The node subscribes to `video_stream` from `uvc_camera:0.1.0`, but this node doesn't exist in the node stack
+    // The node subscribes to `video_stream` from `uvc_camera:v1`, but this node doesn't exist in the node stack
     // so the generation fails since it can't sync the Rust interfaces
     write_node_config(
         node_dir.path(),
@@ -285,11 +285,11 @@ async fn listen_for_node_sync_missing_dependency_fails() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
                     ]
                 },
             },
@@ -339,7 +339,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
     assert!(!response.success, "node_sync should fail");
     assert!(
         response.error_message.contains(
-            "my_robot_brain:0.1.0 depends on `uvc_camera:0.1.0`, but it does not exist in the stack"
+            "my_robot_brain:v1 depends on `uvc_camera:v1`, but it does not exist in the stack"
         ),
         "error should mention missing dependency, got: {}",
         response.error_message
@@ -366,14 +366,14 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera_2" },
-                        { name: "lidar_sensor", tag: "1.0.0", local_id: "lidar_sensor" },
-                        { name: "gps_module", tag: "2.0.0", local_id: "gps_module" },
+                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" },
+                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera_2" },
+                        { name: "lidar_sensor", tag: "v1", local_id: "lidar_sensor" },
+                        { name: "gps_module", tag: "v2", local_id: "gps_module" },
                     ]
                 },
             },
@@ -402,17 +402,17 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
     assert!(!response.success, "node_sync should fail");
     // The error message should contain all three unique missing dependencies
     assert!(
-        response.error_message.contains("uvc_camera:0.1.0"),
+        response.error_message.contains("uvc_camera:v1"),
         "error should mention uvc_camera dependency, got: {}",
         response.error_message
     );
     assert!(
-        response.error_message.contains("lidar_sensor:1.0.0"),
+        response.error_message.contains("lidar_sensor:v1"),
         "error should mention lidar_sensor dependency, got: {}",
         response.error_message
     );
     assert!(
-        response.error_message.contains("gps_module:2.0.0"),
+        response.error_message.contains("gps_module:v2"),
         "error should mention gps_module dependency, got: {}",
         response.error_message
     );
@@ -423,9 +423,9 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
     );
     // Verify deduplication: uvc_camera should only appear once despite two subscriptions
     assert_eq!(
-        response.error_message.matches("uvc_camera:0.1.0").count(),
+        response.error_message.matches("uvc_camera:v1").count(),
         1,
-        "uvc_camera:0.1.0 should appear exactly once (deduplicated), got: {}",
+        "uvc_camera:v1 should appear exactly once (deduplicated), got: {}",
         response.error_message
     );
 
@@ -448,7 +448,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["camera"],
             },
             interfaces: {
@@ -541,11 +541,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
                     ]
                 },
             },
@@ -661,7 +661,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["camera"],
             },
             interfaces: {
@@ -738,11 +738,11 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
                     ]
                 },
             },
@@ -819,7 +819,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["camera"],
             },
             interfaces: {
@@ -898,11 +898,11 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
                     ]
                 },
             },
@@ -979,7 +979,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
             },
             interfaces: {
@@ -1064,11 +1064,11 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "controller",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["controller"],
                 depends_on: {
                     nodes: [
-                        { name: "brain", tag: "0.1.0", local_id: "brain" }
+                        { name: "brain", tag: "v1", local_id: "brain" }
                     ]
                 },
             },
@@ -1145,7 +1145,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["camera"],
             },
             execution: {
@@ -1255,7 +1255,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "example_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -1353,7 +1353,7 @@ async fn listen_for_node_sync_undeclared_local_node_id_fails() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 depends_on: {
                     nodes: []
                 },
@@ -1422,7 +1422,7 @@ fn camera_config() -> &'static str {
         peppy_schema: "node_v1",
         manifest: {
             name: "uvc_camera",
-            tag: "0.1.0",
+            tag: "v1",
         },
         interfaces: {
             topics: {
@@ -1446,7 +1446,7 @@ fn camera_config() -> &'static str {
     "#
 }
 
-/// Brain that consumes `video_stream` from `uvc_camera:0.1.0` — used to
+/// Brain that consumes `video_stream` from `uvc_camera:v1` — used to
 /// drive the resolution path in tests where the camera lives in the
 /// repository cache rather than the node stack.
 fn brain_consumes_camera_config() -> &'static str {
@@ -1455,10 +1455,10 @@ fn brain_consumes_camera_config() -> &'static str {
         peppy_schema: "node_v1",
         manifest: {
             name: "my_robot_brain",
-            tag: "0.1.0",
+            tag: "v1",
             depends_on: {
                 nodes: [
-                    { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                    { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
                 ]
             },
         },
@@ -1525,7 +1525,7 @@ async fn include_repositories_false_does_not_resolve_fs_dep_from_repository() {
     let camera_dir = tempdir().expect("camera tempdir");
     write_node_config(camera_dir.path(), camera_config());
     TestPackagesCache::new()
-        .fs_entry("uvc_camera", "0.1.0", camera_dir.path())
+        .fs_entry("uvc_camera", "v1", camera_dir.path())
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
@@ -1550,7 +1550,7 @@ async fn include_repositories_true_resolves_fs_dep_from_repository() {
     let camera_dir = tempdir().expect("camera tempdir");
     write_node_config(camera_dir.path(), camera_config());
     TestPackagesCache::new()
-        .fs_entry("uvc_camera", "0.1.0", camera_dir.path())
+        .fs_entry("uvc_camera", "v1", camera_dir.path())
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
@@ -1571,7 +1571,7 @@ async fn include_repositories_true_resolves_fs_dep_from_repository() {
     assert_eq!(response.resolved_from_repositories.len(), 1);
     let entry = &response.resolved_from_repositories[0];
     assert_eq!(entry.name, "uvc_camera");
-    assert_eq!(entry.tag, "0.1.0");
+    assert_eq!(entry.tag, "v1");
     assert_eq!(entry.source_kind, RepoSourceKind::Fs);
 
     // peppygen for the consumed topic should exist.
@@ -1605,7 +1605,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
         source_repo_dir.join("nodes/dep_a").join(NODE_CONFIG_FILE),
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "dep_a", tag: "0.1.0" },
+            manifest: { name: "dep_a", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [{ name: "topic_a", qos_profile: "sensor_data", message_format: { v: "u32" } }],
@@ -1621,7 +1621,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
         source_repo_dir.join("nodes/dep_b").join(NODE_CONFIG_FILE),
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "dep_b", tag: "0.1.0" },
+            manifest: { name: "dep_b", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [{ name: "topic_b", qos_profile: "sensor_data", message_format: { v: "u32" } }],
@@ -1650,8 +1650,8 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
 
     let repo_url = source_repo_dir.display().to_string();
     TestPackagesCache::new()
-        .git_entry("dep_a", "0.1.0", &repo_url, &branch, "nodes/dep_a")
-        .git_entry("dep_b", "0.1.0", &repo_url, &branch, "nodes/dep_b")
+        .git_entry("dep_a", "v1", &repo_url, &branch, "nodes/dep_a")
+        .git_entry("dep_b", "v1", &repo_url, &branch, "nodes/dep_b")
         .write(&started.peppy_dirs);
 
     // Brain depends on both deps and consumes one topic from each.
@@ -1663,11 +1663,11 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 depends_on: {
                     nodes: [
-                        { name: "dep_a", tag: "0.1.0", local_id: "a" },
-                        { name: "dep_b", tag: "0.1.0", local_id: "b" }
+                        { name: "dep_a", tag: "v1", local_id: "a" },
+                        { name: "dep_b", tag: "v1", local_id: "b" }
                     ]
                 },
             },
@@ -1722,7 +1722,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         r#"
         {
             peppy_schema: "node_v1",
-            manifest: { name: "uvc_camera", tag: "0.1.0" },
+            manifest: { name: "uvc_camera", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [
@@ -1759,7 +1759,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         r#"
         {
             peppy_schema: "node_v1",
-            manifest: { name: "uvc_camera", tag: "0.1.0" },
+            manifest: { name: "uvc_camera", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [
@@ -1773,7 +1773,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         "#,
     );
     TestPackagesCache::new()
-        .fs_entry("uvc_camera", "0.1.0", repo_camera_dir.path())
+        .fs_entry("uvc_camera", "v1", repo_camera_dir.path())
         .write(&started.peppy_dirs);
 
     // Brain consumes `topic_x` — only the stack version exposes it.
@@ -1785,9 +1785,9 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 depends_on: {
-                    nodes: [{ name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }]
+                    nodes: [{ name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }]
                 },
             },
             interfaces: {
@@ -1813,8 +1813,8 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         response
             .resolved_from_stack
             .iter()
-            .any(|d| d == "uvc_camera:0.1.0"),
-        "stack provenance should list uvc_camera:0.1.0, got {:?}",
+            .any(|d| d == "uvc_camera:v1"),
+        "stack provenance should list uvc_camera:v1, got {:?}",
         response.resolved_from_stack
     );
     assert!(
@@ -1839,7 +1839,7 @@ async fn include_repositories_true_walks_transitive_dep() {
         c_dir.path(),
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "dep_c", tag: "0.1.0" },
+            manifest: { name: "dep_c", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [{ name: "topic_c", qos_profile: "sensor_data", message_format: { v: "u32" } }],
@@ -1856,8 +1856,8 @@ async fn include_repositories_true_walks_transitive_dep() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "dep_b",
-                tag: "0.1.0",
-                depends_on: { nodes: [{ name: "dep_c", tag: "0.1.0", local_id: "c" }] },
+                tag: "v1",
+                depends_on: { nodes: [{ name: "dep_c", tag: "v1", local_id: "c" }] },
             },
             interfaces: {
                 topics: {
@@ -1875,8 +1875,8 @@ async fn include_repositories_true_walks_transitive_dep() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "dep_a",
-                tag: "0.1.0",
-                depends_on: { nodes: [{ name: "dep_b", tag: "0.1.0", local_id: "b" }] },
+                tag: "v1",
+                depends_on: { nodes: [{ name: "dep_b", tag: "v1", local_id: "b" }] },
             },
             interfaces: {
                 topics: {
@@ -1888,9 +1888,9 @@ async fn include_repositories_true_walks_transitive_dep() {
         }"#,
     );
     TestPackagesCache::new()
-        .fs_entry("dep_a", "0.1.0", a_dir.path())
-        .fs_entry("dep_b", "0.1.0", b_dir.path())
-        .fs_entry("dep_c", "0.1.0", c_dir.path())
+        .fs_entry("dep_a", "v1", a_dir.path())
+        .fs_entry("dep_b", "v1", b_dir.path())
+        .fs_entry("dep_c", "v1", c_dir.path())
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
@@ -1900,8 +1900,8 @@ async fn include_repositories_true_walks_transitive_dep() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
-                depends_on: { nodes: [{ name: "dep_a", tag: "0.1.0", local_id: "a" }] },
+                tag: "v1",
+                depends_on: { nodes: [{ name: "dep_a", tag: "v1", local_id: "a" }] },
             },
             interfaces: {
                 topics: {
@@ -1926,7 +1926,7 @@ async fn include_repositories_true_walks_transitive_dep() {
         .iter()
         .map(|e| format!("{}:{}", e.name, e.tag))
         .collect();
-    for expected in ["dep_a:0.1.0", "dep_b:0.1.0", "dep_c:0.1.0"] {
+    for expected in ["dep_a:v1", "dep_b:v1", "dep_c:v1"] {
         assert!(
             names.iter().any(|n| n == expected),
             "expected {} in repo provenance, got {:?}",

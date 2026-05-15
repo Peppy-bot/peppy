@@ -12,11 +12,11 @@ use std::time::Duration;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_reset_clears_node_stack() {
     const TARGET_NODE_A_NAME: &str = "resettable_node_a";
-    const TARGET_NODE_A_TAG: &str = "0.1.0";
+    const TARGET_NODE_A_TAG: &str = "v1";
     const TARGET_NODE_A_INSTANCE_ID: &str = "resettable_instance_a";
 
     const TARGET_NODE_B_NAME: &str = "resettable_node_b";
-    const TARGET_NODE_B_TAG: &str = "0.2.0";
+    const TARGET_NODE_B_TAG: &str = "v2";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();

@@ -80,7 +80,7 @@ mod tests {
   peppy_schema: "node_v1",
   manifest: {
     name: "standalone",
-    tag: "0.1.0",
+    tag: "v1",
   },
   interfaces: {},
   execution: {
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn inject_node_runtime_env_sets_expected_keys() {
         let mut env_vars = Vec::new();
-        inject_node_runtime_env(&mut env_vars, "uvc_camera", "0.1.0");
+        inject_node_runtime_env(&mut env_vars, "uvc_camera", "v1");
 
         let apptainer_bin = env_vars
             .iter()
@@ -198,7 +198,7 @@ mod tests {
                 .iter()
                 .find(|(k, _)| k == PEPPY_NODE_TAG_ENV_VAR)
                 .map(|(_, v)| v.as_str()),
-            Some("0.1.0")
+            Some("v1")
         );
     }
 
@@ -213,10 +213,10 @@ mod tests {
                 PEPPY_NODE_NAME_ENV_VAR.to_string(),
                 "custom_node".to_string(),
             ),
-            (PEPPY_NODE_TAG_ENV_VAR.to_string(), "9.9.9".to_string()),
+            (PEPPY_NODE_TAG_ENV_VAR.to_string(), "v999".to_string()),
         ];
 
-        inject_node_runtime_env(&mut env_vars, "uvc_camera", "0.1.0");
+        inject_node_runtime_env(&mut env_vars, "uvc_camera", "v1");
 
         assert_eq!(
             env_vars
@@ -244,7 +244,7 @@ mod tests {
                 .iter()
                 .find(|(k, _)| k == PEPPY_NODE_TAG_ENV_VAR)
                 .map(|(_, v)| v.as_str()),
-            Some("9.9.9")
+            Some("v999")
         );
     }
 

@@ -498,16 +498,13 @@ mod tests {
 
     #[test]
     fn run_b_short_flag_sets_build() {
-        assert!(
-            parse_run(&["foo:0.1.0", "-b"]),
-            "-b should set build on run"
-        );
+        assert!(parse_run(&["foo:v1", "-b"]), "-b should set build on run");
     }
 
     #[test]
     fn run_long_build_flag_sets_build() {
         assert!(
-            parse_run(&["foo:0.1.0", "--build"]),
+            parse_run(&["foo:v1", "--build"]),
             "--build should set build on run"
         );
     }
@@ -515,7 +512,7 @@ mod tests {
     #[test]
     fn run_without_build_flag_defaults_to_false() {
         assert!(
-            !parse_run(&["foo:0.1.0"]),
+            !parse_run(&["foo:v1"]),
             "build should default to false on run"
         );
     }
@@ -523,7 +520,7 @@ mod tests {
     #[test]
     fn run_i_short_flag_sets_instance_id() {
         assert_eq!(
-            parse_run_instance_id(&["foo:0.1.0", "-i", "my-inst"]),
+            parse_run_instance_id(&["foo:v1", "-i", "my-inst"]),
             Some("my-inst".to_string()),
             "-i should set instance_id on run"
         );
@@ -532,7 +529,7 @@ mod tests {
     #[test]
     fn run_long_instance_id_flag_sets_instance_id() {
         assert_eq!(
-            parse_run_instance_id(&["foo:0.1.0", "--instance-id", "my-inst"]),
+            parse_run_instance_id(&["foo:v1", "--instance-id", "my-inst"]),
             Some("my-inst".to_string()),
             "--instance-id should set instance_id on run"
         );
@@ -542,7 +539,7 @@ mod tests {
     fn run_bi_short_bundle_sets_build_and_instance_id() {
         // `-bi <id>` ≡ `-b -i <id>`: clap treats `-bi` as a bundled short-flag
         // run with `i` consuming the next positional as its value.
-        let full: Vec<&str> = vec!["peppy", "run", "foo:0.1.0", "-bi", "my-inst"];
+        let full: Vec<&str> = vec!["peppy", "run", "foo:v1", "-bi", "my-inst"];
         let cli = TestCli::try_parse_from(full).expect("should parse");
         match cli.command {
             NodeCommands::Run {
@@ -566,12 +563,12 @@ mod tests {
 
     #[test]
     fn build_f_short_flag_sets_force() {
-        assert!(parse_subcommand_force("build", &["foo:0.1.0", "-f"]));
+        assert!(parse_subcommand_force("build", &["foo:v1", "-f"]));
     }
 
     #[test]
     fn remove_f_short_flag_sets_force() {
-        assert!(parse_subcommand_force("remove", &["foo:0.1.0", "-f"]));
+        assert!(parse_subcommand_force("remove", &["foo:v1", "-f"]));
     }
 
     #[test]
@@ -581,11 +578,11 @@ mod tests {
 
     #[test]
     fn build_without_force_flag_defaults_to_false() {
-        assert!(!parse_subcommand_force("build", &["foo:0.1.0"]));
+        assert!(!parse_subcommand_force("build", &["foo:v1"]));
     }
 
     #[test]
     fn remove_without_force_flag_defaults_to_false() {
-        assert!(!parse_subcommand_force("remove", &["foo:0.1.0"]));
+        assert!(!parse_subcommand_force("remove", &["foo:v1"]));
     }
 }
