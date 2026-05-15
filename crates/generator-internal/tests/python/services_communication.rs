@@ -174,7 +174,9 @@ if __name__ == "__main__":
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service).unwrap();
+    generator
+        .add_exposed_service(&exposed_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -479,7 +481,9 @@ if __name__ == "__main__":
         serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service).unwrap();
+    generator
+        .add_exposed_service(&exposed_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -767,7 +771,9 @@ if __name__ == "__main__":
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer1, user_node_exposer1, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer1, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service).unwrap();
+    generator
+        .add_exposed_service(&exposed_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
     generator
         .build(&output_dir_exposer1, &test_peppy_dirs(), Default::default())
@@ -832,7 +838,9 @@ if __name__ == "__main__":
     let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer2, user_node_exposer2, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer2, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service2).unwrap();
+    generator
+        .add_exposed_service(&exposed_service2, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator
         .build(&output_dir_exposer2, &test_peppy_dirs(), Default::default())

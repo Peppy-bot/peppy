@@ -57,11 +57,6 @@ pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
     parameters: config::ParameterSchema,
-    /// Scratch slot threaded by [`super::types::DeploymentInterface::register_with`]
-    /// before each producer-side `add_*` call. `None` means the next artifact is
-    /// the node's own (native) declaration; `Some` means it was pulled in via a
-    /// `conforms_to` entry and should nest under `{iface_name}/{iface_tag}`.
-    current_origin: Option<InterfaceOrigin>,
 }
 
 impl RustGenerator {
@@ -69,17 +64,14 @@ impl RustGenerator {
         Self::default()
     }
 
-    fn current_origin(&self) -> Option<&InterfaceOrigin> {
-        self.current_origin.as_ref()
-    }
-
     fn make_artifact(
         &self,
         leaf_name: &str,
+        origin: Option<&InterfaceOrigin>,
         kind: InterfaceKind,
         code_output: String,
     ) -> InterfaceArtifact {
-        InterfaceArtifact::for_leaf(self.current_origin(), leaf_name, kind, code_output)
+        InterfaceArtifact::for_leaf(origin, leaf_name, kind, code_output)
     }
 
     /// Sets the node parameters for code generation.
@@ -513,11 +505,11 @@ impl SchemaInfo {
 }
 
 impl LanguageGenerator for RustGenerator {
-    fn set_current_origin(&mut self, origin: Option<InterfaceOrigin>) {
-        self.current_origin = origin;
-    }
-
-    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
+    fn add_emitted_topic(
+        &mut self,
+        topic: &EmittedTopic,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
 
@@ -547,7 +539,7 @@ impl LanguageGenerator for RustGenerator {
             encoding.as_ref(),
             topic,
             &fn_name_str,
-            self.current_origin(),
+            origin,
         );
 
         let tokens: TokenStream = quote! {
@@ -563,13 +555,18 @@ impl LanguageGenerator for RustGenerator {
 
         self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            origin,
             InterfaceKind::EmittedTopic,
             rendered,
         ));
         Ok(())
     }
 
-    fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
+    fn add_exposed_service(
+        &mut self,
+        service: &ExposedService,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let fn_name_str = fn_name.to_string();
         let struct_prefix = to_camel_case(&fn_name_str);
@@ -676,13 +673,18 @@ impl LanguageGenerator for RustGenerator {
         let rendered = render_tokens(tokens);
         self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            origin,
             InterfaceKind::ExposedService,
             rendered,
         ));
         Ok(())
     }
 
-    fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
+    fn add_exposed_action(
+        &mut self,
+        action: &ExposedAction,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let base_ident = prefixed_ident("", non_empty_str(&action.name), "action");
         let base_name = base_ident.to_string();
         let action_prefix = to_camel_case(&base_name);
@@ -967,6 +969,7 @@ impl LanguageGenerator for RustGenerator {
         let rendered = render_tokens(tokens);
         self.push_section(self.make_artifact(
             &sanitize_node_display_name(&action.name),
+            origin,
             InterfaceKind::ExposedAction,
             rendered,
         ));
@@ -1075,6 +1078,7 @@ impl LanguageGenerator for RustGenerator {
 
         self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedTopic,
             rendered,
         ));
@@ -1152,6 +1156,7 @@ impl LanguageGenerator for RustGenerator {
 
         self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedTopic,
             rendered,
         ));
@@ -1411,6 +1416,7 @@ impl LanguageGenerator for RustGenerator {
 
         self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedService,
             rendered,
         ));
@@ -1564,6 +1570,7 @@ impl LanguageGenerator for RustGenerator {
         let module_label = raw_module_label(&action.local_node_id, &action.name);
         self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedAction,
             rendered,
         ));

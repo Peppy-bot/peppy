@@ -172,7 +172,7 @@ fn exposed_action() {
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_action(&action).unwrap();
+    generator.add_exposed_action(&action, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -373,7 +373,7 @@ fn expose_action_without_request_body() {
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_action(&action).unwrap();
+    generator.add_exposed_action(&action, None).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -461,7 +461,7 @@ fn exposed_action_feedback_emits_nested_types() {
         serde_json5::from_str(EXPOSED_ACTION_WITH_NESTED_FEEDBACK_EXAMPLE).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_action(&action).unwrap();
+    generator.add_exposed_action(&action, None).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -496,8 +496,8 @@ fn expose_two_actions() {
     let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_action(&action1).unwrap();
-    generator.add_exposed_action(&action2).unwrap();
+    generator.add_exposed_action(&action1, None).unwrap();
+    generator.add_exposed_action(&action2, None).unwrap();
 
     let artifacts = generator.into_artifacts();
     assert_eq!(

@@ -226,7 +226,7 @@ fn main() -> Result<()> {
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -541,7 +541,7 @@ fn main() -> Result<()> {
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -899,7 +899,7 @@ fn main() -> Result<()> {
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -1261,7 +1261,7 @@ fn main() -> Result<()> {
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -1622,7 +1622,7 @@ fn main() -> Result<()> {
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())

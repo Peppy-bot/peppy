@@ -180,14 +180,25 @@ impl InterfaceArtifact {
 
 /// Collects deployment interfaces and produces generated artifacts when finalized.
 pub trait LanguageGenerator {
-    /// Sets the `conforms_to` origin used by the next `add_*` call for an
-    /// exposed/emitted item. `register_with` resets this to `None` on every
-    /// invocation, so test callsites that bypass `register_with` see the
-    /// default "native" behavior.
-    fn set_current_origin(&mut self, origin: Option<InterfaceOrigin>);
-    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()>;
-    fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()>;
-    fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()>;
+    /// `origin` is `Some` when the topic was contributed via a
+    /// `conforms_to` interface (nests the artifact under
+    /// `{iface_name}/{iface_tag}/{leaf}`) and `None` for the node's own
+    /// native declarations.
+    fn add_emitted_topic(
+        &mut self,
+        topic: &EmittedTopic,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()>;
+    fn add_exposed_service(
+        &mut self,
+        service: &ExposedService,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()>;
+    fn add_exposed_action(
+        &mut self,
+        action: &ExposedAction,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()>;
     fn add_consumed_topic(
         &mut self,
         topic: &ConsumedTopic,
@@ -225,22 +236,13 @@ impl DeploymentInterface {
     pub fn register_with<B: LanguageGenerator + ?Sized>(&self, backend: &mut B) -> Result<()> {
         match self.interface() {
             InterfaceVariant::EmittedTopic { topic, origin } => {
-                backend.set_current_origin(origin.clone());
-                let result = backend.add_emitted_topic(topic);
-                backend.set_current_origin(None);
-                result
+                backend.add_emitted_topic(topic, origin.as_ref())
             }
             InterfaceVariant::ExposedService { service, origin } => {
-                backend.set_current_origin(origin.clone());
-                let result = backend.add_exposed_service(service);
-                backend.set_current_origin(None);
-                result
+                backend.add_exposed_service(service, origin.as_ref())
             }
             InterfaceVariant::ExposedAction { action, origin } => {
-                backend.set_current_origin(origin.clone());
-                let result = backend.add_exposed_action(action);
-                backend.set_current_origin(None);
-                result
+                backend.add_exposed_action(action, origin.as_ref())
             }
             InterfaceVariant::ConsumedTopic {
                 topic,

@@ -206,7 +206,7 @@ fn exposed_action() {
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_action(&action).unwrap();
+    generator.add_exposed_action(&action, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -341,7 +341,7 @@ fn expose_action_without_request_body() {
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_action(&action).unwrap();
+    generator.add_exposed_action(&action, None).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -394,7 +394,7 @@ fn exposed_action_rejects_reserved_message_field_name() {
         serde_json5::from_str(EXPOSED_ACTION_RESERVED_FEEDBACK_FIELD_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
-    let err = generator.add_exposed_action(&action).unwrap_err();
+    let err = generator.add_exposed_action(&action, None).unwrap_err();
 
     match err {
         Error::UnauthorizedMessageFieldName {
@@ -428,7 +428,7 @@ fn expose_action_with_feedback_only_initializes_existing_fields() {
     .unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_action(&action).unwrap();
+    generator.add_exposed_action(&action, None).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -469,8 +469,8 @@ fn expose_two_actions() {
     let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_action(&action1).unwrap();
-    generator.add_exposed_action(&action2).unwrap();
+    generator.add_exposed_action(&action1, None).unwrap();
+    generator.add_exposed_action(&action2, None).unwrap();
 
     let artifacts = generator.into_artifacts();
     assert_eq!(
@@ -972,7 +972,7 @@ fn clippy_single_exposed_action_empty_goal_request() {
     };
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_exposed_action(&action).unwrap();
+    generator.add_exposed_action(&action, None).unwrap();
     generator
         .add_consumed_action(&consumed_action1, &consumed_action1_messages, "brain")
         .unwrap();
@@ -1058,8 +1058,8 @@ fn compile_lib_with_exposed_and_consumed_actions() {
     };
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_exposed_action(&action1).unwrap();
-    generator.add_exposed_action(&action2).unwrap();
+    generator.add_exposed_action(&action1, None).unwrap();
+    generator.add_exposed_action(&action2, None).unwrap();
     generator
         .add_consumed_action(&consumed_action1, &consumed_action1_messages, "brain")
         .unwrap();

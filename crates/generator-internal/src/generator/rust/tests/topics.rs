@@ -110,7 +110,7 @@ fn emit_topic() {
     let topic = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
 
     let mut generator = RustGenerator::new();
-    generator.add_emitted_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -167,8 +167,8 @@ fn emit_two_topics() {
     let topic2 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2);
 
     let mut generator = RustGenerator::new();
-    generator.add_emitted_topic(&topic1).unwrap();
-    generator.add_emitted_topic(&topic2).unwrap();
+    generator.add_emitted_topic(&topic1, None).unwrap();
+    generator.add_emitted_topic(&topic2, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -197,7 +197,7 @@ fn emit_topic_escapes_rust_keyword_fields() {
     let topic = parse_emitted_topic(emitted_topic_keyword_fields_example);
 
     let mut generator = RustGenerator::new();
-    generator.add_emitted_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic, None).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -230,7 +230,7 @@ fn emit_topic_rejects_reserved_message_field_name() {
     let topic = parse_emitted_topic(emitted_topic_reserved_field_example);
     let mut generator = RustGenerator::new();
 
-    let err = generator.add_emitted_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic, None).unwrap_err();
 
     match err {
         Error::UnauthorizedMessageFieldName {
@@ -264,7 +264,7 @@ fn emit_topic_rejects_fixed_string_array() {
     let topic = parse_emitted_topic(emitted_topic_fixed_string_array_example);
     let mut generator = RustGenerator::new();
 
-    let err = generator.add_emitted_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic, None).unwrap_err();
 
     match err {
         Error::UnsupportedFixedArrayItemType { field, item } => {
@@ -298,7 +298,7 @@ fn emit_topic_rejects_fixed_object_array() {
     let topic = parse_emitted_topic(emitted_topic_fixed_object_array_example);
     let mut generator = RustGenerator::new();
 
-    let err = generator.add_emitted_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic, None).unwrap_err();
 
     match err {
         Error::UnsupportedFixedArrayItemType { field, item } => {
@@ -331,7 +331,7 @@ fn emit_topic_with_dynamic_object_array() {
     let topic = parse_emitted_topic(emitted_topic_dynamic_object_array_example);
 
     let mut generator = RustGenerator::new();
-    generator.add_emitted_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -604,7 +604,7 @@ fn clippy_single_emitted_topic_empty_format() {
     };
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_emitted_topic(&emitted_topic).unwrap();
+    generator.add_emitted_topic(&emitted_topic, None).unwrap();
     generator
         .add_consumed_action(&consumed_action1, &action_messages, "brain")
         .unwrap();
@@ -651,8 +651,8 @@ fn compile_lib_with_emitted_and_consumed_topics() {
     let subscribed_format2 = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_emitted_topic(&emitted_topic1).unwrap();
-    generator.add_emitted_topic(&emitted_topic2).unwrap();
+    generator.add_emitted_topic(&emitted_topic1, None).unwrap();
+    generator.add_emitted_topic(&emitted_topic2, None).unwrap();
     generator
         .add_consumed_topic(&consumed_topic1, subscribed_format1, "uvc_camera")
         .unwrap();

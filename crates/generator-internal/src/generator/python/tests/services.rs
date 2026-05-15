@@ -99,7 +99,7 @@ fn expose_service() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_service(&service).unwrap();
+    generator.add_exposed_service(&service, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -199,7 +199,7 @@ fn expose_service_without_request_body() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_service(&service).unwrap();
+    generator.add_exposed_service(&service, None).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -261,8 +261,8 @@ fn expose_two_services() {
     let service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_service(&service1).unwrap();
-    generator.add_exposed_service(&service2).unwrap();
+    generator.add_exposed_service(&service1, None).unwrap();
+    generator.add_exposed_service(&service2, None).unwrap();
 
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(

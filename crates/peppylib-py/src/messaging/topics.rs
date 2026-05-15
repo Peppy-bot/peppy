@@ -1,8 +1,6 @@
 use super::{PyMessengerHandle, to_py_err};
 use crate::config::PyQoSProfile;
-use peppylib::messaging::{
-    NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, Subscription, TopicMessenger,
-};
+use peppylib::messaging::{Subscription, TopicMessenger};
 use peppylib::types::{Message, Payload};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -82,7 +80,7 @@ pub struct PyTopicMessenger;
 impl PyTopicMessenger {
     /// Subscribe to a topic.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, to_topic, target_core_node, target_instance_id, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, iface_name, iface_tag, to_topic, target_core_node, target_instance_id, qos))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -90,6 +88,8 @@ impl PyTopicMessenger {
         as_core_node: String,
         as_instance_id: String,
         to_node_name: String,
+        iface_name: String,
+        iface_tag: String,
         to_topic: String,
         target_core_node: Option<String>,
         target_instance_id: Option<String>,
@@ -102,8 +102,8 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &to_node_name,
-                NATIVE_IFACE_SEGMENT_NAME,
-                NATIVE_IFACE_SEGMENT_TAG,
+                &iface_name,
+                &iface_tag,
                 &to_topic,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -161,6 +161,8 @@ impl PyTopicMessenger {
         as_core_node: String,
         as_instance_id: String,
         as_node_name: String,
+        iface_name: String,
+        iface_tag: String,
         as_topic_name: String,
         qos: PyQoSProfile,
         payload: Vec<u8>,
@@ -172,8 +174,8 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
-                NATIVE_IFACE_SEGMENT_NAME,
-                NATIVE_IFACE_SEGMENT_TAG,
+                &iface_name,
+                &iface_tag,
                 &as_topic_name,
                 qos.into(),
                 Payload::from(payload),

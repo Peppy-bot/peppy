@@ -97,7 +97,7 @@ async fn topics_communication() {
         .add_consumed_topic(&consumed_topic, subscribed_format, "uvc_camera")
         .unwrap();
     generator
-        .add_exposed_service(&frame_received_service)
+        .add_exposed_service(&frame_received_service, None)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_receiver, &receiver_dir);
     generator
@@ -171,7 +171,7 @@ if __name__ == "__main__":
     let emitter_parameters: config::ParameterSchema =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
     generator.set_parameters(emitter_parameters.clone());
-    generator.add_emitted_topic(&emitted_topic).unwrap();
+    generator.add_emitted_topic(&emitted_topic, None).unwrap();
     let output_config = copy_config_to_output(&user_node_emitter, &emitter_dir);
     generator
         .build(&emitter_dir, &test_peppy_dirs(), Default::default())

@@ -42,9 +42,6 @@ pub struct PythonGenerator {
     parameters: config::ParameterSchema,
     schemas: HashMap<String, CapnpSchema>,
     is_container: bool,
-    /// See [`super::rust::RustGenerator::current_origin`]: scratch slot
-    /// threaded by `register_with` before each producer-side `add_*` call.
-    current_origin: Option<InterfaceOrigin>,
 }
 
 impl PythonGenerator {
@@ -52,17 +49,14 @@ impl PythonGenerator {
         Self::default()
     }
 
-    fn current_origin(&self) -> Option<&InterfaceOrigin> {
-        self.current_origin.as_ref()
-    }
-
     fn make_artifact(
         &self,
         leaf_name: &str,
+        origin: Option<&InterfaceOrigin>,
         kind: InterfaceKind,
         code_output: String,
     ) -> InterfaceArtifact {
-        InterfaceArtifact::for_leaf(self.current_origin(), leaf_name, kind, code_output)
+        InterfaceArtifact::for_leaf(origin, leaf_name, kind, code_output)
     }
 
     /// Sets the node parameters for code generation.
@@ -134,23 +128,32 @@ impl PythonGenerator {
 }
 
 impl LanguageGenerator for PythonGenerator {
-    fn set_current_origin(&mut self, origin: Option<InterfaceOrigin>) {
-        self.current_origin = origin;
-    }
-
-    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
+    fn add_emitted_topic(
+        &mut self,
+        topic: &EmittedTopic,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let schema_info = topic
             .message_format
             .as_ref()
             .map(|fmt| self.register_schema(&topic.name, fmt))
             .transpose()?;
 
-        let code = topics::build_emitted_topic(topic, schema_info.as_ref(), self.current_origin())?;
-        self.push_section(self.make_artifact(&topic.name, InterfaceKind::EmittedTopic, code));
+        let code = topics::build_emitted_topic(topic, schema_info.as_ref(), origin)?;
+        self.push_section(self.make_artifact(
+            &topic.name,
+            origin,
+            InterfaceKind::EmittedTopic,
+            code,
+        ));
         Ok(())
     }
 
-    fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
+    fn add_exposed_service(
+        &mut self,
+        service: &ExposedService,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let request_schema_info = self.register_optional_schema(
             format!("{}_request", service.name),
             service.request_message_format.as_ref(),
@@ -165,11 +168,20 @@ impl LanguageGenerator for PythonGenerator {
             request_schema_info.as_ref(),
             response_schema_info.as_ref(),
         )?;
-        self.push_section(self.make_artifact(&service.name, InterfaceKind::ExposedService, code));
+        self.push_section(self.make_artifact(
+            &service.name,
+            origin,
+            InterfaceKind::ExposedService,
+            code,
+        ));
         Ok(())
     }
 
-    fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
+    fn add_exposed_action(
+        &mut self,
+        action: &ExposedAction,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let goal_request_schema_info = self.register_optional_schema(
             format!("{}_goal_request", action.name),
             action
@@ -215,7 +227,12 @@ impl LanguageGenerator for PythonGenerator {
             result_response_schema_info.as_ref(),
             feedback_schema_info.as_ref(),
         )?;
-        self.push_section(self.make_artifact(&action.name, InterfaceKind::ExposedAction, code));
+        self.push_section(self.make_artifact(
+            &action.name,
+            origin,
+            InterfaceKind::ExposedAction,
+            code,
+        ));
         Ok(())
     }
 
@@ -234,7 +251,12 @@ impl LanguageGenerator for PythonGenerator {
         let code =
             topics::build_consumed_topic(topic, &arguments, &schema_info, dependency_node_name)?;
         let module_label = module_name_from_components(&linked.local_node_id, &linked.name);
-        self.push_section(self.make_artifact(&module_label, InterfaceKind::ConsumedTopic, code));
+        self.push_section(self.make_artifact(
+            &module_label,
+            None,
+            InterfaceKind::ConsumedTopic,
+            code,
+        ));
         Ok(())
     }
 
@@ -242,7 +264,12 @@ impl LanguageGenerator for PythonGenerator {
         let schema_info = self.register_schema(name, &arguments)?;
         let code = topics::build_external_consumed_topic(name, &arguments, &schema_info)?;
         let module_label = name.trim().to_string();
-        self.push_section(self.make_artifact(&module_label, InterfaceKind::ConsumedTopic, code));
+        self.push_section(self.make_artifact(
+            &module_label,
+            None,
+            InterfaceKind::ConsumedTopic,
+            code,
+        ));
         Ok(())
     }
 
@@ -271,7 +298,12 @@ impl LanguageGenerator for PythonGenerator {
             dependency_node_name,
         )?;
         let module_label = module_name_from_components(&service.local_node_id, &service.name);
-        self.push_section(self.make_artifact(&module_label, InterfaceKind::ConsumedService, code));
+        self.push_section(self.make_artifact(
+            &module_label,
+            None,
+            InterfaceKind::ConsumedService,
+            code,
+        ));
         Ok(())
     }
 
@@ -317,7 +349,12 @@ impl LanguageGenerator for PythonGenerator {
             dependency_node_name,
         )?;
         let module_label = module_name_from_components(&action.local_node_id, &action.name);
-        self.push_section(self.make_artifact(&module_label, InterfaceKind::ConsumedAction, code));
+        self.push_section(self.make_artifact(
+            &module_label,
+            None,
+            InterfaceKind::ConsumedAction,
+            code,
+        ));
         Ok(())
     }
 
