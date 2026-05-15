@@ -96,7 +96,7 @@ fn repo_list_finds_nodes_in_fs_repo() {
             n.get("node_name").and_then(|v| v.as_str()) == Some("my_sensor")
                 && n.get("node_tag").and_then(|v| v.as_str()) == Some("v1")
         }),
-        "cache should contain my_sensor/1.0.0, got: {cache_content}"
+        "cache should contain my_sensor with node_tag v1, got: {cache_content}"
     );
 }
 
