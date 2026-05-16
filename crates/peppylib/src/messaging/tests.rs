@@ -487,6 +487,8 @@ async fn service_communication_poll_no_instance_id_target() {
             listener_core_node1,
             listener_instance_id1,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
         )
         .await
@@ -533,6 +535,8 @@ async fn service_communication_poll_no_instance_id_target() {
             listener_core_node2,
             listener_instance_id2,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
         )
         .await
@@ -593,6 +597,8 @@ async fn service_communication_poll_no_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
             None, // Here we don't specify any node
             None, // We don't specify any instance_id target either
@@ -666,6 +672,8 @@ async fn service_communication_poll_specific_instance_id() {
             listener_core_node1,
             listener_instance_id1,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
         )
         .await
@@ -701,6 +709,8 @@ async fn service_communication_poll_specific_instance_id() {
             listener_core_node2,
             listener_instance_id2,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
         )
         .await
@@ -759,6 +769,8 @@ async fn service_communication_poll_specific_instance_id() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
             None,                        // Here we don't specify any target core node
             Some(listener_instance_id2), // We specify listener_instance_id2 as the target
@@ -828,6 +840,8 @@ async fn service_communication_poll_wrong_node() {
             listener_core_node,
             listener_instance_id,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
         )
         .await
@@ -876,6 +890,8 @@ async fn service_communication_poll_wrong_node() {
                 CALLER_CORE_NODE,
                 CALLER_INSTANCE_ID,
                 listener_node_name,
+                NATIVE_IFACE_SEGMENT_NAME,
+                NATIVE_IFACE_SEGMENT_TAG,
                 listener_service_name,
                 None,               // target_core_node
                 Some("wrong_node"), // Use a wrong instance_id here
@@ -960,6 +976,8 @@ async fn service_communication_poll_wrong_core_node() {
             listener_core_node,
             listener_instance_id,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
         )
         .await
@@ -1007,6 +1025,8 @@ async fn service_communication_poll_wrong_core_node() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
             Some("wrong_core_node"), // target_core_node - wrong one!
             None,                    // no specific target_instance_id
@@ -1068,6 +1088,8 @@ async fn service_communication_fails_service_not_started() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
             None,
             None,
@@ -1132,6 +1154,8 @@ async fn service_communication_fails_service_timeouts() {
             listener_core_node,
             listener_instance_id,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
         )
         .await
@@ -1193,6 +1217,8 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
             None,
             None,
@@ -1213,6 +1239,8 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
             None,
             None,
@@ -1292,6 +1320,8 @@ async fn service_handle_request_processes_multiple_messages() {
             listener_core_node,
             listener_instance_id,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
         )
         .await
@@ -1333,6 +1363,8 @@ async fn service_handle_request_processes_multiple_messages() {
                 CALLER_CORE_NODE,
                 CALLER_INSTANCE_ID,
                 listener_node_name,
+                NATIVE_IFACE_SEGMENT_NAME,
+                NATIVE_IFACE_SEGMENT_TAG,
                 listener_service_name,
                 None,
                 Some(listener_instance_id),
@@ -1395,6 +1427,8 @@ async fn single_service_communication_multiple_polls_and_callers() {
             listener_core_node,
             listener_instance_id,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
         )
         .await
@@ -1475,6 +1509,8 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         CALLER_CORE_NODE,
                         &caller_id,
                         listener_node_name,
+                        NATIVE_IFACE_SEGMENT_NAME,
+                        NATIVE_IFACE_SEGMENT_TAG,
                         listener_service_name,
                         None,
                         Some(listener_instance_id),
@@ -1575,6 +1611,8 @@ async fn action_communication_no_instance_id_target() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 listener_node_name,
+                NATIVE_IFACE_SEGMENT_NAME,
+                NATIVE_IFACE_SEGMENT_TAG,
                 listener_action_name,
             )
             .await
@@ -1672,6 +1710,8 @@ async fn action_communication_no_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_action_name,
             None, // No target core_id
             None, // No target instance_id
@@ -1761,6 +1801,8 @@ async fn action_communication_with_instance_id_target() {
                 LISTENER_CORE_NODE1,
                 LISTENER_INSTANCE_ID1,
                 listener_node_name,
+                NATIVE_IFACE_SEGMENT_NAME,
+                NATIVE_IFACE_SEGMENT_TAG,
                 listener_action_name,
             )
             .await
@@ -1808,6 +1850,8 @@ async fn action_communication_with_instance_id_target() {
                 LISTENER_CORE_NODE2,
                 LISTENER_INSTANCE_ID2,
                 listener_node_name,
+                NATIVE_IFACE_SEGMENT_NAME,
+                NATIVE_IFACE_SEGMENT_TAG,
                 listener_action_name,
             )
             .await
@@ -1905,6 +1949,8 @@ async fn action_communication_with_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_action_name,
             Some(LISTENER_CORE_NODE2),
             Some(LISTENER_INSTANCE_ID2),
@@ -1999,6 +2045,8 @@ async fn action_communication_goal_cancelled() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 listener_node_name,
+                NATIVE_IFACE_SEGMENT_NAME,
+                NATIVE_IFACE_SEGMENT_TAG,
                 listener_action_name,
             )
             .await
@@ -2122,6 +2170,8 @@ async fn action_communication_goal_cancelled() {
         CALLER_CORE_NODE,
         CALLER_INSTANCE_ID,
         listener_node_name,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         listener_action_name,
         Some(LISTENER_CORE_NODE),
         Some(LISTENER_INSTANCE_ID),
@@ -2254,6 +2304,8 @@ async fn single_action_communication_multiple_polls() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 listener_node_name,
+                NATIVE_IFACE_SEGMENT_NAME,
+                NATIVE_IFACE_SEGMENT_TAG,
                 listener_action_name,
             )
             .await
@@ -2390,6 +2442,8 @@ async fn single_action_communication_multiple_polls() {
                 CALLER_CORE_NODE,
                 &case.client_id,
                 listener_node_name,
+                NATIVE_IFACE_SEGMENT_NAME,
+                NATIVE_IFACE_SEGMENT_TAG,
                 listener_action_name,
                 None,
                 None,
@@ -2492,6 +2546,8 @@ async fn service_communication_poll_wildcard_caller() {
             listener_core_node,
             listener_instance_id,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
         )
         .await
@@ -2540,6 +2596,8 @@ async fn service_communication_poll_wildcard_caller() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             listener_service_name,
             None,
             None,

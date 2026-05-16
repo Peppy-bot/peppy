@@ -66,12 +66,13 @@ async def test_ready_node():
                     TEST_CORE_NODE_NAME,
                     CALLER_INSTANCE_ID,
                     TEST_NODE_NAME,
+                    None,  # iface_name (None = native)
+                    None,  # iface_tag (None = native)
                     NODE_READY_SERVICE,
                     target_core_node,
                     target_instance_id,
                     request_payload,
-                    2.0,
-                )
+                    2.0,)
             except RuntimeError as exc:
                 pytest.fail(f"[{label}] poll failed: {exc}")
 

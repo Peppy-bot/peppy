@@ -8,6 +8,7 @@ use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse, RepoResolvedEnt
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceOrigin, InterfaceVariant};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
+use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::{HashMap, HashSet};
@@ -28,6 +29,8 @@ pub async fn listen_for_node_sync(
         core_node_node,
         instance_id,
         node_name,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         names::NODE_SYNC,
     )
     .await?;
@@ -1284,6 +1287,66 @@ mod conforms_to_tests {
             err.contains("collide") && err.contains("normalization"),
             "sanitize-collision error should mention collision + normalization, got: {err}"
         );
+    }
+
+    const ARM_V1_WITH_SERVICE_AND_ACTION: &str = r#"{
+        peppy_schema: "interface_v1",
+        manifest: { name: "arm", tag: "v1" },
+        interfaces: {
+            services: [
+                { name: "control" }
+            ],
+            actions: [
+                { name: "move_arm" }
+            ]
+        }
+    }"#;
+
+    /// A `conforms_to` entry whose body declares a service AND an action must
+    /// yield both as `ExposedService`/`ExposedAction` variants stamped with
+    /// `Some(origin)` pointing back at the source interface. Mirrors
+    /// `resolves_cache_hit_with_origin` but exercises the non-topic variants.
+    #[test]
+    fn resolves_cache_hit_with_service_and_action_origin() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_interface(tmp.path(), "arm", "v1", ARM_V1_WITH_SERVICE_AND_ACTION);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let cfg = interfaces_with_conforms(vec![ConformsToItem {
+            name: Name::new("arm").unwrap(),
+            tag: "v1".to_string(),
+            sha256: None,
+        }]);
+
+        let out = resolve_conforms_to(&cfg, &dirs).expect("happy path");
+
+        let mut saw_service = false;
+        let mut saw_action = false;
+        for entry in &out {
+            match entry.interface() {
+                InterfaceVariant::ExposedService {
+                    service,
+                    origin: Some(o),
+                } => {
+                    assert_eq!(service.name, "control");
+                    assert_eq!(o.iface_name, "arm");
+                    assert_eq!(o.iface_tag, "v1");
+                    saw_service = true;
+                }
+                InterfaceVariant::ExposedAction {
+                    action,
+                    origin: Some(o),
+                } => {
+                    assert_eq!(action.name, "move_arm");
+                    assert_eq!(o.iface_name, "arm");
+                    assert_eq!(o.iface_tag, "v1");
+                    saw_action = true;
+                }
+                other => panic!("unexpected resolved variant: {other:?}"),
+            }
+        }
+        assert!(saw_service, "service should be resolved with origin");
+        assert!(saw_action, "action should be resolved with origin");
     }
 
     #[test]

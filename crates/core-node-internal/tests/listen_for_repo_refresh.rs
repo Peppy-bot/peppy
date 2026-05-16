@@ -14,6 +14,7 @@ use core_node_api::encoding::{
 };
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
+use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use std::path::Path;
 use std::time::Duration;
 
@@ -91,6 +92,8 @@ async fn send_refresh_inner(
         caller_core_node,
         caller_instance_id,
         &started.core_node_name,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         names::REPO_REFRESH_ACTION,
         Some(&started.core_node_name),
         None,

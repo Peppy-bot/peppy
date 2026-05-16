@@ -34,6 +34,8 @@ async def main():
         core_node,
         instance_id,
         NODE_NAME,
+        None,  # iface_name (None = native)
+        None,  # iface_tag (None = native)
         SERVICE_NAME,
         None,  # target_core_node - not needed
         None,  # target_instance_id - any instance would work

@@ -43,12 +43,13 @@ async def test_node_health_request_response_roundtrip():
             TEST_CORE_NODE_NAME,
             CALLER_INSTANCE_ID,
             TEST_NODE_NAME,
+            None,  # iface_name (None = native)
+            None,  # iface_tag (None = native)
             NODE_HEALTH_SERVICE,
             TEST_CORE_NODE_NAME,
             TEST_INSTANCE_ID,
             request_payload,
-            2.0,
-        )
+            2.0,)
 
         # Verify the response
         assert response is not None

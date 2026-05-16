@@ -168,6 +168,7 @@ impl LanguageGenerator for PythonGenerator {
             service,
             request_schema_info.as_ref(),
             response_schema_info.as_ref(),
+            origin,
         )?;
         self.push_section(self.make_artifact(
             &service.name,
@@ -230,6 +231,7 @@ impl LanguageGenerator for PythonGenerator {
             cancel_response_schema_info.as_ref(),
             result_response_schema_info.as_ref(),
             feedback_schema_info.as_ref(),
+            origin,
         )?;
         self.push_section(self.make_artifact(
             &action.name,

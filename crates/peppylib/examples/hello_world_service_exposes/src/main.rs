@@ -5,6 +5,7 @@ use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, Payload, PeppyResult, ServiceMessenger};
 use rand::rng;
 use tokio::signal;
+use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 
 const SERVICE_NAME: &str = "hello_service";
 const NODE_NAME: &str = "hello_node";
@@ -74,8 +75,11 @@ async fn main() {
         &core_node,
         &instance_id,
         NODE_NAME,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         SERVICE_NAME,
     )
+
     .await
     .expect("Should expose the service");
 

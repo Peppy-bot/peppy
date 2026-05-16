@@ -50,8 +50,9 @@ async def main():
         core_node,
         instance_id,
         NODE_NAME,
-        SERVICE_NAME,
-    )
+        None,  # iface_name (None = native)
+        None,  # iface_tag (None = native)
+        SERVICE_NAME,)
 
     print(
         f"Waiting for service requests as instance_id {instance_id}... "

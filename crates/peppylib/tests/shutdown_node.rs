@@ -3,6 +3,7 @@ mod common;
 use common::{
     CALLER_INSTANCE_ID, TEST_CORE_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
 };
+use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{
     messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger},
@@ -39,6 +40,8 @@ async fn shutdown_node() {
         &client.core_node_name,
         CALLER_INSTANCE_ID,
         TEST_NODE_NAME,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         SHUTDOWN_SERVICE,
         Some(&client.core_node_name),
         Some(&client.instance_id),

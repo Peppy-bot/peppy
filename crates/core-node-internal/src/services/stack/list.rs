@@ -3,6 +3,7 @@ use crate::names;
 use core_node_api::encoding::{StackListRequest, StackListResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
+use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::sync::Arc;
@@ -21,6 +22,8 @@ pub async fn listen_for_stack_list(
         core_node_node,
         instance_id,
         node_name,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         names::STACK_LIST,
     )
     .await?;

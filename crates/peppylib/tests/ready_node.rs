@@ -3,6 +3,7 @@ mod common;
 use common::{
     CALLER_INSTANCE_ID, TEST_CORE_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
 };
+use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::{
     messaging::{MessengerHandle, ServiceMessenger},
     services::ready::listen_for_node_ready,
@@ -52,6 +53,8 @@ async fn ready_node() {
             &client.core_node_name,
             CALLER_INSTANCE_ID,
             TEST_NODE_NAME,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             peppylib::messaging::NODE_READY_SERVICE,
             target_core_node,
             target_instance_id,

@@ -17,10 +17,17 @@ use super::common::{CORE_NODE, SERVER_INSTANCE, start_router_and_runner, wait_un
 /// verbatim. The handler decodes the inbound `ClockRequest` to assert wire
 /// shape, even though it ignores the value.
 async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockResponse) {
-    let mut endpoint =
-        ServiceMessenger::listen(&server, CORE_NODE, SERVER_INSTANCE, CORE_NODE, names::CLOCK)
-            .await
-            .expect("listen should succeed");
+    let mut endpoint = ServiceMessenger::listen(
+        &server,
+        CORE_NODE,
+        SERVER_INSTANCE,
+        CORE_NODE,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
+        names::CLOCK,
+    )
+    .await
+    .expect("listen should succeed");
 
     tokio::spawn(async move {
         endpoint

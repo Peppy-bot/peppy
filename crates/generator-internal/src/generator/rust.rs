@@ -272,11 +272,15 @@ impl RustGenerator {
             ) -> crate::Result<Self> {
                 #goal_payload_tokens
 
+                // Consumer-side discovery of the producer's interface namespace is the
+                // follow-up PR; for now we assume native (`"_"`/`"_"`).
                 let action_handle = peppylib::ActionMessenger::send_goal(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     TARGET_NODE_NAME,
+                    "_",
+                    "_",
                     TARGET_ACTION_NAME,
                     target_core_node,
                     target_instance_id,
@@ -652,6 +656,7 @@ impl LanguageGenerator for RustGenerator {
                 request_data_struct: request_data_struct_ident.as_ref(),
                 response_spec: response_spec.as_ref(),
                 use_service_name_const: true,
+                origin,
             })?;
 
         let service_name_const = {
@@ -953,7 +958,7 @@ impl LanguageGenerator for RustGenerator {
         }
 
         let action_handle_struct = build_action_handle_struct(has_goal, has_feedback, has_result);
-        let expose_method = build_action_expose_method(has_goal, has_feedback, has_result);
+        let expose_method = build_action_expose_method(has_goal, has_feedback, has_result, origin);
 
         let mut items = vec![quote!(const ACTION_NAME: &str = #action_name_literal;)];
         items.extend(context.into_tokens());
@@ -1291,12 +1296,17 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
+        // Consumer-side discovery of the producer's interface namespace is the
+        // follow-up PR; for now we assume native (`"_"`/`"_"`) since the deployment
+        // config doesn't record which interface a consumed service originates from.
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 NODE_NAME,
+                "_",
+                "_",
                 SERVICE_NAME,
                 target_core_node,
                 target_instance_id,

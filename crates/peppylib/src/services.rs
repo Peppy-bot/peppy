@@ -2,7 +2,9 @@ pub mod health;
 pub mod ready;
 pub mod shutdown;
 
-use crate::messaging::ServiceRequestContext;
+use crate::messaging::{
+    NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, ServiceRequestContext,
+};
 use crate::runtime::TaskHandle;
 use crate::types::Payload;
 use crate::{MessengerHandle, PeppyResult, ServiceMessenger};
@@ -19,9 +21,16 @@ pub(crate) async fn listen_for_echo_service(
     service_name: &str,
     log_label: &'static str,
 ) -> PeppyResult<TaskHandle<PeppyResult<()>>> {
-    let mut endpoint =
-        ServiceMessenger::listen(messenger, core_node, instance_id, node_name, service_name)
-            .await?;
+    let mut endpoint = ServiceMessenger::listen(
+        messenger,
+        core_node,
+        instance_id,
+        node_name,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
+        service_name,
+    )
+    .await?;
 
     let handle = crate::runtime::spawn(async move {
         endpoint

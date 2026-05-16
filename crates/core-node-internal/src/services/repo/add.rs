@@ -6,6 +6,7 @@ use crate::services::repo::{json_entry_identity, repo_source_to_json};
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
 use peppylib::messaging::ServiceRequestContext;
+use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
@@ -23,6 +24,8 @@ pub async fn listen_for_repo_add(
         core_node_name,
         instance_id,
         node_name,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         names::REPO_ADD,
     )
     .await?;

@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle, ActionMessenger,
-    NonEmptyPayload, ServiceEndpoint,
+    NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, NonEmptyPayload, ServiceEndpoint,
 };
 use peppylib::types::Payload;
 use pyo3::exceptions::PyValueError;
@@ -112,6 +112,8 @@ pub struct PyActionGoalHandle {
     core_node: String,
     instance_id: String,
     node_name: String,
+    iface_name: String,
+    iface_tag: String,
     action_name: String,
     target_core_node: Option<String>,
     target_instance_id: Option<String>,
@@ -198,13 +200,20 @@ pub struct PyActionMessenger;
 #[pymethods]
 impl PyActionMessenger {
     /// Expose an action server, returning the goal, cancel, result services and feedback publisher.
+    ///
+    /// Pass `iface_name=None` and `iface_tag=None` for native (non-`conforms_to`)
+    /// actions; the binding fills in the wire-path sentinels internally.
     #[staticmethod]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_node_name, iface_name, iface_tag, as_action_name))]
+    #[allow(clippy::too_many_arguments)]
     fn expose<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
         as_node_name: String,
+        iface_name: Option<String>,
+        iface_tag: Option<String>,
         as_action_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
@@ -214,6 +223,8 @@ impl PyActionMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
+                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
+                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
                 &as_action_name,
             )
             .await
@@ -231,8 +242,11 @@ impl PyActionMessenger {
     /// Send a goal to an action server. The framework generates a fresh
     /// `goal_id`, wraps `user_payload`, and exposes the id on the returned
     /// handle via `goal_id`.
+    ///
+    /// Pass `iface_name=None` and `iface_tag=None` for native (non-`conforms_to`)
+    /// actions; the binding fills in the wire-path sentinels internally.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, to_action_name, target_core_node=None, target_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, iface_name, iface_tag, to_action_name, target_core_node=None, target_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
@@ -240,6 +254,8 @@ impl PyActionMessenger {
         as_core_node: String,
         as_instance_id: String,
         to_node_name: String,
+        iface_name: Option<String>,
+        iface_tag: Option<String>,
         to_action_name: String,
         target_core_node: Option<String>,
         target_instance_id: Option<String>,
@@ -248,6 +264,8 @@ impl PyActionMessenger {
         goal_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
         let goal_timeout = duration_from_secs_f64("goal_timeout_secs", goal_timeout_secs)?;
+        let iface_name_str = iface_name.unwrap_or_else(|| NATIVE_IFACE_SEGMENT_NAME.to_string());
+        let iface_tag_str = iface_tag.unwrap_or_else(|| NATIVE_IFACE_SEGMENT_TAG.to_string());
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let goal_handle = ActionMessenger::send_goal(
@@ -255,6 +273,8 @@ impl PyActionMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &to_node_name,
+                &iface_name_str,
+                &iface_tag_str,
                 &to_action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -282,6 +302,8 @@ impl PyActionMessenger {
                 core_node: as_core_node,
                 instance_id: as_instance_id,
                 node_name: to_node_name,
+                iface_name: iface_name_str,
+                iface_tag: iface_tag_str,
                 action_name: to_action_name,
                 target_core_node,
                 target_instance_id,
@@ -306,6 +328,8 @@ impl PyActionMessenger {
         let core_node = goal_handle.core_node.clone();
         let instance_id = goal_handle.instance_id.clone();
         let node_name = goal_handle.node_name.clone();
+        let iface_name = goal_handle.iface_name.clone();
+        let iface_tag = goal_handle.iface_tag.clone();
         let action_name = goal_handle.action_name.clone();
         let target_core_node = goal_handle.target_core_node.clone();
         let target_instance_id = goal_handle.target_instance_id.clone();
@@ -315,6 +339,8 @@ impl PyActionMessenger {
                 &core_node,
                 &instance_id,
                 &node_name,
+                &iface_name,
+                &iface_tag,
                 &action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -342,6 +368,8 @@ impl PyActionMessenger {
         let core_node = goal_handle.core_node.clone();
         let instance_id = goal_handle.instance_id.clone();
         let node_name = goal_handle.node_name.clone();
+        let iface_name = goal_handle.iface_name.clone();
+        let iface_tag = goal_handle.iface_tag.clone();
         let action_name = goal_handle.action_name.clone();
         let target_core_node = goal_handle.target_core_node.clone();
         let target_instance_id = goal_handle.target_instance_id.clone();
@@ -351,6 +379,8 @@ impl PyActionMessenger {
                 &core_node,
                 &instance_id,
                 &node_name,
+                &iface_name,
+                &iface_tag,
                 &action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -364,7 +394,7 @@ impl PyActionMessenger {
 
     /// Check whether an action server is reachable.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, target_action_name, target_core_node=None, target_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, iface_name, iface_tag, target_action_name, target_core_node=None, target_instance_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
@@ -372,6 +402,8 @@ impl PyActionMessenger {
         bound_core_node: String,
         as_instance_id: String,
         target_node_name: String,
+        iface_name: Option<String>,
+        iface_tag: Option<String>,
         target_action_name: String,
         target_core_node: Option<String>,
         target_instance_id: Option<String>,
@@ -383,6 +415,8 @@ impl PyActionMessenger {
                 &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
+                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
+                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
                 &target_action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),

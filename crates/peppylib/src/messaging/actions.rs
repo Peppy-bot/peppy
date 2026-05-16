@@ -207,6 +207,8 @@ pub struct ActionGoalHandle {
     core_node: String,
     instance_id: String,
     node_name: String,
+    iface_name: String,
+    iface_tag: String,
     action_name: String,
     target_core_node: Option<String>,
     target_instance_id: Option<String>,
@@ -221,6 +223,8 @@ impl std::fmt::Debug for ActionGoalHandle {
             .field("core_node", &self.core_node)
             .field("instance_id", &self.instance_id)
             .field("node_name", &self.node_name)
+            .field("iface_name", &self.iface_name)
+            .field("iface_tag", &self.iface_tag)
             .field("action_name", &self.action_name)
             .field("target_core_node", &self.target_core_node)
             .field("target_instance_id", &self.target_instance_id)
@@ -280,17 +284,24 @@ pub struct ActionCreation {
 }
 
 impl ActionMessenger {
+    /// `iface_name`/`iface_tag` scope the wire path to a `conforms_to` interface;
+    /// pass `NATIVE_IFACE_SEGMENT_NAME`/`NATIVE_IFACE_SEGMENT_TAG` for native actions.
+    #[allow(clippy::too_many_arguments)]
     pub async fn expose(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         as_action_name: &str,
     ) -> Result<ActionCreation> {
         messenger
             .expose_action(
                 bound_core_node,
                 as_node_name,
+                iface_name,
+                iface_tag,
                 as_action_name,
                 as_instance_id,
             )
@@ -304,6 +315,8 @@ impl ActionMessenger {
         bound_core_node: &str,
         as_instance_id: &str,
         target_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         target_action_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
@@ -314,6 +327,8 @@ impl ActionMessenger {
                 bound_core_node,
                 as_instance_id,
                 target_node_name,
+                iface_name,
+                iface_tag,
                 target_action_name,
                 target_core_node,
                 target_instance_id,
@@ -332,12 +347,17 @@ impl ActionMessenger {
     /// Send a goal to an action server. Generates a fresh `goal_id`,
     /// wraps `user_payload` in the per-goal envelope, and subscribes to
     /// the matching feedback topic before polling the goal service.
+    ///
+    /// `iface_name`/`iface_tag` must match the segments the action server used in
+    /// [`Self::expose`].
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         to_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         to_action_name: &str,
         target_core_instance_id: Option<&str>,
         target_instance_id: Option<&str>,
@@ -347,16 +367,17 @@ impl ActionMessenger {
     ) -> Result<ActionGoalHandle> {
         let goal_id = generate_goal_id();
         let goal_payload = wrap_goal_payload(&goal_id, user_payload.as_ref())?;
+        let normalized_iface_tag = crate::messaging::normalize_iface_segment(iface_tag);
         let feedback_topic = {
             let sender_core_node = target_core_instance_id.unwrap_or("*");
             match target_instance_id {
                 Some(target_instance_id) => {
                     format!(
-                        "{as_core_node}/{sender_core_node}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}/{goal_id}"
+                        "{as_core_node}/{sender_core_node}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{iface_name}/{normalized_iface_tag}/{to_action_name}/feedback/{target_instance_id}/{goal_id}"
                     )
                 }
                 None => format!(
-                    "{as_core_node}/{sender_core_node}/{as_instance_id}/*/action/{to_node_name}/{to_action_name}/feedback/*/{goal_id}"
+                    "{as_core_node}/{sender_core_node}/{as_instance_id}/*/action/{to_node_name}/{iface_name}/{normalized_iface_tag}/{to_action_name}/feedback/*/{goal_id}"
                 ),
             }
         };
@@ -376,6 +397,8 @@ impl ActionMessenger {
                 as_core_node,
                 as_instance_id,
                 to_node_name,
+                iface_name,
+                iface_tag,
                 &goal_service_name,
                 target_core_instance_id,
                 target_instance_id,
@@ -388,6 +411,8 @@ impl ActionMessenger {
             core_node: as_core_node.to_string(),
             instance_id: as_instance_id.to_string(),
             node_name: to_node_name.to_string(),
+            iface_name: iface_name.to_string(),
+            iface_tag: iface_tag.to_string(),
             action_name: to_action_name.to_string(),
             target_core_node: target_core_instance_id.map(|name| name.to_string()),
             target_instance_id: target_instance_id.map(|id| id.to_string()),
@@ -407,6 +432,8 @@ impl ActionMessenger {
             &action_handle.core_node,
             &action_handle.instance_id,
             &action_handle.node_name,
+            &action_handle.iface_name,
+            &action_handle.iface_tag,
             &action_handle.action_name,
             action_handle.target_core_node.as_deref(),
             action_handle.target_instance_id.as_deref(),
@@ -424,6 +451,8 @@ impl ActionMessenger {
         core_node: &str,
         instance_id: &str,
         node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         action_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
@@ -437,6 +466,8 @@ impl ActionMessenger {
                 core_node,
                 instance_id,
                 node_name,
+                iface_name,
+                iface_tag,
                 &cancel_service_name,
                 target_core_node,
                 target_instance_id,
@@ -456,6 +487,8 @@ impl ActionMessenger {
             &action_handle.core_node,
             &action_handle.instance_id,
             &action_handle.node_name,
+            &action_handle.iface_name,
+            &action_handle.iface_tag,
             &action_handle.action_name,
             action_handle.target_core_node.as_deref(),
             action_handle.target_instance_id.as_deref(),
@@ -473,6 +506,8 @@ impl ActionMessenger {
         core_node: &str,
         instance_id: &str,
         node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         action_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
@@ -486,6 +521,8 @@ impl ActionMessenger {
                 core_node,
                 instance_id,
                 node_name,
+                iface_name,
+                iface_tag,
                 &result_service_name,
                 target_core_node,
                 target_instance_id,

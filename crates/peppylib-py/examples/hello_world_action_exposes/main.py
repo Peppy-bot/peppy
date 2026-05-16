@@ -218,8 +218,9 @@ async def main():
         core_node,
         instance_id,
         NODE_NAME,
-        ACTION_NAME,
-    )
+        None,  # iface_name (None = native)
+        None,  # iface_tag (None = native)
+        ACTION_NAME,)
 
     print(
         f"{BOLD}{WHITE}[ACTION] Waiting for action goals as `{instance_id}` "

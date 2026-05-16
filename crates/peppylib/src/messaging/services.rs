@@ -374,25 +374,43 @@ impl fmt::Debug for ServiceRequestContext {
 
 impl ServiceMessenger {
     /// Listening as a service is a 2 way stream, so the process that exposes the service needs to provide its instance_id
+    ///
+    /// `iface_name`/`iface_tag` scope the wire path to a `conforms_to` interface; pass
+    /// [`NATIVE_IFACE_SEGMENT_NAME`](super::NATIVE_IFACE_SEGMENT_NAME)/
+    /// [`NATIVE_IFACE_SEGMENT_TAG`](super::NATIVE_IFACE_SEGMENT_TAG) for native (non-conformed) services.
+    #[allow(clippy::too_many_arguments)]
     pub async fn listen(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
         messenger
-            .expose_service(as_core_node, as_instance_id, as_node_name, as_service_name)
+            .expose_service(
+                as_core_node,
+                as_instance_id,
+                as_node_name,
+                iface_name,
+                iface_tag,
+                as_service_name,
+            )
             .await
     }
 
-    /// If `target_instance_id` is `None`, this call returns with the first service instance that it hits
+    /// If `target_instance_id` is `None`, this call returns with the first service instance that it hits.
+    ///
+    /// `iface_name`/`iface_tag` must match the segments the responder used in [`Self::listen`].
     #[allow(clippy::too_many_arguments)]
     pub async fn poll(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
         target_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         target_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
@@ -405,6 +423,8 @@ impl ServiceMessenger {
                 bound_core_node,
                 as_instance_id,
                 target_node_name,
+                iface_name,
+                iface_tag,
                 target_service_name,
                 target_core_node,
                 target_instance_id,
@@ -425,6 +445,8 @@ impl ServiceMessenger {
         bound_core_node: &str,
         as_instance_id: &str,
         target_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         target_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
@@ -435,6 +457,8 @@ impl ServiceMessenger {
                 bound_core_node,
                 as_instance_id,
                 target_node_name,
+                iface_name,
+                iface_tag,
                 target_service_name,
                 target_core_node,
                 target_instance_id,

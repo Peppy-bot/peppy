@@ -75,6 +75,8 @@ pub async fn listen_for_clock(
         core_node_node,
         instance_id,
         node_name,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         names::CLOCK,
     )
     .await?;

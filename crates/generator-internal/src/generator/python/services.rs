@@ -4,14 +4,29 @@ use super::deserialization;
 use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use crate::error::Result;
-use crate::generator::types::non_empty_message_format;
+use crate::generator::types::{InterfaceOrigin, non_empty_message_format};
 use config::node::{ConsumedService, ExposedService, MessageFormat};
+
+/// Returns the two literal Python string segments to splice into a generated
+/// `listen`/`poll` call: `("\"_\"", "\"_\"")` for native artifacts or
+/// `("\"<iface_name>\"", "\"<iface_tag>\"")` for those pulled in via
+/// `interfaces.conforms_to`.
+pub(crate) fn iface_segment_python_literals(origin: Option<&InterfaceOrigin>) -> (String, String) {
+    match origin {
+        Some(o) => (
+            format!("\"{}\"", o.iface_name),
+            format!("\"{}\"", o.iface_tag),
+        ),
+        None => (String::from("\"_\""), String::from("\"_\"")),
+    }
+}
 
 /// Generates Python code for an exposed (handler) service.
 pub fn build_exposed_service(
     service: &ExposedService,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
+    origin: Option<&InterfaceOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
@@ -142,12 +157,15 @@ pub fn build_exposed_service(
         "async def handle_next_request(node_runner: peppylib.NodeRunner, handler: {handler_type}) -> None:"
     ));
     builder.indent();
+    let (iface_name_lit, iface_tag_lit) = iface_segment_python_literals(origin);
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("node_runner.node_name(),");
+    builder.line(&format!("{iface_name_lit},"));
+    builder.line(&format!("{iface_tag_lit},"));
     builder.line("SERVICE_NAME,");
     builder.dedent();
     builder.line(")");
@@ -283,7 +301,10 @@ pub fn build_consumed_service(
         builder.line("request_payload = b\"\"");
     }
 
-    // Call peppylib.ServiceMessenger.poll
+    // Call peppylib.ServiceMessenger.poll. Consumer-side discovery of the
+    // producer's interface namespace is the follow-up PR; for now we assume
+    // native (`"_"`/`"_"`) since the deployment config doesn't record which
+    // interface a consumed service originates from.
     if has_response {
         builder.line("response_message = await peppylib.ServiceMessenger.poll(");
     } else {
@@ -294,6 +315,8 @@ pub fn build_consumed_service(
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("NODE_NAME,");
+    builder.line("\"_\",");
+    builder.line("\"_\",");
     builder.line("SERVICE_NAME,");
     builder.line("target_core_node,");
     builder.line("target_instance_id,");

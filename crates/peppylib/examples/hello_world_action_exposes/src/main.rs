@@ -8,6 +8,7 @@ use rand::rng;
 use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::Mutex;
+use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 
 const NODE_NAME: &str = "hello_node";
 const ACTION_NAME: &str = "hello_action";
@@ -355,8 +356,11 @@ async fn main() {
         &core_node_name,
         &as_instance_id,
         NODE_NAME,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         ACTION_NAME,
     )
+
     .await
     .expect("Should expose the action");
 

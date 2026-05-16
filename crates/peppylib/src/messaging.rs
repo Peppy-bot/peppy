@@ -278,9 +278,13 @@ impl MessengerHandle {
         bound_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
-        let service_root = format!("service/{as_node_name}/{as_service_name}");
+        let iface_tag = normalize_iface_segment(iface_tag);
+        let service_root =
+            format!("service/{as_node_name}/{iface_name}/{iface_tag}/{as_service_name}");
         self.create_service_endpoint(bound_core_node, service_root, as_instance_id)
             .await
     }
@@ -342,6 +346,8 @@ impl MessengerHandle {
         bound_core_node: &str,
         as_instance_id: &str,
         target_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         target_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
@@ -349,9 +355,9 @@ impl MessengerHandle {
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
         let response_timeout: Option<Duration> = response_timeout.into();
+        let iface_tag = normalize_iface_segment(iface_tag);
         let service_root = format!(
-            "{}/{}/{}",
-            message_type, target_node_name, target_service_name
+            "{message_type}/{target_node_name}/{iface_name}/{iface_tag}/{target_service_name}"
         );
         // Caller's instance as TARGET (identifies who is calling in request)
         let caller_target_instance_segment =
@@ -508,14 +514,19 @@ impl MessengerHandle {
         Ok(response)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn expose_action(
         &self,
         bound_core_node: &str,
         as_node_name: &str,
+        iface_name: &str,
+        iface_tag: &str,
         as_action_name: &str,
         as_instance_id: &str,
     ) -> Result<ActionCreation> {
-        let action_root = format!("action/{}/{}", as_node_name, as_action_name);
+        let iface_tag = normalize_iface_segment(iface_tag);
+        let action_root =
+            format!("action/{as_node_name}/{iface_name}/{iface_tag}/{as_action_name}");
 
         let goal_service_root = format!("{action_root}/goal");
         let cancel_service_root = format!("{action_root}/cancel");

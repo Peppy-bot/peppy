@@ -43,12 +43,13 @@ async def test_shutdown_node():
             TEST_CORE_NODE_NAME,
             CALLER_INSTANCE_ID,
             TEST_NODE_NAME,
+            None,  # iface_name (None = native)
+            None,  # iface_tag (None = native)
             SHUTDOWN_SERVICE,
             TEST_CORE_NODE_NAME,
             TEST_INSTANCE_ID,
             request_payload,
-            2.0,
-        )
+            2.0,)
 
         # Verify the response echoes back the payload
         assert response.payload == request_payload

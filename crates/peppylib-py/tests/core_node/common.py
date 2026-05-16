@@ -46,10 +46,11 @@ async def wait_until_reachable(messenger, service_name: str) -> None:
             CORE_NODE,
             CLIENT_INSTANCE,
             CORE_NODE,
+            None,  # iface_name (None = native)
+            None,  # iface_tag (None = native)
             service_name,
             CORE_NODE,
-            None,
-        ):
+            None,):
             return
         if asyncio.get_event_loop().time() >= deadline:
             pytest.fail(f"{service_name} stub did not become reachable within 5s")
@@ -92,8 +93,9 @@ async def spawn_stub_listener(server_handle, service_name: str, response_bytes: 
         CORE_NODE,
         SERVER_INSTANCE,
         CORE_NODE,
-        service_name,
-    )
+        None,  # iface_name (None = native)
+        None,  # iface_tag (None = native)
+        service_name,)
     return asyncio.ensure_future(
         endpoint.handle_next_request(lambda _request: response_bytes)
     )

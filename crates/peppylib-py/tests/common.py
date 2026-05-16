@@ -90,10 +90,11 @@ async def wait_for_service(
             bound_core_node,
             as_instance_id,
             target_node_name,
+            None,  # iface_name (None = native)
+            None,  # iface_tag (None = native)
             service_name,
             target_core_node,
-            target_instance_id,
-        ):
+            target_instance_id,):
             return
 
         if asyncio.get_event_loop().time() >= deadline:

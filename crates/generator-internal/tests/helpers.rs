@@ -6,6 +6,7 @@ use config::consts::{
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
+use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::io::Read;
 use std::path::Path;
@@ -359,10 +360,13 @@ pub async fn wait_for_service_reachable_or_exit(
             ctx.bound_core_node,
             ctx.caller_instance_id,
             target_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             target_service_name,
             ctx.target_core_node,
             target_instance_id,
         )
+
         .await
         .unwrap_or_else(|err| {
             panic!(
@@ -414,10 +418,13 @@ pub async fn wait_for_action_service_reachable_or_exit(
             ctx.bound_core_node,
             ctx.caller_instance_id,
             target_node_name,
+            NATIVE_IFACE_SEGMENT_NAME,
+            NATIVE_IFACE_SEGMENT_TAG,
             target_service_name,
             ctx.target_core_node,
             target_instance_id,
         )
+
         .await
         .unwrap_or_else(|err| {
             panic!(
@@ -489,6 +496,8 @@ pub async fn send_shutdown(
         bound_core_node,
         sender_instance_id,
         target_node_name,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         SHUTDOWN_SERVICE,
         target_core_node,
         Some(target_instance_id),
@@ -521,6 +530,8 @@ pub async fn try_send_shutdown(
         bound_core_node,
         sender_instance_id,
         target_node_name,
+        NATIVE_IFACE_SEGMENT_NAME,
+        NATIVE_IFACE_SEGMENT_TAG,
         SHUTDOWN_SERVICE,
         target_core_node,
         Some(target_instance_id),

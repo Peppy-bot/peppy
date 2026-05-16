@@ -46,6 +46,7 @@ pub fn build_action_expose_method(
     has_goal: bool,
     has_feedback: bool,
     has_result: bool,
+    origin: Option<&crate::generator::types::InterfaceOrigin>,
 ) -> TokenStream {
     let mut init_fields = Vec::new();
 
@@ -63,6 +64,8 @@ pub fn build_action_expose_method(
         init_fields.push(quote!(current_goal: None));
     }
 
+    let (iface_name_lit, iface_tag_lit) = super::topics::iface_segment_literals(origin);
+
     quote! {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
             let action = peppylib::ActionMessenger::expose(
@@ -70,6 +73,8 @@ pub fn build_action_expose_method(
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 node_runner.processor().node_name(),
+                #iface_name_lit,
+                #iface_tag_lit,
                 ACTION_NAME,
             )
             .await?;

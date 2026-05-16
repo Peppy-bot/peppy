@@ -1,5 +1,8 @@
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, encode_service_handler_error};
+use peppylib::messaging::{
+    NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, ServiceEndpoint, ServiceRequestContext,
+    encode_service_handler_error,
+};
 use peppylib::types::Payload;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -153,12 +156,16 @@ impl PyServiceMessenger {
     ///
     /// Returns a `ServiceEndpoint` that can be used to handle incoming requests.
     #[staticmethod]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_node_name, iface_name, iface_tag, as_service_name))]
+    #[allow(clippy::too_many_arguments)]
     fn listen<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
         as_node_name: String,
+        iface_name: Option<String>,
+        iface_tag: Option<String>,
         as_service_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
@@ -168,6 +175,8 @@ impl PyServiceMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
+                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
+                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
                 &as_service_name,
             )
             .await
@@ -180,7 +189,7 @@ impl PyServiceMessenger {
 
     /// Check if a service has active subscribers.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, target_service_name, target_core_node=None, target_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, iface_name, iface_tag, target_service_name, target_core_node=None, target_instance_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
@@ -188,6 +197,8 @@ impl PyServiceMessenger {
         bound_core_node: String,
         as_instance_id: String,
         target_node_name: String,
+        iface_name: Option<String>,
+        iface_tag: Option<String>,
         target_service_name: String,
         target_core_node: Option<String>,
         target_instance_id: Option<String>,
@@ -199,6 +210,8 @@ impl PyServiceMessenger {
                 &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
+                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
+                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
                 &target_service_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -211,7 +224,7 @@ impl PyServiceMessenger {
 
     /// Send a request to a service and wait for a response.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, target_service_name, target_core_node=None, target_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, iface_name, iface_tag, target_service_name, target_core_node=None, target_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn poll<'py>(
         py: Python<'py>,
@@ -219,6 +232,8 @@ impl PyServiceMessenger {
         bound_core_node: String,
         as_instance_id: String,
         target_node_name: String,
+        iface_name: Option<String>,
+        iface_tag: Option<String>,
         target_service_name: String,
         target_core_node: Option<String>,
         target_instance_id: Option<String>,
@@ -234,6 +249,8 @@ impl PyServiceMessenger {
                 &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
+                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
+                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
                 &target_service_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
