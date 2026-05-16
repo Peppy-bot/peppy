@@ -169,7 +169,7 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
             let endpoint = ServiceMessenger::listen(
                 &handle,
                 &as_core_node,
@@ -206,7 +206,7 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
@@ -247,7 +247,7 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
             let response = ServiceMessenger::poll(
                 &handle,
                 &bound_core_node,

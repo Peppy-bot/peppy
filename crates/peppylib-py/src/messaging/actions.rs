@@ -220,7 +220,7 @@ impl PyActionMessenger {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
             let creation = ActionMessenger::expose(
                 &handle,
                 &as_core_node,
@@ -267,7 +267,7 @@ impl PyActionMessenger {
         goal_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
         let goal_timeout = duration_from_secs_f64("goal_timeout_secs", goal_timeout_secs)?;
-        let (iface_name_str, iface_tag_str) = iface::or_native_owned(iface_name, iface_tag);
+        let (iface_name_str, iface_tag_str) = iface::or_native_owned(iface_name, iface_tag)?;
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let goal_handle = ActionMessenger::send_goal(
@@ -413,7 +413,7 @@ impl PyActionMessenger {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
