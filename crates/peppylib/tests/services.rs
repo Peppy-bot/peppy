@@ -1,5 +1,5 @@
+use peppylib::messaging::Iface;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::time::Duration;
@@ -32,8 +32,7 @@ async fn service_messenger_communication() {
         core_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         service_name,
     )
     .await
@@ -57,8 +56,7 @@ async fn service_messenger_communication() {
         core_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -112,8 +110,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         service_name,
     )
     .await
@@ -135,8 +132,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         node_name,
-        iface_name,
-        iface_tag,
+        Iface::new(iface_name, iface_tag),
         service_name,
     )
     .await
@@ -161,8 +157,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -183,8 +178,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         node_name,
-        iface_name,
-        iface_tag,
+        Iface::new(iface_name, iface_tag),
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -234,8 +228,7 @@ async fn service_iface_tag_hyphen_normalized() {
         core_node,
         instance_id,
         node_name,
-        iface_name,
-        "v2-stable",
+        Iface::new(iface_name, "v2-stable"),
         service_name,
     )
     .await
@@ -257,8 +250,7 @@ async fn service_iface_tag_hyphen_normalized() {
         core_node,
         instance_id,
         node_name,
-        iface_name,
-        "v2_stable",
+        Iface::new(iface_name, "v2_stable"),
         service_name,
         Some(core_node),
         Some(instance_id),

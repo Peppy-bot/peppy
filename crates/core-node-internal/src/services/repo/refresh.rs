@@ -15,8 +15,8 @@ use core_node_api::encoding::{
     RepoItemKind, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSource, RepoSourceKind,
 };
+use peppylib::messaging::Iface;
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult};
 use serde::Deserialize;
@@ -52,8 +52,7 @@ pub async fn listen_for_repo_refresh(
         core_node_name,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::REPO_REFRESH_ACTION,
     )
     .await?;

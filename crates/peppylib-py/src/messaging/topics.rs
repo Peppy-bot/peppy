@@ -101,15 +101,13 @@ impl PyTopicMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
+            let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
             let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 &to_node_name,
-                iface_name,
-                iface_tag,
+                iface,
                 &to_topic,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -179,15 +177,13 @@ impl PyTopicMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
+            let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
             TopicMessenger::emit(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
-                iface_name,
-                iface_tag,
+                iface,
                 &as_topic_name,
                 qos.into(),
                 Payload::from(payload),

@@ -64,7 +64,7 @@ pub fn build_action_expose_method(
         init_fields.push(quote!(current_goal: None));
     }
 
-    let (iface_name_lit, iface_tag_lit) = super::topics::iface_segment_literals(origin);
+    let iface_expr = super::topics::iface_expression(origin);
 
     quote! {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
@@ -73,8 +73,7 @@ pub fn build_action_expose_method(
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 node_runner.processor().node_name(),
-                #iface_name_lit,
-                #iface_tag_lit,
+                #iface_expr,
                 ACTION_NAME,
             )
             .await?;

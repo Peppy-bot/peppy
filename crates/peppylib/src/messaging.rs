@@ -13,23 +13,27 @@ pub use actions::{
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
+// Re-export wire-addressing types so peppylib consumers don't reach into pmi.
+pub use pmi::{
+    ActionWireReceiver, ActionWireSender, BROADCAST_MARKER, Iface, IfaceError,
+    NATIVE_IFACE_SEGMENT, ServiceKind, ServiceWireReceiver, ServiceWireSender, TopicWireReceiver,
+    TopicWireSender,
+};
+
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{
-    Message as PmiMessage, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    PeppyMessagingInterfaceError, PublisherQoS, SubscriberQoS, Subscription as PmiSubscription,
-    ZenohAdapter, ZenohNetProtocol,
+    Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher, Payload as PmiPayload,
+    PeppyMessagingInterfaceError, PublisherQoS, Subscription as PmiSubscription, ZenohAdapter,
+    ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
-use std::{
-    borrow::Cow,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{SystemTime, UNIX_EPOCH},
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{
     sync::Mutex,
     time::{Duration, Instant, timeout},
@@ -39,10 +43,6 @@ use tokio::{
 pub const NODE_HEALTH_SERVICE: &str = "node_health";
 pub const NODE_READY_SERVICE: &str = "node_ready";
 pub const SHUTDOWN_SERVICE: &str = "shutdown";
-
-const INSTANCE_ID_WILDCARD: &str = "**";
-/// Marker used in key expressions for broadcast requests (targeting any instance)
-const BROADCAST_MARKER: &str = "_any_";
 
 /// Prefix used for encoding service-side handler errors into response payloads.
 ///
@@ -62,29 +62,8 @@ const SERVICE_PROBE_PAYLOAD: &[u8] = b"\0peppy_service_probe\0";
 /// Timeout for reachability probes sent by `is_reachable`.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Sentinel passed as `iface_name` by callers that aren't part of a
-/// `conforms_to` interface — i.e. the node's own (native) topics, services,
-/// and actions. The placeholder keeps the wire key shape stable
-/// (`topic/{node}/{iface_name}/{iface_tag}/{leaf}`) regardless of conformance.
-pub const NATIVE_IFACE_SEGMENT_NAME: &str = "_";
-
-/// Sentinel passed as `iface_tag` for native (non-`conforms_to`) artifacts.
-/// Paired with [`NATIVE_IFACE_SEGMENT_NAME`].
-pub const NATIVE_IFACE_SEGMENT_TAG: &str = "_";
-
-/// Normalizes an interface tag for use as a Zenoh wire-path segment.
-///
-/// Tags allow ASCII letters/digits/`_`/`-`; identifier syntax in generated code
-/// does not allow hyphens, so we convert `-` → `_` once at this boundary. The
-/// generator passes the raw tag through unchanged so the wire and code agree
-/// after this normalization. Hyphen-free tags (the common case — native
-/// callers pass `NATIVE_IFACE_SEGMENT_TAG`) skip the allocation.
-pub(crate) fn normalize_iface_segment(value: &str) -> Cow<'_, str> {
-    if value.contains('-') {
-        Cow::Owned(value.replace('-', "_"))
-    } else {
-        Cow::Borrowed(value)
-    }
+fn into_pmi_payload(payload: Payload) -> PmiPayload {
+    PmiPayload::from_bytes(payload.into_inner())
 }
 
 fn is_service_ack_payload(payload: &[u8]) -> bool {
@@ -158,11 +137,6 @@ fn generate_request_id() -> String {
     generate_short_id("request")
 }
 
-/// Formats an instance ID as a key-expression segment, returning `None` for wildcards.
-fn format_instance_segment(instance_id: &str) -> Option<String> {
-    (instance_id != INSTANCE_ID_WILDCARD).then(|| instance_id.to_string())
-}
-
 impl MessengerHandle {
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
         Self { messenger }
@@ -173,14 +147,27 @@ impl MessengerHandle {
     /// returned [`pmi::MessengerPublisher`] holds its own state (an
     /// `Arc<zenoh::Session>` clone or `Arc<Mutex<HashMap>>` clones for the
     /// mock) and `publish` skips the central messenger mutex.
-    pub(crate) async fn declare_publisher(
+    pub(crate) async fn declare_topic_publisher(
         &self,
-        topic: String,
+        sender: &TopicWireSender,
         qos: PublisherQoS,
     ) -> Result<MessengerPublisher> {
         let messenger = self.messenger.lock().await;
         messenger
-            .declare_publisher(topic, qos)
+            .declare_topic_publisher(sender, qos)
+            .map_err(Error::PeppyMessagingInterface)
+    }
+
+    /// Pre-bind a per-goal action-feedback publisher.
+    pub(crate) async fn declare_action_feedback_publisher(
+        &self,
+        recv: &ActionWireReceiver,
+        goal_id: &str,
+        qos: PublisherQoS,
+    ) -> Result<MessengerPublisher> {
+        let messenger = self.messenger.lock().await;
+        messenger
+            .declare_action_feedback_publisher(recv, goal_id, qos)
             .map_err(Error::PeppyMessagingInterface)
     }
 
@@ -219,228 +206,78 @@ impl MessengerHandle {
         Ok(messenger)
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn subscribe_to_topic(
         &self,
-        as_core_node: &str,
-        as_instance_id: &str,
-        to_node_name: &str,
-        iface_name: &str,
-        iface_tag: &str,
-        to_topic: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        recv: &TopicWireReceiver,
         qos: QoSProfile,
     ) -> Result<PmiSubscription> {
-        let to_core_node = to_core_node.unwrap_or("*");
-        let to_instance_id = to_instance_id.unwrap_or("*");
-        let iface_tag = normalize_iface_segment(iface_tag);
-        let key_expr = format!(
-            "{as_core_node}/{to_core_node}/{as_instance_id}/{to_instance_id}/topic/{to_node_name}/{iface_name}/{iface_tag}/{to_topic}"
-        );
-        let subscription = {
-            let messenger = self.messenger.lock().await;
-            messenger.subscribe(&key_expr, qos.into()).await
-        }
-        .map_err(Error::PeppyMessagingInterface)?;
-
-        Ok(subscription)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn emit_topic_message(
-        &self,
-        as_core_node: &str,
-        as_instance_id: &str,
-        as_node_name: &str,
-        iface_name: &str,
-        iface_tag: &str,
-        as_topic_name: &str,
-        qos: QoSProfile,
-        payload: Payload,
-    ) -> Result<()> {
-        let iface_tag = normalize_iface_segment(iface_tag);
-        let key_expr = format!(
-            "*/{}/*/{}/topic/{}/{}/{}/{}",
-            as_core_node, as_instance_id, as_node_name, iface_name, iface_tag, as_topic_name
-        );
-        let msg = PmiMessage::new(&key_expr, payload.into_inner());
-
-        let mut messenger = self.messenger.lock().await;
+        let messenger = self.messenger.lock().await;
         messenger
-            .publish(msg, qos.into())
+            .subscribe_topic(recv, qos.into())
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    async fn expose_service(
+    async fn emit_topic_message(
         &self,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        as_node_name: &str,
-        iface_name: &str,
-        iface_tag: &str,
-        as_service_name: &str,
-    ) -> Result<ServiceEndpoint> {
-        let iface_tag = normalize_iface_segment(iface_tag);
-        let service_root =
-            format!("service/{as_node_name}/{iface_name}/{iface_tag}/{as_service_name}");
-        self.create_service_endpoint(bound_core_node, service_root, as_instance_id)
+        sender: &TopicWireSender,
+        qos: QoSProfile,
+        payload: Payload,
+    ) -> Result<()> {
+        let mut messenger = self.messenger.lock().await;
+        messenger
+            .publish_topic(sender, into_pmi_payload(payload), qos.into())
             .await
+            .map_err(Error::PeppyMessagingInterface)
     }
 
-    async fn create_service_endpoint(
+    pub(crate) async fn expose_service(
         &self,
-        bound_core_node: &str,
-        service_root: String,
-        as_instance_id: &str,
+        recv: &ServiceWireReceiver,
     ) -> Result<ServiceEndpoint> {
-        // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
-        // We need 4 subscription patterns to match all valid request combinations:
-        let patterns = [
-            // 1. Specific core node, specific instance
-            format!("{bound_core_node}/*/{as_instance_id}/*/{service_root}/request/**"),
-            // 2. Specific core node, broadcast instance
-            format!("{bound_core_node}/*/{BROADCAST_MARKER}/*/{service_root}/request/**"),
-            // 3. Broadcast core node, specific instance
-            format!("{BROADCAST_MARKER}/*/{as_instance_id}/*/{service_root}/request/**"),
-            // 4. Broadcast core node, broadcast instance
-            format!("{BROADCAST_MARKER}/*/{BROADCAST_MARKER}/*/{service_root}/request/**"),
-        ];
-
-        let messenger = self.messenger.lock().await;
-
-        // Create all 4 subscriptions
-        let sub0 = messenger
-            .subscribe(&patterns[0], SubscriberQoS::Standard)
-            .await
-            .map_err(Error::PeppyMessagingInterface)?;
-        let sub1 = messenger
-            .subscribe(&patterns[1], SubscriberQoS::Standard)
-            .await
-            .map_err(Error::PeppyMessagingInterface)?;
-        let sub2 = messenger
-            .subscribe(&patterns[2], SubscriberQoS::Standard)
-            .await
-            .map_err(Error::PeppyMessagingInterface)?;
-        let sub3 = messenger
-            .subscribe(&patterns[3], SubscriberQoS::Standard)
-            .await
-            .map_err(Error::PeppyMessagingInterface)?;
-
-        drop(messenger);
-
+        let subscriptions = {
+            let messenger = self.messenger.lock().await;
+            messenger
+                .listen_service(recv)
+                .await
+                .map_err(Error::PeppyMessagingInterface)?
+        };
         Ok(ServiceEndpoint::new(
             Arc::clone(&self.messenger),
-            [sub0, sub1, sub2, sub3],
-            bound_core_node.to_string(),
-            service_root,
-            as_instance_id.to_string(),
+            subscriptions,
+            recv.clone(),
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn poll_service(
+    pub(crate) async fn poll_service(
         &self,
-        message_type: &str,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_node_name: &str,
-        iface_name: &str,
-        iface_tag: &str,
-        target_service_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        sender: &ServiceWireSender,
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
         let response_timeout: Option<Duration> = response_timeout.into();
-        let iface_tag = normalize_iface_segment(iface_tag);
-        let service_root = format!(
-            "{message_type}/{target_node_name}/{iface_name}/{iface_tag}/{target_service_name}"
-        );
-        // Caller's instance as TARGET (identifies who is calling in request)
-        let caller_target_instance_segment =
-            format_instance_segment(as_instance_id).unwrap_or_else(|| BROADCAST_MARKER.to_string());
-        // Caller's instance as BOUND (caller receives response)
-        let caller_bound_instance_segment =
-            format_instance_segment(as_instance_id).unwrap_or_else(|| BROADCAST_MARKER.to_string());
-
-        let target_instance_id = target_instance_id.map(str::to_string);
-
-        // If no target specified, use BROADCAST_MARKER for broadcast requests
-        // This allows Zenoh subscription patterns to filter at the key expression level
-        let (effective_target_core_node, effective_target_instance) =
-            match (target_core_node, target_instance_id.as_deref()) {
-                (Some(core_node), Some(instance)) => (core_node.to_string(), instance.to_string()),
-                (Some(core_node), None) => (core_node.to_string(), BROADCAST_MARKER.to_string()),
-                (None, Some(instance)) => (BROADCAST_MARKER.to_string(), instance.to_string()),
-                (None, None) => (BROADCAST_MARKER.to_string(), BROADCAST_MARKER.to_string()),
-            };
-
-        // Target's instance as BOUND (service is bound to receive requests)
-        let target_bound_instance_segment = format_instance_segment(&effective_target_instance);
         let request_id = generate_request_id();
 
-        // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
-        let target_core_node = target_bound_instance_segment
-            .as_ref()
-            .map(|_| effective_target_core_node.as_str())
-            .unwrap_or(BROADCAST_MARKER);
-        let target_instance = target_bound_instance_segment
-            .as_deref()
-            .unwrap_or(BROADCAST_MARKER);
-        let request_topic = format!(
-            "{}/{}/{}/{}/{}/request/{request_id}",
-            target_core_node,
-            bound_core_node,
-            target_instance,
-            caller_target_instance_segment,
-            service_root
-        );
-
-        // Response topic format: caller_core_node/responder_core_node/caller_instance/responder_instance/service_root/response/request_id
-        // Always subscribe with wildcards for responder core node and instance.
-        // The request_id (UUID) uniquely identifies our response, so wildcards
-        // are safe and — crucially — keep the subscriber pattern consistent
-        // across different targeting modes, avoiding Zenoh routing-table
-        // interference when the same session is reused for successive polls
-        // with varying target specificity.
-        let response_topic = format!(
-            "{}/*/{}/*/{}/response/{request_id}",
-            bound_core_node, caller_bound_instance_segment, service_root
-        );
-
         let mut response_subscription = {
-            let messenger = self.messenger.lock().await;
-            messenger
-                .subscribe(&response_topic, SubscriberQoS::Standard)
-                .await
-        }
-        .map_err(Error::PeppyMessagingInterface)?;
-
-        {
             let mut messenger = self.messenger.lock().await;
             messenger
-                .publish(
-                    pmi::Message::new(&request_topic, request_payload.into_inner()),
-                    PublisherQoS::Standard,
-                )
+                .open_service_call(sender, &request_id, into_pmi_payload(request_payload))
                 .await
-                .map_err(Error::PeppyMessagingInterface)?;
-        }
+                .map_err(Error::PeppyMessagingInterface)?
+        };
 
-        // Wait for the response, filtering out service acks.
-        // The service sends an ack immediately upon receiving the request (before the
-        // handler runs). With a timeout, if we receive the ack but no response, the
-        // service is alive but slow (ServiceTimeout). If we receive nothing, nobody is
-        // listening (ServiceUnreachable). With no timeout (None), we wait indefinitely
-        // for the response signal — used in tests to avoid wall-clock dependencies.
+        // Wait for the response, filtering out service acks. The service sends an
+        // ack immediately upon receiving the request (before the handler runs).
+        // With a timeout, ack-without-response → ServiceTimeout, no ack at all →
+        // ServiceUnreachable. With no timeout (None), we wait indefinitely — used
+        // in tests to avoid wall-clock dependencies.
         let channel_closed_err = || {
             Error::PeppyMessagingInterface(PeppyMessagingInterfaceError::BackendError(
                 "service response channel closed".to_string(),
             ))
         };
+        let target_service_name = sender.to_service_name.clone();
+        let target_instance_id = sender.to_instance_id.clone();
 
         let response = match response_timeout {
             Some(response_timeout) => {
@@ -453,12 +290,12 @@ impl MessengerHandle {
                         if received_ack {
                             return Err(Error::ServiceTimeout {
                                 instance_id: target_instance_id,
-                                service_name: target_service_name.to_string(),
+                                service_name: target_service_name,
                             });
                         } else {
                             return Err(Error::ServiceUnreachable {
                                 instance_id: target_instance_id,
-                                service_name: target_service_name.to_string(),
+                                service_name: target_service_name,
                             });
                         }
                     }
@@ -476,12 +313,12 @@ impl MessengerHandle {
                             if received_ack {
                                 return Err(Error::ServiceTimeout {
                                     instance_id: target_instance_id,
-                                    service_name: target_service_name.to_string(),
+                                    service_name: target_service_name,
                                 });
                             } else {
                                 return Err(Error::ServiceUnreachable {
                                     instance_id: target_instance_id,
-                                    service_name: target_service_name.to_string(),
+                                    service_name: target_service_name,
                                 });
                             }
                         }
@@ -506,7 +343,7 @@ impl MessengerHandle {
         if let Some(reason) = decode_service_error_payload(response_payload.as_ref()) {
             return Err(Error::ServiceError {
                 instance_id: target_instance_id,
-                service_name: target_service_name.to_string(),
+                service_name: target_service_name,
                 reason,
             });
         }
@@ -514,39 +351,10 @@ impl MessengerHandle {
         Ok(response)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn expose_action(
-        &self,
-        bound_core_node: &str,
-        as_node_name: &str,
-        iface_name: &str,
-        iface_tag: &str,
-        as_action_name: &str,
-        as_instance_id: &str,
-    ) -> Result<ActionCreation> {
-        let iface_tag = normalize_iface_segment(iface_tag);
-        let action_root =
-            format!("action/{as_node_name}/{iface_name}/{iface_tag}/{as_action_name}");
-
-        let goal_service_root = format!("{action_root}/goal");
-        let cancel_service_root = format!("{action_root}/cancel");
-        let result_service_root = format!("{action_root}/result");
-
-        let bound_instance_segment =
-            format_instance_segment(as_instance_id).unwrap_or_else(|| BROADCAST_MARKER.to_string());
-        let feedback_topic_suffix = format!(
-            "*/{bound_core_node}/*/{bound_instance_segment}/{action_root}/feedback/{as_instance_id}"
-        );
-
-        let goal_service = self
-            .create_service_endpoint(bound_core_node, goal_service_root, as_instance_id)
-            .await?;
-        let cancel_service = self
-            .create_service_endpoint(bound_core_node, cancel_service_root, as_instance_id)
-            .await?;
-        let result_service = self
-            .create_service_endpoint(bound_core_node, result_service_root, as_instance_id)
-            .await?;
+    pub(crate) async fn expose_action(&self, recv: &ActionWireReceiver) -> Result<ActionCreation> {
+        let goal_service = self.expose_service(&recv.goal_service()).await?;
+        let cancel_service = self.expose_service(&recv.cancel_service()).await?;
+        let result_service = self.expose_service(&recv.result_service()).await?;
 
         // Per-goal feedback uses `Important` (Block on congestion, DataHigh
         // priority) rather than `Standard`. The publisher is declared inside
@@ -559,7 +367,7 @@ impl MessengerHandle {
         // backpressure a fast emitter than to silently drop progress updates.
         let feedback_publisher_factory = actions::ActionFeedbackPublisherFactory::new(
             self.clone(),
-            feedback_topic_suffix,
+            recv.clone(),
             PublisherQoS::Important,
         );
 

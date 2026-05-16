@@ -1,7 +1,7 @@
 use config::consts::DEFAULT_MESSAGING_PORT;
 use config::node::QoSProfile;
 use names_generator2::get_random;
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
+use peppylib::messaging::Iface;
 use peppylib::{MessengerHandle, TopicMessenger};
 use rand::rng;
 use tokio::signal;
@@ -30,8 +30,7 @@ async fn main() {
         &core_node,
         &instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         topic_name,
         None,
         None,

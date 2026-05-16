@@ -1,0 +1,276 @@
+//! Zenoh-specific wire-format functions. Every raw zenoh keyexpr string that
+//! enters or leaves the bus is built here — no other module in the crate is
+//! allowed to format zenoh keyexprs. This keeps the protocol in exactly one
+//! place per transport.
+//!
+//! Not feature-gated on `zenoh` because the mock adapter currently mirrors
+//! zenoh's wire shape and reuses these formatters for in-process matching.
+//! If a transport later needs a different wire form, add a sibling
+//! `*_wire.rs` module rather than diverging this one.
+
+use crate::wire::{
+    ActionWireReceiver, ActionWireSender, BROADCAST_MARKER, Iface, ServiceKind,
+    ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
+};
+use std::fmt;
+
+/// Zenoh's single-chunk wildcard. Matches exactly one path segment.
+const SINGLE_CHUNK_WILDCARD: &str = "*";
+
+/// Namespace for zenoh-specific wire format functions. Calls look like
+/// `ZenohWire::topic_publish(&sender)`.
+pub(crate) struct ZenohWire;
+
+impl ZenohWire {
+    // ─── Topics ───────────────────────────────────────────────────────────
+
+    /// `*/{as_core}/*/{as_inst}/topic/{as_node}/{iface_name}/{iface_tag}/{as_topic}`
+    pub(crate) fn topic_publish(s: &TopicWireSender) -> String {
+        format!(
+            "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/topic/{}/{}/{}/{}",
+            s.as_core_node,
+            s.as_instance_id,
+            s.as_node_name,
+            s.iface.name(),
+            s.iface.tag(),
+            s.as_topic_name,
+        )
+    }
+
+    /// `{as_core}/{to_core|*}/{as_inst}/{to_inst|*}/topic/{to_node}/{iface_name}/{iface_tag}/{to_topic}`
+    pub(crate) fn topic_subscribe(r: &TopicWireReceiver) -> String {
+        let to_core = r.to_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let to_inst = r.to_instance_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        format!(
+            "{}/{to_core}/{}/{to_inst}/topic/{}/{}/{}/{}",
+            r.as_core_node,
+            r.as_instance_id,
+            r.to_node_name,
+            r.iface.name(),
+            r.iface.tag(),
+            r.to_topic,
+        )
+    }
+
+    // ─── Services ─────────────────────────────────────────────────────────
+
+    /// All 4 broadcast-Cartesian listen patterns:
+    /// `{bound|_any_}/*/{inst|_any_}/*/{service_root}/request/**`.
+    ///
+    /// Order matches the original code's `patterns[0..4]` (bound-specific +
+    /// instance-specific first, then progressively broader).
+    pub(crate) fn service_listen_patterns(r: &ServiceWireReceiver) -> [String; 4] {
+        let root = service_root(&r.as_node_name, &r.iface, &r.as_service_name, r.kind);
+        let bound = r.bound_core_node.as_str();
+        let inst = r.as_instance_id.as_str();
+        [
+            format!(
+                "{bound}/{SINGLE_CHUNK_WILDCARD}/{inst}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
+            ),
+            format!(
+                "{bound}/{SINGLE_CHUNK_WILDCARD}/{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
+            ),
+            format!(
+                "{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{inst}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
+            ),
+            format!(
+                "{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
+            ),
+        ]
+    }
+
+    /// Client → server request publish:
+    /// `{target_core|_any_}/{bound_core}/{target_inst|_any_}/{caller_inst}/{service_root}/request/{request_id}`.
+    pub(crate) fn service_request_publish(s: &ServiceWireSender, request_id: &str) -> String {
+        let root = service_root(&s.to_node_name, &s.iface, &s.to_service_name, s.kind);
+        let target_core = s.to_core_node.as_deref().unwrap_or(BROADCAST_MARKER);
+        let target_inst = s.to_instance_id.as_deref().unwrap_or(BROADCAST_MARKER);
+        format!(
+            "{target_core}/{}/{target_inst}/{}/{root}/request/{request_id}",
+            s.bound_core_node, s.as_instance_id,
+        )
+    }
+
+    /// Client-side response subscribe (wildcards on responder fields, keyed by `request_id`):
+    /// `{bound_core}/*/{caller_inst}/*/{service_root}/response/{request_id}`.
+    pub(crate) fn service_response_subscribe(s: &ServiceWireSender, request_id: &str) -> String {
+        let root = service_root(&s.to_node_name, &s.iface, &s.to_service_name, s.kind);
+        format!(
+            "{}/{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{root}/response/{request_id}",
+            s.bound_core_node, s.as_instance_id,
+        )
+    }
+
+    /// Parses a received request keyexpr against the receiver's expected service
+    /// shape and returns the request_id plus the server-side response publish key.
+    ///
+    /// Returns an error if the keyexpr doesn't match the expected request shape
+    /// (wrong segment count, mismatched service_root, missing `request` marker, etc.).
+    pub(crate) fn parse_received_request(
+        receiver: &ServiceWireReceiver,
+        request_keyexpr: &str,
+    ) -> Result<ParsedRequest, WireParseError> {
+        let mut parts = request_keyexpr.split('/').filter(|s| !s.is_empty());
+
+        let target_core = parts
+            .next()
+            .ok_or(WireParseError::MissingSegment("target_core_node"))?;
+        let caller_core = parts
+            .next()
+            .ok_or(WireParseError::MissingSegment("caller_core_node"))?;
+        let target_inst = parts
+            .next()
+            .ok_or(WireParseError::MissingSegment("target_instance"))?;
+        let caller_inst = parts
+            .next()
+            .ok_or(WireParseError::MissingSegment("caller_instance"))?;
+
+        let expected_root = service_root(
+            &receiver.as_node_name,
+            &receiver.iface,
+            &receiver.as_service_name,
+            receiver.kind,
+        );
+        for expected in expected_root.split('/').filter(|s| !s.is_empty()) {
+            let got = parts
+                .next()
+                .ok_or(WireParseError::MissingSegment("service_root"))?;
+            if got != expected {
+                return Err(WireParseError::ServiceRootMismatch {
+                    expected: expected.to_string(),
+                    got: got.to_string(),
+                });
+            }
+        }
+
+        let marker = parts
+            .next()
+            .ok_or(WireParseError::MissingSegment("request"))?;
+        if marker != "request" {
+            return Err(WireParseError::NotARequest);
+        }
+
+        let request_id = parts
+            .next()
+            .filter(|s| !s.is_empty())
+            .ok_or(WireParseError::MissingSegment("request_id"))?
+            .to_string();
+
+        if parts.next().is_some() {
+            return Err(WireParseError::UnexpectedTrailing);
+        }
+
+        // Normalized request keyexpr — preserves the broadcast markers that came in.
+        let normalized_request = format!(
+            "{target_core}/{caller_core}/{target_inst}/{caller_inst}/{expected_root}/request/{request_id}"
+        );
+
+        // Server-side response publish:
+        // {caller_core}/{responder_core}/{caller_inst}/{responder_inst}/{service_root}/response/{request_id}
+        let response_keyexpr = format!(
+            "{caller_core}/{}/{caller_inst}/{}/{expected_root}/response/{request_id}",
+            receiver.bound_core_node, receiver.as_instance_id,
+        );
+
+        Ok(ParsedRequest {
+            request_id,
+            normalized_request,
+            response_keyexpr,
+        })
+    }
+
+    // ─── Actions ──────────────────────────────────────────────────────────
+
+    /// Server-side per-goal feedback publish:
+    /// `*/{bound_core}/*/{as_inst}/action/{as_node}/{iface_name}/{iface_tag}/{as_action}/feedback/{as_inst}/{goal_id}`.
+    pub(crate) fn action_feedback_publish(r: &ActionWireReceiver, goal_id: &str) -> String {
+        let action_root = action_root(&r.as_node_name, &r.iface, &r.as_action_name);
+        format!(
+            "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/{action_root}/feedback/{}/{goal_id}",
+            r.bound_core_node, r.as_instance_id, r.as_instance_id,
+        )
+    }
+
+    /// Client-side per-goal feedback subscribe. Wildcards on server-side fields
+    /// when the target is not pinned.
+    pub(crate) fn action_feedback_subscribe(s: &ActionWireSender, goal_id: &str) -> String {
+        let action_root = action_root(&s.to_node_name, &s.iface, &s.to_action_name);
+        let target_core = s.to_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_inst_segment = s.to_instance_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        format!(
+            "{}/{target_core}/{}/{target_inst_segment}/{action_root}/feedback/{target_inst_segment}/{goal_id}",
+            s.as_core_node, s.as_instance_id,
+        )
+    }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────
+
+/// Builds the service_root segment. For action sub-services, appends the
+/// `goal` / `cancel` / `result` suffix.
+fn service_root(node: &str, iface: &Iface, name: &str, kind: ServiceKind) -> String {
+    match kind.suffix() {
+        None => format!(
+            "{}/{node}/{}/{}/{name}",
+            kind.root_segment(),
+            iface.name(),
+            iface.tag(),
+        ),
+        Some(suffix) => format!(
+            "{}/{node}/{}/{}/{name}/{suffix}",
+            kind.root_segment(),
+            iface.name(),
+            iface.tag(),
+        ),
+    }
+}
+
+/// Builds the action_root segment (`action/{node}/{iface_name}/{iface_tag}/{action}`).
+fn action_root(node: &str, iface: &Iface, action: &str) -> String {
+    format!("action/{node}/{}/{}/{action}", iface.name(), iface.tag())
+}
+
+// ─── Parsed request returned to the adapter ──────────────────────────────
+
+/// Result of parsing a received service request keyexpr. Fields are
+/// `pub(crate)` so the adapter can use the response keyexpr without exposing
+/// raw zenoh strings to peppylib.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedRequest {
+    pub(crate) request_id: String,
+    /// Normalized request keyexpr (preserves broadcast markers from the
+    /// original message so all 4 listen patterns see identical key strings).
+    pub(crate) normalized_request: String,
+    /// Server-side response publish keyexpr.
+    pub(crate) response_keyexpr: String,
+}
+
+/// Reasons a request keyexpr can fail to match the expected request shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WireParseError {
+    MissingSegment(&'static str),
+    UnexpectedTrailing,
+    NotARequest,
+    ServiceRootMismatch { expected: String, got: String },
+}
+
+impl fmt::Display for WireParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingSegment(segment) => write!(f, "missing `{segment}` segment in request"),
+            Self::UnexpectedTrailing => {
+                f.write_str("request contains unexpected trailing segments")
+            }
+            Self::NotARequest => f.write_str("expected `request` marker segment"),
+            Self::ServiceRootMismatch { expected, got } => write!(
+                f,
+                "service root segment mismatch: expected `{expected}`, got `{got}`"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WireParseError {}
+
+#[cfg(test)]
+mod tests;

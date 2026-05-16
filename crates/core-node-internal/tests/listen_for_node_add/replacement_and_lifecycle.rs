@@ -1,5 +1,5 @@
 use super::*;
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
+use peppylib::messaging::Iface;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents() {
@@ -518,8 +518,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         &started_core_node.core_node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,
@@ -671,8 +670,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         &started_core_node.core_node_name,
         INSTANCE_1,
         NODE_NAME,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -706,8 +704,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         &started_core_node.core_node_name,
         INSTANCE_2,
         NODE_NAME,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -984,8 +981,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         &started_core_node.core_node_name,
         INSTANCE_ID,
         DEPENDENCY_NODE_NAME,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -1199,8 +1195,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         &started_core_node.core_node_name,
         INSTANCE_ID,
         DEPENDENCY_NODE_NAME,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -1429,8 +1424,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         &started_core_node.core_node_name,
         INSTANCE_ID,
         DEPENDENCY_NODE_NAME,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         SHUTDOWN_SERVICE,
     )
     .await

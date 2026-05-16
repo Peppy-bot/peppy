@@ -11,8 +11,8 @@ use core_node_api::encoding::{
     NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource,
 };
 use node_stack::NodeStack;
+use peppylib::messaging::Iface;
 use peppylib::messaging::ServiceRequestContext;
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::path::{Path, PathBuf};
@@ -35,8 +35,7 @@ pub async fn listen_for_node_info(
         core_node_name,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::NODE_INFO,
     )
     .await?;

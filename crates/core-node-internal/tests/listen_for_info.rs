@@ -5,7 +5,7 @@ use config::consts::DEFAULT_MESSAGING_PORT;
 use core_node::names;
 use core_node_api::encoding::{InfoRequest, InfoResponse};
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
+use peppylib::messaging::Iface;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -21,8 +21,7 @@ async fn listen_for_info_success() {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         &started.core_node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::INFO,
         Some(&started.core_node_name),
         None,

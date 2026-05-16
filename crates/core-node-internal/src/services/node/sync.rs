@@ -7,8 +7,8 @@ use config::node::NodeConfigParser;
 use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse, RepoResolvedEntry};
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceOrigin, InterfaceVariant};
 use node_stack::NodeStack;
+use peppylib::messaging::Iface;
 use peppylib::messaging::ServiceRequestContext;
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::{HashMap, HashSet};
@@ -29,8 +29,7 @@ pub async fn listen_for_node_sync(
         core_node_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::NODE_SYNC,
     )
     .await?;

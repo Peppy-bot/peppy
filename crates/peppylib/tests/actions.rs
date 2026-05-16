@@ -1,10 +1,10 @@
 use config::node::QoSProfile;
 use peppylib::PeppyError;
+use peppylib::messaging::Iface;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, EmptyPayloadError, MessengerHandle,
     NonEmptyPayload,
 };
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::sync::Arc;
@@ -39,8 +39,7 @@ async fn action_messenger_communication() {
         core_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         action_name,
     )
     .await
@@ -106,8 +105,7 @@ async fn action_messenger_communication() {
         core_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -178,8 +176,7 @@ async fn setup_goal_handshake(
         core_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         action_name,
     )
     .await
@@ -222,8 +219,7 @@ async fn setup_goal_handshake(
         core_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -403,8 +399,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         action_name,
     )
     .await
@@ -414,8 +409,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         node_name,
-        iface_name,
-        iface_tag,
+        Iface::new(iface_name, iface_tag),
         action_name,
     )
     .await
@@ -467,8 +461,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -489,8 +482,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         node_name,
-        iface_name,
-        iface_tag,
+        Iface::new(iface_name, iface_tag),
         action_name,
         Some(core_node),
         Some(instance_id),

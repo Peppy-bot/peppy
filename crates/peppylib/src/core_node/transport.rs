@@ -17,7 +17,7 @@ use core_node_api::encoding::*;
 use core_node_api::names;
 
 use crate::error::Result;
-use crate::messaging::{ActionGoalHandle, NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
+use crate::messaging::{ActionGoalHandle, Iface};
 use crate::{ActionMessenger, MessengerHandle, ServiceMessenger};
 
 /// Routing parameters for a single service poll. Bundled into a struct so
@@ -57,8 +57,7 @@ async fn poll_core_node_service<Response>(
         route.bound_core_node,
         route.as_instance_id,
         route.service_target_node.unwrap_or(route.target_core_node),
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         route.service_name,
         Some(route.target_core_node),
         None,
@@ -79,8 +78,7 @@ async fn send_core_node_goal(
         route.as_core_node,
         route.as_instance_id,
         route.target_core_node.unwrap_or(route.as_core_node),
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         route.action_name,
         route.target_core_node,
         route.target_instance_id,

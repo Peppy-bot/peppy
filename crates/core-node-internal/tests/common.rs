@@ -14,9 +14,7 @@ use core_node_api::encoding::{
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
-use peppylib::messaging::{
-    MessengerHandle, NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, TopicMessenger,
-};
+use peppylib::messaging::{Iface, MessengerHandle, TopicMessenger};
 use peppylib::runtime::{TaskHandle, spawn};
 use peppylib::{ActionMessenger, PeppyError, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
@@ -71,8 +69,7 @@ pub async fn wait_until_service_reachable(
             bound_core_node,
             "ready_probe",
             target_node_name,
-            peppylib::messaging::NATIVE_IFACE_SEGMENT_NAME,
-            peppylib::messaging::NATIVE_IFACE_SEGMENT_TAG,
+            peppylib::messaging::Iface::native(),
             target_service_name,
             Some(target_core_node),
             Some(target_instance_id),
@@ -107,8 +104,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         &started.core_node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -153,8 +149,7 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         caller_core_node,
         caller_instance_id,
         &started.core_node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -338,8 +333,7 @@ async fn send_node_run_and_wait_internal(
         caller_core_node,
         caller_instance_id,
         core_node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::NODE_RUN_ACTION,
         Some(core_node_name),
         None,
@@ -509,8 +503,7 @@ async fn send_node_add_and_wait_internal<'a>(
         caller_core_node,
         caller_instance_id,
         core_node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::NODE_ADD_ACTION,
         Some(core_node_name),
         None,
@@ -636,8 +629,7 @@ pub async fn send_node_build_and_wait(
         caller_core_node,
         caller_instance_id,
         core_node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::NODE_BUILD_ACTION,
         Some(core_node_name),
         None,

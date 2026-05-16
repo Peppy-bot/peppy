@@ -168,15 +168,13 @@ impl PyServiceMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
+            let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
             let endpoint = ServiceMessenger::listen(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
-                iface_name,
-                iface_tag,
+                iface,
                 &as_service_name,
             )
             .await
@@ -205,15 +203,13 @@ impl PyServiceMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
+            let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
-                iface_name,
-                iface_tag,
+                iface,
                 &target_service_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -246,15 +242,13 @@ impl PyServiceMessenger {
             duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
+            let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
             let response = ServiceMessenger::poll(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
-                iface_name,
-                iface_tag,
+                iface,
                 &target_service_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),

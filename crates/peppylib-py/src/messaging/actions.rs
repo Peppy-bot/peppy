@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle, ActionMessenger,
-    NonEmptyPayload, ServiceEndpoint,
+    Iface, NonEmptyPayload, ServiceEndpoint,
 };
 use peppylib::types::Payload;
 use pyo3::exceptions::PyValueError;
@@ -113,8 +113,7 @@ pub struct PyActionGoalHandle {
     core_node: String,
     instance_id: String,
     node_name: String,
-    iface_name: String,
-    iface_tag: String,
+    iface: Iface,
     action_name: String,
     target_core_node: Option<String>,
     target_instance_id: Option<String>,
@@ -219,15 +218,13 @@ impl PyActionMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
+            let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
             let creation = ActionMessenger::expose(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
-                iface_name,
-                iface_tag,
+                iface,
                 &as_action_name,
             )
             .await
@@ -267,7 +264,7 @@ impl PyActionMessenger {
         goal_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
         let goal_timeout = duration_from_secs_f64("goal_timeout_secs", goal_timeout_secs)?;
-        let (iface_name_str, iface_tag_str) = iface::or_native_owned(iface_name, iface_tag)?;
+        let iface = iface::into_iface_owned(iface_name, iface_tag)?;
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let goal_handle = ActionMessenger::send_goal(
@@ -275,8 +272,7 @@ impl PyActionMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &to_node_name,
-                &iface_name_str,
-                &iface_tag_str,
+                iface.clone(),
                 &to_action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -304,8 +300,7 @@ impl PyActionMessenger {
                 core_node: as_core_node,
                 instance_id: as_instance_id,
                 node_name: to_node_name,
-                iface_name: iface_name_str,
-                iface_tag: iface_tag_str,
+                iface,
                 action_name: to_action_name,
                 target_core_node,
                 target_instance_id,
@@ -330,8 +325,7 @@ impl PyActionMessenger {
         let core_node = goal_handle.core_node.clone();
         let instance_id = goal_handle.instance_id.clone();
         let node_name = goal_handle.node_name.clone();
-        let iface_name = goal_handle.iface_name.clone();
-        let iface_tag = goal_handle.iface_tag.clone();
+        let iface = goal_handle.iface.clone();
         let action_name = goal_handle.action_name.clone();
         let target_core_node = goal_handle.target_core_node.clone();
         let target_instance_id = goal_handle.target_instance_id.clone();
@@ -341,8 +335,7 @@ impl PyActionMessenger {
                 &core_node,
                 &instance_id,
                 &node_name,
-                &iface_name,
-                &iface_tag,
+                iface,
                 &action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -370,8 +363,7 @@ impl PyActionMessenger {
         let core_node = goal_handle.core_node.clone();
         let instance_id = goal_handle.instance_id.clone();
         let node_name = goal_handle.node_name.clone();
-        let iface_name = goal_handle.iface_name.clone();
-        let iface_tag = goal_handle.iface_tag.clone();
+        let iface = goal_handle.iface.clone();
         let action_name = goal_handle.action_name.clone();
         let target_core_node = goal_handle.target_core_node.clone();
         let target_instance_id = goal_handle.target_instance_id.clone();
@@ -381,8 +373,7 @@ impl PyActionMessenger {
                 &core_node,
                 &instance_id,
                 &node_name,
-                &iface_name,
-                &iface_tag,
+                iface,
                 &action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -412,15 +403,13 @@ impl PyActionMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (iface_name, iface_tag) =
-                iface::or_native(iface_name.as_deref(), iface_tag.as_deref())?;
+            let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
-                iface_name,
-                iface_tag,
+                iface,
                 &target_action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),

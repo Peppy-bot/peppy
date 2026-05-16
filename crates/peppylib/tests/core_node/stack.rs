@@ -13,7 +13,7 @@ use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
 use super::common::{CORE_NODE, SERVER_INSTANCE, start_router_and_runner, wait_until_reachable};
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
+use peppylib::messaging::Iface;
 
 /// Spins up a single-shot `STACK_LIST` listener that returns `graph` serialized
 /// as JSON, and `dot_graph` only when the inbound request asked for it.
@@ -24,8 +24,7 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
         CORE_NODE,
         SERVER_INSTANCE,
         CORE_NODE,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::STACK_LIST,
     )
     .await

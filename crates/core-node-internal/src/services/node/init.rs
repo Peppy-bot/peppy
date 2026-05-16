@@ -6,8 +6,8 @@ use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Toolchain;
 use core_node_api::encoding::{NodeInitRequest, NodeInitResponse};
+use peppylib::messaging::Iface;
 use peppylib::messaging::ServiceRequestContext;
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
@@ -25,8 +25,7 @@ pub async fn listen_for_node_init(
         core_node_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::NODE_INIT,
     )
     .await?;
