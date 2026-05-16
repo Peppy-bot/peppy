@@ -261,6 +261,10 @@ impl RustGenerator {
             }
         };
 
+        // Consumer-side discovery of the producer's interface namespace is the
+        // follow-up PR; for now we use native (None).
+        let (iface_name_lit, iface_tag_lit) = topics::iface_segment_literals(None);
+
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
@@ -272,15 +276,13 @@ impl RustGenerator {
             ) -> crate::Result<Self> {
                 #goal_payload_tokens
 
-                // Consumer-side discovery of the producer's interface namespace is the
-                // follow-up PR; for now we assume native (`"_"`/`"_"`).
                 let action_handle = peppylib::ActionMessenger::send_goal(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     TARGET_NODE_NAME,
-                    "_",
-                    "_",
+                    #iface_name_lit,
+                    #iface_tag_lit,
                     TARGET_ACTION_NAME,
                     target_core_node,
                     target_instance_id,
@@ -1297,16 +1299,17 @@ impl LanguageGenerator for RustGenerator {
         };
 
         // Consumer-side discovery of the producer's interface namespace is the
-        // follow-up PR; for now we assume native (`"_"`/`"_"`) since the deployment
+        // follow-up PR; for now we use native (None) since the deployment
         // config doesn't record which interface a consumed service originates from.
+        let (iface_name_lit, iface_tag_lit) = topics::iface_segment_literals(None);
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 NODE_NAME,
-                "_",
-                "_",
+                #iface_name_lit,
+                #iface_tag_lit,
                 SERVICE_NAME,
                 target_core_node,
                 target_instance_id,

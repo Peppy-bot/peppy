@@ -1,8 +1,7 @@
+use super::iface;
 use super::{PyMessengerHandle, to_py_err};
 use crate::config::PyQoSProfile;
-use peppylib::messaging::{
-    NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, Subscription, TopicMessenger,
-};
+use peppylib::messaging::{Subscription, TopicMessenger};
 use peppylib::types::{Message, Payload};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -102,13 +101,15 @@ impl PyTopicMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (iface_name, iface_tag) =
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
             let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 &to_node_name,
-                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
-                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
+                iface_name,
+                iface_tag,
                 &to_topic,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -178,13 +179,15 @@ impl PyTopicMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (iface_name, iface_tag) =
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
             TopicMessenger::emit(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
-                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
-                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
+                iface_name,
+                iface_tag,
                 &as_topic_name,
                 qos.into(),
                 Payload::from(payload),

@@ -2,6 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
+use super::services::iface_segment_python_literals;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
@@ -109,13 +110,7 @@ pub fn build_emitted_topic(
         builder.line("payload = b\"\"");
     }
 
-    let (iface_name_lit, iface_tag_lit) = match origin {
-        Some(o) => (
-            format!("\"{}\"", o.iface_name),
-            format!("\"{}\"", o.iface_tag),
-        ),
-        None => (String::from("\"_\""), String::from("\"_\"")),
-    };
+    let (iface_name_lit, iface_tag_lit) = iface_segment_python_literals(origin);
     builder.line("await peppylib.TopicMessenger.emit(");
     builder.indent();
     builder.line("node_runner.messenger(),");

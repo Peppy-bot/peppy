@@ -1,14 +1,12 @@
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{
-    NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, ServiceEndpoint, ServiceRequestContext,
-    encode_service_handler_error,
-};
+use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, encode_service_handler_error};
 use peppylib::types::Payload;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use super::iface;
 use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 
 /// Python wrapper for a service request received by a listener.
@@ -170,13 +168,15 @@ impl PyServiceMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (iface_name, iface_tag) =
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
             let endpoint = ServiceMessenger::listen(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
-                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
-                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
+                iface_name,
+                iface_tag,
                 &as_service_name,
             )
             .await
@@ -205,13 +205,15 @@ impl PyServiceMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (iface_name, iface_tag) =
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
-                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
-                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
+                iface_name,
+                iface_tag,
                 &target_service_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -244,13 +246,15 @@ impl PyServiceMessenger {
             duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (iface_name, iface_tag) =
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
             let response = ServiceMessenger::poll(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
-                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
-                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
+                iface_name,
+                iface_tag,
                 &target_service_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),

@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle, ActionMessenger,
-    NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, NonEmptyPayload, ServiceEndpoint,
+    NonEmptyPayload, ServiceEndpoint,
 };
 use peppylib::types::Payload;
 use pyo3::exceptions::PyValueError;
@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use super::iface;
 use super::services::PyServiceEndpoint;
 use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 use crate::config::PyQoSProfile;
@@ -218,13 +219,15 @@ impl PyActionMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (iface_name, iface_tag) =
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
             let creation = ActionMessenger::expose(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
-                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
-                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
+                iface_name,
+                iface_tag,
                 &as_action_name,
             )
             .await
@@ -264,8 +267,7 @@ impl PyActionMessenger {
         goal_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
         let goal_timeout = duration_from_secs_f64("goal_timeout_secs", goal_timeout_secs)?;
-        let iface_name_str = iface_name.unwrap_or_else(|| NATIVE_IFACE_SEGMENT_NAME.to_string());
-        let iface_tag_str = iface_tag.unwrap_or_else(|| NATIVE_IFACE_SEGMENT_TAG.to_string());
+        let (iface_name_str, iface_tag_str) = iface::or_native_owned(iface_name, iface_tag);
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let goal_handle = ActionMessenger::send_goal(
@@ -410,13 +412,15 @@ impl PyActionMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (iface_name, iface_tag) =
+                iface::or_native(iface_name.as_deref(), iface_tag.as_deref());
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
-                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
-                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
+                iface_name,
+                iface_tag,
                 &target_action_name,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),

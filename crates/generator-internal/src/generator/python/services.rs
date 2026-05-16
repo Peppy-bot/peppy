@@ -302,21 +302,22 @@ pub fn build_consumed_service(
     }
 
     // Call peppylib.ServiceMessenger.poll. Consumer-side discovery of the
-    // producer's interface namespace is the follow-up PR; for now we assume
-    // native (`"_"`/`"_"`) since the deployment config doesn't record which
+    // producer's interface namespace is the follow-up PR; for now we use
+    // native (None) since the deployment config doesn't record which
     // interface a consumed service originates from.
     if has_response {
         builder.line("response_message = await peppylib.ServiceMessenger.poll(");
     } else {
         builder.line("await peppylib.ServiceMessenger.poll(");
     }
+    let (iface_name_lit, iface_tag_lit) = iface_segment_python_literals(None);
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("NODE_NAME,");
-    builder.line("\"_\",");
-    builder.line("\"_\",");
+    builder.line(&format!("{iface_name_lit},"));
+    builder.line(&format!("{iface_tag_lit},"));
     builder.line("SERVICE_NAME,");
     builder.line("target_core_node,");
     builder.line("target_instance_id,");

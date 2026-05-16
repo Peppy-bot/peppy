@@ -780,15 +780,16 @@ pub fn build_consumed_action(
     }
 
     // Consumer-side discovery of the producer's interface namespace is the
-    // follow-up PR; for now we assume native (`"_"`/`"_"`).
+    // follow-up PR; for now we use native (None).
+    let (send_goal_iface_name_lit, send_goal_iface_tag_lit) = iface_segment_python_literals(None);
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("TARGET_NODE_NAME,");
-    builder.line("\"_\",");
-    builder.line("\"_\",");
+    builder.line(&format!("{send_goal_iface_name_lit},"));
+    builder.line(&format!("{send_goal_iface_tag_lit},"));
     builder.line("TARGET_ACTION_NAME,");
     builder.line("target_core_node,");
     builder.line("target_instance_id,");
