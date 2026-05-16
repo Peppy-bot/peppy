@@ -33,9 +33,11 @@ async def main():
         core_node,
         instance_id,
         node_name,
+        None,  # iface_name (None = native)
+        None,  # iface_tag (None = native)
         topic_name,
-        None,
-        None,
+        None,  # target_core_node (None = any)
+        None,  # target_instance_id (None = any)
         qos,
     )
 

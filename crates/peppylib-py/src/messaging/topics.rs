@@ -1,6 +1,8 @@
 use super::{PyMessengerHandle, to_py_err};
 use crate::config::PyQoSProfile;
-use peppylib::messaging::{Subscription, TopicMessenger};
+use peppylib::messaging::{
+    NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, Subscription, TopicMessenger,
+};
 use peppylib::types::{Message, Payload};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -79,6 +81,9 @@ pub struct PyTopicMessenger;
 #[pymethods]
 impl PyTopicMessenger {
     /// Subscribe to a topic.
+    ///
+    /// Pass `iface_name=None` and `iface_tag=None` for native (non-`conforms_to`)
+    /// topics; the binding fills in the wire-path sentinels internally.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, iface_name, iface_tag, to_topic, target_core_node, target_instance_id, qos))]
     #[allow(clippy::too_many_arguments)]
@@ -88,8 +93,8 @@ impl PyTopicMessenger {
         as_core_node: String,
         as_instance_id: String,
         to_node_name: String,
-        iface_name: String,
-        iface_tag: String,
+        iface_name: Option<String>,
+        iface_tag: Option<String>,
         to_topic: String,
         target_core_node: Option<String>,
         target_instance_id: Option<String>,
@@ -102,8 +107,8 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &to_node_name,
-                &iface_name,
-                &iface_tag,
+                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
+                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
                 &to_topic,
                 target_core_node.as_deref(),
                 target_instance_id.as_deref(),
@@ -153,6 +158,9 @@ impl PyTopicMessenger {
     }
 
     /// Emit (publish) a message to a topic.
+    ///
+    /// Pass `iface_name=None` and `iface_tag=None` for native (non-`conforms_to`)
+    /// topics; the binding fills in the wire-path sentinels internally.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_node_name, iface_name, iface_tag, as_topic_name, qos, payload))]
     #[allow(clippy::too_many_arguments)]
@@ -162,8 +170,8 @@ impl PyTopicMessenger {
         as_core_node: String,
         as_instance_id: String,
         as_node_name: String,
-        iface_name: String,
-        iface_tag: String,
+        iface_name: Option<String>,
+        iface_tag: Option<String>,
         as_topic_name: String,
         qos: PyQoSProfile,
         payload: Vec<u8>,
@@ -175,8 +183,8 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
-                &iface_name,
-                &iface_tag,
+                iface_name.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_NAME),
+                iface_tag.as_deref().unwrap_or(NATIVE_IFACE_SEGMENT_TAG),
                 &as_topic_name,
                 qos.into(),
                 Payload::from(payload),

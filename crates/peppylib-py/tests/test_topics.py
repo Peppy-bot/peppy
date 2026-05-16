@@ -32,8 +32,8 @@ async def test_messenger_communication():
             core_node,
             instance_id,
             node_name,
-            "_",  # iface_name (native)
-            "_",  # iface_tag (native)
+            None,  # iface_name (None = native)
+            None,  # iface_tag (None = native)
             topic_name,
             None,  # Accept messages from any core node
             None,  # Accept messages from any instance
@@ -49,8 +49,8 @@ async def test_messenger_communication():
             core_node,
             instance_id,
             node_name,
-            "_",  # iface_name (native)
-            "_",  # iface_tag (native)
+            None,  # iface_name (None = native)
+            None,  # iface_tag (None = native)
             topic_name,
             qos,
             payload,

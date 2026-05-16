@@ -90,8 +90,8 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
             CORE_NODE,
             SERVER_INSTANCE,
             CORE_NODE,
-            "_",  # iface_name (native)
-            "_",  # iface_tag (native)
+            None,  # iface_name (None = native)
+            None,  # iface_tag (None = native)
             "clock",
             QoSProfile.SensorData,
             canned.encode(),
