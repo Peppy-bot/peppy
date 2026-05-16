@@ -62,6 +62,18 @@ const NODE_CONFIG: &str = r#"{
 }
 "#;
 
+/// Realsense_d435 scenario for the Python generator: one native
+/// `video_stream` emit plus three resolved conformed interfaces
+/// (`depth_camera:v1`, `depth_camera:v2`, `uvc_camera:v1`) each shaped as
+/// `video_stream` with a distinguishing marker field. Verifies that:
+///   1. Conformed artifacts nest under
+///      `emitted_topics/{iface_name}/{iface_tag}/{topic}.py` while the native
+///      artifact stays flat at `emitted_topics/{topic}.py`.
+///   2. The `__init__.py` chain at each level imports its direct children.
+///   3. Each leaf's emit body passes the matching `iface_name`/`iface_tag`
+///      literals to the messenger (and two `"_"` args for the native leaf).
+///   4. The per-interface marker fields land in their own files — proof the
+///      four artifacts weren't cross-wired during generation.
 #[test]
 fn nests_conformed_topics_under_iface_name_and_tag() {
     let temp_dir = TempDir::new().expect("temp dir");
@@ -161,6 +173,11 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
     assert!(uvc_v1_src.contains("uvc_v1_marker"));
 }
 
+/// Exercises hyphen-to-underscore normalization in the `iface_tag` for the
+/// Python generator: a tag `v1-beta` becomes the directory `v1_beta` (Python
+/// identifiers can't carry hyphens) while the literal `"v1-beta"` is still
+/// embedded in the emit body — the messaging layer normalizes hyphens at the
+/// wire boundary, so the generator keeps the raw value.
 #[test]
 fn hyphenated_tag_lands_in_underscore_directory() {
     let temp_dir = TempDir::new().expect("temp dir");

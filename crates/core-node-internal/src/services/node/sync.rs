@@ -1179,6 +1179,10 @@ mod conforms_to_tests {
         assert!(out.is_empty());
     }
 
+    /// Happy path: a `conforms_to` entry whose `(name, tag)` is present in the
+    /// interfaces cache yields the underlying interface's topics, each wrapped
+    /// as `EmittedTopic` and stamped with `origin` pointing back to the source
+    /// interface so downstream codegen can attribute the topic.
     #[test]
     fn resolves_cache_hit_with_origin() {
         let tmp = TempDir::new().unwrap();
