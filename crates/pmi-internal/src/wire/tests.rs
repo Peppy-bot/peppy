@@ -1,5 +1,11 @@
 use super::*;
 
+/// Test-local shorthand: wrap a `&str` in a validated [`Segment`]. Panics on
+/// invalid input — tests use known-good values only.
+fn seg(value: &str) -> Segment {
+    Segment::try_from(value).expect("test segment value should be valid")
+}
+
 // ─── Iface ────────────────────────────────────────────────────────────────
 
 #[test]
@@ -20,7 +26,7 @@ fn iface_wildcard_uses_single_chunk_wildcard_segments() {
 
 #[test]
 fn iface_new_preserves_alphanumeric_tag() {
-    let iface = Iface::new("camera_driver", "v1");
+    let iface = Iface::new("camera_driver", "v1").expect("valid iface");
     assert_eq!(iface.name(), "camera_driver");
     assert_eq!(iface.tag(), "v1");
     assert!(!iface.is_native());
@@ -28,14 +34,26 @@ fn iface_new_preserves_alphanumeric_tag() {
 
 #[test]
 fn iface_new_normalizes_hyphenated_tag() {
-    let iface = Iface::new("camera_driver", "v1-beta-2");
+    let iface = Iface::new("camera_driver", "v1-beta-2").expect("valid iface");
     assert_eq!(iface.tag(), "v1_beta_2");
 }
 
 #[test]
 fn iface_new_does_not_touch_underscored_tag() {
-    let iface = Iface::new("nav", "v2_stable");
+    let iface = Iface::new("nav", "v2_stable").expect("valid iface");
     assert_eq!(iface.tag(), "v2_stable");
+}
+
+#[test]
+fn iface_new_rejects_segment_with_slash() {
+    let err = Iface::new("nav/sub", "v1").unwrap_err();
+    assert!(matches!(err, IfaceError::InvalidSegment(_)));
+}
+
+#[test]
+fn iface_new_rejects_reserved_sentinel() {
+    let err = Iface::new("_", "v1").unwrap_err();
+    assert!(matches!(err, IfaceError::InvalidSegment(_)));
 }
 
 #[test]
@@ -53,8 +71,14 @@ fn iface_from_options_both_some_uses_values() {
 
 #[test]
 fn iface_from_options_one_side_only_is_err() {
-    assert_eq!(Iface::from_options(Some("nav"), None), Err(IfaceError));
-    assert_eq!(Iface::from_options(None, Some("v2")), Err(IfaceError));
+    assert_eq!(
+        Iface::from_options(Some("nav"), None),
+        Err(IfaceError::UnpairedOptions)
+    );
+    assert_eq!(
+        Iface::from_options(None, Some("v2")),
+        Err(IfaceError::UnpairedOptions)
+    );
 }
 
 #[test]
@@ -87,13 +111,13 @@ fn service_kind_action_variants_share_root_with_distinct_suffixes() {
 
 fn sample_action_sender() -> ActionWireSender {
     ActionWireSender {
-        as_core_node: "caller_core".into(),
-        as_instance_id: "caller_inst".into(),
-        to_core_node: Some("target_core".into()),
-        to_instance_id: Some("target_inst".into()),
-        to_node_name: "robot_arm".into(),
+        as_core_node: seg("caller_core"),
+        as_instance_id: seg("caller_inst"),
+        to_core_node: Some(seg("target_core")),
+        to_instance_id: Some(seg("target_inst")),
+        to_node_name: seg("robot_arm"),
         iface: Iface::native(),
-        to_action_name: "pick_place".into(),
+        to_action_name: seg("pick_place"),
     }
 }
 
@@ -129,11 +153,11 @@ fn action_sender_cancel_and_result_only_differ_by_kind() {
 
 fn sample_action_receiver() -> ActionWireReceiver {
     ActionWireReceiver {
-        bound_core_node: "server_core".into(),
-        as_instance_id: "server_inst".into(),
-        as_node_name: "robot_arm".into(),
-        iface: Iface::new("manipulator", "v1"),
-        as_action_name: "pick_place".into(),
+        bound_core_node: seg("server_core"),
+        as_instance_id: seg("server_inst"),
+        as_node_name: seg("robot_arm"),
+        iface: Iface::new("manipulator", "v1").expect("valid iface"),
+        as_action_name: seg("pick_place"),
     }
 }
 

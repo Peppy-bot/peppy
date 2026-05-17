@@ -13,18 +13,22 @@ pub use actions::{
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
-// Re-export wire-addressing types so peppylib consumers don't reach into pmi.
-pub use pmi::{
-    ActionWireReceiver, ActionWireSender, Iface, IfaceError, ServiceKind, ServiceWireReceiver,
-    ServiceWireSender, TopicWireReceiver, TopicWireSender,
-};
+// Public re-exports. `Iface` / `IfaceError` / `ServiceKind` describe the
+// shape of messaging calls and surface in user-facing peppylib APIs.
+// `ActionWireSender` is exposed because peppylib-py caches one to drive
+// subsequent cancel / result calls without locking. The other wire structs
+// (TopicWire*, ServiceWire*, ActionWireReceiver) are internal to peppylib's
+// own messaging implementation — each submodule imports them directly from
+// `pmi::`.
+pub use pmi::{ActionWireSender, Iface, IfaceError, ServiceKind};
 
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{
-    Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    PeppyMessagingInterfaceError, PublisherQoS, Subscription as PmiSubscription, ZenohAdapter,
+    ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
+    PeppyMessagingInterfaceError, PublisherQoS, ServiceWireReceiver, ServiceWireSender,
+    Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender, ZenohAdapter,
     ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
@@ -271,8 +275,8 @@ impl MessengerHandle {
                 "service response channel closed".to_string(),
             ))
         };
-        let target_service_name = sender.to_service_name.clone();
-        let target_instance_id = sender.to_instance_id.clone();
+        let target_service_name = sender.to_service_name().to_string();
+        let target_instance_id = sender.to_instance_id().map(str::to_string);
 
         let response = match response_timeout {
             Some(response_timeout) => {

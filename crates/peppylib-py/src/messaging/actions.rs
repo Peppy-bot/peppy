@@ -281,7 +281,6 @@ impl PyActionMessenger {
             // request_result never need to lock the mutex behind ActionGoalHandle.
             let resp = goal_handle.goal_response();
             let goal_response_cache = PyTopicMessage {
-                key_expr: resp.key_expr().to_string(),
                 payload: resp.payload().to_vec(),
                 instance_id: resp.instance_id().to_string(),
                 core_node: resp.core_node().to_string(),

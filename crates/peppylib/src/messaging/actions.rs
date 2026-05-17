@@ -1,14 +1,13 @@
 use super::generate_short_id;
 use super::topics::Subscription;
 use super::{
-    ActionWireReceiver, ActionWireSender, MessengerHandle, PROBE_TIMEOUT, SERVICE_PROBE_PAYLOAD,
-    ServiceEndpoint, TopicPublisher,
+    MessengerHandle, PROBE_TIMEOUT, SERVICE_PROBE_PAYLOAD, ServiceEndpoint, TopicPublisher,
 };
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
-use pmi::{Iface, MessengerBackend, PublisherQoS};
+use pmi::{ActionWireReceiver, ActionWireSender, Iface, MessengerBackend, PublisherQoS};
 use std::sync::Arc;
 use tokio::time::Duration;
 
@@ -289,7 +288,7 @@ impl ActionMessenger {
             as_node_name,
             iface,
             as_action_name,
-        );
+        )?;
         messenger.expose_action(&recv).await
     }
 
@@ -313,7 +312,7 @@ impl ActionMessenger {
             target_node_name,
             iface,
             target_action_name,
-        );
+        )?;
         match messenger
             .poll_service(
                 &sender.goal_service(),
@@ -359,7 +358,7 @@ impl ActionMessenger {
             to_node_name,
             iface,
             to_action_name,
-        );
+        )?;
 
         let feedback_subscription = {
             let messenger_guard = messenger.messenger.lock().await;
@@ -419,7 +418,7 @@ impl ActionMessenger {
         sender: &ActionWireSender,
         result_timeout: Duration,
     ) -> Result<Message> {
-        let action_name = sender.to_action_name.clone();
+        let action_name = sender.to_action_name().to_string();
         messenger_handle
             .poll_service(&sender.result_service(), Payload::new(), result_timeout)
             .await

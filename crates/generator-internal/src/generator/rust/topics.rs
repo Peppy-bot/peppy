@@ -149,14 +149,15 @@ pub fn build_topic_emit(
 
 /// Returns the `Iface` constructor expression to splice into a generated
 /// `emit`/`subscribe` call: `peppylib::messaging::Iface::native()` for native
-/// artifacts, or `Iface::new(name, tag)` for those pulled in via
-/// `interfaces.conforms_to`.
+/// artifacts, or `Iface::new(name, tag)?` for those pulled in via
+/// `interfaces.conforms_to`. The `?` is required because `Iface::new` is
+/// fallible — it validates segments at construction.
 pub fn iface_expression(origin: Option<&crate::generator::types::InterfaceOrigin>) -> TokenStream {
     match origin {
         Some(o) => {
             let name = Literal::string(&o.iface_name);
             let tag = Literal::string(&o.iface_tag);
-            quote!(peppylib::messaging::Iface::new(#name, #tag))
+            quote!(peppylib::messaging::Iface::new(#name, #tag)?)
         }
         None => quote!(peppylib::messaging::Iface::native()),
     }

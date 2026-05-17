@@ -3,11 +3,11 @@ use super::super::types::{
     Message, Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS, SubscriberQoS,
     Subscription, TopicMessage,
 };
+use super::super::wire::format::WireFormat;
 use super::super::wire::{
     ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
     TopicWireReceiver, TopicWireSender,
 };
-use super::zenoh_wire::ZenohWire;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -100,7 +100,7 @@ impl MessengerBackend for MockAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        self.subscribe_keyexpr(&ZenohWire::topic_subscribe(recv), qos)
+        self.subscribe_keyexpr(&WireFormat::topic_subscribe(recv), qos)
             .await
     }
 
@@ -110,12 +110,12 @@ impl MessengerBackend for MockAdapter {
         payload: Payload,
         _qos: PublisherQoS,
     ) -> Result<()> {
-        self.publish_keyexpr(ZenohWire::topic_publish(sender), payload)
+        self.publish_keyexpr(WireFormat::topic_publish(sender), payload)
             .await
     }
 
     async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<[Subscription; 4]> {
-        let [p0, p1, p2, p3] = ZenohWire::service_listen_patterns(recv);
+        let [p0, p1, p2, p3] = WireFormat::service_listen_patterns(recv);
         let s0 = self.subscribe_keyexpr(&p0, SubscriberQoS::Standard).await?;
         let s1 = self.subscribe_keyexpr(&p1, SubscriberQoS::Standard).await?;
         let s2 = self.subscribe_keyexpr(&p2, SubscriberQoS::Standard).await?;
@@ -129,11 +129,11 @@ impl MessengerBackend for MockAdapter {
         request_id: &str,
         payload: Payload,
     ) -> Result<Subscription> {
-        let response_keyexpr = ZenohWire::service_response_subscribe(sender, request_id);
+        let response_keyexpr = WireFormat::service_response_subscribe(sender, request_id);
         let response_sub = self
             .subscribe_keyexpr(&response_keyexpr, SubscriberQoS::Standard)
             .await?;
-        let request_keyexpr = ZenohWire::service_request_publish(sender, request_id);
+        let request_keyexpr = WireFormat::service_request_publish(sender, request_id);
         self.publish_keyexpr(request_keyexpr, payload).await?;
         Ok(response_sub)
     }
@@ -144,7 +144,7 @@ impl MessengerBackend for MockAdapter {
         received_request: &str,
         payload: Payload,
     ) -> Result<()> {
-        let parsed = ZenohWire::parse_received_request(recv, received_request)?;
+        let parsed = WireFormat::parse_received_request(recv, received_request)?;
         self.publish_keyexpr(parsed.response_keyexpr, payload).await
     }
 
@@ -153,7 +153,7 @@ impl MessengerBackend for MockAdapter {
         recv: &ServiceWireReceiver,
         received_request: &str,
     ) -> Result<String> {
-        let parsed = ZenohWire::parse_received_request(recv, received_request)?;
+        let parsed = WireFormat::parse_received_request(recv, received_request)?;
         Ok(parsed.request_id)
     }
 
@@ -163,7 +163,7 @@ impl MessengerBackend for MockAdapter {
         goal_id: &str,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        self.subscribe_keyexpr(&ZenohWire::action_feedback_subscribe(sender, goal_id), qos)
+        self.subscribe_keyexpr(&WireFormat::action_feedback_subscribe(sender, goal_id), qos)
             .await
     }
 
@@ -253,7 +253,7 @@ impl MockAdapter {
         sender: &TopicWireSender,
         _qos: PublisherQoS,
     ) -> MockPublisher {
-        self.declare_publisher_keyexpr(ZenohWire::topic_publish(sender))
+        self.declare_publisher_keyexpr(WireFormat::topic_publish(sender))
     }
 
     /// Pre-bind a per-goal action-feedback publisher.
@@ -263,7 +263,7 @@ impl MockAdapter {
         goal_id: &str,
         _qos: PublisherQoS,
     ) -> MockPublisher {
-        self.declare_publisher_keyexpr(ZenohWire::action_feedback_publish(recv, goal_id))
+        self.declare_publisher_keyexpr(WireFormat::action_feedback_publish(recv, goal_id))
     }
 
     fn declare_publisher_keyexpr(&self, topic: String) -> MockPublisher {

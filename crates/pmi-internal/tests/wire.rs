@@ -44,22 +44,24 @@ async fn topic_native_roundtrip() {
         .expect("Failed to start zenohd process");
     instance.messenger().start_session().await.unwrap();
 
-    let sender = TopicWireSender {
-        as_core_node: "core_pub".into(),
-        as_instance_id: "publisher_inst".into(),
-        as_node_name: "uvc_camera".into(),
-        iface: Iface::native(),
-        as_topic_name: "video_stream".into(),
-    };
-    let receiver = TopicWireReceiver {
-        as_core_node: "core_sub".into(),
-        as_instance_id: "subscriber_inst".into(),
-        to_core_node: Some("core_pub".into()),
-        to_instance_id: Some("publisher_inst".into()),
-        to_node_name: Some("uvc_camera".into()),
-        iface: Iface::native(),
-        to_topic: "video_stream".into(),
-    };
+    let sender = TopicWireSender::new(
+        "core_pub",
+        "publisher_inst",
+        "uvc_camera",
+        Iface::native(),
+        "video_stream",
+    )
+    .expect("valid wire fields");
+    let receiver = TopicWireReceiver::new(
+        "core_sub",
+        "subscriber_inst",
+        Some("core_pub"),
+        Some("publisher_inst"),
+        Some("uvc_camera"),
+        Iface::native(),
+        "video_stream",
+    )
+    .expect("valid wire fields");
 
     let mut sub = instance
         .messenger()
@@ -93,23 +95,25 @@ async fn topic_iface_roundtrip() {
         .unwrap();
     instance.messenger().start_session().await.unwrap();
 
-    let iface = Iface::new("manipulator", "v1-rc2");
-    let sender = TopicWireSender {
-        as_core_node: "core_pub".into(),
-        as_instance_id: "pub_inst".into(),
-        as_node_name: "robot_arm".into(),
-        iface: iface.clone(),
-        as_topic_name: "joint_states".into(),
-    };
-    let receiver = TopicWireReceiver {
-        as_core_node: "core_sub".into(),
-        as_instance_id: "sub_inst".into(),
-        to_core_node: Some("core_pub".into()),
-        to_instance_id: Some("pub_inst".into()),
-        to_node_name: Some("robot_arm".into()),
+    let iface = Iface::new("manipulator", "v1-rc2").expect("valid iface");
+    let sender = TopicWireSender::new(
+        "core_pub",
+        "pub_inst",
+        "robot_arm",
+        iface.clone(),
+        "joint_states",
+    )
+    .expect("valid wire fields");
+    let receiver = TopicWireReceiver::new(
+        "core_sub",
+        "sub_inst",
+        Some("core_pub"),
+        Some("pub_inst"),
+        Some("robot_arm"),
         iface,
-        to_topic: "joint_states".into(),
-    };
+        "joint_states",
+    )
+    .expect("valid wire fields");
 
     let mut sub = instance
         .messenger()
@@ -141,23 +145,25 @@ async fn topic_wildcard_subscriber() {
         .unwrap();
     instance.messenger().start_session().await.unwrap();
 
-    let sender = TopicWireSender {
-        as_core_node: "any_publisher_core".into(),
-        as_instance_id: "any_publisher_inst".into(),
-        as_node_name: "uvc_camera".into(),
-        iface: Iface::native(),
-        as_topic_name: "frames".into(),
-    };
+    let sender = TopicWireSender::new(
+        "any_publisher_core",
+        "any_publisher_inst",
+        "uvc_camera",
+        Iface::native(),
+        "frames",
+    )
+    .expect("valid wire fields");
     // Receiver is fully untargeted — both `to_core_node` and `to_instance_id` None.
-    let receiver = TopicWireReceiver {
-        as_core_node: "subscriber_core".into(),
-        as_instance_id: "subscriber_inst".into(),
-        to_core_node: None,
-        to_instance_id: None,
-        to_node_name: Some("uvc_camera".into()),
-        iface: Iface::native(),
-        to_topic: "frames".into(),
-    };
+    let receiver = TopicWireReceiver::new(
+        "subscriber_core",
+        "subscriber_inst",
+        None,
+        None,
+        Some("uvc_camera"),
+        Iface::native(),
+        "frames",
+    )
+    .expect("valid wire fields");
 
     let mut sub = instance
         .messenger()
@@ -184,27 +190,29 @@ async fn topic_wildcard_subscriber() {
 // ─── Services ─────────────────────────────────────────────────────────────
 
 fn service_receiver() -> ServiceWireReceiver {
-    ServiceWireReceiver {
-        bound_core_node: "server_core".into(),
-        as_instance_id: "server_inst".into(),
-        as_node_name: "robot_arm".into(),
-        iface: Iface::native(),
-        as_service_name: "ping".into(),
-        kind: ServiceKind::Service,
-    }
+    ServiceWireReceiver::new(
+        "server_core",
+        "server_inst",
+        "robot_arm",
+        Iface::native(),
+        "ping",
+        ServiceKind::Service,
+    )
+    .expect("valid wire fields")
 }
 
 fn service_sender(to_core_node: Option<&str>, to_instance_id: Option<&str>) -> ServiceWireSender {
-    ServiceWireSender {
-        bound_core_node: "client_core".into(),
-        as_instance_id: "client_inst".into(),
-        to_core_node: to_core_node.map(str::to_string),
-        to_instance_id: to_instance_id.map(str::to_string),
-        to_node_name: "robot_arm".into(),
-        iface: Iface::native(),
-        to_service_name: "ping".into(),
-        kind: ServiceKind::Service,
-    }
+    ServiceWireSender::new(
+        "client_core",
+        "client_inst",
+        to_core_node,
+        to_instance_id,
+        "robot_arm",
+        Iface::native(),
+        "ping",
+        ServiceKind::Service,
+    )
+    .expect("valid wire fields")
 }
 
 async fn run_service_roundtrip(sender: ServiceWireSender) {
@@ -281,25 +289,27 @@ async fn service_full_broadcast() {
 // ─── Actions ──────────────────────────────────────────────────────────────
 
 fn action_receiver() -> ActionWireReceiver {
-    ActionWireReceiver {
-        bound_core_node: "server_core".into(),
-        as_instance_id: "server_inst".into(),
-        as_node_name: "robot_arm".into(),
-        iface: Iface::native(),
-        as_action_name: "pick_place".into(),
-    }
+    ActionWireReceiver::new(
+        "server_core",
+        "server_inst",
+        "robot_arm",
+        Iface::native(),
+        "pick_place",
+    )
+    .expect("valid wire fields")
 }
 
 fn action_sender() -> ActionWireSender {
-    ActionWireSender {
-        as_core_node: "client_core".into(),
-        as_instance_id: "client_inst".into(),
-        to_core_node: Some("server_core".into()),
-        to_instance_id: Some("server_inst".into()),
-        to_node_name: "robot_arm".into(),
-        iface: Iface::native(),
-        to_action_name: "pick_place".into(),
-    }
+    ActionWireSender::new(
+        "client_core",
+        "client_inst",
+        Some("server_core"),
+        Some("server_inst"),
+        "robot_arm",
+        Iface::native(),
+        "pick_place",
+    )
+    .expect("valid wire fields")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

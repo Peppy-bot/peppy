@@ -19,25 +19,27 @@ mod zenoh_tests {
     }
 
     fn sender(as_topic_name: &str) -> TopicWireSender {
-        TopicWireSender {
-            as_core_node: "test_core_node".into(),
-            as_instance_id: "test_instance".into(),
-            as_node_name: "test_node".into(),
-            iface: Iface::native(),
-            as_topic_name: as_topic_name.into(),
-        }
+        TopicWireSender::new(
+            "test_core_node",
+            "test_instance",
+            "test_node",
+            Iface::native(),
+            as_topic_name,
+        )
+        .expect("valid wire fields")
     }
 
     fn receiver(to_topic: &str) -> TopicWireReceiver {
-        TopicWireReceiver {
-            as_core_node: "test_core_node".into(),
-            as_instance_id: "test_instance".into(),
-            to_core_node: None,
-            to_instance_id: None,
-            to_node_name: Some("test_node".into()),
-            iface: Iface::native(),
-            to_topic: to_topic.into(),
-        }
+        TopicWireReceiver::new(
+            "test_core_node",
+            "test_instance",
+            None,
+            None,
+            Some("test_node"),
+            Iface::native(),
+            to_topic,
+        )
+        .expect("valid wire fields")
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

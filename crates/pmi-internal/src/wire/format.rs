@@ -1,12 +1,11 @@
-//! Zenoh-specific wire-format functions. Every raw zenoh keyexpr string that
-//! enters or leaves the bus is built here — no other module in the crate is
-//! allowed to format zenoh keyexprs. This keeps the protocol in exactly one
-//! place per transport.
+//! Shared wire-format functions. Every raw keyexpr string that enters or
+//! leaves the bus is built here — no other module in the crate is allowed to
+//! format keyexprs. This keeps the protocol in exactly one place.
 //!
-//! Not feature-gated on `zenoh` because the mock adapter currently mirrors
-//! zenoh's wire shape and reuses these formatters for in-process matching.
-//! If a transport later needs a different wire form, add a sibling
-//! `*_wire.rs` module rather than diverging this one.
+//! Both the zenoh adapter and the in-process mock adapter use this format:
+//! the mock mirrors zenoh's wire shape so its matching logic can reuse the
+//! same encoder/parser. If a future transport needs a different wire form,
+//! introduce a sibling module rather than diverging this one.
 
 use crate::wire::{
     ActionWireReceiver, ActionWireSender, BROADCAST_MARKER, Iface, ServiceKind,
@@ -14,15 +13,41 @@ use crate::wire::{
 };
 use std::fmt;
 
-/// Zenoh's single-chunk wildcard. Matches exactly one path segment.
+/// Single-chunk wildcard. Matches exactly one path segment.
 const SINGLE_CHUNK_WILDCARD: &str = "*";
 
-/// Namespace for zenoh-specific wire format functions. Calls look like
-/// `ZenohWire::topic_publish(&sender)`.
-pub(crate) struct ZenohWire;
+/// Namespace for the shared wire format functions. Calls look like
+/// `WireFormat::topic_publish(&sender)`.
+pub(crate) struct WireFormat;
 
-impl ZenohWire {
+impl WireFormat {
     // ─── Topics ───────────────────────────────────────────────────────────
+
+    /// Parses the publisher half of a topic keyexpr into the caller's
+    /// addressing. Inverse of [`Self::topic_publish`].
+    ///
+    /// The publish shape is
+    /// `*/{caller_core}/*/{caller_inst}/topic/{caller_node}/{iface_name}/{iface_tag}/{topic}`
+    /// — caller_core is segment index 1, caller_inst is segment index 3.
+    pub(crate) fn parse_topic_keyexpr(keyexpr: &str) -> Result<ParsedTopicKey, WireParseError> {
+        let mut segments = keyexpr.splitn(5, '/');
+        let _target_core = segments.next();
+        let core_node = segments
+            .next()
+            .filter(|s| !s.is_empty())
+            .ok_or(WireParseError::MissingSegment("caller_core_node"))?
+            .to_string();
+        let _target_instance = segments.next();
+        let instance_id = segments
+            .next()
+            .filter(|s| !s.is_empty())
+            .ok_or(WireParseError::MissingSegment("caller_instance_id"))?
+            .to_string();
+        Ok(ParsedTopicKey {
+            core_node,
+            instance_id,
+        })
+    }
 
     /// `*/{as_core}/*/{as_inst}/topic/{as_node}/{iface_name}/{iface_tag}/{as_topic}`
     pub(crate) fn topic_publish(s: &TopicWireSender) -> String {
@@ -220,11 +245,20 @@ fn action_root(node: &str, iface: &Iface, action: &str) -> String {
     format!("action/{node}/{}/{}/{action}", iface.name(), iface.tag())
 }
 
-// ─── Parsed request returned to the adapter ──────────────────────────────
+// ─── Parsed envelopes returned to the adapter ────────────────────────────
+
+/// Result of parsing the publisher half of a topic keyexpr — extracts the
+/// caller's `core_node` and `instance_id` so the adapter can build a
+/// [`crate::types::TopicMessage`] without re-parsing the wire string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedTopicKey {
+    pub(crate) core_node: String,
+    pub(crate) instance_id: String,
+}
 
 /// Result of parsing a received service request keyexpr. Fields are
 /// `pub(crate)` so the adapter can use the response keyexpr without exposing
-/// raw zenoh strings to peppylib.
+/// raw wire strings to peppylib.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedRequest {
     pub(crate) request_id: String,

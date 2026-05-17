@@ -1,5 +1,6 @@
 use super::adapters::mock::{MockAdapter, MockPublisher};
-use super::error::{Error, Result};
+use super::error::Result;
+use super::wire::format::WireFormat;
 use super::wire::{
     ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
     TopicWireReceiver, TopicWireSender,
@@ -368,48 +369,18 @@ pub struct TopicMessage {
 
 impl TopicMessage {
     pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
-        let (core_node, instance_id) = Self::parse_key_expr(key_expr)?;
+        let parsed = WireFormat::parse_topic_keyexpr(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
-            instance_id,
-            core_node,
+            instance_id: parsed.instance_id,
+            core_node: parsed.core_node,
             payload: payload.into(),
         })
     }
 
     #[cfg(feature = "zenoh")]
     pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
-        let (core_node, instance_id) = Self::parse_key_expr(key_expr)?;
-        Ok(Self {
-            key_expr: key_expr.to_string(),
-            instance_id,
-            core_node,
-            payload: Payload::from_zbytes(zbytes),
-        })
-    }
-
-    /// Parses a key expression into its (core_node, instance_id) components.
-    ///
-    /// Key expression format: `target_core_node/caller_core_node/target_instance/caller_instance/...`
-    /// - core_node is at segment index 1 (caller_core_node)
-    /// - instance_id is at segment index 3 (caller_instance)
-    fn parse_key_expr(key_expr: &str) -> Result<(String, String)> {
-        let mut segments = key_expr.splitn(5, '/');
-        let _target_core = segments.next();
-        let core_node = segments
-            .next()
-            .ok_or_else(|| Error::CoreNodeNotFound(key_expr.to_string()))?;
-        if core_node.is_empty() {
-            return Err(Error::CoreNodeNotFound(key_expr.to_string()));
-        }
-        let _target_instance = segments.next();
-        let instance_id = segments
-            .next()
-            .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))?;
-        if instance_id.is_empty() {
-            return Err(Error::InstanceIdNotFound(key_expr.to_string()));
-        }
-        Ok((core_node.to_string(), instance_id.to_string()))
+        Self::new(key_expr, Payload::from_zbytes(zbytes))
     }
 
     pub fn instance_id(&self) -> &str {
@@ -428,6 +399,12 @@ impl TopicMessage {
         self.payload
     }
 
+    /// Raw incoming keyexpr. Wire-format-aware code (peppylib's service flow,
+    /// adapters) uses this to address responses back to the request; no other
+    /// consumer should touch this — the wire format is owned by
+    /// `wire::format::WireFormat`. This getter exists for service-flow
+    /// plumbing only and may be removed when that flow stops threading raw
+    /// keyexprs.
     pub fn key_expr(&self) -> &str {
         &self.key_expr
     }

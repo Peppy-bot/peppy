@@ -147,12 +147,6 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
 
-    let expected_key_expr = format!(
-        "*/{}/*/{}/topic/{}/_/_/{}",
-        emitter_core_node, emitter_instance_id, node_name, topic
-    );
-
-    assert_eq!(received.key_expr(), expected_key_expr);
     assert_eq!(received.instance_id(), emitter_instance_id);
     assert_eq!(received.core_node(), emitter_core_node);
     assert_eq!(received.payload(), &payload);
@@ -394,19 +388,22 @@ async fn topic_publish_reliable_5000hz_messages() {
         .expect("Should send the payload");
     }
 
-    let expected_key_expr = format!(
-        "*/{}/*/{}/topic/{}/_/_/{}",
-        emitter_core_node, emitter_instance_id, node_name, topic
-    );
-
+    // Identity check runs once on the first received message — the wire-format
+    // contract is pinned in `pmi::wire::format::tests`, so this loop only needs
+    // to verify peppylib-level addressing and ordering.
     let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
+    let mut identity_checked = false;
     for _ in 0..message_count {
         let message = tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
             .await
             .expect("Timed out waiting for a message")
             .expect("Subscription closed before receiving all messages");
 
-        assert_eq!(message.key_expr(), expected_key_expr);
+        if !identity_checked {
+            assert_eq!(message.core_node(), emitter_core_node);
+            assert_eq!(message.instance_id(), emitter_instance_id);
+            identity_checked = true;
+        }
 
         let payload = message.payload();
         let payload_bytes = payload.as_ref();

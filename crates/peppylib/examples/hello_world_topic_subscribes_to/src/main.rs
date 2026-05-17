@@ -54,10 +54,9 @@ async fn main() {
                         let payload = String::from_utf8_lossy(payload_bytes.as_ref());
                         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
                         println!(
-                            "[{timestamp}] Received `{payload}` from instance_id `{}` and core_node `{}` with key_expr `{}`",
+                            "[{timestamp}] Received `{payload}` from instance_id `{}` and core_node `{}`",
                             received.instance_id(),
                             received.core_node(),
-                            received.key_expr()
                         );
                     }
                     None => {

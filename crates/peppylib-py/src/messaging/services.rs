@@ -13,7 +13,6 @@ use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err
 #[pyclass(name = "ServiceRequestContext")]
 pub struct PyServiceRequestContext {
     request_id: String,
-    key_expr: String,
     payload: Vec<u8>,
     instance_id: String,
     core_node: String,
@@ -45,7 +44,6 @@ impl PyServiceRequestContext {
     #[getter]
     fn message(&self) -> PyTopicMessage {
         PyTopicMessage {
-            key_expr: self.key_expr.clone(),
             payload: self.payload.clone(),
             instance_id: self.instance_id.clone(),
             core_node: self.core_node.clone(),
@@ -59,7 +57,6 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
         let message = ctx.message();
         Self {
             request_id,
-            key_expr: message.key_expr().to_string(),
             payload: message.payload().to_vec(),
             instance_id: message.instance_id().to_string(),
             core_node: message.core_node().to_string(),

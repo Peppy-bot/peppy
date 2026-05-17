@@ -12,7 +12,6 @@ use tokio::sync::Mutex;
 #[pyclass(name = "TopicMessage", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyTopicMessage {
-    pub(crate) key_expr: String,
     pub(crate) payload: Vec<u8>,
     pub(crate) instance_id: String,
     pub(crate) core_node: String,
@@ -20,11 +19,6 @@ pub struct PyTopicMessage {
 
 #[pymethods]
 impl PyTopicMessage {
-    #[getter]
-    fn key_expr(&self) -> &str {
-        &self.key_expr
-    }
-
     #[getter]
     fn payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.payload)
@@ -44,7 +38,6 @@ impl PyTopicMessage {
 impl From<Message> for PyTopicMessage {
     fn from(msg: Message) -> Self {
         Self {
-            key_expr: msg.key_expr().to_string(),
             payload: msg.payload().to_vec(),
             instance_id: msg.instance_id().to_string(),
             core_node: msg.core_node().to_string(),

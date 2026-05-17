@@ -89,6 +89,10 @@ pub enum Error {
     #[error(transparent)]
     PeppyMessagingInterface(#[from] pmi::PeppyMessagingInterfaceError),
 
+    // -- wire-format input validation (Iface::new in generated code)
+    #[error(transparent)]
+    InvalidIface(#[from] pmi::IfaceError),
+
     // -- core-node-api
     #[error(transparent)]
     CoreNodeApi(#[from] core_node_api::Error),

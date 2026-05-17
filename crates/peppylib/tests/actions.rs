@@ -409,7 +409,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         node_name,
-        Iface::new(iface_name, iface_tag),
+        Iface::new(iface_name, iface_tag).expect("valid iface"),
         action_name,
     )
     .await
@@ -482,7 +482,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         node_name,
-        Iface::new(iface_name, iface_tag),
+        Iface::new(iface_name, iface_tag).expect("valid iface"),
         action_name,
         Some(core_node),
         Some(instance_id),

@@ -1,11 +1,14 @@
 use super::{
-    MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD, ServiceKind,
-    ServiceWireReceiver, ServiceWireSender, encode_service_handler_error, is_service_probe_payload,
+    MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD,
+    encode_service_handler_error, is_service_probe_payload,
 };
 use crate::error::{Error, Result};
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
-use pmi::{Iface, Messenger, MessengerBackend, Subscription, TopicMessage};
+use pmi::{
+    Iface, Messenger, MessengerBackend, ServiceKind, ServiceWireReceiver, ServiceWireSender,
+    Subscription, TopicMessage,
+};
 use std::{fmt, sync::Arc};
 use tokio::{sync::Mutex, time::Duration};
 use tracing::error;
@@ -258,7 +261,7 @@ impl ServiceRequestContext {
 impl fmt::Debug for ServiceRequestContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ServiceRequestContext")
-            .field("message_key", &self.message.key_expr())
+            .field("core_node", &self.message.core_node())
             .field("instance_id", &self.message.instance_id())
             .field("request_id", &self.request_id)
             .finish()
@@ -286,7 +289,7 @@ impl ServiceMessenger {
             iface,
             as_service_name,
             ServiceKind::Service,
-        );
+        )?;
         messenger.expose_service(&recv).await
     }
 
@@ -316,7 +319,7 @@ impl ServiceMessenger {
             iface,
             target_service_name,
             ServiceKind::Service,
-        );
+        )?;
         messenger
             .poll_service(&sender, request_payload, response_timeout)
             .await

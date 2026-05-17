@@ -1,8 +1,8 @@
-use super::{MessengerHandle, TopicWireReceiver, TopicWireSender};
+use super::MessengerHandle;
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
-use pmi::{Iface, MessengerPublisher};
+use pmi::{Iface, MessengerPublisher, TopicWireReceiver, TopicWireSender};
 use std::sync::Arc;
 
 pub struct Subscription {
@@ -54,7 +54,7 @@ impl TopicMessenger {
             Some(to_node_name),
             iface,
             to_topic,
-        );
+        )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription))
     }
@@ -81,7 +81,7 @@ impl TopicMessenger {
             None,
             Iface::wildcard(),
             to_topic,
-        );
+        )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription))
     }
@@ -104,7 +104,7 @@ impl TopicMessenger {
             as_node_name,
             iface,
             as_topic_name,
-        );
+        )?;
         messenger.emit_topic_message(&sender, qos, payload).await
     }
 
@@ -126,7 +126,7 @@ impl TopicMessenger {
             as_node_name,
             iface,
             as_topic_name,
-        );
+        )?;
         let inner = messenger
             .declare_topic_publisher(&sender, qos.into())
             .await?;
