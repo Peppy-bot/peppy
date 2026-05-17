@@ -2467,9 +2467,3 @@ async fn single_action_communication_multiple_polls() {
 
     router.shutdown().await;
 }
-
-// The legacy `INSTANCE_ID_WILDCARD = "**"` magic for callers was removed in
-// the wire refactor; callers now signal "broadcast" via `Option<String>::None`
-// on the wire structs' target fields, so the `*/**` fallback path no longer
-// exists. The broadcast variants of `service_communication_poll_*` cover the
-// equivalent semantics for the new API.
