@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use peppylib::messaging::Iface;
-use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::messaging::{MessengerHandle, ServiceWireSender};
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use pmi::{ZenohAdapter, ZenohdInstance};
 use tempfile::TempDir;
@@ -38,18 +38,21 @@ pub(crate) fn write_standalone_peppy_config(dir: &TempDir) -> PathBuf {
 pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if ServiceMessenger::is_reachable(
-            client,
-            CORE_NODE,
-            CLIENT_INSTANCE,
-            CORE_NODE,
-            Iface::native(),
-            service_name,
-            Some(CORE_NODE),
-            None,
-        )
-        .await
-        .expect("reachability check should succeed")
+        if client
+            .is_service_reachable(
+                &ServiceWireSender::new(
+                    CORE_NODE,
+                    CLIENT_INSTANCE,
+                    Some(CORE_NODE),
+                    None,
+                    CORE_NODE,
+                    Iface::native(),
+                    service_name,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("reachability check should succeed")
         {
             return;
         }

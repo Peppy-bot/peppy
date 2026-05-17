@@ -10,7 +10,7 @@ use core_node_api::encoding::{
 use peppylib::messaging::Iface;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceWireReceiver};
 use serde_json::Value;
 use std::collections::HashSet;
 use tokio::task::JoinHandle;
@@ -23,15 +23,15 @@ pub async fn listen_for_repo_list(
     node_name: &str,
     peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
-        messenger,
-        core_node_name,
-        instance_id,
-        node_name,
-        Iface::native(),
-        names::REPO_LIST,
-    )
-    .await?;
+    let mut endpoint = messenger
+        .expose_service(&ServiceWireReceiver::new(
+            core_node_name,
+            instance_id,
+            node_name,
+            Iface::native(),
+            names::REPO_LIST,
+        )?)
+        .await?;
 
     let handle = tokio::spawn(async move {
         endpoint

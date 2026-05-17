@@ -1,5 +1,5 @@
 use peppylib::messaging::Iface;
-use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::messaging::{MessengerHandle, ServiceWireReceiver, ServiceWireSender};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::time::Duration;
@@ -27,16 +27,19 @@ async fn service_messenger_communication() {
         .expect("failed to create client handle");
 
     // Start the service listener
-    let mut service = ServiceMessenger::listen(
-        &server_handle,
-        core_node,
-        instance_id,
-        node_name,
-        Iface::native(),
-        service_name,
-    )
-    .await
-    .expect("listen should succeed");
+    let mut service = server_handle
+        .expose_service(
+            &ServiceWireReceiver::new(
+                core_node,
+                instance_id,
+                node_name,
+                Iface::native(),
+                service_name,
+            )
+            .expect("valid wire fields"),
+        )
+        .await
+        .expect("listen should succeed");
 
     // Allow listener to propagate
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -51,20 +54,23 @@ async fn service_messenger_communication() {
     });
 
     // Poll the service as a client
-    let response = ServiceMessenger::poll(
-        &client_handle,
-        core_node,
-        instance_id,
-        node_name,
-        Iface::native(),
-        service_name,
-        Some(core_node),
-        Some(instance_id),
-        request_payload,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("poll should succeed");
+    let response = client_handle
+        .poll_service(
+            &ServiceWireSender::new(
+                core_node,
+                instance_id,
+                Some(core_node),
+                Some(instance_id),
+                node_name,
+                Iface::native(),
+                service_name,
+            )
+            .expect("valid wire fields"),
+            request_payload,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
 
     handler.await.expect("handler task should not panic");
 
@@ -105,16 +111,19 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         .expect("failed to create caller handle");
 
     let (native_ready_tx, native_ready_rx) = oneshot::channel();
-    let mut native_endpoint = ServiceMessenger::listen(
-        &native_handle,
-        core_node,
-        instance_id,
-        node_name,
-        Iface::native(),
-        service_name,
-    )
-    .await
-    .expect("native listen should succeed");
+    let mut native_endpoint = native_handle
+        .expose_service(
+            &ServiceWireReceiver::new(
+                core_node,
+                instance_id,
+                node_name,
+                Iface::native(),
+                service_name,
+            )
+            .expect("valid wire fields"),
+        )
+        .await
+        .expect("native listen should succeed");
 
     let native_response_clone = native_response.clone();
     let native_handler = tokio::spawn(async move {
@@ -127,16 +136,19 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
     native_ready_rx.await.unwrap();
 
     let (iface_ready_tx, iface_ready_rx) = oneshot::channel();
-    let mut iface_endpoint = ServiceMessenger::listen(
-        &iface_handle,
-        core_node,
-        instance_id,
-        node_name,
-        Iface::new(iface_name, iface_tag).expect("valid iface"),
-        service_name,
-    )
-    .await
-    .expect("iface listen should succeed");
+    let mut iface_endpoint = iface_handle
+        .expose_service(
+            &ServiceWireReceiver::new(
+                core_node,
+                instance_id,
+                node_name,
+                Iface::new(iface_name, iface_tag).expect("valid iface"),
+                service_name,
+            )
+            .expect("valid wire fields"),
+        )
+        .await
+        .expect("iface listen should succeed");
 
     let iface_response_clone = iface_response.clone();
     let iface_handler = tokio::spawn(async move {
@@ -152,20 +164,23 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Poll the native scope and assert we get the native response.
-    let from_native = ServiceMessenger::poll(
-        &caller_handle,
-        core_node,
-        instance_id,
-        node_name,
-        Iface::native(),
-        service_name,
-        Some(core_node),
-        Some(instance_id),
-        Payload::from_static(b"ping_native"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("native poll should succeed");
+    let from_native = caller_handle
+        .poll_service(
+            &ServiceWireSender::new(
+                core_node,
+                instance_id,
+                Some(core_node),
+                Some(instance_id),
+                node_name,
+                Iface::native(),
+                service_name,
+            )
+            .expect("valid wire fields"),
+            Payload::from_static(b"ping_native"),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("native poll should succeed");
     assert_eq!(
         from_native.payload(),
         &native_response,
@@ -173,20 +188,23 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
     );
 
     // Poll the iface scope and assert we get the iface response.
-    let from_iface = ServiceMessenger::poll(
-        &caller_handle,
-        core_node,
-        instance_id,
-        node_name,
-        Iface::new(iface_name, iface_tag).expect("valid iface"),
-        service_name,
-        Some(core_node),
-        Some(instance_id),
-        Payload::from_static(b"ping_iface"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("iface poll should succeed");
+    let from_iface = caller_handle
+        .poll_service(
+            &ServiceWireSender::new(
+                core_node,
+                instance_id,
+                Some(core_node),
+                Some(instance_id),
+                node_name,
+                Iface::new(iface_name, iface_tag).expect("valid iface"),
+                service_name,
+            )
+            .expect("valid wire fields"),
+            Payload::from_static(b"ping_iface"),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("iface poll should succeed");
     assert_eq!(
         from_iface.payload(),
         &iface_response,
@@ -223,16 +241,19 @@ async fn service_iface_tag_hyphen_normalized() {
         .expect("failed to create client handle");
 
     // Listener uses hyphen.
-    let mut endpoint = ServiceMessenger::listen(
-        &server_handle,
-        core_node,
-        instance_id,
-        node_name,
-        Iface::new(iface_name, "v2-stable").expect("valid iface"),
-        service_name,
-    )
-    .await
-    .expect("listen should succeed");
+    let mut endpoint = server_handle
+        .expose_service(
+            &ServiceWireReceiver::new(
+                core_node,
+                instance_id,
+                node_name,
+                Iface::new(iface_name, "v2-stable").expect("valid iface"),
+                service_name,
+            )
+            .expect("valid wire fields"),
+        )
+        .await
+        .expect("listen should succeed");
 
     let response_clone = response_payload.clone();
     let handler = tokio::spawn(async move {
@@ -245,20 +266,23 @@ async fn service_iface_tag_hyphen_normalized() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Caller uses underscore. Both should normalize to the same wire segment.
-    let response = ServiceMessenger::poll(
-        &client_handle,
-        core_node,
-        instance_id,
-        node_name,
-        Iface::new(iface_name, "v2_stable").expect("valid iface"),
-        service_name,
-        Some(core_node),
-        Some(instance_id),
-        Payload::from_static(b"ping"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("poll should succeed");
+    let response = client_handle
+        .poll_service(
+            &ServiceWireSender::new(
+                core_node,
+                instance_id,
+                Some(core_node),
+                Some(instance_id),
+                node_name,
+                Iface::new(iface_name, "v2_stable").expect("valid iface"),
+                service_name,
+            )
+            .expect("valid wire fields"),
+            Payload::from_static(b"ping"),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
 
     handler.await.expect("handler task panicked");
     assert_eq!(response.payload(), &response_payload);

@@ -8,7 +8,7 @@ use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
 use peppylib::messaging::Iface;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceWireReceiver};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -19,15 +19,15 @@ pub async fn listen_for_repo_add(
     node_name: &str,
     peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
-        messenger,
-        core_node_name,
-        instance_id,
-        node_name,
-        Iface::native(),
-        names::REPO_ADD,
-    )
-    .await?;
+    let mut endpoint = messenger
+        .expose_service(&ServiceWireReceiver::new(
+            core_node_name,
+            instance_id,
+            node_name,
+            Iface::native(),
+            names::REPO_ADD,
+        )?)
+        .await?;
 
     let handle = tokio::spawn(async move {
         endpoint

@@ -17,8 +17,8 @@ use core_node_api::encoding::*;
 use core_node_api::names;
 
 use crate::error::Result;
-use crate::messaging::{ActionGoalHandle, Iface};
-use crate::{ActionMessenger, MessengerHandle, ServiceMessenger};
+use crate::messaging::{ActionGoalHandle, Iface, ServiceWireSender};
+use crate::{ActionMessenger, MessengerHandle};
 
 /// Routing parameters for a single service poll. Bundled into a struct so
 /// [`poll_core_node_service`] doesn't need a `clippy::too_many_arguments`
@@ -52,19 +52,19 @@ async fn poll_core_node_service<Response>(
     decode_response: fn(&[u8]) -> core_node_api::Result<Response>,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<Response> {
-    let response = ServiceMessenger::poll(
-        route.messenger,
+    let sender = ServiceWireSender::new(
         route.bound_core_node,
         route.as_instance_id,
+        Some(route.target_core_node),
+        None,
         route.service_target_node.unwrap_or(route.target_core_node),
         Iface::native(),
         route.service_name,
-        Some(route.target_core_node),
-        None,
-        request_payload,
-        response_timeout,
-    )
-    .await?;
+    )?;
+    let response = route
+        .messenger
+        .poll_service(&sender, request_payload, response_timeout)
+        .await?;
     decode_response(response.payload().as_ref()).map_err(Into::into)
 }
 

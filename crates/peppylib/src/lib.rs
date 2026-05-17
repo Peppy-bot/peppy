@@ -9,7 +9,9 @@ pub use error::{
     Error as PeppyError, MissingStandaloneParameters, ParameterDeserializationError,
     Result as PeppyResult,
 };
-pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
+pub use messaging::{
+    ActionMessenger, MessengerHandle, ServiceWireReceiver, ServiceWireSender, TopicMessenger,
+};
 pub mod config;
 pub mod types;
 

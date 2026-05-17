@@ -18,7 +18,7 @@ use peppylib::messaging::{
     ActionFeedbackPublisher, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext,
 };
 use peppylib::types::Payload;
-use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceWireSender};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::panic::AssertUnwindSafe;
@@ -898,6 +898,16 @@ async fn perform_health_check(
     let request_payload = NodeHealthRequest::new()
         .encode()
         .map_err(|e| format!("failed to encode node health request: {e}"))?;
+    let sender = ServiceWireSender::new(
+        target.core_node_name,
+        target.caller_instance_id,
+        Some(target.target_core_node),
+        Some(target.target_instance_id),
+        target.target_node_name,
+        Iface::native(),
+        NODE_HEALTH_SERVICE,
+    )
+    .map_err(|e| format!("failed to build health service sender: {e}"))?;
     let deadline = Instant::now() + timeout;
     let mut last_err: Option<PeppyError> = None;
 
@@ -927,19 +937,10 @@ async fn perform_health_check(
         let remaining = deadline - now;
         let attempt_timeout = remaining.min(Duration::from_millis(500));
 
-        match ServiceMessenger::poll(
-            target.messenger,
-            target.core_node_name,
-            target.caller_instance_id,
-            target.target_node_name,
-            Iface::native(),
-            NODE_HEALTH_SERVICE,
-            Some(target.target_core_node),
-            Some(target.target_instance_id),
-            request_payload.clone(),
-            attempt_timeout,
-        )
-        .await
+        match target
+            .messenger
+            .poll_service(&sender, request_payload.clone(), attempt_timeout)
+            .await
         {
             Ok(_) => return Ok(()),
             Err(err) => {
@@ -964,6 +965,16 @@ async fn wait_for_ready_signal(
     let request_payload = NodeReadyRequest::new()
         .encode()
         .map_err(|e| format!("failed to encode node ready request: {e}"))?;
+    let sender = ServiceWireSender::new(
+        target.core_node_name,
+        target.caller_instance_id,
+        Some(target.target_core_node),
+        Some(target.target_instance_id),
+        target.target_node_name,
+        Iface::native(),
+        NODE_READY_SERVICE,
+    )
+    .map_err(|e| format!("failed to build ready service sender: {e}"))?;
     let deadline = Instant::now() + timeout;
     let mut last_err: Option<PeppyError> = None;
 
@@ -994,19 +1005,10 @@ async fn wait_for_ready_signal(
         let remaining = deadline - now;
         let attempt_timeout = remaining.min(Duration::from_millis(500));
 
-        match ServiceMessenger::poll(
-            target.messenger,
-            target.core_node_name,
-            target.caller_instance_id,
-            target.target_node_name,
-            Iface::native(),
-            NODE_READY_SERVICE,
-            Some(target.target_core_node),
-            Some(target.target_instance_id),
-            request_payload.clone(),
-            attempt_timeout,
-        )
-        .await
+        match target
+            .messenger
+            .poll_service(&sender, request_payload.clone(), attempt_timeout)
+            .await
         {
             Ok(_) => return Ok(()),
             Err(err) => {
@@ -1054,6 +1056,26 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
             }
         };
 
+        let sender = match ServiceWireSender::new(
+            &p.core_node_name,
+            &p.caller_instance_id,
+            Some(&p.target_core_node),
+            Some(&instance_id_str),
+            &p.target_node_name,
+            Iface::native(),
+            NODE_HEALTH_SERVICE,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    "Health monitor for '{}' failed to build sender: {}",
+                    instance_id_str,
+                    e
+                );
+                return;
+            }
+        };
+
         let mut consecutive_failures: u32 = 0;
 
         loop {
@@ -1072,19 +1094,10 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 return;
             }
 
-            match ServiceMessenger::poll(
-                &p.messenger,
-                &p.core_node_name,
-                &p.caller_instance_id,
-                &p.target_node_name,
-                Iface::native(),
-                NODE_HEALTH_SERVICE,
-                Some(&p.target_core_node),
-                Some(&instance_id_str),
-                request_payload.clone(),
-                p.timeout,
-            )
-            .await
+            match p
+                .messenger
+                .poll_service(&sender, request_payload.clone(), p.timeout)
+                .await
             {
                 Ok(_) => {
                     consecutive_failures = 0;

@@ -10,7 +10,7 @@ use node_stack::NodeStack;
 use peppylib::messaging::Iface;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceWireReceiver};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -24,15 +24,15 @@ pub async fn listen_for_node_sync(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
-        messenger,
-        core_node_node,
-        instance_id,
-        node_name,
-        Iface::native(),
-        names::NODE_SYNC,
-    )
-    .await?;
+    let mut endpoint = messenger
+        .expose_service(&ServiceWireReceiver::new(
+            core_node_node,
+            instance_id,
+            node_name,
+            Iface::native(),
+            names::NODE_SYNC,
+        )?)
+        .await?;
 
     let handle = tokio::spawn(async move {
         endpoint

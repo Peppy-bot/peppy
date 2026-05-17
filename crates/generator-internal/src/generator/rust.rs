@@ -1302,15 +1302,16 @@ impl LanguageGenerator for RustGenerator {
         // config doesn't record which interface a consumed service originates from.
         let iface_expr = topics::iface_expression(None);
         let poll_call = quote! {
-            peppylib::ServiceMessenger::poll(
-                node_runner.messenger(),
-                node_runner.processor().bound_core_node(),
-                node_runner.processor().bound_instance_id(),
-                NODE_NAME,
-                #iface_expr,
-                SERVICE_NAME,
-                target_core_node,
-                target_instance_id,
+            node_runner.messenger().poll_service(
+                &peppylib::ServiceWireSender::new(
+                    node_runner.processor().bound_core_node(),
+                    node_runner.processor().bound_instance_id(),
+                    target_core_node,
+                    target_instance_id,
+                    NODE_NAME,
+                    #iface_expr,
+                    SERVICE_NAME,
+                )?,
                 request_payload,
                 timeout,
             )

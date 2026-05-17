@@ -4,7 +4,9 @@ use config::node::Name;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::Iface;
-use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
+use peppylib::messaging::{
+    SHUTDOWN_SERVICE, ServiceRequestContext, ServiceWireReceiver, ServiceWireSender,
+};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
 use std::sync::Arc;
@@ -27,15 +29,15 @@ pub async fn listen_for_node_stop(
     let core_instance_id = instance_id.to_string();
     let messenger = messenger.clone();
 
-    let mut endpoint = ServiceMessenger::listen(
-        &messenger,
-        &core_node_node,
-        &core_instance_id,
-        node_name,
-        Iface::native(),
-        names::NODE_STOP,
-    )
-    .await?;
+    let mut endpoint = messenger
+        .expose_service(&ServiceWireReceiver::new(
+            &core_node_node,
+            &core_instance_id,
+            node_name,
+            Iface::native(),
+            names::NODE_STOP,
+        )?)
+        .await?;
 
     let handle = tokio::spawn(async move {
         endpoint
@@ -249,19 +251,15 @@ async fn send_shutdown_signal(
         "Sending shutdown request to node instance '{}'",
         instance_id_str
     );
-    ServiceMessenger::poll(
-        messenger,
+    let sender = ServiceWireSender::new(
         core_node_node,
         core_instance_id,
+        Some(core_node_node),
+        Some(instance_id_str),
         node_name,
         Iface::native(),
         SHUTDOWN_SERVICE,
-        Some(core_node_node),
-        Some(instance_id_str),
-        Payload::from_static(b"shutdown"),
-        SHUTDOWN_TIMEOUT,
     )
-    .await
     .map_err(|e| {
         crate::error::Error::ShutdownInstanceFailed {
             instance_id: instance_id_str.to_owned(),
@@ -269,6 +267,16 @@ async fn send_shutdown_signal(
         }
         .to_string()
     })?;
+    messenger
+        .poll_service(&sender, Payload::from_static(b"shutdown"), SHUTDOWN_TIMEOUT)
+        .await
+        .map_err(|e| {
+            crate::error::Error::ShutdownInstanceFailed {
+                instance_id: instance_id_str.to_owned(),
+                reason: e.to_string(),
+            }
+            .to_string()
+        })?;
     debug!("Node instance '{}' shutdown acknowledged", instance_id_str);
     Ok(())
 }

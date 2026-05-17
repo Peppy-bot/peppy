@@ -3,7 +3,9 @@ use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::Iface;
-use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
+use peppylib::messaging::{
+    NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE, ServiceWireSender,
+};
 use peppylib::runtime::CancellationToken;
 use peppylib::runtime::NodeBuilder;
 use peppylib::types::Payload;
@@ -169,18 +171,21 @@ async fn daemon_runner_succeed() {
             panic!("runner exited early: {result:?}");
         }
 
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
-            Iface::native(),
-            SHUTDOWN_SERVICE,
-            Some(TEST_CORE_NODE),
-            Some(TEST_INSTANCE_ID),
-        )
-        .await
-        .expect("reachability check should succeed")
+        if messenger
+            .is_service_reachable(
+                &ServiceWireSender::new(
+                    TEST_CORE_NODE,
+                    SHUTDOWN_SENDER_INSTANCE_ID,
+                    Some(TEST_CORE_NODE),
+                    Some(TEST_INSTANCE_ID),
+                    TEST_NODE_NAME,
+                    Iface::native(),
+                    SHUTDOWN_SERVICE,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("reachability check should succeed")
         {
             break;
         }
@@ -195,37 +200,43 @@ async fn daemon_runner_succeed() {
     let health_request = NodeHealthRequest::new()
         .encode()
         .expect("failed to encode health request");
-    let health_response = peppylib::ServiceMessenger::poll(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
-        Iface::native(),
-        NODE_HEALTH_SERVICE,
-        Some(TEST_CORE_NODE),
-        Some(TEST_INSTANCE_ID),
-        health_request,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("health service should respond");
+    let health_response = messenger
+        .poll_service(
+            &ServiceWireSender::new(
+                TEST_CORE_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                Some(TEST_CORE_NODE),
+                Some(TEST_INSTANCE_ID),
+                TEST_NODE_NAME,
+                Iface::native(),
+                NODE_HEALTH_SERVICE,
+            )
+            .expect("valid wire fields"),
+            health_request,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("health service should respond");
     NodeHealthResponse::decode(&health_response.payload()).expect("health response should decode");
 
     let shutdown_payload = Payload::from_static(b"shutdown");
-    let shutdown_response = peppylib::ServiceMessenger::poll(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
-        Iface::native(),
-        SHUTDOWN_SERVICE,
-        Some(TEST_CORE_NODE),
-        Some(TEST_INSTANCE_ID),
-        shutdown_payload.clone(),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("shutdown service should respond");
+    let shutdown_response = messenger
+        .poll_service(
+            &ServiceWireSender::new(
+                TEST_CORE_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                Some(TEST_CORE_NODE),
+                Some(TEST_INSTANCE_ID),
+                TEST_NODE_NAME,
+                Iface::native(),
+                SHUTDOWN_SERVICE,
+            )
+            .expect("valid wire fields"),
+            shutdown_payload.clone(),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("shutdown service should respond");
 
     assert_eq!(shutdown_response.payload(), &shutdown_payload);
     assert_eq!(shutdown_response.instance_id(), TEST_INSTANCE_ID);
@@ -377,18 +388,21 @@ async fn node_ready_but_not_healthy() {
             panic!("runner exited early: {result:?}");
         }
 
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
-            Iface::native(),
-            NODE_READY_SERVICE,
-            Some(TEST_CORE_NODE),
-            Some(TEST_INSTANCE_ID),
-        )
-        .await
-        .expect("reachability check should succeed")
+        if messenger
+            .is_service_reachable(
+                &ServiceWireSender::new(
+                    TEST_CORE_NODE,
+                    SHUTDOWN_SENDER_INSTANCE_ID,
+                    Some(TEST_CORE_NODE),
+                    Some(TEST_INSTANCE_ID),
+                    TEST_NODE_NAME,
+                    Iface::native(),
+                    NODE_READY_SERVICE,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("reachability check should succeed")
         {
             break;
         }
@@ -401,20 +415,23 @@ async fn node_ready_but_not_healthy() {
     }
 
     let ready_payload = Payload::from_static(b"ready");
-    let ready_response = peppylib::ServiceMessenger::poll(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
-        Iface::native(),
-        NODE_READY_SERVICE,
-        Some(TEST_CORE_NODE),
-        Some(TEST_INSTANCE_ID),
-        ready_payload.clone(),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("ready service should respond while setup is blocked");
+    let ready_response = messenger
+        .poll_service(
+            &ServiceWireSender::new(
+                TEST_CORE_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                Some(TEST_CORE_NODE),
+                Some(TEST_INSTANCE_ID),
+                TEST_NODE_NAME,
+                Iface::native(),
+                NODE_READY_SERVICE,
+            )
+            .expect("valid wire fields"),
+            ready_payload.clone(),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("ready service should respond while setup is blocked");
     assert_eq!(ready_response.payload(), &ready_payload);
     assert_eq!(ready_response.instance_id(), TEST_INSTANCE_ID);
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -424,18 +441,21 @@ async fn node_ready_but_not_healthy() {
             panic!("runner exited early: {result:?}");
         }
 
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
-            Iface::native(),
-            SHUTDOWN_SERVICE,
-            Some(TEST_CORE_NODE),
-            Some(TEST_INSTANCE_ID),
-        )
-        .await
-        .expect("reachability check should succeed")
+        if messenger
+            .is_service_reachable(
+                &ServiceWireSender::new(
+                    TEST_CORE_NODE,
+                    SHUTDOWN_SENDER_INSTANCE_ID,
+                    Some(TEST_CORE_NODE),
+                    Some(TEST_INSTANCE_ID),
+                    TEST_NODE_NAME,
+                    Iface::native(),
+                    SHUTDOWN_SERVICE,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("reachability check should succeed")
         {
             break;
         }
@@ -448,38 +468,44 @@ async fn node_ready_but_not_healthy() {
     }
 
     assert!(
-        !peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
-            Iface::native(),
-            NODE_HEALTH_SERVICE,
-            Some(TEST_CORE_NODE),
-            Some(TEST_INSTANCE_ID),
-        )
-        .await
-        .expect("reachability check should succeed"),
+        !messenger
+            .is_service_reachable(
+                &ServiceWireSender::new(
+                    TEST_CORE_NODE,
+                    SHUTDOWN_SENDER_INSTANCE_ID,
+                    Some(TEST_CORE_NODE),
+                    Some(TEST_INSTANCE_ID),
+                    TEST_NODE_NAME,
+                    Iface::native(),
+                    NODE_HEALTH_SERVICE,
+                )
+                .expect("valid wire fields")
+            )
+            .await
+            .expect("reachability check should succeed"),
         "health service should not be reachable while setup is blocked"
     );
 
     let health_request = NodeHealthRequest::new()
         .encode()
         .expect("failed to encode health request");
-    let health_err = peppylib::ServiceMessenger::poll(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
-        Iface::native(),
-        NODE_HEALTH_SERVICE,
-        Some(TEST_CORE_NODE),
-        Some(TEST_INSTANCE_ID),
-        health_request.clone(),
-        Duration::from_millis(200),
-    )
-    .await
-    .expect_err("health service should not respond while setup is blocked");
+    let health_err = messenger
+        .poll_service(
+            &ServiceWireSender::new(
+                TEST_CORE_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                Some(TEST_CORE_NODE),
+                Some(TEST_INSTANCE_ID),
+                TEST_NODE_NAME,
+                Iface::native(),
+                NODE_HEALTH_SERVICE,
+            )
+            .expect("valid wire fields"),
+            health_request.clone(),
+            Duration::from_millis(200),
+        )
+        .await
+        .expect_err("health service should not respond while setup is blocked");
 
     match health_err {
         peppylib::PeppyError::ServiceUnreachable { service_name, .. }
@@ -498,18 +524,21 @@ async fn node_ready_but_not_healthy() {
             panic!("runner exited early: {result:?}");
         }
 
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
-            Iface::native(),
-            NODE_HEALTH_SERVICE,
-            Some(TEST_CORE_NODE),
-            Some(TEST_INSTANCE_ID),
-        )
-        .await
-        .expect("reachability check should succeed")
+        if messenger
+            .is_service_reachable(
+                &ServiceWireSender::new(
+                    TEST_CORE_NODE,
+                    SHUTDOWN_SENDER_INSTANCE_ID,
+                    Some(TEST_CORE_NODE),
+                    Some(TEST_INSTANCE_ID),
+                    TEST_NODE_NAME,
+                    Iface::native(),
+                    NODE_HEALTH_SERVICE,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("reachability check should succeed")
         {
             break;
         }
@@ -521,37 +550,43 @@ async fn node_ready_but_not_healthy() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let health_response = peppylib::ServiceMessenger::poll(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
-        Iface::native(),
-        NODE_HEALTH_SERVICE,
-        Some(TEST_CORE_NODE),
-        Some(TEST_INSTANCE_ID),
-        health_request,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("health service should respond after setup completes");
+    let health_response = messenger
+        .poll_service(
+            &ServiceWireSender::new(
+                TEST_CORE_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                Some(TEST_CORE_NODE),
+                Some(TEST_INSTANCE_ID),
+                TEST_NODE_NAME,
+                Iface::native(),
+                NODE_HEALTH_SERVICE,
+            )
+            .expect("valid wire fields"),
+            health_request,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("health service should respond after setup completes");
     NodeHealthResponse::decode(&health_response.payload()).expect("health response should decode");
 
     let shutdown_payload = Payload::from_static(b"shutdown");
-    let shutdown_response = peppylib::ServiceMessenger::poll(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
-        Iface::native(),
-        SHUTDOWN_SERVICE,
-        Some(TEST_CORE_NODE),
-        Some(TEST_INSTANCE_ID),
-        shutdown_payload.clone(),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("shutdown service should respond");
+    let shutdown_response = messenger
+        .poll_service(
+            &ServiceWireSender::new(
+                TEST_CORE_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                Some(TEST_CORE_NODE),
+                Some(TEST_INSTANCE_ID),
+                TEST_NODE_NAME,
+                Iface::native(),
+                SHUTDOWN_SERVICE,
+            )
+            .expect("valid wire fields"),
+            shutdown_payload.clone(),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("shutdown service should respond");
 
     assert_eq!(shutdown_response.payload(), &shutdown_payload);
     assert_eq!(shutdown_response.instance_id(), TEST_INSTANCE_ID);
@@ -644,18 +679,21 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
             panic!("runner exited early: {result:?}");
         }
 
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
-            Iface::native(),
-            SHUTDOWN_SERVICE,
-            Some(TEST_CORE_NODE),
-            Some(TEST_INSTANCE_ID),
-        )
-        .await
-        .expect("reachability check should succeed")
+        if messenger
+            .is_service_reachable(
+                &ServiceWireSender::new(
+                    TEST_CORE_NODE,
+                    SHUTDOWN_SENDER_INSTANCE_ID,
+                    Some(TEST_CORE_NODE),
+                    Some(TEST_INSTANCE_ID),
+                    TEST_NODE_NAME,
+                    Iface::native(),
+                    SHUTDOWN_SERVICE,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("reachability check should succeed")
         {
             break;
         }
@@ -669,20 +707,23 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
 
     // Send shutdown request
     let shutdown_payload = Payload::from_static(b"shutdown");
-    peppylib::ServiceMessenger::poll(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
-        Iface::native(),
-        SHUTDOWN_SERVICE,
-        Some(TEST_CORE_NODE),
-        Some(TEST_INSTANCE_ID),
-        shutdown_payload,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("shutdown service should respond");
+    messenger
+        .poll_service(
+            &ServiceWireSender::new(
+                TEST_CORE_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                Some(TEST_CORE_NODE),
+                Some(TEST_INSTANCE_ID),
+                TEST_NODE_NAME,
+                Iface::native(),
+                SHUTDOWN_SERVICE,
+            )
+            .expect("valid wire fields"),
+            shutdown_payload,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("shutdown service should respond");
 
     // Wait for runner to exit
     tokio::time::timeout(Duration::from_secs(10), &mut runner_task)

@@ -6,7 +6,7 @@ use common::{
 use peppylib::messaging::Iface;
 use peppylib::{
     encoding::health::{NodeHealthRequest, NodeHealthResponse},
-    messaging::{MessengerHandle, ServiceMessenger},
+    messaging::{MessengerHandle, ServiceWireSender},
     services::health::listen_for_node_health,
 };
 use std::sync::Arc;
@@ -36,20 +36,24 @@ async fn node_health_request_response_roundtrip() {
     let request_payload = request.encode().expect("failed to encode health request");
 
     // Client sends a health request and receives the response
-    let response = ServiceMessenger::poll(
-        &client.caller_handle,
-        &client.core_node_name,
-        CALLER_INSTANCE_ID,
-        TEST_NODE_NAME,
-        Iface::native(),
-        peppylib::messaging::NODE_HEALTH_SERVICE,
-        Some(&client.core_node_name),
-        Some(&client.instance_id),
-        request_payload,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("caller should receive response");
+    let response = client
+        .caller_handle
+        .poll_service(
+            &ServiceWireSender::new(
+                &client.core_node_name,
+                CALLER_INSTANCE_ID,
+                Some(&client.core_node_name),
+                Some(&client.instance_id),
+                TEST_NODE_NAME,
+                Iface::native(),
+                peppylib::messaging::NODE_HEALTH_SERVICE,
+            )
+            .expect("valid wire fields"),
+            request_payload,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("caller should receive response");
 
     // Decode and verify the response
     let _health_response =

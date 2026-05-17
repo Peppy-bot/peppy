@@ -6,7 +6,7 @@ use common::{
 use peppylib::messaging::Iface;
 use peppylib::types::Payload;
 use peppylib::{
-    messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger},
+    messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceWireSender},
     services::shutdown::listen_for_shutdown,
 };
 use std::sync::Arc;
@@ -35,20 +35,24 @@ async fn shutdown_node() {
     let request_payload = Payload::from_static(b"shutdown");
 
     // Client sends a shutdown request and receives the response
-    let response = ServiceMessenger::poll(
-        &client.caller_handle,
-        &client.core_node_name,
-        CALLER_INSTANCE_ID,
-        TEST_NODE_NAME,
-        Iface::native(),
-        SHUTDOWN_SERVICE,
-        Some(&client.core_node_name),
-        Some(&client.instance_id),
-        request_payload.clone(),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("caller should receive response");
+    let response = client
+        .caller_handle
+        .poll_service(
+            &ServiceWireSender::new(
+                &client.core_node_name,
+                CALLER_INSTANCE_ID,
+                Some(&client.core_node_name),
+                Some(&client.instance_id),
+                TEST_NODE_NAME,
+                Iface::native(),
+                SHUTDOWN_SERVICE,
+            )
+            .expect("valid wire fields"),
+            request_payload.clone(),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("caller should receive response");
 
     // Verify the response contains the same payload (echoed back)
     assert_eq!(response.payload(), request_payload);

@@ -4,7 +4,9 @@ use config::node::Name;
 use core_node_api::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::Iface;
-use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
+use peppylib::messaging::{
+    SHUTDOWN_SERVICE, ServiceRequestContext, ServiceWireReceiver, ServiceWireSender,
+};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
 use std::sync::Arc;
@@ -25,15 +27,15 @@ pub async fn listen_for_node_remove(
     let core_instance_id = instance_id.to_string();
     let messenger = messenger.clone();
 
-    let mut endpoint = ServiceMessenger::listen(
-        &messenger,
-        &core_node_node,
-        &core_instance_id,
-        node_name,
-        Iface::native(),
-        names::NODE_REMOVE,
-    )
-    .await?;
+    let mut endpoint = messenger
+        .expose_service(&ServiceWireReceiver::new(
+            &core_node_node,
+            &core_instance_id,
+            node_name,
+            Iface::native(),
+            names::NODE_REMOVE,
+        )?)
+        .await?;
 
     let handle = tokio::spawn(async move {
         endpoint
@@ -168,17 +170,17 @@ async fn handle_node_remove_request_inner(
     // Probe all instances in parallel so overall latency is bounded by the
     // slowest probe rather than the sum.
     let reachability: Vec<std::result::Result<bool, PeppyError>> =
-        futures::future::join_all(targets.iter().map(|target| {
-            ServiceMessenger::is_reachable(
-                messenger,
+        futures::future::join_all(targets.iter().map(|target| async move {
+            let sender = ServiceWireSender::new(
                 core_node_node,
                 core_instance_id,
+                Some(core_node_node),
+                Some(target.instance_id.as_str()),
                 &target.node_name,
                 Iface::native(),
                 SHUTDOWN_SERVICE,
-                Some(core_node_node),
-                Some(target.instance_id.as_str()),
-            )
+            )?;
+            messenger.is_service_reachable(&sender).await
         }))
         .await;
 
@@ -247,21 +249,22 @@ async fn handle_node_remove_request_inner(
         // Shut down instances concurrently. Overall wall-clock latency is
         // bounded by the slowest shutdown (up to SHUTDOWN_TIMEOUT) rather
         // than the sum.
-        let shutdown_results = futures::future::join_all(running_targets.iter().map(|target| {
-            ServiceMessenger::poll(
-                messenger,
-                core_node_node,
-                core_instance_id,
-                &target.node_name,
-                Iface::native(),
-                SHUTDOWN_SERVICE,
-                Some(core_node_node),
-                Some(target.instance_id.as_str()),
-                Payload::from_static(b"shutdown"),
-                SHUTDOWN_TIMEOUT,
-            )
-        }))
-        .await;
+        let shutdown_results =
+            futures::future::join_all(running_targets.iter().map(|target| async move {
+                let sender = ServiceWireSender::new(
+                    core_node_node,
+                    core_instance_id,
+                    Some(core_node_node),
+                    Some(target.instance_id.as_str()),
+                    &target.node_name,
+                    Iface::native(),
+                    SHUTDOWN_SERVICE,
+                )?;
+                messenger
+                    .poll_service(&sender, Payload::from_static(b"shutdown"), SHUTDOWN_TIMEOUT)
+                    .await
+            }))
+            .await;
         for (target, res) in running_targets.iter().zip(shutdown_results) {
             if let Err(e) = res {
                 return NodeRemoveResponse::failure(format!(

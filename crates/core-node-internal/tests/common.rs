@@ -16,7 +16,7 @@ use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
 use peppylib::messaging::{Iface, MessengerHandle, TopicMessenger};
 use peppylib::runtime::{TaskHandle, spawn};
-use peppylib::{ActionMessenger, PeppyError, ServiceMessenger};
+use peppylib::{ActionMessenger, PeppyError, ServiceWireSender};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -48,7 +48,7 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
-/// Polls `ServiceMessenger::is_reachable` until the named service responds or
+/// Polls `MessengerHandle::is_service_reachable` until the named service responds or
 /// `deadline` expires. Replaces fixed sleeps used as broker-propagation
 /// barriers in tests that spawn a `handle_requests` task and then need to
 /// be sure callers can route to it.
@@ -61,21 +61,20 @@ pub async fn wait_until_service_reachable(
     target_instance_id: &str,
     timeout: Duration,
 ) {
-    use peppylib::messaging::ServiceMessenger;
+    use peppylib::messaging::ServiceWireSender;
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if let Ok(true) = ServiceMessenger::is_reachable(
-            messenger,
+        let sender = ServiceWireSender::new(
             bound_core_node,
             "ready_probe",
+            Some(target_core_node),
+            Some(target_instance_id),
             target_node_name,
             peppylib::messaging::Iface::native(),
             target_service_name,
-            Some(target_core_node),
-            Some(target_instance_id),
         )
-        .await
-        {
+        .expect("valid wire fields");
+        if let Ok(true) = messenger.is_service_reachable(&sender).await {
             return;
         }
         if std::time::Instant::now() >= deadline {
@@ -99,20 +98,24 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         .encode()
         .expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        Iface::native(),
-        names::CLOCK,
-        Some(&started.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("clock service poll should succeed");
+    let response = started
+        .caller_handle
+        .poll_service(
+            &ServiceWireSender::new(
+                &started.core_node_name,
+                CALLER_INSTANCE_ID,
+                Some(&started.core_node_name),
+                None,
+                &started.core_node_name,
+                Iface::native(),
+                names::CLOCK,
+            )
+            .expect("valid wire fields"),
+            request_payload,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("clock service poll should succeed");
 
     let t3 = wall_now_ns().expect("system clock should be available");
     let clock_response = ClockResponse::decode(&response.payload()).expect("decode should succeed");

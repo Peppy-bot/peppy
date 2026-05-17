@@ -7,7 +7,7 @@ use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
 use peppylib::messaging::Iface;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
-use peppylib::{MessengerHandle, ServiceMessenger};
+use peppylib::{MessengerHandle, ServiceWireSender};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -355,16 +355,15 @@ pub async fn wait_for_service_reachable_or_exit(
             );
         }
 
-        let reachable = ServiceMessenger::is_reachable(
-            ctx.messenger,
+        let reachable = ctx.messenger.is_service_reachable(&ServiceWireSender::new(
             ctx.bound_core_node,
             ctx.caller_instance_id,
+            ctx.target_core_node,
+            target_instance_id,
             target_node_name,
             Iface::native(),
             target_service_name,
-            ctx.target_core_node,
-            target_instance_id,
-        )
+        ).expect("valid wire fields"))
 
         .await
         .unwrap_or_else(|err| {
@@ -489,25 +488,28 @@ pub async fn send_shutdown(
     timeout: Duration,
 ) {
     let payload = peppylib::types::Payload::from_static(b"shutdown");
-    ServiceMessenger::poll(
-        messenger,
-        bound_core_node,
-        sender_instance_id,
-        target_node_name,
-        Iface::native(),
-        SHUTDOWN_SERVICE,
-        target_core_node,
-        Some(target_instance_id),
-        payload,
-        timeout,
-    )
-    .await
-    .unwrap_or_else(|err| {
-        panic!(
-            "failed to send shutdown to node={} instance={} (project core node={}): {}",
-            target_node_name, target_instance_id, bound_core_node, err
+    messenger
+        .poll_service(
+            &ServiceWireSender::new(
+                bound_core_node,
+                sender_instance_id,
+                target_core_node,
+                Some(target_instance_id),
+                target_node_name,
+                Iface::native(),
+                SHUTDOWN_SERVICE,
+            )
+            .expect("valid wire fields"),
+            payload,
+            timeout,
         )
-    });
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to send shutdown to node={} instance={} (project core node={}): {}",
+                target_node_name, target_instance_id, bound_core_node, err
+            )
+        });
 }
 
 /// Like `send_shutdown` but doesn't panic if the service is unreachable
@@ -522,19 +524,22 @@ pub async fn try_send_shutdown(
     timeout: Duration,
 ) {
     let payload = peppylib::types::Payload::from_static(b"shutdown");
-    let _ = ServiceMessenger::poll(
-        messenger,
-        bound_core_node,
-        sender_instance_id,
-        target_node_name,
-        Iface::native(),
-        SHUTDOWN_SERVICE,
-        target_core_node,
-        Some(target_instance_id),
-        payload,
-        timeout,
-    )
-    .await;
+    let _ = messenger
+        .poll_service(
+            &ServiceWireSender::new(
+                bound_core_node,
+                sender_instance_id,
+                target_core_node,
+                Some(target_instance_id),
+                target_node_name,
+                Iface::native(),
+                SHUTDOWN_SERVICE,
+            )
+            .expect("valid wire fields"),
+            payload,
+            timeout,
+        )
+        .await;
 }
 
 // ---------------------------------------------------------------------------

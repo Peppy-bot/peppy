@@ -3,7 +3,7 @@ use std::time::Duration;
 use core_node_api::encoding::{ContainerInfo, InfoRequest, InfoResponse};
 use core_node_api::names;
 use peppylib::info;
-use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::messaging::{MessengerHandle, ServiceWireReceiver};
 use peppylib::runtime::NodeRunner;
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
@@ -13,16 +13,19 @@ use peppylib::messaging::Iface;
 
 /// Spins up a single-shot `INFO` listener that returns `response` verbatim.
 async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
-    let mut endpoint = ServiceMessenger::listen(
-        &server,
-        CORE_NODE,
-        SERVER_INSTANCE,
-        CORE_NODE,
-        Iface::native(),
-        names::INFO,
-    )
-    .await
-    .expect("listen should succeed");
+    let mut endpoint = server
+        .expose_service(
+            &ServiceWireReceiver::new(
+                CORE_NODE,
+                SERVER_INSTANCE,
+                CORE_NODE,
+                Iface::native(),
+                names::INFO,
+            )
+            .expect("valid wire fields"),
+        )
+        .await
+        .expect("listen should succeed");
 
     tokio::spawn(async move {
         endpoint

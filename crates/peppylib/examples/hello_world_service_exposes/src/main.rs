@@ -2,7 +2,7 @@ use chrono::Local;
 use config::consts::DEFAULT_MESSAGING_PORT;
 use names_generator2::get_random;
 use peppylib::messaging::ServiceRequestContext;
-use peppylib::{MessengerHandle, Payload, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, Payload, PeppyResult, ServiceWireReceiver};
 use rand::rng;
 use tokio::signal;
 use peppylib::messaging::Iface;
@@ -70,14 +70,13 @@ async fn main() {
     let core_node = format!("{}_core", get_random(rng()));
     let instance_id = format!("{}_listener", get_random(rng()));
 
-    let mut service = ServiceMessenger::listen(
-        &receiver_handle,
+    let mut service = receiver_handle.expose_service(&ServiceWireReceiver::new(
         &core_node,
         &instance_id,
         NODE_NAME,
         Iface::native(),
         SERVICE_NAME,
-    )
+    ).expect("valid wire fields"))
 
     .await
     .expect("Should expose the service");

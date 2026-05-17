@@ -148,7 +148,8 @@ fn expose_service() {
     assert_contains_all(
         &rendered,
         &[
-            "peppylib::ServiceMessenger::listen",
+            ".expose_service(",
+            "&peppylib::ServiceWireReceiver::new(",
             ".handle_next_request(move |request_context|",
         ],
     );
@@ -281,7 +282,8 @@ fn consumed_service() {
         &rendered,
         &[
             "root.set_enable(enable);",
-            "peppylib::ServiceMessenger::poll(",
+            ".poll_service(",
+            "&peppylib::ServiceWireSender::new(",
             "fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>",
         ],
     );
@@ -356,7 +358,7 @@ fn consumed_service_without_response_payload() {
         artifacts.len()
     );
 
-    assert_artifact_contains(&artifacts, "let _ = peppylib::ServiceMessenger::poll(");
+    assert_artifact_contains(&artifacts, ".poll_service(");
 }
 
 #[test]

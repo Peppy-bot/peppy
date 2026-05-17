@@ -11,7 +11,7 @@
 use bytes::Bytes;
 use pmi::{
     ActionWireReceiver, ActionWireSender, Iface, MessengerBackend, Payload, PublisherQoS,
-    ServiceKind, ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription, TopicMessage,
+    ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription, TopicMessage,
     TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
 use std::time::Duration;
@@ -216,7 +216,6 @@ fn service_receiver() -> ServiceWireReceiver {
         "robot_arm",
         Iface::native(),
         "ping",
-        ServiceKind::Service,
     )
     .expect("valid wire fields")
 }
@@ -230,7 +229,6 @@ fn service_sender(to_core_node: Option<&str>, to_instance_id: Option<&str>) -> S
         "robot_arm",
         Iface::native(),
         "ping",
-        ServiceKind::Service,
     )
     .expect("valid wire fields")
 }

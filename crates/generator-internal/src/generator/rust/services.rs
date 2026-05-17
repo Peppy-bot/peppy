@@ -38,7 +38,7 @@ pub struct ExposedServiceMethodSpec<'a> {
     pub use_service_name_const: bool,
     /// `Some(o)` when the service is conformed via `interfaces.conforms_to`;
     /// `None` for native services. Drives the `iface_name`/`iface_tag` segments
-    /// spliced into the generated `ServiceMessenger::listen` call.
+    /// spliced into the generated `ServiceWireReceiver::new` call.
     pub origin: Option<&'a InterfaceOrigin>,
 }
 
@@ -345,13 +345,14 @@ pub fn build_exposed_service_method(
             where
                 F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
             {
-                let mut service = peppylib::ServiceMessenger::listen(
-                    node_runner.messenger(),
-                    node_runner.processor().bound_core_node(),
-                    node_runner.processor().bound_instance_id(),
-                    node_runner.processor().node_name(),
-                    #iface_expr,
-                    #service_name_ref,
+                let mut service = node_runner.messenger().expose_service(
+                    &peppylib::ServiceWireReceiver::new(
+                        node_runner.processor().bound_core_node(),
+                        node_runner.processor().bound_instance_id(),
+                        node_runner.processor().node_name(),
+                        #iface_expr,
+                        #service_name_ref,
+                    )?,
                 )
                 .await?;
 
@@ -397,13 +398,14 @@ pub fn build_exposed_service_method(
                 let node_name = node_runner.node_name();
                 #service_name_binding
 
-                let mut service = peppylib::ServiceMessenger::listen(
-                    node_runner.messenger(),
-                    node_runner.core_node(),
-                    service_instance_id.as_str(),
-                    node_name,
-                    #iface_expr,
-                    service_name,
+                let mut service = node_runner.messenger().expose_service(
+                    &peppylib::ServiceWireReceiver::new(
+                        node_runner.core_node(),
+                        service_instance_id.as_str(),
+                        node_name,
+                        #iface_expr,
+                        service_name,
+                    )?,
                 )
                 .await?;
 

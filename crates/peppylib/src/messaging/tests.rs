@@ -9,7 +9,9 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use crate::error::Error;
-use crate::messaging::{ActionMessenger, Iface, MessengerHandle, ServiceMessenger, TopicMessenger};
+use crate::messaging::{
+    ActionMessenger, Iface, MessengerHandle, ServiceWireReceiver, ServiceWireSender, TopicMessenger,
+};
 
 #[derive(Clone)]
 struct ActionClientCase {
@@ -466,16 +468,19 @@ async fn service_communication_poll_no_instance_id_target() {
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task1 = {
         let service_expose_handle = router.messenger().await;
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node1,
-            listener_instance_id1,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
+        let mut service = service_expose_handle
+            .expose_service(
+                &ServiceWireReceiver::new(
+                    listener_core_node1,
+                    listener_instance_id1,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("service should start");
 
         let request_payload = request_payload.clone();
         let response_payload = response_payload.clone();
@@ -513,16 +518,19 @@ async fn service_communication_poll_no_instance_id_target() {
     let listener_instance_id2 = "listener_instance2";
     let service_task2 = {
         let service_expose_handle = router.messenger().await;
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node2,
-            listener_instance_id2,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
+        let mut service = service_expose_handle
+            .expose_service(
+                &ServiceWireReceiver::new(
+                    listener_core_node2,
+                    listener_instance_id2,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("service should start");
 
         let request_payload = request_payload.clone();
         let response_payload = response_payload.clone();
@@ -574,20 +582,23 @@ async fn service_communication_poll_no_instance_id_target() {
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.messenger().await;
-        let response = ServiceMessenger::poll(
-            &caller_handle,
-            CALLER_CORE_NODE,
-            CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-            None, // Here we don't specify any node
-            None, // We don't specify any instance_id target either
-            request_payload.clone(),
-            Duration::from_secs(2),
-        )
-        .await
-        .expect("caller should receive response");
+        let response = caller_handle
+            .poll_service(
+                &ServiceWireSender::new(
+                    CALLER_CORE_NODE,
+                    CALLER_INSTANCE_ID,
+                    None,
+                    None,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+                request_payload.clone(),
+                Duration::from_secs(2),
+            )
+            .await
+            .expect("caller should receive response");
 
         // Listener instance 1 is supposed to have responded more quickly here
         assert_eq!(response.instance_id(), listener_instance_id1);
@@ -648,16 +659,19 @@ async fn service_communication_poll_specific_instance_id() {
     let service_task1 = {
         let service_expose_handle = router.messenger().await;
         // This listener is not supposed to receive any message
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node1,
-            listener_instance_id1,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
+        let mut service = service_expose_handle
+            .expose_service(
+                &ServiceWireReceiver::new(
+                    listener_core_node1,
+                    listener_instance_id1,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("service should start");
 
         tokio::spawn(async move {
             service_ready_tx1.send(()).unwrap();
@@ -684,16 +698,19 @@ async fn service_communication_poll_specific_instance_id() {
     let listener_instance_id2 = "listener_instance2";
     let service_task2 = {
         let service_expose_handle = router.messenger().await;
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node2,
-            listener_instance_id2,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
+        let mut service = service_expose_handle
+            .expose_service(
+                &ServiceWireReceiver::new(
+                    listener_core_node2,
+                    listener_instance_id2,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("service should start");
 
         let request_payload = request_payload.clone();
         let response_payload = response_payload.clone();
@@ -743,20 +760,23 @@ async fn service_communication_poll_specific_instance_id() {
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.messenger().await;
-        let response = ServiceMessenger::poll(
-            &caller_handle,
-            CALLER_CORE_NODE,
-            CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-            None,                        // Here we don't specify any target core node
-            Some(listener_instance_id2), // We specify listener_instance_id2 as the target
-            request_payload.clone(),
-            Duration::from_secs(1),
-        )
-        .await
-        .expect("caller should receive response");
+        let response = caller_handle
+            .poll_service(
+                &ServiceWireSender::new(
+                    CALLER_CORE_NODE,
+                    CALLER_INSTANCE_ID,
+                    None,
+                    Some(listener_instance_id2),
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+                request_payload.clone(),
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("caller should receive response");
 
         // Listener instance 2 is supposed to have responded since it's the target
         assert_eq!(response.instance_id(), listener_instance_id2);
@@ -813,16 +833,19 @@ async fn service_communication_poll_wrong_node() {
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
         let service_expose_handle = router.messenger().await;
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node,
-            listener_instance_id,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
+        let mut service = service_expose_handle
+            .expose_service(
+                &ServiceWireReceiver::new(
+                    listener_core_node,
+                    listener_instance_id,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("service should start");
 
         let call_count = Arc::clone(&call_count);
 
@@ -862,19 +885,22 @@ async fn service_communication_poll_wrong_node() {
     {
         let caller_handle = router.messenger().await;
         let err = {
-            let result = ServiceMessenger::poll(
-                &caller_handle,
-                CALLER_CORE_NODE,
-                CALLER_INSTANCE_ID,
-                listener_node_name,
-                Iface::native(),
-                listener_service_name,
-                None,               // target_core_node
-                Some("wrong_node"), // Use a wrong instance_id here
-                request_payload.clone(),
-                Duration::from_secs(1),
-            )
-            .await;
+            let result = caller_handle
+                .poll_service(
+                    &ServiceWireSender::new(
+                        CALLER_CORE_NODE,
+                        CALLER_INSTANCE_ID,
+                        None,
+                        Some("wrong_node"),
+                        listener_node_name,
+                        Iface::native(),
+                        listener_service_name,
+                    )
+                    .expect("valid wire fields"),
+                    request_payload.clone(),
+                    Duration::from_secs(1),
+                )
+                .await;
 
             let Err(err) = result else {
                 panic!("service call should fail when targeting the wrong node");
@@ -947,16 +973,19 @@ async fn service_communication_poll_wrong_core_node() {
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
         let service_expose_handle = router.messenger().await;
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node,
-            listener_instance_id,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
+        let mut service = service_expose_handle
+            .expose_service(
+                &ServiceWireReceiver::new(
+                    listener_core_node,
+                    listener_instance_id,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("service should start");
 
         let call_count = Arc::clone(&call_count);
 
@@ -995,19 +1024,22 @@ async fn service_communication_poll_wrong_core_node() {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let caller_handle = router.messenger().await;
-        let result = ServiceMessenger::poll(
-            &caller_handle,
-            CALLER_CORE_NODE,
-            CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-            Some("wrong_core_node"), // target_core_node - wrong one!
-            None,                    // no specific target_instance_id
-            request_payload.clone(),
-            Duration::from_millis(200),
-        )
-        .await;
+        let result = caller_handle
+            .poll_service(
+                &ServiceWireSender::new(
+                    CALLER_CORE_NODE,
+                    CALLER_INSTANCE_ID,
+                    Some("wrong_core_node"),
+                    None,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+                request_payload.clone(),
+                Duration::from_millis(200),
+            )
+            .await;
 
         let Err(err) = result else {
             panic!("service call should fail when targeting the wrong core node");
@@ -1057,19 +1089,22 @@ async fn service_communication_fails_service_not_started() {
     let err = {
         let caller_handle = router.messenger().await;
 
-        let result = ServiceMessenger::poll(
-            &caller_handle,
-            CALLER_CORE_NODE,
-            CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-            None,
-            None,
-            Payload::from_static(b"enable=true"),
-            Duration::from_secs(1),
-        )
-        .await;
+        let result = caller_handle
+            .poll_service(
+                &ServiceWireSender::new(
+                    CALLER_CORE_NODE,
+                    CALLER_INSTANCE_ID,
+                    None,
+                    None,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+                Payload::from_static(b"enable=true"),
+                Duration::from_secs(1),
+            )
+            .await;
 
         let Err(err) = result else {
             panic!("service call should fail when service is not started");
@@ -1122,16 +1157,19 @@ async fn service_communication_fails_service_timeouts() {
         let response_delay = Duration::from_millis(200);
 
         let service_expose_handle = router.messenger().await;
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node,
-            listener_instance_id,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
+        let mut service = service_expose_handle
+            .expose_service(
+                &ServiceWireReceiver::new(
+                    listener_core_node,
+                    listener_instance_id,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("service should start");
 
         let response_payload = response_payload.clone();
         let call_count = Arc::clone(&call_count);
@@ -1184,20 +1222,23 @@ async fn service_communication_fails_service_timeouts() {
 
         let caller_handle = router.messenger().await;
 
-        let success_response = ServiceMessenger::poll(
-            &caller_handle,
-            CALLER_CORE_NODE,
-            CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-            None,
-            None,
-            request_payload.clone(),
-            caller_success_timeout,
-        )
-        .await
-        .expect("caller should receive response before timeout");
+        let success_response = caller_handle
+            .poll_service(
+                &ServiceWireSender::new(
+                    CALLER_CORE_NODE,
+                    CALLER_INSTANCE_ID,
+                    None,
+                    None,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+                request_payload.clone(),
+                caller_success_timeout,
+            )
+            .await
+            .expect("caller should receive response before timeout");
         assert_eq!(success_response.payload(), response_payload);
         assert_eq!(
             call_count.load(Ordering::SeqCst),
@@ -1205,19 +1246,22 @@ async fn service_communication_fails_service_timeouts() {
             "service should have processed the successful request exactly once"
         );
 
-        let result = ServiceMessenger::poll(
-            &caller_handle,
-            CALLER_CORE_NODE,
-            CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-            None,
-            None,
-            request_payload,
-            caller_failure_timeout,
-        )
-        .await;
+        let result = caller_handle
+            .poll_service(
+                &ServiceWireSender::new(
+                    CALLER_CORE_NODE,
+                    CALLER_INSTANCE_ID,
+                    None,
+                    None,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+                request_payload,
+                caller_failure_timeout,
+            )
+            .await;
 
         let Err(err) = result else {
             panic!("service call should fail when response exceeds timeout");
@@ -1285,16 +1329,19 @@ async fn service_handle_request_processes_multiple_messages() {
 
     let service_task = {
         let service_expose_handle = connect_messenger(&host, port).await;
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node,
-            listener_instance_id,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
+        let mut service = service_expose_handle
+            .expose_service(
+                &ServiceWireReceiver::new(
+                    listener_core_node,
+                    listener_instance_id,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("service should start");
 
         let call_count = Arc::clone(&call_count);
 
@@ -1327,20 +1374,23 @@ async fn service_handle_request_processes_multiple_messages() {
 
         for i in 0..expected_requests {
             let request_payload = Payload::from(format!("enable=true;request={i}").into_bytes());
-            let response = ServiceMessenger::poll(
-                &caller_handle,
-                CALLER_CORE_NODE,
-                CALLER_INSTANCE_ID,
-                listener_node_name,
-                Iface::native(),
-                listener_service_name,
-                None,
-                Some(listener_instance_id),
-                request_payload.clone(),
-                Duration::from_secs(2),
-            )
-            .await
-            .expect("caller should receive response");
+            let response = caller_handle
+                .poll_service(
+                    &ServiceWireSender::new(
+                        CALLER_CORE_NODE,
+                        CALLER_INSTANCE_ID,
+                        None,
+                        Some(listener_instance_id),
+                        listener_node_name,
+                        Iface::native(),
+                        listener_service_name,
+                    )
+                    .expect("valid wire fields"),
+                    request_payload.clone(),
+                    Duration::from_secs(2),
+                )
+                .await
+                .expect("caller should receive response");
             assert_eq!(
                 response.payload(),
                 request_payload,
@@ -1390,16 +1440,19 @@ async fn single_service_communication_multiple_polls_and_callers() {
     let service_task: tokio::task::JoinHandle<Result<(), Error>> = {
         let service_expose_handle = router.messenger().await;
 
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node,
-            listener_instance_id,
-            listener_node_name,
-            Iface::native(),
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
+        let mut service = service_expose_handle
+            .expose_service(
+                &ServiceWireReceiver::new(
+                    listener_core_node,
+                    listener_instance_id,
+                    listener_node_name,
+                    Iface::native(),
+                    listener_service_name,
+                )
+                .expect("valid wire fields"),
+            )
+            .await
+            .expect("service should start");
 
         let call_count = Arc::clone(&call_count);
 
@@ -1471,20 +1524,23 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
                 let mut caller_results = Vec::with_capacity(requests.len());
                 for (request_idx, request_payload) in requests {
-                    let response = ServiceMessenger::poll(
-                        &caller_handle,
-                        CALLER_CORE_NODE,
-                        &caller_id,
-                        listener_node_name,
-                        Iface::native(),
-                        listener_service_name,
-                        None,
-                        Some(listener_instance_id),
-                        request_payload.clone(),
-                        Duration::from_secs(1),
-                    )
-                    .await
-                    .expect("caller should receive response");
+                    let response = caller_handle
+                        .poll_service(
+                            &ServiceWireSender::new(
+                                CALLER_CORE_NODE,
+                                &caller_id,
+                                None,
+                                Some(listener_instance_id),
+                                listener_node_name,
+                                Iface::native(),
+                                listener_service_name,
+                            )
+                            .expect("valid wire fields"),
+                            request_payload.clone(),
+                            Duration::from_secs(1),
+                        )
+                        .await
+                        .expect("caller should receive response");
 
                     caller_results.push((
                         caller_id.clone(),
