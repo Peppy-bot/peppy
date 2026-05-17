@@ -233,8 +233,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            None,
-            None,
+            Iface.native(),
             "move",
         )
         iface_action = await ActionMessenger.expose(
@@ -242,8 +241,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            "arm",
-            "v1",
+            Iface.conformed("arm", "v1"),
             "move",
         )
 
@@ -271,8 +269,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            None,
-            None,
+            Iface.native(),
             "move",
             CORE_NODE,
             INSTANCE_ID,
@@ -287,8 +284,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            "arm",
-            "v1",
+            Iface.conformed("arm", "v1"),
             "move",
             CORE_NODE,
             INSTANCE_ID,
