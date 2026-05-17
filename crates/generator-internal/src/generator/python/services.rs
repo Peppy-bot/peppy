@@ -18,7 +18,7 @@ use config::node::{ConsumedService, ExposedService, MessageFormat};
 pub(crate) fn iface_python_expr(origin: Option<&InterfaceOrigin>) -> String {
     match origin {
         Some(o) => format!(
-            "peppylib.Iface.conformed(\"{}\", \"{}\")",
+            "peppylib.Iface.conformed({:?}, {:?})",
             o.iface_name, o.iface_tag
         ),
         None => String::from("peppylib.Iface.native()"),

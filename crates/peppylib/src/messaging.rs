@@ -28,8 +28,8 @@ use config::node::QoSProfile;
 use pmi::{
     ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
     PeppyMessagingInterfaceError, PublisherQoS, ServiceWireReceiver, ServiceWireSender,
-    Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender, ZenohAdapter,
-    ZenohNetProtocol,
+    SubscriberQoS, Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender,
+    ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -376,5 +376,18 @@ impl MessengerHandle {
             feedback_publisher_factory,
             result_service,
         })
+    }
+
+    pub(crate) async fn subscribe_action_feedback(
+        &self,
+        sender: &ActionWireSender,
+        goal_id: &str,
+        qos: SubscriberQoS,
+    ) -> Result<PmiSubscription> {
+        let messenger = self.messenger.lock().await;
+        messenger
+            .subscribe_action_feedback(sender, goal_id, qos)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
     }
 }

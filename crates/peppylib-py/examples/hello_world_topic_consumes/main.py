@@ -62,7 +62,7 @@ async def main():
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 print(
                     f"[{timestamp}] Received `{payload}` from instance_id `{maybe_msg.instance_id}` "
-                    f"and core_node `{maybe_msg.core_node}` with key_expr `{maybe_msg.key_expr}`"
+                    f"and core_node `{maybe_msg.core_node}`"
                 )
             else:
                 print("Subscription closed by sender.")

@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
-use pmi::{ActionWireReceiver, ActionWireSender, Iface, MessengerBackend, PublisherQoS};
+use pmi::{ActionWireReceiver, ActionWireSender, Iface, PublisherQoS};
 use std::sync::Arc;
 use tokio::time::Duration;
 
@@ -360,13 +360,9 @@ impl ActionMessenger {
             to_action_name,
         )?;
 
-        let feedback_subscription = {
-            let messenger_guard = messenger.messenger.lock().await;
-            messenger_guard
-                .subscribe_action_feedback(&sender, &goal_id, feedback_qos.into())
-                .await
-                .map_err(Error::PeppyMessagingInterface)?
-        };
+        let feedback_subscription = messenger
+            .subscribe_action_feedback(&sender, &goal_id, feedback_qos.into())
+            .await?;
 
         let goal_response = messenger
             .poll_service(&sender.goal_service(), goal_payload, goal_timeout)
