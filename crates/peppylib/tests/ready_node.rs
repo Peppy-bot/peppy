@@ -5,7 +5,7 @@ use common::{
 };
 use peppylib::messaging::Iface;
 use peppylib::{
-    messaging::{MessengerHandle, ServiceWireSender},
+    messaging::{MessengerHandle, ServiceMessenger},
     services::ready::listen_for_node_ready,
     types::Payload,
 };
@@ -48,24 +48,20 @@ async fn ready_node() {
     ];
 
     for (target_core_node, target_instance_id) in target_combinations {
-        let response = client
-            .caller_handle
-            .poll_service(
-                &ServiceWireSender::new(
-                    &client.core_node_name,
-                    CALLER_INSTANCE_ID,
-                    target_core_node,
-                    target_instance_id,
-                    TEST_NODE_NAME,
-                    Iface::native(),
-                    peppylib::messaging::NODE_READY_SERVICE,
-                )
-                .expect("valid wire fields"),
-                request_payload.clone(),
-                Duration::from_secs(2),
-            )
-            .await
-            .expect("caller should receive response");
+        let response = ServiceMessenger::poll(
+            &client.caller_handle,
+            &client.core_node_name,
+            CALLER_INSTANCE_ID,
+            TEST_NODE_NAME,
+            Iface::native(),
+            peppylib::messaging::NODE_READY_SERVICE,
+            target_core_node,
+            target_instance_id,
+            request_payload.clone(),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("caller should receive response");
 
         assert_eq!(response.payload(), &request_payload);
         assert_eq!(response.core_node(), client.core_node_name);

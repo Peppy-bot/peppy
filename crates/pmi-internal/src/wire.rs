@@ -209,15 +209,14 @@ impl fmt::Display for IfaceError {
 
 impl std::error::Error for IfaceError {}
 
-/// Discriminator for service-shaped traffic, internal to the wire crate.
-/// External callers always work with plain services; action sub-services are
-/// produced by [`ActionWireSender`] / [`ActionWireReceiver`] and never need to
-/// name the kind explicitly.
+/// Discriminator for service-shaped traffic. Replaces the stringly-typed
+/// `message_type: &str` (`"service"` / `"action"`) parameter previously
+/// threaded through call sites.
 ///
 /// On the wire, `Service` produces `service/{node}/.../{name}` while action
 /// variants produce `action/{node}/.../{name}/{goal|cancel|result}`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum ServiceKind {
+pub enum ServiceKind {
     Service,
     ActionGoal,
     ActionCancel,
@@ -226,7 +225,7 @@ pub(crate) enum ServiceKind {
 
 impl ServiceKind {
     /// First segment of the service root (`"service"` or `"action"`).
-    pub(crate) fn root_segment(self) -> &'static str {
+    pub fn root_segment(self) -> &'static str {
         match self {
             ServiceKind::Service => "service",
             ServiceKind::ActionGoal | ServiceKind::ActionCancel | ServiceKind::ActionResult => {
@@ -237,7 +236,7 @@ impl ServiceKind {
 
     /// Trailing segment appended after the service name for action sub-services,
     /// or `None` for a plain service.
-    pub(crate) fn suffix(self) -> Option<&'static str> {
+    pub fn suffix(self) -> Option<&'static str> {
         match self {
             ServiceKind::Service => None,
             ServiceKind::ActionGoal => Some("goal"),
@@ -341,6 +340,7 @@ impl ServiceWireSender {
         to_node_name: &str,
         iface: Iface,
         to_service_name: &str,
+        kind: ServiceKind,
     ) -> crate::error::Result<Self> {
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
@@ -350,7 +350,7 @@ impl ServiceWireSender {
             to_node_name: Segment::try_from(to_node_name)?,
             iface,
             to_service_name: Segment::try_from(to_service_name)?,
-            kind: ServiceKind::Service,
+            kind,
         })
     }
 
@@ -382,6 +382,7 @@ impl ServiceWireReceiver {
         as_node_name: &str,
         iface: Iface,
         as_service_name: &str,
+        kind: ServiceKind,
     ) -> crate::error::Result<Self> {
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
@@ -389,7 +390,7 @@ impl ServiceWireReceiver {
             as_node_name: Segment::try_from(as_node_name)?,
             iface,
             as_service_name: Segment::try_from(as_service_name)?,
-            kind: ServiceKind::Service,
+            kind,
         })
     }
 }

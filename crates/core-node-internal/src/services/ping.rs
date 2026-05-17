@@ -4,7 +4,7 @@ use core_node_api::encoding::{PingRequest, PingResponse};
 use peppylib::messaging::Iface;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceWireReceiver};
+use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -14,15 +14,15 @@ pub async fn listen_for_ping(
     instance_id: &str,
     node_name: &str,
 ) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = messenger
-        .expose_service(&ServiceWireReceiver::new(
-            core_node_node,
-            instance_id,
-            node_name,
-            Iface::native(),
-            names::PING,
-        )?)
-        .await?;
+    let mut endpoint = ServiceMessenger::listen(
+        messenger,
+        core_node_node,
+        instance_id,
+        node_name,
+        Iface::native(),
+        names::PING,
+    )
+    .await?;
 
     let handle = tokio::spawn(async move {
         endpoint

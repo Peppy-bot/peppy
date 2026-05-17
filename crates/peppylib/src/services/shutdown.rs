@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, oneshot};
 use tracing::debug;
 
-use crate::messaging::{Iface, ServiceRequestContext, ServiceWireReceiver};
-use crate::{MessengerHandle, PeppyError, PeppyResult};
+use crate::messaging::{Iface, ServiceRequestContext};
+use crate::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 
 /// Receiver for shutdown signals. When a shutdown request is received by the service,
 /// this receiver will complete.
@@ -19,14 +19,15 @@ pub async fn listen_for_shutdown(
     instance_id: &str,
     node_name: &str,
 ) -> PeppyResult<(TaskHandle<PeppyResult<()>>, ShutdownReceiver)> {
-    let recv = ServiceWireReceiver::new(
+    let mut endpoint = ServiceMessenger::listen(
+        messenger,
         core_node_node,
         instance_id,
         node_name,
         Iface::native(),
         super::super::messaging::SHUTDOWN_SERVICE,
-    )?;
-    let mut endpoint = messenger.expose_service(&recv).await?;
+    )
+    .await?;
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));

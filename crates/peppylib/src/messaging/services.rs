@@ -1,10 +1,16 @@
-use super::{SERVICE_ACK_PAYLOAD, encode_service_handler_error, is_service_probe_payload};
+use super::{
+    MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD,
+    encode_service_handler_error, is_service_probe_payload,
+};
 use crate::error::{Error, Result};
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
-use pmi::{Messenger, MessengerBackend, ServiceWireReceiver, Subscription, TopicMessage};
+use pmi::{
+    Iface, Messenger, MessengerBackend, ServiceKind, ServiceWireReceiver, ServiceWireSender,
+    Subscription, TopicMessage,
+};
 use std::{fmt, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::Duration};
 use tracing::{error, warn};
 
 /// Runs a service handler and converts any error into a protocol-level error payload.
@@ -22,6 +28,8 @@ where
         }
     }
 }
+
+pub struct ServiceMessenger;
 
 /// Server-side endpoint for a single service. Holds the four broadcast-Cartesian
 /// listen subscriptions plus the addressing context needed to validate incoming
@@ -264,5 +272,100 @@ impl fmt::Debug for ServiceRequestContext {
             .field("instance_id", &self.message.instance_id())
             .field("request_id", &self.request_id)
             .finish()
+    }
+}
+
+impl ServiceMessenger {
+    /// Listening as a service is a 2-way stream, so the process that exposes
+    /// the service provides its own `instance_id`.
+    ///
+    /// `iface` must match the segments callers will use in [`Self::poll`];
+    /// pass [`Iface::native`] for native (non-conformed) services.
+    pub async fn listen(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_node_name: &str,
+        iface: Iface,
+        as_service_name: &str,
+    ) -> Result<ServiceEndpoint> {
+        let recv = ServiceWireReceiver::new(
+            as_core_node,
+            as_instance_id,
+            as_node_name,
+            iface,
+            as_service_name,
+            ServiceKind::Service,
+        )?;
+        messenger.expose_service(&recv).await
+    }
+
+    /// If `target_instance_id` is `None`, this call returns with the first
+    /// service instance that responds.
+    ///
+    /// `iface` must match the segments the responder used in [`Self::listen`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn poll(
+        messenger: &MessengerHandle,
+        bound_core_node: &str,
+        as_instance_id: &str,
+        target_node_name: &str,
+        iface: Iface,
+        target_service_name: &str,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
+        request_payload: Payload,
+        response_timeout: impl Into<Option<Duration>>,
+    ) -> Result<Message> {
+        let sender = ServiceWireSender::new(
+            bound_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
+            target_node_name,
+            iface,
+            target_service_name,
+            ServiceKind::Service,
+        )?;
+        messenger
+            .poll_service(&sender, request_payload, response_timeout)
+            .await
+    }
+
+    /// Sends a lightweight probe to check whether a service is listening.
+    ///
+    /// The probe is handled transparently by the service's request loop — the user
+    /// handler is never invoked. Returns `true` if the service responds within
+    /// [`PROBE_TIMEOUT`], `false` if unreachable.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn is_reachable(
+        messenger: &MessengerHandle,
+        bound_core_node: &str,
+        as_instance_id: &str,
+        target_node_name: &str,
+        iface: Iface,
+        target_service_name: &str,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
+    ) -> Result<bool> {
+        match Self::poll(
+            messenger,
+            bound_core_node,
+            as_instance_id,
+            target_node_name,
+            iface,
+            target_service_name,
+            target_core_node,
+            target_instance_id,
+            Payload::from_static(SERVICE_PROBE_PAYLOAD),
+            PROBE_TIMEOUT,
+        )
+        .await
+        {
+            Ok(_) => Ok(true),
+            Err(Error::ServiceUnreachable { .. }) => Ok(false),
+            Err(Error::ServiceTimeout { .. }) => Ok(true),
+            Err(e) => Err(e),
+        }
     }
 }

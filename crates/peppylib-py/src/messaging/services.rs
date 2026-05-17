@@ -1,6 +1,6 @@
+use peppylib::ServiceMessenger;
 use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, encode_service_handler_error};
 use peppylib::types::Payload;
-use peppylib::{ServiceWireReceiver, ServiceWireSender};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
@@ -166,15 +166,16 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
-            let recv = ServiceWireReceiver::new(
+            let endpoint = ServiceMessenger::listen(
+                &handle,
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
                 iface,
                 &as_service_name,
             )
-            .map_err(|e| to_py_err(e.into()))?;
-            let endpoint = handle.expose_service(&recv).await.map_err(to_py_err)?;
+            .await
+            .map_err(to_py_err)?;
             Ok(PyServiceEndpoint {
                 inner: Arc::new(Mutex::new(endpoint)),
             })
@@ -200,20 +201,18 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
-            let sender = ServiceWireSender::new(
+            let reachable = ServiceMessenger::is_reachable(
+                &handle,
                 &bound_core_node,
                 &as_instance_id,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
                 &target_node_name,
                 iface,
                 &target_service_name,
+                target_core_node.as_deref(),
+                target_instance_id.as_deref(),
             )
-            .map_err(|e| to_py_err(e.into()))?;
-            let reachable = handle
-                .is_service_reachable(&sender)
-                .await
-                .map_err(to_py_err)?;
+            .await
+            .map_err(to_py_err)?;
             Ok(reachable)
         })
     }
@@ -241,20 +240,20 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
-            let sender = ServiceWireSender::new(
+            let response = ServiceMessenger::poll(
+                &handle,
                 &bound_core_node,
                 &as_instance_id,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
                 &target_node_name,
                 iface,
                 &target_service_name,
+                target_core_node.as_deref(),
+                target_instance_id.as_deref(),
+                Payload::from(request_payload),
+                response_timeout,
             )
-            .map_err(|e| to_py_err(e.into()))?;
-            let response = handle
-                .poll_service(&sender, Payload::from(request_payload), response_timeout)
-                .await
-                .map_err(to_py_err)?;
+            .await
+            .map_err(to_py_err)?;
             Ok(PyTopicMessage::from(response))
         })
     }

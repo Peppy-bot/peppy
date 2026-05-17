@@ -606,7 +606,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_add_same_node_shutdown_existing_instances() {
-    use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceWireReceiver};
+    use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger};
     use std::sync::Arc;
     use tokio::sync::{Mutex, Notify, oneshot};
 
@@ -665,19 +665,16 @@ async fn node_add_same_node_shutdown_existing_instances() {
     let called_tx_1 = Arc::new(Mutex::new(Some(called_tx_1)));
     let allow_shutdown_1 = Arc::new(Notify::new());
     let allow_shutdown_1_clone = Arc::clone(&allow_shutdown_1);
-    let mut shutdown_endpoint_1 = instance_messenger
-        .expose_service(
-            &ServiceWireReceiver::new(
-                &started_core_node.core_node_name,
-                INSTANCE_1,
-                NODE_NAME,
-                Iface::native(),
-                SHUTDOWN_SERVICE,
-            )
-            .expect("valid wire fields"),
-        )
-        .await
-        .expect("failed to expose shutdown service for instance 1");
+    let mut shutdown_endpoint_1 = ServiceMessenger::listen(
+        &instance_messenger,
+        &started_core_node.core_node_name,
+        INSTANCE_1,
+        NODE_NAME,
+        Iface::native(),
+        SHUTDOWN_SERVICE,
+    )
+    .await
+    .expect("failed to expose shutdown service for instance 1");
     let _shutdown_task_1 = AbortOnDrop(peppylib::runtime::spawn({
         let called_tx_1 = Arc::clone(&called_tx_1);
         async move {
@@ -702,19 +699,16 @@ async fn node_add_same_node_shutdown_existing_instances() {
     let called_tx_2 = Arc::new(Mutex::new(Some(called_tx_2)));
     let allow_shutdown_2 = Arc::new(Notify::new());
     let allow_shutdown_2_clone = Arc::clone(&allow_shutdown_2);
-    let mut shutdown_endpoint_2 = instance_messenger
-        .expose_service(
-            &ServiceWireReceiver::new(
-                &started_core_node.core_node_name,
-                INSTANCE_2,
-                NODE_NAME,
-                Iface::native(),
-                SHUTDOWN_SERVICE,
-            )
-            .expect("valid wire fields"),
-        )
-        .await
-        .expect("failed to expose shutdown service for instance 2");
+    let mut shutdown_endpoint_2 = ServiceMessenger::listen(
+        &instance_messenger,
+        &started_core_node.core_node_name,
+        INSTANCE_2,
+        NODE_NAME,
+        Iface::native(),
+        SHUTDOWN_SERVICE,
+    )
+    .await
+    .expect("failed to expose shutdown service for instance 2");
     let _shutdown_task_2 = AbortOnDrop(peppylib::runtime::spawn({
         let called_tx_2 = Arc::clone(&called_tx_2);
         async move {
@@ -855,7 +849,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
-    use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceWireReceiver};
+    use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger};
     use std::sync::Arc;
     use tokio::sync::{Mutex, Notify, oneshot};
 
@@ -982,19 +976,16 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
     let called_tx = Arc::new(Mutex::new(Some(called_tx)));
     let allow_shutdown = Arc::new(Notify::new());
     let allow_shutdown_clone = Arc::clone(&allow_shutdown);
-    let mut shutdown_endpoint = instance_messenger
-        .expose_service(
-            &ServiceWireReceiver::new(
-                &started_core_node.core_node_name,
-                INSTANCE_ID,
-                DEPENDENCY_NODE_NAME,
-                Iface::native(),
-                SHUTDOWN_SERVICE,
-            )
-            .expect("valid wire fields"),
-        )
-        .await
-        .expect("failed to expose shutdown service");
+    let mut shutdown_endpoint = ServiceMessenger::listen(
+        &instance_messenger,
+        &started_core_node.core_node_name,
+        INSTANCE_ID,
+        DEPENDENCY_NODE_NAME,
+        Iface::native(),
+        SHUTDOWN_SERVICE,
+    )
+    .await
+    .expect("failed to expose shutdown service");
     let _shutdown_task = AbortOnDrop(peppylib::runtime::spawn({
         let called_tx = Arc::clone(&called_tx);
         async move {
@@ -1076,7 +1067,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
 async fn node_add_same_node_changing_interface_with_running_instance_and_dependents_fails() {
     // The instance is stopped first (shutdown succeeds), then push_config fails because
     // the new interface breaks the dependent. The stack is preserved with the old config.
-    use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceWireReceiver};
+    use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger};
     use std::sync::Arc;
 
     const DEPENDENCY_NODE_NAME: &str = "lidar_iface";
@@ -1199,19 +1190,16 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     // Shutdown succeeds; push_config then rejects the overwrite due to the interface change.
     let instance_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let mut shutdown_endpoint = instance_messenger
-        .expose_service(
-            &ServiceWireReceiver::new(
-                &started_core_node.core_node_name,
-                INSTANCE_ID,
-                DEPENDENCY_NODE_NAME,
-                Iface::native(),
-                SHUTDOWN_SERVICE,
-            )
-            .expect("valid wire fields"),
-        )
-        .await
-        .expect("failed to expose shutdown service");
+    let mut shutdown_endpoint = ServiceMessenger::listen(
+        &instance_messenger,
+        &started_core_node.core_node_name,
+        INSTANCE_ID,
+        DEPENDENCY_NODE_NAME,
+        Iface::native(),
+        SHUTDOWN_SERVICE,
+    )
+    .await
+    .expect("failed to expose shutdown service");
     let _shutdown_task = AbortOnDrop(peppylib::runtime::spawn(async move {
         shutdown_endpoint
             .handle_requests(|context| async move { Ok(context.message().payload()) })
@@ -1320,7 +1308,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
 /// The instance and stack must remain untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stopped_node_stuck() {
-    use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceWireReceiver};
+    use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger};
     use std::sync::Arc;
     use tokio::sync::Notify;
 
@@ -1431,19 +1419,16 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
     let never_unblock = Arc::new(Notify::new());
     let never_unblock_clone = Arc::clone(&never_unblock);
-    let mut shutdown_endpoint = instance_messenger
-        .expose_service(
-            &ServiceWireReceiver::new(
-                &started_core_node.core_node_name,
-                INSTANCE_ID,
-                DEPENDENCY_NODE_NAME,
-                Iface::native(),
-                SHUTDOWN_SERVICE,
-            )
-            .expect("valid wire fields"),
-        )
-        .await
-        .expect("failed to expose shutdown service");
+    let mut shutdown_endpoint = ServiceMessenger::listen(
+        &instance_messenger,
+        &started_core_node.core_node_name,
+        INSTANCE_ID,
+        DEPENDENCY_NODE_NAME,
+        Iface::native(),
+        SHUTDOWN_SERVICE,
+    )
+    .await
+    .expect("failed to expose shutdown service");
     let _shutdown_task = AbortOnDrop(peppylib::runtime::spawn(async move {
         shutdown_endpoint
             .handle_requests(move |context| {

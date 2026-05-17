@@ -3,7 +3,7 @@ use std::time::Duration;
 use config::node::QoSProfile;
 use core_node_api::encoding::{ClockResponse, ClockTick};
 use core_node_api::names;
-use peppylib::messaging::{Iface, MessengerHandle, ServiceWireReceiver, TopicMessenger};
+use peppylib::messaging::{Iface, MessengerHandle, ServiceMessenger, TopicMessenger};
 use peppylib::{subscribe_clock, synchronize};
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
@@ -14,19 +14,16 @@ use super::common::{CORE_NODE, SERVER_INSTANCE, start_router_and_runner, wait_un
 /// verbatim. The handler decodes the inbound `ClockRequest` to assert wire
 /// shape, even though it ignores the value.
 async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockResponse) {
-    let mut endpoint = server
-        .expose_service(
-            &ServiceWireReceiver::new(
-                CORE_NODE,
-                SERVER_INSTANCE,
-                CORE_NODE,
-                Iface::native(),
-                names::CLOCK,
-            )
-            .expect("valid wire fields"),
-        )
-        .await
-        .expect("listen should succeed");
+    let mut endpoint = ServiceMessenger::listen(
+        &server,
+        CORE_NODE,
+        SERVER_INSTANCE,
+        CORE_NODE,
+        Iface::native(),
+        names::CLOCK,
+    )
+    .await
+    .expect("listen should succeed");
 
     tokio::spawn(async move {
         endpoint

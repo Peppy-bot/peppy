@@ -1,6 +1,6 @@
 use config::consts::DEFAULT_MESSAGING_PORT;
 use names_generator2::get_random;
-use peppylib::{MessengerHandle, Payload, ServiceWireSender};
+use peppylib::{MessengerHandle, Payload, ServiceMessenger};
 use rand::rng;
 use std::time::Duration;
 use peppylib::messaging::Iface;
@@ -30,16 +30,15 @@ async fn main() {
     println!(
         "Sending service request as instance_id {as_instance_id} and core node {core_node}..."
     );
-    let response = sender_handle.poll_service(
-        &ServiceWireSender::new(
-            &core_node,
-            &as_instance_id,
-            None,
-            None,
-            POLL_NODE_NAME,
-            Iface::native(),
-            POLL_SERVICE_NAME,
-        ).expect("valid wire fields"),
+    let response = ServiceMessenger::poll(
+        &sender_handle,
+        &core_node,
+        &as_instance_id,
+        POLL_NODE_NAME,
+        Iface::native(),
+        POLL_SERVICE_NAME,
+        None, // target_core_node - not needed
+        None, // target_instance_id - we don't need to point to a particular instance, any would work
         request_payload,
         Duration::from_secs(3),
     )

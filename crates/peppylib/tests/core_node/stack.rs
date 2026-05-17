@@ -6,7 +6,7 @@ use core_node_api::{
     InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
     SerializedNodeGraph,
 };
-use peppylib::messaging::{MessengerHandle, ServiceWireReceiver};
+use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::runtime::NodeRunner;
 use peppylib::stack_list;
 use pmi::ZenohdInstance;
@@ -19,19 +19,16 @@ use peppylib::messaging::Iface;
 /// as JSON, and `dot_graph` only when the inbound request asked for it.
 async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph, dot_graph: &str) {
     let dot_graph = dot_graph.to_string();
-    let mut endpoint = server
-        .expose_service(
-            &ServiceWireReceiver::new(
-                CORE_NODE,
-                SERVER_INSTANCE,
-                CORE_NODE,
-                Iface::native(),
-                names::STACK_LIST,
-            )
-            .expect("valid wire fields"),
-        )
-        .await
-        .expect("listen should succeed");
+    let mut endpoint = ServiceMessenger::listen(
+        &server,
+        CORE_NODE,
+        SERVER_INSTANCE,
+        CORE_NODE,
+        Iface::native(),
+        names::STACK_LIST,
+    )
+    .await
+    .expect("listen should succeed");
 
     tokio::spawn(async move {
         endpoint

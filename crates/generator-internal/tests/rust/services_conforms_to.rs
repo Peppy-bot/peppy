@@ -1,6 +1,6 @@
 //! Generator-level test that a node exposing the same service `control` both
 //! natively and via two conformed interfaces (`camera:v1`, `arm:v2`) produces
-//! distinct generated files AND each `ServiceWireReceiver::new` call inside
+//! distinct generated files AND each `ServiceMessenger::listen` call inside
 //! those files passes the matching `iface_name`/`iface_tag` literals (or
 //! `"_"`/`"_"` for the native one).
 
@@ -66,7 +66,7 @@ const NODE_CONFIG: &str = r#"{
 ///      native artifact stays flat at `exposed_services/control.rs`.
 ///   2. The category `exposed_services.rs` declares the native leaf and one
 ///      module entry per conforming interface.
-///   3. Each leaf calls `peppylib::ServiceWireReceiver::new` with the matching
+///   3. Each leaf calls `peppylib::ServiceMessenger::listen` with the matching
 ///      `iface_name`/`iface_tag` literals (and two `"_"` args for native).
 ///   4. Per-interface marker fields land in the right file (no cross-wiring).
 #[test]
@@ -116,8 +116,8 @@ fn nests_conformed_services_under_iface_name_and_tag() {
 
     let native_src = fs::read_to_string(&native_path).expect("read native");
     assert!(
-        native_src.contains("ServiceWireReceiver::new"),
-        "native source should call ServiceWireReceiver::new:\n{native_src}",
+        native_src.contains("ServiceMessenger::listen"),
+        "native source should call ServiceMessenger::listen:\n{native_src}",
     );
     let native_underscore_count = native_src.matches("\"_\"").count();
     assert!(

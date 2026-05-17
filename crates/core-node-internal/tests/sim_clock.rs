@@ -13,7 +13,7 @@ use config::node::QoSProfile;
 use core_node::names;
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
 use peppylib::messaging::Iface;
-use peppylib::{ServiceWireSender, TopicMessenger};
+use peppylib::{ServiceMessenger, TopicMessenger};
 use std::time::{Duration, Instant};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -21,23 +21,19 @@ async fn sim_clock_service_returns_not_ready_until_first_tick() {
     let started = start_core_node_with_sim_clock().await;
 
     let request_payload = ClockRequest::new(0).encode().expect("encode succeeds");
-    let response = started
-        .caller_handle
-        .poll_service(
-            &ServiceWireSender::new(
-                &started.core_node_name,
-                CALLER_INSTANCE_ID,
-                Some(&started.core_node_name),
-                None,
-                &started.core_node_name,
-                Iface::native(),
-                names::CLOCK,
-            )
-            .expect("valid wire fields"),
-            request_payload,
-            Duration::from_secs(2),
-        )
-        .await;
+    let response = ServiceMessenger::poll(
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started.core_node_name,
+        Iface::native(),
+        names::CLOCK,
+        Some(&started.core_node_name),
+        None,
+        request_payload,
+        Duration::from_secs(2),
+    )
+    .await;
 
     let err = response.expect_err("empty cache must reject the synchronize request");
     let message = err.to_string();
@@ -82,23 +78,19 @@ async fn sim_clock_service_serves_external_tick_after_publish() {
             .saturating_duration_since(Instant::now())
             .min(Duration::from_secs(2));
         let request_payload = ClockRequest::new(0).encode().expect("encode request");
-        let attempt = started
-            .caller_handle
-            .poll_service(
-                &ServiceWireSender::new(
-                    &started.core_node_name,
-                    CALLER_INSTANCE_ID,
-                    Some(&started.core_node_name),
-                    None,
-                    &started.core_node_name,
-                    Iface::native(),
-                    names::CLOCK,
-                )
-                .expect("valid wire fields"),
-                request_payload,
-                attempt_timeout,
-            )
-            .await;
+        let attempt = ServiceMessenger::poll(
+            &started.caller_handle,
+            &started.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started.core_node_name,
+            Iface::native(),
+            names::CLOCK,
+            Some(&started.core_node_name),
+            None,
+            request_payload,
+            attempt_timeout,
+        )
+        .await;
         match attempt {
             Ok(resp) => break resp,
             Err(e) => {

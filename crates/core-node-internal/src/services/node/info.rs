@@ -14,7 +14,7 @@ use node_stack::NodeStack;
 use peppylib::messaging::Iface;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceWireReceiver};
+use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::{sync::Arc, time::Duration};
@@ -30,15 +30,15 @@ pub async fn listen_for_node_info(
     peppy_dirs: PeppyDirs,
     timeout: Duration,
 ) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = messenger
-        .expose_service(&ServiceWireReceiver::new(
-            core_node_name,
-            instance_id,
-            node_name,
-            Iface::native(),
-            names::NODE_INFO,
-        )?)
-        .await?;
+    let mut endpoint = ServiceMessenger::listen(
+        messenger,
+        core_node_name,
+        instance_id,
+        node_name,
+        Iface::native(),
+        names::NODE_INFO,
+    )
+    .await?;
 
     let handle = tokio::spawn(async move {
         endpoint

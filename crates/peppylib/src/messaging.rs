@@ -10,24 +10,26 @@ pub use actions::{
     ActionMessenger, DeclaredFeedback, EmptyPayloadError, NonEmptyPayload, generate_goal_id,
     unwrap_goal_payload, wrap_goal_payload,
 };
-pub use services::{ServiceEndpoint, ServiceRequestContext, ServiceResponder};
+pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
-// Public re-exports. `Iface` / `IfaceError` describe the shape of messaging
-// calls and surface in user-facing peppylib APIs. `ActionWireSender` is
-// exposed because peppylib-py caches one to drive subsequent cancel / result
-// calls without locking. `ServiceWireSender` / `ServiceWireReceiver` are the
-// caller-built addressing structs that flow into `MessengerHandle::poll_service`
-// and `MessengerHandle::expose_service`.
-pub use pmi::{ActionWireSender, Iface, IfaceError, ServiceWireReceiver, ServiceWireSender};
+// Public re-exports. `Iface` / `IfaceError` / `ServiceKind` describe the
+// shape of messaging calls and surface in user-facing peppylib APIs.
+// `ActionWireSender` is exposed because peppylib-py caches one to drive
+// subsequent cancel / result calls without locking. The other wire structs
+// (TopicWire*, ServiceWire*, ActionWireReceiver) are internal to peppylib's
+// own messaging implementation — each submodule imports them directly from
+// `pmi::`.
+pub use pmi::{ActionWireSender, Iface, IfaceError, ServiceKind};
 
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{
     ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    PeppyMessagingInterfaceError, PublisherQoS, Subscription as PmiSubscription, TopicWireReceiver,
-    TopicWireSender, ZenohAdapter, ZenohNetProtocol,
+    PeppyMessagingInterfaceError, PublisherQoS, ServiceWireReceiver, ServiceWireSender,
+    Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender, ZenohAdapter,
+    ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -228,7 +230,10 @@ impl MessengerHandle {
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    pub async fn expose_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceEndpoint> {
+    pub(crate) async fn expose_service(
+        &self,
+        recv: &ServiceWireReceiver,
+    ) -> Result<ServiceEndpoint> {
         let subscriptions = {
             let messenger = self.messenger.lock().await;
             messenger
@@ -243,7 +248,7 @@ impl MessengerHandle {
         ))
     }
 
-    pub async fn poll_service(
+    pub(crate) async fn poll_service(
         &self,
         sender: &ServiceWireSender,
         request_payload: Payload,
@@ -343,27 +348,6 @@ impl MessengerHandle {
         }
 
         Ok(response)
-    }
-
-    /// Sends a lightweight probe to check whether a service is listening.
-    ///
-    /// The probe is handled transparently by the service's request loop, so
-    /// the user handler is never invoked. Returns `true` if the service
-    /// responds within [`PROBE_TIMEOUT`], `false` if unreachable.
-    pub async fn is_service_reachable(&self, sender: &ServiceWireSender) -> Result<bool> {
-        match self
-            .poll_service(
-                sender,
-                Payload::from_static(SERVICE_PROBE_PAYLOAD),
-                PROBE_TIMEOUT,
-            )
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(Error::ServiceUnreachable { .. }) => Ok(false),
-            Err(Error::ServiceTimeout { .. }) => Ok(true),
-            Err(e) => Err(e),
-        }
     }
 
     pub(crate) async fn expose_action(&self, recv: &ActionWireReceiver) -> Result<ActionCreation> {

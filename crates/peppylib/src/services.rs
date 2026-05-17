@@ -2,10 +2,10 @@ pub mod health;
 pub mod ready;
 pub mod shutdown;
 
-use crate::messaging::{Iface, ServiceRequestContext, ServiceWireReceiver};
+use crate::messaging::{Iface, ServiceRequestContext};
 use crate::runtime::TaskHandle;
 use crate::types::Payload;
-use crate::{MessengerHandle, PeppyResult};
+use crate::{MessengerHandle, PeppyResult, ServiceMessenger};
 use tracing::debug;
 
 /// Starts a service that echoes each request's payload back as the response.
@@ -19,14 +19,15 @@ pub(crate) async fn listen_for_echo_service(
     service_name: &str,
     log_label: &'static str,
 ) -> PeppyResult<TaskHandle<PeppyResult<()>>> {
-    let recv = ServiceWireReceiver::new(
+    let mut endpoint = ServiceMessenger::listen(
+        messenger,
         core_node,
         instance_id,
         node_name,
         Iface::native(),
         service_name,
-    )?;
-    let mut endpoint = messenger.expose_service(&recv).await?;
+    )
+    .await?;
 
     let handle = crate::runtime::spawn(async move {
         endpoint

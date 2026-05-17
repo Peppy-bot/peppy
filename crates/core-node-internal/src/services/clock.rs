@@ -4,7 +4,7 @@ use config::node::QoSProfile;
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
 use peppylib::messaging::{Iface, ServiceRequestContext, Subscription, TopicPublisher};
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceWireReceiver, TopicMessenger};
+use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger, TopicMessenger};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -67,15 +67,15 @@ pub async fn listen_for_clock(
     node_name: &str,
     source: Arc<dyn ClockSource>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = messenger
-        .expose_service(&ServiceWireReceiver::new(
-            core_node_node,
-            instance_id,
-            node_name,
-            Iface::native(),
-            names::CLOCK,
-        )?)
-        .await?;
+    let mut endpoint = ServiceMessenger::listen(
+        messenger,
+        core_node_node,
+        instance_id,
+        node_name,
+        Iface::native(),
+        names::CLOCK,
+    )
+    .await?;
 
     let handle = tokio::spawn(async move {
         endpoint

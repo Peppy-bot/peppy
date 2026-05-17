@@ -4,7 +4,7 @@ use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
 use config::consts::DEFAULT_MESSAGING_PORT;
 use core_node::names;
 use core_node_api::encoding::{InfoRequest, InfoResponse};
-use peppylib::ServiceWireSender;
+use peppylib::ServiceMessenger;
 use peppylib::messaging::Iface;
 use std::time::Duration;
 
@@ -16,24 +16,20 @@ async fn listen_for_info_success() {
     let info_request = InfoRequest::new();
     let request_payload = info_request.encode().expect("encode should succeed");
 
-    let response = started
-        .caller_handle
-        .poll_service(
-            &ServiceWireSender::new(
-                &started.core_node_name,
-                CALLER_INSTANCE_ID,
-                Some(&started.core_node_name),
-                None,
-                &started.core_node_name,
-                Iface::native(),
-                names::INFO,
-            )
-            .expect("valid wire fields"),
-            request_payload,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("info request should succeed");
+    let response = ServiceMessenger::poll(
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started.core_node_name,
+        Iface::native(),
+        names::INFO,
+        Some(&started.core_node_name),
+        None,
+        request_payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("info request should succeed");
 
     let info_response = InfoResponse::decode(&response.payload()).expect("decode should succeed");
 
