@@ -294,7 +294,7 @@ impl MockAdapter {
         messages: &MessageLog,
         subscriptions: &SubscriptionMap,
     ) -> Result<()> {
-        Self::to_response_message(message)?;
+        let response = Self::to_response_message(message)?;
 
         {
             let mut messages = messages.lock().unwrap();
@@ -316,7 +316,7 @@ impl MockAdapter {
         };
 
         for sender in senders {
-            let _ = sender.send(Self::to_response_message(message)?).await;
+            let _ = sender.send(response.clone()).await;
         }
         Ok(())
     }

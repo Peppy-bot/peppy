@@ -2,8 +2,8 @@ use peppylib::messaging::{Iface, IfaceError};
 use pyo3::PyResult;
 use pyo3::exceptions::PyValueError;
 
-fn iface_error_to_py(_err: IfaceError) -> pyo3::PyErr {
-    PyValueError::new_err("iface_name and iface_tag must both be set or both be None")
+fn iface_error_to_py(err: IfaceError) -> pyo3::PyErr {
+    PyValueError::new_err(err.to_string())
 }
 
 /// Resolve optional `iface_name`/`iface_tag` Python arguments into an [`Iface`].

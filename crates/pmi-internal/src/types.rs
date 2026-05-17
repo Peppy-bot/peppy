@@ -360,6 +360,7 @@ impl PartialEq<Payload> for bytes::Bytes {
 }
 
 /// Envelope for messages travelling through the transport layer.
+#[derive(Clone)]
 pub struct TopicMessage {
     key_expr: String,
     instance_id: String,
@@ -475,7 +476,8 @@ impl Messenger {
 }
 
 /// Per-topic publisher handle that bypasses the central `Messenger` mutex.
-/// Construct via [`Messenger::declare_publisher`].
+/// Construct via [`Messenger::declare_topic_publisher`] (or
+/// [`Messenger::declare_action_feedback_publisher`] for action feedback).
 pub enum MessengerPublisher {
     #[cfg(feature = "zenoh")]
     Zenoh(ZenohPublisher),

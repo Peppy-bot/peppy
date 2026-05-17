@@ -179,6 +179,27 @@ fn parse_topic_keyexpr_empty_instance_id_errors() {
     ));
 }
 
+#[test]
+fn parse_topic_keyexpr_rejects_wildcard_in_caller_core_node() {
+    // A bare `*` at the caller-core position is never produced by topic_publish
+    // (Segment validation forbids it). Surfacing it as a real address would be
+    // a silent protocol violation, so parse must reject it.
+    let err = WireFormat::parse_topic_keyexpr("a/*/c/d/rest").unwrap_err();
+    assert!(matches!(
+        err,
+        WireParseError::WildcardInCallerSegment("caller_core_node")
+    ));
+}
+
+#[test]
+fn parse_topic_keyexpr_rejects_wildcard_in_caller_instance_id() {
+    let err = WireFormat::parse_topic_keyexpr("a/b/c/*/rest").unwrap_err();
+    assert!(matches!(
+        err,
+        WireParseError::WildcardInCallerSegment("caller_instance_id")
+    ));
+}
+
 // ─── Services — listen patterns ───────────────────────────────────────────
 
 fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {

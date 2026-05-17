@@ -11,7 +11,7 @@ use pmi::{
 };
 use std::{fmt, sync::Arc};
 use tokio::{sync::Mutex, time::Duration};
-use tracing::error;
+use tracing::{error, warn};
 
 /// Runs a service handler and converts any error into a protocol-level error payload.
 async fn run_handler<F, Fut>(handler: F, context: ServiceRequestContext) -> Payload
@@ -174,9 +174,16 @@ impl ServiceEndpoint {
                             // Auto-handle probes: respond immediately without invoking
                             // the user handler, so is_reachable() checks are transparent.
                             if is_service_probe_payload(context.message().payload().as_ref()) {
-                                let _ = self
+                                if let Err(err) = self
                                     .publish_response(&received_keyexpr, Payload::new())
-                                    .await;
+                                    .await
+                                {
+                                    warn!(
+                                        %received_keyexpr,
+                                        %err,
+                                        "failed to publish probe response"
+                                    );
+                                }
                                 continue;
                             }
                             return Ok((context, received_keyexpr));

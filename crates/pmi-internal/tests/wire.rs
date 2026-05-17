@@ -19,18 +19,38 @@ use tokio::sync::Mutex;
 
 static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
 
+const RECV_TIMEOUT: Duration = Duration::from_secs(5);
+
 async fn wait_for_subscriber_discovery() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 }
 
+/// Awaits the next message on `sub` or fails the test after `RECV_TIMEOUT`. The
+/// `label` is included in the panic message so reviewers can identify which
+/// receiver stalled in CI.
+async fn recv_or_timeout(sub: &mut Subscription, label: &str) -> TopicMessage {
+    tokio::time::timeout(RECV_TIMEOUT, sub.rx.recv())
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for message on {label}"))
+        .unwrap_or_else(|| panic!("channel closed before message on {label}"))
+}
+
 /// Waits for the next message from any of the four service listen patterns.
+/// Panics with the offending arm name on timeout.
 async fn select_listen(subs: &mut [Subscription; 4]) -> TopicMessage {
     let [s0, s1, s2, s3] = subs;
-    tokio::select! {
-        Some(msg) = s0.rx.recv() => msg,
-        Some(msg) = s1.rx.recv() => msg,
-        Some(msg) = s2.rx.recv() => msg,
-        Some(msg) = s3.rx.recv() => msg,
+    let result = tokio::time::timeout(RECV_TIMEOUT, async {
+        tokio::select! {
+            Some(msg) = s0.rx.recv() => ("s0", msg),
+            Some(msg) = s1.rx.recv() => ("s1", msg),
+            Some(msg) = s2.rx.recv() => ("s2", msg),
+            Some(msg) = s3.rx.recv() => ("s3", msg),
+        }
+    })
+    .await;
+    match result {
+        Ok((_label, msg)) => msg,
+        Err(_) => panic!("timed out waiting for message on any of s0/s1/s2/s3"),
     }
 }
 
@@ -81,7 +101,7 @@ async fn topic_native_roundtrip() {
         .await
         .unwrap();
 
-    let received = sub.rx.recv().await.expect("topic message");
+    let received = recv_or_timeout(&mut sub, "topic_native_roundtrip sub").await;
     assert_eq!(received.payload(), &body);
     assert_eq!(received.core_node(), "core_pub");
     assert_eq!(received.instance_id(), "publisher_inst");
@@ -133,7 +153,7 @@ async fn topic_iface_roundtrip() {
         .await
         .unwrap();
 
-    let received = sub.rx.recv().await.expect("topic message");
+    let received = recv_or_timeout(&mut sub, "topic_iface_roundtrip sub").await;
     assert_eq!(received.payload(), &body);
 }
 
@@ -183,7 +203,7 @@ async fn topic_wildcard_subscriber() {
         .await
         .unwrap();
 
-    let received = sub.rx.recv().await.expect("topic message");
+    let received = recv_or_timeout(&mut sub, "topic_wildcard_subscriber sub").await;
     assert_eq!(received.payload(), &body);
 }
 
@@ -258,7 +278,7 @@ async fn run_service_roundtrip(sender: ServiceWireSender) {
         .unwrap();
 
     // Client: receive response.
-    let response = response_sub.rx.recv().await.expect("response");
+    let response = recv_or_timeout(&mut response_sub, "service response_sub").await;
     assert_eq!(response.payload(), &response_body);
 }
 
@@ -371,7 +391,7 @@ async fn action_goal_feedback_result() {
         .unwrap();
 
     // Client receives goal response.
-    let goal_response = goal_response_sub.rx.recv().await.expect("goal response");
+    let goal_response = recv_or_timeout(&mut goal_response_sub, "goal_response_sub").await;
     assert_eq!(
         goal_response.payload(),
         &Bytes::from_static(b"goal_accepted")
@@ -388,7 +408,7 @@ async fn action_goal_feedback_result() {
         .unwrap();
 
     // Client receives feedback.
-    let feedback = feedback_sub.rx.recv().await.expect("feedback");
+    let feedback = recv_or_timeout(&mut feedback_sub, "feedback_sub").await;
     assert_eq!(feedback.payload(), &Bytes::from_static(b"progress=0.5"));
 
     // Client polls result service.
@@ -408,7 +428,7 @@ async fn action_goal_feedback_result() {
         )
         .await
         .unwrap();
-    let result_response = result_response_sub.rx.recv().await.expect("result");
+    let result_response = recv_or_timeout(&mut result_response_sub, "result_response_sub").await;
     assert_eq!(
         result_response.payload(),
         &Bytes::from_static(b"result=done")
@@ -451,6 +471,6 @@ async fn action_cancel_roundtrip() {
         .await
         .unwrap();
 
-    let response = cancel_response_sub.rx.recv().await.expect("response");
+    let response = recv_or_timeout(&mut cancel_response_sub, "cancel_response_sub").await;
     assert_eq!(response.payload(), &Bytes::from_static(b"cancel_accepted"));
 }

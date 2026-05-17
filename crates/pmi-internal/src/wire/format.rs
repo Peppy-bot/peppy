@@ -32,17 +32,9 @@ impl WireFormat {
     pub(crate) fn parse_topic_keyexpr(keyexpr: &str) -> Result<ParsedTopicKey, WireParseError> {
         let mut segments = keyexpr.splitn(5, '/');
         let _target_core = segments.next();
-        let core_node = segments
-            .next()
-            .filter(|s| !s.is_empty())
-            .ok_or(WireParseError::MissingSegment("caller_core_node"))?
-            .to_string();
+        let core_node = extract_caller_segment(segments.next(), "caller_core_node")?;
         let _target_instance = segments.next();
-        let instance_id = segments
-            .next()
-            .filter(|s| !s.is_empty())
-            .ok_or(WireParseError::MissingSegment("caller_instance_id"))?
-            .to_string();
+        let instance_id = extract_caller_segment(segments.next(), "caller_instance_id")?;
         Ok(ParsedTopicKey {
             core_node,
             instance_id,
@@ -228,6 +220,23 @@ impl WireFormat {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
+/// Pulls a caller-identity segment out of a topic keyexpr, rejecting both
+/// missing/empty values and the single-chunk wildcard. The publish wire format
+/// never places `*` in caller slots, so observing one means the keyexpr is
+/// malformed and must not surface to consumers as a real address.
+fn extract_caller_segment(
+    segment: Option<&str>,
+    field: &'static str,
+) -> Result<String, WireParseError> {
+    let value = segment
+        .filter(|s| !s.is_empty())
+        .ok_or(WireParseError::MissingSegment(field))?;
+    if value == SINGLE_CHUNK_WILDCARD {
+        return Err(WireParseError::WildcardInCallerSegment(field));
+    }
+    Ok(value.to_string())
+}
+
 /// Builds the service_root segment. For action sub-services, appends the
 /// `goal` / `cancel` / `result` suffix.
 fn service_root(node: &str, iface: &Iface, name: &str, kind: ServiceKind) -> String {
@@ -270,6 +279,7 @@ pub(crate) struct ParsedRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WireParseError {
     MissingSegment(&'static str),
+    WildcardInCallerSegment(&'static str),
     UnexpectedTrailing,
     NotARequest,
     ServiceRootMismatch { expected: String, got: String },
@@ -279,6 +289,10 @@ impl fmt::Display for WireParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingSegment(segment) => write!(f, "missing `{segment}` segment in request"),
+            Self::WildcardInCallerSegment(segment) => write!(
+                f,
+                "caller segment `{segment}` must not be the single-chunk wildcard `*`"
+            ),
             Self::UnexpectedTrailing => {
                 f.write_str("request contains unexpected trailing segments")
             }

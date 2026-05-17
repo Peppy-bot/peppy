@@ -13,9 +13,24 @@ mod zenoh_tests {
     /// without adding time-based probes.
     static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
 
+    const RECV_TIMEOUT: Duration = Duration::from_secs(5);
+
     /// Small delay to allow Zenoh's subscriber discovery to propagate.
     async fn wait_for_subscriber_discovery() {
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    /// Awaits a single message on `rx` or fails the test on timeout. The
+    /// `label` is included in both timeout and channel-closed panics so test
+    /// failures in CI pinpoint which subscription stalled.
+    async fn recv_or_timeout(
+        rx: &mut tokio::sync::mpsc::Receiver<pmi::TopicMessage>,
+        label: &str,
+    ) -> pmi::TopicMessage {
+        tokio::time::timeout(RECV_TIMEOUT, rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for message on {label}"))
+            .unwrap_or_else(|| panic!("channel closed before message on {label}"))
     }
 
     fn sender(as_topic_name: &str) -> TopicWireSender {
@@ -93,7 +108,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish");
 
-        let received = sub.rx.recv().await.expect("Failed to receive message");
+        let received = recv_or_timeout(&mut sub.rx, "test_basic_publish_subscribe sub").await;
         assert_eq!(received.instance_id(), "test_instance");
         assert_eq!(received.core_node(), "test_core_node");
         assert_eq!(received.payload(), &body);
@@ -147,10 +162,10 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish to topic2");
 
-        let received1 = sub1.rx.recv().await.expect("Failed to receive on topic1");
+        let received1 = recv_or_timeout(&mut sub1.rx, "test_multiple_topics sub1").await;
         assert_eq!(received1.payload(), &body1);
 
-        let received2 = sub2.rx.recv().await.expect("Failed to receive on topic2");
+        let received2 = recv_or_timeout(&mut sub2.rx, "test_multiple_topics sub2").await;
         assert_eq!(received2.payload(), &body2);
     }
 
@@ -194,7 +209,8 @@ mod zenoh_tests {
         }
 
         for expected in &messages {
-            let received = sub.rx.recv().await.expect("Failed to receive message");
+            let received =
+                recv_or_timeout(&mut sub.rx, "test_multiple_messages_same_topic sub").await;
             assert_eq!(received.payload(), expected);
         }
     }
@@ -242,7 +258,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish new message");
 
-        let received = late_sub.rx.recv().await.expect("Failed to receive message");
+        let received = recv_or_timeout(&mut late_sub.rx, "test_late_subscription late_sub").await;
         assert_eq!(received.payload(), &new_body);
     }
 
@@ -320,7 +336,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish from client");
 
-        let received = sub.rx.recv().await.expect("Failed to receive message");
+        let received = recv_or_timeout(&mut sub.rx, "test_connect_to_existing_router sub").await;
         assert_eq!(received.payload(), &body);
     }
 
@@ -363,7 +379,11 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish");
 
-        let received = sub.rx.recv().await.expect("Failed to receive message");
+        let received = recv_or_timeout(
+            &mut sub.rx,
+            "test_start_router_ephemeral_with_specific_port sub",
+        )
+        .await;
         assert_eq!(received.payload(), &body);
     }
 }
