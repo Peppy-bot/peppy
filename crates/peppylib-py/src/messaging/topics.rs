@@ -1,4 +1,4 @@
-use super::iface;
+use super::iface::PyIface;
 use super::{PyMessengerHandle, to_py_err};
 use crate::config::PyQoSProfile;
 use peppylib::messaging::{Subscription, TopicMessenger};
@@ -72,12 +72,11 @@ pub struct PyTopicMessenger;
 
 #[pymethods]
 impl PyTopicMessenger {
-    /// Subscribe to a topic.
-    ///
-    /// Pass `iface_name=None` and `iface_tag=None` for native (non-`conforms_to`)
-    /// topics; the binding fills in the wire-path sentinels internally.
+    /// Subscribe to a topic. Pass `peppylib.Iface.native()` for non-`conforms_to`
+    /// topics, `Iface.wildcard()` to match any publisher iface, or
+    /// `Iface.conformed(name, tag)` for a specific interface.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, iface_name, iface_tag, to_topic, target_core_node, target_instance_id, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, iface, to_topic, target_core_node, target_instance_id, qos))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -85,16 +84,15 @@ impl PyTopicMessenger {
         as_core_node: String,
         as_instance_id: String,
         to_node_name: String,
-        iface_name: Option<String>,
-        iface_tag: Option<String>,
+        iface: PyIface,
         to_topic: String,
         target_core_node: Option<String>,
         target_instance_id: Option<String>,
         qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
+        let iface = iface.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
             let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_core_node,
@@ -149,12 +147,11 @@ impl PyTopicMessenger {
         })
     }
 
-    /// Emit (publish) a message to a topic.
-    ///
-    /// Pass `iface_name=None` and `iface_tag=None` for native (non-`conforms_to`)
-    /// topics; the binding fills in the wire-path sentinels internally.
+    /// Emit (publish) a message to a topic. Pass `peppylib.Iface.native()` for
+    /// non-`conforms_to` topics, or `Iface.conformed(name, tag)` for a specific
+    /// interface.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_node_name, iface_name, iface_tag, as_topic_name, qos, payload))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_node_name, iface, as_topic_name, qos, payload))]
     #[allow(clippy::too_many_arguments)]
     fn emit<'py>(
         py: Python<'py>,
@@ -162,15 +159,14 @@ impl PyTopicMessenger {
         as_core_node: String,
         as_instance_id: String,
         as_node_name: String,
-        iface_name: Option<String>,
-        iface_tag: Option<String>,
+        iface: PyIface,
         as_topic_name: String,
         qos: PyQoSProfile,
         payload: Vec<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
+        let iface = iface.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let iface = iface::into_iface(iface_name.as_deref(), iface_tag.as_deref())?;
             TopicMessenger::emit(
                 &handle,
                 &as_core_node,

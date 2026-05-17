@@ -1,8 +1,9 @@
 //! Python mirror of `tests/rust/services_conforms_to.rs`: verifies the
 //! Python generator nests conformed services under
 //! `peppygen/exposed_services/{iface_name}/{iface_tag}/<service>.py` and
-//! splices the matching iface literals into each `ServiceMessenger.listen`
-//! call (or `"_"`,`"_"` for the native leaf).
+//! splices the matching `peppylib.Iface.conformed(...)` expression into each
+//! `ServiceMessenger.listen` call (or `peppylib.Iface.native()` for the
+//! native leaf).
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{ExposedService, MessageFormat, PeppygenLanguage, SchemaType, TypeToken};
@@ -100,21 +101,20 @@ fn nests_conformed_services_under_iface_name_and_tag() {
         native_src.contains("ServiceMessenger.listen"),
         "native source should call ServiceMessenger.listen:\n{native_src}",
     );
-    let native_underscore_count = native_src.matches("\"_\"").count();
     assert!(
-        native_underscore_count >= 2,
-        "native leaf should pass two `\"_\"` iface segments:\n{native_src}",
+        native_src.contains("peppylib.Iface.native()"),
+        "native leaf should pass `peppylib.Iface.native()`:\n{native_src}",
     );
 
     let camera_v1_src = fs::read_to_string(&camera_v1).expect("read camera v1");
     assert!(
-        camera_v1_src.contains("\"camera\"") && camera_v1_src.contains("\"v1\""),
-        "camera v1 leaf should pass `camera`,`v1` literals:\n{camera_v1_src}",
+        camera_v1_src.contains("peppylib.Iface.conformed(\"camera\", \"v1\")"),
+        "camera v1 leaf should pass `Iface.conformed(\"camera\", \"v1\")`:\n{camera_v1_src}",
     );
 
     let arm_v2_src = fs::read_to_string(&arm_v2).expect("read arm v2");
     assert!(
-        arm_v2_src.contains("\"arm\"") && arm_v2_src.contains("\"v2\""),
-        "arm v2 leaf should pass `arm`,`v2` literals:\n{arm_v2_src}",
+        arm_v2_src.contains("peppylib.Iface.conformed(\"arm\", \"v2\")"),
+        "arm v2 leaf should pass `Iface.conformed(\"arm\", \"v2\")`:\n{arm_v2_src}",
     );
 }

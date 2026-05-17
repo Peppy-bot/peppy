@@ -71,7 +71,8 @@ const NODE_CONFIG: &str = r#"{
 ///      artifact stays flat at `emitted_topics/{topic}.py`.
 ///   2. The `__init__.py` chain at each level imports its direct children.
 ///   3. Each leaf's emit body passes the matching `iface_name`/`iface_tag`
-///      literals to the messenger (and two `"_"` args for the native leaf).
+///      `peppylib.Iface.conformed(...)` expression to the messenger
+///      (and `peppylib.Iface.native()` for the native leaf).
 ///   4. The per-interface marker fields land in their own files — proof the
 ///      four artifacts weren't cross-wired during generation.
 #[test]
@@ -139,30 +140,31 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
         "depth_camera/__init__.py should import v1 and v2:\n{depth_init}",
     );
 
-    // Each leaf's emit body passes the matching `iface_name`/`iface_tag` to
-    // the messenger. Native gets two `"_"` arguments back-to-back.
+    // Each leaf's emit body passes a matching `peppylib.Iface.*` expression
+    // to the messenger. Native gets `Iface.native()`; conformed leaves pass
+    // `Iface.conformed("<name>", "<tag>")` with the producer's segments.
     let native_src = fs::read_to_string(&native_path).expect("read native");
     assert!(
-        native_src.matches("\"_\"").count() >= 2,
-        "native source should pass two `\"_\"` iface segments:\n{native_src}",
+        native_src.contains("peppylib.Iface.native()"),
+        "native source should pass `peppylib.Iface.native()`:\n{native_src}",
     );
 
     let depth_v1_src = fs::read_to_string(&depth_v1).expect("read depth v1");
     assert!(
-        depth_v1_src.contains("\"depth_camera\"") && depth_v1_src.contains("\"v1\""),
-        "depth_v1 source missing iface literals:\n{depth_v1_src}",
+        depth_v1_src.contains("peppylib.Iface.conformed(\"depth_camera\", \"v1\")"),
+        "depth_v1 source missing Iface.conformed literal:\n{depth_v1_src}",
     );
 
     let depth_v2_src = fs::read_to_string(&depth_v2).expect("read depth v2");
     assert!(
-        depth_v2_src.contains("\"depth_camera\"") && depth_v2_src.contains("\"v2\""),
-        "depth_v2 source missing iface literals:\n{depth_v2_src}",
+        depth_v2_src.contains("peppylib.Iface.conformed(\"depth_camera\", \"v2\")"),
+        "depth_v2 source missing Iface.conformed literal:\n{depth_v2_src}",
     );
 
     let uvc_v1_src = fs::read_to_string(&uvc_v1).expect("read uvc v1");
     assert!(
-        uvc_v1_src.contains("\"uvc_camera\"") && uvc_v1_src.contains("\"v1\""),
-        "uvc_v1 source missing iface literals:\n{uvc_v1_src}",
+        uvc_v1_src.contains("peppylib.Iface.conformed(\"uvc_camera\", \"v1\")"),
+        "uvc_v1 source missing Iface.conformed literal:\n{uvc_v1_src}",
     );
 
     // Distinguishing message-format markers should still be present in their
@@ -213,7 +215,7 @@ fn hyphenated_tag_lands_in_underscore_directory() {
     );
     let src = fs::read_to_string(&leaf).expect("read leaf");
     assert!(
-        src.contains("\"v1-beta\""),
+        src.contains("peppylib.Iface.conformed(\"depth_camera\", \"v1-beta\")"),
         "generator should pass the raw tag (messaging normalizes hyphens):\n{src}",
     );
 }

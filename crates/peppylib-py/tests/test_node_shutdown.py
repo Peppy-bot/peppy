@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from peppylib import MessengerHandle, ServiceMessenger, ZenohdInstance
+from peppylib import Iface, MessengerHandle, ServiceMessenger, ZenohdInstance
 from peppylib.config import SHUTDOWN_SERVICE
 from peppylib.services import ShutdownService
 
@@ -43,8 +43,7 @@ async def test_shutdown_node():
             TEST_CORE_NODE_NAME,
             CALLER_INSTANCE_ID,
             TEST_NODE_NAME,
-            None,  # iface_name (None = native)
-            None,  # iface_tag (None = native)
+            Iface.native(),  # iface
             SHUTDOWN_SERVICE,
             TEST_CORE_NODE_NAME,
             TEST_INSTANCE_ID,

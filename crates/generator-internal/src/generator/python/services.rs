@@ -7,17 +7,21 @@ use crate::error::Result;
 use crate::generator::types::{InterfaceOrigin, non_empty_message_format};
 use config::node::{ConsumedService, ExposedService, MessageFormat};
 
-/// Returns the two literal Python string segments to splice into a generated
-/// `listen`/`poll` call: `("\"_\"", "\"_\"")` for native artifacts or
-/// `("\"<iface_name>\"", "\"<iface_tag>\"")` for those pulled in via
-/// `interfaces.conforms_to`.
-pub(crate) fn iface_segment_python_literals(origin: Option<&InterfaceOrigin>) -> (String, String) {
+/// Returns the Python expression for the `Iface` value to splice into a
+/// generated `listen` / `poll` / `subscribe` / `emit` call:
+///   - native artifact         → `peppylib.Iface.native()`
+///   - `interfaces.conforms_to` → `peppylib.Iface.conformed("<name>", "<tag>")`
+///
+/// Consumer-side wildcard (`peppylib.Iface.wildcard()`) is emitted directly at
+/// the call site that needs it; this helper covers only the producer-known
+/// origin cases.
+pub(crate) fn iface_python_expr(origin: Option<&InterfaceOrigin>) -> String {
     match origin {
-        Some(o) => (
-            format!("\"{}\"", o.iface_name),
-            format!("\"{}\"", o.iface_tag),
+        Some(o) => format!(
+            "peppylib.Iface.conformed(\"{}\", \"{}\")",
+            o.iface_name, o.iface_tag
         ),
-        None => (String::from("\"_\""), String::from("\"_\"")),
+        None => String::from("peppylib.Iface.native()"),
     }
 }
 
@@ -157,15 +161,14 @@ pub fn build_exposed_service(
         "async def handle_next_request(node_runner: peppylib.NodeRunner, handler: {handler_type}) -> None:"
     ));
     builder.indent();
-    let (iface_name_lit, iface_tag_lit) = iface_segment_python_literals(origin);
+    let iface_expr = iface_python_expr(origin);
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("node_runner.node_name(),");
-    builder.line(&format!("{iface_name_lit},"));
-    builder.line(&format!("{iface_tag_lit},"));
+    builder.line(&format!("{iface_expr},"));
     builder.line("SERVICE_NAME,");
     builder.dedent();
     builder.line(")");
@@ -303,21 +306,20 @@ pub fn build_consumed_service(
 
     // Call peppylib.ServiceMessenger.poll. Consumer-side discovery of the
     // producer's interface namespace is the follow-up PR; for now we use
-    // native (None) since the deployment config doesn't record which
-    // interface a consumed service originates from.
+    // native since the deployment config doesn't record which interface a
+    // consumed service originates from.
     if has_response {
         builder.line("response_message = await peppylib.ServiceMessenger.poll(");
     } else {
         builder.line("await peppylib.ServiceMessenger.poll(");
     }
-    let (iface_name_lit, iface_tag_lit) = iface_segment_python_literals(None);
+    let iface_expr = iface_python_expr(None);
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("NODE_NAME,");
-    builder.line(&format!("{iface_name_lit},"));
-    builder.line(&format!("{iface_tag_lit},"));
+    builder.line(&format!("{iface_expr},"));
     builder.line("SERVICE_NAME,");
     builder.line("target_core_node,");
     builder.line("target_instance_id,");
