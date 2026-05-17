@@ -389,7 +389,7 @@ pub async fn wait_for_service_reachable_or_exit(
 pub async fn wait_for_action_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
     target_node_name: &str,
-    target_service_name: &str,
+    target_action_name: &str,
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
@@ -404,7 +404,7 @@ pub async fn wait_for_action_service_reachable_or_exit(
             let stderr = String::from_utf8_lossy(&output.stderr);
             panic!(
                 "process exited before action `{}` became reachable (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
-                target_service_name,
+                target_action_name,
                 status.code(),
                 dir.display(),
                 stdout,
@@ -418,7 +418,7 @@ pub async fn wait_for_action_service_reachable_or_exit(
             ctx.caller_instance_id,
             target_node_name,
             Iface::native(),
-            target_service_name,
+            target_action_name,
             ctx.target_core_node,
             target_instance_id,
         )
@@ -427,7 +427,7 @@ pub async fn wait_for_action_service_reachable_or_exit(
         .unwrap_or_else(|err| {
             panic!(
                 "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
-                target_service_name,
+                target_action_name,
                 target_node_name,
                 target_instance_id,
                 dir.display(),

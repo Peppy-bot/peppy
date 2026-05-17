@@ -10,9 +10,9 @@
 //!      `emitted_topics/{iface_name}/{iface_tag}/{topic}.rs` while keeping the
 //!      native artifact at `emitted_topics/{topic}.rs`.
 //!   2. Each `mod.rs` declares the right children.
-//!   3. The rendered emit call inside each leaf passes the matching
-//!      `iface_name`, `iface_tag` literals (or `"_"`, `"_"` for native) to
-//!      `peppylib::TopicMessenger::emit`.
+//!   3. The rendered emit call inside each leaf passes the matching iface
+//!      (`Iface::new("name", "tag")?` for conformed, `Iface::native()` for
+//!      native) to `peppylib::TopicMessenger::emit`.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
@@ -85,8 +85,8 @@ const NODE_CONFIG: &str = r#"{
 ///      top-level `emitted_topics.rs` lists the native leaf plus one entry per
 ///      conforming interface directory.
 ///   3. Each leaf calls `peppylib::TopicMessenger::emit` with the matching
-///      `iface_name`/`iface_tag` literals (and two `"_"` args for the native
-///      leaf).
+///      iface: `Iface::new("name", "tag")?` for conformed leaves and
+///      `Iface::native()` for the native leaf.
 ///   4. The per-interface marker fields land in their own files — proof the
 ///      four artifacts weren't cross-wired during generation.
 #[test]
@@ -161,20 +161,16 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
     }
 
     // Each leaf calls `peppylib::TopicMessenger::emit(...)` with the iface
-    // segments threaded through. We check that the literal segments match
-    // the artifact's origin (or `"_"`, `"_"` for the native leaf).
+    // threaded through. Conformed leaves splice in `Iface::new("name", "tag")?`
+    // while the native leaf passes `Iface::native()`.
     let native_src = fs::read_to_string(&native_path).expect("read native");
     assert!(
         native_src.contains("TopicMessenger::emit"),
         "native source should call TopicMessenger::emit:\n{native_src}",
     );
-    // prettyplease may emit "_" or normalize whitespace; assert both segments
-    // are present in their literal form. The native leaf gets two `"_"`
-    // arguments back-to-back.
-    let native_underscore_pairs = native_src.matches("\"_\"").count();
     assert!(
-        native_underscore_pairs >= 2,
-        "native leaf should pass two `\"_\"` iface segments:\n{native_src}",
+        native_src.contains("Iface::native()"),
+        "native leaf should pass `Iface::native()`:\n{native_src}",
     );
 
     let depth_v1_src = fs::read_to_string(&depth_v1).expect("read depth v1");

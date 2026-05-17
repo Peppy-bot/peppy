@@ -319,19 +319,14 @@ async fn send_node_run_and_wait_internal(
         timeouts.result.as_secs(),
     )
     .with_env_vars(env_vars);
-    let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
-        ("*", "*")
-    } else {
-        (core_node_name, CALLER_INSTANCE_ID)
-    };
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode goal: {}", e))?;
 
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
-        caller_core_node,
-        caller_instance_id,
+        core_node_name,
+        CALLER_INSTANCE_ID,
         core_node_name,
         Iface::native(),
         names::NODE_RUN_ACTION,
@@ -489,19 +484,14 @@ async fn send_node_add_and_wait_internal<'a>(
     .with_env_vars(env_vars)
     .with_force(force);
 
-    let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
-        ("*", "*")
-    } else {
-        (core_node_name, CALLER_INSTANCE_ID)
-    };
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode goal: {}", e))?;
 
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
-        caller_core_node,
-        caller_instance_id,
+        core_node_name,
+        CALLER_INSTANCE_ID,
         core_node_name,
         Iface::native(),
         names::NODE_ADD_ACTION,
@@ -619,15 +609,10 @@ pub async fn send_node_build_and_wait(
         .encode()
         .map_err(|e| format!("Failed to encode build goal: {}", e))?;
 
-    let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
-        ("*", "*")
-    } else {
-        (core_node_name, CALLER_INSTANCE_ID)
-    };
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
-        caller_core_node,
-        caller_instance_id,
+        core_node_name,
+        CALLER_INSTANCE_ID,
         core_node_name,
         Iface::native(),
         names::NODE_BUILD_ACTION,
@@ -726,9 +711,6 @@ pub async fn send_node_build_and_wait(
 
 /// Helper function to send a node_add goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
-///
-/// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
-/// can match feedback topics with "*" segments.
 pub async fn send_node_add_and_wait<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -951,9 +933,6 @@ pub async fn send_node_add_and_wait_with_force<'a>(
 
 /// Helper function to send a node_run goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
-///
-/// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
-/// can match feedback topics with "*" segments.
 pub async fn send_node_run_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,

@@ -365,7 +365,7 @@ if __name__ == "__main__":
             target_core_node: None,
         },
         PRODUCER_NODE_NAME,
-        &format!("{ACTION_NAME}/goal"),
+        ACTION_NAME,
         None,
         &mut producer_child,
         &producer_dir,
