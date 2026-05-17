@@ -106,21 +106,20 @@ fn nests_conformed_actions_under_iface_name_and_tag() {
         native_src.contains("ActionMessenger.expose"),
         "native source should call ActionMessenger.expose:\n{native_src}",
     );
-    let native_underscore_count = native_src.matches("\"_\"").count();
     assert!(
-        native_underscore_count >= 2,
-        "native leaf should pass two `\"_\"` iface segments:\n{native_src}",
+        native_src.contains("peppylib.Iface.native()"),
+        "native leaf should pass `peppylib.Iface.native()`:\n{native_src}",
     );
 
     let arm_v1_src = fs::read_to_string(&arm_v1).expect("read arm v1");
     assert!(
-        arm_v1_src.contains("\"arm\"") && arm_v1_src.contains("\"v1\""),
-        "arm v1 leaf should pass `arm`,`v1`:\n{arm_v1_src}",
+        arm_v1_src.contains("peppylib.Iface.conformed(\"arm\", \"v1\")"),
+        "arm v1 leaf should pass `Iface.conformed(\"arm\", \"v1\")`:\n{arm_v1_src}",
     );
 
     let arm_v2_src = fs::read_to_string(&arm_v2).expect("read arm v2");
     assert!(
-        arm_v2_src.contains("\"arm\"") && arm_v2_src.contains("\"v2\""),
-        "arm v2 leaf should pass `arm`,`v2`:\n{arm_v2_src}",
+        arm_v2_src.contains("peppylib.Iface.conformed(\"arm\", \"v2\")"),
+        "arm v2 leaf should pass `Iface.conformed(\"arm\", \"v2\")`:\n{arm_v2_src}",
     );
 }

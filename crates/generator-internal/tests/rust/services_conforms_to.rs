@@ -1,8 +1,8 @@
 //! Generator-level test that a node exposing the same service `control` both
 //! natively and via two conformed interfaces (`camera:v1`, `arm:v2`) produces
 //! distinct generated files AND each `ServiceMessenger::listen` call inside
-//! those files passes the matching `iface_name`/`iface_tag` literals (or
-//! `"_"`/`"_"` for the native one).
+//! those files passes the matching iface: `Iface::new("name", "tag")?` for
+//! conformed leaves and `Iface::native()` for the native one.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{ExposedService, MessageFormat, PeppygenLanguage, SchemaType, TypeToken};
@@ -67,7 +67,8 @@ const NODE_CONFIG: &str = r#"{
 ///   2. The category `exposed_services.rs` declares the native leaf and one
 ///      module entry per conforming interface.
 ///   3. Each leaf calls `peppylib::ServiceMessenger::listen` with the matching
-///      `iface_name`/`iface_tag` literals (and two `"_"` args for native).
+///      iface: `Iface::new("name", "tag")?` for conformed leaves and
+///      `Iface::native()` for the native leaf.
 ///   4. Per-interface marker fields land in the right file (no cross-wiring).
 #[test]
 fn nests_conformed_services_under_iface_name_and_tag() {
@@ -119,10 +120,9 @@ fn nests_conformed_services_under_iface_name_and_tag() {
         native_src.contains("ServiceMessenger::listen"),
         "native source should call ServiceMessenger::listen:\n{native_src}",
     );
-    let native_underscore_count = native_src.matches("\"_\"").count();
     assert!(
-        native_underscore_count >= 2,
-        "native leaf should pass two `\"_\"` iface segments:\n{native_src}",
+        native_src.contains("Iface::native()"),
+        "native leaf should pass `Iface::native()`:\n{native_src}",
     );
     assert!(
         native_src.contains("native_marker"),

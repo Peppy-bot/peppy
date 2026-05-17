@@ -2,8 +2,8 @@ use crate::Result;
 use crate::names;
 use core_node_api::encoding::{ContainerInfo, InfoRequest, InfoResponse};
 use node_stack::NodeStack;
+use peppylib::messaging::Iface;
 use peppylib::messaging::ServiceRequestContext;
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::sync::Arc;
@@ -26,8 +26,7 @@ pub async fn listen_for_info(
         core_node_name,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::INFO,
     )
     .await?;

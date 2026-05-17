@@ -12,8 +12,8 @@ use core_node_api::encoding::{
 use futures::FutureExt;
 use node_stack::{BuildContext, NodeStack};
 use parking_lot::Mutex as StdMutex;
+use peppylib::messaging::Iface;
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::fs::File;
@@ -38,8 +38,7 @@ pub async fn listen_for_node_build(
         core_node_name,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::NODE_BUILD_ACTION,
     )
     .await?;

@@ -17,8 +17,8 @@ use core_node_api::encoding::{
 };
 use node_stack::NodeStack;
 use parking_lot::Mutex as StdMutex;
+use peppylib::messaging::Iface;
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -97,8 +97,7 @@ pub async fn listen_for_stack_launch(
         core_node_name,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::STACK_LAUNCH_ACTION,
     )
     .await?;

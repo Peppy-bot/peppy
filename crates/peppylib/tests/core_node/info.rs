@@ -9,7 +9,7 @@ use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
 use super::common::{CORE_NODE, SERVER_INSTANCE, start_router_and_runner, wait_until_reachable};
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
+use peppylib::messaging::Iface;
 
 /// Spins up a single-shot `INFO` listener that returns `response` verbatim.
 async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
@@ -18,8 +18,7 @@ async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
         CORE_NODE,
         SERVER_INSTANCE,
         CORE_NODE,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::INFO,
     )
     .await

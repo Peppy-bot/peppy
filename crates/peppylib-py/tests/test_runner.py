@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from peppylib import MessengerHandle, ServiceMessenger, ZenohdInstance
+from peppylib import Iface, MessengerHandle, ServiceMessenger, ZenohdInstance
 from peppylib.config import (
     NODE_CONFIG_FILE,
     NODE_HEALTH_SERVICE,
@@ -122,8 +122,7 @@ async def test_daemon_runner_succeed(monkeypatch):
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
-                None,  # iface_name (None = native)
-                None,  # iface_tag (None = native)
+                Iface.native(),  # iface
                 NODE_HEALTH_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
@@ -137,8 +136,7 @@ async def test_daemon_runner_succeed(monkeypatch):
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
-                None,  # iface_name (None = native)
-                None,  # iface_tag (None = native)
+                Iface.native(),  # iface
                 SHUTDOWN_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
@@ -469,8 +467,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
-                None,  # iface_name (None = native)
-                None,  # iface_tag (None = native)
+                Iface.native(),  # iface
                 NODE_READY_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
@@ -493,8 +490,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
-                None,  # iface_name (None = native)
-                None,  # iface_tag (None = native)
+                Iface.native(),  # iface
                 NODE_HEALTH_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,)
@@ -509,8 +505,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                     TEST_CORE_NODE,
                     SHUTDOWN_SENDER_INSTANCE_ID,
                     TEST_NODE_NAME,
-                    None,  # iface_name (None = native)
-                    None,  # iface_tag (None = native)
+                    Iface.native(),  # iface
                     NODE_HEALTH_SERVICE,
                     TEST_CORE_NODE,
                     TEST_INSTANCE_ID,
@@ -534,8 +529,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
-                None,  # iface_name (None = native)
-                None,  # iface_tag (None = native)
+                Iface.native(),  # iface
                 NODE_HEALTH_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
@@ -549,8 +543,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
-                None,  # iface_name (None = native)
-                None,  # iface_tag (None = native)
+                Iface.native(),  # iface
                 SHUTDOWN_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
@@ -630,8 +623,7 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
-                None,  # iface_name (None = native)
-                None,  # iface_tag (None = native)
+                Iface.native(),  # iface
                 SHUTDOWN_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,

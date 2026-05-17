@@ -2,9 +2,7 @@ pub mod health;
 pub mod ready;
 pub mod shutdown;
 
-use crate::messaging::{
-    NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG, ServiceRequestContext,
-};
+use crate::messaging::{Iface, ServiceRequestContext};
 use crate::runtime::TaskHandle;
 use crate::types::Payload;
 use crate::{MessengerHandle, PeppyResult, ServiceMessenger};
@@ -26,8 +24,7 @@ pub(crate) async fn listen_for_echo_service(
         core_node,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         service_name,
     )
     .await?;

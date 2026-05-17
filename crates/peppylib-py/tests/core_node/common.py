@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from peppylib import (
+    Iface,
     MessengerHandle,
     NodeRunner,
     ServiceMessenger,
@@ -46,8 +47,7 @@ async def wait_until_reachable(messenger, service_name: str) -> None:
             CORE_NODE,
             CLIENT_INSTANCE,
             CORE_NODE,
-            None,  # iface_name (None = native)
-            None,  # iface_tag (None = native)
+            Iface.native(),  # iface
             service_name,
             CORE_NODE,
             None,):
@@ -93,8 +93,7 @@ async def spawn_stub_listener(server_handle, service_name: str, response_bytes: 
         CORE_NODE,
         SERVER_INSTANCE,
         CORE_NODE,
-        None,  # iface_name (None = native)
-        None,  # iface_tag (None = native)
+        Iface.native(),  # iface
         service_name,)
     return asyncio.ensure_future(
         endpoint.handle_next_request(lambda _request: response_bytes)

@@ -1,7 +1,12 @@
 use super::super::error::{Error, Result};
 use super::super::types::{
-    Message, Messenger, MessengerAdapter, MessengerBackend, PublisherQoS, SubscriberQoS,
+    Message, Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS, SubscriberQoS,
     Subscription, TopicMessage,
+};
+use super::super::wire::zenoh_format::ZenohWireFormat;
+use super::super::wire::{
+    ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
+    TopicWireReceiver, TopicWireSender,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -43,13 +48,20 @@ impl Drop for MockInstance {
     }
 }
 
+/// Shared map of published messages, keyed by topic. Used to record every
+/// publish for later assertions.
+type MessageLog = Arc<Mutex<HashMap<String, Vec<Message>>>>;
+
+/// Shared map of active subscriptions, keyed by pattern. Each pattern maps to
+/// the senders that should receive a fanout when an intersecting topic is
+/// published.
+type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<TopicMessage>>>>>;
+
 pub struct MockAdapter {
     pub is_session_connected: bool,
     pub is_router_started: bool,
-    // Store published messages by topic
-    pub messages: Arc<Mutex<HashMap<String, Vec<Message>>>>,
-    // Store active subscriptions
-    pub subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<TopicMessage>>>>>,
+    pub messages: MessageLog,
+    pub subscriptions: SubscriptionMap,
 }
 
 impl Default for MockAdapter {
@@ -77,79 +89,85 @@ impl MessengerBackend for MockAdapter {
         self.is_session_connected = false;
         self.is_router_started = false;
 
-        // Clear all data
         self.messages.lock().unwrap().clear();
         self.subscriptions.lock().unwrap().clear();
 
         Ok(())
     }
 
-    async fn publish(&mut self, message: Message, _qos: PublisherQoS) -> Result<()> {
-        if !self.is_session_connected {
-            return Err(Error::PublishError {
-                topic: message.identifier().to_string(),
-            });
-        }
-
-        // Ensure we can convert the message before storing/sending
-        Self::to_response_message(&message)?;
-        let topic = message.identifier().to_string();
-
-        // Store the message
-        {
-            let mut messages = self.messages.lock().unwrap();
-            messages
-                .entry(topic.clone())
-                .or_default()
-                .push(message.clone());
-        }
-
-        // Send to all matching subscribers. Matching is a bidirectional
-        // key-expression intersection — both the subscriber pattern and the
-        // published key may contain wildcards. Mirrors Zenoh's `keyexpr` API.
-        let senders = {
-            let subscriptions = self.subscriptions.lock().unwrap();
-            let mut matched = Vec::new();
-            for (pattern, senders) in subscriptions.iter() {
-                if Self::key_exprs_intersect(pattern, &topic) {
-                    matched.extend(senders.iter().cloned());
-                }
-            }
-            matched
-        };
-
-        for sender in senders {
-            // Ignore send errors (subscriber might have dropped)
-            let _ = sender.send(Self::to_response_message(&message)?).await;
-        }
-
-        Ok(())
+    async fn subscribe_topic(
+        &self,
+        recv: &TopicWireReceiver,
+        qos: SubscriberQoS,
+    ) -> Result<Subscription> {
+        self.subscribe_keyexpr(&ZenohWireFormat::topic_subscribe(recv), qos)
+            .await
     }
 
-    async fn subscribe(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
-        if !self.is_session_connected {
-            return Err(Error::SubscribeError {
-                topic: topic.to_string(),
-            });
-        }
+    async fn publish_topic(
+        &mut self,
+        sender: &TopicWireSender,
+        payload: Payload,
+        _qos: PublisherQoS,
+    ) -> Result<()> {
+        self.publish_keyexpr(ZenohWireFormat::topic_publish(sender), payload)
+            .await
+    }
 
-        let (tx, rx) = mpsc::channel(qos.channel_size());
+    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<[Subscription; 4]> {
+        let [p0, p1, p2, p3] = ZenohWireFormat::service_listen_patterns(recv);
+        let s0 = self.subscribe_keyexpr(&p0, SubscriberQoS::Standard).await?;
+        let s1 = self.subscribe_keyexpr(&p1, SubscriberQoS::Standard).await?;
+        let s2 = self.subscribe_keyexpr(&p2, SubscriberQoS::Standard).await?;
+        let s3 = self.subscribe_keyexpr(&p3, SubscriberQoS::Standard).await?;
+        Ok([s0, s1, s2, s3])
+    }
 
-        // Store the sender for this subscription
-        {
-            let mut subscriptions = self.subscriptions.lock().unwrap();
-            subscriptions
-                .entry(topic.to_string())
-                .or_default()
-                .push(tx.clone());
-        }
+    async fn open_service_call(
+        &mut self,
+        sender: &ServiceWireSender,
+        request_id: &str,
+        payload: Payload,
+    ) -> Result<Subscription> {
+        let response_keyexpr = ZenohWireFormat::service_response_subscribe(sender, request_id);
+        let response_sub = self
+            .subscribe_keyexpr(&response_keyexpr, SubscriberQoS::Standard)
+            .await?;
+        let request_keyexpr = ZenohWireFormat::service_request_publish(sender, request_id);
+        self.publish_keyexpr(request_keyexpr, payload).await?;
+        Ok(response_sub)
+    }
 
-        // Create a dummy task that does nothing, just to get an abort handle
-        // This maintains compatibility with the Subscription type
-        let join_handle = tokio::spawn(async {});
-        let abort_handle = join_handle.abort_handle();
+    async fn publish_service_response(
+        &mut self,
+        recv: &ServiceWireReceiver,
+        received_request: &str,
+        payload: Payload,
+    ) -> Result<()> {
+        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
+        self.publish_keyexpr(parsed.response_keyexpr, payload).await
+    }
 
-        Ok(Subscription::new(rx, abort_handle))
+    fn parse_service_request_id(
+        &self,
+        recv: &ServiceWireReceiver,
+        received_request: &str,
+    ) -> Result<String> {
+        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
+        Ok(parsed.request_id)
+    }
+
+    async fn subscribe_action_feedback(
+        &self,
+        sender: &ActionWireSender,
+        goal_id: &str,
+        qos: SubscriberQoS,
+    ) -> Result<Subscription> {
+        self.subscribe_keyexpr(
+            &ZenohWireFormat::action_feedback_subscribe(sender, goal_id),
+            qos,
+        )
+        .await
     }
 
     async fn start_router(&mut self) -> Result<()> {
@@ -231,16 +249,105 @@ impl MockAdapter {
         TopicMessage::new(identifier, message.payload().clone())
     }
 
-    /// Pre-bind a publisher to `topic` + `qos`. Clones the adapter's
-    /// `subscriptions` and `messages` `Arc`s so the resulting publisher's
-    /// `publish` skips the central `Messenger` mutex — only the per-map
-    /// locks (which the original `publish` was already taking).
-    pub fn declare_publisher(&self, topic: String, _qos: PublisherQoS) -> MockPublisher {
+    /// Pre-bind a per-topic publisher for `sender`. The returned publisher
+    /// clones the adapter's `Arc`s, bypassing the central `Messenger` mutex.
+    pub fn declare_topic_publisher(
+        &self,
+        sender: &TopicWireSender,
+        _qos: PublisherQoS,
+    ) -> MockPublisher {
+        self.declare_publisher_keyexpr(ZenohWireFormat::topic_publish(sender))
+    }
+
+    /// Pre-bind a per-goal action-feedback publisher.
+    pub fn declare_action_feedback_publisher(
+        &self,
+        recv: &ActionWireReceiver,
+        goal_id: &str,
+        _qos: PublisherQoS,
+    ) -> MockPublisher {
+        self.declare_publisher_keyexpr(ZenohWireFormat::action_feedback_publish(recv, goal_id))
+    }
+
+    fn declare_publisher_keyexpr(&self, topic: String) -> MockPublisher {
         MockPublisher {
             topic,
             subscriptions: Arc::clone(&self.subscriptions),
             messages: Arc::clone(&self.messages),
         }
+    }
+
+    async fn publish_keyexpr(&self, topic: String, payload: Payload) -> Result<()> {
+        if !self.is_session_connected {
+            return Err(Error::PublishError { topic });
+        }
+
+        let message = Message::new(&topic, payload.to_bytes());
+        Self::route_publish(&topic, &message, &self.messages, &self.subscriptions).await
+    }
+
+    /// Records `message` against `topic` in the mock's message log and fans
+    /// it out to every subscription whose pattern intersects `topic`. Shared
+    /// by [`MockAdapter::publish_keyexpr`] (which holds the adapter
+    /// directly) and [`MockPublisher::publish`] (which clones the same
+    /// `Arc`s for lock-free per-topic publishing).
+    async fn route_publish(
+        topic: &str,
+        message: &Message,
+        messages: &MessageLog,
+        subscriptions: &SubscriptionMap,
+    ) -> Result<()> {
+        let response = Self::to_response_message(message)?;
+
+        {
+            let mut messages = messages.lock().unwrap();
+            messages
+                .entry(topic.to_string())
+                .or_default()
+                .push(message.clone());
+        }
+
+        let senders = {
+            let subscriptions = subscriptions.lock().unwrap();
+            let mut matched = Vec::new();
+            for (pattern, senders) in subscriptions.iter() {
+                if Self::key_exprs_intersect(pattern, topic) {
+                    matched.extend(senders.iter().cloned());
+                }
+            }
+            matched
+        };
+
+        for sender in senders {
+            let _ = sender.send(response.clone()).await;
+        }
+        Ok(())
+    }
+
+    async fn subscribe_keyexpr(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
+        if !self.is_session_connected {
+            return Err(Error::SubscribeError {
+                topic: topic.to_string(),
+            });
+        }
+
+        let (tx, rx) = mpsc::channel(qos.channel_size());
+
+        {
+            let mut subscriptions = self.subscriptions.lock().unwrap();
+            subscriptions
+                .entry(topic.to_string())
+                .or_default()
+                .push(tx.clone());
+        }
+
+        // No background task is needed — the mock writes directly into the
+        // sender from `publish_keyexpr`. The dummy task gives us an abort
+        // handle to satisfy the `Subscription` type.
+        let join_handle = tokio::spawn(async {});
+        let abort_handle = join_handle.abort_handle();
+
+        Ok(Subscription::new(rx, abort_handle))
     }
 }
 
@@ -249,287 +356,23 @@ impl MockAdapter {
 /// independent of the `Arc<Mutex<Messenger>>` global lock that everyone shares.
 pub struct MockPublisher {
     topic: String,
-    subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<TopicMessage>>>>>,
-    messages: Arc<Mutex<HashMap<String, Vec<Message>>>>,
+    subscriptions: SubscriptionMap,
+    messages: MessageLog,
 }
 
 impl MockPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
         let message = Message::new(&self.topic, payload);
-        // Same routing logic as `MockAdapter::publish`, but on cloned Arcs.
-        MockAdapter::to_response_message(&message)?;
-
-        {
-            let mut messages = self.messages.lock().unwrap();
-            messages
-                .entry(self.topic.clone())
-                .or_default()
-                .push(message.clone());
-        }
-
-        let senders = {
-            let subs = self.subscriptions.lock().unwrap();
-            let mut matched = Vec::new();
-            for (pattern, senders) in subs.iter() {
-                if MockAdapter::key_exprs_intersect(pattern, &self.topic) {
-                    matched.extend(senders.iter().cloned());
-                }
-            }
-            matched
-        };
-
-        for sender in senders {
-            let _ = sender
-                .send(MockAdapter::to_response_message(&message)?)
-                .await;
-        }
-
-        Ok(())
+        MockAdapter::route_publish(&self.topic, &message, &self.messages, &self.subscriptions).await
     }
 }
 
-// Those tests purpose is to test the behaviour of a real messaging system and check if they map to the behaviour of the mock
+// End-to-end behavior of the mock vs. real messaging is covered by the typed
+// roundtrip tests in `tests/wire.rs`. These local tests pin the
+// `key_exprs_intersect` matching primitive that drives in-process routing.
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
-
     use super::*;
-    use crate::types::{MessengerAdapter, PublisherQoS, SubscriberQoS};
-    use crate::{Message, Messenger, MessengerBackend};
-
-    // Key expression format: target_core_node/caller_core_node/target_instance/caller_instance/...
-    // Instance ID is extracted from segment index 3 (caller_instance)
-    // Core node is extracted from segment index 1 (caller_core_node)
-    const INSTANCE_ID: &str = "test_instance";
-    const CORE_NODE: &str = "test_core_node";
-
-    /// Creates a valid key expression with the expected format for TopicMessage
-    fn make_key_expr(topic: &str) -> String {
-        // Format: target_core_node/caller_core_node/target_instance/caller_instance/topic
-        // Segments: 0=target_core_node, 1=caller_core_node, 2=target_instance, 3=caller_instance
-        // TopicMessage extracts: instance_id from index 3, core_node from index 1
-        format!(
-            "target_core_node/{}/target_instance/{}/{}",
-            CORE_NODE, INSTANCE_ID, topic
-        )
-    }
-
-    fn create_test_messenger() -> Messenger {
-        let adapter = MockAdapter::default();
-        Messenger::new(MessengerAdapter::Mock(adapter))
-    }
-
-    #[tokio::test]
-    async fn test_build_mock_messenger() {
-        use super::MockAdapter;
-
-        let mut mock = MockAdapter::default();
-
-        // Initially, nothing should be started or connected
-        assert!(!mock.is_router_started);
-        assert!(!mock.is_session_connected);
-
-        // Test start_router - should set is_router_started but not is_connected
-        assert!(mock.start_router().await.is_ok());
-        assert!(mock.is_router_started);
-        assert!(!mock.is_session_connected);
-
-        // Test stop_router - should clear is_router_started
-        assert!(mock.stop_router().await.is_ok());
-        assert!(!mock.is_router_started);
-        assert!(!mock.is_session_connected);
-
-        // Start router again for the rest of the test
-        assert!(mock.start_router().await.is_ok());
-        assert!(mock.is_router_started);
-
-        // Test init - should set is_connected
-        assert!(mock.start_session().await.is_ok());
-        assert!(mock.is_router_started);
-        assert!(mock.is_session_connected);
-
-        // Test publish - should work when connected
-        let key = make_key_expr("test_topic");
-        let test_message = Message::new(&key, [1, 2, 3]);
-        assert!(
-            mock.publish(test_message, PublisherQoS::Standard)
-                .await
-                .is_ok()
-        );
-
-        // Verify message was stored
-        {
-            let messages = mock.messages.lock().unwrap();
-            assert!(messages.contains_key(&key));
-            assert_eq!(messages.get(&key).unwrap().len(), 1);
-        }
-
-        // Test shutdown consumes self and succeeds when connected
-        assert!(mock.stop_session().await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_mock_messenger_operations() {
-        let mut messenger = create_test_messenger();
-
-        // Test all operations succeed with MockAdapter
-        assert!(messenger.start_session().await.is_ok());
-
-        // Test subscribe first - pattern must match the key format from make_key_expr
-        // make_key_expr("test/topic/data") = "target_core_node/test_core/target_instance/test_instance/test/topic/data"
-        // Pattern uses wildcards for first 4 segments and matches rest literally
-        let subscription = messenger
-            .subscribe("*/*/*/*/test/topic/**", SubscriberQoS::Standard)
-            .await;
-        assert!(subscription.is_ok());
-        let mut subscription = subscription.unwrap();
-
-        // Test publish - use key expression format expected by TopicMessage
-        let key = make_key_expr("test/topic/data");
-        let message = Message::new(&key, b"test payload");
-        assert!(
-            messenger
-                .publish(message.clone(), PublisherQoS::Standard)
-                .await
-                .is_ok()
-        );
-
-        // Verify subscription receives the published message
-        let received = subscription.rx.recv().await;
-        assert!(received.is_some());
-        let received_msg = received.unwrap();
-        assert_eq!(received_msg.instance_id(), INSTANCE_ID);
-        assert_eq!(received_msg.core_node(), CORE_NODE);
-        assert_eq!(received_msg.payload(), message.payload());
-
-        // Test shutdown
-        assert!(messenger.stop_session().await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_mock_messenger_subscription_returns_valid_channel() {
-        let mut messenger = create_test_messenger();
-
-        // Must start router and connect first
-        assert!(messenger.start_session().await.is_ok());
-
-        // Test that subscription returns a valid channel
-        let mut subscription = messenger
-            .subscribe("test/topic/**", SubscriberQoS::Standard)
-            .await
-            .unwrap();
-
-        // The receiver should be created even if no messages are sent
-        // Try to receive with a timeout to check if channel is empty
-        let result =
-            tokio::time::timeout(std::time::Duration::from_millis(10), subscription.rx.recv())
-                .await;
-        assert!(result.is_err()); // Should timeout since no messages
-    }
-
-    #[tokio::test]
-    async fn test_mock_messenger_multiple_subscriptions() {
-        let mut messenger = create_test_messenger();
-
-        // Must start router and connect first
-        assert!(messenger.start_session().await.is_ok());
-
-        // Test multiple subscriptions to different topics
-        let sub1 = messenger
-            .subscribe("topic/1/**", SubscriberQoS::Standard)
-            .await;
-        let sub2 = messenger
-            .subscribe("topic/2/**", SubscriberQoS::HighThroughput)
-            .await;
-        let sub3 = messenger
-            .subscribe("topic/3/**", SubscriberQoS::HighThroughput)
-            .await;
-
-        assert!(sub1.is_ok());
-        assert!(sub2.is_ok());
-        assert!(sub3.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_mock_messenger_publish_multiple_messages() {
-        let mut messenger = create_test_messenger();
-
-        // Test publishing before start_session should fail
-        let early_message = Message::new(&make_key_expr("topic/early"), b"too_early");
-        assert!(
-            messenger
-                .publish(early_message, PublisherQoS::Standard)
-                .await
-                .is_err()
-        );
-
-        // Must start router and connect first
-        assert!(messenger.start_session().await.is_ok());
-
-        // Test publishing multiple messages
-        let messages = vec![
-            Message::new(&make_key_expr("topic/1"), Bytes::from_static(b"payload1")),
-            Message::new(&make_key_expr("topic/2"), Bytes::from_static(b"payload2")),
-            Message::new(&make_key_expr("topic/3"), Bytes::from_static(b"payload3")),
-        ];
-
-        for message in messages {
-            assert!(
-                messenger
-                    .publish(message, PublisherQoS::Standard)
-                    .await
-                    .is_ok()
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_mock_messenger_late_subscription_only_receives_new_messages() {
-        let mut messenger = create_test_messenger();
-
-        assert!(messenger.start_session().await.is_ok());
-
-        // Publish before any subscription exists
-        let early_msg = Message::new(&make_key_expr("test/topic/live"), b"early");
-        assert!(
-            messenger
-                .publish(early_msg, PublisherQoS::Standard)
-                .await
-                .is_ok()
-        );
-
-        // Subscribe after the first publish; should not receive the earlier message
-        let mut subscription = messenger
-            .subscribe("*/*/*/*/test/topic/**", SubscriberQoS::Standard)
-            .await
-            .expect("subscription should succeed");
-
-        let result =
-            tokio::time::timeout(std::time::Duration::from_millis(20), subscription.rx.recv())
-                .await;
-        assert!(
-            result.is_err(),
-            "late subscription should not replay history"
-        );
-
-        // Publish a new message that matches the subscription
-        let live_msg = Message::new(&make_key_expr("test/topic/live"), b"live");
-        assert!(
-            messenger
-                .publish(live_msg.clone(), PublisherQoS::Standard)
-                .await
-                .is_ok()
-        );
-
-        let received =
-            tokio::time::timeout(std::time::Duration::from_millis(50), subscription.rx.recv())
-                .await
-                .expect("should receive live message")
-                .expect("channel should deliver a message");
-        assert_eq!(received.payload(), live_msg.payload());
-
-        assert!(messenger.stop_session().await.is_ok());
-    }
 
     #[test]
     fn test_key_exprs_intersect_exact() {

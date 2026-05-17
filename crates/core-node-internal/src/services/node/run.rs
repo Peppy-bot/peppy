@@ -13,10 +13,10 @@ use node_stack::{self, NodeStack};
 use parking_lot::Mutex as StdMutex;
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
+use peppylib::messaging::Iface;
 use peppylib::messaging::{
     ActionFeedbackPublisher, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext,
 };
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::BTreeMap;
@@ -81,8 +81,7 @@ pub async fn listen_for_node_run(
         core_node_name,
         instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::NODE_RUN_ACTION,
     )
     .await?;
@@ -933,8 +932,7 @@ async fn perform_health_check(
             target.core_node_name,
             target.caller_instance_id,
             target.target_node_name,
-            NATIVE_IFACE_SEGMENT_NAME,
-            NATIVE_IFACE_SEGMENT_TAG,
+            Iface::native(),
             NODE_HEALTH_SERVICE,
             Some(target.target_core_node),
             Some(target.target_instance_id),
@@ -1001,8 +999,7 @@ async fn wait_for_ready_signal(
             target.core_node_name,
             target.caller_instance_id,
             target.target_node_name,
-            NATIVE_IFACE_SEGMENT_NAME,
-            NATIVE_IFACE_SEGMENT_TAG,
+            Iface::native(),
             NODE_READY_SERVICE,
             Some(target.target_core_node),
             Some(target.target_instance_id),
@@ -1080,8 +1077,7 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 &p.core_node_name,
                 &p.caller_instance_id,
                 &p.target_node_name,
-                NATIVE_IFACE_SEGMENT_NAME,
-                NATIVE_IFACE_SEGMENT_TAG,
+                Iface::native(),
                 NODE_HEALTH_SERVICE,
                 Some(&p.target_core_node),
                 Some(&instance_id_str),

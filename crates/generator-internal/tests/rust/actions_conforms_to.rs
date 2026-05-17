@@ -76,7 +76,8 @@ const NODE_CONFIG: &str = r#"{
 ///   2. The category `exposed_actions.rs` lists the native leaf and one
 ///      module entry per conforming interface.
 ///   3. Each leaf calls `peppylib::ActionMessenger::expose` with the matching
-///      `iface_name`/`iface_tag` literals (`"_"`/`"_"` for native).
+///      iface: `Iface::new("name", "tag")?` for conformed leaves and
+///      `Iface::native()` for the native leaf.
 ///   4. Per-interface marker fields land in the right file.
 #[test]
 fn nests_conformed_actions_under_iface_name_and_tag() {
@@ -134,10 +135,9 @@ fn nests_conformed_actions_under_iface_name_and_tag() {
         native_src.contains("ActionMessenger::expose"),
         "native source should call ActionMessenger::expose:\n{native_src}",
     );
-    let native_underscore_count = native_src.matches("\"_\"").count();
     assert!(
-        native_underscore_count >= 2,
-        "native leaf should pass two `\"_\"` iface segments:\n{native_src}",
+        native_src.contains("Iface::native()"),
+        "native leaf should pass `Iface::native()`:\n{native_src}",
     );
     assert!(
         native_src.contains("native_marker"),

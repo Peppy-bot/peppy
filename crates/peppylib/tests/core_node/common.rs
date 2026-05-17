@@ -6,8 +6,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use peppylib::messaging::Iface;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use pmi::{ZenohAdapter, ZenohdInstance};
 use tempfile::TempDir;
@@ -43,8 +43,7 @@ pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name:
             CORE_NODE,
             CLIENT_INSTANCE,
             CORE_NODE,
-            NATIVE_IFACE_SEGMENT_NAME,
-            NATIVE_IFACE_SEGMENT_TAG,
+            Iface::native(),
             service_name,
             Some(CORE_NODE),
             None,

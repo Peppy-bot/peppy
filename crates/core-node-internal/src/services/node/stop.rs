@@ -3,7 +3,7 @@ use crate::names;
 use config::node::Name;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use node_stack::NodeStack;
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
+use peppylib::messaging::Iface;
 use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
@@ -32,8 +32,7 @@ pub async fn listen_for_node_stop(
         &core_node_node,
         &core_instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::NODE_STOP,
     )
     .await?;
@@ -255,8 +254,7 @@ async fn send_shutdown_signal(
         core_node_node,
         core_instance_id,
         node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         SHUTDOWN_SERVICE,
         Some(core_node_node),
         Some(instance_id_str),

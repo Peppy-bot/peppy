@@ -368,7 +368,7 @@ if __name__ == "__main__":
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -682,7 +682,7 @@ if __name__ == "__main__":
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -1028,7 +1028,7 @@ if __name__ == "__main__":
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -1359,7 +1359,7 @@ if __name__ == "__main__":
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -1726,7 +1726,7 @@ if __name__ == "__main__":
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -2090,7 +2090,7 @@ if __name__ == "__main__":
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,

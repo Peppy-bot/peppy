@@ -1,7 +1,12 @@
 use crate::error::{Error, Result};
-use crate::types::{PublisherQoS, SubscriberQoS, TopicMessage};
+use crate::types::{Payload, PublisherQoS, SubscriberQoS, TopicMessage};
+use crate::wire::zenoh_format::ZenohWireFormat;
+use crate::wire::{
+    ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
+    TopicWireReceiver, TopicWireSender,
+};
 use crate::zenohd::{self, ZenohNetProtocol};
-use crate::{Message, Messenger, MessengerAdapter, MessengerBackend, Subscription};
+use crate::{Messenger, MessengerAdapter, MessengerBackend, Subscription};
 use askama::Template;
 
 use std::net::{SocketAddr, TcpListener};
@@ -300,92 +305,90 @@ impl MessengerBackend for ZenohAdapter {
     }
 
     async fn stop_session(mut self) -> Result<()> {
-        // Close the Zenoh session if it exists
         if let Some(session) = self.session.take() {
             drop(session);
         }
         Ok(())
     }
 
-    async fn publish(&mut self, message: Message, qos: PublisherQoS) -> Result<()> {
-        let identifier = message.identifier().to_string();
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
-
-        let zenoh_qos = ZenohQoS::from(qos);
-
-        // Use session.put() directly instead of declare_publisher() + put() + drop.
-        // This avoids the publisher declaration/undeclare lifecycle that causes
-        // routing interference between successive service polls with different
-        // targeting combinations.
-        session
-            .put(&identifier, message.payload().as_ref())
-            .congestion_control(zenoh_qos.congestion_control)
-            .priority(zenoh_qos.priority)
-            .express(zenoh_qos.express)
+    async fn subscribe_topic(
+        &self,
+        recv: &TopicWireReceiver,
+        qos: SubscriberQoS,
+    ) -> Result<Subscription> {
+        self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos)
             .await
-            .map_err(|e| Error::PublishError {
-                topic: e.to_string(),
-            })?;
-
-        Ok(())
     }
 
-    async fn subscribe(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
-        // create zenoh subscriber, forward events into rx
-        let (tx, rx) = tokio::sync::mpsc::channel(qos.channel_size());
-
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
-
-        let subscriber = session
-            .declare_subscriber(topic)
+    async fn publish_topic(
+        &mut self,
+        sender: &TopicWireSender,
+        payload: Payload,
+        qos: PublisherQoS,
+    ) -> Result<()> {
+        self.publish_keyexpr(&ZenohWireFormat::topic_publish(sender), payload, qos)
             .await
-            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+    }
 
-        // Spawn background task to forward messages with abort handle
-        let join_handle = tokio::spawn(async move {
-            loop {
-                match subscriber.recv_async().await {
-                    Ok(sample) => {
-                        let SampleFields {
-                            key_expr, payload, ..
-                        } = sample.into();
+    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<[Subscription; 4]> {
+        let patterns = ZenohWireFormat::service_listen_patterns(recv);
+        let [p0, p1, p2, p3] = patterns;
+        let s0 = self.subscribe_keyexpr(p0, SubscriberQoS::Standard).await?;
+        let s1 = self.subscribe_keyexpr(p1, SubscriberQoS::Standard).await?;
+        let s2 = self.subscribe_keyexpr(p2, SubscriberQoS::Standard).await?;
+        let s3 = self.subscribe_keyexpr(p3, SubscriberQoS::Standard).await?;
+        Ok([s0, s1, s2, s3])
+    }
 
-                        let key_expr = key_expr.as_str();
-                        // Create a ResponseMessage object with topic and payload
-                        match TopicMessage::from_zbytes(key_expr, payload) {
-                            Ok(message) => {
-                                if let Err(e) = tx.send(message).await {
-                                    tracing::error!("Failed to send message: {}", e);
-                                    break;
-                                }
-                            }
-                            Err(err) => {
-                                tracing::error!(
-                                    %key_expr,
-                                    %err,
-                                    "Failed to build ResponseMessage from sample"
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Subscriber stopped receiving messages: {}", e);
-                        break;
-                    }
-                }
-            }
-        });
+    async fn open_service_call(
+        &mut self,
+        sender: &ServiceWireSender,
+        request_id: &str,
+        payload: Payload,
+    ) -> Result<Subscription> {
+        let response_keyexpr = ZenohWireFormat::service_response_subscribe(sender, request_id);
+        let response_sub = self
+            .subscribe_keyexpr(response_keyexpr, SubscriberQoS::Standard)
+            .await?;
 
-        // Get the abort handle from the join handle
-        let abort_handle = join_handle.abort_handle();
+        let request_keyexpr = ZenohWireFormat::service_request_publish(sender, request_id);
+        self.publish_keyexpr(&request_keyexpr, payload, PublisherQoS::Standard)
+            .await?;
 
-        Ok(Subscription::new(rx, abort_handle))
+        Ok(response_sub)
+    }
+
+    async fn publish_service_response(
+        &mut self,
+        recv: &ServiceWireReceiver,
+        received_request: &str,
+        payload: Payload,
+    ) -> Result<()> {
+        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
+        self.publish_keyexpr(&parsed.response_keyexpr, payload, PublisherQoS::Standard)
+            .await
+    }
+
+    fn parse_service_request_id(
+        &self,
+        recv: &ServiceWireReceiver,
+        received_request: &str,
+    ) -> Result<String> {
+        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
+        Ok(parsed.request_id)
+    }
+
+    async fn subscribe_action_feedback(
+        &self,
+        sender: &ActionWireSender,
+        goal_id: &str,
+        qos: SubscriberQoS,
+    ) -> Result<Subscription> {
+        self.subscribe_keyexpr(
+            ZenohWireFormat::action_feedback_subscribe(sender, goal_id),
+            qos,
+        )
+        .await
     }
 
     async fn start_router(&mut self) -> Result<()> {
@@ -409,7 +412,6 @@ impl MessengerBackend for ZenohAdapter {
     fn get_host(&self) -> SocketAddr {
         let host = &self.client_config.host;
         let port = self.client_config.port;
-        // Parse host as IP address; use localhost as fallback for empty/invalid hosts
         let ip = host
             .parse()
             .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
@@ -418,10 +420,32 @@ impl MessengerBackend for ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    /// Pre-bind a publisher to `topic` + `qos`. Clones the `Arc<Session>` so
-    /// the resulting publisher's `publish` skips the `Arc<Mutex<Messenger>>`
-    /// global lock — zenoh's session is internally lock-free for `put`.
-    pub fn declare_publisher(&self, topic: String, qos: PublisherQoS) -> Result<ZenohPublisher> {
+    /// Pre-bind a per-topic publisher for `sender`. The returned publisher
+    /// holds an `Arc<Session>` clone so its `publish` is independent of the
+    /// `Arc<Mutex<Messenger>>` global lock.
+    pub fn declare_topic_publisher(
+        &self,
+        sender: &TopicWireSender,
+        qos: PublisherQoS,
+    ) -> Result<ZenohPublisher> {
+        self.declare_publisher_keyexpr(ZenohWireFormat::topic_publish(sender), qos)
+    }
+
+    /// Pre-bind a per-goal action-feedback publisher.
+    pub fn declare_action_feedback_publisher(
+        &self,
+        recv: &ActionWireReceiver,
+        goal_id: &str,
+        qos: PublisherQoS,
+    ) -> Result<ZenohPublisher> {
+        self.declare_publisher_keyexpr(ZenohWireFormat::action_feedback_publish(recv, goal_id), qos)
+    }
+
+    fn declare_publisher_keyexpr(
+        &self,
+        topic: String,
+        qos: PublisherQoS,
+    ) -> Result<ZenohPublisher> {
         let session = self
             .session
             .as_ref()
@@ -432,12 +456,88 @@ impl ZenohAdapter {
             qos: ZenohQoS::from(qos),
         })
     }
+
+    async fn publish_keyexpr(
+        &self,
+        keyexpr: &str,
+        payload: Payload,
+        qos: PublisherQoS,
+    ) -> Result<()> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let zenoh_qos = ZenohQoS::from(qos);
+
+        // session.put() directly rather than declare_publisher() + put() + drop.
+        // This avoids the publisher declaration/undeclare lifecycle that causes
+        // routing interference between successive service polls with different
+        // targeting.
+        session
+            .put(keyexpr, payload.as_bytes().as_ref())
+            .congestion_control(zenoh_qos.congestion_control)
+            .priority(zenoh_qos.priority)
+            .express(zenoh_qos.express)
+            .await
+            .map_err(|e| Error::PublishError {
+                topic: e.to_string(),
+            })?;
+        Ok(())
+    }
+
+    async fn subscribe_keyexpr(&self, keyexpr: String, qos: SubscriberQoS) -> Result<Subscription> {
+        let (tx, rx) = tokio::sync::mpsc::channel(qos.channel_size());
+
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+
+        let subscriber = session
+            .declare_subscriber(&keyexpr)
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+
+        let join_handle = tokio::spawn(async move {
+            loop {
+                match subscriber.recv_async().await {
+                    Ok(sample) => {
+                        let SampleFields {
+                            key_expr, payload, ..
+                        } = sample.into();
+                        let key_expr = key_expr.as_str();
+                        match TopicMessage::from_zbytes(key_expr, payload) {
+                            Ok(message) => {
+                                if let Err(e) = tx.send(message).await {
+                                    tracing::error!("Failed to send message: {}", e);
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    %key_expr,
+                                    %err,
+                                    "Failed to build ResponseMessage from sample"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Subscriber stopped receiving messages: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+        let abort_handle = join_handle.abort_handle();
+        Ok(Subscription::new(rx, abort_handle))
+    }
 }
 
 /// Zenoh-side per-topic publisher returned by [`ZenohAdapter::declare_publisher`].
 ///
 /// Mirrors [`ZenohAdapter::publish`]'s `session.put()` path (NOT a long-lived
-/// `zenoh::pubsub::Publisher`) — see the comment there about routing
+/// `zenoh::pubsub::Publisher`); see the comment there about routing
 /// interference between successive service polls. The win here is bypassing
 /// the central `Messenger` mutex; zenoh's session itself is lock-free for
 /// `put`.

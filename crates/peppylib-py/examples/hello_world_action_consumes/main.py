@@ -1,6 +1,6 @@
 import asyncio
 
-from peppylib import ActionMessenger, MessengerHandle
+from peppylib import Iface, ActionMessenger, MessengerHandle
 from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT, QoSProfile
 
@@ -66,8 +66,7 @@ async def main():
         core_node,
         instance_id,
         NODE_NAME,
-        None,  # iface_name (None = native)
-        None,  # iface_tag (None = native)
+        Iface.native(),  # iface
         ACTION_NAME,
         None,  # target_core_node - binds with the first found
         None,  # target_instance_id - binds with the first found
@@ -102,8 +101,7 @@ async def main():
         core_node,
         instance_id,
         NODE_NAME,
-        None,  # iface_name (None = native)
-        None,  # iface_tag (None = native)
+        Iface.native(),  # iface
         ACTION_NAME,
         None,  # target_core_node
         None,  # target_instance_id

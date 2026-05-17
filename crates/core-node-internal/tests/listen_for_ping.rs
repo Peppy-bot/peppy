@@ -4,7 +4,7 @@ use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
 use core_node::names;
 use core_node_api::encoding::{PingRequest, PingResponse};
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{NATIVE_IFACE_SEGMENT_NAME, NATIVE_IFACE_SEGMENT_TAG};
+use peppylib::messaging::Iface;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -21,8 +21,7 @@ async fn listen_for_ping_roundtrip_succeed() {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         &started.core_node_name,
-        NATIVE_IFACE_SEGMENT_NAME,
-        NATIVE_IFACE_SEGMENT_TAG,
+        Iface::native(),
         names::PING,
         Some(&started.core_node_name),
         None,

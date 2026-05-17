@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from peppylib import ActionMessenger, MessengerHandle, QoSProfile, ZenohdInstance
+from peppylib import Iface, ActionMessenger, MessengerHandle, QoSProfile, ZenohdInstance
 
 CORE_NODE = "test_core"
 INSTANCE_ID = "test_instance"
@@ -35,8 +35,7 @@ async def test_action_messenger_communication():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            None,  # iface_name (None = native)
-            None,  # iface_tag (None = native)
+            Iface.native(),  # iface
             ACTION_NAME,)
 
         # Allow subscriptions to propagate
@@ -74,8 +73,7 @@ async def test_action_messenger_communication():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            None,  # iface_name (None = native)
-            None,  # iface_tag (None = native)
+            Iface.native(),  # iface
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
@@ -120,8 +118,7 @@ async def test_cancel_goal_concurrent_with_feedback():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            None,  # iface_name (None = native)
-            None,  # iface_tag (None = native)
+            Iface.native(),  # iface
             ACTION_NAME,)
 
         await asyncio.sleep(0.05)
@@ -142,8 +139,7 @@ async def test_cancel_goal_concurrent_with_feedback():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            None,  # iface_name (None = native)
-            None,  # iface_tag (None = native)
+            Iface.native(),  # iface
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
@@ -180,8 +176,7 @@ async def test_send_goal_rejects_invalid_timeout():
                 CORE_NODE,
                 INSTANCE_ID,
                 NODE_NAME,
-                None,  # iface_name (None = native)
-                None,  # iface_tag (None = native)
+                Iface.native(),  # iface
                 ACTION_NAME,
                 CORE_NODE,
                 INSTANCE_ID,
@@ -202,8 +197,7 @@ async def test_send_goal_honors_target_core_node():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            None,  # iface_name (None = native)
-            None,  # iface_tag (None = native)
+            Iface.native(),  # iface
             ACTION_NAME,)
 
         await asyncio.sleep(0.05)
@@ -214,8 +208,7 @@ async def test_send_goal_honors_target_core_node():
                 CORE_NODE,
                 INSTANCE_ID,
                 NODE_NAME,
-                None,  # iface_name (None = native)
-                None,  # iface_tag (None = native)
+                Iface.native(),  # iface
                 ACTION_NAME,
                 "wrong_core_node",
                 INSTANCE_ID,
@@ -240,8 +233,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            None,
-            None,
+            Iface.native(),
             "move",
         )
         iface_action = await ActionMessenger.expose(
@@ -249,8 +241,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            "arm",
-            "v1",
+            Iface.conformed("arm", "v1"),
             "move",
         )
 
@@ -278,8 +269,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            None,
-            None,
+            Iface.native(),
             "move",
             CORE_NODE,
             INSTANCE_ID,
@@ -294,8 +284,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            "arm",
-            "v1",
+            Iface.conformed("arm", "v1"),
             "move",
             CORE_NODE,
             INSTANCE_ID,

@@ -1,5 +1,10 @@
 use super::adapters::mock::{MockAdapter, MockPublisher};
-use super::error::{Error, Result};
+use super::error::Result;
+use super::wire::zenoh_format::ZenohWireFormat;
+use super::wire::{
+    ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
+    TopicWireReceiver, TopicWireSender,
+};
 use config::node::QoSProfile;
 use std::borrow::Cow;
 use std::future::Future;
@@ -80,33 +85,90 @@ impl From<QoSProfile> for SubscriberQoS {
     }
 }
 
-/// Defines the messaging interface
+/// Defines the messaging interface.
+///
+/// All methods take addressing structs from [`crate::wire`] rather than raw
+/// keyexpressions. Each adapter is responsible for formatting them into its
+/// own wire form internally. Only the per-transport `*_wire.rs` modules are
+/// authorized to produce raw keyexpressions.
 pub trait MessengerBackend {
-    /// Initialize the pubsub session
-    fn start_session(&mut self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
+    /// Initialize the pubsub session.
+    fn start_session(&mut self) -> impl Future<Output = Result<()>> + Send;
 
-    /// Shuts down the pubsub session
-    fn stop_session(self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
+    /// Shuts down the pubsub session.
+    fn stop_session(self) -> impl Future<Output = Result<()>> + Send;
 
-    /// Publish a message to a topic
-    fn publish(
-        &mut self,
-        message: Message,
-        qos: PublisherQoS,
-    ) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
+    // ─── Topics ───────────────────────────────────────────────────────────
 
-    /// Subscribes to a topic
-    fn subscribe(
+    /// Subscribe to a topic.
+    fn subscribe_topic(
         &self,
-        topic: &str,
+        recv: &TopicWireReceiver,
         qos: SubscriberQoS,
-    ) -> impl Future<Output = Result<Subscription>> + Send; // async equivalent for trait
+    ) -> impl Future<Output = Result<Subscription>> + Send;
 
-    /// Starts the router in background and immediately return for engines that uses a router.
-    /// The router should only be started if the lib is intended to connect nodes together
+    /// Publish a one-shot topic message.
+    fn publish_topic(
+        &mut self,
+        sender: &TopicWireSender,
+        payload: Payload,
+        qos: PublisherQoS,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    // ─── Services ─────────────────────────────────────────────────────────
+
+    /// Subscribe to all four broadcast-Cartesian listen patterns for a service.
+    fn listen_service(
+        &self,
+        recv: &ServiceWireReceiver,
+    ) -> impl Future<Output = Result<[Subscription; 4]>> + Send;
+
+    /// Send a service request and subscribe to the response correlated by
+    /// `request_id`. Returns the response subscription.
+    fn open_service_call(
+        &mut self,
+        sender: &ServiceWireSender,
+        request_id: &str,
+        payload: Payload,
+    ) -> impl Future<Output = Result<Subscription>> + Send;
+
+    /// Server-side response publish. The adapter parses `received_request` to
+    /// extract the caller's addressing and request_id, then publishes the
+    /// payload back to the caller.
+    fn publish_service_response(
+        &mut self,
+        recv: &ServiceWireReceiver,
+        received_request: &str,
+        payload: Payload,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Parses a received request keyexpr against the receiver's expected
+    /// shape and returns the request_id. Server-side handlers use this to
+    /// correlate requests with responses without seeing raw keyexpressions.
+    fn parse_service_request_id(
+        &self,
+        recv: &ServiceWireReceiver,
+        received_request: &str,
+    ) -> Result<String>;
+
+    // ─── Actions ──────────────────────────────────────────────────────────
+
+    /// Subscribe to a specific goal's feedback stream.
+    fn subscribe_action_feedback(
+        &self,
+        sender: &ActionWireSender,
+        goal_id: &str,
+        qos: SubscriberQoS,
+    ) -> impl Future<Output = Result<Subscription>> + Send;
+
+    // ─── Router lifecycle ─────────────────────────────────────────────────
+
+    /// Starts the router in background and immediately returns for engines
+    /// that use a router. Only relevant when the library is brokering between
+    /// nodes; client-only adapters can no-op.
     fn start_router(&mut self) -> impl Future<Output = Result<()>> + Send;
 
-    /// Stops the router
+    /// Stops the router.
     fn stop_router(&mut self) -> impl Future<Output = Result<()>> + Send;
 
     /// Returns the socket address (host and port) of this messenger backend.
@@ -298,6 +360,7 @@ impl PartialEq<Payload> for bytes::Bytes {
 }
 
 /// Envelope for messages travelling through the transport layer.
+#[derive(Clone)]
 pub struct TopicMessage {
     key_expr: String,
     instance_id: String,
@@ -307,48 +370,18 @@ pub struct TopicMessage {
 
 impl TopicMessage {
     pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
-        let (core_node, instance_id) = Self::parse_key_expr(key_expr)?;
+        let parsed = ZenohWireFormat::parse_topic_keyexpr(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
-            instance_id,
-            core_node,
+            instance_id: parsed.instance_id,
+            core_node: parsed.core_node,
             payload: payload.into(),
         })
     }
 
     #[cfg(feature = "zenoh")]
     pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
-        let (core_node, instance_id) = Self::parse_key_expr(key_expr)?;
-        Ok(Self {
-            key_expr: key_expr.to_string(),
-            instance_id,
-            core_node,
-            payload: Payload::from_zbytes(zbytes),
-        })
-    }
-
-    /// Parses a key expression into its (core_node, instance_id) components.
-    ///
-    /// Key expression format: `target_core_node/caller_core_node/target_instance/caller_instance/...`
-    /// - core_node is at segment index 1 (caller_core_node)
-    /// - instance_id is at segment index 3 (caller_instance)
-    fn parse_key_expr(key_expr: &str) -> Result<(String, String)> {
-        let mut segments = key_expr.splitn(5, '/');
-        let _target_core = segments.next();
-        let core_node = segments
-            .next()
-            .ok_or_else(|| Error::CoreNodeNotFound(key_expr.to_string()))?;
-        if core_node.is_empty() {
-            return Err(Error::CoreNodeNotFound(key_expr.to_string()));
-        }
-        let _target_instance = segments.next();
-        let instance_id = segments
-            .next()
-            .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))?;
-        if instance_id.is_empty() {
-            return Err(Error::InstanceIdNotFound(key_expr.to_string()));
-        }
-        Ok((core_node.to_string(), instance_id.to_string()))
+        Self::new(key_expr, Payload::from_zbytes(zbytes))
     }
 
     pub fn instance_id(&self) -> &str {
@@ -367,6 +400,12 @@ impl TopicMessage {
         self.payload
     }
 
+    /// Raw incoming keyexpr. Wire-format-aware code (peppylib's service flow,
+    /// adapters) uses this to address responses back to the request; no other
+    /// consumer should touch this — the wire format is owned by
+    /// `wire::zenoh_format::ZenohWireFormat`. This getter exists for service-flow
+    /// plumbing only and may be removed when that flow stops threading raw
+    /// keyexprs.
     pub fn key_expr(&self) -> &str {
         &self.key_expr
     }
@@ -394,29 +433,51 @@ impl Messenger {
         self.get_host().port()
     }
 
-    /// Pre-bind a per-topic publisher to the active adapter. Returns a handle
-    /// whose `publish` skips the central `Arc<Mutex<Messenger>>` lock that all
-    /// other operations contend on — useful for periodic / per-frame publish
-    /// loops where the per-call mutex acquisition becomes a bottleneck.
-    pub fn declare_publisher(
+    /// Pre-bind a per-topic publisher. The returned [`MessengerPublisher`]
+    /// publishes to the same wire keyexpr as [`MessengerBackend::publish_topic`]
+    /// for the same `sender`, but skips the central `Arc<Mutex<Messenger>>`
+    /// lock that all other operations contend on — useful for periodic /
+    /// per-frame publish loops.
+    pub fn declare_topic_publisher(
         &self,
-        topic: String,
+        sender: &TopicWireSender,
         qos: PublisherQoS,
     ) -> Result<MessengerPublisher> {
         match &self.adapter {
             #[cfg(feature = "zenoh")]
             MessengerAdapter::Zenoh(adapter) => Ok(MessengerPublisher::Zenoh(
-                adapter.declare_publisher(topic, qos)?,
+                adapter.declare_topic_publisher(sender, qos)?,
             )),
             MessengerAdapter::Mock(adapter) => Ok(MessengerPublisher::Mock(
-                adapter.declare_publisher(topic, qos),
+                adapter.declare_topic_publisher(sender, qos),
+            )),
+        }
+    }
+
+    /// Pre-bind a per-goal action-feedback publisher. Mirrors
+    /// [`declare_topic_publisher`](Self::declare_topic_publisher) for action
+    /// feedback streams keyed by `goal_id`.
+    pub fn declare_action_feedback_publisher(
+        &self,
+        recv: &ActionWireReceiver,
+        goal_id: &str,
+        qos: PublisherQoS,
+    ) -> Result<MessengerPublisher> {
+        match &self.adapter {
+            #[cfg(feature = "zenoh")]
+            MessengerAdapter::Zenoh(adapter) => Ok(MessengerPublisher::Zenoh(
+                adapter.declare_action_feedback_publisher(recv, goal_id, qos)?,
+            )),
+            MessengerAdapter::Mock(adapter) => Ok(MessengerPublisher::Mock(
+                adapter.declare_action_feedback_publisher(recv, goal_id, qos),
             )),
         }
     }
 }
 
 /// Per-topic publisher handle that bypasses the central `Messenger` mutex.
-/// Construct via [`Messenger::declare_publisher`].
+/// Construct via [`Messenger::declare_topic_publisher`] (or
+/// [`Messenger::declare_action_feedback_publisher`] for action feedback).
 pub enum MessengerPublisher {
     #[cfg(feature = "zenoh")]
     Zenoh(ZenohPublisher),
@@ -458,16 +519,87 @@ impl MessengerBackend for Messenger {
         dispatch!(&mut self.adapter, start_session)
     }
 
-    async fn publish(&mut self, message: Message, qos: PublisherQoS) -> Result<()> {
-        dispatch!(&mut self.adapter, publish, message, qos)
-    }
-
-    async fn subscribe(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
-        dispatch!(&self.adapter, subscribe, topic, qos)
-    }
-
     async fn stop_session(self) -> Result<()> {
         dispatch!(self.adapter, stop_session)
+    }
+
+    async fn subscribe_topic(
+        &self,
+        recv: &TopicWireReceiver,
+        qos: SubscriberQoS,
+    ) -> Result<Subscription> {
+        dispatch!(&self.adapter, subscribe_topic, recv, qos)
+    }
+
+    async fn publish_topic(
+        &mut self,
+        sender: &TopicWireSender,
+        payload: Payload,
+        qos: PublisherQoS,
+    ) -> Result<()> {
+        dispatch!(&mut self.adapter, publish_topic, sender, payload, qos)
+    }
+
+    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<[Subscription; 4]> {
+        dispatch!(&self.adapter, listen_service, recv)
+    }
+
+    async fn open_service_call(
+        &mut self,
+        sender: &ServiceWireSender,
+        request_id: &str,
+        payload: Payload,
+    ) -> Result<Subscription> {
+        dispatch!(
+            &mut self.adapter,
+            open_service_call,
+            sender,
+            request_id,
+            payload
+        )
+    }
+
+    async fn publish_service_response(
+        &mut self,
+        recv: &ServiceWireReceiver,
+        received_request: &str,
+        payload: Payload,
+    ) -> Result<()> {
+        dispatch!(
+            &mut self.adapter,
+            publish_service_response,
+            recv,
+            received_request,
+            payload
+        )
+    }
+
+    fn parse_service_request_id(
+        &self,
+        recv: &ServiceWireReceiver,
+        received_request: &str,
+    ) -> Result<String> {
+        dispatch_sync!(
+            &self.adapter,
+            parse_service_request_id,
+            recv,
+            received_request
+        )
+    }
+
+    async fn subscribe_action_feedback(
+        &self,
+        sender: &ActionWireSender,
+        goal_id: &str,
+        qos: SubscriberQoS,
+    ) -> Result<Subscription> {
+        dispatch!(
+            &self.adapter,
+            subscribe_action_feedback,
+            sender,
+            goal_id,
+            qos
+        )
     }
 
     async fn start_router(&mut self) -> Result<()> {

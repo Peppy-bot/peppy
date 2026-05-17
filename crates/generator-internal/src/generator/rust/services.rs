@@ -4,7 +4,7 @@ use super::identifiers::sanitize_rust_identifier;
 use super::serialization::{
     MessageEncodingSpec, NameGenerator, build_serialize_payload, generate_field_assignment,
 };
-use super::topics::iface_segment_literals;
+use super::topics::iface_expression;
 use crate::error::{Error, Result};
 use crate::generator::types::InterfaceOrigin;
 use config::encoding::FunctionParam;
@@ -63,7 +63,7 @@ pub fn build_exposed_service_method(
         use_service_name_const,
         origin,
     } = *spec;
-    let (iface_name_lit, iface_tag_lit) = iface_segment_literals(origin);
+    let iface_expr = iface_expression(origin);
 
     let handler_fn_name = handler_fn_name_override.cloned().unwrap_or_else(|| {
         Ident::new(
@@ -350,8 +350,7 @@ pub fn build_exposed_service_method(
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     node_runner.processor().node_name(),
-                    #iface_name_lit,
-                    #iface_tag_lit,
+                    #iface_expr,
                     #service_name_ref,
                 )
                 .await?;
@@ -403,8 +402,7 @@ pub fn build_exposed_service_method(
                     node_runner.core_node(),
                     service_instance_id.as_str(),
                     node_name,
-                    #iface_name_lit,
-                    #iface_tag_lit,
+                    #iface_expr,
                     service_name,
                 )
                 .await?;

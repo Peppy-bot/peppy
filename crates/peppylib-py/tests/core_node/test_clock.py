@@ -11,6 +11,7 @@ import pytest
 from peppylib import (
     ClockResponse,
     ClockTick,
+    Iface,
     QoSProfile,
     TopicMessenger,
     subscribe_clock,
@@ -90,8 +91,7 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
             CORE_NODE,
             SERVER_INSTANCE,
             CORE_NODE,
-            None,  # iface_name (None = native)
-            None,  # iface_tag (None = native)
+            Iface.native(),  # iface
             "clock",
             QoSProfile.SensorData,
             canned.encode(),

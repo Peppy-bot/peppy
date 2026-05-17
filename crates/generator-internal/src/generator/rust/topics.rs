@@ -116,7 +116,7 @@ pub fn build_topic_emit(
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
     let label_literal = Literal::string(label);
-    let (iface_name_lit, iface_tag_lit) = iface_segment_literals(origin);
+    let iface_expr = iface_expression(origin);
 
     build_emit_method(EmitMethodSpec {
         method_name: method_ident,
@@ -135,8 +135,7 @@ pub fn build_topic_emit(
                 with_core_node,
                 as_instance_id,
                 as_node_name,
-                #iface_name_lit,
-                #iface_tag_lit,
+                #iface_expr,
                 as_topic,
                 qos,
                 payload,
@@ -148,19 +147,19 @@ pub fn build_topic_emit(
     })
 }
 
-/// Returns the two literal segments to splice into a generated `emit`/
-/// `subscribe` call: `("_", "_")` for native artifacts, or
-/// `(iface_name, iface_tag)` for those pulled in via `interfaces.conforms_to`.
-/// The tag is passed through unchanged — messaging.rs normalizes hyphens.
-pub fn iface_segment_literals(
-    origin: Option<&crate::generator::types::InterfaceOrigin>,
-) -> (Literal, Literal) {
+/// Returns the `Iface` constructor expression to splice into a generated
+/// `emit`/`subscribe` call: `peppylib::messaging::Iface::native()` for native
+/// artifacts, or `Iface::new(name, tag)?` for those pulled in via
+/// `interfaces.conforms_to`. The `?` is required because `Iface::new` is
+/// fallible — it validates segments at construction.
+pub fn iface_expression(origin: Option<&crate::generator::types::InterfaceOrigin>) -> TokenStream {
     match origin {
-        Some(o) => (
-            Literal::string(&o.iface_name),
-            Literal::string(&o.iface_tag),
-        ),
-        None => (Literal::string("_"), Literal::string("_")),
+        Some(o) => {
+            let name = Literal::string(&o.iface_name);
+            let tag = Literal::string(&o.iface_tag);
+            quote!(peppylib::messaging::Iface::new(#name, #tag)?)
+        }
+        None => quote!(peppylib::messaging::Iface::native()),
     }
 }
 
@@ -203,8 +202,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     node_name,
-                    "*",
-                    "*",
+                    peppylib::messaging::Iface::wildcard(),
                     topic_name,
                     target_core_node,
                     target_instance_id,

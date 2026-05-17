@@ -263,7 +263,7 @@ impl RustGenerator {
 
         // Consumer-side discovery of the producer's interface namespace is the
         // follow-up PR; for now we use native (None).
-        let (iface_name_lit, iface_tag_lit) = topics::iface_segment_literals(None);
+        let iface_expr = topics::iface_expression(None);
 
         let method_tokens = quote! {
             pub async fn fire_goal(
@@ -281,8 +281,7 @@ impl RustGenerator {
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     TARGET_NODE_NAME,
-                    #iface_name_lit,
-                    #iface_tag_lit,
+                    #iface_expr,
                     TARGET_ACTION_NAME,
                     target_core_node,
                     target_instance_id,
@@ -1301,15 +1300,14 @@ impl LanguageGenerator for RustGenerator {
         // Consumer-side discovery of the producer's interface namespace is the
         // follow-up PR; for now we use native (None) since the deployment
         // config doesn't record which interface a consumed service originates from.
-        let (iface_name_lit, iface_tag_lit) = topics::iface_segment_literals(None);
+        let iface_expr = topics::iface_expression(None);
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 NODE_NAME,
-                #iface_name_lit,
-                #iface_tag_lit,
+                #iface_expr,
                 SERVICE_NAME,
                 target_core_node,
                 target_instance_id,

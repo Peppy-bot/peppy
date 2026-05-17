@@ -2,7 +2,7 @@ import asyncio
 import signal
 from datetime import datetime
 
-from peppylib import MessengerHandle, ServiceMessenger
+from peppylib import Iface, MessengerHandle, ServiceMessenger
 from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT
 
@@ -50,8 +50,7 @@ async def main():
         core_node,
         instance_id,
         NODE_NAME,
-        None,  # iface_name (None = native)
-        None,  # iface_tag (None = native)
+        Iface.native(),  # iface
         SERVICE_NAME,)
 
     print(

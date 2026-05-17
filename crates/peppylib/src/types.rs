@@ -6,7 +6,6 @@ pub struct Message(pub(crate) pmi::TopicMessage);
 impl std::fmt::Debug for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Message")
-            .field("key_expr", &self.key_expr())
             .field("instance_id", &self.instance_id())
             .field("core_node", &self.core_node())
             .field("payload", &self.payload())
@@ -18,11 +17,6 @@ impl Message {
     /// Get the payload of the message.
     pub fn payload(&self) -> Payload {
         Payload::from(self.0.payload().to_bytes())
-    }
-
-    /// Get the key expression of the message.
-    pub fn key_expr(&self) -> &str {
-        self.0.key_expr()
     }
 
     /// Get the instance ID of the sender.
