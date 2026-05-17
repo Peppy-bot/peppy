@@ -1,8 +1,8 @@
 //! Transport-neutral addressing structs for peppy's messaging protocol.
 //!
 //! The schema (core_node / instance_id / iface / topic|service|action / name) is
-//! peppy-specific; the wire format that encodes it is transport-specific and lives
-//! in `wire::format`.
+//! peppy-specific. The zenoh-shaped wire format that encodes it lives in
+//! `wire::zenoh_format`.
 
 use std::fmt;
 
@@ -513,7 +513,7 @@ impl ActionWireReceiver {
     }
 }
 
-pub(crate) mod format;
+pub(crate) mod zenoh_format;
 
 #[cfg(test)]
 mod tests;

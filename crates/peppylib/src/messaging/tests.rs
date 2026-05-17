@@ -389,7 +389,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     }
 
     // Identity check runs once on the first received message — the wire-format
-    // contract is pinned in `pmi::wire::format::tests`, so this loop only needs
+    // contract is pinned in `pmi::wire::zenoh_format::tests`, so this loop only needs
     // to verify peppylib-level addressing and ordering.
     let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
     let mut identity_checked = false;

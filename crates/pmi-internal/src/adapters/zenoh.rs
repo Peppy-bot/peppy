@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::types::{Payload, PublisherQoS, SubscriberQoS, TopicMessage};
-use crate::wire::format::WireFormat;
+use crate::wire::zenoh_format::ZenohWireFormat;
 use crate::wire::{
     ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
     TopicWireReceiver, TopicWireSender,
@@ -316,7 +316,7 @@ impl MessengerBackend for ZenohAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        self.subscribe_keyexpr(WireFormat::topic_subscribe(recv), qos)
+        self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos)
             .await
     }
 
@@ -326,12 +326,12 @@ impl MessengerBackend for ZenohAdapter {
         payload: Payload,
         qos: PublisherQoS,
     ) -> Result<()> {
-        self.publish_keyexpr(&WireFormat::topic_publish(sender), payload, qos)
+        self.publish_keyexpr(&ZenohWireFormat::topic_publish(sender), payload, qos)
             .await
     }
 
     async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<[Subscription; 4]> {
-        let patterns = WireFormat::service_listen_patterns(recv);
+        let patterns = ZenohWireFormat::service_listen_patterns(recv);
         let [p0, p1, p2, p3] = patterns;
         let s0 = self.subscribe_keyexpr(p0, SubscriberQoS::Standard).await?;
         let s1 = self.subscribe_keyexpr(p1, SubscriberQoS::Standard).await?;
@@ -346,12 +346,12 @@ impl MessengerBackend for ZenohAdapter {
         request_id: &str,
         payload: Payload,
     ) -> Result<Subscription> {
-        let response_keyexpr = WireFormat::service_response_subscribe(sender, request_id);
+        let response_keyexpr = ZenohWireFormat::service_response_subscribe(sender, request_id);
         let response_sub = self
             .subscribe_keyexpr(response_keyexpr, SubscriberQoS::Standard)
             .await?;
 
-        let request_keyexpr = WireFormat::service_request_publish(sender, request_id);
+        let request_keyexpr = ZenohWireFormat::service_request_publish(sender, request_id);
         self.publish_keyexpr(&request_keyexpr, payload, PublisherQoS::Standard)
             .await?;
 
@@ -364,7 +364,7 @@ impl MessengerBackend for ZenohAdapter {
         received_request: &str,
         payload: Payload,
     ) -> Result<()> {
-        let parsed = WireFormat::parse_received_request(recv, received_request)?;
+        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
         self.publish_keyexpr(&parsed.response_keyexpr, payload, PublisherQoS::Standard)
             .await
     }
@@ -374,7 +374,7 @@ impl MessengerBackend for ZenohAdapter {
         recv: &ServiceWireReceiver,
         received_request: &str,
     ) -> Result<String> {
-        let parsed = WireFormat::parse_received_request(recv, received_request)?;
+        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
         Ok(parsed.request_id)
     }
 
@@ -384,8 +384,11 @@ impl MessengerBackend for ZenohAdapter {
         goal_id: &str,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        self.subscribe_keyexpr(WireFormat::action_feedback_subscribe(sender, goal_id), qos)
-            .await
+        self.subscribe_keyexpr(
+            ZenohWireFormat::action_feedback_subscribe(sender, goal_id),
+            qos,
+        )
+        .await
     }
 
     async fn start_router(&mut self) -> Result<()> {
@@ -425,7 +428,7 @@ impl ZenohAdapter {
         sender: &TopicWireSender,
         qos: PublisherQoS,
     ) -> Result<ZenohPublisher> {
-        self.declare_publisher_keyexpr(WireFormat::topic_publish(sender), qos)
+        self.declare_publisher_keyexpr(ZenohWireFormat::topic_publish(sender), qos)
     }
 
     /// Pre-bind a per-goal action-feedback publisher.
@@ -435,7 +438,7 @@ impl ZenohAdapter {
         goal_id: &str,
         qos: PublisherQoS,
     ) -> Result<ZenohPublisher> {
-        self.declare_publisher_keyexpr(WireFormat::action_feedback_publish(recv, goal_id), qos)
+        self.declare_publisher_keyexpr(ZenohWireFormat::action_feedback_publish(recv, goal_id), qos)
     }
 
     fn declare_publisher_keyexpr(

@@ -1,6 +1,6 @@
 use super::adapters::mock::{MockAdapter, MockPublisher};
 use super::error::Result;
-use super::wire::format::WireFormat;
+use super::wire::zenoh_format::ZenohWireFormat;
 use super::wire::{
     ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
     TopicWireReceiver, TopicWireSender,
@@ -370,7 +370,7 @@ pub struct TopicMessage {
 
 impl TopicMessage {
     pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
-        let parsed = WireFormat::parse_topic_keyexpr(key_expr)?;
+        let parsed = ZenohWireFormat::parse_topic_keyexpr(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id: parsed.instance_id,
@@ -403,7 +403,7 @@ impl TopicMessage {
     /// Raw incoming keyexpr. Wire-format-aware code (peppylib's service flow,
     /// adapters) uses this to address responses back to the request; no other
     /// consumer should touch this — the wire format is owned by
-    /// `wire::format::WireFormat`. This getter exists for service-flow
+    /// `wire::zenoh_format::ZenohWireFormat`. This getter exists for service-flow
     /// plumbing only and may be removed when that flow stops threading raw
     /// keyexprs.
     pub fn key_expr(&self) -> &str {

@@ -1,11 +1,11 @@
-//! Shared wire-format functions. Every raw keyexpr string that enters or
-//! leaves the bus is built here — no other module in the crate is allowed to
-//! format keyexprs. This keeps the protocol in exactly one place.
+//! Zenoh-shaped wire format. All keyexpr strings emitted on the bus are built
+//! here, and incoming keyexprs are parsed here. No other module in the crate
+//! constructs keyexprs directly, which keeps the protocol pinned to one place.
 //!
-//! Both the zenoh adapter and the in-process mock adapter use this format:
-//! the mock mirrors zenoh's wire shape so its matching logic can reuse the
-//! same encoder/parser. If a future transport needs a different wire form,
-//! introduce a sibling module rather than diverging this one.
+//! The in-process mock adapter mirrors this exact wire shape so the same
+//! encoder/parser serves both transports. If a future transport needs a
+//! different wire form (MQTT, DDS, etc.), add a sibling module rather than
+//! diverging this one.
 
 use crate::wire::{
     ActionWireReceiver, ActionWireSender, BROADCAST_MARKER, Iface, ServiceKind,
@@ -16,11 +16,11 @@ use std::fmt;
 /// Single-chunk wildcard. Matches exactly one path segment.
 const SINGLE_CHUNK_WILDCARD: &str = "*";
 
-/// Namespace for the shared wire format functions. Calls look like
-/// `WireFormat::topic_publish(&sender)`.
-pub(crate) struct WireFormat;
+/// Namespace for the zenoh wire format functions. Calls look like
+/// `ZenohWireFormat::topic_publish(&sender)`.
+pub(crate) struct ZenohWireFormat;
 
-impl WireFormat {
+impl ZenohWireFormat {
     // ─── Topics ───────────────────────────────────────────────────────────
 
     /// Parses the publisher half of a topic keyexpr into the caller's
@@ -29,7 +29,9 @@ impl WireFormat {
     /// The publish shape is
     /// `*/{caller_core}/*/{caller_inst}/topic/{caller_node}/{iface_name}/{iface_tag}/{topic}`
     /// — caller_core is segment index 1, caller_inst is segment index 3.
-    pub(crate) fn parse_topic_keyexpr(keyexpr: &str) -> Result<ParsedTopicKey, WireParseError> {
+    pub(crate) fn parse_topic_keyexpr(
+        keyexpr: &str,
+    ) -> Result<ParsedTopicKey, ZenohWireParseError> {
         let mut segments = keyexpr.splitn(5, '/');
         let _target_core = segments.next();
         let core_node = extract_caller_segment(segments.next(), "caller_core_node")?;
@@ -126,7 +128,7 @@ impl WireFormat {
     pub(crate) fn parse_received_request(
         receiver: &ServiceWireReceiver,
         request_keyexpr: &str,
-    ) -> Result<ParsedRequest, WireParseError> {
+    ) -> Result<ParsedRequest, ZenohWireParseError> {
         let mut parts = request_keyexpr.split('/').filter(|s| !s.is_empty());
 
         // target_core / target_inst are consumed but unused: the receiver's listen
@@ -134,16 +136,16 @@ impl WireFormat {
         // mismatch would have caused the message to land on a different listener.
         let _target_core = parts
             .next()
-            .ok_or(WireParseError::MissingSegment("target_core_node"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("target_core_node"))?;
         let caller_core = parts
             .next()
-            .ok_or(WireParseError::MissingSegment("caller_core_node"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("caller_core_node"))?;
         let _target_inst = parts
             .next()
-            .ok_or(WireParseError::MissingSegment("target_instance"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("target_instance"))?;
         let caller_inst = parts
             .next()
-            .ok_or(WireParseError::MissingSegment("caller_instance"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("caller_instance"))?;
 
         let expected_root = service_root(
             &receiver.as_node_name,
@@ -154,9 +156,9 @@ impl WireFormat {
         for expected in expected_root.split('/').filter(|s| !s.is_empty()) {
             let got = parts
                 .next()
-                .ok_or(WireParseError::MissingSegment("service_root"))?;
+                .ok_or(ZenohWireParseError::MissingSegment("service_root"))?;
             if got != expected {
-                return Err(WireParseError::ServiceRootMismatch {
+                return Err(ZenohWireParseError::ServiceRootMismatch {
                     expected: expected.to_string(),
                     got: got.to_string(),
                 });
@@ -165,19 +167,19 @@ impl WireFormat {
 
         let marker = parts
             .next()
-            .ok_or(WireParseError::MissingSegment("request"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("request"))?;
         if marker != "request" {
-            return Err(WireParseError::NotARequest);
+            return Err(ZenohWireParseError::NotARequest);
         }
 
         let request_id = parts
             .next()
             .filter(|s| !s.is_empty())
-            .ok_or(WireParseError::MissingSegment("request_id"))?
+            .ok_or(ZenohWireParseError::MissingSegment("request_id"))?
             .to_string();
 
         if parts.next().is_some() {
-            return Err(WireParseError::UnexpectedTrailing);
+            return Err(ZenohWireParseError::UnexpectedTrailing);
         }
 
         // Server-side response publish:
@@ -227,12 +229,12 @@ impl WireFormat {
 fn extract_caller_segment(
     segment: Option<&str>,
     field: &'static str,
-) -> Result<String, WireParseError> {
+) -> Result<String, ZenohWireParseError> {
     let value = segment
         .filter(|s| !s.is_empty())
-        .ok_or(WireParseError::MissingSegment(field))?;
+        .ok_or(ZenohWireParseError::MissingSegment(field))?;
     if value == SINGLE_CHUNK_WILDCARD {
-        return Err(WireParseError::WildcardInCallerSegment(field));
+        return Err(ZenohWireParseError::WildcardInCallerSegment(field));
     }
     Ok(value.to_string())
 }
@@ -277,7 +279,7 @@ pub(crate) struct ParsedRequest {
 
 /// Reasons a request keyexpr can fail to match the expected request shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum WireParseError {
+pub(crate) enum ZenohWireParseError {
     MissingSegment(&'static str),
     WildcardInCallerSegment(&'static str),
     UnexpectedTrailing,
@@ -285,7 +287,7 @@ pub(crate) enum WireParseError {
     ServiceRootMismatch { expected: String, got: String },
 }
 
-impl fmt::Display for WireParseError {
+impl fmt::Display for ZenohWireParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingSegment(segment) => write!(f, "missing `{segment}` segment in request"),
@@ -305,10 +307,10 @@ impl fmt::Display for WireParseError {
     }
 }
 
-impl std::error::Error for WireParseError {}
+impl std::error::Error for ZenohWireParseError {}
 
-impl From<WireParseError> for crate::error::Error {
-    fn from(err: WireParseError) -> Self {
+impl From<ZenohWireParseError> for crate::error::Error {
+    fn from(err: ZenohWireParseError) -> Self {
         crate::error::Error::BackendError(err.to_string())
     }
 }
