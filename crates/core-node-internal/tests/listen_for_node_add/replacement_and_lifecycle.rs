@@ -779,7 +779,9 @@ async fn node_add_same_node_shutdown_existing_instances() {
     )
     .expect("write v2 marker");
 
-    // Use wildcard caller IDs so mock pub/sub can match feedback topics with "*" segments.
+    // The server wildcards the caller-side positions of its feedback publish
+    // keyexpr, so a concrete caller still receives feedback over a real
+    // messenger (the mock adapter just doesn't deliver feedback).
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
 
     let caller_handle = started_core_node.caller_handle.clone();
