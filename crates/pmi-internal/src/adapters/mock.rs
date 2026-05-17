@@ -7,7 +7,7 @@ use super::super::wire::{
     ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
     TopicWireReceiver, TopicWireSender,
 };
-use super::zenoh_wire::{WireParseError, ZenohWire};
+use super::zenoh_wire::ZenohWire;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -48,13 +48,20 @@ impl Drop for MockInstance {
     }
 }
 
+/// Shared map of published messages, keyed by topic. Used to record every
+/// publish for later assertions.
+type MessageLog = Arc<Mutex<HashMap<String, Vec<Message>>>>;
+
+/// Shared map of active subscriptions, keyed by pattern. Each pattern maps to
+/// the senders that should receive a fanout when an intersecting topic is
+/// published.
+type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<TopicMessage>>>>>;
+
 pub struct MockAdapter {
     pub is_session_connected: bool,
     pub is_router_started: bool,
-    // Store published messages by topic
-    pub messages: Arc<Mutex<HashMap<String, Vec<Message>>>>,
-    // Store active subscriptions
-    pub subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<TopicMessage>>>>>,
+    pub messages: MessageLog,
+    pub subscriptions: SubscriptionMap,
 }
 
 impl Default for MockAdapter {
@@ -137,8 +144,7 @@ impl MessengerBackend for MockAdapter {
         received_request: &str,
         payload: Payload,
     ) -> Result<()> {
-        let parsed = ZenohWire::parse_received_request(recv, received_request)
-            .map_err(wire_parse_to_error)?;
+        let parsed = ZenohWire::parse_received_request(recv, received_request)?;
         self.publish_keyexpr(parsed.response_keyexpr, payload).await
     }
 
@@ -147,8 +153,7 @@ impl MessengerBackend for MockAdapter {
         recv: &ServiceWireReceiver,
         received_request: &str,
     ) -> Result<String> {
-        let parsed = ZenohWire::parse_received_request(recv, received_request)
-            .map_err(wire_parse_to_error)?;
+        let parsed = ZenohWire::parse_received_request(recv, received_request)?;
         Ok(parsed.request_id)
     }
 
@@ -175,10 +180,6 @@ impl MessengerBackend for MockAdapter {
     fn get_host(&self) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], config::consts::DEFAULT_MESSAGING_PORT))
     }
-}
-
-fn wire_parse_to_error(err: WireParseError) -> Error {
-    Error::BackendError(err.to_string())
 }
 
 impl MockAdapter {
@@ -278,23 +279,36 @@ impl MockAdapter {
             return Err(Error::PublishError { topic });
         }
 
-        let payload_bytes = payload.to_bytes();
-        let message = Message::new(&topic, payload_bytes.clone());
-        Self::to_response_message(&message)?;
+        let message = Message::new(&topic, payload.to_bytes());
+        Self::route_publish(&topic, &message, &self.messages, &self.subscriptions).await
+    }
+
+    /// Records `message` against `topic` in the mock's message log and fans
+    /// it out to every subscription whose pattern intersects `topic`. Shared
+    /// by [`MockAdapter::publish_keyexpr`] (which holds the adapter
+    /// directly) and [`MockPublisher::publish`] (which clones the same
+    /// `Arc`s for lock-free per-topic publishing).
+    async fn route_publish(
+        topic: &str,
+        message: &Message,
+        messages: &MessageLog,
+        subscriptions: &SubscriptionMap,
+    ) -> Result<()> {
+        Self::to_response_message(message)?;
 
         {
-            let mut messages = self.messages.lock().unwrap();
+            let mut messages = messages.lock().unwrap();
             messages
-                .entry(topic.clone())
+                .entry(topic.to_string())
                 .or_default()
                 .push(message.clone());
         }
 
         let senders = {
-            let subscriptions = self.subscriptions.lock().unwrap();
+            let subscriptions = subscriptions.lock().unwrap();
             let mut matched = Vec::new();
             for (pattern, senders) in subscriptions.iter() {
-                if Self::key_exprs_intersect(pattern, &topic) {
+                if Self::key_exprs_intersect(pattern, topic) {
                     matched.extend(senders.iter().cloned());
                 }
             }
@@ -302,7 +316,7 @@ impl MockAdapter {
         };
 
         for sender in senders {
-            let _ = sender.send(Self::to_response_message(&message)?).await;
+            let _ = sender.send(Self::to_response_message(message)?).await;
         }
         Ok(())
     }
@@ -339,42 +353,14 @@ impl MockAdapter {
 /// independent of the `Arc<Mutex<Messenger>>` global lock that everyone shares.
 pub struct MockPublisher {
     topic: String,
-    subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<TopicMessage>>>>>,
-    messages: Arc<Mutex<HashMap<String, Vec<Message>>>>,
+    subscriptions: SubscriptionMap,
+    messages: MessageLog,
 }
 
 impl MockPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
         let message = Message::new(&self.topic, payload);
-        // Same routing logic as `MockAdapter::publish`, but on cloned Arcs.
-        MockAdapter::to_response_message(&message)?;
-
-        {
-            let mut messages = self.messages.lock().unwrap();
-            messages
-                .entry(self.topic.clone())
-                .or_default()
-                .push(message.clone());
-        }
-
-        let senders = {
-            let subs = self.subscriptions.lock().unwrap();
-            let mut matched = Vec::new();
-            for (pattern, senders) in subs.iter() {
-                if MockAdapter::key_exprs_intersect(pattern, &self.topic) {
-                    matched.extend(senders.iter().cloned());
-                }
-            }
-            matched
-        };
-
-        for sender in senders {
-            let _ = sender
-                .send(MockAdapter::to_response_message(&message)?)
-                .await;
-        }
-
-        Ok(())
+        MockAdapter::route_publish(&self.topic, &message, &self.messages, &self.subscriptions).await
     }
 }
 

@@ -8,35 +8,46 @@ use std::fmt;
 
 /// Wire segment used for the iface_name and iface_tag positions when an
 /// artifact is native (not part of a `conforms_to` interface).
-pub const NATIVE_IFACE_SEGMENT: &str = "_";
+pub(crate) const NATIVE_IFACE_SEGMENT: &str = "_";
+
+/// Wire segment used when an iface position should match any value. Coincides
+/// with zenoh's single-chunk wildcard so the segment can be embedded verbatim
+/// in keyexprs by the zenoh adapter.
+pub(crate) const WILDCARD_IFACE_SEGMENT: &str = "*";
 
 /// Wire marker used to indicate "any" target in broadcast routing. Distinct
-/// from zenoh's `*` wildcard — broadcasts are explicit at the protocol level.
-pub const BROADCAST_MARKER: &str = "_any_";
+/// from a transport-level wildcard: broadcasts are explicit at the protocol
+/// level so the responder can decide whether to answer.
+pub(crate) const BROADCAST_MARKER: &str = "_any_";
 
-/// Paired `iface_name` + `iface_tag`. Either both come from a `conforms_to`
-/// interface or both are the native sentinel — never one without the other.
+/// Paired iface segments. `Native` corresponds to an artifact that is not part
+/// of a `conforms_to` interface; `Wildcard` matches any iface for external
+/// consumers that don't know the producer's identity; `Conformed` carries the
+/// interface name and tag from a `conforms_to` declaration.
+///
 /// Tag is hyphen-normalized once at construction (the generator emits tags
 /// with hyphens; the wire form requires identifiers).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Iface {
-    name: String,
-    tag: String,
+pub enum Iface {
+    Native,
+    Wildcard,
+    Conformed { name: String, tag: String },
 }
 
 impl Iface {
     pub fn new(name: impl Into<String>, tag: impl Into<String>) -> Self {
-        Self {
+        Self::Conformed {
             name: name.into(),
             tag: Self::normalize_tag(tag.into()),
         }
     }
 
-    pub fn native() -> Self {
-        Self {
-            name: NATIVE_IFACE_SEGMENT.to_string(),
-            tag: NATIVE_IFACE_SEGMENT.to_string(),
-        }
+    pub const fn native() -> Self {
+        Self::Native
+    }
+
+    pub const fn wildcard() -> Self {
+        Self::Wildcard
     }
 
     /// `(None, None)` → native; `(Some, Some)` → conformed iface; one-side
@@ -51,15 +62,23 @@ impl Iface {
     }
 
     pub fn name(&self) -> &str {
-        &self.name
+        match self {
+            Self::Native => NATIVE_IFACE_SEGMENT,
+            Self::Wildcard => WILDCARD_IFACE_SEGMENT,
+            Self::Conformed { name, .. } => name,
+        }
     }
 
     pub fn tag(&self) -> &str {
-        &self.tag
+        match self {
+            Self::Native => NATIVE_IFACE_SEGMENT,
+            Self::Wildcard => WILDCARD_IFACE_SEGMENT,
+            Self::Conformed { tag, .. } => tag,
+        }
     }
 
     pub fn is_native(&self) -> bool {
-        self.name == NATIVE_IFACE_SEGMENT && self.tag == NATIVE_IFACE_SEGMENT
+        matches!(self, Self::Native)
     }
 
     fn normalize_tag(tag: String) -> String {
@@ -133,18 +152,58 @@ pub struct TopicWireSender {
     pub as_topic_name: String,
 }
 
-/// Subscriber-side addressing for a topic. `to_core_node` / `to_instance_id`
-/// are `None` to mean "any" (translated to the transport's single-chunk
-/// wildcard).
+impl TopicWireSender {
+    pub fn new(
+        as_core_node: impl Into<String>,
+        as_instance_id: impl Into<String>,
+        as_node_name: impl Into<String>,
+        iface: Iface,
+        as_topic_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            as_core_node: as_core_node.into(),
+            as_instance_id: as_instance_id.into(),
+            as_node_name: as_node_name.into(),
+            iface,
+            as_topic_name: as_topic_name.into(),
+        }
+    }
+}
+
+/// Subscriber-side addressing for a topic. `to_core_node` / `to_instance_id` /
+/// `to_node_name` are `None` to mean "any" (translated to the transport's
+/// single-chunk wildcard).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopicWireReceiver {
     pub as_core_node: String,
     pub as_instance_id: String,
     pub to_core_node: Option<String>,
     pub to_instance_id: Option<String>,
-    pub to_node_name: String,
+    pub to_node_name: Option<String>,
     pub iface: Iface,
     pub to_topic: String,
+}
+
+impl TopicWireReceiver {
+    pub fn new(
+        as_core_node: impl Into<String>,
+        as_instance_id: impl Into<String>,
+        to_core_node: Option<&str>,
+        to_instance_id: Option<&str>,
+        to_node_name: Option<&str>,
+        iface: Iface,
+        to_topic: impl Into<String>,
+    ) -> Self {
+        Self {
+            as_core_node: as_core_node.into(),
+            as_instance_id: as_instance_id.into(),
+            to_core_node: to_core_node.map(str::to_string),
+            to_instance_id: to_instance_id.map(str::to_string),
+            to_node_name: to_node_name.map(str::to_string),
+            iface,
+            to_topic: to_topic.into(),
+        }
+    }
 }
 
 // ─── Services ────────────────────────────────────────────────────────────────
@@ -163,6 +222,31 @@ pub struct ServiceWireSender {
     pub kind: ServiceKind,
 }
 
+impl ServiceWireSender {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        bound_core_node: impl Into<String>,
+        as_instance_id: impl Into<String>,
+        to_core_node: Option<&str>,
+        to_instance_id: Option<&str>,
+        to_node_name: impl Into<String>,
+        iface: Iface,
+        to_service_name: impl Into<String>,
+        kind: ServiceKind,
+    ) -> Self {
+        Self {
+            bound_core_node: bound_core_node.into(),
+            as_instance_id: as_instance_id.into(),
+            to_core_node: to_core_node.map(str::to_string),
+            to_instance_id: to_instance_id.map(str::to_string),
+            to_node_name: to_node_name.into(),
+            iface,
+            to_service_name: to_service_name.into(),
+            kind,
+        }
+    }
+}
+
 /// Server-side addressing for a service. The four broadcast-Cartesian listen
 /// patterns are derived from this single context by the transport adapter.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,6 +257,26 @@ pub struct ServiceWireReceiver {
     pub iface: Iface,
     pub as_service_name: String,
     pub kind: ServiceKind,
+}
+
+impl ServiceWireReceiver {
+    pub fn new(
+        bound_core_node: impl Into<String>,
+        as_instance_id: impl Into<String>,
+        as_node_name: impl Into<String>,
+        iface: Iface,
+        as_service_name: impl Into<String>,
+        kind: ServiceKind,
+    ) -> Self {
+        Self {
+            bound_core_node: bound_core_node.into(),
+            as_instance_id: as_instance_id.into(),
+            as_node_name: as_node_name.into(),
+            iface,
+            as_service_name: as_service_name.into(),
+            kind,
+        }
+    }
 }
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
@@ -192,6 +296,26 @@ pub struct ActionWireSender {
 }
 
 impl ActionWireSender {
+    pub fn new(
+        as_core_node: impl Into<String>,
+        as_instance_id: impl Into<String>,
+        to_core_node: Option<&str>,
+        to_instance_id: Option<&str>,
+        to_node_name: impl Into<String>,
+        iface: Iface,
+        to_action_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            as_core_node: as_core_node.into(),
+            as_instance_id: as_instance_id.into(),
+            to_core_node: to_core_node.map(str::to_string),
+            to_instance_id: to_instance_id.map(str::to_string),
+            to_node_name: to_node_name.into(),
+            iface,
+            to_action_name: to_action_name.into(),
+        }
+    }
+
     pub fn goal_service(&self) -> ServiceWireSender {
         self.action_service(ServiceKind::ActionGoal)
     }
@@ -229,6 +353,22 @@ pub struct ActionWireReceiver {
 }
 
 impl ActionWireReceiver {
+    pub fn new(
+        bound_core_node: impl Into<String>,
+        as_instance_id: impl Into<String>,
+        as_node_name: impl Into<String>,
+        iface: Iface,
+        as_action_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            bound_core_node: bound_core_node.into(),
+            as_instance_id: as_instance_id.into(),
+            as_node_name: as_node_name.into(),
+            iface,
+            as_action_name: as_action_name.into(),
+        }
+    }
+
     pub fn goal_service(&self) -> ServiceWireReceiver {
         self.action_service(ServiceKind::ActionGoal)
     }

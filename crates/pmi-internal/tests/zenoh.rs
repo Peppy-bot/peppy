@@ -34,7 +34,7 @@ mod zenoh_tests {
             as_instance_id: "test_instance".into(),
             to_core_node: None,
             to_instance_id: None,
-            to_node_name: "test_node".into(),
+            to_node_name: Some("test_node".into()),
             iface: Iface::native(),
             to_topic: to_topic.into(),
         }

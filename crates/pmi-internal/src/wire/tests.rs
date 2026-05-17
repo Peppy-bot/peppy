@@ -11,6 +11,14 @@ fn iface_native_uses_underscore_sentinels() {
 }
 
 #[test]
+fn iface_wildcard_uses_single_chunk_wildcard_segments() {
+    let iface = Iface::wildcard();
+    assert_eq!(iface.name(), WILDCARD_IFACE_SEGMENT);
+    assert_eq!(iface.tag(), WILDCARD_IFACE_SEGMENT);
+    assert!(!iface.is_native());
+}
+
+#[test]
 fn iface_new_preserves_alphanumeric_tag() {
     let iface = Iface::new("camera_driver", "v1");
     assert_eq!(iface.name(), "camera_driver");

@@ -37,15 +37,15 @@ impl ZenohWire {
         )
     }
 
-    /// `{as_core}/{to_core|*}/{as_inst}/{to_inst|*}/topic/{to_node}/{iface_name}/{iface_tag}/{to_topic}`
+    /// `{as_core}/{to_core|*}/{as_inst}/{to_inst|*}/topic/{to_node|*}/{iface_name}/{iface_tag}/{to_topic}`
     pub(crate) fn topic_subscribe(r: &TopicWireReceiver) -> String {
         let to_core = r.to_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         let to_inst = r.to_instance_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let to_node = r.to_node_name.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         format!(
-            "{}/{to_core}/{}/{to_inst}/topic/{}/{}/{}/{}",
+            "{}/{to_core}/{}/{to_inst}/topic/{to_node}/{}/{}/{}",
             r.as_core_node,
             r.as_instance_id,
-            r.to_node_name,
             r.iface.name(),
             r.iface.tag(),
             r.to_topic,
@@ -112,13 +112,16 @@ impl ZenohWire {
     ) -> Result<ParsedRequest, WireParseError> {
         let mut parts = request_keyexpr.split('/').filter(|s| !s.is_empty());
 
-        let target_core = parts
+        // target_core / target_inst are consumed but unused: the receiver's listen
+        // patterns already filter on these via Zenoh keyexpr matching, so any
+        // mismatch would have caused the message to land on a different listener.
+        let _target_core = parts
             .next()
             .ok_or(WireParseError::MissingSegment("target_core_node"))?;
         let caller_core = parts
             .next()
             .ok_or(WireParseError::MissingSegment("caller_core_node"))?;
-        let target_inst = parts
+        let _target_inst = parts
             .next()
             .ok_or(WireParseError::MissingSegment("target_instance"))?;
         let caller_inst = parts
@@ -160,11 +163,6 @@ impl ZenohWire {
             return Err(WireParseError::UnexpectedTrailing);
         }
 
-        // Normalized request keyexpr — preserves the broadcast markers that came in.
-        let normalized_request = format!(
-            "{target_core}/{caller_core}/{target_inst}/{caller_inst}/{expected_root}/request/{request_id}"
-        );
-
         // Server-side response publish:
         // {caller_core}/{responder_core}/{caller_inst}/{responder_inst}/{service_root}/response/{request_id}
         let response_keyexpr = format!(
@@ -174,7 +172,6 @@ impl ZenohWire {
 
         Ok(ParsedRequest {
             request_id,
-            normalized_request,
             response_keyexpr,
         })
     }
@@ -209,20 +206,13 @@ impl ZenohWire {
 /// Builds the service_root segment. For action sub-services, appends the
 /// `goal` / `cancel` / `result` suffix.
 fn service_root(node: &str, iface: &Iface, name: &str, kind: ServiceKind) -> String {
-    match kind.suffix() {
-        None => format!(
-            "{}/{node}/{}/{}/{name}",
-            kind.root_segment(),
-            iface.name(),
-            iface.tag(),
-        ),
-        Some(suffix) => format!(
-            "{}/{node}/{}/{}/{name}/{suffix}",
-            kind.root_segment(),
-            iface.name(),
-            iface.tag(),
-        ),
-    }
+    let suffix = kind.suffix().map(|s| format!("/{s}")).unwrap_or_default();
+    format!(
+        "{}/{node}/{}/{}/{name}{suffix}",
+        kind.root_segment(),
+        iface.name(),
+        iface.tag(),
+    )
 }
 
 /// Builds the action_root segment (`action/{node}/{iface_name}/{iface_tag}/{action}`).
@@ -238,9 +228,6 @@ fn action_root(node: &str, iface: &Iface, action: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedRequest {
     pub(crate) request_id: String,
-    /// Normalized request keyexpr (preserves broadcast markers from the
-    /// original message so all 4 listen patterns see identical key strings).
-    pub(crate) normalized_request: String,
     /// Server-side response publish keyexpr.
     pub(crate) response_keyexpr: String,
 }
@@ -271,6 +258,12 @@ impl fmt::Display for WireParseError {
 }
 
 impl std::error::Error for WireParseError {}
+
+impl From<WireParseError> for crate::error::Error {
+    fn from(err: WireParseError) -> Self {
+        crate::error::Error::BackendError(err.to_string())
+    }
+}
 
 #[cfg(test)]
 mod tests;

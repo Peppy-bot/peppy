@@ -1,4 +1,4 @@
-use crate::adapters::zenoh_wire::{WireParseError, ZenohWire};
+use crate::adapters::zenoh_wire::ZenohWire;
 use crate::error::{Error, Result};
 use crate::types::{Payload, PublisherQoS, SubscriberQoS, TopicMessage};
 use crate::wire::{
@@ -364,8 +364,7 @@ impl MessengerBackend for ZenohAdapter {
         received_request: &str,
         payload: Payload,
     ) -> Result<()> {
-        let parsed = ZenohWire::parse_received_request(recv, received_request)
-            .map_err(wire_parse_to_error)?;
+        let parsed = ZenohWire::parse_received_request(recv, received_request)?;
         self.publish_keyexpr(&parsed.response_keyexpr, payload, PublisherQoS::Standard)
             .await
     }
@@ -375,8 +374,7 @@ impl MessengerBackend for ZenohAdapter {
         recv: &ServiceWireReceiver,
         received_request: &str,
     ) -> Result<String> {
-        let parsed = ZenohWire::parse_received_request(recv, received_request)
-            .map_err(wire_parse_to_error)?;
+        let parsed = ZenohWire::parse_received_request(recv, received_request)?;
         Ok(parsed.request_id)
     }
 
@@ -416,10 +414,6 @@ impl MessengerBackend for ZenohAdapter {
             .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
         SocketAddr::new(ip, port)
     }
-}
-
-fn wire_parse_to_error(err: WireParseError) -> Error {
-    Error::BackendError(err.to_string())
 }
 
 impl ZenohAdapter {
@@ -472,9 +466,10 @@ impl ZenohAdapter {
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
         let zenoh_qos = ZenohQoS::from(qos);
 
-        // session.put() directly rather than declare_publisher() + put() + drop —
-        // avoids the publisher declaration/undeclare lifecycle that causes routing
-        // interference between successive service polls with different targeting.
+        // session.put() directly rather than declare_publisher() + put() + drop.
+        // This avoids the publisher declaration/undeclare lifecycle that causes
+        // routing interference between successive service polls with different
+        // targeting.
         session
             .put(keyexpr, payload.as_bytes().as_ref())
             .congestion_control(zenoh_qos.congestion_control)
@@ -539,7 +534,7 @@ impl ZenohAdapter {
 /// Zenoh-side per-topic publisher returned by [`ZenohAdapter::declare_publisher`].
 ///
 /// Mirrors [`ZenohAdapter::publish`]'s `session.put()` path (NOT a long-lived
-/// `zenoh::pubsub::Publisher`) — see the comment there about routing
+/// `zenoh::pubsub::Publisher`); see the comment there about routing
 /// interference between successive service polls. The win here is bypassing
 /// the central `Messenger` mutex; zenoh's session itself is lock-free for
 /// `put`.

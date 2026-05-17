@@ -15,16 +15,15 @@ pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
 // Re-export wire-addressing types so peppylib consumers don't reach into pmi.
 pub use pmi::{
-    ActionWireReceiver, ActionWireSender, BROADCAST_MARKER, Iface, IfaceError,
-    NATIVE_IFACE_SEGMENT, ServiceKind, ServiceWireReceiver, ServiceWireSender, TopicWireReceiver,
-    TopicWireSender,
+    ActionWireReceiver, ActionWireSender, Iface, IfaceError, ServiceKind, ServiceWireReceiver,
+    ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{
-    Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher, Payload as PmiPayload,
+    Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
     PeppyMessagingInterfaceError, PublisherQoS, Subscription as PmiSubscription, ZenohAdapter,
     ZenohNetProtocol,
 };
@@ -61,10 +60,6 @@ const SERVICE_PROBE_PAYLOAD: &[u8] = b"\0peppy_service_probe\0";
 
 /// Timeout for reachability probes sent by `is_reachable`.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
-
-fn into_pmi_payload(payload: Payload) -> PmiPayload {
-    PmiPayload::from_bytes(payload.into_inner())
-}
 
 fn is_service_ack_payload(payload: &[u8]) -> bool {
     payload == SERVICE_ACK_PAYLOAD
@@ -226,7 +221,7 @@ impl MessengerHandle {
     ) -> Result<()> {
         let mut messenger = self.messenger.lock().await;
         messenger
-            .publish_topic(sender, into_pmi_payload(payload), qos.into())
+            .publish_topic(sender, payload.into_inner().into(), qos.into())
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
@@ -261,7 +256,7 @@ impl MessengerHandle {
         let mut response_subscription = {
             let mut messenger = self.messenger.lock().await;
             messenger
-                .open_service_call(sender, &request_id, into_pmi_payload(request_payload))
+                .open_service_call(sender, &request_id, request_payload.into_inner().into())
                 .await
                 .map_err(Error::PeppyMessagingInterface)?
         };

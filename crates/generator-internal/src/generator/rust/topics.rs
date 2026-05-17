@@ -201,7 +201,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     node_name,
-                    peppylib::messaging::Iface::new("*", "*"),
+                    peppylib::messaging::Iface::wildcard(),
                     topic_name,
                     target_core_node,
                     target_instance_id,

@@ -45,7 +45,7 @@ fn topic_subscribe_targeted_native_iface() {
         as_instance_id: "sub_inst".into(),
         to_core_node: Some("core_publisher".into()),
         to_instance_id: Some("pub_inst".into()),
-        to_node_name: "uvc_camera".into(),
+        to_node_name: Some("uvc_camera".into()),
         iface: Iface::native(),
         to_topic: "video_stream".into(),
     };
@@ -62,7 +62,7 @@ fn topic_subscribe_untargeted_uses_single_chunk_wildcard() {
         as_instance_id: "sub_inst".into(),
         to_core_node: None,
         to_instance_id: None,
-        to_node_name: "uvc_camera".into(),
+        to_node_name: Some("uvc_camera".into()),
         iface: Iface::native(),
         to_topic: "video_stream".into(),
     };
@@ -79,13 +79,30 @@ fn topic_subscribe_partial_target() {
         as_instance_id: "sub_inst".into(),
         to_core_node: Some("core_publisher".into()),
         to_instance_id: None,
-        to_node_name: "robot_arm".into(),
+        to_node_name: Some("robot_arm".into()),
         iface: Iface::new("manipulator", "v1"),
         to_topic: "joint_states".into(),
     };
     assert_eq!(
         ZenohWire::topic_subscribe(&receiver),
         "core_subscriber/core_publisher/sub_inst/*/topic/robot_arm/manipulator/v1/joint_states"
+    );
+}
+
+#[test]
+fn topic_subscribe_external_consumer_wildcards_node_and_iface() {
+    let receiver = TopicWireReceiver {
+        as_core_node: "core_subscriber".into(),
+        as_instance_id: "sub_inst".into(),
+        to_core_node: None,
+        to_instance_id: None,
+        to_node_name: None,
+        iface: Iface::wildcard(),
+        to_topic: "video_stream".into(),
+    };
+    assert_eq!(
+        ZenohWire::topic_subscribe(&receiver),
+        "core_subscriber/*/sub_inst/*/topic/*/*/*/video_stream"
     );
 }
 
@@ -239,7 +256,6 @@ fn parse_received_request_round_trips_specific() {
         "server_core/caller_core/server_inst/caller_inst/service/robot_arm/_/_/ping/request/abc123";
     let parsed = ZenohWire::parse_received_request(&receiver, request).expect("should parse");
     assert_eq!(parsed.request_id, "abc123");
-    assert_eq!(parsed.normalized_request, request);
     assert_eq!(
         parsed.response_keyexpr,
         "caller_core/server_core/caller_inst/server_inst/service/robot_arm/_/_/ping/response/abc123"
@@ -247,14 +263,12 @@ fn parse_received_request_round_trips_specific() {
 }
 
 #[test]
-fn parse_received_request_preserves_broadcast_markers_in_normalized() {
+fn parse_received_request_response_addresses_caller_with_broadcast_request() {
     let receiver = sample_service_receiver(ServiceKind::Service);
     let request = "_any_/caller_core/_any_/caller_inst/service/robot_arm/_/_/ping/request/abc123";
     let parsed = ZenohWire::parse_received_request(&receiver, request).expect("should parse");
-    // Normalized form keeps the original target segments (including broadcast markers)
-    // so all four listen subscriptions hand the user the same identifier.
-    assert_eq!(parsed.normalized_request, request);
-    // Response still goes to the caller's real identity, using the receiver's own bound fields.
+    // Response goes to the caller's real identity even when the request came in on
+    // a broadcast pattern; the receiver's own bound fields fill the responder slots.
     assert_eq!(
         parsed.response_keyexpr,
         "caller_core/server_core/caller_inst/server_inst/service/robot_arm/_/_/ping/response/abc123"

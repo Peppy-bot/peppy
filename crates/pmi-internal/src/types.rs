@@ -87,7 +87,7 @@ impl From<QoSProfile> for SubscriberQoS {
 /// Defines the messaging interface.
 ///
 /// All methods take addressing structs from [`crate::wire`] rather than raw
-/// keyexpressions — each adapter is responsible for formatting them into its
+/// keyexpressions. Each adapter is responsible for formatting them into its
 /// own wire form internally. Only the per-transport `*_wire.rs` modules are
 /// authorized to produce raw keyexpressions.
 pub trait MessengerBackend {

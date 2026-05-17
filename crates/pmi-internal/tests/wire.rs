@@ -56,7 +56,7 @@ async fn topic_native_roundtrip() {
         as_instance_id: "subscriber_inst".into(),
         to_core_node: Some("core_pub".into()),
         to_instance_id: Some("publisher_inst".into()),
-        to_node_name: "uvc_camera".into(),
+        to_node_name: Some("uvc_camera".into()),
         iface: Iface::native(),
         to_topic: "video_stream".into(),
     };
@@ -106,7 +106,7 @@ async fn topic_iface_roundtrip() {
         as_instance_id: "sub_inst".into(),
         to_core_node: Some("core_pub".into()),
         to_instance_id: Some("pub_inst".into()),
-        to_node_name: "robot_arm".into(),
+        to_node_name: Some("robot_arm".into()),
         iface,
         to_topic: "joint_states".into(),
     };
@@ -154,7 +154,7 @@ async fn topic_wildcard_subscriber() {
         as_instance_id: "subscriber_inst".into(),
         to_core_node: None,
         to_instance_id: None,
-        to_node_name: "uvc_camera".into(),
+        to_node_name: Some("uvc_camera".into()),
         iface: Iface::native(),
         to_topic: "frames".into(),
     };

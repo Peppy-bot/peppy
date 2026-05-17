@@ -13,9 +13,8 @@ pub use types::{
     PayloadSlices, PublisherQoS, SubscriberQoS, Subscription, TopicMessage,
 };
 pub use wire::{
-    ActionWireReceiver, ActionWireSender, BROADCAST_MARKER, Iface, IfaceError,
-    NATIVE_IFACE_SEGMENT, ServiceKind, ServiceWireReceiver, ServiceWireSender, TopicWireReceiver,
-    TopicWireSender,
+    ActionWireReceiver, ActionWireSender, Iface, IfaceError, ServiceKind, ServiceWireReceiver,
+    ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 
 pub use adapters::mock::{MockAdapter, MockInstance};

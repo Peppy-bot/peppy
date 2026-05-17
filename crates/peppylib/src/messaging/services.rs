@@ -67,10 +67,13 @@ pub struct ServiceResponder {
 impl ServiceResponder {
     /// Send the response payload for this request.
     pub async fn respond(self, payload: Payload) -> Result<()> {
-        let pmi_payload = pmi::Payload::from_bytes(payload.into_inner());
         let mut messenger = self.messenger.lock().await;
         messenger
-            .publish_service_response(&self.receiver, &self.received_request, pmi_payload)
+            .publish_service_response(
+                &self.receiver,
+                &self.received_request,
+                payload.into_inner().into(),
+            )
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
@@ -211,17 +214,20 @@ impl ServiceEndpoint {
             .publish_service_response(
                 &self.receiver,
                 received_request,
-                pmi::Payload::from_bytes(SERVICE_ACK_PAYLOAD.to_vec().into()),
+                bytes::Bytes::from_static(SERVICE_ACK_PAYLOAD).into(),
             )
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
 
     async fn publish_response(&self, received_request: &str, payload: Payload) -> Result<()> {
-        let pmi_payload = pmi::Payload::from_bytes(payload.into_inner());
         let mut messenger = self.messenger.lock().await;
         messenger
-            .publish_service_response(&self.receiver, received_request, pmi_payload)
+            .publish_service_response(
+                &self.receiver,
+                received_request,
+                payload.into_inner().into(),
+            )
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
@@ -273,14 +279,14 @@ impl ServiceMessenger {
         iface: Iface,
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
-        let recv = ServiceWireReceiver {
-            bound_core_node: as_core_node.to_string(),
-            as_instance_id: as_instance_id.to_string(),
-            as_node_name: as_node_name.to_string(),
+        let recv = ServiceWireReceiver::new(
+            as_core_node,
+            as_instance_id,
+            as_node_name,
             iface,
-            as_service_name: as_service_name.to_string(),
-            kind: ServiceKind::Service,
-        };
+            as_service_name,
+            ServiceKind::Service,
+        );
         messenger.expose_service(&recv).await
     }
 
@@ -301,16 +307,16 @@ impl ServiceMessenger {
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
-        let sender = ServiceWireSender {
-            bound_core_node: bound_core_node.to_string(),
-            as_instance_id: as_instance_id.to_string(),
-            to_core_node: target_core_node.map(str::to_string),
-            to_instance_id: target_instance_id.map(str::to_string),
-            to_node_name: target_node_name.to_string(),
+        let sender = ServiceWireSender::new(
+            bound_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
+            target_node_name,
             iface,
-            to_service_name: target_service_name.to_string(),
-            kind: ServiceKind::Service,
-        };
+            target_service_name,
+            ServiceKind::Service,
+        );
         messenger
             .poll_service(&sender, request_payload, response_timeout)
             .await

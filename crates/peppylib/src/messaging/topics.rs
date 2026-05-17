@@ -46,24 +46,24 @@ impl TopicMessenger {
         target_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let recv = TopicWireReceiver {
-            as_core_node: as_core_node.to_string(),
-            as_instance_id: as_instance_id.to_string(),
-            to_core_node: target_core_node.map(str::to_string),
-            to_instance_id: target_instance_id.map(str::to_string),
-            to_node_name: to_node_name.to_string(),
+        let recv = TopicWireReceiver::new(
+            as_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
+            Some(to_node_name),
             iface,
-            to_topic: to_topic.to_string(),
-        };
+            to_topic,
+        );
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription))
     }
 
     /// Consumes a topic from any node (external/unlinked topics).
     ///
-    /// Unlike [`subscribe`], this does not target a specific publisher node.
-    /// Uses `*` wildcards in the node and iface segments — matching whatever
-    /// any publisher writes on the given topic.
+    /// Unlike [`subscribe`], this does not target a specific publisher node
+    /// or iface. The transport translates `None` and [`Iface::wildcard`] into
+    /// its match-any segments at the wire layer.
     pub async fn consume_external(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -73,19 +73,15 @@ impl TopicMessenger {
         target_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        // External consumers don't know the producer's node/iface identity;
-        // a wildcard `*` is spliced into those segments. This stays an
-        // intentional escape hatch — the typed wire structs assume known
-        // identity, so we feed `"*"` directly.
-        let recv = TopicWireReceiver {
-            as_core_node: as_core_node.to_string(),
-            as_instance_id: as_instance_id.to_string(),
-            to_core_node: target_core_node.map(str::to_string),
-            to_instance_id: target_instance_id.map(str::to_string),
-            to_node_name: "*".to_string(),
-            iface: Iface::new("*", "*"),
-            to_topic: to_topic.to_string(),
-        };
+        let recv = TopicWireReceiver::new(
+            as_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
+            None,
+            Iface::wildcard(),
+            to_topic,
+        );
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription))
     }
@@ -102,13 +98,13 @@ impl TopicMessenger {
         qos: QoSProfile,
         payload: Payload,
     ) -> Result<()> {
-        let sender = TopicWireSender {
-            as_core_node: as_core_node.to_string(),
-            as_instance_id: as_instance_id.to_string(),
-            as_node_name: as_node_name.to_string(),
+        let sender = TopicWireSender::new(
+            as_core_node,
+            as_instance_id,
+            as_node_name,
             iface,
-            as_topic_name: as_topic_name.to_string(),
-        };
+            as_topic_name,
+        );
         messenger.emit_topic_message(&sender, qos, payload).await
     }
 
@@ -124,13 +120,13 @@ impl TopicMessenger {
         as_topic_name: &str,
         qos: QoSProfile,
     ) -> Result<TopicPublisher> {
-        let sender = TopicWireSender {
-            as_core_node: as_core_node.to_string(),
-            as_instance_id: as_instance_id.to_string(),
-            as_node_name: as_node_name.to_string(),
+        let sender = TopicWireSender::new(
+            as_core_node,
+            as_instance_id,
+            as_node_name,
             iface,
-            as_topic_name: as_topic_name.to_string(),
-        };
+            as_topic_name,
+        );
         let inner = messenger
             .declare_topic_publisher(&sender, qos.into())
             .await?;
