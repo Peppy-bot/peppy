@@ -518,19 +518,19 @@ mod peppylib_build {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
-        let mut hashed_files: Vec<_> = std::fs::read_dir(peppylib_dir)
-            .expect("failed to read peppylib directory")
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| {
-                        (n.starts_with("_peppylib.abi3.") && n.ends_with(".so"))
-                            || n.ends_with(".py")
-                    })
+        let mut hashed_files: Vec<_> = super::walkdir(peppylib_dir)
+            .into_iter()
+            .filter(|p| {
+                if p.components().any(|c| c.as_os_str() == "__pycache__") {
+                    return false;
+                }
+                if p.extension().is_some_and(|ext| ext == "py") {
+                    return true;
+                }
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n.starts_with("_peppylib.abi3.") && n.ends_with(".so")
+                })
             })
-            .map(|e| e.path())
             .collect();
         hashed_files.sort();
         for file in &hashed_files {
