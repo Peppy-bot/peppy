@@ -1,9 +1,33 @@
-use super::types::{Execution, NodeConfig};
+use super::types::{Execution, Manifest, NodeConfig};
 use crate::{
     error::{ParsingError, Result},
     parsing::read_non_empty_file,
 };
+use std::collections::HashSet;
 use std::path::Path;
+
+/// Rejects duplicate `link_id`s in `manifest.depends_on`. `link_id` is a
+/// shared identity for both `depends_on.nodes` and `depends_on.interfaces`:
+/// consumed topics/services/actions resolve their producer by `link_id`
+/// alone, so a collision either silently overwrites a resolution or binds
+/// to the wrong producer.
+fn validate_depends_on(manifest: &Manifest) -> Result<()> {
+    let Some(depends_on) = &manifest.depends_on else {
+        return Ok(());
+    };
+    let mut seen: HashSet<&str> = HashSet::new();
+    for link_id in depends_on
+        .nodes
+        .iter()
+        .map(|n| n.link_id.as_str())
+        .chain(depends_on.interfaces.iter().map(|i| i.link_id.as_str()))
+    {
+        if !seen.insert(link_id) {
+            return Err(ParsingError::DuplicateLinkId(link_id.to_owned()).into());
+        }
+    }
+    Ok(())
+}
 
 /// Validates execution constraints.
 fn validate_execution(execution: &Execution) -> Result<()> {
@@ -52,6 +76,7 @@ impl NodeConfigParser {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
         let config: NodeConfig = crate::error::deserialize_json5_with_path(content)?;
         validate_execution(&config.execution)?;
+        validate_depends_on(&config.manifest)?;
         Ok(config)
     }
 }
@@ -230,6 +255,109 @@ mod tests {
             result.unwrap_err(),
             Error::Parsing(ParsingError::NoProcessOrContainer)
         ));
+    }
+
+    #[test]
+    fn test_duplicate_link_id_within_nodes_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_node",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "alpha", tag: "v1", link_id: "shared" },
+                        { name: "beta",  tag: "v1", link_id: "shared" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+            ),
+            "expected DuplicateLinkId(\"shared\"), got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_duplicate_link_id_across_nodes_and_interfaces_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_node",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "alpha", tag: "v1", link_id: "shared" },
+                    ],
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "shared" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+            ),
+            "expected DuplicateLinkId(\"shared\") across nodes+interfaces, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_unique_link_ids_parse_ok() {
+        // Mirrors the openarm01_backbone scenario: same (name, tag) repeated
+        // under distinct link_ids must remain valid.
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "openarm01_backbone",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "torso_camera" },
+                    ],
+                },
+            },
+            interfaces: {
+                topics: {
+                    consumes: [
+                        { link_id: "wrist_left_camera",  name: "video_stream" },
+                        { link_id: "wrist_right_camera", name: "video_stream" },
+                        { link_id: "torso_camera",       name: "video_stream" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                build_cmd: ["cargo", "build", "--release"],
+                run_cmd: ["./target/release/backbone"],
+            },
+        }"#;
+        let config =
+            NodeConfigParser::from_content(json5).expect("distinct link_ids should parse cleanly");
+        let deps = config
+            .manifest
+            .depends_on
+            .expect("depends_on should be set");
+        assert_eq!(deps.nodes.len(), 3);
     }
 
     #[test]

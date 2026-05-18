@@ -405,6 +405,61 @@ async fn listen_for_node_add_dependency_not_resolved() {
     assert_eq!(node_stack.len(), 1, "only root should exist");
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_duplicate_link_id_fails() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    // Two depends_on.nodes entries sharing the same link_id must be rejected
+    // at parse time, before any dependency resolution runs.
+    let peppy_json5 = r#"{
+        peppy_schema: "node_v1",
+        manifest: {
+            name: "dup_link_id_node",
+            tag: "v1",
+            depends_on: {
+                nodes: [
+                    { name: "alpha", tag: "v1", link_id: "dup" },
+                    { name: "beta",  tag: "v1", link_id: "dup" },
+                ],
+            },
+        },
+        execution: {
+            language: "rust",
+            run_cmd: ["sleep", "10"],
+        },
+    }"#;
+    write_peppy_json5(source_dir.path(), peppy_json5);
+
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail when depends_on contains duplicate link_id"
+    );
+    let err_msg = add_result.error_message.unwrap_or_default();
+    assert!(
+        err_msg.contains("Duplicate link_id"),
+        "error message should mention duplicate link_id, got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("dup"),
+        "error message should name the offending link_id, got: {err_msg}"
+    );
+
+    assert_eq!(node_stack.len(), 1, "only root should exist");
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     // If there is a missing dependency, the NODE_ADD_ACTION should fail with a MissingDependency error
     // BEFORE running build_cmd. This mimics real nodes (e.g. fake_video_reconstruction) where

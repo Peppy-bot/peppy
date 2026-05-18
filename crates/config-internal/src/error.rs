@@ -57,6 +57,10 @@ pub enum ParsingError {
     EmptyName,
     #[error("Duplicate name: {0}")]
     DuplicateName(String),
+    #[error(
+        "Duplicate link_id `{0}` in manifest.depends_on (link_ids must be unique across nodes and interfaces)"
+    )]
+    DuplicateLinkId(String),
 
     // -- deployments
     #[error("Invalid deployment source: {0}")]
