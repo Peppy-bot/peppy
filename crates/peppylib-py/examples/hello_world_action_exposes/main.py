@@ -3,7 +3,7 @@ import enum
 import signal
 from datetime import datetime
 
-from peppylib import ActionMessenger, MessengerHandle
+from peppylib import Iface, ActionMessenger, MessengerHandle
 from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT
 
@@ -218,8 +218,8 @@ async def main():
         core_node,
         instance_id,
         NODE_NAME,
-        ACTION_NAME,
-    )
+        Iface.native(),  # iface
+        ACTION_NAME,)
 
     print(
         f"{BOLD}{WHITE}[ACTION] Waiting for action goals as `{instance_id}` "

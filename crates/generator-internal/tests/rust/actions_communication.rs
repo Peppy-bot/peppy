@@ -226,7 +226,7 @@ fn main() -> Result<()> {
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -323,12 +323,12 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        to_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -344,7 +344,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -541,7 +541,7 @@ fn main() -> Result<()> {
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -634,12 +634,12 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        to_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -655,7 +655,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -899,7 +899,7 @@ fn main() -> Result<()> {
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -993,12 +993,12 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        to_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -1014,7 +1014,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -1261,7 +1261,7 @@ fn main() -> Result<()> {
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -1344,12 +1344,12 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        to_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -1365,7 +1365,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -1622,7 +1622,7 @@ fn main() -> Result<()> {
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -1716,12 +1716,12 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        to_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -1737,7 +1737,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,

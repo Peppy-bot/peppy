@@ -3,6 +3,7 @@ mod common;
 use common::{
     CALLER_INSTANCE_ID, TEST_CORE_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
 };
+use peppylib::messaging::Iface;
 use peppylib::{
     encoding::health::{NodeHealthRequest, NodeHealthResponse},
     messaging::{MessengerHandle, ServiceMessenger},
@@ -40,6 +41,7 @@ async fn node_health_request_response_roundtrip() {
         &client.core_node_name,
         CALLER_INSTANCE_ID,
         TEST_NODE_NAME,
+        Iface::native(),
         peppylib::messaging::NODE_HEALTH_SERVICE,
         Some(&client.core_node_name),
         Some(&client.instance_id),

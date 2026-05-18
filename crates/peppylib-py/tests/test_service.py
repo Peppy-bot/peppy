@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from peppylib import MessengerHandle, ServiceMessenger, ZenohdInstance
+from peppylib import Iface, MessengerHandle, ServiceMessenger, ZenohdInstance
 
 CORE_NODE = "test_core"
 INSTANCE_ID = "test_instance"
@@ -33,8 +33,8 @@ async def test_service_messenger_communication():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            SERVICE_NAME,
-        )
+            Iface.native(),  # iface
+            SERVICE_NAME,)
 
         # Allow listener to propagate
         await asyncio.sleep(0.05)
@@ -51,12 +51,12 @@ async def test_service_messenger_communication():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
+            Iface.native(),  # iface
             SERVICE_NAME,
             CORE_NODE,
             INSTANCE_ID,
             REQUEST_PAYLOAD,
-            2.0,
-        )
+            2.0,)
 
         await handler
 
@@ -77,12 +77,12 @@ async def test_service_poll_rejects_invalid_timeout():
                 CORE_NODE,
                 INSTANCE_ID,
                 NODE_NAME,
+                Iface.native(),  # iface
                 SERVICE_NAME,
                 CORE_NODE,
                 INSTANCE_ID,
                 REQUEST_PAYLOAD,
-                -1.0,
-            )
+                -1.0,)
 
 
 @pytest.mark.asyncio
@@ -97,8 +97,8 @@ async def test_service_handler_exception_returns_service_error():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            SERVICE_NAME,
-        )
+            Iface.native(),  # iface
+            SERVICE_NAME,)
 
         await asyncio.sleep(0.05)
 
@@ -113,12 +113,84 @@ async def test_service_handler_exception_returns_service_error():
                 CORE_NODE,
                 INSTANCE_ID,
                 NODE_NAME,
+                Iface.native(),  # iface
                 SERVICE_NAME,
                 CORE_NODE,
                 INSTANCE_ID,
                 REQUEST_PAYLOAD,
-                2.0,
-            )
+                2.0,)
 
         handled = await asyncio.wait_for(handler, timeout=2.0)
         assert handled is True
+
+
+@pytest.mark.asyncio
+async def test_service_iface_scoped_native_and_conformed_do_not_collide():
+    """Same service name exposed natively AND under a conformed interface must wire to distinct paths."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        native_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        iface_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        caller_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        native_response = b"native_ack"
+        iface_response = b"iface_ack"
+
+        native_service = await ServiceMessenger.listen(
+            native_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            Iface.native(),  # iface
+            "control",
+        )
+        iface_service = await ServiceMessenger.listen(
+            iface_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            Iface.conformed("camera", "v1"),
+            "control",
+        )
+
+        native_handler = asyncio.ensure_future(
+            native_service.handle_next_request(lambda _req: native_response)
+        )
+        iface_handler = asyncio.ensure_future(
+            iface_service.handle_next_request(lambda _req: iface_response)
+        )
+
+        # Allow subscriptions to propagate.
+        await asyncio.sleep(0.1)
+
+        # Native poll → native handler.
+        from_native = await ServiceMessenger.poll(
+            caller_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            Iface.native(),
+            "control",
+            CORE_NODE,
+            INSTANCE_ID,
+            b"ping_native",
+            2.0,
+        )
+        assert from_native.payload == native_response
+
+        # Iface poll → iface handler.
+        from_iface = await ServiceMessenger.poll(
+            caller_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            Iface.conformed("camera", "v1"),
+            "control",
+            CORE_NODE,
+            INSTANCE_ID,
+            b"ping_iface",
+            2.0,
+        )
+        assert from_iface.payload == iface_response
+
+        await asyncio.wait_for(native_handler, timeout=2.0)
+        await asyncio.wait_for(iface_handler, timeout=2.0)

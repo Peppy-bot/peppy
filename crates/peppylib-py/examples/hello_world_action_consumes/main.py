@@ -1,6 +1,6 @@
 import asyncio
 
-from peppylib import ActionMessenger, MessengerHandle
+from peppylib import Iface, ActionMessenger, MessengerHandle
 from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT, QoSProfile
 
@@ -66,13 +66,13 @@ async def main():
         core_node,
         instance_id,
         NODE_NAME,
+        Iface.native(),  # iface
         ACTION_NAME,
         None,  # target_core_node - binds with the first found
         None,  # target_instance_id - binds with the first found
         b"Hello from the action client",
         QoSProfile.Reliable,
-        GOAL_TIMEOUT,
-    )
+        GOAL_TIMEOUT,)
 
     goal_response = goal_handle.goal_response
     goal_response_text = goal_response.payload.decode("utf-8")
@@ -101,13 +101,13 @@ async def main():
         core_node,
         instance_id,
         NODE_NAME,
+        Iface.native(),  # iface
         ACTION_NAME,
         None,  # target_core_node
         None,  # target_instance_id
         b"This goal will be cancelled",
         QoSProfile.Reliable,
-        GOAL_TIMEOUT,
-    )
+        GOAL_TIMEOUT,)
 
     cancel_goal_response_text = goal_handle.goal_response.payload.decode("utf-8")
     print(f"{BOLD}{GREEN}[GOAL] Received goal response: `{cancel_goal_response_text}`{RESET}")

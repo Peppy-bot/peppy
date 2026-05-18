@@ -15,6 +15,7 @@ use core_node_api::encoding::{
     RepoItemKind, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSource, RepoSourceKind,
 };
+use peppylib::messaging::Iface;
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult};
@@ -51,6 +52,7 @@ pub async fn listen_for_repo_refresh(
         core_node_name,
         instance_id,
         node_name,
+        Iface::native(),
         names::REPO_REFRESH_ACTION,
     )
     .await?;

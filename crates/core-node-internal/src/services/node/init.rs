@@ -6,6 +6,7 @@ use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Toolchain;
 use core_node_api::encoding::{NodeInitRequest, NodeInitResponse};
+use peppylib::messaging::Iface;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -24,6 +25,7 @@ pub async fn listen_for_node_init(
         core_node_node,
         instance_id,
         node_name,
+        Iface::native(),
         names::NODE_INIT,
     )
     .await?;

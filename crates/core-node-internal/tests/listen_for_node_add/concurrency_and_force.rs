@@ -1,4 +1,5 @@
 use super::*;
+use peppylib::messaging::Iface;
 
 /// Tests that a second goal is rejected when an action is already in progress,
 /// and that the rejection message suggests using `--force`.
@@ -34,6 +35,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         &started_core_node.core_node_name,
+        Iface::native(),
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,
@@ -118,6 +120,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         &started_core_node.core_node_name,
+        Iface::native(),
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,

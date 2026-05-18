@@ -6,13 +6,13 @@ use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use super::iface::PyIface;
 use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 
 /// Python wrapper for a service request received by a listener.
 #[pyclass(name = "ServiceRequestContext")]
 pub struct PyServiceRequestContext {
     request_id: String,
-    key_expr: String,
     payload: Vec<u8>,
     instance_id: String,
     core_node: String,
@@ -44,7 +44,6 @@ impl PyServiceRequestContext {
     #[getter]
     fn message(&self) -> PyTopicMessage {
         PyTopicMessage {
-            key_expr: self.key_expr.clone(),
             payload: self.payload.clone(),
             instance_id: self.instance_id.clone(),
             core_node: self.core_node.clone(),
@@ -58,7 +57,6 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
         let message = ctx.message();
         Self {
             request_id,
-            key_expr: message.key_expr().to_string(),
             payload: message.payload().to_vec(),
             instance_id: message.instance_id().to_string(),
             core_node: message.core_node().to_string(),
@@ -153,21 +151,26 @@ impl PyServiceMessenger {
     ///
     /// Returns a `ServiceEndpoint` that can be used to handle incoming requests.
     #[staticmethod]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_node_name, iface, as_service_name))]
+    #[allow(clippy::too_many_arguments)]
     fn listen<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
         as_node_name: String,
+        iface: PyIface,
         as_service_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
+        let iface = iface.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let endpoint = ServiceMessenger::listen(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 &as_node_name,
+                iface,
                 &as_service_name,
             )
             .await
@@ -180,28 +183,31 @@ impl PyServiceMessenger {
 
     /// Check if a service has active subscribers.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, target_service_name, target_core_node=None, target_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_node_name, iface, to_service_name, to_core_node=None, to_instance_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         bound_core_node: String,
         as_instance_id: String,
-        target_node_name: String,
-        target_service_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        to_node_name: String,
+        iface: PyIface,
+        to_service_name: String,
+        to_core_node: Option<String>,
+        to_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
+        let iface = iface.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
-                &target_node_name,
-                &target_service_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                &to_node_name,
+                iface,
+                &to_service_name,
+                to_core_node.as_deref(),
+                to_instance_id.as_deref(),
             )
             .await
             .map_err(to_py_err)?;
@@ -211,32 +217,35 @@ impl PyServiceMessenger {
 
     /// Send a request to a service and wait for a response.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, target_service_name, target_core_node=None, target_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_node_name, iface, to_service_name, to_core_node=None, to_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn poll<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         bound_core_node: String,
         as_instance_id: String,
-        target_node_name: String,
-        target_service_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        to_node_name: String,
+        iface: PyIface,
+        to_service_name: String,
+        to_core_node: Option<String>,
+        to_instance_id: Option<String>,
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
         let response_timeout =
             duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
         let handle = messenger.inner.clone();
+        let iface = iface.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let response = ServiceMessenger::poll(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
-                &target_node_name,
-                &target_service_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                &to_node_name,
+                iface,
+                &to_service_name,
+                to_core_node.as_deref(),
+                to_instance_id.as_deref(),
                 Payload::from(request_payload),
                 response_timeout,
             )

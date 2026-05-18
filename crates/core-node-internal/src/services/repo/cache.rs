@@ -320,7 +320,6 @@ pub fn lookup_launcher_by_sha256<'a>(
 
 /// Returns the highest-priority (lowest `repo_id`) interface entry
 /// matching `(name, tag)`. Returns `None` when no entry matches.
-#[allow(dead_code)] // public API used by future interface resolution flows
 pub fn lookup_interface<'a>(
     entries: &'a [InterfaceCacheEntry],
     name: &str,
@@ -334,7 +333,6 @@ pub fn lookup_interface<'a>(
 
 /// Returns the interface entry whose `(name, tag, sha256)` triple
 /// matches exactly. Returns `None` when no entry matches.
-#[allow(dead_code)] // public API used by future interface resolution flows
 pub fn lookup_interface_by_sha256<'a>(
     entries: &'a [InterfaceCacheEntry],
     name: &str,

@@ -17,6 +17,7 @@ use core_node_api::encoding::{
 };
 use node_stack::NodeStack;
 use parking_lot::Mutex as StdMutex;
+use peppylib::messaging::Iface;
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
@@ -96,6 +97,7 @@ pub async fn listen_for_stack_launch(
         core_node_name,
         instance_id,
         node_name,
+        Iface::native(),
         names::STACK_LAUNCH_ACTION,
     )
     .await?;

@@ -94,7 +94,7 @@ fn expose_service() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_service(&service).unwrap();
+    generator.add_exposed_service(&service, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -159,7 +159,7 @@ fn expose_service_without_request_body() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_service(&service).unwrap();
+    generator.add_exposed_service(&service, None).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -201,8 +201,8 @@ fn expose_two_services() {
     let service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_service(&service1).unwrap();
-    generator.add_exposed_service(&service2).unwrap();
+    generator.add_exposed_service(&service1, None).unwrap();
+    generator.add_exposed_service(&service2, None).unwrap();
 
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -270,8 +270,8 @@ fn consumed_service() {
         &rendered,
         &[
             "pub async fn poll(",
-            "target_core_node: Option<&str>",
-            "target_instance_id: Option<&str>",
+            "to_core_node: Option<&str>",
+            "to_instance_id: Option<&str>",
             "-> crate::Result<Response>",
         ],
     );
@@ -422,7 +422,9 @@ fn clippy_single_exposed_service_without_request_body() {
     };
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_exposed_service(&exposed_service).unwrap();
+    generator
+        .add_exposed_service(&exposed_service, None)
+        .unwrap();
     generator
         .add_consumed_action(&consumed_action1, &action_messages, "brain")
         .unwrap();
@@ -482,8 +484,12 @@ fn compile_lib_with_exposed_and_consumed_services() {
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_exposed_service(&exposed_service1).unwrap();
-    generator.add_exposed_service(&exposed_service2).unwrap();
+    generator
+        .add_exposed_service(&exposed_service1, None)
+        .unwrap();
+    generator
+        .add_exposed_service(&exposed_service2, None)
+        .unwrap();
     generator
         .add_consumed_service(
             &consumed_service1,

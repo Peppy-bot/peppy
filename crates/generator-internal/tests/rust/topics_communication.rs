@@ -145,7 +145,7 @@ fn main() -> Result<()> {
     let emitter_parameters: config::ParameterSchema =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
     generator.set_parameters(emitter_parameters.clone());
-    generator.add_emitted_topic(&emitted_topic).unwrap();
+    generator.add_emitted_topic(&emitted_topic, None).unwrap();
     let output_config = copy_config_to_output(&user_node_emitter, &emitter_dir);
     generator
         .build(&emitter_dir, &test_peppy_dirs(), Default::default())
@@ -255,7 +255,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,

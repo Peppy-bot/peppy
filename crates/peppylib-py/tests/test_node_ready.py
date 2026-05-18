@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from peppylib import MessengerHandle, ServiceMessenger, ZenohdInstance
+from peppylib import Iface, MessengerHandle, ServiceMessenger, ZenohdInstance
 from peppylib.config import NODE_READY_SERVICE
 from peppylib.services import NodeReadyService
 
@@ -66,12 +66,12 @@ async def test_ready_node():
                     TEST_CORE_NODE_NAME,
                     CALLER_INSTANCE_ID,
                     TEST_NODE_NAME,
+                    Iface.native(),  # iface
                     NODE_READY_SERVICE,
                     target_core_node,
                     target_instance_id,
                     request_payload,
-                    2.0,
-                )
+                    2.0,)
             except RuntimeError as exc:
                 pytest.fail(f"[{label}] poll failed: {exc}")
 

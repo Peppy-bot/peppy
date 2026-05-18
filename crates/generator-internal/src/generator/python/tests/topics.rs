@@ -110,7 +110,7 @@ fn emit_topic() {
     let topic = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
 
     let mut generator = PythonGenerator::new();
-    generator.add_emitted_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -207,8 +207,8 @@ fn emit_two_topics() {
     let topic2 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2);
 
     let mut generator = PythonGenerator::new();
-    generator.add_emitted_topic(&topic1).unwrap();
-    generator.add_emitted_topic(&topic2).unwrap();
+    generator.add_emitted_topic(&topic1, None).unwrap();
+    generator.add_emitted_topic(&topic2, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -271,7 +271,7 @@ fn emit_topic_escapes_python_keyword_fields() {
     let topic = parse_emitted_topic(emitted_topic_with_python_keyword_fields);
 
     let mut generator = PythonGenerator::new();
-    generator.add_emitted_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic, None).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -304,7 +304,7 @@ fn emit_topic_rejects_reserved_message_field_name() {
     let topic = parse_emitted_topic(emitted_topic_reserved_field_example);
 
     let mut generator = PythonGenerator::new();
-    let err = generator.add_emitted_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic, None).unwrap_err();
 
     match err {
         Error::UnauthorizedMessageFieldName {
@@ -339,7 +339,7 @@ fn emit_topic_rejects_fixed_string_array() {
     let topic = parse_emitted_topic(emitted_topic_fixed_string_array_example);
 
     let mut generator = PythonGenerator::new();
-    let err = generator.add_emitted_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic, None).unwrap_err();
 
     match err {
         Error::UnsupportedFixedArrayItemType { field, item } => {
@@ -373,7 +373,7 @@ fn emit_topic_rejects_fixed_object_array() {
     let topic = parse_emitted_topic(emitted_topic_fixed_object_array_example);
 
     let mut generator = PythonGenerator::new();
-    let err = generator.add_emitted_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic, None).unwrap_err();
 
     match err {
         Error::UnsupportedFixedArrayItemType { field, item } => {
@@ -405,7 +405,7 @@ fn emit_topic_with_dynamic_object_array() {
     let topic = parse_emitted_topic(emitted_topic_dynamic_object_array_example);
 
     let mut generator = PythonGenerator::new();
-    generator.add_emitted_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -513,8 +513,8 @@ fn consumed_topic() {
         &[
             "async def on_next_message_received(",
             "node_runner: peppylib.NodeRunner",
-            "target_core_node: Optional[str] = None",
-            "target_instance_id: Optional[str] = None",
+            "from_core_node: Optional[str] = None",
+            "from_instance_id: Optional[str] = None",
             ") -> Tuple[str, Message]:",
         ],
     );
@@ -526,8 +526,8 @@ fn consumed_topic() {
             "\"uvc_camera\"",
             "\"video_stream\"",
             "peppylib.TopicMessenger.subscribe(",
-            "target_core_node,",
-            "target_instance_id,",
+            "from_core_node,",
+            "from_instance_id,",
         ],
     );
 
@@ -705,8 +705,8 @@ fn external_consumed_topic() {
         &[
             "async def on_next_message_received(",
             "node_runner: peppylib.NodeRunner",
-            "target_core_node: Optional[str] = None",
-            "target_instance_id: Optional[str] = None",
+            "from_core_node: Optional[str] = None",
+            "from_instance_id: Optional[str] = None",
             ") -> Tuple[str, Message]:",
         ],
     );
@@ -734,11 +734,12 @@ fn external_consumed_topic() {
     );
 }
 
-/// Regression guard: all three consumer-side interfaces (topic / service / action)
-/// must emit filter parameters named `target_core_node` / `target_instance_id`.
-/// This test fails loudly if any generator drifts away from the shared naming.
+/// Regression guard: consumer-side topic subscribers emit `from_*` filter params
+/// (messages flow publisher → subscriber), while service/action callers emit
+/// `to_*` filter params (request flows caller → server). This test fails loudly
+/// if any generator drifts away from the directional naming.
 #[test]
-fn consumer_filter_params_use_target_prefix() {
+fn consumer_filter_params_use_directional_prefix() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let topic_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
@@ -779,28 +780,36 @@ fn consumer_filter_params_use_target_prefix() {
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
 
-    // Positive invariant: the target_* pair is present.
-    assert_contains_all(
-        &rendered,
-        &[
-            "target_core_node: Optional[str] = None",
-            "target_instance_id: Optional[str] = None",
-        ],
+    // Topic subscriber: messages flow FROM the publisher → `from_*`.
+    assert_eq!(
+        rendered
+            .matches("from_core_node: Optional[str] = None")
+            .count(),
+        1,
+        "expected `from_core_node` once on the topic subscriber; rendered:\n{rendered}"
+    );
+    assert_eq!(
+        rendered
+            .matches("from_instance_id: Optional[str] = None")
+            .count(),
+        1,
+        "expected `from_instance_id` once on the topic subscriber; rendered:\n{rendered}"
     );
 
-    // Count-based check: each consumer interface must surface the pair exactly once.
+    // Service caller (poll) + action caller (fire_goal): request flows TO the
+    // server → `to_*`. Service contributes 1, action contributes 1.
     assert_eq!(
         rendered
-            .matches("target_core_node: Optional[str] = None")
+            .matches("to_core_node: Optional[str] = None")
             .count(),
-        3,
-        "expected `target_core_node` on all 3 consumer interfaces (topic/service/action); rendered:\n{rendered}"
+        2,
+        "expected `to_core_node` twice (service + action callers); rendered:\n{rendered}"
     );
     assert_eq!(
         rendered
-            .matches("target_instance_id: Optional[str] = None")
+            .matches("to_instance_id: Optional[str] = None")
             .count(),
-        3,
-        "expected `target_instance_id` on all 3 consumer interfaces (topic/service/action); rendered:\n{rendered}"
+        2,
+        "expected `to_instance_id` twice (service + action callers); rendered:\n{rendered}"
     );
 }

@@ -29,12 +29,66 @@ pub struct ConsumedActionMessage {
     pub result_response: Option<MessageFormat>,
 }
 
+/// Identifies the `conforms_to` interface a producer artifact was pulled from.
+///
+/// `None` on a producer variant means the artifact is the node's own (native)
+/// declaration; `Some` means it was contributed by a [`PeppyInterface`] pulled
+/// via `interfaces.conforms_to`. The pair `(iface_name, iface_tag)` drives both
+/// the generated module nesting (`emitted_topics::{iface_name}::{iface_tag}::{topic}`)
+/// and the two extra Zenoh segments on the wire path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceOrigin {
+    pub iface_name: String,
+    pub iface_tag: String,
+}
+
+impl InterfaceOrigin {
+    /// Module path for an artifact contributed by this origin:
+    /// `[iface_name, sanitized_tag, leaf_name]`.
+    pub fn module_path_for(&self, leaf_name: &str) -> Vec<String> {
+        vec![
+            self.iface_name.clone(),
+            crate::generator::naming::sanitize_iface_tag(&self.iface_tag),
+            leaf_name.to_string(),
+        ]
+    }
+
+    /// Namespaces `local` with `iface_name` + sanitized tag so a leaf name
+    /// shared across conformed origins produces distinct schema keys.
+    pub fn scoped_schema_key(&self, local: &str) -> String {
+        format!(
+            "{}_{}_{}",
+            self.iface_name,
+            crate::generator::naming::sanitize_iface_tag(&self.iface_tag),
+            local
+        )
+    }
+}
+
+/// Builds a schema key scoped to `origin` when `Some`, falling back to the
+/// raw `local` key when the artifact is the node's own (native) declaration.
+pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> String {
+    match origin {
+        Some(o) => o.scoped_schema_key(local),
+        None => local.to_string(),
+    }
+}
+
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
 #[derive(Debug, Clone)]
 pub enum InterfaceVariant {
-    EmittedTopic(EmittedTopic),
-    ExposedService(ExposedService),
-    ExposedAction(ExposedAction),
+    EmittedTopic {
+        topic: EmittedTopic,
+        origin: Option<InterfaceOrigin>,
+    },
+    ExposedService {
+        service: ExposedService,
+        origin: Option<InterfaceOrigin>,
+    },
+    ExposedAction {
+        action: ExposedAction,
+        origin: Option<InterfaceOrigin>,
+    },
     ConsumedTopic {
         topic: ConsumedTopic,
         message_format: MessageFormat,
@@ -77,8 +131,14 @@ impl DeploymentInterface {
     }
 }
 
+#[derive(Clone)]
 pub struct InterfaceArtifact {
-    pub node_name: String,
+    /// Module path under the category dir, leaf-last. Native artifacts have a
+    /// single segment (the topic/service/action name); artifacts pulled in via
+    /// `interfaces.conforms_to` have three segments
+    /// (`[iface_name, iface_tag, leaf_name]`) so they nest as
+    /// `emitted_topics/{iface_name}/{iface_tag}/{leaf_name}.rs`.
+    pub module_path: Vec<String>,
     pub kind: InterfaceKind,
     pub code_output: String,
 }
@@ -86,18 +146,83 @@ pub struct InterfaceArtifact {
 impl InterfaceArtifact {
     pub fn from_kind(node_name: &str, kind: InterfaceKind, code_output: String) -> Self {
         Self {
-            node_name: node_name.to_string(),
+            module_path: vec![node_name.to_string()],
             kind,
             code_output,
         }
+    }
+
+    /// Creates an artifact whose generated module nests under
+    /// `{iface_name}/{iface_tag}/{leaf_name}` — used for symbols pulled in via
+    /// `interfaces.conforms_to`.
+    pub fn from_kind_nested(
+        module_path: Vec<String>,
+        kind: InterfaceKind,
+        code_output: String,
+    ) -> Self {
+        debug_assert!(
+            !module_path.is_empty(),
+            "from_kind_nested called with empty module_path; leaf_name() would panic",
+        );
+        Self {
+            module_path,
+            kind,
+            code_output,
+        }
+    }
+
+    /// Builds an artifact for `leaf_name`, nesting under
+    /// `{iface_name}/{iface_tag}/{leaf_name}` when contributed via
+    /// `interfaces.conforms_to`, or a single-segment `[leaf_name]` for the
+    /// node's own (native) declarations.
+    pub fn for_leaf(
+        origin: Option<&InterfaceOrigin>,
+        leaf_name: &str,
+        kind: InterfaceKind,
+        code_output: String,
+    ) -> Self {
+        let module_path = match origin {
+            Some(o) => o.module_path_for(leaf_name),
+            None => vec![leaf_name.to_string()],
+        };
+        Self {
+            module_path,
+            kind,
+            code_output,
+        }
+    }
+
+    /// Returns the leaf segment (the topic/service/action name). Panics on an
+    /// empty `module_path`, which would be a generator bug.
+    pub fn leaf_name(&self) -> &str {
+        self.module_path
+            .last()
+            .map(String::as_str)
+            .expect("InterfaceArtifact::module_path must not be empty")
     }
 }
 
 /// Collects deployment interfaces and produces generated artifacts when finalized.
 pub trait LanguageGenerator {
-    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()>;
-    fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()>;
-    fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()>;
+    /// `origin` is `Some` when the topic was contributed via a
+    /// `conforms_to` interface (nests the artifact under
+    /// `{iface_name}/{iface_tag}/{leaf}`) and `None` for the node's own
+    /// native declarations.
+    fn add_emitted_topic(
+        &mut self,
+        topic: &EmittedTopic,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()>;
+    fn add_exposed_service(
+        &mut self,
+        service: &ExposedService,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()>;
+    fn add_exposed_action(
+        &mut self,
+        action: &ExposedAction,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()>;
     fn add_consumed_topic(
         &mut self,
         topic: &ConsumedTopic,
@@ -134,9 +259,15 @@ pub trait LanguageGenerator {
 impl DeploymentInterface {
     pub fn register_with<B: LanguageGenerator + ?Sized>(&self, backend: &mut B) -> Result<()> {
         match self.interface() {
-            InterfaceVariant::EmittedTopic(topic) => backend.add_emitted_topic(topic),
-            InterfaceVariant::ExposedService(service) => backend.add_exposed_service(service),
-            InterfaceVariant::ExposedAction(action) => backend.add_exposed_action(action),
+            InterfaceVariant::EmittedTopic { topic, origin } => {
+                backend.add_emitted_topic(topic, origin.as_ref())
+            }
+            InterfaceVariant::ExposedService { service, origin } => {
+                backend.add_exposed_service(service, origin.as_ref())
+            }
+            InterfaceVariant::ExposedAction { action, origin } => {
+                backend.add_exposed_action(action, origin.as_ref())
+            }
             InterfaceVariant::ConsumedTopic {
                 topic,
                 message_format,

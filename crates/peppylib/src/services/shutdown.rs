@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, oneshot};
 use tracing::debug;
 
-use crate::messaging::ServiceRequestContext;
+use crate::messaging::{Iface, ServiceRequestContext};
 use crate::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 
 /// Receiver for shutdown signals. When a shutdown request is received by the service,
@@ -24,6 +24,7 @@ pub async fn listen_for_shutdown(
         core_node_node,
         instance_id,
         node_name,
+        Iface::native(),
         super::super::messaging::SHUTDOWN_SERVICE,
     )
     .await?;

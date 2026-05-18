@@ -5,8 +5,9 @@ use crate::services::repo::cache as repo_cache;
 use config::consts::PeppyDirs;
 use config::node::NodeConfigParser;
 use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse, RepoResolvedEntry};
-use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
+use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceOrigin, InterfaceVariant};
 use node_stack::NodeStack;
+use peppylib::messaging::Iface;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -28,6 +29,7 @@ pub async fn listen_for_node_sync(
         core_node_node,
         instance_id,
         node_name,
+        Iface::native(),
         names::NODE_SYNC,
     )
     .await?;
@@ -355,7 +357,7 @@ async fn handle_node_sync_request_inner(
                 }
 
                 // Collect consumed interfaces with resolved message formats
-                let interfaces = match collect_consumed_interfaces(
+                let mut interfaces = match collect_consumed_interfaces(
                     &node_config.manifest,
                     &node_config.interfaces,
                     resolve_dep,
@@ -370,6 +372,18 @@ async fn handle_node_sync_request_inner(
                         .map_err(Into::into);
                     }
                 };
+                let conformed = match resolve_conforms_to(&node_config.interfaces, &peppy_dirs) {
+                    Ok(v) => v,
+                    Err(reason) => {
+                        return NodeSyncResponse::failure(format!(
+                            "Failed to resolve `conforms_to` interfaces: {}",
+                            reason
+                        ))
+                        .encode()
+                        .map_err(Into::into);
+                    }
+                };
+                interfaces.extend(conformed);
                 let language = node_config.execution.language;
                 let root_manifest = node_config.manifest.clone();
                 (interfaces, language, root_manifest)
@@ -750,6 +764,136 @@ pub fn collect_consumed_interfaces(
     Ok(interfaces)
 }
 
+/// Resolves every `interfaces.conforms_to` entry against the local interface
+/// cache and returns the pulled interface's topics/services/actions as a
+/// `Vec<DeploymentInterface>` ready to feed [`generator::generate_peppygen_lib`].
+///
+/// Each returned `DeploymentInterface` is stamped with an
+/// [`InterfaceOrigin`] so the generator nests it under
+/// `emitted_topics/{iface_name}/{iface_tag}/{leaf}` (and similar for services
+/// and actions) and embeds the matching `(iface_name, iface_tag)` segments in
+/// the generated wire-path calls.
+///
+/// Errors:
+/// - Duplicate raw `(name, tag)` entries (sha256 differences do not count).
+/// - Two entries that sanitize to the same `(iface_name, iface_tag)` — e.g.
+///   `v1` and `v-1` collide because the wire-path tag normalization replaces
+///   hyphens with underscores. Refusing this keeps generated symbols
+///   addressable without ambiguity.
+/// - Cache miss — surfaces "run `peppy repo refresh`".
+/// - `sha256` pin set but the on-disk content has drifted.
+pub fn resolve_conforms_to(
+    interfaces_cfg: &config::node::Interfaces,
+    peppy_dirs: &PeppyDirs,
+) -> std::result::Result<Vec<DeploymentInterface>, String> {
+    let Some(items) = interfaces_cfg.conforms_to.as_ref() else {
+        return Ok(Vec::new());
+    };
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Sanitized-key collisions strictly dominate raw-key duplicates (an exact
+    // raw dup collides post-sanitize too), so one pass catches both. Compare
+    // the prior raw tag to distinguish "duplicate" from "collides after
+    // hyphen→underscore normalization" (e.g. `v1` vs `v-1`) — both would
+    // generate to the same module path and wire segments.
+    let mut seen: HashMap<(String, String), String> = HashMap::new();
+    for item in items {
+        let sanitized_tag = item.tag.replace('-', "_");
+        let key = (item.name.as_str().to_string(), sanitized_tag);
+        if let Some(prior_tag) = seen.insert(key, item.tag.clone()) {
+            if prior_tag == item.tag {
+                return Err(format!(
+                    "duplicate `conforms_to` entry `{}:{}`",
+                    item.name.as_str(),
+                    item.tag
+                ));
+            }
+            return Err(format!(
+                "`conforms_to` entries `{}:{}` and `{}:{}` collide after \
+                 tag normalization (hyphens become underscores); rename one \
+                 to disambiguate",
+                item.name.as_str(),
+                prior_tag,
+                item.name.as_str(),
+                item.tag
+            ));
+        }
+    }
+
+    let cache = repo_cache::load_interface_cache(peppy_dirs)
+        .map_err(|e| format!("failed to load interface cache: {e}"))?;
+
+    let mut out: Vec<DeploymentInterface> = Vec::new();
+    for item in items {
+        let name = item.name.as_str();
+        let tag = item.tag.as_str();
+        let entry = match item.sha256.as_deref() {
+            Some(sha) => repo_cache::lookup_interface_by_sha256(&cache, name, tag, sha)
+                .ok_or_else(|| {
+                    format!(
+                        "interface `{name}:{tag}` (sha256 `{sha}`) not in interface cache; \
+                         run `peppy repo refresh`"
+                    )
+                })?,
+            None => repo_cache::lookup_interface(&cache, name, tag).ok_or_else(|| {
+                format!("interface `{name}:{tag}` not in interface cache; run `peppy repo refresh`")
+            })?,
+        };
+
+        // Re-fingerprint the on-disk content to guard against drift between
+        // the cached entry (recorded at `peppy repo refresh`) and what's on
+        // disk now — for both pinned and unpinned entries, since the cache
+        // entry's sha256 reflects the last-refreshed bytes, not live bytes.
+        let bytes = std::fs::read(&entry.path).map_err(|e| {
+            format!(
+                "failed to read cached interface `{name}:{tag}` at {}: {e}",
+                entry.path
+            )
+        })?;
+        let actual_sha = config::fingerprint::fingerprint_for_bytes(&bytes);
+        if actual_sha != entry.sha256 {
+            return Err(format!(
+                "interface `{name}:{tag}` content drifted from cache fingerprint \
+                 (expected `{}`, got `{actual_sha}`); run `peppy repo refresh`",
+                entry.sha256
+            ));
+        }
+
+        let content = std::str::from_utf8(&bytes)
+            .map_err(|e| format!("cached interface `{name}:{tag}` is not UTF-8: {e}"))?;
+        let parsed = config::interface::PeppyInterfaceParser::from_content(content)
+            .map_err(|e| format!("failed to parse cached interface `{name}:{tag}`: {e}"))?;
+
+        let origin = InterfaceOrigin {
+            iface_name: name.to_string(),
+            iface_tag: tag.to_string(),
+        };
+
+        for topic in parsed.interfaces.topics {
+            out.push(DeploymentInterface::new(InterfaceVariant::EmittedTopic {
+                topic,
+                origin: Some(origin.clone()),
+            }));
+        }
+        for service in parsed.interfaces.services {
+            out.push(DeploymentInterface::new(InterfaceVariant::ExposedService {
+                service,
+                origin: Some(origin.clone()),
+            }));
+        }
+        for action in parsed.interfaces.actions {
+            out.push(DeploymentInterface::new(InterfaceVariant::ExposedAction {
+                action,
+                origin: Some(origin.clone()),
+            }));
+        }
+    }
+
+    Ok(out)
+}
+
 /// Convenience helper that builds a resolver closure backed by a [`NodeStack`].
 ///
 /// Use this for callers that don't have any local peers to layer on top of
@@ -804,7 +948,7 @@ pub fn auto_sync_if_missing(
         };
 
         let gen_result: crate::Result<()> = (|| {
-            let consumed = collect_consumed_interfaces(
+            let mut consumed = collect_consumed_interfaces(
                 params.manifest,
                 params.interfaces,
                 stack_resolver(node_stack),
@@ -815,6 +959,14 @@ pub fn auto_sync_if_missing(
                     reason
                 )))
             })?;
+            let conformed =
+                resolve_conforms_to(params.interfaces, peppy_dirs).map_err(|reason| {
+                    crate::Error::Io(std::io::Error::other(format!(
+                        "failed to resolve `conforms_to` interfaces: {}",
+                        reason
+                    )))
+                })?;
+            consumed.extend(conformed);
             generate_peppygen_for_node(
                 params.execution_language,
                 params.node_dir,
@@ -941,5 +1093,286 @@ mod tests {
         std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
         std::fs::write(peppygen.join("peppy.json5.sha256"), b"deadbeef").unwrap();
         assert!(!needs_sync(tmp.path()));
+    }
+}
+
+#[cfg(test)]
+mod conforms_to_tests {
+    //! Exercises [`resolve_conforms_to`]: the cache-loading side of
+    //! `interfaces.conforms_to` resolution. The generator-side (module
+    //! nesting / wire-segment embedding) is verified by the integration
+    //! tests in `crates/generator-internal/tests/{rust,python}/conforms_to.rs`.
+
+    use super::*;
+    use config::node::{ConformsToItem, Interfaces, Name};
+    use core_node_api::encoding::RepoSourceKind;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Writes an interface manifest to `dir/{name}_{tag}.json5` and seeds the
+    /// returned `InterfaceCacheEntry` with the matching sha256. Returns
+    /// `(entry, abs_path)` so callers can either keep or mutate the entry
+    /// (e.g. for the drift test).
+    fn seed_interface(
+        dir: &std::path::Path,
+        name: &str,
+        tag: &str,
+        body: &str,
+    ) -> repo_cache::InterfaceCacheEntry {
+        let file_name = format!("{name}_{tag}.json5");
+        let path = dir.join(&file_name);
+        fs::write(&path, body).expect("write interface file");
+        let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
+        repo_cache::InterfaceCacheEntry {
+            interface_name: name.to_string(),
+            tag: tag.to_string(),
+            sha256: sha,
+            source_type: RepoSourceKind::Fs,
+            source_uri: None,
+            resolved_ref: None,
+            path: path.to_string_lossy().to_string(),
+            repo_id: 0,
+        }
+    }
+
+    /// Builds an interfaces.json5 cache + dir-rooted `PeppyDirs` from a set of
+    /// seeded entries.
+    fn make_peppy_dirs_with_cache(
+        entries: &[repo_cache::InterfaceCacheEntry],
+    ) -> (TempDir, PeppyDirs) {
+        let tmp = TempDir::new().expect("temp dir");
+        let dirs = PeppyDirs::new(tmp.path().to_path_buf());
+        fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
+        let cache_path = repo_cache::interfaces_repo_cache_path(&dirs);
+        let json = serde_json5::to_string(&entries.to_vec()).expect("serialize cache");
+        fs::write(&cache_path, json).expect("write cache file");
+        (tmp, dirs)
+    }
+
+    const DEPTH_V1_BODY: &str = r#"{
+        peppy_schema: "interface_v1",
+        manifest: { name: "depth_camera", tag: "v1" },
+        interfaces: {
+            topics: [
+                { name: "video_stream", qos_profile: "sensor_data" }
+            ]
+        }
+    }"#;
+
+    fn interfaces_with_conforms(items: Vec<ConformsToItem>) -> Interfaces {
+        Interfaces {
+            topics: None,
+            services: None,
+            actions: None,
+            conforms_to: Some(items),
+        }
+    }
+
+    #[test]
+    fn returns_empty_when_no_conforms_to() {
+        let dirs = PeppyDirs::new(TempDir::new().unwrap().path().to_path_buf());
+        let cfg = Interfaces {
+            topics: None,
+            services: None,
+            actions: None,
+            conforms_to: None,
+        };
+        let out = resolve_conforms_to(&cfg, &dirs).expect("ok");
+        assert!(out.is_empty());
+    }
+
+    /// Happy path: a `conforms_to` entry whose `(name, tag)` is present in the
+    /// interfaces cache yields the underlying interface's topics, each wrapped
+    /// as `EmittedTopic` and stamped with `origin` pointing back to the source
+    /// interface so downstream codegen can attribute the topic.
+    #[test]
+    fn resolves_cache_hit_with_origin() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_interface(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let cfg = interfaces_with_conforms(vec![ConformsToItem {
+            name: Name::new("depth_camera").unwrap(),
+            tag: "v1".to_string(),
+            sha256: None,
+        }]);
+
+        let out = resolve_conforms_to(&cfg, &dirs).expect("happy path");
+        assert_eq!(out.len(), 1, "should pull the one video_stream topic");
+        match out[0].interface() {
+            InterfaceVariant::EmittedTopic {
+                topic,
+                origin: Some(o),
+            } => {
+                assert_eq!(topic.name, "video_stream");
+                assert_eq!(o.iface_name, "depth_camera");
+                assert_eq!(o.iface_tag, "v1");
+            }
+            other => panic!("expected EmittedTopic with origin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cache_miss_suggests_repo_refresh() {
+        // Empty cache — any lookup misses.
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[]);
+        let cfg = interfaces_with_conforms(vec![ConformsToItem {
+            name: Name::new("depth_camera").unwrap(),
+            tag: "v1".to_string(),
+            sha256: None,
+        }]);
+
+        let err = resolve_conforms_to(&cfg, &dirs).expect_err("miss must error");
+        assert!(
+            err.contains("`depth_camera:v1`") && err.contains("peppy repo refresh"),
+            "missing-from-cache error should name the entry and suggest refresh, got: {err}"
+        );
+    }
+
+    #[test]
+    fn duplicate_raw_entries_are_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_interface(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        // Two entries with the same raw `(name, tag)` — sha256 differing
+        // should NOT rescue this case per the spec.
+        let cfg = interfaces_with_conforms(vec![
+            ConformsToItem {
+                name: Name::new("depth_camera").unwrap(),
+                tag: "v1".to_string(),
+                sha256: None,
+            },
+            ConformsToItem {
+                name: Name::new("depth_camera").unwrap(),
+                tag: "v1".to_string(),
+                sha256: Some("aaa".to_string()),
+            },
+        ]);
+
+        let err = resolve_conforms_to(&cfg, &dirs).expect_err("dup must error");
+        assert!(
+            err.contains("duplicate") && err.contains("depth_camera:v1"),
+            "duplicate error should name the entry, got: {err}"
+        );
+    }
+
+    #[test]
+    fn tag_sanitize_collisions_are_rejected() {
+        // `v_1` and `v-1` both sanitize to `v_1` after the hyphen→underscore
+        // pass that the wire-path and generated-symbol layers apply. Refuse
+        // rather than silently merge.
+        let tmp = TempDir::new().unwrap();
+        let entry_a = seed_interface(tmp.path(), "depth_camera", "v_1", DEPTH_V1_BODY);
+        let body_b = DEPTH_V1_BODY.replace("\"v1\"", "\"v-1\"");
+        let entry_b = seed_interface(tmp.path(), "depth_camera", "v-1", &body_b);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry_a, entry_b]);
+
+        let cfg = interfaces_with_conforms(vec![
+            ConformsToItem {
+                name: Name::new("depth_camera").unwrap(),
+                tag: "v_1".to_string(),
+                sha256: None,
+            },
+            ConformsToItem {
+                name: Name::new("depth_camera").unwrap(),
+                tag: "v-1".to_string(),
+                sha256: None,
+            },
+        ]);
+
+        let err = resolve_conforms_to(&cfg, &dirs).expect_err("collision must error");
+        assert!(
+            err.contains("collide") && err.contains("normalization"),
+            "sanitize-collision error should mention collision + normalization, got: {err}"
+        );
+    }
+
+    const ARM_V1_WITH_SERVICE_AND_ACTION: &str = r#"{
+        peppy_schema: "interface_v1",
+        manifest: { name: "arm", tag: "v1" },
+        interfaces: {
+            services: [
+                { name: "control" }
+            ],
+            actions: [
+                { name: "move_arm" }
+            ]
+        }
+    }"#;
+
+    /// A `conforms_to` entry whose body declares a service AND an action must
+    /// yield both as `ExposedService`/`ExposedAction` variants stamped with
+    /// `Some(origin)` pointing back at the source interface. Mirrors
+    /// `resolves_cache_hit_with_origin` but exercises the non-topic variants.
+    #[test]
+    fn resolves_cache_hit_with_service_and_action_origin() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_interface(tmp.path(), "arm", "v1", ARM_V1_WITH_SERVICE_AND_ACTION);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let cfg = interfaces_with_conforms(vec![ConformsToItem {
+            name: Name::new("arm").unwrap(),
+            tag: "v1".to_string(),
+            sha256: None,
+        }]);
+
+        let out = resolve_conforms_to(&cfg, &dirs).expect("happy path");
+
+        let mut saw_service = false;
+        let mut saw_action = false;
+        for entry in &out {
+            match entry.interface() {
+                InterfaceVariant::ExposedService {
+                    service,
+                    origin: Some(o),
+                } => {
+                    assert_eq!(service.name, "control");
+                    assert_eq!(o.iface_name, "arm");
+                    assert_eq!(o.iface_tag, "v1");
+                    saw_service = true;
+                }
+                InterfaceVariant::ExposedAction {
+                    action,
+                    origin: Some(o),
+                } => {
+                    assert_eq!(action.name, "move_arm");
+                    assert_eq!(o.iface_name, "arm");
+                    assert_eq!(o.iface_tag, "v1");
+                    saw_action = true;
+                }
+                other => panic!("unexpected resolved variant: {other:?}"),
+            }
+        }
+        assert!(saw_service, "service should be resolved with origin");
+        assert!(saw_action, "action should be resolved with origin");
+    }
+
+    #[test]
+    fn sha256_drift_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_interface(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        // Rewrite the underlying file so its fingerprint no longer matches
+        // the cache's `sha256` — i.e. the cache thinks the file is X but it
+        // is now Y. resolve_conforms_to must catch this.
+        fs::write(
+            &entry.path,
+            DEPTH_V1_BODY.replace("video_stream", "video_stream_v2"),
+        )
+        .unwrap();
+        // Keep the stale (pre-rewrite) sha256 in the cache entry. We need to
+        // ensure load_interface_cache trusts it.
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let cfg = interfaces_with_conforms(vec![ConformsToItem {
+            name: Name::new("depth_camera").unwrap(),
+            tag: "v1".to_string(),
+            sha256: None,
+        }]);
+        let err = resolve_conforms_to(&cfg, &dirs).expect_err("drift must error");
+        assert!(
+            err.contains("drifted") && err.contains("peppy repo refresh"),
+            "drift error should mention drift + refresh, got: {err}"
+        );
     }
 }

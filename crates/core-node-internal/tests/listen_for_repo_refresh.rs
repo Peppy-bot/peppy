@@ -14,6 +14,7 @@ use core_node_api::encoding::{
 };
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
+use peppylib::messaging::Iface;
 use std::path::Path;
 use std::time::Duration;
 
@@ -66,16 +67,16 @@ struct RefreshTestResult {
     result: RepoRefreshResult,
 }
 
-/// Send a refresh goal and wait for the result. Uses mock-compatible identifiers
-/// (no feedback will be received with mock adapter).
+/// Send a refresh goal and wait for the result. The server publishes feedback
+/// with wildcards at caller positions, so a concrete caller identity still
+/// receives feedback over a real messenger; the mock adapter just doesn't
+/// deliver feedback.
 async fn send_refresh_and_wait(started: &StartedCoreNode) -> RefreshTestResult {
     send_refresh_inner(started, &started.core_node_name, CALLER_INSTANCE_ID).await
 }
 
-/// Send a refresh goal and wait for the result with wildcard identifiers so
-/// feedback is received (requires real messenger).
 async fn send_refresh_and_wait_with_feedback(started: &StartedCoreNode) -> RefreshTestResult {
-    send_refresh_inner(started, "*", "*").await
+    send_refresh_and_wait(started).await
 }
 
 async fn send_refresh_inner(
@@ -91,6 +92,7 @@ async fn send_refresh_inner(
         caller_core_node,
         caller_instance_id,
         &started.core_node_name,
+        Iface::native(),
         names::REPO_REFRESH_ACTION,
         Some(&started.core_node_name),
         None,

@@ -1,5 +1,6 @@
 use config::node::QoSProfile;
 use peppylib::PeppyError;
+use peppylib::messaging::Iface;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, EmptyPayloadError, MessengerHandle,
     NonEmptyPayload,
@@ -38,6 +39,7 @@ async fn action_messenger_communication() {
         core_node,
         instance_id,
         node_name,
+        Iface::native(),
         action_name,
     )
     .await
@@ -103,6 +105,7 @@ async fn action_messenger_communication() {
         core_node,
         instance_id,
         node_name,
+        Iface::native(),
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -173,6 +176,7 @@ async fn setup_goal_handshake(
         core_node,
         instance_id,
         node_name,
+        Iface::native(),
         action_name,
     )
     .await
@@ -215,6 +219,7 @@ async fn setup_goal_handshake(
         core_node,
         instance_id,
         node_name,
+        Iface::native(),
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -352,4 +357,149 @@ fn non_empty_payload_rejects_empty_payload() {
         matches!(result, Err(EmptyPayloadError)),
         "empty payload must be rejected by NonEmptyPayload::try_new",
     );
+}
+
+/// A single node exposes the *same* action name under two distinct iface
+/// scopes (native + a conformed interface). Their goal services must wire to
+/// distinct paths, so a `send_goal` targeting one scope must only ever hit
+/// the matching server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn action_iface_scoped_native_and_conformed_do_not_collide() {
+    use peppylib::messaging::ActionFeedbackPublisherFactory;
+    use tokio::sync::oneshot;
+
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let core_node = "test_core";
+    let instance_id = "test_instance";
+    let node_name = "test_node";
+    let action_name = "move";
+    let iface_name = "arm";
+    let iface_tag = "v1";
+
+    let native_response = Payload::from_static(b"native_ack");
+    let iface_response = Payload::from_static(b"iface_ack");
+
+    let native_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("native handle");
+    let iface_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("iface handle");
+    let caller_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("caller handle");
+
+    // Expose under both scopes.
+    let native_action = ActionMessenger::expose(
+        &native_handle,
+        core_node,
+        instance_id,
+        node_name,
+        Iface::native(),
+        action_name,
+    )
+    .await
+    .expect("native expose");
+    let iface_action = ActionMessenger::expose(
+        &iface_handle,
+        core_node,
+        instance_id,
+        node_name,
+        Iface::new(iface_name, iface_tag).expect("valid iface"),
+        action_name,
+    )
+    .await
+    .expect("iface expose");
+
+    fn run_goal_handler(
+        mut action: peppylib::messaging::ActionCreation,
+        response: Payload,
+    ) -> (tokio::task::JoinHandle<()>, oneshot::Receiver<()>) {
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let factory: ActionFeedbackPublisherFactory = action.feedback_publisher_factory.clone();
+        let handle = tokio::spawn(async move {
+            let ready_tx = std::sync::Mutex::new(Some(ready_tx));
+            let _publisher_keepalive: Arc<std::sync::Mutex<Option<ActionFeedbackPublisher>>> =
+                Arc::new(std::sync::Mutex::new(None));
+            let kept = Arc::clone(&_publisher_keepalive);
+            let _ = action
+                .goal_service
+                .handle_next_request(|req| {
+                    let factory = factory.clone();
+                    let response = response.clone();
+                    let kept = Arc::clone(&kept);
+                    async move {
+                        let declared = factory
+                            .declare_from_wire(req.message().payload().into_inner())
+                            .await
+                            .expect("declare_from_wire");
+                        kept.lock().unwrap().replace(declared.publisher);
+                        Ok(response)
+                    }
+                })
+                .await
+                .expect("goal handler");
+            if let Some(tx) = ready_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+        });
+        (handle, ready_rx)
+    }
+
+    let (native_task, native_done) = run_goal_handler(native_action, native_response.clone());
+    let (iface_task, iface_done) = run_goal_handler(iface_action, iface_response.clone());
+
+    // Allow subscriptions to propagate.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let native_goal = ActionMessenger::send_goal(
+        &caller_handle,
+        core_node,
+        instance_id,
+        node_name,
+        Iface::native(),
+        action_name,
+        Some(core_node),
+        Some(instance_id),
+        Payload::from_static(b"native_goal"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("native send_goal");
+    assert_eq!(
+        native_goal.goal_response().payload(),
+        &native_response,
+        "native send_goal must hit the native goal handler",
+    );
+
+    let iface_goal = ActionMessenger::send_goal(
+        &caller_handle,
+        core_node,
+        instance_id,
+        node_name,
+        Iface::new(iface_name, iface_tag).expect("valid iface"),
+        action_name,
+        Some(core_node),
+        Some(instance_id),
+        Payload::from_static(b"iface_goal"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("iface send_goal");
+    assert_eq!(
+        iface_goal.goal_response().payload(),
+        &iface_response,
+        "iface send_goal must hit the iface goal handler",
+    );
+
+    native_done.await.expect("native handler signaled ready");
+    iface_done.await.expect("iface handler signaled ready");
+    native_task.await.expect("native task");
+    iface_task.await.expect("iface task");
 }

@@ -3,6 +3,7 @@ use crate::names;
 use config::node::Name;
 use core_node_api::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use node_stack::NodeStack;
+use peppylib::messaging::Iface;
 use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
@@ -29,6 +30,7 @@ pub async fn listen_for_node_remove(
         &core_node_node,
         &core_instance_id,
         node_name,
+        Iface::native(),
         names::NODE_REMOVE,
     )
     .await?;
@@ -172,6 +174,7 @@ async fn handle_node_remove_request_inner(
                 core_node_node,
                 core_instance_id,
                 &target.node_name,
+                Iface::native(),
                 SHUTDOWN_SERVICE,
                 Some(core_node_node),
                 Some(target.instance_id.as_str()),
@@ -250,6 +253,7 @@ async fn handle_node_remove_request_inner(
                 core_node_node,
                 core_instance_id,
                 &target.node_name,
+                Iface::native(),
                 SHUTDOWN_SERVICE,
                 Some(core_node_node),
                 Some(target.instance_id.as_str()),

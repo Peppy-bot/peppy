@@ -2,11 +2,12 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
+use super::services::iface_python_expr;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use super::type_mapping::{collect_fields_from_format, uses_optional};
 use crate::error::{Error, Result};
 use crate::generator::types::{
-    ConsumedActionMessage, cancel_action_response_format, non_empty_message_format,
+    ConsumedActionMessage, InterfaceOrigin, cancel_action_response_format, non_empty_message_format,
 };
 use config::node::{ConsumedAction, ExposedAction, MessageFormat};
 
@@ -22,6 +23,7 @@ pub fn build_exposed_action(
     cancel_response_schema_info: Option<&PythonSchemaInfo>,
     result_response_schema_info: Option<&PythonSchemaInfo>,
     feedback_schema_info: Option<&PythonSchemaInfo>,
+    origin: Option<&InterfaceOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
@@ -282,12 +284,14 @@ pub fn build_exposed_action(
     builder.add_import("from typing import Self");
     builder.line("async def expose(cls, node_runner: peppylib.NodeRunner) -> Self:");
     builder.indent();
+    let expose_iface_expr = iface_python_expr(origin);
     builder.line("action = await peppylib.ActionMessenger.expose(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("node_runner.node_name(),");
+    builder.line(&format!("{expose_iface_expr},"));
     builder.line("ACTION_NAME,");
     builder.dedent();
     builder.line(")");
@@ -748,9 +752,9 @@ pub fn build_consumed_action(
     // fire_goal @classmethod
     builder.line("@classmethod");
     if has_goal_request {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None) -> Self:");
     } else {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None) -> Self:");
     }
     builder.indent();
 
@@ -774,15 +778,19 @@ pub fn build_consumed_action(
         builder.line("user_goal_payload = b\"\"");
     }
 
+    // Consumer-side discovery of the producer's interface namespace is the
+    // follow-up PR; for now we use native.
+    let send_goal_iface_expr = iface_python_expr(None);
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("TARGET_NODE_NAME,");
+    builder.line(&format!("{send_goal_iface_expr},"));
     builder.line("TARGET_ACTION_NAME,");
-    builder.line("target_core_node,");
-    builder.line("target_instance_id,");
+    builder.line("to_core_node,");
+    builder.line("to_instance_id,");
     builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");

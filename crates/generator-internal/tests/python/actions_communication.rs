@@ -185,7 +185,9 @@ async fn actions_communication() {
     generator
         .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
-    generator.add_exposed_service(&flow_done_service).unwrap();
+    generator
+        .add_exposed_service(&flow_done_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
     generator
         .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
@@ -256,7 +258,7 @@ if __name__ == "__main__":
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -361,12 +363,12 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        to_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -382,7 +384,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -514,7 +516,9 @@ async fn actions_communication_cancel_goal() {
     generator
         .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
-    generator.add_exposed_service(&flow_done_service).unwrap();
+    generator
+        .add_exposed_service(&flow_done_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
     generator
         .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
@@ -582,7 +586,7 @@ if __name__ == "__main__":
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -673,12 +677,12 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        to_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -694,7 +698,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -846,7 +850,9 @@ async fn actions_communication_emit_feedback_from_within_goal_handler() {
     generator
         .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
-    generator.add_exposed_service(&flow_done_service).unwrap();
+    generator
+        .add_exposed_service(&flow_done_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
     generator
         .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
@@ -920,7 +926,7 @@ if __name__ == "__main__":
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -1017,12 +1023,12 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        to_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -1038,7 +1044,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -1188,7 +1194,9 @@ async fn actions_communication_cancel_accept_closes_feedback_stream() {
     generator
         .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
-    generator.add_exposed_service(&flow_done_service).unwrap();
+    generator
+        .add_exposed_service(&flow_done_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
     generator
         .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
@@ -1263,7 +1271,7 @@ if __name__ == "__main__":
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -1346,12 +1354,12 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        to_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -1367,7 +1375,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -1533,7 +1541,9 @@ async fn actions_communication_cancel_reject_keeps_feedback_open() {
     generator
         .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
-    generator.add_exposed_service(&flow_done_service).unwrap();
+    generator
+        .add_exposed_service(&flow_done_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
     generator
         .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
@@ -1618,7 +1628,7 @@ if __name__ == "__main__":
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -1711,12 +1721,12 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        to_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -1732,7 +1742,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -1904,7 +1914,9 @@ async fn actions_communication_drain_loop_until_end_signal() {
     generator
         .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
-    generator.add_exposed_service(&flow_done_service).unwrap();
+    generator
+        .add_exposed_service(&flow_done_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
     generator
         .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
@@ -1985,7 +1997,7 @@ if __name__ == "__main__":
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action).unwrap();
+    generator.add_exposed_action(&exposed_action, None).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -2073,12 +2085,12 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        to_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
         BRAIN_NODE_NAME,
-        "move_arm/goal",
+        "move_arm",
         None,
         &mut exposer_child,
         &user_node_exposer,
@@ -2094,7 +2106,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,

@@ -1,6 +1,7 @@
 use config::consts::DEFAULT_MESSAGING_PORT;
 use config::node::QoSProfile;
 use names_generator2::get_random;
+use peppylib::messaging::Iface;
 use peppylib::{MessengerHandle, Payload, TopicMessenger};
 use rand::rng;
 
@@ -33,6 +34,7 @@ async fn main() {
         &core_node,
         &instance_id,
         node_name,
+        Iface::native(),
         topic_name,
         qos,
         payload,

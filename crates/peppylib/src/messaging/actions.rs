@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
-use pmi::{MessengerBackend, PublisherQoS};
+use pmi::{ActionWireReceiver, ActionWireSender, Iface, PublisherQoS};
 use std::sync::Arc;
 use tokio::time::Duration;
 
@@ -86,10 +86,7 @@ fn is_safe_goal_id(goal_id: &str) -> bool {
 }
 
 /// Re-exported from `core-node-api` so callers can use the existing
-/// `peppylib::messaging::NonEmptyPayload` import path. The type lives in
-/// `core-node-api` next to [`Payload`] so capnp `encode()` helpers can
-/// return it directly without `core-node-api` having to depend on
-/// `peppylib`.
+/// `peppylib::messaging::NonEmptyPayload` import path.
 pub use core_node_api::{EmptyPayloadError, NonEmptyPayload};
 
 /// Per-goal feedback publisher used by action servers. The end-of-stream
@@ -115,16 +112,12 @@ impl ActionFeedbackPublisher {
         Self { inner }
     }
 
-    /// Publish a feedback message. The [`NonEmptyPayload`] type guarantees
-    /// non-emptiness at the type level, since an empty payload is reserved
-    /// for the end-of-stream sentinel emitted by [`Self::publish_end`].
+    /// Publish a feedback message.
     pub async fn publish(&self, payload: NonEmptyPayload) -> Result<()> {
         self.inner.publish(payload.into_inner()).await
     }
 
-    /// Publish the end-of-stream sentinel (a zero-length payload). The next
-    /// `on_next_feedback` call on the matching subscription resolves with
-    /// `Err(Error::ActionFeedbackChannelClosed)`.
+    /// Publish the end-of-stream sentinel (a zero-length payload).
     pub async fn publish_end(&self) -> Result<()> {
         self.inner.publish(Payload::new()).await
     }
@@ -147,15 +140,19 @@ pub struct DeclaredFeedback {
 #[derive(Clone)]
 pub struct ActionFeedbackPublisherFactory {
     messenger: MessengerHandle,
-    base_topic: String,
+    receiver: ActionWireReceiver,
     qos: PublisherQoS,
 }
 
 impl ActionFeedbackPublisherFactory {
-    pub(crate) fn new(messenger: MessengerHandle, base_topic: String, qos: PublisherQoS) -> Self {
+    pub(crate) fn new(
+        messenger: MessengerHandle,
+        receiver: ActionWireReceiver,
+        qos: PublisherQoS,
+    ) -> Self {
         Self {
             messenger,
-            base_topic,
+            receiver,
             qos,
         }
     }
@@ -166,7 +163,7 @@ impl ActionFeedbackPublisherFactory {
     pub async fn declare_from_wire(&self, wire: Bytes) -> Result<DeclaredFeedback> {
         let (goal_id, user_payload_offset) = {
             let (goal_id, user_payload) = unwrap_goal_payload(wire.as_ref())?;
-            // The goal_id is appended to `base_topic` to scope the feedback
+            // The goal_id is appended to the feedback topic to scope the
             // publisher per goal cycle. Reject anything that could let a
             // malicious or malformed envelope escape that scope (extra
             // segments, Zenoh wildcards, ...) so the publisher cannot be
@@ -191,25 +188,18 @@ impl ActionFeedbackPublisherFactory {
     }
 
     async fn declare(&self, goal_id: &str) -> Result<ActionFeedbackPublisher> {
-        let topic = format!("{}/{}", self.base_topic, goal_id);
         let inner = self
             .messenger
-            .declare_publisher(topic.clone(), self.qos)
+            .declare_action_feedback_publisher(&self.receiver, goal_id, self.qos)
             .await?;
-        Ok(ActionFeedbackPublisher::new(TopicPublisher::new(
-            Arc::new(inner),
-            topic,
-        )))
+        Ok(ActionFeedbackPublisher::new(TopicPublisher::new(Arc::new(
+            inner,
+        ))))
     }
 }
 
 pub struct ActionGoalHandle {
-    core_node: String,
-    instance_id: String,
-    node_name: String,
-    action_name: String,
-    target_core_node: Option<String>,
-    target_instance_id: Option<String>,
+    sender: ActionWireSender,
     goal_id: String,
     goal_response: Message,
     feedback: Subscription,
@@ -218,18 +208,20 @@ pub struct ActionGoalHandle {
 impl std::fmt::Debug for ActionGoalHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActionGoalHandle")
-            .field("core_node", &self.core_node)
-            .field("instance_id", &self.instance_id)
-            .field("node_name", &self.node_name)
-            .field("action_name", &self.action_name)
-            .field("target_core_node", &self.target_core_node)
-            .field("target_instance_id", &self.target_instance_id)
+            .field("sender", &self.sender)
             .field("goal_id", &self.goal_id)
             .finish_non_exhaustive()
     }
 }
 
 impl ActionGoalHandle {
+    /// The wire sender used to dispatch this goal. Cloned by external wrappers
+    /// (e.g. Python bindings) that need to issue cancel/result calls without
+    /// holding a lock on the goal handle.
+    pub fn sender(&self) -> &ActionWireSender {
+        &self.sender
+    }
+
     pub fn goal_response(&self) -> &Message {
         &self.goal_response
     }
@@ -280,21 +272,24 @@ pub struct ActionCreation {
 }
 
 impl ActionMessenger {
+    /// Expose an action server. `iface` must match what callers pass to
+    /// [`Self::send_goal`].
     pub async fn expose(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
+        iface: Iface,
         as_action_name: &str,
     ) -> Result<ActionCreation> {
-        messenger
-            .expose_action(
-                bound_core_node,
-                as_node_name,
-                as_action_name,
-                as_instance_id,
-            )
-            .await
+        let recv = ActionWireReceiver::new(
+            bound_core_node,
+            as_instance_id,
+            as_node_name,
+            iface,
+            as_action_name,
+        )?;
+        messenger.expose_action(&recv).await
     }
 
     /// Sends a lightweight probe to check whether an action service is listening.
@@ -303,20 +298,24 @@ impl ActionMessenger {
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
-        target_node_name: &str,
-        target_action_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        to_node_name: &str,
+        iface: Iface,
+        to_action_name: &str,
+        to_core_node: Option<&str>,
+        to_instance_id: Option<&str>,
     ) -> Result<bool> {
+        let sender = ActionWireSender::new(
+            bound_core_node,
+            as_instance_id,
+            to_core_node,
+            to_instance_id,
+            to_node_name,
+            iface,
+            to_action_name,
+        )?;
         match messenger
             .poll_service(
-                "action",
-                bound_core_node,
-                as_instance_id,
-                target_node_name,
-                target_action_name,
-                target_core_node,
-                target_instance_id,
+                &sender.goal_service(),
                 Payload::from_static(SERVICE_PROBE_PAYLOAD),
                 PROBE_TIMEOUT,
             )
@@ -330,67 +329,47 @@ impl ActionMessenger {
     }
 
     /// Send a goal to an action server. Generates a fresh `goal_id`,
-    /// wraps `user_payload` in the per-goal envelope, and subscribes to
-    /// the matching feedback topic before polling the goal service.
+    /// wraps `user_payload` in the per-goal envelope, subscribes to the
+    /// matching feedback topic, and polls the goal service.
+    ///
+    /// `iface` must match the segments the action server used in [`Self::expose`].
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         to_node_name: &str,
+        iface: Iface,
         to_action_name: &str,
-        target_core_instance_id: Option<&str>,
-        target_instance_id: Option<&str>,
+        to_core_node: Option<&str>,
+        to_instance_id: Option<&str>,
         user_payload: Payload,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
         let goal_id = generate_goal_id();
         let goal_payload = wrap_goal_payload(&goal_id, user_payload.as_ref())?;
-        let feedback_topic = {
-            let sender_core_node = target_core_instance_id.unwrap_or("*");
-            match target_instance_id {
-                Some(target_instance_id) => {
-                    format!(
-                        "{as_core_node}/{sender_core_node}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}/{goal_id}"
-                    )
-                }
-                None => format!(
-                    "{as_core_node}/{sender_core_node}/{as_instance_id}/*/action/{to_node_name}/{to_action_name}/feedback/*/{goal_id}"
-                ),
-            }
-        };
-        let goal_service_name = format!("{to_action_name}/goal");
 
-        let feedback_subscription = {
-            let messenger = messenger.messenger.lock().await;
-            messenger
-                .subscribe(&feedback_topic, feedback_qos.into())
-                .await
-        }
-        .map_err(Error::PeppyMessagingInterface)?;
+        let sender = ActionWireSender::new(
+            as_core_node,
+            as_instance_id,
+            to_core_node,
+            to_instance_id,
+            to_node_name,
+            iface,
+            to_action_name,
+        )?;
+
+        let feedback_subscription = messenger
+            .subscribe_action_feedback(&sender, &goal_id, feedback_qos.into())
+            .await?;
 
         let goal_response = messenger
-            .poll_service(
-                "action",
-                as_core_node,
-                as_instance_id,
-                to_node_name,
-                &goal_service_name,
-                target_core_instance_id,
-                target_instance_id,
-                goal_payload,
-                goal_timeout,
-            )
+            .poll_service(&sender.goal_service(), goal_payload, goal_timeout)
             .await?;
 
         Ok(ActionGoalHandle {
-            core_node: as_core_node.to_string(),
-            instance_id: as_instance_id.to_string(),
-            node_name: to_node_name.to_string(),
-            action_name: to_action_name.to_string(),
-            target_core_node: target_core_instance_id.map(|name| name.to_string()),
-            target_instance_id: target_instance_id.map(|id| id.to_string()),
+            sender,
             goal_id,
             goal_response,
             feedback: Subscription::new(feedback_subscription),
@@ -402,47 +381,20 @@ impl ActionMessenger {
         action_handle: &ActionGoalHandle,
         cancel_timeout: Duration,
     ) -> Result<Message> {
-        Self::cancel_goal_with(
-            messenger_handle,
-            &action_handle.core_node,
-            &action_handle.instance_id,
-            &action_handle.node_name,
-            &action_handle.action_name,
-            action_handle.target_core_node.as_deref(),
-            action_handle.target_instance_id.as_deref(),
-            cancel_timeout,
-        )
-        .await
+        Self::cancel_with_sender(messenger_handle, &action_handle.sender, cancel_timeout).await
     }
 
-    /// Like [`cancel_goal`](Self::cancel_goal) but accepts individual fields,
-    /// allowing callers to avoid holding a lock on the goal handle during the
-    /// network round-trip.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn cancel_goal_with(
+    /// Like [`cancel_goal`](Self::cancel_goal) but takes a cloned sender
+    /// directly. External wrappers (e.g. Python bindings) hold a clone so
+    /// they can cancel without locking the goal handle during the network
+    /// round-trip.
+    pub async fn cancel_with_sender(
         messenger_handle: &MessengerHandle,
-        core_node: &str,
-        instance_id: &str,
-        node_name: &str,
-        action_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        sender: &ActionWireSender,
         cancel_timeout: Duration,
     ) -> Result<Message> {
-        let cancel_service_name = format!("{action_name}/cancel");
-
         messenger_handle
-            .poll_service(
-                "action",
-                core_node,
-                instance_id,
-                node_name,
-                &cancel_service_name,
-                target_core_node,
-                target_instance_id,
-                Payload::new(),
-                cancel_timeout,
-            )
+            .poll_service(&sender.cancel_service(), Payload::new(), cancel_timeout)
             .await
     }
 
@@ -451,59 +403,36 @@ impl ActionMessenger {
         action_handle: &ActionGoalHandle,
         result_timeout: Duration,
     ) -> Result<Message> {
-        Self::request_result_with(
-            messenger_handle,
-            &action_handle.core_node,
-            &action_handle.instance_id,
-            &action_handle.node_name,
-            &action_handle.action_name,
-            action_handle.target_core_node.as_deref(),
-            action_handle.target_instance_id.as_deref(),
-            result_timeout,
-        )
-        .await
+        Self::request_result_with_sender(messenger_handle, &action_handle.sender, result_timeout)
+            .await
     }
 
-    /// Like [`request_result`](Self::request_result) but accepts individual
-    /// fields, allowing callers to avoid holding a lock on the goal handle
-    /// during the network round-trip.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn request_result_with(
+    /// Like [`request_result`](Self::request_result) but takes a cloned sender
+    /// directly. Mirrors [`cancel_with_sender`](Self::cancel_with_sender).
+    pub async fn request_result_with_sender(
         messenger_handle: &MessengerHandle,
-        core_node: &str,
-        instance_id: &str,
-        node_name: &str,
-        action_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        sender: &ActionWireSender,
         result_timeout: Duration,
     ) -> Result<Message> {
-        let result_service_name = format!("{action_name}/result");
-
+        let action_name = sender.to_action_name().to_string();
         messenger_handle
-            .poll_service(
-                "action",
-                core_node,
-                instance_id,
-                node_name,
-                &result_service_name,
-                target_core_node,
-                target_instance_id,
-                Payload::new(),
-                result_timeout,
-            )
+            .poll_service(&sender.result_service(), Payload::new(), result_timeout)
             .await
-            .map_err(|err| match err {
-                Error::ServiceTimeout { instance_id, .. } => Error::ActionResultTimeout {
-                    instance_id,
-                    action_name: action_name.to_string(),
-                },
-                Error::ServiceUnreachable { instance_id, .. } => Error::ActionResultUnreachable {
-                    instance_id,
-                    action_name: action_name.to_string(),
-                },
-                other => other,
-            })
+            .map_err(|err| Self::map_result_error(err, &action_name))
+    }
+
+    fn map_result_error(err: Error, action_name: &str) -> Error {
+        match err {
+            Error::ServiceTimeout { instance_id, .. } => Error::ActionResultTimeout {
+                instance_id,
+                action_name: action_name.to_string(),
+            },
+            Error::ServiceUnreachable { instance_id, .. } => Error::ActionResultUnreachable {
+                instance_id,
+                action_name: action_name.to_string(),
+            },
+            other => other,
+        }
     }
 }
 

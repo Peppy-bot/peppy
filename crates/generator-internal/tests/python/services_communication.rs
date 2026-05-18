@@ -89,7 +89,7 @@ const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 "#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_no_target_instance_id() {
+async fn services_communication_no_to_instance_id() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -174,7 +174,9 @@ if __name__ == "__main__":
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service).unwrap();
+    generator
+        .add_exposed_service(&exposed_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -258,7 +260,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn exposer first so it's ready to handle requests
@@ -479,7 +481,9 @@ if __name__ == "__main__":
         serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service).unwrap();
+    generator
+        .add_exposed_service(&exposed_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -548,7 +552,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn exposer first so it's ready to handle requests
@@ -682,7 +686,7 @@ if __name__ == "__main__":
 
 /// If there are multiple services of the same name and the consumer does not specify an instance_id, it's the first service that responds that connects with the consumer
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_multiple_exposed_instances_same_service_not_target_instance_id() {
+async fn services_communication_multiple_exposed_instances_same_service_not_to_instance_id() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -767,7 +771,9 @@ if __name__ == "__main__":
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer1, user_node_exposer1, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer1, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service).unwrap();
+    generator
+        .add_exposed_service(&exposed_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
     generator
         .build(&output_dir_exposer1, &test_peppy_dirs(), Default::default())
@@ -832,7 +838,9 @@ if __name__ == "__main__":
     let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer2, user_node_exposer2, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer2, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service2).unwrap();
+    generator
+        .add_exposed_service(&exposed_service2, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator
         .build(&output_dir_exposer2, &test_peppy_dirs(), Default::default())
@@ -910,7 +918,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn both exposers first so they're ready to handle requests

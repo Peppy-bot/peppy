@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from peppylib import ServiceMessenger
+from peppylib import Iface, ServiceMessenger
 
 TEST_NODE_NAME = "test_node"
 TEST_INSTANCE_ID = "test_instance"
@@ -90,10 +90,10 @@ async def wait_for_service(
             bound_core_node,
             as_instance_id,
             target_node_name,
+            Iface.native(),  # iface
             service_name,
             target_core_node,
-            target_instance_id,
-        ):
+            target_instance_id,):
             return
 
         if asyncio.get_event_loop().time() >= deadline:

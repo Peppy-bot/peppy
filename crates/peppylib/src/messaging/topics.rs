@@ -2,7 +2,7 @@ use super::MessengerHandle;
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
-use pmi::MessengerPublisher;
+use pmi::{Iface, MessengerPublisher, TopicWireReceiver, TopicWireSender};
 use std::sync::Arc;
 
 pub struct Subscription {
@@ -32,104 +32,105 @@ impl Subscription {
 pub struct TopicMessenger;
 
 impl TopicMessenger {
+    /// Subscribe to a topic published by a specific node. `iface` must match
+    /// the iface segments the publisher used in [`Self::emit`].
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
-        to_node_name: &str,
+        from_node_name: &str,
+        iface: Iface,
         to_topic: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        from_core_node: Option<&str>,
+        from_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let subscription = messenger
-            .subscribe_to_topic(
-                as_core_node,
-                as_instance_id,
-                to_node_name,
-                to_topic,
-                target_core_node,
-                target_instance_id,
-                qos,
-            )
-            .await?;
+        let recv = TopicWireReceiver::new(
+            as_core_node,
+            as_instance_id,
+            from_core_node,
+            from_instance_id,
+            Some(from_node_name),
+            iface,
+            to_topic,
+        )?;
+        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription))
     }
 
     /// Consumes a topic from any node (external/unlinked topics).
     ///
-    /// Unlike [`subscribe`], this does not target a specific publisher node.
-    /// Internally uses a wildcard for the node name, so messages from any
-    /// node publishing on the given topic will be received.
+    /// Unlike [`subscribe`], this does not target a specific publisher node
+    /// or iface. The transport translates `None` and [`Iface::wildcard`] into
+    /// its match-any segments at the wire layer.
     pub async fn consume_external(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         to_topic: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        from_core_node: Option<&str>,
+        from_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let subscription = messenger
-            .subscribe_to_topic(
-                as_core_node,
-                as_instance_id,
-                "*",
-                to_topic,
-                target_core_node,
-                target_instance_id,
-                qos,
-            )
-            .await?;
+        let recv = TopicWireReceiver::new(
+            as_core_node,
+            as_instance_id,
+            from_core_node,
+            from_instance_id,
+            None,
+            Iface::wildcard(),
+            to_topic,
+        )?;
+        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription))
     }
 
     /// Publishes a payload to a topic on the specified core node.
+    #[allow(clippy::too_many_arguments)]
     pub async fn emit(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
+        iface: Iface,
         as_topic_name: &str,
         qos: QoSProfile,
         payload: Payload,
     ) -> Result<()> {
-        messenger
-            .emit_topic_message(
-                as_core_node,
-                as_instance_id,
-                as_node_name,
-                as_topic_name,
-                qos,
-                payload,
-            )
-            .await
+        let sender = TopicWireSender::new(
+            as_core_node,
+            as_instance_id,
+            as_node_name,
+            iface,
+            as_topic_name,
+        )?;
+        messenger.emit_topic_message(&sender, qos, payload).await
     }
 
-    /// Pre-binds a topic publisher to a fixed key + QoS, bypassing the
-    /// central `Messenger` mutex on every subsequent publish. Use this in
-    /// publish loops (per-tick clock ticks, action feedback streams); use
-    /// [`emit`] for one-shot publishes where the per-call setup is in the
-    /// noise.
-    ///
-    /// The key follows the same `*/<core_node>/*/<instance>/topic/<node>/<topic>`
-    /// shape as [`MessengerHandle::emit_topic_message`] — keep this in sync if
-    /// that format changes.
+    /// Pre-binds a topic publisher, bypassing the central `Messenger` mutex
+    /// on every subsequent publish. Use this in publish loops; use [`emit`]
+    /// for one-shot publishes.
     pub async fn declare_publisher(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
+        iface: Iface,
         as_topic_name: &str,
         qos: QoSProfile,
     ) -> Result<TopicPublisher> {
-        let topic =
-            format!("*/{as_core_node}/*/{as_instance_id}/topic/{as_node_name}/{as_topic_name}");
+        let sender = TopicWireSender::new(
+            as_core_node,
+            as_instance_id,
+            as_node_name,
+            iface,
+            as_topic_name,
+        )?;
         let inner = messenger
-            .declare_publisher(topic.clone(), qos.into())
+            .declare_topic_publisher(&sender, qos.into())
             .await?;
-        Ok(TopicPublisher::new(Arc::new(inner), topic))
+        Ok(TopicPublisher::new(Arc::new(inner)))
     }
 }
 
@@ -144,16 +145,11 @@ impl TopicMessenger {
 #[derive(Clone)]
 pub struct TopicPublisher {
     inner: Arc<MessengerPublisher>,
-    topic: String,
 }
 
 impl TopicPublisher {
-    pub(crate) fn new(inner: Arc<MessengerPublisher>, topic: String) -> Self {
-        Self { inner, topic }
-    }
-
-    pub fn topic(&self) -> &str {
-        &self.topic
+    pub(crate) fn new(inner: Arc<MessengerPublisher>) -> Self {
+        Self { inner }
     }
 
     pub async fn publish(&self, payload: Payload) -> Result<()> {

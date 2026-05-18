@@ -12,6 +12,7 @@ use core_node_api::encoding::{
 use futures::FutureExt;
 use node_stack::{BuildContext, NodeStack};
 use parking_lot::Mutex as StdMutex;
+use peppylib::messaging::Iface;
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
@@ -37,6 +38,7 @@ pub async fn listen_for_node_build(
         core_node_name,
         instance_id,
         node_name,
+        Iface::native(),
         names::NODE_BUILD_ACTION,
     )
     .await?;

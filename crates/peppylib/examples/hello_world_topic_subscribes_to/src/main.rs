@@ -1,6 +1,7 @@
 use config::consts::DEFAULT_MESSAGING_PORT;
 use config::node::QoSProfile;
 use names_generator2::get_random;
+use peppylib::messaging::Iface;
 use peppylib::{MessengerHandle, TopicMessenger};
 use rand::rng;
 use tokio::signal;
@@ -29,6 +30,7 @@ async fn main() {
         &core_node,
         &instance_id,
         node_name,
+        Iface::native(),
         topic_name,
         None,
         None,
@@ -52,10 +54,9 @@ async fn main() {
                         let payload = String::from_utf8_lossy(payload_bytes.as_ref());
                         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
                         println!(
-                            "[{timestamp}] Received `{payload}` from instance_id `{}` and core_node `{}` with key_expr `{}`",
+                            "[{timestamp}] Received `{payload}` from instance_id `{}` and core_node `{}`",
                             received.instance_id(),
                             received.core_node(),
-                            received.key_expr()
                         );
                     }
                     None => {

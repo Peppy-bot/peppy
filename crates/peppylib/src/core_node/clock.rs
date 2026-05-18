@@ -193,6 +193,7 @@ pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
         processor.bound_core_node(),
         processor.bound_instance_id(),
         core_node,
+        crate::messaging::Iface::native(),
         names::CLOCK,
         Some(core_node),
         None,

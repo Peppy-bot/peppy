@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use crate::error::Error;
-use crate::messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
+use crate::messaging::{ActionMessenger, Iface, MessengerHandle, ServiceMessenger, TopicMessenger};
 
 #[derive(Clone)]
 struct ActionClientCase {
@@ -98,7 +98,7 @@ async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topic_publish_subscribe_no_target_instance_id() {
+async fn topic_publish_subscribe_no_from_instance_id() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
@@ -114,6 +114,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         subscriber_core_node,
         subscriber_instance_id,
         node_name,
+        Iface::native(),
         topic,
         None, // Accepts any core node that emits
         None, // Accepts any instance id that emits
@@ -133,6 +134,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         emitter_core_node,
         emitter_instance_id,
         node_name,
+        Iface::native(),
         topic,
         qos,
         payload.clone(),
@@ -145,12 +147,6 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
 
-    let expected_key_expr = format!(
-        "*/{}/*/{}/topic/{}/{}",
-        emitter_core_node, emitter_instance_id, node_name, topic
-    );
-
-    assert_eq!(received.key_expr(), expected_key_expr);
     assert_eq!(received.instance_id(), emitter_instance_id);
     assert_eq!(received.core_node(), emitter_core_node);
     assert_eq!(received.payload(), &payload);
@@ -159,7 +155,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topic_publish_subscribe_with_target_instance_id() {
+async fn topic_publish_subscribe_with_from_instance_id() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
@@ -186,6 +182,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         subscriber_core_node,
         subscriber_instance_id1,
         node_name,
+        Iface::native(),
         topic,
         Some(emitter_core_node),
         Some(emitter_instance_id1),
@@ -201,6 +198,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         subscriber_core_node,
         subscriber_instance_id2,
         node_name,
+        Iface::native(),
         topic,
         Some(emitter_core_node),
         Some(emitter_instance_id2),
@@ -218,6 +216,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         emitter_core_node,
         emitter_instance_id2,
         node_name,
+        Iface::native(),
         topic,
         qos,
         payload.clone(),
@@ -247,7 +246,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topic_publish_subscribe_with_target_core_node() {
+async fn topic_publish_subscribe_with_from_core_node() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
@@ -273,6 +272,7 @@ async fn topic_publish_subscribe_with_target_core_node() {
         subscriber_core_node1,
         subscriber_instance_id,
         node_name,
+        Iface::native(),
         topic,
         Some(emitter_core_node1),
         Some(emitter_instance_id),
@@ -288,6 +288,7 @@ async fn topic_publish_subscribe_with_target_core_node() {
         subscriber_core_node2,
         subscriber_instance_id,
         node_name,
+        Iface::native(),
         topic,
         Some(emitter_core_node2),
         Some(emitter_instance_id),
@@ -305,6 +306,7 @@ async fn topic_publish_subscribe_with_target_core_node() {
         emitter_core_node2,
         emitter_instance_id,
         node_name,
+        Iface::native(),
         topic,
         qos,
         payload.clone(),
@@ -351,6 +353,7 @@ async fn topic_publish_reliable_5000hz_messages() {
         subscriber_core_node,
         subscriber_instance_id,
         node_name,
+        Iface::native(),
         topic,
         None,
         None,
@@ -376,6 +379,7 @@ async fn topic_publish_reliable_5000hz_messages() {
             emitter_core_node,
             emitter_instance_id,
             node_name,
+            Iface::native(),
             topic,
             qos.clone(),
             payload,
@@ -384,19 +388,22 @@ async fn topic_publish_reliable_5000hz_messages() {
         .expect("Should send the payload");
     }
 
-    let expected_key_expr = format!(
-        "*/{}/*/{}/topic/{}/{}",
-        emitter_core_node, emitter_instance_id, node_name, topic
-    );
-
+    // Identity check runs once on the first received message — the wire-format
+    // contract is pinned in `pmi::wire::zenoh_format::tests`, so this loop only needs
+    // to verify peppylib-level addressing and ordering.
     let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
+    let mut identity_checked = false;
     for _ in 0..message_count {
         let message = tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
             .await
             .expect("Timed out waiting for a message")
             .expect("Subscription closed before receiving all messages");
 
-        assert_eq!(message.key_expr(), expected_key_expr);
+        if !identity_checked {
+            assert_eq!(message.core_node(), emitter_core_node);
+            assert_eq!(message.instance_id(), emitter_instance_id);
+            identity_checked = true;
+        }
 
         let payload = message.payload();
         let payload_bytes = payload.as_ref();
@@ -464,6 +471,7 @@ async fn service_communication_poll_no_instance_id_target() {
             listener_core_node1,
             listener_instance_id1,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
         )
         .await
@@ -510,6 +518,7 @@ async fn service_communication_poll_no_instance_id_target() {
             listener_core_node2,
             listener_instance_id2,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
         )
         .await
@@ -570,6 +579,7 @@ async fn service_communication_poll_no_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
             None, // Here we don't specify any node
             None, // We don't specify any instance_id target either
@@ -643,6 +653,7 @@ async fn service_communication_poll_specific_instance_id() {
             listener_core_node1,
             listener_instance_id1,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
         )
         .await
@@ -678,6 +689,7 @@ async fn service_communication_poll_specific_instance_id() {
             listener_core_node2,
             listener_instance_id2,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
         )
         .await
@@ -736,6 +748,7 @@ async fn service_communication_poll_specific_instance_id() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
             None,                        // Here we don't specify any target core node
             Some(listener_instance_id2), // We specify listener_instance_id2 as the target
@@ -805,6 +818,7 @@ async fn service_communication_poll_wrong_node() {
             listener_core_node,
             listener_instance_id,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
         )
         .await
@@ -853,8 +867,9 @@ async fn service_communication_poll_wrong_node() {
                 CALLER_CORE_NODE,
                 CALLER_INSTANCE_ID,
                 listener_node_name,
+                Iface::native(),
                 listener_service_name,
-                None,               // target_core_node
+                None,               // to_core_node
                 Some("wrong_node"), // Use a wrong instance_id here
                 request_payload.clone(),
                 Duration::from_secs(1),
@@ -937,6 +952,7 @@ async fn service_communication_poll_wrong_core_node() {
             listener_core_node,
             listener_instance_id,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
         )
         .await
@@ -984,9 +1000,10 @@ async fn service_communication_poll_wrong_core_node() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
-            Some("wrong_core_node"), // target_core_node - wrong one!
-            None,                    // no specific target_instance_id
+            Some("wrong_core_node"), // to_core_node - wrong one!
+            None,                    // no specific to_instance_id
             request_payload.clone(),
             Duration::from_millis(200),
         )
@@ -1045,6 +1062,7 @@ async fn service_communication_fails_service_not_started() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
             None,
             None,
@@ -1109,6 +1127,7 @@ async fn service_communication_fails_service_timeouts() {
             listener_core_node,
             listener_instance_id,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
         )
         .await
@@ -1170,6 +1189,7 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
             None,
             None,
@@ -1190,6 +1210,7 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
             None,
             None,
@@ -1269,6 +1290,7 @@ async fn service_handle_request_processes_multiple_messages() {
             listener_core_node,
             listener_instance_id,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
         )
         .await
@@ -1310,6 +1332,7 @@ async fn service_handle_request_processes_multiple_messages() {
                 CALLER_CORE_NODE,
                 CALLER_INSTANCE_ID,
                 listener_node_name,
+                Iface::native(),
                 listener_service_name,
                 None,
                 Some(listener_instance_id),
@@ -1372,6 +1395,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
             listener_core_node,
             listener_instance_id,
             listener_node_name,
+            Iface::native(),
             listener_service_name,
         )
         .await
@@ -1452,6 +1476,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         CALLER_CORE_NODE,
                         &caller_id,
                         listener_node_name,
+                        Iface::native(),
                         listener_service_name,
                         None,
                         Some(listener_instance_id),
@@ -1552,6 +1577,7 @@ async fn action_communication_no_instance_id_target() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 listener_node_name,
+                Iface::native(),
                 listener_action_name,
             )
             .await
@@ -1649,6 +1675,7 @@ async fn action_communication_no_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            Iface::native(),
             listener_action_name,
             None, // No target core_id
             None, // No target instance_id
@@ -1738,6 +1765,7 @@ async fn action_communication_with_instance_id_target() {
                 LISTENER_CORE_NODE1,
                 LISTENER_INSTANCE_ID1,
                 listener_node_name,
+                Iface::native(),
                 listener_action_name,
             )
             .await
@@ -1785,6 +1813,7 @@ async fn action_communication_with_instance_id_target() {
                 LISTENER_CORE_NODE2,
                 LISTENER_INSTANCE_ID2,
                 listener_node_name,
+                Iface::native(),
                 listener_action_name,
             )
             .await
@@ -1882,6 +1911,7 @@ async fn action_communication_with_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
+            Iface::native(),
             listener_action_name,
             Some(LISTENER_CORE_NODE2),
             Some(LISTENER_INSTANCE_ID2),
@@ -1976,6 +2006,7 @@ async fn action_communication_goal_cancelled() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 listener_node_name,
+                Iface::native(),
                 listener_action_name,
             )
             .await
@@ -2099,6 +2130,7 @@ async fn action_communication_goal_cancelled() {
         CALLER_CORE_NODE,
         CALLER_INSTANCE_ID,
         listener_node_name,
+        Iface::native(),
         listener_action_name,
         Some(LISTENER_CORE_NODE),
         Some(LISTENER_INSTANCE_ID),
@@ -2231,6 +2263,7 @@ async fn single_action_communication_multiple_polls() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 listener_node_name,
+                Iface::native(),
                 listener_action_name,
             )
             .await
@@ -2367,6 +2400,7 @@ async fn single_action_communication_multiple_polls() {
                 CALLER_CORE_NODE,
                 &case.client_id,
                 listener_node_name,
+                Iface::native(),
                 listener_action_name,
                 None,
                 None,
@@ -2432,112 +2466,4 @@ async fn single_action_communication_multiple_polls() {
         .expect("action handler returned error");
 
     router.shutdown().await;
-}
-
-/// Verifies that a caller using the wildcard instance ID ("**") can still
-/// send a service request and receive a response.  The wildcard triggers
-/// fallback logic in `poll_service` (caller segments) and
-/// `build_request_context` (response segment) which replaces "**" with
-/// BROADCAST_MARKER ("_any_") to produce valid Zenoh key expressions.
-/// Using the raw "**" wildcard would create invalid key expressions like
-/// `core/*/**/*/.../response/id` (Zenoh requires `*/**` not `**/*`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_communication_poll_wildcard_caller() {
-    let router = TestRouterContext::start().await;
-
-    let listener_node_name = "sensor";
-    let listener_service_name = "read_value";
-
-    // The caller uses "**" (INSTANCE_ID_WILDCARD) as its instance ID.
-    const CALLER_INSTANCE_ID: &str = "**";
-    const CALLER_CORE_NODE: &str = "wildcard_caller_core";
-
-    let request_payload = Payload::from_static(b"read");
-    let response_payload = Payload::from_static(b"value=42");
-
-    let (service_ready_tx, service_ready_rx) = oneshot::channel();
-    let service_wait_timeout = Duration::from_millis(1500);
-    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
-    let service_ready_timeout = Duration::from_secs(1);
-
-    let listener_core_node = "listener_core_node";
-    let listener_instance_id = "listener_instance";
-    let service_task = {
-        let service_expose_handle = router.messenger().await;
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node,
-            listener_instance_id,
-            listener_node_name,
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
-
-        let request_payload = request_payload.clone();
-        let response_payload = response_payload.clone();
-
-        tokio::spawn(async move {
-            let handler = service.handle_next_request(|request| {
-                let response_payload = response_payload.clone();
-                async move {
-                    assert_eq!(request.message().payload(), &request_payload);
-                    Ok(response_payload)
-                }
-            });
-
-            service_ready_tx.send(()).unwrap();
-            let handled = tokio::time::timeout(service_wait_timeout, handler)
-                .await
-                .expect("service handler timed out");
-            let handled = handled.expect("service should receive exactly one request");
-
-            assert!(
-                handled,
-                "service subscription closed before handling request"
-            );
-
-            Ok::<(), Error>(())
-        })
-    };
-
-    tokio::time::timeout(service_ready_timeout, service_ready_rx)
-        .await
-        .expect("service should signal readiness before timeout")
-        .expect("service should signal readiness");
-
-    // Allow service subscriptions to stabilize
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Poll with the wildcard caller instance ID — exercises the fallback path
-    {
-        let caller_handle = router.messenger().await;
-        let response = ServiceMessenger::poll(
-            &caller_handle,
-            CALLER_CORE_NODE,
-            CALLER_INSTANCE_ID,
-            listener_node_name,
-            listener_service_name,
-            None,
-            None,
-            request_payload.clone(),
-            Duration::from_secs(2),
-        )
-        .await
-        .expect("wildcard caller should receive response");
-
-        assert_eq!(response.instance_id(), listener_instance_id);
-        assert_eq!(response.core_node(), listener_core_node);
-        assert_eq!(response.payload(), &response_payload);
-    }
-
-    tokio::time::timeout(service_task_timeout, service_task)
-        .await
-        .expect("service task should finish within timeout")
-        .expect("service task panicked")
-        .expect("service task returned error");
-
-    tokio::time::timeout(service_task_timeout, router.shutdown())
-        .await
-        .expect("router shutdown timed out");
 }

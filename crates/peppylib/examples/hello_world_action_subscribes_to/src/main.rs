@@ -6,6 +6,7 @@ use peppylib::{ActionMessenger, MessengerHandle, Payload, PeppyError};
 use rand::rng;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
+use peppylib::messaging::Iface;
 
 const NODE_NAME: &str = "hello_node";
 const ACTION_NAME: &str = "hello_action";
@@ -77,6 +78,7 @@ async fn main() {
         &core_node_name,
         &as_instance_id,
         NODE_NAME,
+        Iface::native(),
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found
@@ -84,6 +86,7 @@ async fn main() {
         QoSProfile::Reliable,
         GOAL_TIMEOUT,
     )
+
     .await
     .expect("Action goal should succeed");
 
@@ -128,6 +131,7 @@ async fn main() {
         &core_node_name,
         &as_instance_id,
         NODE_NAME,
+        Iface::native(),
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found
@@ -135,6 +139,7 @@ async fn main() {
         QoSProfile::Reliable,
         GOAL_TIMEOUT,
     )
+
     .await
     .expect("Cancellable action goal should succeed");
 

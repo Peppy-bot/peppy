@@ -1,4 +1,5 @@
 use super::*;
+use peppylib::messaging::Iface;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents() {
@@ -517,6 +518,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         &started_core_node.core_node_name,
+        Iface::native(),
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,
@@ -668,6 +670,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         &started_core_node.core_node_name,
         INSTANCE_1,
         NODE_NAME,
+        Iface::native(),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -701,6 +704,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         &started_core_node.core_node_name,
         INSTANCE_2,
         NODE_NAME,
+        Iface::native(),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -775,7 +779,9 @@ async fn node_add_same_node_shutdown_existing_instances() {
     )
     .expect("write v2 marker");
 
-    // Use wildcard caller IDs so mock pub/sub can match feedback topics with "*" segments.
+    // The server wildcards the caller-side positions of its feedback publish
+    // keyexpr, so a concrete caller still receives feedback over a real
+    // messenger (the mock adapter just doesn't deliver feedback).
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
 
     let caller_handle = started_core_node.caller_handle.clone();
@@ -977,6 +983,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         &started_core_node.core_node_name,
         INSTANCE_ID,
         DEPENDENCY_NODE_NAME,
+        Iface::native(),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -1190,6 +1197,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         &started_core_node.core_node_name,
         INSTANCE_ID,
         DEPENDENCY_NODE_NAME,
+        Iface::native(),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -1418,6 +1426,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         &started_core_node.core_node_name,
         INSTANCE_ID,
         DEPENDENCY_NODE_NAME,
+        Iface::native(),
         SHUTDOWN_SERVICE,
     )
     .await

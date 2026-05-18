@@ -111,10 +111,12 @@ pub fn build_topic_emit(
     encoding: Option<&MessageEncodingSpec>,
     topic: &EmittedTopic,
     label: &str,
+    origin: Option<&crate::generator::types::InterfaceOrigin>,
 ) -> TokenStream {
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
     let label_literal = Literal::string(label);
+    let iface_expr = iface_expression(origin);
 
     build_emit_method(EmitMethodSpec {
         method_name: method_ident,
@@ -133,6 +135,7 @@ pub fn build_topic_emit(
                 with_core_node,
                 as_instance_id,
                 as_node_name,
+                #iface_expr,
                 as_topic,
                 qos,
                 payload,
@@ -142,6 +145,22 @@ pub fn build_topic_emit(
         error_context: quote!(String::from(#label_literal)),
         suppress_unused: vec![quote!(let _ = node_runner;)],
     })
+}
+
+/// Returns the `Iface` constructor expression to splice into a generated
+/// `emit`/`subscribe` call: `peppylib::messaging::Iface::native()` for native
+/// artifacts, or `Iface::new(name, tag)?` for those pulled in via
+/// `interfaces.conforms_to`. The `?` is required because `Iface::new` is
+/// fallible — it validates segments at construction.
+pub fn iface_expression(origin: Option<&crate::generator::types::InterfaceOrigin>) -> TokenStream {
+    match origin {
+        Some(o) => {
+            let name = Literal::string(&o.iface_name);
+            let tag = Literal::string(&o.iface_tag);
+            quote!(peppylib::messaging::Iface::new(#name, #tag)?)
+        }
+        None => quote!(peppylib::messaging::Iface::native()),
+    }
 }
 
 pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<TokenStream> {
@@ -170,8 +189,8 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
-            target_core_node: Option<&str>,
-            target_instance_id: Option<&str>,
+            from_core_node: Option<&str>,
+            from_instance_id: Option<&str>,
         ) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let node_name = #node_name_literal;
@@ -183,9 +202,10 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     node_name,
+                    peppylib::messaging::Iface::wildcard(),
                     topic_name,
-                    target_core_node,
-                    target_instance_id,
+                    from_core_node,
+                    from_instance_id,
                     qos,
                 );
                 let mut subscription = subscription_future.await.map_err(|source| {
@@ -250,8 +270,8 @@ pub fn build_external_consumed_topic_callback(
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
-            target_core_node: Option<&str>,
-            target_instance_id: Option<&str>,
+            from_core_node: Option<&str>,
+            from_instance_id: Option<&str>,
         ) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let qos = peppylib::config::QoSProfile::Standard;
@@ -262,8 +282,8 @@ pub fn build_external_consumed_topic_callback(
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     topic_name,
-                    target_core_node,
-                    target_instance_id,
+                    from_core_node,
+                    from_instance_id,
                     qos,
                 );
                 let mut subscription = subscription_future.await.map_err(|source| {

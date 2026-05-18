@@ -14,7 +14,7 @@ use core_node_api::encoding::{
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
-use peppylib::messaging::{MessengerHandle, TopicMessenger};
+use peppylib::messaging::{Iface, MessengerHandle, TopicMessenger};
 use peppylib::runtime::{TaskHandle, spawn};
 use peppylib::{ActionMessenger, PeppyError, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
@@ -55,10 +55,10 @@ impl<T> Drop for AbortOnDrop<T> {
 pub async fn wait_until_service_reachable(
     messenger: &MessengerHandle,
     bound_core_node: &str,
-    target_node_name: &str,
-    target_service_name: &str,
-    target_core_node: &str,
-    target_instance_id: &str,
+    to_node_name: &str,
+    to_service_name: &str,
+    to_core_node: &str,
+    to_instance_id: &str,
     timeout: Duration,
 ) {
     use peppylib::messaging::ServiceMessenger;
@@ -68,10 +68,11 @@ pub async fn wait_until_service_reachable(
             messenger,
             bound_core_node,
             "ready_probe",
-            target_node_name,
-            target_service_name,
-            Some(target_core_node),
-            Some(target_instance_id),
+            to_node_name,
+            peppylib::messaging::Iface::native(),
+            to_service_name,
+            Some(to_core_node),
+            Some(to_instance_id),
         )
         .await
         {
@@ -79,8 +80,8 @@ pub async fn wait_until_service_reachable(
         }
         if std::time::Instant::now() >= deadline {
             panic!(
-                "service {target_node_name}/{target_service_name} on \
-                 {target_core_node}/{target_instance_id} did not become \
+                "service {to_node_name}/{to_service_name} on \
+                 {to_core_node}/{to_instance_id} did not become \
                  reachable within {timeout:?}"
             );
         }
@@ -103,6 +104,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         &started.core_node_name,
+        Iface::native(),
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -147,6 +149,7 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         caller_core_node,
         caller_instance_id,
         &started.core_node_name,
+        Iface::native(),
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -316,20 +319,16 @@ async fn send_node_run_and_wait_internal(
         timeouts.result.as_secs(),
     )
     .with_env_vars(env_vars);
-    let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
-        ("*", "*")
-    } else {
-        (core_node_name, CALLER_INSTANCE_ID)
-    };
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode goal: {}", e))?;
 
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
-        caller_core_node,
-        caller_instance_id,
         core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_name,
+        Iface::native(),
         names::NODE_RUN_ACTION,
         Some(core_node_name),
         None,
@@ -485,20 +484,16 @@ async fn send_node_add_and_wait_internal<'a>(
     .with_env_vars(env_vars)
     .with_force(force);
 
-    let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
-        ("*", "*")
-    } else {
-        (core_node_name, CALLER_INSTANCE_ID)
-    };
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode goal: {}", e))?;
 
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
-        caller_core_node,
-        caller_instance_id,
         core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_name,
+        Iface::native(),
         names::NODE_ADD_ACTION,
         Some(core_node_name),
         None,
@@ -614,16 +609,12 @@ pub async fn send_node_build_and_wait(
         .encode()
         .map_err(|e| format!("Failed to encode build goal: {}", e))?;
 
-    let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
-        ("*", "*")
-    } else {
-        (core_node_name, CALLER_INSTANCE_ID)
-    };
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
-        caller_core_node,
-        caller_instance_id,
         core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_name,
+        Iface::native(),
         names::NODE_BUILD_ACTION,
         Some(core_node_name),
         None,
@@ -720,9 +711,6 @@ pub async fn send_node_build_and_wait(
 
 /// Helper function to send a node_add goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
-///
-/// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
-/// can match feedback topics with "*" segments.
 pub async fn send_node_add_and_wait<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -945,9 +933,6 @@ pub async fn send_node_add_and_wait_with_force<'a>(
 
 /// Helper function to send a node_run goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
-///
-/// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
-/// can match feedback topics with "*" segments.
 pub async fn send_node_run_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,

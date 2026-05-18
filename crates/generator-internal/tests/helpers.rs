@@ -5,6 +5,7 @@ use config::consts::{
 };
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
+use peppylib::messaging::Iface;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::io::Read;
@@ -325,14 +326,14 @@ pub struct WaitContext<'a> {
     pub messenger: &'a MessengerHandle,
     pub bound_core_node: &'a str,
     pub caller_instance_id: &'a str,
-    pub target_core_node: Option<&'a str>,
+    pub to_core_node: Option<&'a str>,
 }
 
 pub async fn wait_for_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
-    target_node_name: &str,
-    target_service_name: &str,
-    target_instance_id: Option<&str>,
+    to_node_name: &str,
+    to_service_name: &str,
+    to_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
 ) {
@@ -346,7 +347,7 @@ pub async fn wait_for_service_reachable_or_exit(
             let stderr = String::from_utf8_lossy(&output.stderr);
             panic!(
                 "process exited before `{}` became reachable (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
-                target_service_name,
+                to_service_name,
                 status.code(),
                 dir.display(),
                 stdout,
@@ -358,18 +359,20 @@ pub async fn wait_for_service_reachable_or_exit(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
-            target_node_name,
-            target_service_name,
-            ctx.target_core_node,
-            target_instance_id,
+            to_node_name,
+            Iface::native(),
+            to_service_name,
+            ctx.to_core_node,
+            to_instance_id,
         )
+
         .await
         .unwrap_or_else(|err| {
             panic!(
                 "failed to check reachability for service `{}` (node={}, instance={:?}) for project at {}: {}",
-                target_service_name,
-                target_node_name,
-                target_instance_id,
+                to_service_name,
+                to_node_name,
+                to_instance_id,
                 dir.display(),
                 err
             )
@@ -385,9 +388,9 @@ pub async fn wait_for_service_reachable_or_exit(
 
 pub async fn wait_for_action_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
-    target_node_name: &str,
-    target_service_name: &str,
-    target_instance_id: Option<&str>,
+    to_node_name: &str,
+    to_action_name: &str,
+    to_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
 ) {
@@ -401,7 +404,7 @@ pub async fn wait_for_action_service_reachable_or_exit(
             let stderr = String::from_utf8_lossy(&output.stderr);
             panic!(
                 "process exited before action `{}` became reachable (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
-                target_service_name,
+                to_action_name,
                 status.code(),
                 dir.display(),
                 stdout,
@@ -413,18 +416,20 @@ pub async fn wait_for_action_service_reachable_or_exit(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
-            target_node_name,
-            target_service_name,
-            ctx.target_core_node,
-            target_instance_id,
+            to_node_name,
+            Iface::native(),
+            to_action_name,
+            ctx.to_core_node,
+            to_instance_id,
         )
+
         .await
         .unwrap_or_else(|err| {
             panic!(
                 "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
-                target_service_name,
-                target_node_name,
-                target_instance_id,
+                to_action_name,
+                to_node_name,
+                to_instance_id,
                 dir.display(),
                 err
             )
@@ -440,16 +445,16 @@ pub async fn wait_for_action_service_reachable_or_exit(
 
 pub async fn wait_for_shutdown_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
-    target_node_name: &str,
-    target_instance_id: &str,
+    to_node_name: &str,
+    to_instance_id: &str,
     child: &mut std::process::Child,
     dir: &std::path::Path,
 ) {
     wait_for_service_reachable_or_exit(
         ctx,
-        target_node_name,
+        to_node_name,
         SHUTDOWN_SERVICE,
-        Some(target_instance_id),
+        Some(to_instance_id),
         child,
         dir,
     )
@@ -458,16 +463,16 @@ pub async fn wait_for_shutdown_service_reachable_or_exit(
 
 pub async fn wait_for_health_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
-    target_node_name: &str,
-    target_instance_id: &str,
+    to_node_name: &str,
+    to_instance_id: &str,
     child: &mut std::process::Child,
     dir: &std::path::Path,
 ) {
     wait_for_service_reachable_or_exit(
         ctx,
-        target_node_name,
+        to_node_name,
         NODE_HEALTH_SERVICE,
-        Some(target_instance_id),
+        Some(to_instance_id),
         child,
         dir,
     )
@@ -478,9 +483,9 @@ pub async fn send_shutdown(
     messenger: &MessengerHandle,
     bound_core_node: &str,
     sender_instance_id: &str,
-    target_node_name: &str,
-    target_core_node: Option<&str>,
-    target_instance_id: &str,
+    to_node_name: &str,
+    to_core_node: Option<&str>,
+    to_instance_id: &str,
     timeout: Duration,
 ) {
     let payload = peppylib::types::Payload::from_static(b"shutdown");
@@ -488,10 +493,11 @@ pub async fn send_shutdown(
         messenger,
         bound_core_node,
         sender_instance_id,
-        target_node_name,
+        to_node_name,
+        Iface::native(),
         SHUTDOWN_SERVICE,
-        target_core_node,
-        Some(target_instance_id),
+        to_core_node,
+        Some(to_instance_id),
         payload,
         timeout,
     )
@@ -499,7 +505,7 @@ pub async fn send_shutdown(
     .unwrap_or_else(|err| {
         panic!(
             "failed to send shutdown to node={} instance={} (project core node={}): {}",
-            target_node_name, target_instance_id, bound_core_node, err
+            to_node_name, to_instance_id, bound_core_node, err
         )
     });
 }
@@ -510,9 +516,9 @@ pub async fn try_send_shutdown(
     messenger: &MessengerHandle,
     bound_core_node: &str,
     sender_instance_id: &str,
-    target_node_name: &str,
-    target_core_node: Option<&str>,
-    target_instance_id: &str,
+    to_node_name: &str,
+    to_core_node: Option<&str>,
+    to_instance_id: &str,
     timeout: Duration,
 ) {
     let payload = peppylib::types::Payload::from_static(b"shutdown");
@@ -520,10 +526,11 @@ pub async fn try_send_shutdown(
         messenger,
         bound_core_node,
         sender_instance_id,
-        target_node_name,
+        to_node_name,
+        Iface::native(),
         SHUTDOWN_SERVICE,
-        target_core_node,
-        Some(target_instance_id),
+        to_core_node,
+        Some(to_instance_id),
         payload,
         timeout,
     )

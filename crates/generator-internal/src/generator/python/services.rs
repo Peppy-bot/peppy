@@ -4,14 +4,33 @@ use super::deserialization;
 use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use crate::error::Result;
-use crate::generator::types::non_empty_message_format;
+use crate::generator::types::{InterfaceOrigin, non_empty_message_format};
 use config::node::{ConsumedService, ExposedService, MessageFormat};
+
+/// Returns the Python expression for the `Iface` value to splice into a
+/// generated `listen` / `poll` / `subscribe` / `emit` call:
+///   - native artifact         → `peppylib.Iface.native()`
+///   - `interfaces.conforms_to` → `peppylib.Iface.conformed("<name>", "<tag>")`
+///
+/// Consumer-side wildcard (`peppylib.Iface.wildcard()`) is emitted directly at
+/// the call site that needs it; this helper covers only the producer-known
+/// origin cases.
+pub(crate) fn iface_python_expr(origin: Option<&InterfaceOrigin>) -> String {
+    match origin {
+        Some(o) => format!(
+            "peppylib.Iface.conformed({:?}, {:?})",
+            o.iface_name, o.iface_tag
+        ),
+        None => String::from("peppylib.Iface.native()"),
+    }
+}
 
 /// Generates Python code for an exposed (handler) service.
 pub fn build_exposed_service(
     service: &ExposedService,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
+    origin: Option<&InterfaceOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
@@ -142,12 +161,14 @@ pub fn build_exposed_service(
         "async def handle_next_request(node_runner: peppylib.NodeRunner, handler: {handler_type}) -> None:"
     ));
     builder.indent();
+    let iface_expr = iface_python_expr(origin);
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("node_runner.node_name(),");
+    builder.line(&format!("{iface_expr},"));
     builder.line("SERVICE_NAME,");
     builder.dedent();
     builder.line(")");
@@ -239,7 +260,7 @@ pub fn build_consumed_service(
 
     // poll async function
     builder.add_import("import peppylib");
-    // Always needed: poll() signature uses Optional[str] for target_core_node/target_instance_id
+    // Always needed: poll() signature uses Optional[str] for to_core_node/to_instance_id
     builder.add_import("from typing import Optional");
     builder.blank_line();
 
@@ -253,11 +274,11 @@ pub fn build_consumed_service(
 
     let signature = if has_request {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None){return_type}:"
         )
     } else {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, timeout: float, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None){return_type}:"
         )
     };
     builder.line(&signature);
@@ -283,20 +304,25 @@ pub fn build_consumed_service(
         builder.line("request_payload = b\"\"");
     }
 
-    // Call peppylib.ServiceMessenger.poll
+    // Call peppylib.ServiceMessenger.poll. Consumer-side discovery of the
+    // producer's interface namespace is the follow-up PR; for now we use
+    // native since the deployment config doesn't record which interface a
+    // consumed service originates from.
     if has_response {
         builder.line("response_message = await peppylib.ServiceMessenger.poll(");
     } else {
         builder.line("await peppylib.ServiceMessenger.poll(");
     }
+    let iface_expr = iface_python_expr(None);
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("NODE_NAME,");
+    builder.line(&format!("{iface_expr},"));
     builder.line("SERVICE_NAME,");
-    builder.line("target_core_node,");
-    builder.line("target_instance_id,");
+    builder.line("to_core_node,");
+    builder.line("to_instance_id,");
     builder.line("request_payload,");
     builder.line("timeout,");
     builder.dedent();

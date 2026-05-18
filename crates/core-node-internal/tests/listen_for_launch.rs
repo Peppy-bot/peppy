@@ -19,6 +19,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 use crate::common::{TestPackagesCache, start_core_node_with_mock_messenger};
+use peppylib::messaging::Iface;
 
 struct NodeConfigOptions<'a> {
     build_cmd: &'a [&'a str],
@@ -350,6 +351,7 @@ async fn send_launch_origin_and_wait(
         core_node_name,
         CALLER_INSTANCE_ID,
         core_node_name,
+        Iface::native(),
         names::STACK_LAUNCH_ACTION,
         None,
         None,

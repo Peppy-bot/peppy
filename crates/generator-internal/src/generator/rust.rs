@@ -15,8 +15,8 @@ mod type_mapping;
 pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
-    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, LanguageGenerator,
-    cancel_action_response_format, non_empty_message_format,
+    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, InterfaceOrigin,
+    LanguageGenerator, cancel_action_response_format, non_empty_message_format, scoped_schema_key,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
@@ -62,6 +62,16 @@ pub struct RustGenerator {
 impl RustGenerator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn make_artifact(
+        &self,
+        leaf_name: &str,
+        origin: Option<&InterfaceOrigin>,
+        kind: InterfaceKind,
+        code_output: String,
+    ) -> InterfaceArtifact {
+        InterfaceArtifact::for_leaf(origin, leaf_name, kind, code_output)
     }
 
     /// Sets the node parameters for code generation.
@@ -251,12 +261,16 @@ impl RustGenerator {
             }
         };
 
+        // Consumer-side discovery of the producer's interface namespace is the
+        // follow-up PR; for now we use native (None).
+        let iface_expr = topics::iface_expression(None);
+
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
                 timeout: std::time::Duration,
-                target_core_node: Option<&str>,
-                target_instance_id: Option<&str>,
+                to_core_node: Option<&str>,
+                to_instance_id: Option<&str>,
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
             ) -> crate::Result<Self> {
@@ -267,9 +281,10 @@ impl RustGenerator {
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     TARGET_NODE_NAME,
+                    #iface_expr,
                     TARGET_ACTION_NAME,
-                    target_core_node,
-                    target_instance_id,
+                    to_core_node,
+                    to_instance_id,
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -495,7 +510,11 @@ impl SchemaInfo {
 }
 
 impl LanguageGenerator for RustGenerator {
-    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
+    fn add_emitted_topic(
+        &mut self,
+        topic: &EmittedTopic,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
 
@@ -511,8 +530,9 @@ impl LanguageGenerator for RustGenerator {
             &mut context,
             None,
         )?;
+        let scoped_key = scoped_schema_key(origin, &fn_name_str);
         let encoding = self.prepare_message_encoding(
-            &fn_name_str,
+            &scoped_key,
             &schema_prefix,
             format_artifacts.as_ref(),
             &params,
@@ -525,6 +545,7 @@ impl LanguageGenerator for RustGenerator {
             encoding.as_ref(),
             topic,
             &fn_name_str,
+            origin,
         );
 
         let tokens: TokenStream = quote! {
@@ -538,15 +559,20 @@ impl LanguageGenerator for RustGenerator {
             module_label = String::from("topic");
         }
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            origin,
             InterfaceKind::EmittedTopic,
             rendered,
         ));
         Ok(())
     }
 
-    fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
+    fn add_exposed_service(
+        &mut self,
+        service: &ExposedService,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let fn_name_str = fn_name.to_string();
         let struct_prefix = to_camel_case(&fn_name_str);
@@ -570,8 +596,9 @@ impl LanguageGenerator for RustGenerator {
             &mut context,
             Some(&generic_response_ident),
         )?;
+        let scoped_request_key = scoped_schema_key(origin, &fn_name_str);
         let encoding = self.prepare_message_encoding(
-            &fn_name_str,
+            &scoped_request_key,
             &struct_prefix,
             request_wire_artifacts.as_ref(),
             &wire_params,
@@ -599,7 +626,7 @@ impl LanguageGenerator for RustGenerator {
 
         let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
-            let schema_key = format!("{fn_name_str}_response");
+            let schema_key = scoped_schema_key(origin, &format!("{fn_name_str}_response"));
             let schema_info =
                 self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
             Some(ServiceResponseSpec {
@@ -630,6 +657,7 @@ impl LanguageGenerator for RustGenerator {
                 request_data_struct: request_data_struct_ident.as_ref(),
                 response_spec: response_spec.as_ref(),
                 use_service_name_const: true,
+                origin,
             })?;
 
         let service_name_const = {
@@ -651,15 +679,20 @@ impl LanguageGenerator for RustGenerator {
             #( #service_tokens )*
         };
         let rendered = render_tokens(tokens);
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            origin,
             InterfaceKind::ExposedService,
             rendered,
         ));
         Ok(())
     }
 
-    fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
+    fn add_exposed_action(
+        &mut self,
+        action: &ExposedAction,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let base_ident = prefixed_ident("", non_empty_str(&action.name), "action");
         let base_name = base_ident.to_string();
         let action_prefix = to_camel_case(&base_name);
@@ -709,8 +742,9 @@ impl LanguageGenerator for RustGenerator {
                 goal_request_data_struct.as_ref(),
             );
 
+            let scoped_goal_key = scoped_schema_key(origin, &label);
             let encoding = self.prepare_message_encoding(
-                &label,
+                &scoped_goal_key,
                 &schema_struct_prefix,
                 request_artifacts.as_ref(),
                 &goal_data_params,
@@ -718,7 +752,7 @@ impl LanguageGenerator for RustGenerator {
 
             let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
                 let response_schema_prefix = format!("{schema_struct_prefix}Response");
-                let schema_key = format!("{label}_response");
+                let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
                 let schema_info =
                     self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
                 Some(ServiceResponseSpec {
@@ -790,7 +824,7 @@ impl LanguageGenerator for RustGenerator {
 
             let cancel_response_spec =
                 if let Some(return_artifacts) = cancel_response_artifacts.as_ref() {
-                    let schema_key = format!("{cancel_label}_response");
+                    let schema_key = scoped_schema_key(origin, &format!("{cancel_label}_response"));
                     let schema_info = self.register_schema(
                         &schema_key,
                         &format!("{cancel_schema_prefix}Response"),
@@ -853,7 +887,7 @@ impl LanguageGenerator for RustGenerator {
             )?;
 
             let result_response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
-                let schema_key = format!("{label}_response");
+                let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
                 let schema_info = self.register_schema(
                     &schema_key,
                     &format!("{schema_struct_prefix}Response"),
@@ -910,7 +944,7 @@ impl LanguageGenerator for RustGenerator {
                 None,
             )?;
             let encoding = self.prepare_message_encoding(
-                &format!("emit_{base_name}_feedback"),
+                &scoped_schema_key(origin, &format!("emit_{base_name}_feedback")),
                 &struct_prefix,
                 format_artifacts.as_ref(),
                 &params,
@@ -925,7 +959,7 @@ impl LanguageGenerator for RustGenerator {
         }
 
         let action_handle_struct = build_action_handle_struct(has_goal, has_feedback, has_result);
-        let expose_method = build_action_expose_method(has_goal, has_feedback, has_result);
+        let expose_method = build_action_expose_method(has_goal, has_feedback, has_result, origin);
 
         let mut items = vec![quote!(const ACTION_NAME: &str = #action_name_literal;)];
         items.extend(context.into_tokens());
@@ -942,8 +976,9 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&action.name),
+            origin,
             InterfaceKind::ExposedAction,
             rendered,
         ));
@@ -1050,8 +1085,9 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedTopic,
             rendered,
         ));
@@ -1127,8 +1163,9 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedTopic,
             rendered,
         ));
@@ -1260,15 +1297,20 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
+        // Consumer-side discovery of the producer's interface namespace is the
+        // follow-up PR; for now we use native (None) since the deployment
+        // config doesn't record which interface a consumed service originates from.
+        let iface_expr = topics::iface_expression(None);
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 NODE_NAME,
+                #iface_expr,
                 SERVICE_NAME,
-                target_core_node,
-                target_instance_id,
+                to_core_node,
+                to_instance_id,
                 request_payload,
                 timeout,
             )
@@ -1348,8 +1390,8 @@ impl LanguageGenerator for RustGenerator {
         let mut fn_param_tokens = vec![
             quote!(node_runner: &crate::NodeRunner),
             quote!(timeout: std::time::Duration),
-            quote!(target_core_node: Option<&str>),
-            quote!(target_instance_id: Option<&str>),
+            quote!(to_core_node: Option<&str>),
+            quote!(to_instance_id: Option<&str>),
         ];
         if !request_struct_params.is_empty() {
             fn_param_tokens.push(quote!(request: #request_struct_ident));
@@ -1386,8 +1428,9 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedService,
             rendered,
         ));
@@ -1539,8 +1582,9 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
         let module_label = raw_module_label(&action.local_node_id, &action.name);
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedAction,
             rendered,
         ));

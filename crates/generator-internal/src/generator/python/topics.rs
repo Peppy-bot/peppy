@@ -2,6 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
+use super::services::iface_python_expr;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
@@ -54,6 +55,7 @@ pub(crate) fn emit_capnp_schema_loader(
 pub fn build_emitted_topic(
     topic: &EmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
+    origin: Option<&crate::generator::types::InterfaceOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
@@ -108,12 +110,14 @@ pub fn build_emitted_topic(
         builder.line("payload = b\"\"");
     }
 
+    let iface_expr = iface_python_expr(origin);
     builder.line("await peppylib.TopicMessenger.emit(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("node_runner.node_name(),");
+    builder.line(&format!("{iface_expr},"));
     builder.line("TOPIC_NAME,");
     builder.line("qos,");
     builder.line("payload,");
@@ -159,7 +163,7 @@ fn build_consumed_topic_inner(
     // Collect fields from the message format
     let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
 
-    // Always need Optional for the function parameters (target_core_node, target_instance_id),
+    // Always need Optional for the function parameters (from_core_node, from_instance_id),
     // plus any Optional fields in the dataclasses.
     // Tuple is used for the return type of on_next_message_received.
     builder.add_import("from typing import Optional, Tuple");
@@ -191,7 +195,7 @@ fn build_consumed_topic_inner(
     // Generate on_next_message_received function
     builder.add_import("import peppylib");
     builder.blank_line();
-    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
+    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None, from_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
     if let Some(node_name) = dependency_node_name {
@@ -202,9 +206,13 @@ fn build_consumed_topic_inner(
         builder.line("node_runner.bound_core_node(),");
         builder.line("node_runner.bound_instance_id(),");
         builder.line("node_name,");
+        // Consumer-side discovery of the publisher's interface namespace is the
+        // follow-up PR; for now we subscribe with the wildcard iface so the
+        // segments match any publisher.
+        builder.line("peppylib.Iface.wildcard(),");
         builder.line("topic_name,");
-        builder.line("target_core_node,");
-        builder.line("target_instance_id,");
+        builder.line("from_core_node,");
+        builder.line("from_instance_id,");
         builder.line("peppylib.QoSProfile.Standard,");
         builder.dedent();
         builder.line(")");
@@ -215,8 +223,8 @@ fn build_consumed_topic_inner(
         builder.line("node_runner.bound_core_node(),");
         builder.line("node_runner.bound_instance_id(),");
         builder.line("topic_name,");
-        builder.line("target_core_node,");
-        builder.line("target_instance_id,");
+        builder.line("from_core_node,");
+        builder.line("from_instance_id,");
         builder.line("peppylib.QoSProfile.Standard,");
         builder.dedent();
         builder.line(")");

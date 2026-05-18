@@ -9,6 +9,7 @@ use common::{
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use config::node::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
+use peppylib::messaging::Iface;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -965,6 +966,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         &started.core_node_name,
         common::CALLER_INSTANCE_ID,
         &started.core_node_name,
+        Iface::native(),
         core_node::names::NODE_RUN_ACTION,
         Some(&started.core_node_name),
         None,

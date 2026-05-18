@@ -1,6 +1,9 @@
 mod actions;
+mod iface;
 mod services;
 mod topics;
+
+pub(crate) use iface::PyIface;
 
 use peppylib::PeppyError;
 use peppylib::messaging::MessengerHandle;
@@ -193,6 +196,7 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging_module.add_class::<PyTopicMessage>()?;
     messaging_module.add_class::<PySubscription>()?;
     messaging_module.add_class::<PyTopicMessenger>()?;
+    messaging_module.add_class::<PyIface>()?;
     services::register(&messaging_module)?;
     actions::register(&messaging_module)?;
     parent_module.add_submodule(&messaging_module)?;

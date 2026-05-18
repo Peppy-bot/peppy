@@ -2,7 +2,7 @@ import asyncio
 import signal
 from datetime import datetime
 
-from peppylib import MessengerHandle, TopicMessenger
+from peppylib import Iface, MessengerHandle, TopicMessenger
 from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT, QoSProfile
 
@@ -33,9 +33,10 @@ async def main():
         core_node,
         instance_id,
         node_name,
+        Iface.native(),  # iface
         topic_name,
-        None,
-        None,
+        None,  # target_core_node (None = any)
+        None,  # target_instance_id (None = any)
         qos,
     )
 
@@ -61,7 +62,7 @@ async def main():
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 print(
                     f"[{timestamp}] Received `{payload}` from instance_id `{maybe_msg.instance_id}` "
-                    f"and core_node `{maybe_msg.core_node}` with key_expr `{maybe_msg.key_expr}`"
+                    f"and core_node `{maybe_msg.core_node}`"
                 )
             else:
                 print("Subscription closed by sender.")

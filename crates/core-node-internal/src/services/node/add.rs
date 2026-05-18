@@ -37,6 +37,7 @@ use tracing::debug;
 use ureq::Error as HttpError;
 
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
+use peppylib::messaging::Iface;
 
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
@@ -51,6 +52,7 @@ pub async fn listen_for_node_add(
         core_node_name,
         instance_id,
         node_name,
+        Iface::native(),
         names::NODE_ADD_ACTION,
     )
     .await?;

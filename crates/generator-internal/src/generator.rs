@@ -1,5 +1,6 @@
 pub mod common;
 pub(crate) mod naming;
+pub(crate) mod scaffold_tree;
 #[cfg(test)]
 #[macro_use]
 mod test_helpers;
@@ -8,6 +9,7 @@ pub mod rust;
 pub mod types;
 
 use crate::error::{Error, Result};
+use config::node::{EmittedTopic, ExposedAction, ExposedService};
 use config::{
     consts::{NODE_CONFIG_FILE, PeppyDirs},
     node::{NodeConfigParser, PeppygenLanguage},
@@ -125,7 +127,10 @@ fn collect_exposed_interfaces(
             .topics
             .as_ref()
             .and_then(|topics| topics.emits.as_deref()),
-        InterfaceVariant::EmittedTopic,
+        |topic: EmittedTopic| InterfaceVariant::EmittedTopic {
+            topic,
+            origin: None,
+        },
     );
     push_interfaces(
         &mut interfaces,
@@ -134,7 +139,10 @@ fn collect_exposed_interfaces(
             .services
             .as_ref()
             .and_then(|services| services.exposes.as_deref()),
-        InterfaceVariant::ExposedService,
+        |service: ExposedService| InterfaceVariant::ExposedService {
+            service,
+            origin: None,
+        },
     );
     push_interfaces(
         &mut interfaces,
@@ -143,7 +151,10 @@ fn collect_exposed_interfaces(
             .actions
             .as_ref()
             .and_then(|actions| actions.exposes.as_deref()),
-        InterfaceVariant::ExposedAction,
+        |action: ExposedAction| InterfaceVariant::ExposedAction {
+            action,
+            origin: None,
+        },
     );
 
     interfaces

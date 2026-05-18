@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from peppylib import ActionMessenger, MessengerHandle, QoSProfile, ZenohdInstance
+from peppylib import Iface, ActionMessenger, MessengerHandle, QoSProfile, ZenohdInstance
 
 CORE_NODE = "test_core"
 INSTANCE_ID = "test_instance"
@@ -35,8 +35,8 @@ async def test_action_messenger_communication():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            ACTION_NAME,
-        )
+            Iface.native(),  # iface
+            ACTION_NAME,)
 
         # Allow subscriptions to propagate
         await asyncio.sleep(0.05)
@@ -73,13 +73,13 @@ async def test_action_messenger_communication():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
+            Iface.native(),  # iface
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
-            2.0,
-        )
+            2.0,)
 
         assert goal_handle.goal_response.payload == GOAL_RESPONSE_PAYLOAD
 
@@ -118,8 +118,8 @@ async def test_cancel_goal_concurrent_with_feedback():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            ACTION_NAME,
-        )
+            Iface.native(),  # iface
+            ACTION_NAME,)
 
         await asyncio.sleep(0.05)
 
@@ -139,13 +139,13 @@ async def test_cancel_goal_concurrent_with_feedback():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
+            Iface.native(),  # iface
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
-            2.0,
-        )
+            2.0,)
 
         # Start waiting for feedback (will block — server never sends any).
         feedback_task = asyncio.ensure_future(goal_handle.on_next_feedback())
@@ -176,13 +176,13 @@ async def test_send_goal_rejects_invalid_timeout():
                 CORE_NODE,
                 INSTANCE_ID,
                 NODE_NAME,
+                Iface.native(),  # iface
                 ACTION_NAME,
                 CORE_NODE,
                 INSTANCE_ID,
                 GOAL_PAYLOAD,
                 QoSProfile.Reliable,
-                -1.0,
-            )
+                -1.0,)
 
 
 @pytest.mark.asyncio
@@ -197,8 +197,8 @@ async def test_send_goal_honors_target_core_node():
             CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
-            ACTION_NAME,
-        )
+            Iface.native(),  # iface
+            ACTION_NAME,)
 
         await asyncio.sleep(0.05)
 
@@ -208,10 +208,91 @@ async def test_send_goal_honors_target_core_node():
                 CORE_NODE,
                 INSTANCE_ID,
                 NODE_NAME,
+                Iface.native(),  # iface
                 ACTION_NAME,
                 "wrong_core_node",
                 INSTANCE_ID,
                 GOAL_PAYLOAD,
                 QoSProfile.Reliable,
-                0.5,
-            )
+                0.5,)
+
+
+@pytest.mark.asyncio
+async def test_action_iface_scoped_native_and_conformed_do_not_collide():
+    """Same action name exposed natively AND under a conformed interface must wire to distinct paths."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        native_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        iface_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        caller_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        native_goal_response = b"native_goal_ack"
+        iface_goal_response = b"iface_goal_ack"
+
+        native_action = await ActionMessenger.expose(
+            native_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            Iface.native(),
+            "move",
+        )
+        iface_action = await ActionMessenger.expose(
+            iface_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            Iface.conformed("arm", "v1"),
+            "move",
+        )
+
+        async def goal_handler(action, response: bytes):
+            """Server-side: unwrap envelope, declare feedback publisher (kept), return response."""
+            captured = [None]
+
+            async def on_goal(req):
+                publisher, _goal_id, _user_payload = await action.feedback_publisher_factory.declare_from_wire(
+                    bytes(req.message.payload)
+                )
+                captured[0] = publisher
+                return response
+
+            await action.goal_service.handle_next_request(on_goal)
+            return captured[0]
+
+        native_task = asyncio.ensure_future(goal_handler(native_action, native_goal_response))
+        iface_task = asyncio.ensure_future(goal_handler(iface_action, iface_goal_response))
+
+        await asyncio.sleep(0.1)
+
+        native_goal = await ActionMessenger.send_goal(
+            caller_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            Iface.native(),
+            "move",
+            CORE_NODE,
+            INSTANCE_ID,
+            b"native_goal",
+            QoSProfile.Reliable,
+            2.0,
+        )
+        assert native_goal.goal_response.payload == native_goal_response
+
+        iface_goal = await ActionMessenger.send_goal(
+            caller_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            Iface.conformed("arm", "v1"),
+            "move",
+            CORE_NODE,
+            INSTANCE_ID,
+            b"iface_goal",
+            QoSProfile.Reliable,
+            2.0,
+        )
+        assert iface_goal.goal_response.payload == iface_goal_response
+
+        await asyncio.wait_for(native_task, timeout=2.0)
+        await asyncio.wait_for(iface_task, timeout=2.0)
