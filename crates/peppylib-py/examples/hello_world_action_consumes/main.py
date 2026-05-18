@@ -1,10 +1,11 @@
 import asyncio
 
-from peppylib import Iface, ActionMessenger, MessengerHandle
+from peppylib import ActionMessenger, MessengerHandle, SenderTarget
 from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT, QoSProfile
 
 NODE_NAME = "hello_node"
+NODE_TAG = "v1"
 ACTION_NAME = "hello_action"
 
 BOLD = "\033[1m"
@@ -65,8 +66,7 @@ async def main():
         sender_handle,
         core_node,
         instance_id,
-        NODE_NAME,
-        Iface.native(),  # iface
+        SenderTarget.node(NODE_NAME, NODE_TAG),
         ACTION_NAME,
         None,  # target_core_node - binds with the first found
         None,  # target_instance_id - binds with the first found
@@ -100,8 +100,7 @@ async def main():
         sender_handle,
         core_node,
         instance_id,
-        NODE_NAME,
-        Iface.native(),  # iface
+        SenderTarget.node(NODE_NAME, NODE_TAG),
         ACTION_NAME,
         None,  # target_core_node
         None,  # target_instance_id

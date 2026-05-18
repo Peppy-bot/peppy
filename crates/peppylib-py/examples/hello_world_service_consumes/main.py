@@ -1,11 +1,12 @@
 import asyncio
 
-from peppylib import Iface, MessengerHandle, ServiceMessenger
+from peppylib import MessengerHandle, SenderTarget, ServiceMessenger
 from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT
 
 SERVICE_NAME = "hello_service"
 NODE_NAME = "hello_node"
+NODE_TAG = "v1"
 
 
 async def main():
@@ -33,8 +34,7 @@ async def main():
         sender_handle,
         core_node,
         instance_id,
-        NODE_NAME,
-        Iface.native(),  # iface
+        SenderTarget.node(NODE_NAME, NODE_TAG),
         SERVICE_NAME,
         None,  # target_core_node - not needed
         None,  # target_instance_id - any instance would work

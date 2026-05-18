@@ -1,9 +1,9 @@
 //! Python mirror of `tests/rust/services_conforms_to.rs`: verifies the
 //! Python generator nests conformed services under
 //! `peppygen/exposed_services/{iface_name}/{iface_tag}/<service>.py` and
-//! splices the matching `peppylib.Iface.conformed(...)` expression into each
-//! `ServiceMessenger.listen` call (or `peppylib.Iface.native()` for the
-//! native leaf).
+//! splices the matching `peppylib.SenderTarget.interface(...)` expression
+//! into each `ServiceMessenger.listen` call (or
+//! `peppylib.SenderTarget.node(...)` for the native leaf).
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{ExposedService, MessageFormat, PeppygenLanguage, SchemaType, TypeToken};

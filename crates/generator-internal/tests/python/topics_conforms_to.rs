@@ -70,9 +70,9 @@ const NODE_CONFIG: &str = r#"{
 ///      `emitted_topics/{iface_name}/{iface_tag}/{topic}.py` while the native
 ///      artifact stays flat at `emitted_topics/{topic}.py`.
 ///   2. The `__init__.py` chain at each level imports its direct children.
-///   3. Each leaf's emit body passes the matching `iface_name`/`iface_tag`
-///      `peppylib.Iface.conformed(...)` expression to the messenger
-///      (and `peppylib.Iface.native()` for the native leaf).
+///   3. Each leaf's emit body passes the matching sender target to the
+///      messenger: `peppylib.SenderTarget.interface(...)` for conformed
+///      leaves and `peppylib.SenderTarget.node(...)` for the native leaf.
 ///   4. The per-interface marker fields land in their own files — proof the
 ///      four artifacts weren't cross-wired during generation.
 #[test]

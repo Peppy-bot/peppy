@@ -3,11 +3,12 @@ import enum
 import signal
 from datetime import datetime
 
-from peppylib import Iface, ActionMessenger, MessengerHandle
+from peppylib import ActionMessenger, MessengerHandle, SenderTarget
 from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT
 
 NODE_NAME = "hello_node"
+NODE_TAG = "v1"
 ACTION_NAME = "hello_action"
 
 BOLD = "\033[1m"
@@ -217,8 +218,7 @@ async def main():
         receiver_handle,
         core_node,
         instance_id,
-        NODE_NAME,
-        Iface.native(),  # iface
+        SenderTarget.node(NODE_NAME, NODE_TAG),
         ACTION_NAME,)
 
     print(
