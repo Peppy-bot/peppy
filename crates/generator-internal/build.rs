@@ -527,9 +527,9 @@ mod peppylib_build {
                 if p.extension().is_some_and(|ext| ext == "py") {
                     return true;
                 }
-                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-                    n.starts_with("_peppylib.abi3.") && n.ends_with(".so")
-                })
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("_peppylib.abi3.") && n.ends_with(".so"))
             })
             .collect();
         hashed_files.sort();
