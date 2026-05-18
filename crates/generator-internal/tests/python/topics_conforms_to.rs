@@ -140,31 +140,31 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
         "depth_camera/__init__.py should import v1 and v2:\n{depth_init}",
     );
 
-    // Each leaf's emit body passes a matching `peppylib.Iface.*` expression
-    // to the messenger. Native gets `Iface.native()`; conformed leaves pass
-    // `Iface.conformed("<name>", "<tag>")` with the producer's segments.
+    // Each leaf's emit body passes a matching `peppylib.SenderTarget` expression
+    // to the messenger. Native gets `SenderTarget.node(...)`; conformed leaves
+    // pass `SenderTarget.interface("<name>", "<tag>")` with the producer's segments.
     let native_src = fs::read_to_string(&native_path).expect("read native");
     assert!(
         native_src.contains("peppylib.SenderTarget.node("),
-        "native source should pass `peppylib.Iface.native()`:\n{native_src}",
+        "native source should pass `peppylib.SenderTarget.node(...)`:\n{native_src}",
     );
 
     let depth_v1_src = fs::read_to_string(&depth_v1).expect("read depth v1");
     assert!(
         depth_v1_src.contains("peppylib.SenderTarget.interface(\"depth_camera\", \"v1\")"),
-        "depth_v1 source missing Iface.conformed literal:\n{depth_v1_src}",
+        "depth_v1 source missing SenderTarget.interface literal:\n{depth_v1_src}",
     );
 
     let depth_v2_src = fs::read_to_string(&depth_v2).expect("read depth v2");
     assert!(
         depth_v2_src.contains("peppylib.SenderTarget.interface(\"depth_camera\", \"v2\")"),
-        "depth_v2 source missing Iface.conformed literal:\n{depth_v2_src}",
+        "depth_v2 source missing SenderTarget.interface literal:\n{depth_v2_src}",
     );
 
     let uvc_v1_src = fs::read_to_string(&uvc_v1).expect("read uvc v1");
     assert!(
         uvc_v1_src.contains("peppylib.SenderTarget.interface(\"uvc_camera\", \"v1\")"),
-        "uvc_v1 source missing Iface.conformed literal:\n{uvc_v1_src}",
+        "uvc_v1 source missing SenderTarget.interface literal:\n{uvc_v1_src}",
     );
 
     // Distinguishing message-format markers should still be present in their

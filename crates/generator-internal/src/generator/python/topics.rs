@@ -199,19 +199,11 @@ fn build_consumed_topic_inner(
         builder.line("node_runner.messenger(),");
         builder.line("node_runner.bound_core_node(),");
         builder.line("node_runner.bound_instance_id(),");
-        // Address the producer via the same `SenderTarget` form it uses to
-        // emit: `Interface(name, tag)` when the dep exposes the topic via
-        // `conforms_to`, otherwise `Node(node_name, node_tag)`.
-        let from_target = match &dep.origin {
-            Some(origin) => format!(
-                "peppylib.SenderTarget.interface({:?}, {:?})",
-                origin.iface_name, origin.iface_tag,
-            ),
-            None => format!(
-                "peppylib.SenderTarget.node({:?}, {:?})",
-                dep.node_name, dep.node_tag,
-            ),
-        };
+        let from_target = sender_target_python_expr(
+            dep.origin.as_ref(),
+            &format!("{:?}", dep.node_name),
+            &format!("{:?}", dep.node_tag),
+        );
         builder.line(&format!("{from_target},"));
         builder.line("topic_name,");
         builder.line("from_core_node,");

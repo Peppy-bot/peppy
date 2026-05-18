@@ -1,7 +1,5 @@
-//! Service name constants for core node services.
-//!
-//! These constants define the service identifiers used when registering
-//! and communicating with core node services.
+//! Wire identifiers used by the core node: the sender-target tag plus the
+//! service/action names exposed to clients.
 
 /// Sender-target tag used by the core node when emitting on the wire. The
 /// core node is not declared via `manifest.tag` like regular nodes, so this

@@ -119,6 +119,13 @@ fn normalize_tag(tag: &str) -> String {
     }
 }
 
+fn validated_name_tag(name: &str, tag: &str) -> Result<(Segment, Segment), SenderTargetError> {
+    let name_segment = Segment::try_from(name)?;
+    let normalized_tag = normalize_tag(tag);
+    let tag_segment = Segment::try_from(normalized_tag.as_str())?;
+    Ok((name_segment, tag_segment))
+}
+
 /// Identifier of an interface declared via `conforms_to`. Carries the
 /// interface's name and tag. Used as one variant of [`SenderTarget`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -129,9 +136,7 @@ pub struct InterfaceIdentifier {
 
 impl InterfaceIdentifier {
     pub fn new(name: &str, tag: &str) -> Result<Self, SenderTargetError> {
-        let interface_name = Segment::try_from(name)?;
-        let normalized_tag = normalize_tag(tag);
-        let interface_tag = Segment::try_from(normalized_tag.as_str())?;
+        let (interface_name, interface_tag) = validated_name_tag(name, tag)?;
         Ok(Self {
             interface_name,
             interface_tag,
@@ -157,9 +162,7 @@ pub struct NodeIdentifier {
 
 impl NodeIdentifier {
     pub fn new(name: &str, tag: &str) -> Result<Self, SenderTargetError> {
-        let node_name = Segment::try_from(name)?;
-        let normalized_tag = normalize_tag(tag);
-        let node_tag = Segment::try_from(normalized_tag.as_str())?;
+        let (node_name, node_tag) = validated_name_tag(name, tag)?;
         Ok(Self {
             node_name,
             node_tag,

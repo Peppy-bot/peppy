@@ -307,20 +307,16 @@ pub fn build_consumed_service(
         builder.line("request_payload = b\"\"");
     }
 
-    // Address the producer with a target that matches its emission shape.
     if has_response {
         builder.line("response_message = await peppylib.ServiceMessenger.poll(");
     } else {
         builder.line("await peppylib.ServiceMessenger.poll(");
     }
-    let target_expr = match &dependency.origin {
-        Some(origin) => sender_target_python_expr(
-            Some(origin),
-            "NODE_NAME",
-            &format!("{:?}", dependency.node_tag),
-        ),
-        None => sender_target_python_expr(None, "NODE_NAME", &format!("{:?}", dependency.node_tag)),
-    };
+    let target_expr = sender_target_python_expr(
+        dependency.origin.as_ref(),
+        "NODE_NAME",
+        &format!("{:?}", dependency.node_tag),
+    );
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");

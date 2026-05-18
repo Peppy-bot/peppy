@@ -658,7 +658,6 @@ pub fn collect_consumed_interfaces(
         }
     }
 
-    // Collect consumed topics
     if let Some(topic_interfaces) = &interfaces_cfg.topics
         && let Some(consumed_topics) = &topic_interfaces.consumes
     {
@@ -671,7 +670,6 @@ pub fn collect_consumed_interfaces(
                     };
                     let key = (dep_name.clone(), dep_tag.clone());
 
-                    // First, native emits on the dependency.
                     let native_match = dep_configs.get(&key).and_then(|dep_config| {
                         dep_config
                             .interfaces
@@ -689,7 +687,6 @@ pub fn collect_consumed_interfaces(
                             })
                     });
 
-                    // Otherwise, topics pulled in via the dep's `conforms_to`.
                     let conformed_match = native_match
                         .is_none()
                         .then(|| {
@@ -721,7 +718,6 @@ pub fn collect_consumed_interfaces(
         }
     }
 
-    // Collect consumed services
     if let Some(service_interfaces) = &interfaces_cfg.services
         && let Some(consumed_services) = &service_interfaces.consumes
     {
@@ -778,7 +774,6 @@ pub fn collect_consumed_interfaces(
         }
     }
 
-    // Collect consumed actions
     if let Some(action_interfaces) = &interfaces_cfg.actions
         && let Some(consumed_actions) = &action_interfaces.consumes
     {

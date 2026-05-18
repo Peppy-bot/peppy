@@ -779,19 +779,11 @@ pub fn build_consumed_action(
         builder.line("user_goal_payload = b\"\"");
     }
 
-    // Address the producer with a target that matches its emission shape.
-    let send_goal_target_expr = match &dependency.origin {
-        Some(origin) => sender_target_python_expr(
-            Some(origin),
-            "TARGET_NODE_NAME",
-            &format!("{:?}", dependency.node_tag),
-        ),
-        None => sender_target_python_expr(
-            None,
-            "TARGET_NODE_NAME",
-            &format!("{:?}", dependency.node_tag),
-        ),
-    };
+    let send_goal_target_expr = sender_target_python_expr(
+        dependency.origin.as_ref(),
+        "TARGET_NODE_NAME",
+        &format!("{:?}", dependency.node_tag),
+    );
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
