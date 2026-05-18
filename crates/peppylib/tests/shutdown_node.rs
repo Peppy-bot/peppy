@@ -3,7 +3,7 @@ mod common;
 use common::{
     CALLER_INSTANCE_ID, TEST_CORE_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
 };
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::types::Payload;
 use peppylib::{
     messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger},
@@ -23,7 +23,7 @@ async fn shutdown_node() {
         &server_handle,
         TEST_CORE_NODE_NAME,
         TEST_INSTANCE_ID,
-        TEST_NODE_NAME,
+        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
     )
     .await
     .expect("failed to start shutdown service");
@@ -39,8 +39,7 @@ async fn shutdown_node() {
         &client.caller_handle,
         &client.core_node_name,
         CALLER_INSTANCE_ID,
-        TEST_NODE_NAME,
-        Iface::native(),
+        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
         SHUTDOWN_SERVICE,
         Some(&client.core_node_name),
         Some(&client.instance_id),

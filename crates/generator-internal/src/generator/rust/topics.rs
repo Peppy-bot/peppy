@@ -116,7 +116,7 @@ pub fn build_topic_emit(
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
     let label_literal = Literal::string(label);
-    let iface_expr = iface_expression(origin);
+    let target_expr = sender_target_expression(origin);
 
     build_emit_method(EmitMethodSpec {
         method_name: method_ident,
@@ -126,7 +126,6 @@ pub fn build_topic_emit(
         publish_body: quote! {
             let qos = #qos_tokens;
             let as_topic = #topic_literal;
-            let as_node_name = node_runner.processor().node_name();
             let as_instance_id = node_runner.processor().bound_instance_id();
             let with_core_node = node_runner.processor().bound_core_node();
 
@@ -134,8 +133,7 @@ pub fn build_topic_emit(
                 node_runner.messenger(),
                 with_core_node,
                 as_instance_id,
-                as_node_name,
-                #iface_expr,
+                #target_expr,
                 as_topic,
                 qos,
                 payload,
@@ -147,19 +145,25 @@ pub fn build_topic_emit(
     })
 }
 
-/// Returns the `Iface` constructor expression to splice into a generated
-/// `emit`/`subscribe` call: `peppylib::messaging::Iface::native()` for native
-/// artifacts, or `Iface::new(name, tag)?` for those pulled in via
-/// `interfaces.conforms_to`. The `?` is required because `Iface::new` is
-/// fallible — it validates segments at construction.
-pub fn iface_expression(origin: Option<&crate::generator::types::InterfaceOrigin>) -> TokenStream {
+/// Returns the `SenderTarget` constructor expression to splice into a
+/// generated emit call. When `origin` is `Some` (the topic is declared via
+/// `interfaces.conforms_to`), emit as `SenderTarget::interface(name, tag)`.
+/// Otherwise emit as `SenderTarget::node(node_name, node_tag)` using the
+/// runtime's own identity. Both forms are fallible because segment validation
+/// runs at construction.
+pub fn sender_target_expression(
+    origin: Option<&crate::generator::types::InterfaceOrigin>,
+) -> TokenStream {
     match origin {
         Some(o) => {
             let name = Literal::string(&o.iface_name);
             let tag = Literal::string(&o.iface_tag);
-            quote!(peppylib::messaging::Iface::new(#name, #tag)?)
+            quote!(peppylib::messaging::SenderTarget::interface(#name, #tag)?)
         }
-        None => quote!(peppylib::messaging::Iface::native()),
+        None => quote!(peppylib::messaging::SenderTarget::node(
+            node_runner.processor().node_name(),
+            node_runner.processor().node_tag(),
+        )?),
     }
 }
 
@@ -186,6 +190,11 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
         struct_prefix,
     )?;
 
+    // The generator doesn't yet thread the dependency's `conforms_to`
+    // information here, so subscribers wildcard the producer's identity. When
+    // the dep declares a `conforms_to` and the generator plumbs that through,
+    // this becomes `Some(SenderTarget::interface(name, tag)?)` instead of
+    // `None` so the subscriber pins on the interface.
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
@@ -201,8 +210,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
-                    node_name,
-                    peppylib::messaging::Iface::wildcard(),
+                    None,
                     topic_name,
                     from_core_node,
                     from_instance_id,

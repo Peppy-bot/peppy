@@ -1,4 +1,4 @@
-use super::iface::PyIface;
+use super::iface::PySenderTarget;
 use super::{PyMessengerHandle, to_py_err};
 use crate::config::PyQoSProfile;
 use peppylib::messaging::{Subscription, TopicMessenger};
@@ -72,33 +72,31 @@ pub struct PyTopicMessenger;
 
 #[pymethods]
 impl PyTopicMessenger {
-    /// Subscribe to a topic. Pass `peppylib.Iface.native()` for non-`conforms_to`
-    /// topics, `Iface.wildcard()` to match any publisher iface, or
-    /// `Iface.conformed(name, tag)` for a specific interface.
+    /// Subscribe to a topic. Pass `SenderTarget.node(name, tag)` or
+    /// `SenderTarget.interface(name, tag)` to match the publisher's target,
+    /// or `None` to match any publisher.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_node_name, iface, to_topic, from_core_node, from_instance_id, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_core_node, from_instance_id, qos))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
-        from_node_name: String,
-        iface: PyIface,
+        from_target: Option<PySenderTarget>,
         to_topic: String,
         from_core_node: Option<String>,
         from_instance_id: Option<String>,
         qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
-        let iface = iface.into_inner();
+        let from_target = from_target.map(|t| t.into_inner());
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
-                &from_node_name,
-                iface,
+                from_target,
                 &to_topic,
                 from_core_node.as_deref(),
                 from_instance_id.as_deref(),
@@ -147,32 +145,29 @@ impl PyTopicMessenger {
         })
     }
 
-    /// Emit (publish) a message to a topic. Pass `peppylib.Iface.native()` for
-    /// non-`conforms_to` topics, or `Iface.conformed(name, tag)` for a specific
-    /// interface.
+    /// Emit (publish) a message to a topic. Pass `SenderTarget.node(name, tag)`
+    /// or `SenderTarget.interface(name, tag)`.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_node_name, iface, as_topic_name, qos, payload))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, payload))]
     #[allow(clippy::too_many_arguments)]
     fn emit<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
-        as_node_name: String,
-        iface: PyIface,
+        as_target: PySenderTarget,
         as_topic_name: String,
         qos: PyQoSProfile,
         payload: Vec<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
-        let iface = iface.into_inner();
+        let as_target = as_target.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             TopicMessenger::emit(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
-                &as_node_name,
-                iface,
+                as_target,
                 &as_topic_name,
                 qos.into(),
                 Payload::from(payload),

@@ -19,7 +19,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 use crate::common::{TestPackagesCache, start_core_node_with_mock_messenger};
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 
 struct NodeConfigOptions<'a> {
     build_cmd: &'a [&'a str],
@@ -350,8 +350,7 @@ async fn send_launch_origin_and_wait(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        core_node_name,
-        Iface::native(),
+        SenderTarget::node(core_node_name, "v1").expect("test target"),
         names::STACK_LAUNCH_ACTION,
         None,
         None,
@@ -463,7 +462,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_front",
-            FAKE_UVC_CAMERA,
+            SenderTarget::node(FAKE_UVC_CAMERA, "v1").expect("test target"),
         )
         .await
         .expect("ready service should start"),
@@ -473,7 +472,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_front",
-            FAKE_UVC_CAMERA,
+            SenderTarget::node(FAKE_UVC_CAMERA, "v1").expect("test target"),
         )
         .await
         .expect("health service should start"),
@@ -483,7 +482,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_rear",
-            FAKE_UVC_CAMERA,
+            SenderTarget::node(FAKE_UVC_CAMERA, "v1").expect("test target"),
         )
         .await
         .expect("ready service should start"),
@@ -493,7 +492,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_rear",
-            FAKE_UVC_CAMERA,
+            SenderTarget::node(FAKE_UVC_CAMERA, "v1").expect("test target"),
         )
         .await
         .expect("health service should start"),
@@ -503,7 +502,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_brain",
-            FAKE_ROBOT_BRAIN,
+            SenderTarget::node(FAKE_ROBOT_BRAIN, "v1").expect("test target"),
         )
         .await
         .expect("ready service should start"),
@@ -513,7 +512,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_brain",
-            FAKE_ROBOT_BRAIN,
+            SenderTarget::node(FAKE_ROBOT_BRAIN, "v1").expect("test target"),
         )
         .await
         .expect("health service should start"),
@@ -523,7 +522,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_nervous_system",
-            FAKE_OPENARM01_CONTROLLER,
+            SenderTarget::node(FAKE_OPENARM01_CONTROLLER, "v1").expect("test target"),
         )
         .await
         .expect("ready service should start"),
@@ -533,7 +532,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_nervous_system",
-            FAKE_OPENARM01_CONTROLLER,
+            SenderTarget::node(FAKE_OPENARM01_CONTROLLER, "v1").expect("test target"),
         )
         .await
         .expect("health service should start"),
@@ -620,7 +619,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_front",
-            UVC_NODE_NAME,
+            SenderTarget::node(UVC_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("ready service should start"),
@@ -630,7 +629,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_front",
-            UVC_NODE_NAME,
+            SenderTarget::node(UVC_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("health service should start"),
@@ -640,7 +639,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_rear",
-            UVC_NODE_NAME,
+            SenderTarget::node(UVC_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("ready service should start"),
@@ -650,7 +649,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_rear",
-            UVC_NODE_NAME,
+            SenderTarget::node(UVC_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("health service should start"),
@@ -660,7 +659,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "main_robot_brain",
-            ROBOT_NODE_NAME,
+            SenderTarget::node(ROBOT_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("ready service should start"),
@@ -670,7 +669,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "main_robot_brain",
-            ROBOT_NODE_NAME,
+            SenderTarget::node(ROBOT_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("health service should start"),
@@ -879,7 +878,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_brain",
-            BRAIN_NODE,
+            SenderTarget::node(BRAIN_NODE, "v1").expect("test target"),
         )
         .await
         .expect("ready service should start"),
@@ -889,7 +888,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_brain",
-            BRAIN_NODE,
+            SenderTarget::node(BRAIN_NODE, "v1").expect("test target"),
         )
         .await
         .expect("health service should start"),
@@ -899,7 +898,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_arm",
-            ARM_NODE,
+            SenderTarget::node(ARM_NODE, "v1").expect("test target"),
         )
         .await
         .expect("ready service should start"),
@@ -909,7 +908,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_arm",
-            ARM_NODE,
+            SenderTarget::node(ARM_NODE, "v1").expect("test target"),
         )
         .await
         .expect("health service should start"),
@@ -1240,7 +1239,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_core_node.core_node_name,
             "a1",
-            "node_a",
+            SenderTarget::node("node_a", "v1").expect("test target"),
         )
         .await
         .expect("ready should start"),
@@ -1250,7 +1249,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_core_node.core_node_name,
             "a1",
-            "node_a",
+            SenderTarget::node("node_a", "v1").expect("test target"),
         )
         .await
         .expect("health should start"),
@@ -1260,7 +1259,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_core_node.core_node_name,
             "b1",
-            "node_b",
+            SenderTarget::node("node_b", "v1").expect("test target"),
         )
         .await
         .expect("ready should start"),
@@ -1270,7 +1269,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_core_node.core_node_name,
             "b1",
-            "node_b",
+            SenderTarget::node("node_b", "v1").expect("test target"),
         )
         .await
         .expect("health should start"),
@@ -1365,7 +1364,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
             &node_messenger,
             &started_core_node.core_node_name,
             "b1",
-            "node_b",
+            SenderTarget::node("node_b", "v1").expect("test target"),
         )
         .await
         .expect("ready should start"),
@@ -1689,7 +1688,7 @@ sleep \"${1:-60}\"
             &node_messenger,
             &started_core_node.core_node_name,
             INSTANCE_ID,
-            NODE_NAME,
+            SenderTarget::node(NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("ready service should start"),
@@ -1699,7 +1698,7 @@ sleep \"${1:-60}\"
             &node_messenger,
             &started_core_node.core_node_name,
             INSTANCE_ID,
-            NODE_NAME,
+            SenderTarget::node(NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("health service should start"),
@@ -1764,7 +1763,7 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
             &node_messenger,
             &started_core_node.core_node_name,
             "main_robot_brain",
-            ROBOT_NODE_NAME,
+            SenderTarget::node(ROBOT_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("ready service should start"),
@@ -1774,7 +1773,7 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
             &node_messenger,
             &started_core_node.core_node_name,
             "main_robot_brain",
-            ROBOT_NODE_NAME,
+            SenderTarget::node(ROBOT_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("health service should start"),

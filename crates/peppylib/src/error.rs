@@ -89,9 +89,9 @@ pub enum Error {
     #[error(transparent)]
     PeppyMessagingInterface(#[from] pmi::PeppyMessagingInterfaceError),
 
-    // -- wire-format input validation (Iface::new in generated code)
+    // -- wire-format input validation (SenderTarget construction in generated code)
     #[error(transparent)]
-    InvalidIface(#[from] pmi::IfaceError),
+    InvalidSenderTarget(#[from] pmi::SenderTargetError),
 
     // -- core-node-api
     #[error(transparent)]

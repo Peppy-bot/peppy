@@ -3,7 +3,7 @@ use crate::names;
 use config::node::Name;
 use core_node_api::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use node_stack::NodeStack;
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
@@ -29,8 +29,7 @@ pub async fn listen_for_node_remove(
         &messenger,
         &core_node_node,
         &core_instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::NODE_REMOVE,
     )
     .await?;
@@ -173,8 +172,8 @@ async fn handle_node_remove_request_inner(
                 messenger,
                 core_node_node,
                 core_instance_id,
-                &target.node_name,
-                Iface::native(),
+                SenderTarget::node(&target.node_name, &target.node_tag)
+                    .expect("node target should be valid"),
                 SHUTDOWN_SERVICE,
                 Some(core_node_node),
                 Some(target.instance_id.as_str()),
@@ -252,8 +251,8 @@ async fn handle_node_remove_request_inner(
                 messenger,
                 core_node_node,
                 core_instance_id,
-                &target.node_name,
-                Iface::native(),
+                SenderTarget::node(&target.node_name, &target.node_tag)
+                    .expect("node target should be valid"),
                 SHUTDOWN_SERVICE,
                 Some(core_node_node),
                 Some(target.instance_id.as_str()),

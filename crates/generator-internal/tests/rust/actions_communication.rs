@@ -166,6 +166,7 @@ async fn actions_communication() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -246,6 +247,7 @@ fn main() -> Result<()> {
             framework: Default::default(),
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -485,6 +487,7 @@ async fn actions_communication_cancel_goal() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -561,6 +564,7 @@ fn main() -> Result<()> {
             framework: Default::default(),
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -826,6 +830,7 @@ async fn actions_communication_drain_loop_until_end_signal() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -919,6 +924,7 @@ fn main() -> Result<()> {
             framework: Default::default(),
         },
         BRAIN_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -1194,6 +1200,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -1281,6 +1288,7 @@ fn main() -> Result<()> {
             framework: Default::default(),
         },
         BRAIN_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -1544,6 +1552,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -1642,6 +1651,7 @@ fn main() -> Result<()> {
             framework: Default::default(),
         },
         BRAIN_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();

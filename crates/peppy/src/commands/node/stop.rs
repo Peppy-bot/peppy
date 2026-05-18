@@ -6,7 +6,9 @@ use tracing::info;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use core_node_api::names::CORE_NODE_TAG;
 use peppylib::core_node::transport::poll_node_stop;
+use peppylib::messaging::SenderTarget;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -28,7 +30,8 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        &conn.core_node_name,
+        SenderTarget::node(&conn.core_node_name, CORE_NODE_TAG)
+            .map_err(|e| Error::ExecutionFailed(format!("Failed to build sender target: {e}")))?,
         &conn.core_node_name,
         REQUEST_TIMEOUT,
     )

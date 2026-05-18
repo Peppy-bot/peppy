@@ -2,7 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
-use super::services::iface_python_expr;
+use super::services::sender_target_python_expr;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use super::type_mapping::{collect_fields_from_format, uses_optional};
 use crate::error::{Error, Result};
@@ -284,14 +284,14 @@ pub fn build_exposed_action(
     builder.add_import("from typing import Self");
     builder.line("async def expose(cls, node_runner: peppylib.NodeRunner) -> Self:");
     builder.indent();
-    let expose_iface_expr = iface_python_expr(origin);
+    let expose_target_expr =
+        sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
     builder.line("action = await peppylib.ActionMessenger.expose(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
-    builder.line("node_runner.node_name(),");
-    builder.line(&format!("{expose_iface_expr},"));
+    builder.line(&format!("{expose_target_expr},"));
     builder.line("ACTION_NAME,");
     builder.dedent();
     builder.line(")");
@@ -779,15 +779,17 @@ pub fn build_consumed_action(
     }
 
     // Consumer-side discovery of the producer's interface namespace is the
-    // follow-up PR; for now we use native.
-    let send_goal_iface_expr = iface_python_expr(None);
+    // follow-up PR; for now we target the producer as a node using TARGET_NODE_NAME
+    // and our own node_tag (placeholder until the deployment config records
+    // the producer's `conforms_to`).
+    let send_goal_target_expr =
+        sender_target_python_expr(None, "TARGET_NODE_NAME", "node_runner.node_tag()");
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
-    builder.line("TARGET_NODE_NAME,");
-    builder.line(&format!("{send_goal_iface_expr},"));
+    builder.line(&format!("{send_goal_target_expr},"));
     builder.line("TARGET_ACTION_NAME,");
     builder.line("to_core_node,");
     builder.line("to_instance_id,");

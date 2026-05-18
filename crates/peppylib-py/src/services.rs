@@ -53,11 +53,12 @@ macro_rules! service_listener {
                 messenger: &PyMessengerHandle,
                 core_node: String,
                 instance_id: String,
-                node_name: String,
+                as_identity: $crate::messaging::PySenderTarget,
             ) -> PyResult<Bound<'py, PyAny>> {
                 let handle = messenger.inner.clone();
+                let as_identity = as_identity.into_inner();
                 pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                    let join_handle = $listen_fn(&handle, &core_node, &instance_id, &node_name)
+                    let join_handle = $listen_fn(&handle, &core_node, &instance_id, as_identity)
                         .await
                         .map_err(to_py_err)?;
                     Ok(PyServiceTask::new(join_handle))

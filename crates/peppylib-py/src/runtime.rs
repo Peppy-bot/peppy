@@ -302,6 +302,11 @@ impl PyNodeRunner {
     fn node_name(&self) -> &str {
         self.inner.processor().node_name()
     }
+
+    /// Get the node tag.
+    fn node_tag(&self) -> &str {
+        self.inner.processor().node_tag()
+    }
 }
 
 /// Python wrapper for StandaloneConfig.

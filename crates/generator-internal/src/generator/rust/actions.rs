@@ -64,7 +64,7 @@ pub fn build_action_expose_method(
         init_fields.push(quote!(current_goal: None));
     }
 
-    let iface_expr = super::topics::iface_expression(origin);
+    let target_expr = super::topics::sender_target_expression(origin);
 
     quote! {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
@@ -72,8 +72,7 @@ pub fn build_action_expose_method(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
-                node_runner.processor().node_name(),
-                #iface_expr,
+                #target_expr,
                 ACTION_NAME,
             )
             .await?;

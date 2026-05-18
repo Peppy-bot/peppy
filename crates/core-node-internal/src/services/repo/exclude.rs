@@ -6,7 +6,7 @@ use crate::services::repo::refresh::{
 use crate::services::repo::{json_entry_identity, normalize_repo_entries, repo_source_to_json};
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -27,8 +27,7 @@ pub async fn listen_for_repo_exclude(
         messenger,
         core_node_name,
         instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::REPO_EXCLUDE,
     )
     .await?;

@@ -291,6 +291,11 @@ where
         self.processor.node_name()
     }
 
+    /// Get the node tag
+    pub fn node_tag(&self) -> &str {
+        self.processor.node_tag()
+    }
+
     /// Get the instance ID
     pub fn instance_id(&self) -> &str {
         self.processor.bound_instance_id()
@@ -412,12 +417,14 @@ struct PreSetupHandles {
 
 async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSetupHandles> {
     let processor = node_runner.processor();
+    let as_identity =
+        crate::messaging::SenderTarget::node(processor.node_name(), processor.node_tag())?;
 
     let ready_handle = listen_for_node_ready(
         node_runner.messenger(),
         processor.bound_core_node(),
         processor.bound_instance_id(),
-        processor.node_name(),
+        as_identity.clone(),
     )
     .await?;
 
@@ -425,7 +432,7 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
         node_runner.messenger(),
         processor.bound_core_node(),
         processor.bound_instance_id(),
-        processor.node_name(),
+        as_identity,
     )
     .await?;
 
@@ -445,11 +452,14 @@ async fn run_post_setup_services(
 ) -> Result<()> {
     let processor = node_runner.processor();
 
+    let as_identity =
+        crate::messaging::SenderTarget::node(processor.node_name(), processor.node_tag())?;
+
     let health_handle = listen_for_node_health(
         node_runner.messenger(),
         processor.bound_core_node(),
         processor.bound_instance_id(),
-        processor.node_name(),
+        as_identity,
     )
     .await?;
 

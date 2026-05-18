@@ -10,6 +10,7 @@ use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
 use peppylib::core_node::transport::poll_node_info as transport_poll_node_info;
 use peppylib::messaging::MessengerHandle;
+use peppylib::messaging::SenderTarget;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
@@ -202,7 +203,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_1,
-            TARGET_NODE_NAME,
+            SenderTarget::node(TARGET_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("failed to start node_ready service (instance 1)"),
@@ -212,7 +213,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_1,
-            TARGET_NODE_NAME,
+            SenderTarget::node(TARGET_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("failed to start node_health service (instance 1)"),
@@ -222,7 +223,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_2,
-            TARGET_NODE_NAME,
+            SenderTarget::node(TARGET_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("failed to start node_ready service (instance 2)"),
@@ -232,7 +233,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_2,
-            TARGET_NODE_NAME,
+            SenderTarget::node(TARGET_NODE_NAME, "v1").expect("test target"),
         )
         .await
         .expect("failed to start node_health service (instance 2)"),
@@ -243,6 +244,7 @@ async fn node_info_has_instance_ids() {
     let runtime_config_json5_1 = common::default_runtime_config_json5(
         &started_core_node.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID_1,
     );
     let start_response_1 = send_node_run_and_wait(
@@ -268,6 +270,7 @@ async fn node_info_has_instance_ids() {
     let runtime_config_json5_2 = common::default_runtime_config_json5(
         &started_core_node.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID_2,
     );
     let start_response_2 = send_node_run_and_wait(

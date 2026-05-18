@@ -132,6 +132,7 @@ async fn services_communication_no_to_instance_id() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -195,6 +196,7 @@ fn main() -> Result<()> {
             framework: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -426,6 +428,7 @@ async fn services_communication_exposed_service_without_request_body() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -486,6 +489,7 @@ fn main() -> Result<()> {
             framework: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -708,6 +712,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_to_i
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -770,6 +775,7 @@ fn main() -> Result<()> {
             framework: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -832,6 +838,7 @@ fn main() -> Result<()> {
             framework: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();

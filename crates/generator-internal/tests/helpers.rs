@@ -5,7 +5,7 @@ use config::consts::{
 };
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::io::Read;
@@ -359,8 +359,7 @@ pub async fn wait_for_service_reachable_or_exit(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
-            to_node_name,
-            Iface::native(),
+            SenderTarget::node(to_node_name, "v1").expect("test target"),
             to_service_name,
             ctx.to_core_node,
             to_instance_id,
@@ -416,8 +415,7 @@ pub async fn wait_for_action_service_reachable_or_exit(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
-            to_node_name,
-            Iface::native(),
+            SenderTarget::node(to_node_name, "v1").expect("test target"),
             to_action_name,
             ctx.to_core_node,
             to_instance_id,
@@ -493,8 +491,7 @@ pub async fn send_shutdown(
         messenger,
         bound_core_node,
         sender_instance_id,
-        to_node_name,
-        Iface::native(),
+        SenderTarget::node(to_node_name, "v1").expect("test target"),
         SHUTDOWN_SERVICE,
         to_core_node,
         Some(to_instance_id),
@@ -526,8 +523,7 @@ pub async fn try_send_shutdown(
         messenger,
         bound_core_node,
         sender_instance_id,
-        to_node_name,
-        Iface::native(),
+        SenderTarget::node(to_node_name, "v1").expect("test target"),
         SHUTDOWN_SERVICE,
         to_core_node,
         Some(to_instance_id),

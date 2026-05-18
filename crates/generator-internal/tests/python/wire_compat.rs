@@ -90,6 +90,7 @@ fn build_runtime_config(
             framework: Default::default(),
         },
         node_name,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();

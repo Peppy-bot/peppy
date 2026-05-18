@@ -1,5 +1,5 @@
 use config::node::QoSProfile;
-use peppylib::messaging::{Iface, MessengerHandle, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, SenderTarget, TopicMessenger};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::time::Duration;
@@ -29,8 +29,7 @@ async fn topic_messenger_communication() {
         &receiver_handle,
         core_node,
         instance_id,
-        node_name,
-        Iface::native(),
+        Some(SenderTarget::node(node_name, "v1").expect("test target")),
         topic_name,
         None, // Accept messages from any core node
         None, // Accept messages from any instance
@@ -47,8 +46,7 @@ async fn topic_messenger_communication() {
         &sender_handle,
         core_node,
         instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, "v1").expect("test target"),
         topic_name,
         QoSProfile::Reliable,
         payload.clone(),

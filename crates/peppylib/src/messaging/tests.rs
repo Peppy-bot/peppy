@@ -9,7 +9,9 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use crate::error::Error;
-use crate::messaging::{ActionMessenger, Iface, MessengerHandle, ServiceMessenger, TopicMessenger};
+use crate::messaging::{
+    ActionMessenger, MessengerHandle, SenderTarget, ServiceMessenger, TopicMessenger,
+};
 
 #[derive(Clone)]
 struct ActionClientCase {
@@ -113,8 +115,7 @@ async fn topic_publish_subscribe_no_from_instance_id() {
         &subscriber_handle,
         subscriber_core_node,
         subscriber_instance_id,
-        node_name,
-        Iface::native(),
+        Some(SenderTarget::node(node_name, "v1").expect("test target")),
         topic,
         None, // Accepts any core node that emits
         None, // Accepts any instance id that emits
@@ -133,8 +134,7 @@ async fn topic_publish_subscribe_no_from_instance_id() {
         &emitter_handle,
         emitter_core_node,
         emitter_instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, "v1").expect("test target"),
         topic,
         qos,
         payload.clone(),
@@ -181,8 +181,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         &subscriber_handle,
         subscriber_core_node,
         subscriber_instance_id1,
-        node_name,
-        Iface::native(),
+        Some(SenderTarget::node(node_name, "v1").expect("test target")),
         topic,
         Some(emitter_core_node),
         Some(emitter_instance_id1),
@@ -197,8 +196,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         &subscriber_handle,
         subscriber_core_node,
         subscriber_instance_id2,
-        node_name,
-        Iface::native(),
+        Some(SenderTarget::node(node_name, "v1").expect("test target")),
         topic,
         Some(emitter_core_node),
         Some(emitter_instance_id2),
@@ -215,8 +213,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         &emitter_handle1,
         emitter_core_node,
         emitter_instance_id2,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, "v1").expect("test target"),
         topic,
         qos,
         payload.clone(),
@@ -271,8 +268,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
         &subscriber_handle,
         subscriber_core_node1,
         subscriber_instance_id,
-        node_name,
-        Iface::native(),
+        Some(SenderTarget::node(node_name, "v1").expect("test target")),
         topic,
         Some(emitter_core_node1),
         Some(emitter_instance_id),
@@ -287,8 +283,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
         &subscriber_handle,
         subscriber_core_node2,
         subscriber_instance_id,
-        node_name,
-        Iface::native(),
+        Some(SenderTarget::node(node_name, "v1").expect("test target")),
         topic,
         Some(emitter_core_node2),
         Some(emitter_instance_id),
@@ -305,8 +300,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
         &emitter_handle1,
         emitter_core_node2,
         emitter_instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, "v1").expect("test target"),
         topic,
         qos,
         payload.clone(),
@@ -352,8 +346,7 @@ async fn topic_publish_reliable_5000hz_messages() {
         &receiver_handle,
         subscriber_core_node,
         subscriber_instance_id,
-        node_name,
-        Iface::native(),
+        Some(SenderTarget::node(node_name, "v1").expect("test target")),
         topic,
         None,
         None,
@@ -378,8 +371,7 @@ async fn topic_publish_reliable_5000hz_messages() {
             &sender_handle,
             emitter_core_node,
             emitter_instance_id,
-            node_name,
-            Iface::native(),
+            SenderTarget::node(node_name, "v1").expect("test target"),
             topic,
             qos.clone(),
             payload,
@@ -470,8 +462,7 @@ async fn service_communication_poll_no_instance_id_target() {
             &service_expose_handle,
             listener_core_node1,
             listener_instance_id1,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
         )
         .await
@@ -517,8 +508,7 @@ async fn service_communication_poll_no_instance_id_target() {
             &service_expose_handle,
             listener_core_node2,
             listener_instance_id2,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
         )
         .await
@@ -578,8 +568,7 @@ async fn service_communication_poll_no_instance_id_target() {
             &caller_handle,
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
             None, // Here we don't specify any node
             None, // We don't specify any instance_id target either
@@ -652,8 +641,7 @@ async fn service_communication_poll_specific_instance_id() {
             &service_expose_handle,
             listener_core_node1,
             listener_instance_id1,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
         )
         .await
@@ -688,8 +676,7 @@ async fn service_communication_poll_specific_instance_id() {
             &service_expose_handle,
             listener_core_node2,
             listener_instance_id2,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
         )
         .await
@@ -747,8 +734,7 @@ async fn service_communication_poll_specific_instance_id() {
             &caller_handle,
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
             None,                        // Here we don't specify any target core node
             Some(listener_instance_id2), // We specify listener_instance_id2 as the target
@@ -817,8 +803,7 @@ async fn service_communication_poll_wrong_node() {
             &service_expose_handle,
             listener_core_node,
             listener_instance_id,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
         )
         .await
@@ -866,8 +851,7 @@ async fn service_communication_poll_wrong_node() {
                 &caller_handle,
                 CALLER_CORE_NODE,
                 CALLER_INSTANCE_ID,
-                listener_node_name,
-                Iface::native(),
+                SenderTarget::node(listener_node_name, "v1").expect("test target"),
                 listener_service_name,
                 None,               // to_core_node
                 Some("wrong_node"), // Use a wrong instance_id here
@@ -951,8 +935,7 @@ async fn service_communication_poll_wrong_core_node() {
             &service_expose_handle,
             listener_core_node,
             listener_instance_id,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
         )
         .await
@@ -999,8 +982,7 @@ async fn service_communication_poll_wrong_core_node() {
             &caller_handle,
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
             Some("wrong_core_node"), // to_core_node - wrong one!
             None,                    // no specific to_instance_id
@@ -1061,8 +1043,7 @@ async fn service_communication_fails_service_not_started() {
             &caller_handle,
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
             None,
             None,
@@ -1126,8 +1107,7 @@ async fn service_communication_fails_service_timeouts() {
             &service_expose_handle,
             listener_core_node,
             listener_instance_id,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
         )
         .await
@@ -1188,8 +1168,7 @@ async fn service_communication_fails_service_timeouts() {
             &caller_handle,
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
             None,
             None,
@@ -1209,8 +1188,7 @@ async fn service_communication_fails_service_timeouts() {
             &caller_handle,
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
             None,
             None,
@@ -1289,8 +1267,7 @@ async fn service_handle_request_processes_multiple_messages() {
             &service_expose_handle,
             listener_core_node,
             listener_instance_id,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
         )
         .await
@@ -1331,8 +1308,7 @@ async fn service_handle_request_processes_multiple_messages() {
                 &caller_handle,
                 CALLER_CORE_NODE,
                 CALLER_INSTANCE_ID,
-                listener_node_name,
-                Iface::native(),
+                SenderTarget::node(listener_node_name, "v1").expect("test target"),
                 listener_service_name,
                 None,
                 Some(listener_instance_id),
@@ -1394,8 +1370,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
             &service_expose_handle,
             listener_core_node,
             listener_instance_id,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_service_name,
         )
         .await
@@ -1475,8 +1450,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         &caller_handle,
                         CALLER_CORE_NODE,
                         &caller_id,
-                        listener_node_name,
-                        Iface::native(),
+                        SenderTarget::node(listener_node_name, "v1").expect("test target"),
                         listener_service_name,
                         None,
                         Some(listener_instance_id),
@@ -1576,8 +1550,7 @@ async fn action_communication_no_instance_id_target() {
                 &action_handle,
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
-                listener_node_name,
-                Iface::native(),
+                SenderTarget::node(listener_node_name, "v1").expect("test target"),
                 listener_action_name,
             )
             .await
@@ -1674,8 +1647,7 @@ async fn action_communication_no_instance_id_target() {
             &caller_handle,
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_action_name,
             None, // No target core_id
             None, // No target instance_id
@@ -1764,8 +1736,7 @@ async fn action_communication_with_instance_id_target() {
                 &action_handle,
                 LISTENER_CORE_NODE1,
                 LISTENER_INSTANCE_ID1,
-                listener_node_name,
-                Iface::native(),
+                SenderTarget::node(listener_node_name, "v1").expect("test target"),
                 listener_action_name,
             )
             .await
@@ -1812,8 +1783,7 @@ async fn action_communication_with_instance_id_target() {
                 &action_handle,
                 LISTENER_CORE_NODE2,
                 LISTENER_INSTANCE_ID2,
-                listener_node_name,
-                Iface::native(),
+                SenderTarget::node(listener_node_name, "v1").expect("test target"),
                 listener_action_name,
             )
             .await
@@ -1910,8 +1880,7 @@ async fn action_communication_with_instance_id_target() {
             &caller_handle,
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
-            listener_node_name,
-            Iface::native(),
+            SenderTarget::node(listener_node_name, "v1").expect("test target"),
             listener_action_name,
             Some(LISTENER_CORE_NODE2),
             Some(LISTENER_INSTANCE_ID2),
@@ -2005,8 +1974,7 @@ async fn action_communication_goal_cancelled() {
                 &action_handle,
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
-                listener_node_name,
-                Iface::native(),
+                SenderTarget::node(listener_node_name, "v1").expect("test target"),
                 listener_action_name,
             )
             .await
@@ -2129,8 +2097,7 @@ async fn action_communication_goal_cancelled() {
         &caller_handle,
         CALLER_CORE_NODE,
         CALLER_INSTANCE_ID,
-        listener_node_name,
-        Iface::native(),
+        SenderTarget::node(listener_node_name, "v1").expect("test target"),
         listener_action_name,
         Some(LISTENER_CORE_NODE),
         Some(LISTENER_INSTANCE_ID),
@@ -2262,8 +2229,7 @@ async fn single_action_communication_multiple_polls() {
                 &action_handle,
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
-                listener_node_name,
-                Iface::native(),
+                SenderTarget::node(listener_node_name, "v1").expect("test target"),
                 listener_action_name,
             )
             .await
@@ -2399,8 +2365,7 @@ async fn single_action_communication_multiple_polls() {
                 &caller_handle,
                 CALLER_CORE_NODE,
                 &case.client_id,
-                listener_node_name,
-                Iface::native(),
+                SenderTarget::node(listener_node_name, "v1").expect("test target"),
                 listener_action_name,
                 None,
                 None,

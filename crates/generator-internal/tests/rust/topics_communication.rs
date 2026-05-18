@@ -107,6 +107,7 @@ async fn topics_communication() {
             framework: Default::default(),
         },
         RECEIVER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -175,6 +176,7 @@ fn main() -> Result<()> {
             framework: Default::default(),
         },
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the receiver
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();

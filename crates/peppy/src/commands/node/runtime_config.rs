@@ -98,6 +98,14 @@ async fn print_runtime_config_async(
     };
 
     let instance_id = get_random(rng());
+    let node_tag = matching_nodes
+        .first()
+        .map(|n| n.tag.as_str())
+        .ok_or_else(|| {
+            Error::ExecutionFailed(format!(
+                "Node '{node_name}' has no tagged entries in the stack"
+            ))
+        })?;
     let runtime_config = RuntimeConfig::new(
         messaging_host.as_str(),
         messaging_port,
@@ -107,6 +115,7 @@ async fn print_runtime_config_async(
             framework: Default::default(),
         },
         node_name,
+        node_tag,
         conn.core_node_name,
     )
     .map_err(Error::PeppyConfig)?;

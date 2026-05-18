@@ -6,7 +6,7 @@ use peppylib::{ActionMessenger, MessengerHandle, Payload, PeppyError};
 use rand::rng;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 
 const NODE_NAME: &str = "hello_node";
 const ACTION_NAME: &str = "hello_action";
@@ -77,8 +77,7 @@ async fn main() {
         &sender_handle,
         &core_node_name,
         &as_instance_id,
-        NODE_NAME,
-        Iface::native(),
+        SenderTarget::node(NODE_NAME, "v1").expect("test target"),
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found
@@ -130,8 +129,7 @@ async fn main() {
         &sender_handle,
         &core_node_name,
         &as_instance_id,
-        NODE_NAME,
-        Iface::native(),
+        SenderTarget::node(NODE_NAME, "v1").expect("test target"),
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found

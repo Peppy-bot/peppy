@@ -2,7 +2,7 @@
 mod zenoh_tests {
     use bytes::Bytes;
     use pmi::{
-        Iface, MessengerBackend, Payload, PublisherQoS, SubscriberQoS, TopicWireReceiver,
+        MessengerBackend, Payload, PublisherQoS, SenderTarget, SubscriberQoS, TopicWireReceiver,
         TopicWireSender, ZenohAdapter,
     };
     use std::time::Duration;
@@ -37,8 +37,7 @@ mod zenoh_tests {
         TopicWireSender::new(
             "test_core_node",
             "test_instance",
-            "test_node",
-            Iface::native(),
+            SenderTarget::node("test_node", "v1").expect("test target"),
             as_topic_name,
         )
         .expect("valid wire fields")
@@ -50,8 +49,7 @@ mod zenoh_tests {
             "test_instance",
             None,
             None,
-            Some("test_node"),
-            Iface::native(),
+            Some(SenderTarget::node("test_node", "v1").expect("test target")),
             to_topic,
         )
         .expect("valid wire fields")

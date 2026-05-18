@@ -262,9 +262,9 @@ impl RustGenerator {
         };
 
         // Consumer-side discovery of the producer's interface namespace is the
-        // follow-up PR; for now we use native (None).
-        let iface_expr = topics::iface_expression(None);
-
+        // follow-up PR; for now we address the target by node name + tag using
+        // the consumer's own identity until the producer's `conforms_to` is
+        // threaded through.
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
@@ -280,8 +280,10 @@ impl RustGenerator {
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
-                    TARGET_NODE_NAME,
-                    #iface_expr,
+                    peppylib::messaging::SenderTarget::node(
+                        TARGET_NODE_NAME,
+                        node_runner.processor().node_tag(),
+                    )?,
                     TARGET_ACTION_NAME,
                     to_core_node,
                     to_instance_id,
@@ -1298,16 +1300,18 @@ impl LanguageGenerator for RustGenerator {
         };
 
         // Consumer-side discovery of the producer's interface namespace is the
-        // follow-up PR; for now we use native (None) since the deployment
-        // config doesn't record which interface a consumed service originates from.
-        let iface_expr = topics::iface_expression(None);
+        // follow-up PR; for now we target the producer as a node using its
+        // declared NODE_NAME and our own node_tag (placeholder until the
+        // deployment config records the producer's `conforms_to`).
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
-                NODE_NAME,
-                #iface_expr,
+                peppylib::messaging::SenderTarget::node(
+                    NODE_NAME,
+                    node_runner.processor().node_tag(),
+                )?,
                 SERVICE_NAME,
                 to_core_node,
                 to_instance_id,

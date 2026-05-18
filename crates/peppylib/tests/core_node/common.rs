@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use pmi::{ZenohAdapter, ZenohdInstance};
@@ -42,8 +42,7 @@ pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name:
             client,
             CORE_NODE,
             CLIENT_INSTANCE,
-            CORE_NODE,
-            Iface::native(),
+            SenderTarget::node(CORE_NODE, "v1").expect("test target"),
             service_name,
             Some(CORE_NODE),
             None,

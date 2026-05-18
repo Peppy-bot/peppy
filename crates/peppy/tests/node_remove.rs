@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use peppylib::core_node::transport::poll_stack_list;
+use peppylib::messaging::SenderTarget;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[test]
@@ -215,7 +216,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            SenderTarget::node(node_name, "v1").expect("test target"),
         ))
         .expect("node ready service should start");
     let _node_health_handle = rt
@@ -223,7 +224,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            SenderTarget::node(node_name, "v1").expect("test target"),
         ))
         .expect("node health service should start");
     let (_node_shutdown_handle, node_shutdown_rx) = rt
@@ -231,7 +232,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            SenderTarget::node(node_name, "v1").expect("test target"),
         ))
         .expect("node shutdown service should start");
 
@@ -357,7 +358,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            SenderTarget::node(node_name, "v1").expect("test target"),
         ))
         .expect("node ready service should start");
 
@@ -366,7 +367,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            SenderTarget::node(node_name, "v1").expect("test target"),
         ))
         .expect("node health service should start");
 
@@ -375,7 +376,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            SenderTarget::node(node_name, "v1").expect("test target"),
         ))
         .expect("node shutdown service should start");
 

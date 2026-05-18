@@ -20,6 +20,7 @@ use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 use peppylib::core_node::transport::poll_stack_list;
+use peppylib::messaging::SenderTarget;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 fn write_node_config(
@@ -178,18 +179,30 @@ async fn node_launch_command_succeed() {
 
     let instance_id = "node_b_instance";
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle =
-        listen_for_node_ready(&node_messenger, &core_node_name, instance_id, node_b_name)
-            .await
-            .expect("node ready service should start");
-    let _node_health_handle =
-        listen_for_node_health(&node_messenger, &core_node_name, instance_id, node_b_name)
-            .await
-            .expect("node health service should start");
-    let (_node_shutdown_handle, _node_shutdown_rx) =
-        listen_for_shutdown(&node_messenger, &core_node_name, instance_id, node_b_name)
-            .await
-            .expect("node shutdown service should start");
+    let _node_ready_handle = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        SenderTarget::node(node_b_name, "v1").expect("test target"),
+    )
+    .await
+    .expect("node ready service should start");
+    let _node_health_handle = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        SenderTarget::node(node_b_name, "v1").expect("test target"),
+    )
+    .await
+    .expect("node health service should start");
+    let (_node_shutdown_handle, _node_shutdown_rx) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        SenderTarget::node(node_b_name, "v1").expect("test target"),
+    )
+    .await
+    .expect("node shutdown service should start");
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let node_b_path = nodes_dir.path().join(node_b_name);

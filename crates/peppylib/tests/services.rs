@@ -1,4 +1,4 @@
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
@@ -31,8 +31,7 @@ async fn service_messenger_communication() {
         &server_handle,
         core_node,
         instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, "v1").expect("test target"),
         service_name,
     )
     .await
@@ -55,8 +54,7 @@ async fn service_messenger_communication() {
         &client_handle,
         core_node,
         instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, "v1").expect("test target"),
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -109,8 +107,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         &native_handle,
         core_node,
         instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, "v1").expect("test target"),
         service_name,
     )
     .await
@@ -131,8 +128,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         &iface_handle,
         core_node,
         instance_id,
-        node_name,
-        Iface::new(iface_name, iface_tag).expect("valid iface"),
+        SenderTarget::interface(iface_name, iface_tag).expect("test target"),
         service_name,
     )
     .await
@@ -156,8 +152,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         &caller_handle,
         core_node,
         instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, "v1").expect("test target"),
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -177,8 +172,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         &caller_handle,
         core_node,
         instance_id,
-        node_name,
-        Iface::new(iface_name, iface_tag).expect("valid iface"),
+        SenderTarget::interface(iface_name, iface_tag).expect("test target"),
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -227,8 +221,7 @@ async fn service_iface_tag_hyphen_normalized() {
         &server_handle,
         core_node,
         instance_id,
-        node_name,
-        Iface::new(iface_name, "v2-stable").expect("valid iface"),
+        SenderTarget::interface(iface_name, "v2-stable").expect("test target"),
         service_name,
     )
     .await
@@ -249,8 +242,7 @@ async fn service_iface_tag_hyphen_normalized() {
         &client_handle,
         core_node,
         instance_id,
-        node_name,
-        Iface::new(iface_name, "v2_stable").expect("valid iface"),
+        SenderTarget::interface(iface_name, "v2_stable").expect("test target"),
         service_name,
         Some(core_node),
         Some(instance_id),

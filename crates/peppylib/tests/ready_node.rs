@@ -3,7 +3,7 @@ mod common;
 use common::{
     CALLER_INSTANCE_ID, TEST_CORE_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
 };
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::{
     messaging::{MessengerHandle, ServiceMessenger},
     services::ready::listen_for_node_ready,
@@ -22,7 +22,7 @@ async fn ready_node() {
         &server_handle,
         TEST_CORE_NODE_NAME,
         TEST_INSTANCE_ID,
-        TEST_NODE_NAME,
+        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
     )
     .await
     .expect("failed to start ready service");
@@ -52,8 +52,7 @@ async fn ready_node() {
             &client.caller_handle,
             &client.core_node_name,
             CALLER_INSTANCE_ID,
-            TEST_NODE_NAME,
-            Iface::native(),
+            SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
             peppylib::messaging::NODE_READY_SERVICE,
             to_core_node,
             to_instance_id,
