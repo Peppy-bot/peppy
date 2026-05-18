@@ -6,6 +6,11 @@ fn seg(value: &str) -> Segment {
     Segment::try_from(value).expect("test segment value should be valid")
 }
 
+/// Test-local shorthand: build a node-shaped target with the standard test tag.
+fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, "v1").expect("test node target")
+}
+
 // ─── InterfaceIdentifier ──────────────────────────────────────────────────
 
 #[test]
@@ -81,7 +86,7 @@ fn sender_target_interface_discriminator_is_interface() {
 
 #[test]
 fn sender_target_node_discriminator_is_node() {
-    let target = SenderTarget::node("uvc_camera", "v1").expect("valid node target");
+    let target = test_node_target("uvc_camera");
     assert_eq!(target.discriminator(), "node");
     assert_eq!(target.name(), "uvc_camera");
     assert_eq!(target.tag(), "v1");
@@ -92,7 +97,7 @@ fn sender_target_node_discriminator_is_node() {
 #[test]
 fn sender_target_interface_and_node_with_same_name_tag_are_distinct() {
     let interface = SenderTarget::interface("widget", "v1").expect("valid interface target");
-    let node = SenderTarget::node("widget", "v1").expect("valid node target");
+    let node = test_node_target("widget");
     assert_ne!(interface, node);
     assert_ne!(interface.discriminator(), node.discriminator());
 }
@@ -124,7 +129,7 @@ fn sample_action_sender() -> ActionWireSender {
         as_instance_id: seg("caller_inst"),
         to_core_node: Some(seg("target_core")),
         to_instance_id: Some(seg("target_inst")),
-        to_target: SenderTarget::node("robot_arm", "v1").expect("valid node target"),
+        to_target: test_node_target("robot_arm"),
         to_action_name: seg("pick_place"),
     }
 }

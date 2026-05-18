@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use peppylib::core_node::transport::poll_stack_list;
-use peppylib::messaging::SenderTarget;
+
+use super::common::test_node_target;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[test]
@@ -220,7 +221,7 @@ fn node_add_command_with_run_arg_succeeds() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            SenderTarget::node(node_name, "v1").expect("test target"),
+            test_node_target(node_name),
         ))
         .expect("node ready service should start");
     let _node_health_handle = rt
@@ -228,7 +229,7 @@ fn node_add_command_with_run_arg_succeeds() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            SenderTarget::node(node_name, "v1").expect("test target"),
+            test_node_target(node_name),
         ))
         .expect("node health service should start");
 
@@ -545,7 +546,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            SenderTarget::node(node_name, "v1").expect("test target"),
+            test_node_target(node_name),
         ))
         .expect("node ready service should start");
     let _node_health_handle = rt
@@ -553,7 +554,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            SenderTarget::node(node_name, "v1").expect("test target"),
+            test_node_target(node_name),
         ))
         .expect("node health service should start");
     let (_node_shutdown_handle, _shutdown_rx) = rt
@@ -561,7 +562,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            SenderTarget::node(node_name, "v1").expect("test target"),
+            test_node_target(node_name),
         ))
         .expect("node shutdown service should start");
 
@@ -734,7 +735,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            SenderTarget::node(node_name, "v1").expect("test target"),
+            test_node_target(node_name),
         ))
         .expect("node ready service should start");
     let _node_health_handle = rt
@@ -742,7 +743,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            SenderTarget::node(node_name, "v1").expect("test target"),
+            test_node_target(node_name),
         ))
         .expect("node health service should start");
     let (_node_shutdown_handle, _shutdown_rx) = rt
@@ -750,7 +751,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            SenderTarget::node(node_name, "v1").expect("test target"),
+            test_node_target(node_name),
         ))
         .expect("node shutdown service should start");
 

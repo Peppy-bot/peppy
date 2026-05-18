@@ -1,9 +1,11 @@
+mod common;
+
+use common::test_node_target;
 use config::node::QoSProfile;
 use peppylib::PeppyError;
-use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, EmptyPayloadError, MessengerHandle,
-    NonEmptyPayload,
+    NonEmptyPayload, SenderTarget,
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
@@ -38,7 +40,7 @@ async fn action_messenger_communication() {
         &server_handle,
         core_node,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
         action_name,
     )
     .await
@@ -103,7 +105,7 @@ async fn action_messenger_communication() {
         &client_handle,
         core_node,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -173,7 +175,7 @@ async fn setup_goal_handshake(
         &server_handle,
         core_node,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
         action_name,
     )
     .await
@@ -215,7 +217,7 @@ async fn setup_goal_handshake(
         &client_handle,
         core_node,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -394,7 +396,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         &native_handle,
         core_node,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
         action_name,
     )
     .await
@@ -454,7 +456,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         &caller_handle,
         core_node,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
         action_name,
         Some(core_node),
         Some(instance_id),

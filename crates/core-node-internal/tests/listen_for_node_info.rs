@@ -10,7 +10,6 @@ use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
 use peppylib::core_node::transport::poll_node_info as transport_poll_node_info;
 use peppylib::messaging::MessengerHandle;
-use peppylib::messaging::SenderTarget;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
@@ -203,7 +202,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_1,
-            SenderTarget::node(TARGET_NODE_NAME, "v1").expect("test target"),
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_ready service (instance 1)"),
@@ -213,7 +212,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_1,
-            SenderTarget::node(TARGET_NODE_NAME, "v1").expect("test target"),
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_health service (instance 1)"),
@@ -223,7 +222,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_2,
-            SenderTarget::node(TARGET_NODE_NAME, "v1").expect("test target"),
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_ready service (instance 2)"),
@@ -233,7 +232,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_2,
-            SenderTarget::node(TARGET_NODE_NAME, "v1").expect("test target"),
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_health service (instance 2)"),

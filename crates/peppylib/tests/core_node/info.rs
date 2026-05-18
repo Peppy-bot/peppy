@@ -8,8 +8,9 @@ use peppylib::runtime::NodeRunner;
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
-use super::common::{CORE_NODE, SERVER_INSTANCE, start_router_and_runner, wait_until_reachable};
-use peppylib::messaging::SenderTarget;
+use super::common::{
+    CORE_NODE, SERVER_INSTANCE, start_router_and_runner, test_node_target, wait_until_reachable,
+};
 
 /// Spins up a single-shot `INFO` listener that returns `response` verbatim.
 async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
@@ -17,7 +18,7 @@ async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
         &server,
         CORE_NODE,
         SERVER_INSTANCE,
-        SenderTarget::node(CORE_NODE, "v1").expect("test target"),
+        test_node_target(CORE_NODE),
         names::INFO,
     )
     .await

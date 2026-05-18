@@ -8,7 +8,6 @@ use config::node::Name;
 use core_node_api::encoding::NodeStopRequest;
 use peppylib::core_node::transport::poll_node_stop;
 use peppylib::messaging::MessengerHandle;
-use peppylib::messaging::SenderTarget;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
@@ -102,7 +101,7 @@ async fn listen_for_node_stop_success() {
         &shutdown_handle,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
-        SenderTarget::node(TARGET_NODE_NAME, "v1").expect("test target"),
+        common::test_node_target(TARGET_NODE_NAME),
     )
     .await
     .expect("failed to start shutdown service");
@@ -128,7 +127,7 @@ async fn listen_for_node_stop_success() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
-        SenderTarget::node(&started_core_node.core_node_name, "v1").expect("test target"),
+        common::test_node_target(&started_core_node.core_node_name),
         &started_core_node.core_node_name,
         Duration::from_secs(10),
     )
@@ -167,7 +166,7 @@ async fn listen_for_node_stop_fails_when_instance_id_not_found() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
-        SenderTarget::node(&started_core_node.core_node_name, "v1").expect("test target"),
+        common::test_node_target(&started_core_node.core_node_name),
         &started_core_node.core_node_name,
         Duration::from_secs(5),
     )

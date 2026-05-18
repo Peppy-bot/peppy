@@ -1,5 +1,7 @@
-use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+mod common;
+
+use common::test_node_target;
+use peppylib::messaging::{MessengerHandle, SenderTarget, ServiceMessenger};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::time::Duration;
@@ -31,7 +33,7 @@ async fn service_messenger_communication() {
         &server_handle,
         core_node,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
         service_name,
     )
     .await
@@ -54,7 +56,7 @@ async fn service_messenger_communication() {
         &client_handle,
         core_node,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -107,7 +109,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         &native_handle,
         core_node,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
         service_name,
     )
     .await
@@ -152,7 +154,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         &caller_handle,
         core_node,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
         service_name,
         Some(core_node),
         Some(instance_id),

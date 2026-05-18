@@ -19,6 +19,10 @@ use tokio::sync::Mutex;
 
 static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
 
+fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, "v1").expect("test node target")
+}
+
 const RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn wait_for_subscriber_discovery() {
@@ -67,7 +71,7 @@ async fn topic_native_roundtrip() {
     let sender = TopicWireSender::new(
         "core_pub",
         "publisher_inst",
-        SenderTarget::node("uvc_camera", "v1").expect("test target"),
+        test_node_target("uvc_camera"),
         "video_stream",
     )
     .expect("valid wire fields");
@@ -76,7 +80,7 @@ async fn topic_native_roundtrip() {
         "subscriber_inst",
         Some("core_pub"),
         Some("publisher_inst"),
-        Some(SenderTarget::node("uvc_camera", "v1").expect("test target")),
+        Some(test_node_target("uvc_camera")),
         "video_stream",
     )
     .expect("valid wire fields");
@@ -159,7 +163,7 @@ async fn topic_wildcard_subscriber() {
     let sender = TopicWireSender::new(
         "any_publisher_core",
         "any_publisher_inst",
-        SenderTarget::node("uvc_camera", "v1").expect("test target"),
+        test_node_target("uvc_camera"),
         "frames",
     )
     .expect("valid wire fields");
@@ -169,7 +173,7 @@ async fn topic_wildcard_subscriber() {
         "subscriber_inst",
         None,
         None,
-        Some(SenderTarget::node("uvc_camera", "v1").expect("test target")),
+        Some(test_node_target("uvc_camera")),
         "frames",
     )
     .expect("valid wire fields");
@@ -202,7 +206,7 @@ fn service_receiver() -> ServiceWireReceiver {
     ServiceWireReceiver::new(
         "server_core",
         "server_inst",
-        SenderTarget::node("robot_arm", "v1").expect("test target"),
+        test_node_target("robot_arm"),
         "ping",
         ServiceKind::Service,
     )
@@ -215,7 +219,7 @@ fn service_sender(to_core_node: Option<&str>, to_instance_id: Option<&str>) -> S
         "client_inst",
         to_core_node,
         to_instance_id,
-        SenderTarget::node("robot_arm", "v1").expect("test target"),
+        test_node_target("robot_arm"),
         "ping",
         ServiceKind::Service,
     )
@@ -299,7 +303,7 @@ fn action_receiver() -> ActionWireReceiver {
     ActionWireReceiver::new(
         "server_core",
         "server_inst",
-        SenderTarget::node("robot_arm", "v1").expect("test target"),
+        test_node_target("robot_arm"),
         "pick_place",
     )
     .expect("valid wire fields")
@@ -311,7 +315,7 @@ fn action_sender() -> ActionWireSender {
         "client_inst",
         Some("server_core"),
         Some("server_inst"),
-        SenderTarget::node("robot_arm", "v1").expect("test target"),
+        test_node_target("robot_arm"),
         "pick_place",
     )
     .expect("valid wire fields")

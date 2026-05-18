@@ -24,6 +24,14 @@ pub fn test_peppy_dirs() -> PeppyDirs {
     PeppyDirs::default()
 }
 
+pub const TEST_NODE_TAG: &str = "v1";
+
+/// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
+/// invalid names — tests use known-good values only.
+pub fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
+}
+
 pub const STUB_NODE_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: {
@@ -359,7 +367,7 @@ pub async fn wait_for_service_reachable_or_exit(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
-            SenderTarget::node(to_node_name, "v1").expect("test target"),
+            test_node_target(to_node_name),
             to_service_name,
             ctx.to_core_node,
             to_instance_id,
@@ -415,7 +423,7 @@ pub async fn wait_for_action_service_reachable_or_exit(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
-            SenderTarget::node(to_node_name, "v1").expect("test target"),
+            test_node_target(to_node_name),
             to_action_name,
             ctx.to_core_node,
             to_instance_id,
@@ -491,7 +499,7 @@ pub async fn send_shutdown(
         messenger,
         bound_core_node,
         sender_instance_id,
-        SenderTarget::node(to_node_name, "v1").expect("test target"),
+        test_node_target(to_node_name),
         SHUTDOWN_SERVICE,
         to_core_node,
         Some(to_instance_id),
@@ -523,7 +531,7 @@ pub async fn try_send_shutdown(
         messenger,
         bound_core_node,
         sender_instance_id,
-        SenderTarget::node(to_node_name, "v1").expect("test target"),
+        test_node_target(to_node_name),
         SHUTDOWN_SERVICE,
         to_core_node,
         Some(to_instance_id),

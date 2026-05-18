@@ -13,7 +13,8 @@ use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 
 use peppylib::core_node::transport::{poll_node_info, poll_stack_list};
-use peppylib::messaging::SenderTarget;
+
+use super::common::test_node_target;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -135,7 +136,7 @@ async fn node_run_command_succeeds() {
         &node_messenger,
         &core_node_name,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
     )
     .await
     .expect("node ready service should start");
@@ -143,7 +144,7 @@ async fn node_run_command_succeeds() {
         &node_messenger,
         &core_node_name,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
     )
     .await
     .expect("node health service should start");
@@ -363,7 +364,7 @@ async fn node_run_command_with_args_succeeds() {
         &node_messenger,
         &core_node_name,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
     )
     .await
     .expect("node ready service should start");
@@ -371,7 +372,7 @@ async fn node_run_command_with_args_succeeds() {
         &node_messenger,
         &core_node_name,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
     )
     .await
     .expect("node health service should start");
@@ -566,7 +567,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         &node_messenger,
         &core_node_name,
         custom_instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
     )
     .await
     .expect("node ready service should start");
@@ -574,7 +575,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         &node_messenger,
         &core_node_name,
         custom_instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
     )
     .await
     .expect("node health service should start");
@@ -746,7 +747,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         &node_messenger,
         &core_node_name,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
     )
     .await
     .expect("node ready service should start");
@@ -754,7 +755,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         &node_messenger,
         &core_node_name,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
     )
     .await
     .expect("node health service should start");
@@ -914,7 +915,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         &node_messenger,
         &core_node_name,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
     )
     .await
     .expect("node ready service should start");
@@ -922,7 +923,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         &node_messenger,
         &core_node_name,
         instance_id,
-        SenderTarget::node(node_name, "v1").expect("test target"),
+        test_node_target(node_name),
     )
     .await
     .expect("node health service should start");

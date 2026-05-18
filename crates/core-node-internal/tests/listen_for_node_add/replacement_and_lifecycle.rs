@@ -1,5 +1,4 @@
 use super::*;
-use peppylib::messaging::SenderTarget;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents() {
@@ -517,7 +516,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
-        SenderTarget::node(&started_core_node.core_node_name, "v1").expect("test target"),
+        common::test_node_target(&started_core_node.core_node_name),
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,
@@ -668,7 +667,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         &instance_messenger,
         &started_core_node.core_node_name,
         INSTANCE_1,
-        SenderTarget::node(NODE_NAME, "v1").expect("test target"),
+        common::test_node_target(NODE_NAME),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -701,7 +700,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         &instance_messenger,
         &started_core_node.core_node_name,
         INSTANCE_2,
-        SenderTarget::node(NODE_NAME, "v1").expect("test target"),
+        common::test_node_target(NODE_NAME),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -979,7 +978,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         &instance_messenger,
         &started_core_node.core_node_name,
         INSTANCE_ID,
-        SenderTarget::node(DEPENDENCY_NODE_NAME, "v1").expect("test target"),
+        common::test_node_target(DEPENDENCY_NODE_NAME),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -1192,7 +1191,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         &instance_messenger,
         &started_core_node.core_node_name,
         INSTANCE_ID,
-        SenderTarget::node(DEPENDENCY_NODE_NAME, "v1").expect("test target"),
+        common::test_node_target(DEPENDENCY_NODE_NAME),
         SHUTDOWN_SERVICE,
     )
     .await
@@ -1420,7 +1419,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         &instance_messenger,
         &started_core_node.core_node_name,
         INSTANCE_ID,
-        SenderTarget::node(DEPENDENCY_NODE_NAME, "v1").expect("test target"),
+        common::test_node_target(DEPENDENCY_NODE_NAME),
         SHUTDOWN_SERVICE,
     )
     .await

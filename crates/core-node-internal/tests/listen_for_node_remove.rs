@@ -8,7 +8,6 @@ use config::node::Name;
 use core_node_api::encoding::NodeRemoveRequest;
 use peppylib::core_node::transport::poll_node_remove;
 use peppylib::messaging::MessengerHandle;
-use peppylib::messaging::SenderTarget;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
@@ -194,7 +193,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         &shutdown_handle,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
-        SenderTarget::node(TARGET_NODE_NAME, "v1").expect("test target"),
+        common::test_node_target(TARGET_NODE_NAME),
     )
     .await
     .expect("failed to start shutdown service");
@@ -292,7 +291,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         &shutdown_handle,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
-        SenderTarget::node(TARGET_NODE_NAME, "v1").expect("test target"),
+        common::test_node_target(TARGET_NODE_NAME),
     )
     .await
     .expect("failed to start shutdown service");

@@ -26,6 +26,16 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Default tag used by tests when building a [`SenderTarget`]. Matches the
+/// `manifest.tag` value the integration test fixtures emit.
+pub const TEST_NODE_TAG: &str = "v1";
+
+/// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
+/// invalid names — tests use known-good values only.
+pub fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
+}
+
 /// Returns `Ok(())` if the payload is a "result pending" sentinel, or `Err` with a
 /// decode-failure message otherwise.
 fn check_pending_or_decode_error(
@@ -68,7 +78,7 @@ pub async fn wait_until_service_reachable(
             messenger,
             bound_core_node,
             "ready_probe",
-            peppylib::messaging::SenderTarget::node(to_node_name, "v1").expect("test target"),
+            test_node_target(to_node_name),
             to_service_name,
             Some(to_core_node),
             Some(to_instance_id),
@@ -102,7 +112,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
-        SenderTarget::node(&started.core_node_name, "v1").expect("test target"),
+        test_node_target(&started.core_node_name),
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -146,7 +156,7 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         &started.caller_handle,
         caller_core_node,
         caller_instance_id,
-        Some(SenderTarget::node(&started.core_node_name, "v1").expect("test target")),
+        Some(test_node_target(&started.core_node_name)),
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -328,7 +338,7 @@ async fn send_node_run_and_wait_internal(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        SenderTarget::node(core_node_name, "v1").expect("test target"),
+        test_node_target(core_node_name),
         names::NODE_RUN_ACTION,
         Some(core_node_name),
         None,
@@ -492,7 +502,7 @@ async fn send_node_add_and_wait_internal<'a>(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        SenderTarget::node(core_node_name, "v1").expect("test target"),
+        test_node_target(core_node_name),
         names::NODE_ADD_ACTION,
         Some(core_node_name),
         None,
@@ -612,7 +622,7 @@ pub async fn send_node_build_and_wait(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        SenderTarget::node(core_node_name, "v1").expect("test target"),
+        test_node_target(core_node_name),
         names::NODE_BUILD_ACTION,
         Some(core_node_name),
         None,
@@ -1422,7 +1432,7 @@ async fn spawn_real_running_instance_inner(
             &shutdown_handle,
             &started.core_node_name,
             instance_id.as_str(),
-            SenderTarget::node(name, "v1").expect("test target"),
+            test_node_target(name),
         )
         .await
         .expect("failed to start shutdown listener for test instance");

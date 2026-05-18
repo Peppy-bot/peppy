@@ -13,6 +13,10 @@ mod zenoh_tests {
     /// without adding time-based probes.
     static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
 
+    fn test_node_target(name: &str) -> SenderTarget {
+        SenderTarget::node(name, "v1").expect("test node target")
+    }
+
     const RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Small delay to allow Zenoh's subscriber discovery to propagate.
@@ -37,7 +41,7 @@ mod zenoh_tests {
         TopicWireSender::new(
             "test_core_node",
             "test_instance",
-            SenderTarget::node("test_node", "v1").expect("test target"),
+            test_node_target("test_node"),
             as_topic_name,
         )
         .expect("valid wire fields")
@@ -49,7 +53,7 @@ mod zenoh_tests {
             "test_instance",
             None,
             None,
-            Some(SenderTarget::node("test_node", "v1").expect("test target")),
+            Some(test_node_target("test_node")),
             to_topic,
         )
         .expect("valid wire fields")

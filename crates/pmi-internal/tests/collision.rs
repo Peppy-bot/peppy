@@ -23,6 +23,10 @@ use tokio::sync::Mutex;
 
 static COLLISION_SERIAL: Mutex<()> = Mutex::const_new(());
 
+fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, "v1").expect("test node target")
+}
+
 const RECV_TIMEOUT: Duration = Duration::from_secs(5);
 const NO_MESSAGE_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -75,7 +79,7 @@ async fn topic_node_vs_interface_no_collision() {
     let node_sender = TopicWireSender::new(
         "core_pub",
         "pub_inst_node",
-        SenderTarget::node("widget", "v1").expect("valid node target"),
+        test_node_target("widget"),
         "frames",
     )
     .unwrap();
@@ -92,7 +96,7 @@ async fn topic_node_vs_interface_no_collision() {
         "sub_inst_node",
         Some("core_pub"),
         None,
-        Some(SenderTarget::node("widget", "v1").expect("valid node target")),
+        Some(test_node_target("widget")),
         "frames",
     )
     .unwrap();
@@ -167,7 +171,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
     let node_sender = TopicWireSender::new(
         "core_pub",
         "pub_inst_node",
-        SenderTarget::node("widget", "v1").unwrap(),
+        test_node_target("widget"),
         "frames",
     )
     .unwrap();
@@ -251,7 +255,7 @@ async fn service_node_vs_interface_no_collision() {
     let node_server_receiver = ServiceWireReceiver::new(
         "server_core",
         "server_inst_node",
-        SenderTarget::node("widget", "v1").unwrap(),
+        test_node_target("widget"),
         "ping",
         ServiceKind::Service,
     )
@@ -282,7 +286,7 @@ async fn service_node_vs_interface_no_collision() {
         "caller_inst",
         Some("server_core"),
         None,
-        SenderTarget::node("widget", "v1").unwrap(),
+        test_node_target("widget"),
         "ping",
         ServiceKind::Service,
     )

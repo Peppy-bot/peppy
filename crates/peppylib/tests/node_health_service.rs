@@ -2,8 +2,8 @@ mod common;
 
 use common::{
     CALLER_INSTANCE_ID, TEST_CORE_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
+    test_node_target,
 };
-use peppylib::messaging::SenderTarget;
 use peppylib::{
     encoding::health::{NodeHealthRequest, NodeHealthResponse},
     messaging::{MessengerHandle, ServiceMessenger},
@@ -23,7 +23,7 @@ async fn node_health_request_response_roundtrip() {
         &server_handle,
         TEST_CORE_NODE_NAME,
         TEST_INSTANCE_ID,
-        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+        test_node_target(TEST_NODE_NAME),
     )
     .await
     .expect("failed to start health service");
@@ -40,7 +40,7 @@ async fn node_health_request_response_roundtrip() {
         &client.caller_handle,
         &client.core_node_name,
         CALLER_INSTANCE_ID,
-        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+        test_node_target(TEST_NODE_NAME),
         peppylib::messaging::NODE_HEALTH_SERVICE,
         Some(&client.core_node_name),
         Some(&client.instance_id),

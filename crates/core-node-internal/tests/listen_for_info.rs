@@ -5,7 +5,6 @@ use config::consts::DEFAULT_MESSAGING_PORT;
 use core_node::names;
 use core_node_api::encoding::{InfoRequest, InfoResponse};
 use peppylib::ServiceMessenger;
-use peppylib::messaging::SenderTarget;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -20,7 +19,7 @@ async fn listen_for_info_success() {
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
-        SenderTarget::node(&started.core_node_name, "v1").expect("test target"),
+        common::test_node_target(&started.core_node_name),
         names::INFO,
         Some(&started.core_node_name),
         None,

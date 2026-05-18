@@ -1,8 +1,10 @@
+mod common;
+
+use common::test_node_target;
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
-use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::runtime::CancellationToken;
 use peppylib::runtime::NodeBuilder;
@@ -174,7 +176,7 @@ async fn daemon_runner_succeed() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+            test_node_target(TEST_NODE_NAME),
             SHUTDOWN_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -199,7 +201,7 @@ async fn daemon_runner_succeed() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+        test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -215,7 +217,7 @@ async fn daemon_runner_succeed() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -380,7 +382,7 @@ async fn node_ready_but_not_healthy() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+            test_node_target(TEST_NODE_NAME),
             NODE_READY_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -403,7 +405,7 @@ async fn node_ready_but_not_healthy() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+        test_node_target(TEST_NODE_NAME),
         NODE_READY_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -425,7 +427,7 @@ async fn node_ready_but_not_healthy() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+            test_node_target(TEST_NODE_NAME),
             SHUTDOWN_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -448,7 +450,7 @@ async fn node_ready_but_not_healthy() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+            test_node_target(TEST_NODE_NAME),
             NODE_HEALTH_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -465,7 +467,7 @@ async fn node_ready_but_not_healthy() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+        test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -496,7 +498,7 @@ async fn node_ready_but_not_healthy() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+            test_node_target(TEST_NODE_NAME),
             NODE_HEALTH_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -518,7 +520,7 @@ async fn node_ready_but_not_healthy() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+        test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -534,7 +536,7 @@ async fn node_ready_but_not_healthy() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -640,7 +642,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+            test_node_target(TEST_NODE_NAME),
             SHUTDOWN_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -664,7 +666,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SenderTarget::node(TEST_NODE_NAME, "v1").expect("test target"),
+        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
