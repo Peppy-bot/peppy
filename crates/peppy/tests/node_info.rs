@@ -171,29 +171,29 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
                 tag: "{NODE_TAG}",
                 depends_on: {
                     nodes: [
-                        { name: "camera_node", tag: "v1", local_id: "camera_node" },
-                        { name: "lidar_node", tag: "v1", local_id: "lidar_node" },
-                        { name: "config_node", tag: "v1", local_id: "config_node" },
-                        { name: "navigation_node", tag: "v1", local_id: "navigation_node" }
+                        { name: "camera_node", tag: "v1", link_id: "camera_node" },
+                        { name: "lidar_node", tag: "v1", link_id: "lidar_node" },
+                        { name: "config_node", tag: "v1", link_id: "config_node" },
+                        { name: "navigation_node", tag: "v1", link_id: "navigation_node" }
                     ]
                 }
             },
             interfaces: {
                 topics: {
                     consumes: [
-                        { local_node_id: "camera_node", name: "video_stream" },
-                        { local_node_id: "lidar_node", name: "point_cloud" },
-                        { local_node_id: "camera_node", name: "depth_stream" }
+                        { link_id: "camera_node", name: "video_stream" },
+                        { link_id: "lidar_node", name: "point_cloud" },
+                        { link_id: "camera_node", name: "depth_stream" }
                     ]
                 },
                 services: {
                     consumes: [
-                        { local_node_id: "config_node", name: "get_config" }
+                        { link_id: "config_node", name: "get_config" }
                     ]
                 },
                 actions: {
                     consumes: [
-                        { local_node_id: "navigation_node", name: "go_to_pose" }
+                        { link_id: "navigation_node", name: "go_to_pose" }
                     ]
                 }
             },
@@ -290,20 +290,20 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
         .expect("consumed actions should exist");
     assert_eq!(actions.len(), 1, "should have 1 consumed action");
 
-    // Extract dependencies (unique local_node_id values) - mirrors what
+    // Extract dependencies (unique link_id values) - mirrors what
     // `format_node_info` does when rendering the "Dependencies" section.
     let mut dependencies: BTreeSet<&str> = BTreeSet::new();
     for topic in topics {
         if let config::node::ConsumedTopic::Linked(linked) = topic {
-            dependencies.insert(&linked.local_node_id);
+            dependencies.insert(&linked.link_id);
         }
     }
     for service in services {
-        dependencies.insert(&service.local_node_id);
+        dependencies.insert(&service.link_id);
     }
     for action in actions {
-        if !action.local_node_id.is_empty() {
-            dependencies.insert(&action.local_node_id);
+        if !action.link_id.is_empty() {
+            dependencies.insert(&action.link_id);
         }
     }
 

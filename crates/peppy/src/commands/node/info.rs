@@ -151,7 +151,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
         {
             for topic in expected {
                 if let config::node::ConsumedTopic::Linked(linked) = topic {
-                    dependencies.insert(&linked.local_node_id);
+                    dependencies.insert(&linked.link_id);
                 }
             }
         }
@@ -159,15 +159,15 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             && let Some(consumed) = &services.consumes
         {
             for service in consumed {
-                dependencies.insert(&service.local_node_id);
+                dependencies.insert(&service.link_id);
             }
         }
         if let Some(actions) = &config.interfaces.actions
             && let Some(consumed) = &actions.consumes
         {
             for action in consumed {
-                if !action.local_node_id.is_empty() {
-                    dependencies.insert(&action.local_node_id);
+                if !action.link_id.is_empty() {
+                    dependencies.insert(&action.link_id);
                 }
             }
         }
@@ -289,7 +289,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
                             let _ = writeln!(
                                 out,
                                 "  - {} (from node: {})",
-                                linked.name, linked.local_node_id
+                                linked.name, linked.link_id
                             );
                         }
                         config::node::ConsumedTopic::External(external) => {
@@ -308,11 +308,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Services:");
                 for service in services {
-                    let _ = writeln!(
-                        out,
-                        "  - {} (from node: {})",
-                        service.name, service.local_node_id
-                    );
+                    let _ = writeln!(out, "  - {} (from node: {})", service.name, service.link_id);
                 }
             }
 
@@ -325,11 +321,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Actions:");
                 for action in actions {
-                    let _ = writeln!(
-                        out,
-                        "  - {} (from node: {})",
-                        action.name, action.local_node_id
-                    );
+                    let _ = writeln!(out, "  - {} (from node: {})", action.name, action.link_id);
                 }
             }
         }

@@ -384,7 +384,7 @@ impl NodeStackInner {
 
                 // Interface changes can break dependents that consume this
                 // node, so they need an explicit gate. Dependency-spec
-                // changes (e.g. swapping `local_node_id` of a consumed
+                // changes (e.g. swapping `link_id` of a consumed
                 // topic) only affect *this* node's outbound edges, so they
                 // don't need the dependents check.
                 if interfaces_changed {

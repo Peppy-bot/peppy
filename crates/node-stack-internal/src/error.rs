@@ -35,12 +35,12 @@ pub enum Error {
         dependency_tag: String,
     },
     #[error(
-        "`{dependant}:{dependant_tag}` references undeclared local_node_id `{local_node_id}` in consumed interfaces"
+        "`{dependant}:{dependant_tag}` references undeclared link_id `{link_id}` in consumed interfaces"
     )]
-    UndeclaredLocalNodeId {
+    UndeclaredLinkId {
         dependant: String,
         dependant_tag: String,
-        local_node_id: String,
+        link_id: String,
     },
 
     // -- node stack errors

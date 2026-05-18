@@ -308,13 +308,9 @@ async fn handle_node_sync_request_inner(
                                 dependency_tag
                             ));
                         }
-                        node_stack::NodeStackError::UndeclaredLocalNodeId {
-                            local_node_id, ..
-                        } => {
-                            missing_interfaces.push(format!(
-                                "references undeclared local_node_id `{}`",
-                                local_node_id
-                            ));
+                        node_stack::NodeStackError::UndeclaredLinkId { link_id, .. } => {
+                            missing_interfaces
+                                .push(format!("references undeclared link_id `{}`", link_id));
                         }
                         _ => {}
                     }
@@ -589,7 +585,7 @@ async fn materialize_repo_deps(
     Ok((resolved, provenance, stack_hits))
 }
 
-/// Builds a lookup from `local_id` → `(dep_name, dep_tag)` using the node's `depends_on.nodes`.
+/// Builds a lookup from `link_id` → `(dep_name, dep_tag)` using the node's `depends_on.nodes`.
 fn build_dependency_lookup(
     manifest: &config::node::Manifest,
 ) -> std::collections::HashMap<String, (String, String)> {
@@ -601,7 +597,7 @@ fn build_dependency_lookup(
                 .iter()
                 .map(|n| {
                     (
-                        n.local_id.clone(),
+                        n.link_id.clone(),
                         (n.name.as_str().to_string(), n.tag.clone()),
                     )
                 })
@@ -654,8 +650,7 @@ pub fn collect_consumed_interfaces(
         for consumed_topic in consumed_topics {
             match consumed_topic {
                 config::node::ConsumedTopic::Linked(linked) => {
-                    let Some((dep_name, dep_tag)) = dep_lookup.get(linked.local_node_id.as_str())
-                    else {
+                    let Some((dep_name, dep_tag)) = dep_lookup.get(linked.link_id.as_str()) else {
                         continue;
                     };
                     let key = (dep_name.clone(), dep_tag.clone());
@@ -688,7 +683,7 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_services) = &service_interfaces.consumes
     {
         for consumed_service in consumed_services {
-            let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_service.local_node_id) else {
+            let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_service.link_id) else {
                 continue;
             };
             let key = (dep_name.clone(), dep_tag.clone());
@@ -715,7 +710,7 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_actions) = &action_interfaces.consumes
     {
         for consumed_action in consumed_actions {
-            let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_action.local_node_id) else {
+            let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_action.link_id) else {
                 continue;
             };
             let key = (dep_name.clone(), dep_tag.clone());

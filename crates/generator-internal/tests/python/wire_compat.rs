@@ -149,14 +149,14 @@ const ACTION_CONSUMER_CONFIG: &str = r#"{
     tag: "v1",
     depends_on: {
       nodes: [
-        { name: "producer", tag: "v1", local_id: "producer" }
+        { name: "producer", tag: "v1", link_id: "producer" }
       ]
     }
   },
   interfaces: {
     actions: {
       consumes: [
-        { local_node_id: "producer", name: "perform_scan" }
+        { link_id: "producer", name: "perform_scan" }
       ]
     }
   },
@@ -280,7 +280,7 @@ if __name__ == "__main__":
             .and_then(|s| s.response_message_format.clone()),
     };
     let consumed_action: ConsumedAction = serde_json5::from_str(&format!(
-        r#"{{ local_node_id: "{PRODUCER_NODE_NAME}", name: "{ACTION_NAME}" }}"#
+        r#"{{ link_id: "{PRODUCER_NODE_NAME}", name: "{ACTION_NAME}" }}"#
     ))
     .unwrap();
     let consumed_interface = DeploymentInterface::new(InterfaceVariant::ConsumedAction {
@@ -508,14 +508,14 @@ const SERVICE_CONSUMER_CONFIG: &str = r#"{
     tag: "v1",
     depends_on: {
       nodes: [
-        { name: "producer", tag: "v1", local_id: "producer" }
+        { name: "producer", tag: "v1", link_id: "producer" }
       ]
     }
   },
   interfaces: {
     services: {
       consumes: [
-        { local_node_id: "producer", name: "report_status" }
+        { link_id: "producer", name: "report_status" }
       ]
     }
   },
@@ -604,7 +604,7 @@ if __name__ == "__main__":
         .expect("exposed service present in producer config");
 
     let consumed_service: ConsumedService = serde_json5::from_str(&format!(
-        r#"{{ local_node_id: "{PRODUCER_NODE_NAME}", name: "{SERVICE_NAME}" }}"#
+        r#"{{ link_id: "{PRODUCER_NODE_NAME}", name: "{SERVICE_NAME}" }}"#
     ))
     .unwrap();
     let consumed_interface = DeploymentInterface::new(InterfaceVariant::ConsumedService {
@@ -825,14 +825,14 @@ const TOPIC_CONSUMER_CONFIG: &str = r#"{
     tag: "v1",
     depends_on: {
       nodes: [
-        { name: "producer", tag: "v1", local_id: "producer" }
+        { name: "producer", tag: "v1", link_id: "producer" }
       ]
     }
   },
   interfaces: {
     topics: {
       consumes: [
-        { local_node_id: "producer", name: "telemetry_feed" }
+        { link_id: "producer", name: "telemetry_feed" }
       ]
     },
     services: {
@@ -924,7 +924,7 @@ if __name__ == "__main__":
         .expect("emitted topic present in producer config");
 
     let consumed_topic: ConsumedTopic = serde_json5::from_str(&format!(
-        r#"{{ local_node_id: "{PRODUCER_NODE_NAME}", name: "{TOPIC_NAME}" }}"#
+        r#"{{ link_id: "{PRODUCER_NODE_NAME}", name: "{TOPIC_NAME}" }}"#
     ))
     .unwrap();
     let consumed_interface = DeploymentInterface::new(InterfaceVariant::ConsumedTopic {

@@ -14,7 +14,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
               tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "controller", tag: "v1", local_id: "controller" }
+                  { name: "controller", tag: "v1", link_id: "controller" }
                 ]
               },
             },
@@ -22,7 +22,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
                 actions: {
                     consumes: [
                         {
-                          local_node_id: "controller",
+                          link_id: "controller",
                           name: "move_right_arm"
                         }
                     ]
@@ -149,7 +149,7 @@ fn action_dependency_fails_when_dependency_is_missing() {
               tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "controller", tag: "v1", local_id: "controller" }
+                  { name: "controller", tag: "v1", link_id: "controller" }
                 ]
               },
             },
@@ -157,7 +157,7 @@ fn action_dependency_fails_when_dependency_is_missing() {
                 actions: {
                     consumes: [
                         {
-                          local_node_id: "controller",
+                          link_id: "controller",
                           name: "move_right_arm"
                         }
                     ]
@@ -200,7 +200,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
               tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "controller", tag: "v1", local_id: "controller" }
+                  { name: "controller", tag: "v1", link_id: "controller" }
                 ]
               },
             },
@@ -208,7 +208,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
                 actions: {
                     consumes: [
                         {
-                          local_node_id: "controller",
+                          link_id: "controller",
                           name: "move_right_arm"
                         }
                     ]
@@ -311,7 +311,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
 }
 
 #[test]
-fn action_dependency_fails_when_local_node_id_is_undeclared() {
+fn action_dependency_fails_when_link_id_is_undeclared() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             peppy_schema: "node_v1",
@@ -326,7 +326,7 @@ fn action_dependency_fails_when_local_node_id_is_undeclared() {
                 actions: {
                     consumes: [
                         {
-                          local_node_id: "nonexistent",
+                          link_id: "nonexistent",
                           name: "move_right_arm"
                         }
                     ]
@@ -343,9 +343,9 @@ fn action_dependency_fails_when_local_node_id_is_undeclared() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
-    let Err(NodeStackError::UndeclaredLocalNodeId { local_node_id, .. }) = result else {
-        panic!("expected UndeclaredLocalNodeId error, got {:?}", result);
+    let Err(NodeStackError::UndeclaredLinkId { link_id, .. }) = result else {
+        panic!("expected UndeclaredLinkId error, got {:?}", result);
     };
-    assert_eq!(local_node_id, "nonexistent");
+    assert_eq!(link_id, "nonexistent");
     assert_eq!(stack.len(), 1, "stack should only have core node");
 }

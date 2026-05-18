@@ -47,7 +47,7 @@ const EMITTED_TOPIC_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 {
-  local_node_id: "uvc_camera",
+  link_id: "uvc_camera",
   name: "video_stream",
 }
 "#;

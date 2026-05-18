@@ -1000,14 +1000,14 @@ impl LanguageGenerator for RustGenerator {
                 context: "add_consumed_topic called with ConsumedTopic::External; use add_external_consumed_topic instead".into(),
             });
         };
-        let node_name = linked.local_node_id.as_str();
+        let node_name = linked.link_id.as_str();
 
         let node_component = sanitize_component(node_name);
         let topic_component = sanitize_component(linked.name.as_str());
 
         debug_assert!(
             !node_component.is_empty(),
-            "ConsumedTopic.local_node_id should be validated as non-empty"
+            "ConsumedTopic.link_id should be validated as non-empty"
         );
         debug_assert!(
             !topic_component.is_empty(),
@@ -1418,8 +1418,8 @@ impl LanguageGenerator for RustGenerator {
             all_tokens.push(deserialize_fn);
         }
 
-        let mut module_label = raw_module_label(&service.local_node_id, &service.name);
-        if module_name_from_components(&service.local_node_id, &service.name).is_empty() {
+        let mut module_label = raw_module_label(&service.link_id, &service.name);
+        if module_name_from_components(&service.link_id, &service.name).is_empty() {
             module_label = method_label
                 .strip_prefix("poll_")
                 .map(|label| label.to_string())
@@ -1587,7 +1587,7 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        let module_label = raw_module_label(&action.local_node_id, &action.name);
+        let module_label = raw_module_label(&action.link_id, &action.name);
         self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
             None,

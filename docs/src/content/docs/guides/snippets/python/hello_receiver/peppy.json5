@@ -8,7 +8,7 @@
         {
           name: "hello_world_param",
           tag: "v1",
-          local_id: "hello_world_param"
+          link_id: "hello_world_param"
         },
       ]
     },
@@ -17,7 +17,7 @@
     topics: {
       consumes: [
         {
-          local_node_id: "hello_world_param",
+          link_id: "hello_world_param",
           name: "message_stream",
         }
       ],

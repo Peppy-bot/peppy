@@ -69,7 +69,7 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 
 const CONSUMED_ACTION_EXAMPLE: &str = r#"
 {
-  local_node_id: "brain",
+  link_id: "brain",
   name: "move_arm",
 }
 "#;

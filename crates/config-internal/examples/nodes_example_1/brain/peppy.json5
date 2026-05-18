@@ -13,12 +13,12 @@
         {
           name: "uvc_camera",
           tag: "v1",
-          local_id: "uvc_camera"
+          link_id: "uvc_camera"
         },
         {
           name: "controller",
           tag: "v1",
-          local_id: "controller"
+          link_id: "controller"
         },
       ]
     },
@@ -27,7 +27,7 @@
     topics: {
       consumes: [
         {
-          local_node_id: "uvc_camera",
+          link_id: "uvc_camera",
           name: "video_stream",
         }
       ],
@@ -35,7 +35,7 @@
     services: {
       consumes: [
         {
-          local_node_id: "uvc_camera",
+          link_id: "uvc_camera",
           name: "video_stream_info",
         }
       ],
@@ -43,11 +43,11 @@
     actions: {
       consumes: [
         {
-          local_node_id: "controller",
+          link_id: "controller",
           name: "move_right_arm",
         },
         {
-          local_node_id: "controller",
+          link_id: "controller",
           name: "move_left_arm",
         }
       ],

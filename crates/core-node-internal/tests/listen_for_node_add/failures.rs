@@ -357,7 +357,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
             tag: "v1",
             depends_on: {
                 nodes: [
-                    { name: "non_existent_node", tag: "v1", local_id: "non_existent_node" }
+                    { name: "non_existent_node", tag: "v1", link_id: "non_existent_node" }
                 ]
             },
         },
@@ -423,7 +423,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
           tag: "TARGET_NODE_TAG",
           depends_on: {
             nodes: [
-              { name: "fake_uvc_camera", tag: "v1", local_id: "fake_uvc_camera" }
+              { name: "fake_uvc_camera", tag: "v1", link_id: "fake_uvc_camera" }
             ]
           },
         },
@@ -431,7 +431,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
           topics: {
             consumes: [
               {
-                local_node_id: "fake_uvc_camera",
+                link_id: "fake_uvc_camera",
                 name: "video_stream"
               },
             ],
@@ -533,7 +533,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
           tag: "TARGET_NODE_TAG",
           depends_on: {
             nodes: [
-              { name: "DEPENDENCY_NODE_NAME", tag: "DEPENDENCY_NODE_TAG", local_id: "DEPENDENCY_NODE_NAME" }
+              { name: "DEPENDENCY_NODE_NAME", tag: "DEPENDENCY_NODE_TAG", link_id: "DEPENDENCY_NODE_NAME" }
             ]
           },
         },
@@ -541,7 +541,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
           topics: {
             consumes: [
               {
-                local_node_id: "DEPENDENCY_NODE_NAME",
+                link_id: "DEPENDENCY_NODE_NAME",
                 name: "video_stream"
               },
             ],

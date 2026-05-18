@@ -168,7 +168,7 @@ mod tests {
         } else {
             let entries = deps
                 .iter()
-                .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}", local_id: "{n}" }}"#))
+                .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}", link_id: "{n}" }}"#))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("depends_on: {{ nodes: [{entries}] }},")

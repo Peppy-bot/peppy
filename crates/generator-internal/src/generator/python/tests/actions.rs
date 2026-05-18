@@ -97,7 +97,7 @@ const EXPOSED_ACTION_WITH_NESTED_FEEDBACK_EXAMPLE: &str = r#"
 // --- Subscribes examples
 pub(super) const SUBSCRIBED_ACTION_EXAMPLE1: &str = r#"
 {
-  local_node_id: "brain",
+  link_id: "brain",
   name: "move_arm",
 }
 "#;
@@ -766,10 +766,9 @@ fn consumed_two_actions_same_node() {
         result_response: Some(move_arm_result_response),
     };
 
-    // Both actions target the same source node ("brain"), so local_node_id must match.
+    // Both actions target the same source node ("brain"), so link_id must match.
     let rotate_action: ConsumedAction =
-        serde_json5::from_str(r#"{ local_node_id: "brain", name: "rotate_servo_clockwise" }"#)
-            .unwrap();
+        serde_json5::from_str(r#"{ link_id: "brain", name: "rotate_servo_clockwise" }"#).unwrap();
     let rotate_goal_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT2).unwrap();
     let rotate_feedback: MessageFormat =

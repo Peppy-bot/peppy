@@ -451,12 +451,12 @@ async fn node_sync_with_include_repositories_prints_provenance() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
-                depends_on: { nodes: [{ name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }] }
+                depends_on: { nodes: [{ name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }] }
             },
             interfaces: {
                 topics: {
                     emits: [],
-                    consumes: [{ local_node_id: "uvc_camera", name: "video_stream" }],
+                    consumes: [{ link_id: "uvc_camera", name: "video_stream" }],
                 },
                 services: { exposes: [] },
                 actions: { exposes: [] },

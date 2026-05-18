@@ -45,7 +45,7 @@ const EMITTED_TOPIC_EXAMPLE2: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
-    local_node_id: "uvc_camera",
+    link_id: "uvc_camera",
     name: "video_stream",
 }
 "#;
@@ -69,7 +69,7 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 {
-    local_node_id: "uvc_camera",
+    link_id: "uvc_camera",
     name: "sound",
 }
 "#;
@@ -552,7 +552,7 @@ fn consumed_topic() {
 fn consumed_topic_escapes_python_keyword_fields() {
     let subscribed_topic_example_keywords: &str = r#"
     {
-        local_node_id: "keyword_source",
+        link_id: "keyword_source",
         name: "keyword_topic",
     }
     "#;

@@ -7,7 +7,7 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-In a standard PeppyOS setup, a node subscribes to topics from its declared dependencies using `local_node_id`.
+In a standard PeppyOS setup, a node subscribes to topics from its declared dependencies using `link_id`.
 This creates a directed graph: if `arm_controller` depends on `robot_arm`, it can expect topics from `robot_arm` — but not the other way around, since that would create a circular dependency.
 
 **External consumed topics** solve this by letting a node subscribe to a topic *without* declaring a dependency on the publisher.
@@ -35,7 +35,7 @@ Instead, it declares `joint_commands` as an **external consumed topic**.
 
 ## Configuring external consumed topics
 
-An external consumed topic has a `name` and an inline `message_format`, but no `local_node_id`:
+An external consumed topic has a `name` and an inline `message_format`, but no `link_id`:
 
 <Tabs>
   <TabItem label="Python">
@@ -70,7 +70,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
           ],
           consumes: [
             {
-              // No local_node_id — this is an external consumed topic
+              // No link_id — this is an external consumed topic
               name: "joint_commands",
               message_format: {
                 target_positions: {
@@ -124,7 +124,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
           ],
           consumes: [
             {
-              // No local_node_id — this is an external consumed topic
+              // No link_id — this is an external consumed topic
               name: "joint_commands",
               message_format: {
                 target_positions: {
@@ -160,7 +160,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
         tag: "v1",
         depends_on: {
           nodes: [
-            { name: "robot_arm", tag: "v1", local_id: "robot_arm" },
+            { name: "robot_arm", tag: "v1", link_id: "robot_arm" },
           ]
         },
       },
@@ -182,7 +182,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
           ],
           consumes: [
             {
-              local_node_id: "robot_arm",  // Linked — references depends_on
+              link_id: "robot_arm",  // Linked — references depends_on
               name: "joint_states",
             },
           ],
@@ -205,7 +205,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
         tag: "v1",
         depends_on: {
           nodes: [
-            { name: "robot_arm", tag: "v1", local_id: "robot_arm" },
+            { name: "robot_arm", tag: "v1", link_id: "robot_arm" },
           ]
         },
       },
@@ -227,7 +227,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
           ],
           consumes: [
             {
-              local_node_id: "robot_arm",  // Linked — references depends_on
+              link_id: "robot_arm",  // Linked — references depends_on
               name: "joint_states",
             },
           ],
@@ -245,7 +245,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
 
 :::note
 The `message_format` of an external consumed topic is defined inline by the subscriber.
-For linked consumed topics, the format is resolved automatically from the dependency's configuration — which is why only `local_node_id` and `name` are needed.
+For linked consumed topics, the format is resolved automatically from the dependency's configuration — which is why only `link_id` and `name` are needed.
 :::
 
 ## Receiving external messages
@@ -361,7 +361,7 @@ On the other side, the `arm_controller` uses a standard linked topic. Notice the
 
     async def control_loop(node_runner: NodeRunner):
         while True:
-            # Linked topic: module name is <local_node_id>_<topic_name>
+            # Linked topic: module name is <link_id>_<topic_name>
             instance_id, state = await robot_arm_joint_states.on_next_message_received(
                 node_runner,
             )
@@ -399,7 +399,7 @@ On the other side, the `arm_controller` uses a standard linked topic. Notice the
             let node_runner_clone = node_runner.clone();
             tokio::spawn(async move {
                 loop {
-                    // Linked topic: module name is <local_node_id>_<topic_name>
+                    // Linked topic: module name is <link_id>_<topic_name>
                     let (instance_id, state) = robot_arm_joint_states::on_next_message_received(
                         &node_runner_clone,
                         None,
@@ -436,10 +436,10 @@ On the other side, the `arm_controller` uses a standard linked topic. Notice the
 
 | | Linked | External |
 |---|---|---|
-| Config | `local_node_id` + `name` | `name` + `message_format` |
+| Config | `link_id` + `name` | `name` + `message_format` |
 | Dependency | Required in `depends_on` | None |
 | Message format | Resolved from the dependency | Defined inline by the subscriber |
-| Module name | `<local_node_id>_<topic_name>` | `<topic_name>` |
+| Module name | `<link_id>_<topic_name>` | `<topic_name>` |
 | Subscribes to | A specific publisher node | Any node emitting that topic |
 
 ## Why only topics?

@@ -873,7 +873,7 @@ fn node_stack_wires_dependencies_for_dependants() {
               tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "lidar", tag: "v1", local_id: "lidar" }
+                  { name: "lidar", tag: "v1", link_id: "lidar" }
                 ]
               },
             },
@@ -881,7 +881,7 @@ fn node_stack_wires_dependencies_for_dependants() {
                 services: {
                     consumes: [
                         {
-                          local_node_id: "lidar",
+                          link_id: "lidar",
                           name: "reset_sensor"
                         }
                     ]
@@ -922,7 +922,7 @@ fn dependency_fails_when_node_name_mismatches() {
               tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
+                  { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                 ]
               },
             },
@@ -994,7 +994,7 @@ fn dependency_fails_when_node_tag_mismatches() {
               tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "lidar", tag: "v1", local_id: "lidar" }
+                  { name: "lidar", tag: "v1", link_id: "lidar" }
                 ]
               },
             },
@@ -1080,7 +1080,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
               tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "lidar", tag: "v1", local_id: "lidar" }
+                  { name: "lidar", tag: "v1", link_id: "lidar" }
                 ]
               },
             },
@@ -1088,7 +1088,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
                 services: {
                     consumes: [
                         {
-                          local_node_id: "lidar",
+                          link_id: "lidar",
                           name: "reset_sensor"
                         }
                     ]
@@ -1260,7 +1260,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
               tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "lidar", tag: "v1", local_id: "lidar" }
+                  { name: "lidar", tag: "v1", link_id: "lidar" }
                 ]
               },
             },

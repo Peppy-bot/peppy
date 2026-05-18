@@ -456,8 +456,8 @@ pub struct ExposedAction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LinkedConsumedTopic {
-    #[serde(deserialize_with = "deserialize_consumed_topic_local_node_id")]
-    pub local_node_id: String,
+    #[serde(deserialize_with = "deserialize_consumed_topic_link_id")]
+    pub link_id: String,
     #[serde(deserialize_with = "deserialize_consumed_topic_name")]
     pub name: String,
 }
@@ -485,9 +485,9 @@ impl ConsumedTopic {
         }
     }
 
-    pub fn local_node_id(&self) -> Option<&str> {
+    pub fn link_id(&self) -> Option<&str> {
         match self {
-            Self::Linked(t) => Some(&t.local_node_id),
+            Self::Linked(t) => Some(&t.link_id),
             Self::External(_) => None,
         }
     }
@@ -496,8 +496,8 @@ impl ConsumedTopic {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedService {
-    #[serde(deserialize_with = "deserialize_consumed_service_local_node_id")]
-    pub local_node_id: String,
+    #[serde(deserialize_with = "deserialize_consumed_service_link_id")]
+    pub link_id: String,
     #[serde(default)]
     pub name: String,
 }
@@ -505,8 +505,8 @@ pub struct ConsumedService {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedAction {
-    #[serde(deserialize_with = "deserialize_consumed_action_local_node_id")]
-    pub local_node_id: String,
+    #[serde(deserialize_with = "deserialize_consumed_action_link_id")]
+    pub link_id: String,
     #[serde(default)]
     pub name: String,
 }
@@ -532,11 +532,11 @@ impl Default for ActionServiceEndpoint {
     }
 }
 
-fn deserialize_consumed_topic_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_topic_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.local_node_id")
+    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.link_id")
 }
 
 fn deserialize_consumed_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -546,18 +546,18 @@ where
     deserialize_non_empty_identifier(deserializer, "ConsumedTopic.name")
 }
 
-fn deserialize_consumed_service_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_service_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ConsumedService.local_node_id")
+    deserialize_non_empty_identifier(deserializer, "ConsumedService.link_id")
 }
 
-fn deserialize_consumed_action_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_action_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ConsumedAction.local_node_id")
+    deserialize_non_empty_identifier(deserializer, "ConsumedAction.link_id")
 }
 
 fn deserialize_non_empty_identifier<'de, D>(
@@ -606,7 +606,7 @@ fn default_action_service_qos_profile() -> QoSProfile {
 pub struct NodeDependency {
     pub name: Name,
     pub tag: String,
-    pub local_id: String,
+    pub link_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -614,7 +614,7 @@ pub struct NodeDependency {
 pub struct InterfaceDependency {
     pub name: Name,
     pub tag: String,
-    pub local_id: String,
+    pub link_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
@@ -1003,7 +1003,7 @@ impl Normalize for TopicInterfaces {
         normalize_opt_vec(&mut self.consumes, |a, b| {
             a.name()
                 .cmp(b.name())
-                .then_with(|| a.local_node_id().cmp(&b.local_node_id()))
+                .then_with(|| a.link_id().cmp(&b.link_id()))
                 .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
         });
     }
@@ -1017,9 +1017,7 @@ impl Normalize for ServiceInterfaces {
                 .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
         });
         normalize_opt_vec(&mut self.consumes, |a, b| {
-            a.name
-                .cmp(&b.name)
-                .then_with(|| a.local_node_id.cmp(&b.local_node_id))
+            a.name.cmp(&b.name).then_with(|| a.link_id.cmp(&b.link_id))
         });
     }
 }
@@ -1032,9 +1030,7 @@ impl Normalize for ActionInterfaces {
                 .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
         });
         normalize_opt_vec(&mut self.consumes, |a, b| {
-            a.name
-                .cmp(&b.name)
-                .then_with(|| a.local_node_id.cmp(&b.local_node_id))
+            a.name.cmp(&b.name).then_with(|| a.link_id.cmp(&b.link_id))
         });
     }
 }
@@ -1078,45 +1074,37 @@ mod tests {
     }
 
     #[test]
-    fn consumed_topic_linked_local_node_id_is_required() {
-        let valid = r#"{ local_node_id: "uvc_camera", name: "video_stream" }"#;
+    fn consumed_topic_linked_link_id_is_required() {
+        let valid = r#"{ link_id: "uvc_camera", name: "video_stream" }"#;
         let topic: ConsumedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
-        let ConsumedTopic::Linked(LinkedConsumedTopic {
-            local_node_id,
-            name,
-        }) = &topic
-        else {
+        let ConsumedTopic::Linked(LinkedConsumedTopic { link_id, name }) = &topic else {
             panic!("expected Linked variant");
         };
-        assert_eq!(local_node_id, "uvc_camera");
+        assert_eq!(link_id, "uvc_camera");
         assert_eq!(name, "video_stream");
 
-        let empty_local_node_id = r#"{ local_node_id: "", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(empty_local_node_id).is_err());
+        let empty_link_id = r#"{ link_id: "", name: "video_stream" }"#;
+        assert!(serde_json5::from_str::<ConsumedTopic>(empty_link_id).is_err());
 
-        let missing_name = r#"{ local_node_id: "uvc_camera", name: "" }"#;
+        let missing_name = r#"{ link_id: "uvc_camera", name: "" }"#;
         assert!(serde_json5::from_str::<ConsumedTopic>(missing_name).is_err());
 
-        let whitespace_only = r#"{ local_node_id: "   ", name: "video_stream" }"#;
+        let whitespace_only = r#"{ link_id: "   ", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<ConsumedTopic>(whitespace_only).is_err());
 
-        let punctuation_only = r#"{ local_node_id: "--", name: "video_stream" }"#;
+        let punctuation_only = r#"{ link_id: "--", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<ConsumedTopic>(punctuation_only).is_err());
 
-        let missing_name_field = r#"{ local_node_id: "uvc_camera" }"#;
+        let missing_name_field = r#"{ link_id: "uvc_camera" }"#;
         assert!(serde_json5::from_str::<ConsumedTopic>(missing_name_field).is_err());
 
-        let trimmed = r#"{ local_node_id: " uvc_camera ", name: " video_stream " }"#;
+        let trimmed = r#"{ link_id: " uvc_camera ", name: " video_stream " }"#;
         let topic: ConsumedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        let ConsumedTopic::Linked(LinkedConsumedTopic {
-            local_node_id,
-            name,
-        }) = &topic
-        else {
+        let ConsumedTopic::Linked(LinkedConsumedTopic { link_id, name }) = &topic else {
             panic!("expected Linked variant");
         };
-        assert_eq!(local_node_id, "uvc_camera");
+        assert_eq!(link_id, "uvc_camera");
         assert_eq!(name, "video_stream");
     }
 
@@ -1140,7 +1128,7 @@ mod tests {
         let name_only = r#"{ name: "cmd_vel" }"#;
         assert!(
             serde_json5::from_str::<ConsumedTopic>(name_only).is_err(),
-            "name-only (no local_node_id, no message_format) should fail"
+            "name-only (no link_id, no message_format) should fail"
         );
 
         // External with empty name should fail
@@ -1151,7 +1139,7 @@ mod tests {
     #[test]
     fn consumed_topic_mixed_linked_and_external() {
         let json = r#"[
-            { local_node_id: "camera", name: "video_stream" },
+            { link_id: "camera", name: "video_stream" },
             { name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }
         ]"#;
         let topics: Vec<ConsumedTopic> =
@@ -1167,7 +1155,7 @@ mod tests {
     fn consumed_topic_rejects_unknown_fields() {
         // Linked with extra message_format should fail (not silently drop it)
         let linked_with_extra = r#"{
-            local_node_id: "camera",
+            link_id: "camera",
             name: "video_stream",
             message_format: { x: "f64" }
         }"#;
@@ -1176,35 +1164,35 @@ mod tests {
             "linked topic with extra message_format should be rejected"
         );
 
-        // External with extra local_node_id should fail (not silently drop it)
+        // External with extra link_id should fail (not silently drop it)
         let external_with_extra = r#"{
-            local_node_id: "camera",
+            link_id: "camera",
             name: "cmd_vel",
             message_format: { linear_x: "f64" }
         }"#;
         assert!(
             serde_json5::from_str::<ConsumedTopic>(external_with_extra).is_err(),
-            "external topic with extra local_node_id should be rejected"
+            "external topic with extra link_id should be rejected"
         );
     }
 
     #[test]
-    fn consumed_service_local_node_id_is_required() {
-        let with_local_node_id = r#"{ local_node_id: "uvc_camera", name: "enable_camera" }"#;
-        let service: ConsumedService = serde_json5::from_str(with_local_node_id)
-            .expect("service with local_node_id should parse");
-        assert_eq!(service.local_node_id, "uvc_camera");
+    fn consumed_service_link_id_is_required() {
+        let with_link_id = r#"{ link_id: "uvc_camera", name: "enable_camera" }"#;
+        let service: ConsumedService =
+            serde_json5::from_str(with_link_id).expect("service with link_id should parse");
+        assert_eq!(service.link_id, "uvc_camera");
 
-        let trimmed = r#"{ local_node_id: "  uvc_camera  ", name: "enable_camera" }"#;
+        let trimmed = r#"{ link_id: "  uvc_camera  ", name: "enable_camera" }"#;
         let service: ConsumedService =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        assert_eq!(service.local_node_id, "uvc_camera");
+        assert_eq!(service.link_id, "uvc_camera");
 
-        let without_local_node_id = r#"{ name: "enable_camera" }"#;
-        assert!(serde_json5::from_str::<ConsumedService>(without_local_node_id).is_err());
+        let without_link_id = r#"{ name: "enable_camera" }"#;
+        assert!(serde_json5::from_str::<ConsumedService>(without_link_id).is_err());
 
-        let blank_local_node_id = r#"{ local_node_id: "   ", name: "enable_camera" }"#;
-        assert!(serde_json5::from_str::<ConsumedService>(blank_local_node_id).is_err());
+        let blank_link_id = r#"{ link_id: "   ", name: "enable_camera" }"#;
+        assert!(serde_json5::from_str::<ConsumedService>(blank_link_id).is_err());
     }
 
     #[test]
@@ -1639,8 +1627,8 @@ mod tests {
             tag: "v1",
             depends_on: {
                 nodes: [
-                    { name: "lidar_driver", tag: "v1", local_id: "lidar" },
-                    { name: "nav_system", tag: "v1", local_id: "navigation" }
+                    { name: "lidar_driver", tag: "v1", link_id: "lidar" },
+                    { name: "nav_system", tag: "v1", link_id: "navigation" }
                 ]
             }
         }"#;
@@ -1649,9 +1637,9 @@ mod tests {
         assert_eq!(deps.nodes.len(), 2);
         assert_eq!(deps.nodes[0].name.as_str(), "lidar_driver");
         assert_eq!(deps.nodes[0].tag, "v1");
-        assert_eq!(deps.nodes[0].local_id, "lidar");
+        assert_eq!(deps.nodes[0].link_id, "lidar");
         assert_eq!(deps.nodes[1].name.as_str(), "nav_system");
-        assert_eq!(deps.nodes[1].local_id, "navigation");
+        assert_eq!(deps.nodes[1].link_id, "navigation");
         assert!(deps.interfaces.is_empty());
     }
 
@@ -1660,7 +1648,7 @@ mod tests {
         let json5 = r#"{
             nodes: [],
             interfaces: [
-                { name: "depth_camera", tag: "v1", sha256: "aaa", local_id: "depth_camera" }
+                { name: "depth_camera", tag: "v1", sha256: "aaa", link_id: "depth_camera" }
             ]
         }"#;
         let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
@@ -1668,7 +1656,7 @@ mod tests {
         assert_eq!(deps.interfaces.len(), 1);
         assert_eq!(deps.interfaces[0].name.as_str(), "depth_camera");
         assert_eq!(deps.interfaces[0].tag, "v1");
-        assert_eq!(deps.interfaces[0].local_id, "depth_camera");
+        assert_eq!(deps.interfaces[0].link_id, "depth_camera");
         assert_eq!(deps.interfaces[0].sha256.as_deref(), Some("aaa"));
     }
 
@@ -1677,7 +1665,7 @@ mod tests {
         let json5 = r#"{
             nodes: [],
             interfaces: [
-                { name: "depth_camera", tag: "v1", local_id: "depth_camera" }
+                { name: "depth_camera", tag: "v1", link_id: "depth_camera" }
             ]
         }"#;
         let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
@@ -1689,7 +1677,7 @@ mod tests {
     fn depends_on_interfaces_requires_name() {
         let json5 = r#"{
             nodes: [],
-            interfaces: [{ tag: "v1", local_id: "depth_camera" }]
+            interfaces: [{ tag: "v1", link_id: "depth_camera" }]
         }"#;
         assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
     }
@@ -1698,13 +1686,13 @@ mod tests {
     fn depends_on_interfaces_requires_tag() {
         let json5 = r#"{
             nodes: [],
-            interfaces: [{ name: "depth_camera", local_id: "depth_camera" }]
+            interfaces: [{ name: "depth_camera", link_id: "depth_camera" }]
         }"#;
         assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
     }
 
     #[test]
-    fn depends_on_interfaces_requires_local_id() {
+    fn depends_on_interfaces_requires_link_id() {
         let json5 = r#"{
             nodes: [],
             interfaces: [{ name: "depth_camera", tag: "v1" }]
@@ -1717,7 +1705,7 @@ mod tests {
         let json5 = r#"{
             nodes: [],
             interfaces: [
-                { name: "depth_camera", tag: "v1", local_id: "depth_camera", extra: "bad" }
+                { name: "depth_camera", tag: "v1", link_id: "depth_camera", extra: "bad" }
             ]
         }"#;
         assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
@@ -1835,7 +1823,7 @@ mod tests {
             name: "node",
             tag: "v1",
             depends_on: {
-                nodes: [{ name: "dep", tag: "v1", local_id: "d", extra: "bad" }]
+                nodes: [{ name: "dep", tag: "v1", link_id: "d", extra: "bad" }]
             }
         }"#;
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
@@ -1882,17 +1870,17 @@ mod tests {
     }
 
     #[test]
-    fn consume_normalization_sorts_by_name_and_local_node_id() {
-        // TopicInterfaces: two linked consumed topics with same name, different local_node_id
+    fn consume_normalization_sorts_by_name_and_link_id() {
+        // TopicInterfaces: two linked consumed topics with same name, different link_id
         let mut topics_a = TopicInterfaces {
             emits: None,
             consumes: Some(vec![
                 ConsumedTopic::Linked(LinkedConsumedTopic {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "topic".into(),
                 }),
                 ConsumedTopic::Linked(LinkedConsumedTopic {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "topic".into(),
                 }),
             ]),
@@ -1901,11 +1889,11 @@ mod tests {
             emits: None,
             consumes: Some(vec![
                 ConsumedTopic::Linked(LinkedConsumedTopic {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "topic".into(),
                 }),
                 ConsumedTopic::Linked(LinkedConsumedTopic {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "topic".into(),
                 }),
             ]),
@@ -1915,19 +1903,19 @@ mod tests {
         assert_eq!(topics_a, topics_b);
         // Verify sorted order: node_a before node_b
         let consumes = topics_a.consumes.unwrap();
-        assert!(matches!(&consumes[0], ConsumedTopic::Linked(t) if t.local_node_id == "node_a"));
-        assert!(matches!(&consumes[1], ConsumedTopic::Linked(t) if t.local_node_id == "node_b"));
+        assert!(matches!(&consumes[0], ConsumedTopic::Linked(t) if t.link_id == "node_a"));
+        assert!(matches!(&consumes[1], ConsumedTopic::Linked(t) if t.link_id == "node_b"));
 
-        // ServiceInterfaces: same name, different local_node_id
+        // ServiceInterfaces: same name, different link_id
         let mut services_a = ServiceInterfaces {
             exposes: None,
             consumes: Some(vec![
                 ConsumedService {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "svc".into(),
                 },
                 ConsumedService {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "svc".into(),
                 },
             ]),
@@ -1936,11 +1924,11 @@ mod tests {
             exposes: None,
             consumes: Some(vec![
                 ConsumedService {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "svc".into(),
                 },
                 ConsumedService {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "svc".into(),
                 },
             ]),
@@ -1949,19 +1937,19 @@ mod tests {
         services_b.normalize();
         assert_eq!(services_a, services_b);
         let consumes = services_a.consumes.unwrap();
-        assert_eq!(consumes[0].local_node_id, "node_a");
-        assert_eq!(consumes[1].local_node_id, "node_b");
+        assert_eq!(consumes[0].link_id, "node_a");
+        assert_eq!(consumes[1].link_id, "node_b");
 
-        // ActionInterfaces: same name, different local_node_id
+        // ActionInterfaces: same name, different link_id
         let mut actions_a = ActionInterfaces {
             exposes: None,
             consumes: Some(vec![
                 ConsumedAction {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "act".into(),
                 },
                 ConsumedAction {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "act".into(),
                 },
             ]),
@@ -1970,11 +1958,11 @@ mod tests {
             exposes: None,
             consumes: Some(vec![
                 ConsumedAction {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "act".into(),
                 },
                 ConsumedAction {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "act".into(),
                 },
             ]),
@@ -1983,7 +1971,7 @@ mod tests {
         actions_b.normalize();
         assert_eq!(actions_a, actions_b);
         let consumes = actions_a.consumes.unwrap();
-        assert_eq!(consumes[0].local_node_id, "node_a");
-        assert_eq!(consumes[1].local_node_id, "node_b");
+        assert_eq!(consumes[0].link_id, "node_a");
+        assert_eq!(consumes[1].link_id, "node_b");
     }
 }

@@ -255,7 +255,7 @@ impl LanguageGenerator for PythonGenerator {
         };
         let schema_info = self.register_schema(&linked.name, &arguments)?;
         let code = topics::build_consumed_topic(topic, &arguments, &schema_info, dependency)?;
-        let module_label = module_name_from_components(&linked.local_node_id, &linked.name);
+        let module_label = module_name_from_components(&linked.link_id, &linked.name);
         self.push_section(self.make_artifact(
             &module_label,
             None,
@@ -302,7 +302,7 @@ impl LanguageGenerator for PythonGenerator {
             response_schema_info.as_ref(),
             dependency,
         )?;
-        let module_label = module_name_from_components(&service.local_node_id, &service.name);
+        let module_label = module_name_from_components(&service.link_id, &service.name);
         self.push_section(self.make_artifact(
             &module_label,
             None,
@@ -353,7 +353,7 @@ impl LanguageGenerator for PythonGenerator {
             },
             dependency,
         )?;
-        let module_label = module_name_from_components(&action.local_node_id, &action.name);
+        let module_label = module_name_from_components(&action.link_id, &action.name);
         self.push_section(self.make_artifact(
             &module_label,
             None,

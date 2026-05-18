@@ -277,7 +277,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     .expect("valid producer_b config");
 
     let consumer_pointing_at = |producer_name: &str| -> config::node::NodeConfig {
-        let local_id = format!("p_{}", producer_name);
+        let link_id = format!("p_{}", producer_name);
         serde_json5::from_str(
             &r#"{
                 peppy_schema: "node_v1",
@@ -286,21 +286,21 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
                     tag: "v1",
                     depends_on: {
                         nodes: [
-                            { name: "PRODUCER", tag: "v1", local_id: "LOCAL_ID" }
+                            { name: "PRODUCER", tag: "v1", link_id: "LINK_ID" }
                         ]
                     },
                 },
                 interfaces: {
                     services: {
                         consumes: [
-                            { local_node_id: "LOCAL_ID", name: "reset_sensor" }
+                            { link_id: "LINK_ID", name: "reset_sensor" }
                         ]
                     }
                 },
                 execution: { language: "rust", run_cmd: ["consumer"] }
             }"#
             .replace("PRODUCER", producer_name)
-            .replace("LOCAL_ID", &local_id),
+            .replace("LINK_ID", &link_id),
         )
         .expect("valid consumer config")
     };

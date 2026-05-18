@@ -49,7 +49,7 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
 ///
 /// Validation is two-phase:
 /// 1. **Node existence**: Each entry in `manifest.depends_on.nodes` must resolve to an existing node.
-/// 2. **Interface exposure**: Each consumed/expected interface must reference a valid `local_node_id`
+/// 2. **Interface exposure**: Each consumed/expected interface must reference a valid `link_id`
 ///    that maps to a dependency which exposes the required interface.
 pub fn validate_dependency_specs(
     manifest: &Manifest,
@@ -60,7 +60,7 @@ pub fn validate_dependency_specs(
 ) -> Vec<crate::error::Error> {
     let mut errors = Vec::new();
 
-    // Build local_id → (name, tag, resolved_config) lookup from depends_on.nodes
+    // Build link_id → (name, tag, resolved_config) lookup from depends_on.nodes
     let mut resolved_deps: HashMap<String, (String, String, NodeConfig)> = HashMap::new();
 
     // Phase 1: Validate all declared dependency nodes exist
@@ -77,26 +77,26 @@ pub fn validate_dependency_specs(
                 });
                 continue;
             };
-            resolved_deps.insert(dep.local_id.clone(), (dep_name, dep_tag, dependency_config));
+            resolved_deps.insert(dep.link_id.clone(), (dep_name, dep_tag, dependency_config));
         }
     }
 
-    // Collect all declared local_ids so we can distinguish "declared but unresolved"
+    // Collect all declared link_ids so we can distinguish "declared but unresolved"
     // (already has a MissingDependency error) from "never declared" (typo).
-    let declared_local_ids: HashSet<&str> = manifest
+    let declared_link_ids: HashSet<&str> = manifest
         .depends_on
         .as_ref()
-        .map(|d| d.nodes.iter().map(|n| n.local_id.as_str()).collect())
+        .map(|d| d.nodes.iter().map(|n| n.link_id.as_str()).collect())
         .unwrap_or_default();
 
-    // Phase 2: Validate consumed interfaces reference valid local_node_ids
+    // Phase 2: Validate consumed interfaces reference valid link_ids
     // and that the dependency exposes the required interface
     if let Some(topics) = &interfaces.topics
         && let Some(consumes) = &topics.consumes
     {
         let items = consumes.iter().filter_map(|t| match t {
             config::node::ConsumedTopic::Linked(linked) => {
-                Some((linked.local_node_id.as_str(), linked.name.as_str()))
+                Some((linked.link_id.as_str(), linked.name.as_str()))
             }
             _ => None,
         });
@@ -104,7 +104,7 @@ pub fn validate_dependency_specs(
             items,
             InterfaceKind::Topic,
             &resolved_deps,
-            &declared_local_ids,
+            &declared_link_ids,
             dependant_name,
             dependant_tag,
             &mut errors,
@@ -116,12 +116,12 @@ pub fn validate_dependency_specs(
     {
         let items = consumes
             .iter()
-            .map(|s| (s.local_node_id.as_str(), s.name.as_str()));
+            .map(|s| (s.link_id.as_str(), s.name.as_str()));
         validate_consumed_items(
             items,
             InterfaceKind::Service,
             &resolved_deps,
-            &declared_local_ids,
+            &declared_link_ids,
             dependant_name,
             dependant_tag,
             &mut errors,
@@ -133,12 +133,12 @@ pub fn validate_dependency_specs(
     {
         let items = consumes
             .iter()
-            .map(|a| (a.local_node_id.as_str(), a.name.as_str()));
+            .map(|a| (a.link_id.as_str(), a.name.as_str()));
         validate_consumed_items(
             items,
             InterfaceKind::Action,
             &resolved_deps,
-            &declared_local_ids,
+            &declared_link_ids,
             dependant_name,
             dependant_tag,
             &mut errors,
@@ -148,30 +148,30 @@ pub fn validate_dependency_specs(
     errors
 }
 
-/// Validates a set of consumed interfaces, checking that each `local_node_id` is declared
+/// Validates a set of consumed interfaces, checking that each `link_id` is declared
 /// and that the referenced dependency exposes the required interface.
 fn validate_consumed_items<'a>(
     items: impl Iterator<Item = (&'a str, &'a str)>,
     kind: InterfaceKind,
     resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
-    declared_local_ids: &HashSet<&str>,
+    declared_link_ids: &HashSet<&str>,
     dependant_name: &str,
     dependant_tag: &str,
     errors: &mut Vec<crate::error::Error>,
 ) {
-    for (local_node_id, name) in items {
-        if !resolved_deps.contains_key(local_node_id) {
-            if !declared_local_ids.contains(local_node_id) {
-                errors.push(crate::error::Error::UndeclaredLocalNodeId {
+    for (link_id, name) in items {
+        if !resolved_deps.contains_key(link_id) {
+            if !declared_link_ids.contains(link_id) {
+                errors.push(crate::error::Error::UndeclaredLinkId {
                     dependant: dependant_name.to_owned(),
                     dependant_tag: dependant_tag.to_owned(),
-                    local_node_id: local_node_id.to_owned(),
+                    link_id: link_id.to_owned(),
                 });
             }
             continue;
         }
         validate_consumed_interface(
-            local_node_id,
+            link_id,
             name,
             kind,
             resolved_deps,
@@ -182,10 +182,10 @@ fn validate_consumed_items<'a>(
     }
 }
 
-/// Validates that a consumed interface's `local_node_id` resolves to a dependency
+/// Validates that a consumed interface's `link_id` resolves to a dependency
 /// that exposes the required interface.
 fn validate_consumed_interface(
-    local_node_id: &str,
+    link_id: &str,
     interface_name: &str,
     kind: InterfaceKind,
     resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
@@ -193,11 +193,11 @@ fn validate_consumed_interface(
     dependant_tag: &str,
     errors: &mut Vec<crate::error::Error>,
 ) {
-    let Some((dep_name, dep_tag, dep_config)) = resolved_deps.get(local_node_id) else {
-        // The local_node_id doesn't map to any resolved dependency.
+    let Some((dep_name, dep_tag, dep_config)) = resolved_deps.get(link_id) else {
+        // The link_id doesn't map to any resolved dependency.
         // This path is only reached when the dependency was declared but failed
         // to resolve (already reported as MissingDependency in Phase 1).
-        // Undeclared local_node_ids are caught before this function is called.
+        // Undeclared link_ids are caught before this function is called.
         return;
     };
 

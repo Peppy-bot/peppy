@@ -53,14 +53,14 @@ fn make_consumer_depend_on_provider(
         nodes: vec![NodeDependency {
             name: ConfigName::new(provider_name).expect("valid provider name"),
             tag: "v1".to_string(),
-            local_id: provider_name.to_string(),
+            link_id: provider_name.to_string(),
         }],
         interfaces: vec![],
     });
 
     consumer_cfg.interfaces.topics = Some(TopicInterfaces {
         consumes: Some(vec![ConsumedTopic::Linked(LinkedConsumedTopic {
-            local_node_id: provider_name.to_string(),
+            link_id: provider_name.to_string(),
             name: topic_name.to_string(),
         })]),
         ..Default::default()

@@ -41,7 +41,7 @@ const EXPOSED_SERVICE_EXAMPLE3: &str = r#"
 
 pub(super) const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
 {
-  local_node_id: "uvc_camera",
+  link_id: "uvc_camera",
   name: "enable_camera",
 }
 "#;
@@ -73,7 +73,7 @@ const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
-    local_node_id: "uvc_camera",
+    link_id: "uvc_camera",
     name: "get_camera_info",
 }
 "#;
@@ -351,7 +351,7 @@ fn consumed_two_services_same_node() {
 fn consumed_service_without_response_payload() {
     let service = r#"
         {
-            local_node_id: "uvc_camera",
+            link_id: "uvc_camera",
             name: "get_camera_info",
         }
         "#;
@@ -421,7 +421,7 @@ fn clippy_single_exposed_service_without_request_body() {
     let consumed_action1: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          local_node_id: "brain",
+          link_id: "brain",
           name: "move_arm",
         }
         "#,
@@ -430,7 +430,7 @@ fn clippy_single_exposed_service_without_request_body() {
     let consumed_action2: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          local_node_id: "controller",
+          link_id: "controller",
           name: "rotate_servo_clockwise",
         }
         "#,
@@ -604,7 +604,7 @@ fn clippy_consumed_service_empty_request_format() {
     let consumed_service: ConsumedService = serde_json5::from_str(
         r#"
         {
-          local_node_id: "sensor",
+          link_id: "sensor",
           name: "get_status",
         }
         "#,
@@ -643,7 +643,7 @@ fn clippy_consumed_service_empty_response_format() {
     let consumed_service: ConsumedService = serde_json5::from_str(
         r#"
         {
-          local_node_id: "sensor",
+          link_id: "sensor",
           name: "trigger_action",
         }
         "#,

@@ -62,7 +62,7 @@ fn minimal_node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
     } else {
         let nodes = deps
             .iter()
-            .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}", local_id: "{n}" }}"#))
+            .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}", link_id: "{n}" }}"#))
             .collect::<Vec<_>>()
             .join(", ");
         format!(r#"depends_on: {{ nodes: [{nodes}] }},"#)

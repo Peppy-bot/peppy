@@ -289,7 +289,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                     ]
                 },
             },
@@ -298,11 +298,11 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                     emits: [],
                     consumes: [
                         {
-                            local_node_id: "uvc_camera",
+                            link_id: "uvc_camera",
                             name: "video_stream",
                         },
                         {
-                            local_node_id: "uvc_camera",
+                            link_id: "uvc_camera",
                             name: "video_stream_rear",
                         },
                     ],
@@ -370,10 +370,10 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" },
-                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera_2" },
-                        { name: "lidar_sensor", tag: "v1", local_id: "lidar_sensor" },
-                        { name: "gps_module", tag: "v2", local_id: "gps_module" },
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera_2" },
+                        { name: "lidar_sensor", tag: "v1", link_id: "lidar_sensor" },
+                        { name: "gps_module", tag: "v2", link_id: "gps_module" },
                     ]
                 },
             },
@@ -545,7 +545,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                     ]
                 },
             },
@@ -554,7 +554,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                     emits: [],
                     consumes: [
                         {
-                          local_node_id: "uvc_camera",
+                          link_id: "uvc_camera",
                           name: "video_stream",
                         }
                     ],
@@ -742,7 +742,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                     ]
                 },
             },
@@ -754,7 +754,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                     exposes: [],
                     consumes: [
                         {
-                          local_node_id: "uvc_camera",
+                          link_id: "uvc_camera",
                           name: "enable_camera",
                         }
                     ],
@@ -902,7 +902,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                     ]
                 },
             },
@@ -911,7 +911,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                     emits: [],
                     consumes: [
                         {
-                          local_node_id: "uvc_camera",
+                          link_id: "uvc_camera",
                           name: "video_stream",
                         }
                     ],
@@ -1068,7 +1068,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                 labels: ["controller"],
                 depends_on: {
                     nodes: [
-                        { name: "brain", tag: "v1", local_id: "brain" }
+                        { name: "brain", tag: "v1", link_id: "brain" }
                     ]
                 },
             },
@@ -1083,7 +1083,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                     exposes: [],
                     consumes: [
                         {
-                          local_node_id: "brain",
+                          link_id: "brain",
                           name: "move_arm",
                         }
                     ],
@@ -1340,12 +1340,12 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_undeclared_local_node_id_fails() {
+async fn listen_for_node_sync_undeclared_link_id_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    // The node consumes a topic from local_node_id "nonexistent", but this
-    // local_node_id is not declared in depends_on.nodes, so sync should fail.
+    // The node consumes a topic from link_id "nonexistent", but this
+    // link_id is not declared in depends_on.nodes, so sync should fail.
     write_node_config(
         node_dir.path(),
         r#"
@@ -1363,7 +1363,7 @@ async fn listen_for_node_sync_undeclared_local_node_id_fails() {
                     emits: [],
                     consumes: [
                         {
-                            local_node_id: "nonexistent",
+                            link_id: "nonexistent",
                             name: "video_stream",
                         }
                     ],
@@ -1398,8 +1398,8 @@ async fn listen_for_node_sync_undeclared_local_node_id_fails() {
 
     assert!(!response.success, "node_sync should fail");
     assert!(
-        response.error_message.contains("undeclared local_node_id"),
-        "error should mention undeclared local_node_id, got: {}",
+        response.error_message.contains("undeclared link_id"),
+        "error should mention undeclared link_id, got: {}",
         response.error_message
     );
 
@@ -1458,7 +1458,7 @@ fn brain_consumes_camera_config() -> &'static str {
             tag: "v1",
             depends_on: {
                 nodes: [
-                    { name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }
+                    { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                 ]
             },
         },
@@ -1466,7 +1466,7 @@ fn brain_consumes_camera_config() -> &'static str {
             topics: {
                 emits: [],
                 consumes: [
-                    { local_node_id: "uvc_camera", name: "video_stream" }
+                    { link_id: "uvc_camera", name: "video_stream" }
                 ],
             },
             services: { exposes: [] },
@@ -1666,8 +1666,8 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
                 tag: "v1",
                 depends_on: {
                     nodes: [
-                        { name: "dep_a", tag: "v1", local_id: "a" },
-                        { name: "dep_b", tag: "v1", local_id: "b" }
+                        { name: "dep_a", tag: "v1", link_id: "a" },
+                        { name: "dep_b", tag: "v1", link_id: "b" }
                     ]
                 },
             },
@@ -1675,8 +1675,8 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
                 topics: {
                     emits: [],
                     consumes: [
-                        { local_node_id: "a", name: "topic_a" },
-                        { local_node_id: "b", name: "topic_b" }
+                        { link_id: "a", name: "topic_a" },
+                        { link_id: "b", name: "topic_b" }
                     ],
                 },
                 services: { exposes: [] },
@@ -1787,13 +1787,13 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
                 name: "my_robot_brain",
                 tag: "v1",
                 depends_on: {
-                    nodes: [{ name: "uvc_camera", tag: "v1", local_id: "uvc_camera" }]
+                    nodes: [{ name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }]
                 },
             },
             interfaces: {
                 topics: {
                     emits: [],
-                    consumes: [{ local_node_id: "uvc_camera", name: "topic_x" }],
+                    consumes: [{ link_id: "uvc_camera", name: "topic_x" }],
                 },
                 services: { exposes: [] },
                 actions: { exposes: [] },
@@ -1857,12 +1857,12 @@ async fn include_repositories_true_walks_transitive_dep() {
             manifest: {
                 name: "dep_b",
                 tag: "v1",
-                depends_on: { nodes: [{ name: "dep_c", tag: "v1", local_id: "c" }] },
+                depends_on: { nodes: [{ name: "dep_c", tag: "v1", link_id: "c" }] },
             },
             interfaces: {
                 topics: {
                     emits: [{ name: "topic_b", qos_profile: "sensor_data", message_format: { v: "u32" } }],
-                    consumes: [{ local_node_id: "c", name: "topic_c" }],
+                    consumes: [{ link_id: "c", name: "topic_c" }],
                 },
             },
             execution: { language: "rust", run_cmd: ["sleep", "10"] },
@@ -1876,12 +1876,12 @@ async fn include_repositories_true_walks_transitive_dep() {
             manifest: {
                 name: "dep_a",
                 tag: "v1",
-                depends_on: { nodes: [{ name: "dep_b", tag: "v1", local_id: "b" }] },
+                depends_on: { nodes: [{ name: "dep_b", tag: "v1", link_id: "b" }] },
             },
             interfaces: {
                 topics: {
                     emits: [{ name: "topic_a", qos_profile: "sensor_data", message_format: { v: "u32" } }],
-                    consumes: [{ local_node_id: "b", name: "topic_b" }],
+                    consumes: [{ link_id: "b", name: "topic_b" }],
                 },
             },
             execution: { language: "rust", run_cmd: ["sleep", "10"] },
@@ -1901,12 +1901,12 @@ async fn include_repositories_true_walks_transitive_dep() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
-                depends_on: { nodes: [{ name: "dep_a", tag: "v1", local_id: "a" }] },
+                depends_on: { nodes: [{ name: "dep_a", tag: "v1", link_id: "a" }] },
             },
             interfaces: {
                 topics: {
                     emits: [],
-                    consumes: [{ local_node_id: "a", name: "topic_a" }],
+                    consumes: [{ link_id: "a", name: "topic_a" }],
                 },
                 services: { exposes: [] },
                 actions: { exposes: [] },

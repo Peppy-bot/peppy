@@ -333,7 +333,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
 
     let consumed_topic: ConsumedTopic = serde_json5::from_str(&format!(
         r#"{{
-          local_node_id: "{EXPOSED_NODE_NAME}",
+          link_id: "{EXPOSED_NODE_NAME}",
           name: "test_topic",
         }}"#
     ))
@@ -449,7 +449,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
 
     let consumed_service: ConsumedService = serde_json5::from_str(&format!(
         r#"{{
-          local_node_id: "{EXPOSED_NODE_NAME}",
+          link_id: "{EXPOSED_NODE_NAME}",
           name: "test_service",
         }}"#
     ))
@@ -590,7 +590,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
 
     let consumed_action: ConsumedAction = serde_json5::from_str(&format!(
         r#"{{
-          local_node_id: "{EXPOSED_NODE_NAME}",
+          link_id: "{EXPOSED_NODE_NAME}",
           name: "test_action",
         }}"#
     ))

@@ -176,7 +176,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 tag: "{DEPENDENT_NODE_TAG}",
                 depends_on: {
                     nodes: [
-                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }
+                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", link_id: "{DEPENDENCY_NODE_NAME}" }
                     ]
                 },
             },
@@ -184,7 +184,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 services: {
                     consumes: [
                         {
-                          local_node_id: "{DEPENDENCY_NODE_NAME}",
+                          link_id: "{DEPENDENCY_NODE_NAME}",
                           name: "reset_sensor"
                         }
                     ]
@@ -909,7 +909,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
                 tag: "{DEPENDENT_NODE_TAG}",
                 depends_on: {
                     nodes: [
-                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }
+                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", link_id: "{DEPENDENCY_NODE_NAME}" }
                     ]
                 },
             },
@@ -917,7 +917,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
                 services: {
                     consumes: [
                         {
-                          local_node_id: "{DEPENDENCY_NODE_NAME}",
+                          link_id: "{DEPENDENCY_NODE_NAME}",
                           name: "reset_sensor"
                         }
                     ]
@@ -1125,7 +1125,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                 tag: "{DEPENDENT_NODE_TAG}",
                 depends_on: {
                     nodes: [
-                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }
+                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", link_id: "{DEPENDENCY_NODE_NAME}" }
                     ]
                 },
             },
@@ -1133,7 +1133,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                 services: {
                     consumes: [
                         {
-                          local_node_id: "{DEPENDENCY_NODE_NAME}",
+                          link_id: "{DEPENDENCY_NODE_NAME}",
                           name: "reset_sensor"
                         }
                     ]
@@ -1359,7 +1359,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
                 tag: "{DEPENDENT_NODE_TAG}",
                 depends_on: {
                     nodes: [
-                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }
+                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", link_id: "{DEPENDENCY_NODE_NAME}" }
                     ]
                 },
             },
