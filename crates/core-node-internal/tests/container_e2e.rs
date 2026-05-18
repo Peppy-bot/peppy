@@ -114,6 +114,7 @@ mod container_e2e_tests {
             messaging_port,
             &started.core_node_name,
             NODE_NAME,
+            NODE_TAG,
             INSTANCE_ID,
             Default::default(),
         );
@@ -279,6 +280,7 @@ mod container_e2e_tests {
             messaging_port,
             &started.core_node_name,
             NODE_NAME,
+            NODE_TAG,
             INSTANCE_ID,
             Default::default(),
         );
