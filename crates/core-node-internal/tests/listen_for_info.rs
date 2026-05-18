@@ -19,7 +19,7 @@ async fn listen_for_info_success() {
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
-        common::test_node_target(&started.core_node_name),
+        common::core_node_target(&started.core_node_name),
         names::INFO,
         Some(&started.core_node_name),
         None,

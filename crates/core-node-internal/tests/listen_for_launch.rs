@@ -349,7 +349,7 @@ async fn send_launch_origin_and_wait(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        common::test_node_target(core_node_name),
+        common::core_node_target(core_node_name),
         names::STACK_LAUNCH_ACTION,
         None,
         None,

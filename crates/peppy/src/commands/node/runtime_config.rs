@@ -82,11 +82,11 @@ async fn print_runtime_config_async(
             .map(|n| n.tag.as_str())
             .collect::<Vec<_>>();
         tags.sort_unstable();
-        info!(
-            "Node '{}' has multiple tags in the stack: {}",
+        return Err(Error::ExecutionFailed(format!(
+            "Node '{}' has multiple tags in the stack: {}. Specify the desired tag.",
             node_name,
             tags.join(", ")
-        );
+        )));
     }
 
     let (messaging_host, messaging_port) = match conn.messenger.messaging_endpoint().await {

@@ -170,7 +170,7 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
     );
     assert!(
         native_src.contains("SenderTarget::node("),
-        "native leaf should pass `Iface::native()`:\n{native_src}",
+        "native leaf should pass `SenderTarget::node(...)`:\n{native_src}",
     );
 
     let depth_v1_src = fs::read_to_string(&depth_v1).expect("read depth v1");

@@ -198,7 +198,7 @@ async fn listen_for_node_run_timeout() {
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
-        "v1",
+        TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
@@ -264,7 +264,7 @@ async fn listen_for_node_run_not_found() {
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
-        "v1",
+        TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
@@ -974,7 +974,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         &started.caller_handle,
         &started.core_node_name,
         common::CALLER_INSTANCE_ID,
-        common::test_node_target(&started.core_node_name),
+        common::core_node_target(&started.core_node_name),
         core_node::names::NODE_RUN_ACTION,
         Some(&started.core_node_name),
         None,

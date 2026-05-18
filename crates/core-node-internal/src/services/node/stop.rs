@@ -183,6 +183,7 @@ async fn handle_node_stop_request_inner(
         core_node_node,
         core_instance_id,
         &node_name,
+        &node_tag,
         &instance_id,
     )
     .await
@@ -241,6 +242,7 @@ async fn send_shutdown_signal(
     core_node_node: &str,
     core_instance_id: &str,
     node_name: &str,
+    node_tag: &str,
     instance_id: &Name,
 ) -> std::result::Result<(), String> {
     let instance_id_str = instance_id.as_str();
@@ -252,7 +254,7 @@ async fn send_shutdown_signal(
         messenger,
         core_node_node,
         core_instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG).map_err(|e| e.to_string())?,
+        SenderTarget::node(node_name, node_tag).map_err(|e| e.to_string())?,
         SHUTDOWN_SERVICE,
         Some(core_node_node),
         Some(instance_id_str),
@@ -349,6 +351,7 @@ pub(super) async fn stop_instance(
         core_node_node,
         core_instance_id,
         node_name,
+        node_tag,
         instance_id,
     )
     .await?;

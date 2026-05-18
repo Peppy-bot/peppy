@@ -111,7 +111,7 @@ impl Processor {
                 framework: Default::default(),
             },
             &node_name,
-            "standalone",
+            node_config.manifest.tag.as_str(),
             "standalone-core",
         )?;
 

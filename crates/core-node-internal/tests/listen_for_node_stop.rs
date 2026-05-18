@@ -127,7 +127,7 @@ async fn listen_for_node_stop_success() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
-        common::test_node_target(&started_core_node.core_node_name),
+        common::core_node_target(&started_core_node.core_node_name),
         &started_core_node.core_node_name,
         Duration::from_secs(10),
     )
@@ -166,7 +166,7 @@ async fn listen_for_node_stop_fails_when_instance_id_not_found() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
-        common::test_node_target(&started_core_node.core_node_name),
+        common::core_node_target(&started_core_node.core_node_name),
         &started_core_node.core_node_name,
         Duration::from_secs(5),
     )

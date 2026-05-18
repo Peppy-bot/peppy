@@ -90,7 +90,7 @@ async fn send_refresh_inner(
         &started.caller_handle,
         caller_core_node,
         caller_instance_id,
-        common::test_node_target(&started.core_node_name),
+        common::core_node_target(&started.core_node_name),
         names::REPO_REFRESH_ACTION,
         Some(&started.core_node_name),
         None,

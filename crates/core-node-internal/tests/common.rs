@@ -36,6 +36,14 @@ pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
 
+/// Builds a node-shaped [`SenderTarget`] tagged with [`names::CORE_NODE_TAG`].
+/// Use this when the test caller is addressing one of the daemon's own services
+/// (clock, info, ping, node_add, …) — the daemon's listeners pin their tag to
+/// `CORE_NODE_TAG`, not the `v1` used for ordinary test nodes.
+pub fn core_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, names::CORE_NODE_TAG).expect("core node target")
+}
+
 /// Returns `Ok(())` if the payload is a "result pending" sentinel, or `Err` with a
 /// decode-failure message otherwise.
 fn check_pending_or_decode_error(
@@ -112,7 +120,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
-        test_node_target(&started.core_node_name),
+        core_node_target(&started.core_node_name),
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -156,7 +164,7 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         &started.caller_handle,
         caller_core_node,
         caller_instance_id,
-        Some(test_node_target(&started.core_node_name)),
+        Some(core_node_target(&started.core_node_name)),
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -338,7 +346,7 @@ async fn send_node_run_and_wait_internal(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        test_node_target(core_node_name),
+        core_node_target(core_node_name),
         names::NODE_RUN_ACTION,
         Some(core_node_name),
         None,
@@ -502,7 +510,7 @@ async fn send_node_add_and_wait_internal<'a>(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        test_node_target(core_node_name),
+        core_node_target(core_node_name),
         names::NODE_ADD_ACTION,
         Some(core_node_name),
         None,
@@ -622,7 +630,7 @@ pub async fn send_node_build_and_wait(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        test_node_target(core_node_name),
+        core_node_target(core_node_name),
         names::NODE_BUILD_ACTION,
         Some(core_node_name),
         None,
