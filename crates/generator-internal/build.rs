@@ -509,28 +509,34 @@ mod peppylib_build {
         }
     }
 
-    /// Computes a combined SHA-256 hash of all platform `.so` files and emits it
-    /// as the `PEPPYLIB_SO_HASH` env var for cache invalidation.
+    /// Computes a combined SHA-256 hash of all platform `.so` files **and**
+    /// every `.py` file in the peppylib package, emitting it as the
+    /// `PEPPYLIB_SO_HASH` env var for cache invalidation. Including the `.py`
+    /// files in the hash ensures a Python-side edit (rename, new export, etc.)
+    /// invalidates the cached embed even when the native `.so` is unchanged.
     fn compute_and_emit_so_hash(peppylib_dir: &Path) {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
-        let mut so_files: Vec<_> = std::fs::read_dir(peppylib_dir)
+        let mut hashed_files: Vec<_> = std::fs::read_dir(peppylib_dir)
             .expect("failed to read peppylib directory")
             .filter_map(|e| e.ok())
             .filter(|e| {
                 e.path()
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("_peppylib.abi3.") && n.ends_with(".so"))
+                    .is_some_and(|n| {
+                        (n.starts_with("_peppylib.abi3.") && n.ends_with(".so"))
+                            || n.ends_with(".py")
+                    })
             })
             .map(|e| e.path())
             .collect();
-        so_files.sort();
-        for so_file in &so_files {
-            let bytes = std::fs::read(so_file)
-                .unwrap_or_else(|e| panic!("failed to read {:?} for hashing: {e}", so_file));
-            hasher.update(so_file.file_name().unwrap().as_encoded_bytes());
+        hashed_files.sort();
+        for file in &hashed_files {
+            let bytes = std::fs::read(file)
+                .unwrap_or_else(|e| panic!("failed to read {:?} for hashing: {e}", file));
+            hasher.update(file.file_name().unwrap().as_encoded_bytes());
             hasher.update(&bytes);
         }
         let hash = hasher.finalize();

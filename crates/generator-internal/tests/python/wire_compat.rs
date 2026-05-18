@@ -286,7 +286,7 @@ if __name__ == "__main__":
     let consumed_interface = DeploymentInterface::new(InterfaceVariant::ConsumedAction {
         action: consumed_action,
         messages: consumed_action_messages,
-        dependency_node_name: PRODUCER_NODE_NAME.to_string(),
+        dependency: generator::DependencyContext::native(PRODUCER_NODE_NAME, "v1"),
     });
 
     generate_peppygen_lib(
@@ -617,7 +617,7 @@ if __name__ == "__main__":
             .response_message_format
             .clone()
             .unwrap_or_default(),
-        dependency_node_name: PRODUCER_NODE_NAME.to_string(),
+        dependency: generator::DependencyContext::native(PRODUCER_NODE_NAME, "v1"),
     });
 
     generate_peppygen_lib(
@@ -933,7 +933,7 @@ if __name__ == "__main__":
             .message_format
             .clone()
             .expect("emitted topic has a message format"),
-        dependency_node_name: PRODUCER_NODE_NAME.to_string(),
+        dependency: generator::DependencyContext::native(PRODUCER_NODE_NAME, "v1"),
     });
 
     generate_peppygen_lib(

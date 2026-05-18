@@ -43,9 +43,12 @@ impl RuffFacade {
             .output()?;
 
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
             return Err(std::io::Error::other(format!(
-                "ruff check --fix failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                "ruff check --fix failed:\nstderr: {}\nstdout: {}",
+                stderr.trim(),
+                stdout.trim()
             )));
         }
 

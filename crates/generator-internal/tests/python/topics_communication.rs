@@ -94,7 +94,11 @@ async fn topics_communication() {
     let (mut generator, receiver_dir, user_node_receiver, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_proj2, STUB_PYTHON_NODE_CONFIG);
     generator
-        .add_consumed_topic(&consumed_topic, subscribed_format, "uvc_camera")
+        .add_consumed_topic(
+            &consumed_topic,
+            subscribed_format,
+            &generator::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
         .add_exposed_service(&frame_received_service, None)

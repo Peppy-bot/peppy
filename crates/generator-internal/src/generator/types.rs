@@ -74,6 +74,45 @@ pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> Strin
     }
 }
 
+/// Identifies a dependency a consumer pulls from. `node_name` + `node_tag`
+/// pin the producer node; `origin` is `Some` when the consumed artifact comes
+/// from an interface the producer `conforms_to` (so the consumer should match
+/// the producer via [`SenderTarget::Interface`] rather than
+/// [`SenderTarget::Node`]).
+///
+/// [`SenderTarget::Interface`]: pmi::SenderTarget::Interface
+/// [`SenderTarget::Node`]: pmi::SenderTarget::Node
+#[derive(Debug, Clone)]
+pub struct DependencyContext {
+    pub node_name: String,
+    pub node_tag: String,
+    pub origin: Option<InterfaceOrigin>,
+}
+
+impl DependencyContext {
+    /// Build a context for a dependency that emits natively (no `conforms_to`).
+    pub fn native(node_name: impl Into<String>, node_tag: impl Into<String>) -> Self {
+        Self {
+            node_name: node_name.into(),
+            node_tag: node_tag.into(),
+            origin: None,
+        }
+    }
+
+    /// Build a context for a dependency that emits via `conforms_to` interface.
+    pub fn conformed(
+        node_name: impl Into<String>,
+        node_tag: impl Into<String>,
+        origin: InterfaceOrigin,
+    ) -> Self {
+        Self {
+            node_name: node_name.into(),
+            node_tag: node_tag.into(),
+            origin: Some(origin),
+        }
+    }
+}
+
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
 #[derive(Debug, Clone)]
 pub enum InterfaceVariant {
@@ -92,18 +131,18 @@ pub enum InterfaceVariant {
     ConsumedTopic {
         topic: ConsumedTopic,
         message_format: MessageFormat,
-        dependency_node_name: String,
+        dependency: DependencyContext,
     },
     ConsumedService {
         service: ConsumedService,
         request_format: MessageFormat,
         response_format: MessageFormat,
-        dependency_node_name: String,
+        dependency: DependencyContext,
     },
     ConsumedAction {
         action: ConsumedAction,
         messages: ConsumedActionMessage,
-        dependency_node_name: String,
+        dependency: DependencyContext,
     },
     ExternalConsumedTopic {
         name: String,
@@ -227,7 +266,7 @@ pub trait LanguageGenerator {
         &mut self,
         topic: &ConsumedTopic,
         arguments: MessageFormat,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()>;
     fn add_external_consumed_topic(
         &mut self,
@@ -239,13 +278,13 @@ pub trait LanguageGenerator {
         service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()>;
     fn add_consumed_action(
         &mut self,
         action: &ConsumedAction,
         messages: &ConsumedActionMessage,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
     fn build(
@@ -271,24 +310,19 @@ impl DeploymentInterface {
             InterfaceVariant::ConsumedTopic {
                 topic,
                 message_format,
-                dependency_node_name,
-            } => backend.add_consumed_topic(topic, message_format.clone(), dependency_node_name),
+                dependency,
+            } => backend.add_consumed_topic(topic, message_format.clone(), dependency),
             InterfaceVariant::ConsumedService {
                 service,
                 request_format,
                 response_format,
-                dependency_node_name,
-            } => backend.add_consumed_service(
-                service,
-                request_format,
-                response_format,
-                dependency_node_name,
-            ),
+                dependency,
+            } => backend.add_consumed_service(service, request_format, response_format, dependency),
             InterfaceVariant::ConsumedAction {
                 action,
                 messages,
-                dependency_node_name,
-            } => backend.add_consumed_action(action, messages, dependency_node_name),
+                dependency,
+            } => backend.add_consumed_action(action, messages, dependency),
             InterfaceVariant::ExternalConsumedTopic {
                 name,
                 message_format,

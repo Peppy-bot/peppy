@@ -136,7 +136,7 @@ fn nests_conformed_actions_under_iface_name_and_tag() {
         "native source should call ActionMessenger::expose:\n{native_src}",
     );
     assert!(
-        native_src.contains("Iface::native()"),
+        native_src.contains("SenderTarget::node("),
         "native leaf should pass `Iface::native()`:\n{native_src}",
     );
     assert!(

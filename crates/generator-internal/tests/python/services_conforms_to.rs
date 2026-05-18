@@ -102,19 +102,19 @@ fn nests_conformed_services_under_iface_name_and_tag() {
         "native source should call ServiceMessenger.listen:\n{native_src}",
     );
     assert!(
-        native_src.contains("peppylib.Iface.native()"),
+        native_src.contains("peppylib.SenderTarget.node("),
         "native leaf should pass `peppylib.Iface.native()`:\n{native_src}",
     );
 
     let camera_v1_src = fs::read_to_string(&camera_v1).expect("read camera v1");
     assert!(
-        camera_v1_src.contains("peppylib.Iface.conformed(\"camera\", \"v1\")"),
+        camera_v1_src.contains("peppylib.SenderTarget.interface(\"camera\", \"v1\")"),
         "camera v1 leaf should pass `Iface.conformed(\"camera\", \"v1\")`:\n{camera_v1_src}",
     );
 
     let arm_v2_src = fs::read_to_string(&arm_v2).expect("read arm v2");
     assert!(
-        arm_v2_src.contains("peppylib.Iface.conformed(\"arm\", \"v2\")"),
+        arm_v2_src.contains("peppylib.SenderTarget.interface(\"arm\", \"v2\")"),
         "arm v2 leaf should pass `Iface.conformed(\"arm\", \"v2\")`:\n{arm_v2_src}",
     );
 }

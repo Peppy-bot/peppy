@@ -338,6 +338,7 @@ impl PyActionMessenger {
     /// Check whether an action server is reachable.
     #[staticmethod]
     #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, to_core_node=None, to_instance_id=None))]
+    #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,

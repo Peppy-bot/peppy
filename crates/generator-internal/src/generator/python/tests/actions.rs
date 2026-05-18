@@ -585,7 +585,11 @@ fn consumed_action() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_action(&action, &format, "brain")
+        .add_consumed_action(
+            &action,
+            &format,
+            &crate::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -782,11 +786,19 @@ fn consumed_two_actions_same_node() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_action(&move_arm_action, &move_arm_messages, "brain")
+        .add_consumed_action(
+            &move_arm_action,
+            &move_arm_messages,
+            &crate::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     // Both actions target the same upstream node.
     generator
-        .add_consumed_action(&rotate_action, &rotate_messages, "brain")
+        .add_consumed_action(
+            &rotate_action,
+            &rotate_messages,
+            &crate::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
 
     let artifacts: Vec<_> = generator.into_artifacts();
@@ -907,7 +919,11 @@ fn consumed_action_without_response_payload() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_action(&action, &format, "brain")
+        .add_consumed_action(
+            &action,
+            &format,
+            &crate::DependencyContext::native("brain", "v1"),
+        )
         .expect("generator should allow consumed actions with empty response payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -993,7 +1009,11 @@ fn consumed_action_without_feedback() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_action(&action, &format, "brain")
+        .add_consumed_action(
+            &action,
+            &format,
+            &crate::DependencyContext::native("brain", "v1"),
+        )
         .expect("generator should allow consumed actions without feedback payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(artifacts.len(), 1, "expected single generated artifact");

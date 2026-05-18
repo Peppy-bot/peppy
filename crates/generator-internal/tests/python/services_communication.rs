@@ -111,7 +111,7 @@ async fn services_communication_no_to_instance_id() {
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            "uvc_camera",
+            &generator::DependencyContext::native("uvc_camera", "v1"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -421,7 +421,7 @@ async fn services_communication_exposed_service_without_request_body() {
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            "uvc_camera",
+            &generator::DependencyContext::native("uvc_camera", "v1"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -712,7 +712,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_to_i
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            "uvc_camera",
+            &generator::DependencyContext::native("uvc_camera", "v1"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);

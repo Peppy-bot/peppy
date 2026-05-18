@@ -1224,6 +1224,7 @@ async fn process_node_add(
         &node_config.manifest,
         &node_config.interfaces,
         stack_resolver(&ctx.action.node_stack),
+        &ctx.action.peppy_dirs,
     ) {
         Ok(v) => v,
         Err(reason) => {

@@ -327,7 +327,12 @@ fn consumed_service() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &request_format,
+            &response_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -422,7 +427,12 @@ fn consumed_service_optional_scalar_and_bytes_use_has_checks() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &request_format,
+            &response_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
@@ -458,10 +468,20 @@ fn consumed_two_services_same_node() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_service(&service1, &request_format1, &response_format1, "uvc_camera")
+        .add_consumed_service(
+            &service1,
+            &request_format1,
+            &response_format1,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_service(&service2, &empty_format, &response_format2, "uvc_camera")
+        .add_consumed_service(
+            &service2,
+            &empty_format,
+            &response_format2,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -530,7 +550,12 @@ fn consumed_service_without_response_payload() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_service(&service, &empty_format, &empty_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &empty_format,
+            &empty_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .expect("generator should allow services without response format");
 
     let artifacts = render_artifacts(generator.into_artifacts());

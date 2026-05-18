@@ -133,14 +133,9 @@ pub fn build_consumed_topic(
     topic: &ConsumedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
-    dependency_node_name: &str,
+    dependency: &crate::generator::types::DependencyContext,
 ) -> Result<String> {
-    build_consumed_topic_inner(
-        topic.name(),
-        arguments,
-        schema_info,
-        Some(dependency_node_name),
-    )
+    build_consumed_topic_inner(topic.name(), arguments, schema_info, Some(dependency))
 }
 
 pub fn build_external_consumed_topic(
@@ -155,7 +150,7 @@ fn build_consumed_topic_inner(
     topic_name: &str,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
-    dependency_node_name: Option<&str>,
+    dependency: Option<&crate::generator::types::DependencyContext>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
@@ -198,17 +193,26 @@ fn build_consumed_topic_inner(
     builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None, from_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
-    if let Some(node_name) = dependency_node_name {
-        builder.line(&format!("node_name = \"{}\"", node_name));
+    if let Some(dep) = dependency {
         builder.line("subscription = await peppylib.TopicMessenger.subscribe(");
         builder.indent();
         builder.line("node_runner.messenger(),");
         builder.line("node_runner.bound_core_node(),");
         builder.line("node_runner.bound_instance_id(),");
-        // Consumer-side discovery of the publisher's identity is the follow-up
-        // PR; for now we pass None so the subscriber matches any publisher
-        // regardless of node/interface lens.
-        builder.line("None,");
+        // Address the producer via the same `SenderTarget` form it uses to
+        // emit: `Interface(name, tag)` when the dep exposes the topic via
+        // `conforms_to`, otherwise `Node(node_name, node_tag)`.
+        let from_target = match &dep.origin {
+            Some(origin) => format!(
+                "peppylib.SenderTarget.interface({:?}, {:?})",
+                origin.iface_name, origin.iface_tag,
+            ),
+            None => format!(
+                "peppylib.SenderTarget.node({:?}, {:?})",
+                dep.node_name, dep.node_tag,
+            ),
+        };
+        builder.line(&format!("{from_target},"));
         builder.line("topic_name,");
         builder.line("from_core_node,");
         builder.line("from_instance_id,");

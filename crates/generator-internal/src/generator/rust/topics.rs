@@ -16,7 +16,7 @@ pub struct ConsumedTopicCallbackSpec<'a> {
     pub encoding: &'a MessageEncodingSpec,
     pub topic: &'a ConsumedTopic,
     pub struct_prefix: &'a str,
-    pub dependency_node_name: &'a str,
+    pub dependency: &'a crate::generator::types::DependencyContext,
 }
 
 /// Specification for building an emit-style method (topic emit or action feedback emit).
@@ -177,10 +177,10 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
         encoding,
         topic,
         struct_prefix,
-        dependency_node_name,
+        dependency,
     } = spec;
     let topic_literal = Literal::string(topic.name());
-    let node_name_literal = Literal::string(dependency_node_name);
+    let node_name_literal = Literal::string(&dependency.node_name);
     let helper_fn_tokens = build_topic_deserialize_helper(
         helper_fn_ident,
         args_struct_ident,
@@ -190,11 +190,8 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
         struct_prefix,
     )?;
 
-    // The generator doesn't yet thread the dependency's `conforms_to`
-    // information here, so subscribers wildcard the producer's identity. When
-    // the dep declares a `conforms_to` and the generator plumbs that through,
-    // this becomes `Some(SenderTarget::interface(name, tag)?)` instead of
-    // `None` so the subscriber pins on the interface.
+    let from_target_expr = consumed_from_target_expression(dependency);
+
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
@@ -210,7 +207,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
-                    None,
+                    #from_target_expr,
                     topic_name,
                     from_core_node,
                     from_instance_id,
@@ -239,6 +236,38 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
 
         #helper_fn_tokens
     })
+}
+
+/// Returns the `Option<SenderTarget>` expression spliced into a generated
+/// `TopicMessenger::subscribe` call to pin the consumer on a specific producer.
+/// When the dependency emits via `conforms_to`, the consumer matches on
+/// `Interface(name, tag)`; otherwise on `Node(node_name, node_tag)`.
+pub fn consumed_from_target_expression(
+    dependency: &crate::generator::types::DependencyContext,
+) -> TokenStream {
+    let target = consumed_to_target_expression(dependency);
+    quote!(Some(#target))
+}
+
+/// Returns the `SenderTarget` expression spliced into a generated
+/// `ServiceMessenger::poll` / `ActionMessenger::send_goal` call. Same producer
+/// matching rules as [`consumed_from_target_expression`] but without the
+/// `Option` wrapper since these APIs require a target.
+pub fn consumed_to_target_expression(
+    dependency: &crate::generator::types::DependencyContext,
+) -> TokenStream {
+    match &dependency.origin {
+        Some(origin) => {
+            let name = Literal::string(&origin.iface_name);
+            let tag = Literal::string(&origin.iface_tag);
+            quote!(peppylib::messaging::SenderTarget::interface(#name, #tag)?)
+        }
+        None => {
+            let node_name = Literal::string(&dependency.node_name);
+            let node_tag = Literal::string(&dependency.node_tag);
+            quote!(peppylib::messaging::SenderTarget::node(#node_name, #node_tag)?)
+        }
+    }
 }
 
 pub struct ExternalConsumedTopicCallbackSpec<'a> {

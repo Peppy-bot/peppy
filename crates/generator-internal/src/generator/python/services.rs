@@ -206,7 +206,7 @@ pub fn build_consumed_service(
     response_arguments: &MessageFormat,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
-    dependency_node_name: &str,
+    dependency: &crate::generator::types::DependencyContext,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
@@ -225,7 +225,7 @@ pub fn build_consumed_service(
     }
 
     // Constants
-    builder.line(&format!("NODE_NAME = \"{}\"", dependency_node_name));
+    builder.line(&format!("NODE_NAME = \"{}\"", dependency.node_name));
     builder.line(&format!("SERVICE_NAME = \"{}\"", service.name));
     builder.blank_line();
 
@@ -307,17 +307,20 @@ pub fn build_consumed_service(
         builder.line("request_payload = b\"\"");
     }
 
-    // Call peppylib.ServiceMessenger.poll. Consumer-side discovery of the
-    // producer's interface namespace is the follow-up PR; for now we target
-    // the producer as a node using its declared NODE_NAME and our own
-    // node_tag (placeholder until the deployment config records the
-    // producer's `conforms_to`).
+    // Address the producer with a target that matches its emission shape.
     if has_response {
         builder.line("response_message = await peppylib.ServiceMessenger.poll(");
     } else {
         builder.line("await peppylib.ServiceMessenger.poll(");
     }
-    let target_expr = sender_target_python_expr(None, "NODE_NAME", "node_runner.node_tag()");
+    let target_expr = match &dependency.origin {
+        Some(origin) => sender_target_python_expr(
+            Some(origin),
+            "NODE_NAME",
+            &format!("{:?}", dependency.node_tag),
+        ),
+        None => sender_target_python_expr(None, "NODE_NAME", &format!("{:?}", dependency.node_tag)),
+    };
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");

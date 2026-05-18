@@ -596,8 +596,9 @@ pub fn build_consumed_action(
     action: &ConsumedAction,
     messages: &ConsumedActionMessage,
     schema_info: ConsumedActionSchemaInfo<'_>,
-    dependency_node_name: &str,
+    dependency: &crate::generator::types::DependencyContext,
 ) -> Result<String> {
+    let dependency_node_name = dependency.node_name.as_str();
     let mut builder = PythonCodeBuilder::new();
 
     let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
@@ -778,12 +779,19 @@ pub fn build_consumed_action(
         builder.line("user_goal_payload = b\"\"");
     }
 
-    // Consumer-side discovery of the producer's interface namespace is the
-    // follow-up PR; for now we target the producer as a node using TARGET_NODE_NAME
-    // and our own node_tag (placeholder until the deployment config records
-    // the producer's `conforms_to`).
-    let send_goal_target_expr =
-        sender_target_python_expr(None, "TARGET_NODE_NAME", "node_runner.node_tag()");
+    // Address the producer with a target that matches its emission shape.
+    let send_goal_target_expr = match &dependency.origin {
+        Some(origin) => sender_target_python_expr(
+            Some(origin),
+            "TARGET_NODE_NAME",
+            &format!("{:?}", dependency.node_tag),
+        ),
+        None => sender_target_python_expr(
+            None,
+            "TARGET_NODE_NAME",
+            &format!("{:?}", dependency.node_tag),
+        ),
+    };
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");

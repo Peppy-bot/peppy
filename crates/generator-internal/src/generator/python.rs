@@ -15,9 +15,9 @@ mod type_mapping;
 
 use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
 use super::types::{
-    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, InterfaceOrigin,
-    LanguageGenerator, cancel_action_response_format, non_empty_message_format, scoped_schema_key,
-    validate_fixed_length_array_items, validate_generated_type_name_collisions,
+    CapnpSchema, ConsumedActionMessage, DependencyContext, InterfaceArtifact, InterfaceKind,
+    InterfaceOrigin, LanguageGenerator, cancel_action_response_format, non_empty_message_format,
+    scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
     validate_message_format_field_names,
 };
 use crate::error::{Error, Result};
@@ -246,7 +246,7 @@ impl LanguageGenerator for PythonGenerator {
         &mut self,
         topic: &ConsumedTopic,
         arguments: MessageFormat,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()> {
         let ConsumedTopic::Linked(linked) = topic else {
             return Err(Error::InvariantViolation {
@@ -254,8 +254,7 @@ impl LanguageGenerator for PythonGenerator {
             });
         };
         let schema_info = self.register_schema(&linked.name, &arguments)?;
-        let code =
-            topics::build_consumed_topic(topic, &arguments, &schema_info, dependency_node_name)?;
+        let code = topics::build_consumed_topic(topic, &arguments, &schema_info, dependency)?;
         let module_label = module_name_from_components(&linked.local_node_id, &linked.name);
         self.push_section(self.make_artifact(
             &module_label,
@@ -284,7 +283,7 @@ impl LanguageGenerator for PythonGenerator {
         service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()> {
         let request_schema_info = self.register_optional_schema(
             format!("{}_request", service.name),
@@ -301,7 +300,7 @@ impl LanguageGenerator for PythonGenerator {
             response_arguments,
             request_schema_info.as_ref(),
             response_schema_info.as_ref(),
-            dependency_node_name,
+            dependency,
         )?;
         let module_label = module_name_from_components(&service.local_node_id, &service.name);
         self.push_section(self.make_artifact(
@@ -317,7 +316,7 @@ impl LanguageGenerator for PythonGenerator {
         &mut self,
         action: &ConsumedAction,
         messages: &ConsumedActionMessage,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()> {
         let goal_request_schema_info = self.register_optional_schema(
             format!("{}_goal_request", action.name),
@@ -352,7 +351,7 @@ impl LanguageGenerator for PythonGenerator {
                 feedback: feedback_schema_info.as_ref(),
                 result_response: result_response_schema_info.as_ref(),
             },
-            dependency_node_name,
+            dependency,
         )?;
         let module_label = module_name_from_components(&action.local_node_id, &action.name);
         self.push_section(self.make_artifact(

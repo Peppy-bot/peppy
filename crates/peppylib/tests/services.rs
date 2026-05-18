@@ -203,7 +203,6 @@ async fn service_iface_tag_hyphen_normalized() {
 
     let core_node = "test_core";
     let instance_id = "test_instance";
-    let node_name = "test_node";
     let service_name = "control";
     let iface_name = "camera";
 

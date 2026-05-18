@@ -434,7 +434,11 @@ fn consumed_topic() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_topic(&topic, format, "uvc_camera")
+        .add_consumed_topic(
+            &topic,
+            format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -565,7 +569,11 @@ fn consumed_topic_escapes_python_keyword_fields() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_topic(&topic, format, "keyword_source")
+        .add_consumed_topic(
+            &topic,
+            format,
+            &crate::DependencyContext::native("keyword_source", "v1"),
+        )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
@@ -593,10 +601,18 @@ fn consumed_two_topics_same_node() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_topic(&video_topic, video_format, "uvc_camera")
+        .add_consumed_topic(
+            &video_topic,
+            video_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_topic(&sound_topic, sound_format, "uvc_camera")
+        .add_consumed_topic(
+            &sound_topic,
+            sound_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -625,7 +641,7 @@ fn consumed_two_topics_same_node() {
         &[
             "video_stream_message.capnp\")",
             "topic_name = \"video_stream\"",
-            "node_name = \"uvc_camera\"",
+            "peppylib.SenderTarget.node(\"uvc_camera\", \"v1\")",
         ],
     );
     assert!(
@@ -638,7 +654,7 @@ fn consumed_two_topics_same_node() {
         &[
             "sound_message.capnp\")",
             "topic_name = \"sound\"",
-            "node_name = \"uvc_camera\"",
+            "peppylib.SenderTarget.node(\"uvc_camera\", \"v1\")",
         ],
     );
     assert!(
@@ -770,13 +786,26 @@ fn consumer_filter_params_use_directional_prefix() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_topic(&topic, topic_format, "uvc_camera")
+        .add_consumed_topic(
+            &topic,
+            topic_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &request_format,
+            &response_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_action(&action, &action_messages, "brain")
+        .add_consumed_action(
+            &action,
+            &action_messages,
+            &crate::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
 
