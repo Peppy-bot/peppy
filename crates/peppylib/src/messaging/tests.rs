@@ -98,7 +98,7 @@ async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topic_publish_subscribe_no_target_instance_id() {
+async fn topic_publish_subscribe_no_from_instance_id() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
@@ -155,7 +155,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topic_publish_subscribe_with_target_instance_id() {
+async fn topic_publish_subscribe_with_from_instance_id() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
@@ -246,7 +246,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topic_publish_subscribe_with_target_core_node() {
+async fn topic_publish_subscribe_with_from_core_node() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
@@ -869,7 +869,7 @@ async fn service_communication_poll_wrong_node() {
                 listener_node_name,
                 Iface::native(),
                 listener_service_name,
-                None,               // target_core_node
+                None,               // to_core_node
                 Some("wrong_node"), // Use a wrong instance_id here
                 request_payload.clone(),
                 Duration::from_secs(1),
@@ -1002,8 +1002,8 @@ async fn service_communication_poll_wrong_core_node() {
             listener_node_name,
             Iface::native(),
             listener_service_name,
-            Some("wrong_core_node"), // target_core_node - wrong one!
-            None,                    // no specific target_instance_id
+            Some("wrong_core_node"), // to_core_node - wrong one!
+            None,                    // no specific to_instance_id
             request_payload.clone(),
             Duration::from_millis(200),
         )

@@ -55,10 +55,10 @@ impl<T> Drop for AbortOnDrop<T> {
 pub async fn wait_until_service_reachable(
     messenger: &MessengerHandle,
     bound_core_node: &str,
-    target_node_name: &str,
-    target_service_name: &str,
-    target_core_node: &str,
-    target_instance_id: &str,
+    to_node_name: &str,
+    to_service_name: &str,
+    to_core_node: &str,
+    to_instance_id: &str,
     timeout: Duration,
 ) {
     use peppylib::messaging::ServiceMessenger;
@@ -68,11 +68,11 @@ pub async fn wait_until_service_reachable(
             messenger,
             bound_core_node,
             "ready_probe",
-            target_node_name,
+            to_node_name,
             peppylib::messaging::Iface::native(),
-            target_service_name,
-            Some(target_core_node),
-            Some(target_instance_id),
+            to_service_name,
+            Some(to_core_node),
+            Some(to_instance_id),
         )
         .await
         {
@@ -80,8 +80,8 @@ pub async fn wait_until_service_reachable(
         }
         if std::time::Instant::now() >= deadline {
             panic!(
-                "service {target_node_name}/{target_service_name} on \
-                 {target_core_node}/{target_instance_id} did not become \
+                "service {to_node_name}/{to_service_name} on \
+                 {to_core_node}/{to_instance_id} did not become \
                  reachable within {timeout:?}"
             );
         }

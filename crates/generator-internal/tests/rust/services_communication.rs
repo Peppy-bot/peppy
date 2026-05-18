@@ -88,7 +88,7 @@ const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 "#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_no_target_instance_id() {
+async fn services_communication_no_to_instance_id() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -243,7 +243,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn exposer first so it's ready to handle requests
@@ -530,7 +530,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn exposer first so it's ready to handle requests
@@ -664,7 +664,7 @@ fn main() -> Result<()> {
 
 /// If there are multiple services of the same name and the consumer does not specify an instance_id, it's the first service that respond that connects with the consumer
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_multiple_exposed_instances_same_service_not_target_instance_id() {
+async fn services_communication_multiple_exposed_instances_same_service_not_to_instance_id() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -885,7 +885,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn both exposers first so they're ready to handle requests

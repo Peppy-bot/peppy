@@ -163,7 +163,7 @@ fn build_consumed_topic_inner(
     // Collect fields from the message format
     let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
 
-    // Always need Optional for the function parameters (target_core_node, target_instance_id),
+    // Always need Optional for the function parameters (from_core_node, from_instance_id),
     // plus any Optional fields in the dataclasses.
     // Tuple is used for the return type of on_next_message_received.
     builder.add_import("from typing import Optional, Tuple");
@@ -195,7 +195,7 @@ fn build_consumed_topic_inner(
     // Generate on_next_message_received function
     builder.add_import("import peppylib");
     builder.blank_line();
-    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
+    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None, from_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
     if let Some(node_name) = dependency_node_name {
@@ -211,8 +211,8 @@ fn build_consumed_topic_inner(
         // segments match any publisher.
         builder.line("peppylib.Iface.wildcard(),");
         builder.line("topic_name,");
-        builder.line("target_core_node,");
-        builder.line("target_instance_id,");
+        builder.line("from_core_node,");
+        builder.line("from_instance_id,");
         builder.line("peppylib.QoSProfile.Standard,");
         builder.dedent();
         builder.line(")");
@@ -223,8 +223,8 @@ fn build_consumed_topic_inner(
         builder.line("node_runner.bound_core_node(),");
         builder.line("node_runner.bound_instance_id(),");
         builder.line("topic_name,");
-        builder.line("target_core_node,");
-        builder.line("target_instance_id,");
+        builder.line("from_core_node,");
+        builder.line("from_instance_id,");
         builder.line("peppylib.QoSProfile.Standard,");
         builder.dedent();
         builder.line(")");

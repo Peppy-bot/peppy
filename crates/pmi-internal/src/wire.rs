@@ -278,16 +278,16 @@ impl TopicWireSender {
     }
 }
 
-/// Subscriber-side addressing for a topic. `to_core_node` / `to_instance_id` /
-/// `to_node_name` are `None` to mean "any" (translated to the transport's
-/// single-chunk wildcard).
+/// Subscriber-side addressing for a topic. `from_core_node` / `from_instance_id` /
+/// `from_node_name` identify the publisher whose messages we want to receive;
+/// `None` means "any" (translated to the transport's single-chunk wildcard).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopicWireReceiver {
     pub(crate) as_core_node: Segment,
     pub(crate) as_instance_id: Segment,
-    pub(crate) to_core_node: Option<Segment>,
-    pub(crate) to_instance_id: Option<Segment>,
-    pub(crate) to_node_name: Option<Segment>,
+    pub(crate) from_core_node: Option<Segment>,
+    pub(crate) from_instance_id: Option<Segment>,
+    pub(crate) from_node_name: Option<Segment>,
     pub(crate) iface: Iface,
     pub(crate) to_topic: Segment,
 }
@@ -296,18 +296,18 @@ impl TopicWireReceiver {
     pub fn new(
         as_core_node: &str,
         as_instance_id: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
-        to_node_name: Option<&str>,
+        from_core_node: Option<&str>,
+        from_instance_id: Option<&str>,
+        from_node_name: Option<&str>,
         iface: Iface,
         to_topic: &str,
     ) -> crate::error::Result<Self> {
         Ok(Self {
             as_core_node: Segment::try_from(as_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
-            to_core_node: to_core_node.map(Segment::try_from).transpose()?,
-            to_instance_id: to_instance_id.map(Segment::try_from).transpose()?,
-            to_node_name: to_node_name.map(Segment::try_from).transpose()?,
+            from_core_node: from_core_node.map(Segment::try_from).transpose()?,
+            from_instance_id: from_instance_id.map(Segment::try_from).transpose()?,
+            from_node_name: from_node_name.map(Segment::try_from).transpose()?,
             iface,
             to_topic: Segment::try_from(to_topic)?,
         })

@@ -173,7 +173,7 @@ async fn topic_wildcard_subscriber() {
         "frames",
     )
     .expect("valid wire fields");
-    // Receiver is fully untargeted — both `to_core_node` and `to_instance_id` None.
+    // Receiver is fully untargeted: both `from_core_node` and `from_instance_id` None.
     let receiver = TopicWireReceiver::new(
         "subscriber_core",
         "subscriber_inst",

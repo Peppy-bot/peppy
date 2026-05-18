@@ -183,18 +183,18 @@ impl PyServiceMessenger {
 
     /// Check if a service has active subscribers.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, iface, target_service_name, target_core_node=None, target_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_node_name, iface, to_service_name, to_core_node=None, to_instance_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         bound_core_node: String,
         as_instance_id: String,
-        target_node_name: String,
+        to_node_name: String,
         iface: PyIface,
-        target_service_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        to_service_name: String,
+        to_core_node: Option<String>,
+        to_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let iface = iface.into_inner();
@@ -203,11 +203,11 @@ impl PyServiceMessenger {
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
-                &target_node_name,
+                &to_node_name,
                 iface,
-                &target_service_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                &to_service_name,
+                to_core_node.as_deref(),
+                to_instance_id.as_deref(),
             )
             .await
             .map_err(to_py_err)?;
@@ -217,18 +217,18 @@ impl PyServiceMessenger {
 
     /// Send a request to a service and wait for a response.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, iface, target_service_name, target_core_node=None, target_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_node_name, iface, to_service_name, to_core_node=None, to_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn poll<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         bound_core_node: String,
         as_instance_id: String,
-        target_node_name: String,
+        to_node_name: String,
         iface: PyIface,
-        target_service_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        to_service_name: String,
+        to_core_node: Option<String>,
+        to_instance_id: Option<String>,
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -241,11 +241,11 @@ impl PyServiceMessenger {
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
-                &target_node_name,
+                &to_node_name,
                 iface,
-                &target_service_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                &to_service_name,
+                to_core_node.as_deref(),
+                to_instance_id.as_deref(),
                 Payload::from(request_payload),
                 response_timeout,
             )

@@ -424,7 +424,7 @@ mod tests {
     fn test_key_exprs_intersect_service_patterns() {
         // Real patterns from the service messenger
         // Subscription pattern: {bound_core_node}/*/{as_instance_id}/*/{service_root}/request/**
-        // Request topic: {target_core_node}/{caller_core_node}/{target_instance}/{caller_instance}/{service_root}/request/{request_id}
+        // Request topic: {to_core_node}/{caller_core_node}/{to_instance}/{caller_instance}/{service_root}/request/{request_id}
 
         // Pattern 1: Specific core node, specific instance
         // Service bound to core node "listener_core_node" with instance "listener_instance"

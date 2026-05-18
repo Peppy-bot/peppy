@@ -56,13 +56,16 @@ impl ZenohWireFormat {
         )
     }
 
-    /// `{as_core}/{to_core|*}/{as_inst}/{to_inst|*}/topic/{to_node|*}/{iface_name}/{iface_tag}/{to_topic}`
+    /// `{as_core}/{from_core|*}/{as_inst}/{from_inst|*}/topic/{from_node|*}/{iface_name}/{iface_tag}/{to_topic}`
     pub(crate) fn topic_subscribe(r: &TopicWireReceiver) -> String {
-        let to_core = r.to_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let to_inst = r.to_instance_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let to_node = r.to_node_name.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let from_core = r.from_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let from_inst = r
+            .from_instance_id
+            .as_deref()
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let from_node = r.from_node_name.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         format!(
-            "{}/{to_core}/{}/{to_inst}/topic/{to_node}/{}/{}/{}",
+            "{}/{from_core}/{}/{from_inst}/topic/{from_node}/{}/{}/{}",
             r.as_core_node,
             r.as_instance_id,
             r.iface.name(),
@@ -131,18 +134,18 @@ impl ZenohWireFormat {
     ) -> Result<ParsedRequest, ZenohWireParseError> {
         let mut parts = request_keyexpr.split('/').filter(|s| !s.is_empty());
 
-        // target_core / target_inst are consumed but unused: the receiver's listen
+        // to_core / to_inst are consumed but unused: the receiver's listen
         // patterns already filter on these via Zenoh keyexpr matching, so any
         // mismatch would have caused the message to land on a different listener.
-        let _target_core = parts
+        let _to_core = parts
             .next()
-            .ok_or(ZenohWireParseError::MissingSegment("target_core_node"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("to_core_node"))?;
         let caller_core = parts
             .next()
             .ok_or(ZenohWireParseError::MissingSegment("caller_core_node"))?;
-        let _target_inst = parts
+        let _to_inst = parts
             .next()
-            .ok_or(ZenohWireParseError::MissingSegment("target_instance"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("to_instance"))?;
         let caller_inst = parts
             .next()
             .ok_or(ZenohWireParseError::MissingSegment("caller_instance"))?;

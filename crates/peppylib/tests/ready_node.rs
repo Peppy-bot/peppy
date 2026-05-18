@@ -37,7 +37,7 @@ async fn ready_node() {
     // - specific core node + broadcast instance
     // - broadcast core node + specific instance
     // - full broadcast (core node + instance)
-    let target_combinations = [
+    let to_combinations = [
         (
             Some(client.core_node_name.as_str()),
             Some(client.instance_id.as_str()),
@@ -47,7 +47,7 @@ async fn ready_node() {
         (None, None),
     ];
 
-    for (target_core_node, target_instance_id) in target_combinations {
+    for (to_core_node, to_instance_id) in to_combinations {
         let response = ServiceMessenger::poll(
             &client.caller_handle,
             &client.core_node_name,
@@ -55,8 +55,8 @@ async fn ready_node() {
             TEST_NODE_NAME,
             Iface::native(),
             peppylib::messaging::NODE_READY_SERVICE,
-            target_core_node,
-            target_instance_id,
+            to_core_node,
+            to_instance_id,
             request_payload.clone(),
             Duration::from_secs(2),
         )

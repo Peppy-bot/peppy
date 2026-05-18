@@ -288,7 +288,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        to_core_node: Some(TEST_CORE_NODE),
     };
 
     // Wait for both nodes to expose health/ready endpoints.

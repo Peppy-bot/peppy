@@ -270,8 +270,8 @@ fn consumed_service() {
         &rendered,
         &[
             "pub async fn poll(",
-            "target_core_node: Option<&str>",
-            "target_instance_id: Option<&str>",
+            "to_core_node: Option<&str>",
+            "to_instance_id: Option<&str>",
             "-> crate::Result<Response>",
         ],
     );

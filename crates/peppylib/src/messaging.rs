@@ -275,8 +275,8 @@ impl MessengerHandle {
                 "service response channel closed".to_string(),
             ))
         };
-        let target_service_name = sender.to_service_name().to_string();
-        let target_instance_id = sender.to_instance_id().map(str::to_string);
+        let to_service_name = sender.to_service_name().to_string();
+        let to_instance_id = sender.to_instance_id().map(str::to_string);
 
         let response = match response_timeout {
             Some(response_timeout) => {
@@ -288,13 +288,13 @@ impl MessengerHandle {
                     if remaining.is_zero() {
                         if received_ack {
                             return Err(Error::ServiceTimeout {
-                                instance_id: target_instance_id,
-                                service_name: target_service_name,
+                                instance_id: to_instance_id,
+                                service_name: to_service_name,
                             });
                         } else {
                             return Err(Error::ServiceUnreachable {
-                                instance_id: target_instance_id,
-                                service_name: target_service_name,
+                                instance_id: to_instance_id,
+                                service_name: to_service_name,
                             });
                         }
                     }
@@ -311,13 +311,13 @@ impl MessengerHandle {
                         Err(_) => {
                             if received_ack {
                                 return Err(Error::ServiceTimeout {
-                                    instance_id: target_instance_id,
-                                    service_name: target_service_name,
+                                    instance_id: to_instance_id,
+                                    service_name: to_service_name,
                                 });
                             } else {
                                 return Err(Error::ServiceUnreachable {
-                                    instance_id: target_instance_id,
-                                    service_name: target_service_name,
+                                    instance_id: to_instance_id,
+                                    service_name: to_service_name,
                                 });
                             }
                         }
@@ -341,8 +341,8 @@ impl MessengerHandle {
         let response_payload = response.payload();
         if let Some(reason) = decode_service_error_payload(response_payload.as_ref()) {
             return Err(Error::ServiceError {
-                instance_id: target_instance_id,
-                service_name: target_service_name,
+                instance_id: to_instance_id,
+                service_name: to_service_name,
                 reason,
             });
         }

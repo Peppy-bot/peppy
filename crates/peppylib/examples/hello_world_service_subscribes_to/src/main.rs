@@ -37,8 +37,8 @@ async fn main() {
         POLL_NODE_NAME,
         Iface::native(),
         POLL_SERVICE_NAME,
-        None, // target_core_node - not needed
-        None, // target_instance_id - we don't need to point to a particular instance, any would work
+        None, // to_core_node - not needed
+        None, // to_instance_id - we don't need to point to a particular instance, any would work
         request_payload,
         Duration::from_secs(3),
     )

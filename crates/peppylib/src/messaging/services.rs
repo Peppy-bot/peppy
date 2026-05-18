@@ -300,7 +300,7 @@ impl ServiceMessenger {
         messenger.expose_service(&recv).await
     }
 
-    /// If `target_instance_id` is `None`, this call returns with the first
+    /// If `to_instance_id` is `None`, this call returns with the first
     /// service instance that responds.
     ///
     /// `iface` must match the segments the responder used in [`Self::listen`].
@@ -309,22 +309,22 @@ impl ServiceMessenger {
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
-        target_node_name: &str,
+        to_node_name: &str,
         iface: Iface,
-        target_service_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        to_service_name: &str,
+        to_core_node: Option<&str>,
+        to_instance_id: Option<&str>,
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
-            target_core_node,
-            target_instance_id,
-            target_node_name,
+            to_core_node,
+            to_instance_id,
+            to_node_name,
             iface,
-            target_service_name,
+            to_service_name,
             ServiceKind::Service,
         )?;
         messenger
@@ -342,21 +342,21 @@ impl ServiceMessenger {
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
-        target_node_name: &str,
+        to_node_name: &str,
         iface: Iface,
-        target_service_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        to_service_name: &str,
+        to_core_node: Option<&str>,
+        to_instance_id: Option<&str>,
     ) -> Result<bool> {
         match Self::poll(
             messenger,
             bound_core_node,
             as_instance_id,
-            target_node_name,
+            to_node_name,
             iface,
-            target_service_name,
-            target_core_node,
-            target_instance_id,
+            to_service_name,
+            to_core_node,
+            to_instance_id,
             Payload::from_static(SERVICE_PROBE_PAYLOAD),
             PROBE_TIMEOUT,
         )

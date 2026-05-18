@@ -752,9 +752,9 @@ pub fn build_consumed_action(
     // fire_goal @classmethod
     builder.line("@classmethod");
     if has_goal_request {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None) -> Self:");
     } else {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None) -> Self:");
     }
     builder.indent();
 
@@ -789,8 +789,8 @@ pub fn build_consumed_action(
     builder.line("TARGET_NODE_NAME,");
     builder.line(&format!("{send_goal_iface_expr},"));
     builder.line("TARGET_ACTION_NAME,");
-    builder.line("target_core_node,");
-    builder.line("target_instance_id,");
+    builder.line("to_core_node,");
+    builder.line("to_instance_id,");
     builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");

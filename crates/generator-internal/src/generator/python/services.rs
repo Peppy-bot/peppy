@@ -260,7 +260,7 @@ pub fn build_consumed_service(
 
     // poll async function
     builder.add_import("import peppylib");
-    // Always needed: poll() signature uses Optional[str] for target_core_node/target_instance_id
+    // Always needed: poll() signature uses Optional[str] for to_core_node/to_instance_id
     builder.add_import("from typing import Optional");
     builder.blank_line();
 
@@ -274,11 +274,11 @@ pub fn build_consumed_service(
 
     let signature = if has_request {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None){return_type}:"
         )
     } else {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, timeout: float, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None){return_type}:"
         )
     };
     builder.line(&signature);
@@ -321,8 +321,8 @@ pub fn build_consumed_service(
     builder.line("NODE_NAME,");
     builder.line(&format!("{iface_expr},"));
     builder.line("SERVICE_NAME,");
-    builder.line("target_core_node,");
-    builder.line("target_instance_id,");
+    builder.line("to_core_node,");
+    builder.line("to_instance_id,");
     builder.line("request_payload,");
     builder.line("timeout,");
     builder.dedent();

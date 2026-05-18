@@ -269,8 +269,8 @@ impl RustGenerator {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
                 timeout: std::time::Duration,
-                target_core_node: Option<&str>,
-                target_instance_id: Option<&str>,
+                to_core_node: Option<&str>,
+                to_instance_id: Option<&str>,
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
             ) -> crate::Result<Self> {
@@ -283,8 +283,8 @@ impl RustGenerator {
                     TARGET_NODE_NAME,
                     #iface_expr,
                     TARGET_ACTION_NAME,
-                    target_core_node,
-                    target_instance_id,
+                    to_core_node,
+                    to_instance_id,
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -1309,8 +1309,8 @@ impl LanguageGenerator for RustGenerator {
                 NODE_NAME,
                 #iface_expr,
                 SERVICE_NAME,
-                target_core_node,
-                target_instance_id,
+                to_core_node,
+                to_instance_id,
                 request_payload,
                 timeout,
             )
@@ -1390,8 +1390,8 @@ impl LanguageGenerator for RustGenerator {
         let mut fn_param_tokens = vec![
             quote!(node_runner: &crate::NodeRunner),
             quote!(timeout: std::time::Duration),
-            quote!(target_core_node: Option<&str>),
-            quote!(target_instance_id: Option<&str>),
+            quote!(to_core_node: Option<&str>),
+            quote!(to_instance_id: Option<&str>),
         ];
         if !request_struct_params.is_empty() {
             fn_param_tokens.push(quote!(request: #request_struct_ident));

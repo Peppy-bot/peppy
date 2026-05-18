@@ -49,9 +49,9 @@ fn topic_subscribe_targeted_native_iface() {
     let receiver = TopicWireReceiver {
         as_core_node: seg("core_subscriber"),
         as_instance_id: seg("sub_inst"),
-        to_core_node: Some(seg("core_publisher")),
-        to_instance_id: Some(seg("pub_inst")),
-        to_node_name: Some(seg("uvc_camera")),
+        from_core_node: Some(seg("core_publisher")),
+        from_instance_id: Some(seg("pub_inst")),
+        from_node_name: Some(seg("uvc_camera")),
         iface: Iface::native(),
         to_topic: seg("video_stream"),
     };
@@ -66,9 +66,9 @@ fn topic_subscribe_untargeted_uses_single_chunk_wildcard() {
     let receiver = TopicWireReceiver {
         as_core_node: seg("core_subscriber"),
         as_instance_id: seg("sub_inst"),
-        to_core_node: None,
-        to_instance_id: None,
-        to_node_name: Some(seg("uvc_camera")),
+        from_core_node: None,
+        from_instance_id: None,
+        from_node_name: Some(seg("uvc_camera")),
         iface: Iface::native(),
         to_topic: seg("video_stream"),
     };
@@ -83,9 +83,9 @@ fn topic_subscribe_partial_target() {
     let receiver = TopicWireReceiver {
         as_core_node: seg("core_subscriber"),
         as_instance_id: seg("sub_inst"),
-        to_core_node: Some(seg("core_publisher")),
-        to_instance_id: None,
-        to_node_name: Some(seg("robot_arm")),
+        from_core_node: Some(seg("core_publisher")),
+        from_instance_id: None,
+        from_node_name: Some(seg("robot_arm")),
         iface: Iface::new("manipulator", "v1").expect("valid iface"),
         to_topic: seg("joint_states"),
     };
@@ -100,9 +100,9 @@ fn topic_subscribe_external_consumer_wildcards_node_and_iface() {
     let receiver = TopicWireReceiver {
         as_core_node: seg("core_subscriber"),
         as_instance_id: seg("sub_inst"),
-        to_core_node: None,
-        to_instance_id: None,
-        to_node_name: None,
+        from_core_node: None,
+        from_instance_id: None,
+        from_node_name: None,
         iface: Iface::wildcard(),
         to_topic: seg("video_stream"),
     };

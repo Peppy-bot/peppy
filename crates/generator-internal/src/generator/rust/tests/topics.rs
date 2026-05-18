@@ -386,8 +386,8 @@ fn consumed_topic() {
         &rendered,
         &[
             "pub async fn on_next_message_received(",
-            "target_core_node: Option<&str>",
-            "target_instance_id: Option<&str>",
+            "from_core_node: Option<&str>",
+            "from_instance_id: Option<&str>",
             "-> crate::Result<(String, Message)>",
         ],
     );
@@ -527,8 +527,8 @@ fn external_consumed_topic() {
         &rendered,
         &[
             "pub async fn on_next_message_received(",
-            "target_core_node: Option<&str>",
-            "target_instance_id: Option<&str>",
+            "from_core_node: Option<&str>",
+            "from_instance_id: Option<&str>",
             "-> crate::Result<(String, Message)>",
         ],
     );
@@ -716,11 +716,12 @@ fn compile_lib_with_emitted_and_consumed_topics() {
     );
 }
 
-/// Regression guard: all three consumer-side interfaces (topic / service / action)
-/// must emit filter parameters named `target_core_node` / `target_instance_id`.
-/// This test fails loudly if any generator drifts away from the shared naming.
+/// Regression guard: consumer-side topic subscribers emit `from_*` filter params
+/// (messages flow publisher → subscriber), while service/action callers emit
+/// `to_*` filter params (request flows caller → server). This test fails loudly
+/// if any generator drifts away from the directional naming.
 #[test]
-fn consumer_filter_params_use_target_prefix() {
+fn consumer_filter_params_use_directional_prefix() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let topic_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
@@ -761,24 +762,28 @@ fn consumer_filter_params_use_target_prefix() {
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
 
-    // Positive invariant: the target_* pair is present.
-    assert_contains_all(
-        &rendered,
-        &[
-            "target_core_node: Option<&str>",
-            "target_instance_id: Option<&str>",
-        ],
+    // Topic subscriber: messages flow FROM the publisher → `from_*`.
+    assert_eq!(
+        rendered.matches("from_core_node: Option<&str>").count(),
+        1,
+        "expected `from_core_node` once on the topic subscriber; rendered:\n{rendered}"
+    );
+    assert_eq!(
+        rendered.matches("from_instance_id: Option<&str>").count(),
+        1,
+        "expected `from_instance_id` once on the topic subscriber; rendered:\n{rendered}"
     );
 
-    // Count-based check: each consumer interface must surface the pair exactly once.
+    // Service caller (poll) + action caller (fire_goal): request flows TO the
+    // server → `to_*`. Service contributes 1, action contributes 1.
     assert_eq!(
-        rendered.matches("target_core_node: Option<&str>").count(),
-        3,
-        "expected `target_core_node` on all 3 consumer interfaces (topic/service/action); rendered:\n{rendered}"
+        rendered.matches("to_core_node: Option<&str>").count(),
+        2,
+        "expected `to_core_node` twice (service + action callers); rendered:\n{rendered}"
     );
     assert_eq!(
-        rendered.matches("target_instance_id: Option<&str>").count(),
-        3,
-        "expected `target_instance_id` on all 3 consumer interfaces (topic/service/action); rendered:\n{rendered}"
+        rendered.matches("to_instance_id: Option<&str>").count(),
+        2,
+        "expected `to_instance_id` twice (service + action callers); rendered:\n{rendered}"
     );
 }

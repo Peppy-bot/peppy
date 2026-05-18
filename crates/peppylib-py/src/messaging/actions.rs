@@ -239,7 +239,7 @@ impl PyActionMessenger {
     /// Pass `peppylib.Iface.native()` for non-`conforms_to` actions, or
     /// `Iface.conformed(name, tag)` for a specific interface.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, iface, to_action_name, target_core_node=None, target_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, iface, to_action_name, to_core_node=None, to_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
@@ -249,8 +249,8 @@ impl PyActionMessenger {
         to_node_name: String,
         iface: PyIface,
         to_action_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        to_core_node: Option<String>,
+        to_instance_id: Option<String>,
         user_payload: Vec<u8>,
         feedback_qos: PyQoSProfile,
         goal_timeout_secs: f64,
@@ -266,8 +266,8 @@ impl PyActionMessenger {
                 &to_node_name,
                 iface,
                 &to_action_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                to_core_node.as_deref(),
+                to_instance_id.as_deref(),
                 Payload::from(user_payload),
                 feedback_qos.into(),
                 goal_timeout,
@@ -342,18 +342,18 @@ impl PyActionMessenger {
 
     /// Check whether an action server is reachable.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, iface, target_action_name, target_core_node=None, target_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_node_name, iface, to_action_name, to_core_node=None, to_instance_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         bound_core_node: String,
         as_instance_id: String,
-        target_node_name: String,
+        to_node_name: String,
         iface: PyIface,
-        target_action_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        to_action_name: String,
+        to_core_node: Option<String>,
+        to_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let iface = iface.into_inner();
@@ -362,11 +362,11 @@ impl PyActionMessenger {
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
-                &target_node_name,
+                &to_node_name,
                 iface,
-                &target_action_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                &to_action_name,
+                to_core_node.as_deref(),
+                to_instance_id.as_deref(),
             )
             .await
             .map_err(to_py_err)?;

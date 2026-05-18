@@ -391,8 +391,8 @@ fn consumed_service() {
             "node_runner: peppylib.NodeRunner",
             "request: Request",
             "timeout: float",
-            "target_core_node: Optional[str] = None",
-            "target_instance_id: Optional[str] = None",
+            "to_core_node: Optional[str] = None",
+            "to_instance_id: Optional[str] = None",
             ") -> Response:",
         ],
     );
