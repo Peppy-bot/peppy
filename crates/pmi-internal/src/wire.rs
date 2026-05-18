@@ -169,6 +169,16 @@ impl NodeIdentifier {
         })
     }
 
+    /// Builds a node identifier from segments the caller has already validated
+    /// upstream (e.g. via `config::Name`). Panics if a segment turns out to
+    /// collide with a reserved wire sentinel; the only inputs that can trigger
+    /// this are degenerate `Name`s like `"_"` or `"-"` (the latter after
+    /// hyphen-to-underscore tag normalization). Use this at call sites whose
+    /// inputs were funneled through a typed `Name` boundary.
+    pub fn from_validated(name: &str, tag: &str) -> Self {
+        Self::new(name, tag).expect("validated name and tag should be wire-segment safe")
+    }
+
     pub fn name(&self) -> &str {
         self.node_name.as_str()
     }
@@ -199,6 +209,13 @@ impl SenderTarget {
     /// `SenderTarget::Node(NodeIdentifier::new("uvc_camera", "v1")?)`.
     pub fn node(name: &str, tag: &str) -> Result<Self, SenderTargetError> {
         NodeIdentifier::new(name, tag).map(Self::Node)
+    }
+
+    /// Builds a node-shaped target from segments validated upstream (e.g. via
+    /// `config::Name`). See [`NodeIdentifier::from_validated`] for the panic
+    /// contract.
+    pub fn node_from_validated(name: &str, tag: &str) -> Self {
+        Self::Node(NodeIdentifier::from_validated(name, tag))
     }
 
     pub(crate) fn discriminator(&self) -> &'static str {

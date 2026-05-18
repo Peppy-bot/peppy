@@ -172,8 +172,7 @@ async fn handle_node_remove_request_inner(
                 messenger,
                 core_node_node,
                 core_instance_id,
-                SenderTarget::node(&target.node_name, &target.node_tag)
-                    .expect("node target should be valid"),
+                SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
                 SHUTDOWN_SERVICE,
                 Some(core_node_node),
                 Some(target.instance_id.as_str()),
@@ -251,8 +250,7 @@ async fn handle_node_remove_request_inner(
                 messenger,
                 core_node_node,
                 core_instance_id,
-                SenderTarget::node(&target.node_name, &target.node_tag)
-                    .expect("node target should be valid"),
+                SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
                 SHUTDOWN_SERVICE,
                 Some(core_node_node),
                 Some(target.instance_id.as_str()),
