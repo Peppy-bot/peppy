@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
 use pmi::{
-    Iface, Messenger, MessengerBackend, ServiceKind, ServiceWireReceiver, ServiceWireSender,
+    Messenger, MessengerBackend, SenderTarget, ServiceKind, ServiceWireReceiver, ServiceWireSender,
     Subscription, TopicMessage,
 };
 use std::{fmt, sync::Arc};
@@ -279,21 +279,19 @@ impl ServiceMessenger {
     /// Listening as a service is a 2-way stream, so the process that exposes
     /// the service provides its own `instance_id`.
     ///
-    /// `iface` must match the segments callers will use in [`Self::poll`];
-    /// pass [`Iface::native`] for native (non-conformed) services.
+    /// `as_identity` must match the [`SenderTarget`] callers will use in
+    /// [`Self::poll`].
     pub async fn listen(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
-        as_node_name: &str,
-        iface: Iface,
+        as_identity: SenderTarget,
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
         let recv = ServiceWireReceiver::new(
             as_core_node,
             as_instance_id,
-            as_node_name,
-            iface,
+            as_identity,
             as_service_name,
             ServiceKind::Service,
         )?;
@@ -303,14 +301,14 @@ impl ServiceMessenger {
     /// If `to_instance_id` is `None`, this call returns with the first
     /// service instance that responds.
     ///
-    /// `iface` must match the segments the responder used in [`Self::listen`].
+    /// `to_target` must match the [`SenderTarget`] the responder used in
+    /// [`Self::listen`].
     #[allow(clippy::too_many_arguments)]
     pub async fn poll(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
-        to_node_name: &str,
-        iface: Iface,
+        to_target: SenderTarget,
         to_service_name: &str,
         to_core_node: Option<&str>,
         to_instance_id: Option<&str>,
@@ -322,8 +320,7 @@ impl ServiceMessenger {
             as_instance_id,
             to_core_node,
             to_instance_id,
-            to_node_name,
-            iface,
+            to_target,
             to_service_name,
             ServiceKind::Service,
         )?;
@@ -337,13 +334,11 @@ impl ServiceMessenger {
     /// The probe is handled transparently by the service's request loop — the user
     /// handler is never invoked. Returns `true` if the service responds within
     /// [`PROBE_TIMEOUT`], `false` if unreachable.
-    #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
-        to_node_name: &str,
-        iface: Iface,
+        to_target: SenderTarget,
         to_service_name: &str,
         to_core_node: Option<&str>,
         to_instance_id: Option<&str>,
@@ -352,8 +347,7 @@ impl ServiceMessenger {
             messenger,
             bound_core_node,
             as_instance_id,
-            to_node_name,
-            iface,
+            to_target,
             to_service_name,
             to_core_node,
             to_instance_id,

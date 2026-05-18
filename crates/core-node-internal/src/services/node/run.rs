@@ -13,7 +13,7 @@ use node_stack::{self, NodeStack};
 use parking_lot::Mutex as StdMutex;
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
     ActionFeedbackPublisher, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext,
 };
@@ -80,8 +80,7 @@ pub async fn listen_for_node_run(
         messenger,
         core_node_name,
         instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::NODE_RUN_ACTION,
     )
     .await?;
@@ -644,6 +643,7 @@ async fn process_node_run(
         core_node_name: &ctx.action.core_node_name,
         caller_instance_id: &ctx.action.caller_instance_id,
         to_node_name: runtime_config.node_name.as_str(),
+        to_node_tag: runtime_config.node_tag.as_str(),
         to_core_node: runtime_config.bound_core_node.as_str(),
         to_instance_id: instance_id_str,
     };
@@ -883,6 +883,7 @@ struct NodeSignalTarget<'a> {
     core_node_name: &'a str,
     caller_instance_id: &'a str,
     to_node_name: &'a str,
+    to_node_tag: &'a str,
     to_core_node: &'a str,
     to_instance_id: &'a str,
 }
@@ -931,8 +932,7 @@ async fn perform_health_check(
             target.messenger,
             target.core_node_name,
             target.caller_instance_id,
-            target.to_node_name,
-            Iface::native(),
+            SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             NODE_HEALTH_SERVICE,
             Some(target.to_core_node),
             Some(target.to_instance_id),
@@ -998,8 +998,7 @@ async fn wait_for_ready_signal(
             target.messenger,
             target.core_node_name,
             target.caller_instance_id,
-            target.to_node_name,
-            Iface::native(),
+            SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             NODE_READY_SERVICE,
             Some(target.to_core_node),
             Some(target.to_instance_id),
@@ -1076,8 +1075,7 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 &p.messenger,
                 &p.core_node_name,
                 &p.caller_instance_id,
-                &p.to_node_name,
-                Iface::native(),
+                SenderTarget::node_from_validated(&p.to_node_name, &p.node_tag),
                 NODE_HEALTH_SERVICE,
                 Some(&p.to_core_node),
                 Some(p.to_instance_id.as_str()),

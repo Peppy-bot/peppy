@@ -11,7 +11,7 @@ use core_node_api::encoding::{
     NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource,
 };
 use node_stack::NodeStack;
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -34,8 +34,7 @@ pub async fn listen_for_node_info(
         messenger,
         core_node_name,
         instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::NODE_INFO,
     )
     .await?;

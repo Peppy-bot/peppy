@@ -183,7 +183,11 @@ async fn actions_communication() {
     let flow_done_service: ExposedService =
         serde_json5::from_str(EXPOSED_ACTION_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
-        .add_consumed_action(&consumed_action, &action_messages, "brain")
+        .add_consumed_action(
+            &consumed_action,
+            &action_messages,
+            &generator::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     generator
         .add_exposed_service(&flow_done_service, None)
@@ -207,6 +211,7 @@ async fn actions_communication() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -278,6 +283,7 @@ if __name__ == "__main__":
             framework: Default::default(),
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -514,7 +520,11 @@ async fn actions_communication_cancel_goal() {
     let flow_done_service: ExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CANCEL_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
-        .add_consumed_action(&consumed_action, &action_messages, "brain")
+        .add_consumed_action(
+            &consumed_action,
+            &action_messages,
+            &generator::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     generator
         .add_exposed_service(&flow_done_service, None)
@@ -538,6 +548,7 @@ async fn actions_communication_cancel_goal() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -606,6 +617,7 @@ if __name__ == "__main__":
             framework: Default::default(),
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -848,7 +860,11 @@ async fn actions_communication_emit_feedback_from_within_goal_handler() {
     let flow_done_service: ExposedService =
         serde_json5::from_str(EXPOSED_ACTION_IN_HANDLER_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
-        .add_consumed_action(&consumed_action, &action_messages, "brain")
+        .add_consumed_action(
+            &consumed_action,
+            &action_messages,
+            &generator::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     generator
         .add_exposed_service(&flow_done_service, None)
@@ -872,6 +888,7 @@ async fn actions_communication_emit_feedback_from_within_goal_handler() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -946,6 +963,7 @@ if __name__ == "__main__":
             framework: Default::default(),
         },
         BRAIN_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -1192,7 +1210,11 @@ async fn actions_communication_cancel_accept_closes_feedback_stream() {
     let flow_done_service: ExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CANCEL_ACCEPT_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
-        .add_consumed_action(&consumed_action, &action_messages, "brain")
+        .add_consumed_action(
+            &consumed_action,
+            &action_messages,
+            &generator::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     generator
         .add_exposed_service(&flow_done_service, None)
@@ -1216,6 +1238,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -1291,6 +1314,7 @@ if __name__ == "__main__":
             framework: Default::default(),
         },
         BRAIN_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -1539,7 +1563,11 @@ async fn actions_communication_cancel_reject_keeps_feedback_open() {
     let flow_done_service: ExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CANCEL_REJECT_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
-        .add_consumed_action(&consumed_action, &action_messages, "brain")
+        .add_consumed_action(
+            &consumed_action,
+            &action_messages,
+            &generator::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     generator
         .add_exposed_service(&flow_done_service, None)
@@ -1563,6 +1591,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -1648,6 +1677,7 @@ if __name__ == "__main__":
             framework: Default::default(),
         },
         BRAIN_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -1912,7 +1942,11 @@ async fn actions_communication_drain_loop_until_end_signal() {
     let flow_done_service: ExposedService =
         serde_json5::from_str(EXPOSED_ACTION_DRAIN_LOOP_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
-        .add_consumed_action(&consumed_action, &action_messages, "brain")
+        .add_consumed_action(
+            &consumed_action,
+            &action_messages,
+            &generator::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     generator
         .add_exposed_service(&flow_done_service, None)
@@ -1936,6 +1970,7 @@ async fn actions_communication_drain_loop_until_end_signal() {
             framework: Default::default(),
         },
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -2017,6 +2052,7 @@ if __name__ == "__main__":
             framework: Default::default(),
         },
         BRAIN_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();

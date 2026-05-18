@@ -2,7 +2,7 @@ use super::MessengerHandle;
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
-use pmi::{Iface, MessengerPublisher, TopicWireReceiver, TopicWireSender};
+use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
 use std::sync::Arc;
 
 pub struct Subscription {
@@ -32,15 +32,15 @@ impl Subscription {
 pub struct TopicMessenger;
 
 impl TopicMessenger {
-    /// Subscribe to a topic published by a specific node. `iface` must match
-    /// the iface segments the publisher used in [`Self::emit`].
+    /// Subscribe to a topic published by a specific target. `from_target`
+    /// `Some(SenderTarget)` filters on the publisher's identity; `None`
+    /// wildcards the target segment (any node or interface emits a match).
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
-        from_node_name: &str,
-        iface: Iface,
+        from_target: Option<SenderTarget>,
         to_topic: &str,
         from_core_node: Option<&str>,
         from_instance_id: Option<&str>,
@@ -51,19 +51,18 @@ impl TopicMessenger {
             as_instance_id,
             from_core_node,
             from_instance_id,
-            Some(from_node_name),
-            iface,
+            from_target,
             to_topic,
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription))
     }
 
-    /// Consumes a topic from any node (external/unlinked topics).
+    /// Consumes a topic from any publisher (external/unlinked topics).
     ///
-    /// Unlike [`subscribe`], this does not target a specific publisher node
-    /// or iface. The transport translates `None` and [`Iface::wildcard`] into
-    /// its match-any segments at the wire layer.
+    /// Unlike [`subscribe`], this does not target a specific publisher. The
+    /// transport translates the absent target into its match-any segments at
+    /// the wire layer.
     pub async fn consume_external(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -79,7 +78,6 @@ impl TopicMessenger {
             from_core_node,
             from_instance_id,
             None,
-            Iface::wildcard(),
             to_topic,
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
@@ -87,24 +85,16 @@ impl TopicMessenger {
     }
 
     /// Publishes a payload to a topic on the specified core node.
-    #[allow(clippy::too_many_arguments)]
     pub async fn emit(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
-        as_node_name: &str,
-        iface: Iface,
+        as_target: SenderTarget,
         as_topic_name: &str,
         qos: QoSProfile,
         payload: Payload,
     ) -> Result<()> {
-        let sender = TopicWireSender::new(
-            as_core_node,
-            as_instance_id,
-            as_node_name,
-            iface,
-            as_topic_name,
-        )?;
+        let sender = TopicWireSender::new(as_core_node, as_instance_id, as_target, as_topic_name)?;
         messenger.emit_topic_message(&sender, qos, payload).await
     }
 
@@ -115,18 +105,11 @@ impl TopicMessenger {
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
-        as_node_name: &str,
-        iface: Iface,
+        as_target: SenderTarget,
         as_topic_name: &str,
         qos: QoSProfile,
     ) -> Result<TopicPublisher> {
-        let sender = TopicWireSender::new(
-            as_core_node,
-            as_instance_id,
-            as_node_name,
-            iface,
-            as_topic_name,
-        )?;
+        let sender = TopicWireSender::new(as_core_node, as_instance_id, as_target, as_topic_name)?;
         let inner = messenger
             .declare_topic_publisher(&sender, qos.into())
             .await?;

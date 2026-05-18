@@ -17,7 +17,7 @@ use core_node_api::encoding::*;
 use core_node_api::names;
 
 use crate::error::Result;
-use crate::messaging::{ActionGoalHandle, Iface};
+use crate::messaging::{ActionGoalHandle, SenderTarget};
 use crate::{ActionMessenger, MessengerHandle, ServiceMessenger};
 
 /// Routing parameters for a single service poll. Bundled into a struct so
@@ -28,10 +28,10 @@ struct ServiceRoute<'a> {
     bound_core_node: &'a str,
     as_instance_id: &'a str,
     to_core_node: &'a str,
-    /// `None` routes to the daemon (the common case); `Some(node_name)` routes
-    /// to a non-core-node service host (e.g. the per-instance `node_stop`
-    /// listener).
-    to_service_host_node: Option<&'a str>,
+    /// Target of the service. For daemon-hosted core_node services this is
+    /// `SenderTarget::node(to_core_node, CORE_NODE_TAG)`. For per-instance
+    /// services (e.g. `node_stop`) it carries the target node's name+tag.
+    to_target: SenderTarget,
     service_name: &'a str,
 }
 
@@ -56,8 +56,7 @@ async fn poll_core_node_service<Response>(
         route.messenger,
         route.bound_core_node,
         route.as_instance_id,
-        route.to_service_host_node.unwrap_or(route.to_core_node),
-        Iface::native(),
+        route.to_target,
         route.service_name,
         Some(route.to_core_node),
         None,
@@ -73,12 +72,12 @@ async fn send_core_node_goal(
     goal_payload: Payload,
     goal_timeout: Duration,
 ) -> Result<ActionGoalHandle> {
+    let to_core = route.to_core_node.unwrap_or(route.as_core_node);
     ActionMessenger::send_goal(
         route.messenger,
         route.as_core_node,
         route.as_instance_id,
-        route.to_core_node.unwrap_or(route.as_core_node),
-        Iface::native(),
+        SenderTarget::node(to_core, names::CORE_NODE_TAG)?,
         route.action_name,
         route.to_core_node,
         route.to_instance_id,
@@ -107,7 +106,7 @@ macro_rules! poll_service {
                     bound_core_node,
                     as_instance_id,
                     to_core_node,
-                    to_service_host_node: None,
+                    to_target: SenderTarget::node(to_core_node, names::CORE_NODE_TAG)?,
                     service_name: $service,
                 },
                 request.encode()?,
@@ -168,15 +167,16 @@ send_goal!(pub send_node_run, NodeRunGoal, names::NODE_RUN_ACTION);
 send_goal!(pub send_node_build, NodeBuildGoal, names::NODE_BUILD_ACTION);
 send_goal!(pub send_repo_refresh, RepoRefreshGoal, names::REPO_REFRESH_ACTION);
 
-/// `node_stop` is the only service whose listener is hosted by the per-instance
-/// node rather than the daemon, so it routes by `to_node_name` instead of
-/// the daemon's core node name. Hand-written for that reason.
+/// `node_stop` is the only service whose listener may be hosted by a
+/// per-instance node rather than the daemon, so it routes by an explicit
+/// `to_target` (name + tag) instead of defaulting to the daemon's core_node
+/// identity. Hand-written for that reason.
 pub async fn poll_node_stop(
     request: &NodeStopRequest,
     messenger: &MessengerHandle,
     bound_core_node: &str,
     as_instance_id: &str,
-    to_node_name: &str,
+    to_target: SenderTarget,
     to_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeStopResponse> {
@@ -186,7 +186,7 @@ pub async fn poll_node_stop(
             bound_core_node,
             as_instance_id,
             to_core_node,
-            to_service_host_node: Some(to_node_name),
+            to_target,
             service_name: names::NODE_STOP,
         },
         request.encode()?,

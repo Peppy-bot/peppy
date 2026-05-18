@@ -1,4 +1,6 @@
-use peppylib::messaging::MessengerHandle;
+#![allow(dead_code)]
+
+use peppylib::messaging::{MessengerHandle, SenderTarget};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -8,6 +10,13 @@ pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 pub const TEST_CORE_NODE_NAME: &str = "test_core_node";
 pub const TEST_NODE_NAME: &str = "test_node";
 pub const TEST_INSTANCE_ID: &str = "test_instance";
+pub const TEST_NODE_TAG: &str = "v1";
+
+/// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
+/// invalid names — tests use known-good values only.
+pub fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
+}
 
 /// Client for sending requests to a test node.
 pub struct CoreNodeClient {

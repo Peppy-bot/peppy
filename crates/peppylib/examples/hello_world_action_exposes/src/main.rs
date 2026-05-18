@@ -8,7 +8,7 @@ use rand::rng;
 use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::Mutex;
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 
 const NODE_NAME: &str = "hello_node";
 const ACTION_NAME: &str = "hello_action";
@@ -355,8 +355,7 @@ async fn main() {
         &receiver_handle,
         &core_node_name,
         &as_instance_id,
-        NODE_NAME,
-        Iface::native(),
+        SenderTarget::node(NODE_NAME, "v1").expect("test target"),
         ACTION_NAME,
     )
 

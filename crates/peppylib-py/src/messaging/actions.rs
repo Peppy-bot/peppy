@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::iface::PyIface;
+use super::iface::PySenderTarget;
 use super::services::PyServiceEndpoint;
 use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 use crate::config::PyQoSProfile;
@@ -195,29 +195,26 @@ pub struct PyActionMessenger;
 impl PyActionMessenger {
     /// Expose an action server, returning the goal, cancel, result services and feedback publisher.
     ///
-    /// Pass `peppylib.Iface.native()` for non-`conforms_to` actions, or
-    /// `Iface.conformed(name, tag)` for a specific interface.
+    /// Pass `SenderTarget.node(name, tag)` for nodes or
+    /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_node_name, iface, as_action_name))]
-    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_action_name))]
     fn expose<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
-        as_node_name: String,
-        iface: PyIface,
+        as_identity: PySenderTarget,
         as_action_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
-        let iface = iface.into_inner();
+        let as_identity = as_identity.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let creation = ActionMessenger::expose(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
-                &as_node_name,
-                iface,
+                as_identity,
                 &as_action_name,
             )
             .await
@@ -236,18 +233,17 @@ impl PyActionMessenger {
     /// `goal_id`, wraps `user_payload`, and exposes the id on the returned
     /// handle via `goal_id`.
     ///
-    /// Pass `peppylib.Iface.native()` for non-`conforms_to` actions, or
-    /// `Iface.conformed(name, tag)` for a specific interface.
+    /// Pass `SenderTarget.node(name, tag)` for nodes or
+    /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, iface, to_action_name, to_core_node=None, to_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, to_core_node=None, to_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
-        to_node_name: String,
-        iface: PyIface,
+        to_target: PySenderTarget,
         to_action_name: String,
         to_core_node: Option<String>,
         to_instance_id: Option<String>,
@@ -256,15 +252,14 @@ impl PyActionMessenger {
         goal_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
         let goal_timeout = duration_from_secs_f64("goal_timeout_secs", goal_timeout_secs)?;
-        let iface = iface.into_inner();
+        let to_target = to_target.into_inner();
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let goal_handle = ActionMessenger::send_goal(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
-                &to_node_name,
-                iface,
+                to_target,
                 &to_action_name,
                 to_core_node.as_deref(),
                 to_instance_id.as_deref(),
@@ -342,28 +337,26 @@ impl PyActionMessenger {
 
     /// Check whether an action server is reachable.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_node_name, iface, to_action_name, to_core_node=None, to_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, to_core_node=None, to_instance_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         bound_core_node: String,
         as_instance_id: String,
-        to_node_name: String,
-        iface: PyIface,
+        to_target: PySenderTarget,
         to_action_name: String,
         to_core_node: Option<String>,
         to_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
-        let iface = iface.into_inner();
+        let to_target = to_target.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
-                &to_node_name,
-                iface,
+                to_target,
                 &to_action_name,
                 to_core_node.as_deref(),
                 to_instance_id.as_deref(),

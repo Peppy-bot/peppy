@@ -9,11 +9,12 @@ import asyncio
 
 import pytest
 
-from peppylib import Iface, MessengerHandle, ServiceMessenger, ZenohdInstance
+from peppylib import MessengerHandle, SenderTarget, ServiceMessenger, ZenohdInstance
 
 CORE_NODE = "test_core"
 INSTANCE_ID = "test_instance"
 NODE_NAME = "test_node"
+NODE_TAG = "v1"
 SERVICE_NAME = "test_service"
 REQUEST_PAYLOAD = b"Hello request"
 RESPONSE_PAYLOAD = b"Hello response"
@@ -32,8 +33,7 @@ async def test_service_messenger_communication():
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),  # iface
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             SERVICE_NAME,)
 
         # Allow listener to propagate
@@ -50,8 +50,7 @@ async def test_service_messenger_communication():
             client_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),  # iface
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             SERVICE_NAME,
             CORE_NODE,
             INSTANCE_ID,
@@ -76,8 +75,7 @@ async def test_service_poll_rejects_invalid_timeout():
                 client_handle,
                 CORE_NODE,
                 INSTANCE_ID,
-                NODE_NAME,
-                Iface.native(),  # iface
+                SenderTarget.node(NODE_NAME, NODE_TAG),
                 SERVICE_NAME,
                 CORE_NODE,
                 INSTANCE_ID,
@@ -96,8 +94,7 @@ async def test_service_handler_exception_returns_service_error():
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),  # iface
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             SERVICE_NAME,)
 
         await asyncio.sleep(0.05)
@@ -112,8 +109,7 @@ async def test_service_handler_exception_returns_service_error():
                 client_handle,
                 CORE_NODE,
                 INSTANCE_ID,
-                NODE_NAME,
-                Iface.native(),  # iface
+                SenderTarget.node(NODE_NAME, NODE_TAG),
                 SERVICE_NAME,
                 CORE_NODE,
                 INSTANCE_ID,
@@ -139,16 +135,14 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
             native_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),  # iface
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             "control",
         )
         iface_service = await ServiceMessenger.listen(
             iface_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.conformed("camera", "v1"),
+            SenderTarget.interface("camera", "v1"),
             "control",
         )
 
@@ -167,8 +161,7 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
             caller_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             "control",
             CORE_NODE,
             INSTANCE_ID,
@@ -177,13 +170,12 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
         )
         assert from_native.payload == native_response
 
-        # Iface poll → iface handler.
+        # Interface poll → interface handler.
         from_iface = await ServiceMessenger.poll(
             caller_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.conformed("camera", "v1"),
+            SenderTarget.interface("camera", "v1"),
             "control",
             CORE_NODE,
             INSTANCE_ID,

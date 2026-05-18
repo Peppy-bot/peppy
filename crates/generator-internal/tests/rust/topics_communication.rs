@@ -86,7 +86,11 @@ async fn topics_communication() {
     let (mut generator, receiver_dir, user_node_receiver, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_proj2, STUB_NODE_CONFIG);
     generator
-        .add_consumed_topic(&consumed_topic, subscribed_format, "uvc_camera")
+        .add_consumed_topic(
+            &consumed_topic,
+            subscribed_format,
+            &generator::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_receiver, &receiver_dir);
     generator
@@ -107,6 +111,7 @@ async fn topics_communication() {
             framework: Default::default(),
         },
         RECEIVER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -175,6 +180,7 @@ fn main() -> Result<()> {
             framework: Default::default(),
         },
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the receiver
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();

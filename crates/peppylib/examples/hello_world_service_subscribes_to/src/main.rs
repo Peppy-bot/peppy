@@ -3,7 +3,7 @@ use names_generator2::get_random;
 use peppylib::{MessengerHandle, Payload, ServiceMessenger};
 use rand::rng;
 use std::time::Duration;
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 
 const POLL_SERVICE_NAME: &str = "hello_service";
 const POLL_NODE_NAME: &str = "hello_node";
@@ -34,8 +34,7 @@ async fn main() {
         &sender_handle,
         &core_node,
         &as_instance_id,
-        POLL_NODE_NAME,
-        Iface::native(),
+        SenderTarget::node(POLL_NODE_NAME, "v1").expect("test target"),
         POLL_SERVICE_NAME,
         None, // to_core_node - not needed
         None, // to_instance_id - we don't need to point to a particular instance, any would work

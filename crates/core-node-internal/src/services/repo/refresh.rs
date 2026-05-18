@@ -15,7 +15,7 @@ use core_node_api::encoding::{
     RepoItemKind, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSource, RepoSourceKind,
 };
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult};
@@ -51,8 +51,7 @@ pub async fn listen_for_repo_refresh(
         messenger,
         core_node_name,
         instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::REPO_REFRESH_ACTION,
     )
     .await?;
@@ -815,7 +814,7 @@ fn resolve_ref_for_cache(repo: &git2::Repository, repo_ref: Option<&str>) -> Str
     }
 
     if let Ok(head) = repo.head() {
-        if let Some(short) = head.shorthand()
+        if let Ok(short) = head.shorthand()
             && short != "HEAD"
         {
             return short.to_owned();
@@ -1907,7 +1906,7 @@ mod tests {
 
         assert_eq!(
             repo.head().unwrap().shorthand(),
-            Some("HEAD"),
+            Ok("HEAD"),
             "precondition: checkout_repo_ref always detaches HEAD"
         );
 
@@ -1968,7 +1967,7 @@ mod tests {
             .expect("clone_shallow should succeed");
         repo.set_head_detached(commits[0])
             .expect("detach head for test");
-        assert_eq!(repo.head().unwrap().shorthand(), Some("HEAD"));
+        assert_eq!(repo.head().unwrap().shorthand(), Ok("HEAD"));
 
         assert_eq!(
             resolve_ref_for_cache(&repo, None),

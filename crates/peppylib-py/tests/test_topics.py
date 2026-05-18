@@ -7,7 +7,9 @@ import uuid
 
 import pytest
 
-from peppylib import Iface, MessengerHandle, TopicMessenger, QoSProfile, ZenohdInstance
+from peppylib import MessengerHandle, QoSProfile, SenderTarget, TopicMessenger, ZenohdInstance
+
+NODE_TAG = "v1"
 
 
 @pytest.mark.asyncio
@@ -31,8 +33,7 @@ async def test_messenger_communication():
             receiver_handle,
             core_node,
             instance_id,
-            node_name,
-            Iface.native(),  # iface
+            SenderTarget.node(node_name, NODE_TAG),
             topic_name,
             None,  # Accept messages from any core node
             None,  # Accept messages from any instance
@@ -47,8 +48,7 @@ async def test_messenger_communication():
             sender_handle,
             core_node,
             instance_id,
-            node_name,
-            Iface.native(),  # iface
+            SenderTarget.node(node_name, NODE_TAG),
             topic_name,
             qos,
             payload,

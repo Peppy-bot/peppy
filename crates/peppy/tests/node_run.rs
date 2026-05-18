@@ -13,6 +13,8 @@ use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 
 use peppylib::core_node::transport::{poll_node_info, poll_stack_list};
+
+use super::common::test_node_target;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -130,14 +132,22 @@ async fn node_run_command_succeeds() {
 
     // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle =
-        listen_for_node_ready(&node_messenger, &core_node_name, instance_id, node_name)
-            .await
-            .expect("node ready service should start");
-    let _node_health_handle =
-        listen_for_node_health(&node_messenger, &core_node_name, instance_id, node_name)
-            .await
-            .expect("node health service should start");
+    let _node_ready_handle = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node ready service should start");
+    let _node_health_handle = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node health service should start");
 
     // Now run the node using the run command
     NodeCommand {
@@ -350,14 +360,22 @@ async fn node_run_command_with_args_succeeds() {
 
     // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle =
-        listen_for_node_ready(&node_messenger, &core_node_name, instance_id, node_name)
-            .await
-            .expect("node ready service should start");
-    let _node_health_handle =
-        listen_for_node_health(&node_messenger, &core_node_name, instance_id, node_name)
-            .await
-            .expect("node health service should start");
+    let _node_ready_handle = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node ready service should start");
+    let _node_health_handle = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node health service should start");
 
     // Now run the node with arguments
     let args = vec![
@@ -549,7 +567,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         &node_messenger,
         &core_node_name,
         custom_instance_id,
-        node_name,
+        test_node_target(node_name),
     )
     .await
     .expect("node ready service should start");
@@ -557,7 +575,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         &node_messenger,
         &core_node_name,
         custom_instance_id,
-        node_name,
+        test_node_target(node_name),
     )
     .await
     .expect("node health service should start");
@@ -725,14 +743,22 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
 
     // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle =
-        listen_for_node_ready(&node_messenger, &core_node_name, instance_id, node_name)
-            .await
-            .expect("node ready service should start");
-    let _node_health_handle =
-        listen_for_node_health(&node_messenger, &core_node_name, instance_id, node_name)
-            .await
-            .expect("node health service should start");
+    let _node_ready_handle = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node ready service should start");
+    let _node_health_handle = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node health service should start");
 
     // Run with `-b` set: should build first, then start the instance.
     NodeCommand {
@@ -885,14 +911,22 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     }
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle =
-        listen_for_node_ready(&node_messenger, &core_node_name, instance_id, node_name)
-            .await
-            .expect("node ready service should start");
-    let _node_health_handle =
-        listen_for_node_health(&node_messenger, &core_node_name, instance_id, node_name)
-            .await
-            .expect("node health service should start");
+    let _node_ready_handle = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node ready service should start");
+    let _node_health_handle = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node health service should start");
 
     // Run with `-b` set: should detect the node is already built, skip the
     // build, and run.

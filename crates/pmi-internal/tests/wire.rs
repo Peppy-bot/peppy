@@ -10,7 +10,7 @@
 
 use bytes::Bytes;
 use pmi::{
-    ActionWireReceiver, ActionWireSender, Iface, MessengerBackend, Payload, PublisherQoS,
+    ActionWireReceiver, ActionWireSender, MessengerBackend, Payload, PublisherQoS, SenderTarget,
     ServiceKind, ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription, TopicMessage,
     TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
@@ -18,6 +18,10 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
+
+fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, "v1").expect("test node target")
+}
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -67,8 +71,7 @@ async fn topic_native_roundtrip() {
     let sender = TopicWireSender::new(
         "core_pub",
         "publisher_inst",
-        "uvc_camera",
-        Iface::native(),
+        test_node_target("uvc_camera"),
         "video_stream",
     )
     .expect("valid wire fields");
@@ -77,8 +80,7 @@ async fn topic_native_roundtrip() {
         "subscriber_inst",
         Some("core_pub"),
         Some("publisher_inst"),
-        Some("uvc_camera"),
-        Iface::native(),
+        Some(test_node_target("uvc_camera")),
         "video_stream",
     )
     .expect("valid wire fields");
@@ -115,22 +117,15 @@ async fn topic_iface_roundtrip() {
         .unwrap();
     instance.messenger().start_session().await.unwrap();
 
-    let iface = Iface::new("manipulator", "v1-rc2").expect("valid iface");
-    let sender = TopicWireSender::new(
-        "core_pub",
-        "pub_inst",
-        "robot_arm",
-        iface.clone(),
-        "joint_states",
-    )
-    .expect("valid wire fields");
+    let target = SenderTarget::interface("manipulator", "v1-rc2").expect("valid target");
+    let sender = TopicWireSender::new("core_pub", "pub_inst", target.clone(), "joint_states")
+        .expect("valid wire fields");
     let receiver = TopicWireReceiver::new(
         "core_sub",
         "sub_inst",
         Some("core_pub"),
         Some("pub_inst"),
-        Some("robot_arm"),
-        iface,
+        Some(target),
         "joint_states",
     )
     .expect("valid wire fields");
@@ -168,8 +163,7 @@ async fn topic_wildcard_subscriber() {
     let sender = TopicWireSender::new(
         "any_publisher_core",
         "any_publisher_inst",
-        "uvc_camera",
-        Iface::native(),
+        test_node_target("uvc_camera"),
         "frames",
     )
     .expect("valid wire fields");
@@ -179,8 +173,7 @@ async fn topic_wildcard_subscriber() {
         "subscriber_inst",
         None,
         None,
-        Some("uvc_camera"),
-        Iface::native(),
+        Some(test_node_target("uvc_camera")),
         "frames",
     )
     .expect("valid wire fields");
@@ -213,8 +206,7 @@ fn service_receiver() -> ServiceWireReceiver {
     ServiceWireReceiver::new(
         "server_core",
         "server_inst",
-        "robot_arm",
-        Iface::native(),
+        test_node_target("robot_arm"),
         "ping",
         ServiceKind::Service,
     )
@@ -227,8 +219,7 @@ fn service_sender(to_core_node: Option<&str>, to_instance_id: Option<&str>) -> S
         "client_inst",
         to_core_node,
         to_instance_id,
-        "robot_arm",
-        Iface::native(),
+        test_node_target("robot_arm"),
         "ping",
         ServiceKind::Service,
     )
@@ -312,8 +303,7 @@ fn action_receiver() -> ActionWireReceiver {
     ActionWireReceiver::new(
         "server_core",
         "server_inst",
-        "robot_arm",
-        Iface::native(),
+        test_node_target("robot_arm"),
         "pick_place",
     )
     .expect("valid wire fields")
@@ -325,8 +315,7 @@ fn action_sender() -> ActionWireSender {
         "client_inst",
         Some("server_core"),
         Some("server_inst"),
-        "robot_arm",
-        Iface::native(),
+        test_node_target("robot_arm"),
         "pick_place",
     )
     .expect("valid wire fields")

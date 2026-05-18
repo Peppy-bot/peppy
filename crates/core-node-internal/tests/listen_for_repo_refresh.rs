@@ -14,7 +14,6 @@ use core_node_api::encoding::{
 };
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
-use peppylib::messaging::Iface;
 use std::path::Path;
 use std::time::Duration;
 
@@ -91,8 +90,7 @@ async fn send_refresh_inner(
         &started.caller_handle,
         caller_core_node,
         caller_instance_id,
-        &started.core_node_name,
-        Iface::native(),
+        common::core_node_target(&started.core_node_name),
         names::REPO_REFRESH_ACTION,
         Some(&started.core_node_name),
         None,

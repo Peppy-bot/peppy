@@ -359,7 +359,11 @@ fn consumed_topic() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_topic(&topic, format, "uvc_camera")
+        .add_consumed_topic(
+            &topic,
+            format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -436,7 +440,11 @@ fn consumed_topic_escapes_rust_keyword_fields() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_topic(&topic, format, "keyword_source")
+        .add_consumed_topic(
+            &topic,
+            format,
+            &crate::DependencyContext::native("keyword_source", "v1"),
+        )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
@@ -465,10 +473,18 @@ fn consumed_two_topics_same_node() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_topic(&video_topic, video_format, "uvc_camera")
+        .add_consumed_topic(
+            &video_topic,
+            video_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_topic(&sound_topic, sound_format, "uvc_camera")
+        .add_consumed_topic(
+            &sound_topic,
+            sound_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -606,10 +622,18 @@ fn clippy_single_emitted_topic_empty_format() {
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_emitted_topic(&emitted_topic, None).unwrap();
     generator
-        .add_consumed_action(&consumed_action1, &action_messages, "brain")
+        .add_consumed_action(
+            &consumed_action1,
+            &action_messages,
+            &crate::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_action(&consumed_action2, &action_messages, "controller")
+        .add_consumed_action(
+            &consumed_action2,
+            &action_messages,
+            &crate::DependencyContext::native("controller", "v1"),
+        )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -654,10 +678,18 @@ fn compile_lib_with_emitted_and_consumed_topics() {
     generator.add_emitted_topic(&emitted_topic1, None).unwrap();
     generator.add_emitted_topic(&emitted_topic2, None).unwrap();
     generator
-        .add_consumed_topic(&consumed_topic1, subscribed_format1, "uvc_camera")
+        .add_consumed_topic(
+            &consumed_topic1,
+            subscribed_format1,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_topic(&consumed_topic2, subscribed_format2, "uvc_camera")
+        .add_consumed_topic(
+            &consumed_topic2,
+            subscribed_format2,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -752,13 +784,26 @@ fn consumer_filter_params_use_directional_prefix() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_topic(&topic, topic_format, "uvc_camera")
+        .add_consumed_topic(
+            &topic,
+            topic_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &request_format,
+            &response_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_action(&action, &action_messages, "brain")
+        .add_consumed_action(
+            &action,
+            &action_messages,
+            &crate::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
 

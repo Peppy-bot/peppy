@@ -107,19 +107,19 @@ fn nests_conformed_actions_under_iface_name_and_tag() {
         "native source should call ActionMessenger.expose:\n{native_src}",
     );
     assert!(
-        native_src.contains("peppylib.Iface.native()"),
-        "native leaf should pass `peppylib.Iface.native()`:\n{native_src}",
+        native_src.contains("peppylib.SenderTarget.node("),
+        "native leaf should pass `peppylib.SenderTarget.node(...)`:\n{native_src}",
     );
 
     let arm_v1_src = fs::read_to_string(&arm_v1).expect("read arm v1");
     assert!(
-        arm_v1_src.contains("peppylib.Iface.conformed(\"arm\", \"v1\")"),
-        "arm v1 leaf should pass `Iface.conformed(\"arm\", \"v1\")`:\n{arm_v1_src}",
+        arm_v1_src.contains("peppylib.SenderTarget.interface(\"arm\", \"v1\")"),
+        "arm v1 leaf should pass `SenderTarget.interface(\"arm\", \"v1\")`:\n{arm_v1_src}",
     );
 
     let arm_v2_src = fs::read_to_string(&arm_v2).expect("read arm v2");
     assert!(
-        arm_v2_src.contains("peppylib.Iface.conformed(\"arm\", \"v2\")"),
-        "arm v2 leaf should pass `Iface.conformed(\"arm\", \"v2\")`:\n{arm_v2_src}",
+        arm_v2_src.contains("peppylib.SenderTarget.interface(\"arm\", \"v2\")"),
+        "arm v2 leaf should pass `SenderTarget.interface(\"arm\", \"v2\")`:\n{arm_v2_src}",
     );
 }

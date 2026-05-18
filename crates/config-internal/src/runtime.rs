@@ -65,6 +65,7 @@ pub struct RuntimeConfig {
     pub messaging_host: String,
     pub messaging_port: u16,
     pub node_name: Name,
+    pub node_tag: Name,
     pub bound_core_node: Name,
     pub node_instance: NodeInstanceConfig,
 }
@@ -75,6 +76,7 @@ impl RuntimeConfig {
         messaging_port: u16,
         node_instance: NodeInstanceConfig,
         node_name: impl Into<String>,
+        node_tag: impl Into<String>,
         bound_core_node: impl Into<String>,
     ) -> Result<Self> {
         Ok(Self {
@@ -82,6 +84,7 @@ impl RuntimeConfig {
             messaging_port,
             node_instance,
             node_name: Name::new(node_name.into())?,
+            node_tag: Name::new(node_tag.into())?,
             bound_core_node: Name::new(bound_core_node.into())?,
         })
     }
@@ -129,6 +132,7 @@ mod tests {
                 instance_id: "$INSTANCE_ID"
             },
             node_name: "camera",
+            node_tag: "v1",
             bound_core_node: "core_node"
         }"#;
 
@@ -153,6 +157,7 @@ mod tests {
                     framework: { use_sim_time: true }
                 },
                 node_name: "camera",
+                node_tag: "v1",
                 bound_core_node: "core_node"
             }"#,
         )

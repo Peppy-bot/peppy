@@ -3,12 +3,14 @@ use std::time::Duration;
 use config::node::QoSProfile;
 use core_node_api::encoding::{ClockResponse, ClockTick};
 use core_node_api::names;
-use peppylib::messaging::{Iface, MessengerHandle, ServiceMessenger, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, ServiceMessenger, TopicMessenger};
 use peppylib::{subscribe_clock, synchronize};
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
-use super::common::{CORE_NODE, SERVER_INSTANCE, start_router_and_runner, wait_until_reachable};
+use super::common::{
+    CORE_NODE, SERVER_INSTANCE, start_router_and_runner, test_node_target, wait_until_reachable,
+};
 
 /// Spins up a single-shot `clock` service listener that returns `response`
 /// verbatim. The handler decodes the inbound `ClockRequest` to assert wire
@@ -18,8 +20,7 @@ async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockRespo
         &server,
         CORE_NODE,
         SERVER_INSTANCE,
-        CORE_NODE,
-        Iface::native(),
+        test_node_target(CORE_NODE),
         names::CLOCK,
     )
     .await
@@ -88,8 +89,7 @@ async fn subscribe_clock_yields_typed_ticks() {
         &server,
         CORE_NODE,
         SERVER_INSTANCE,
-        CORE_NODE,
-        Iface::native(),
+        test_node_target(CORE_NODE),
         names::CLOCK,
         QoSProfile::SensorData,
         canned.encode().expect("encode tick"),

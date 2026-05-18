@@ -1,6 +1,6 @@
 use derive_more::From;
 
-use crate::wire::{IfaceError, SegmentError};
+use crate::wire::{SegmentError, SenderTargetError};
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -26,7 +26,7 @@ pub enum Error {
     #[from]
     InvalidSegment(SegmentError),
     #[from]
-    InvalidIface(IfaceError),
+    InvalidSenderTarget(SenderTargetError),
 }
 
 impl core::fmt::Display for Error {

@@ -2,7 +2,7 @@ import asyncio
 import signal
 from datetime import datetime
 
-from peppylib import Iface, MessengerHandle, TopicMessenger
+from peppylib import MessengerHandle, SenderTarget, TopicMessenger
 from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT, QoSProfile
 
@@ -13,6 +13,7 @@ async def main():
 
     # Those properties are found in the peppy_launcher.json5 `deployments` array
     node_name = "hello_node"
+    node_tag = "v1"
     core_node = f"{generate_name()}_core"
     instance_id = f"{generate_name()}_receiver"
 
@@ -32,8 +33,7 @@ async def main():
         receiver_handle,
         core_node,
         instance_id,
-        node_name,
-        Iface.native(),  # iface
+        SenderTarget.node(node_name, node_tag),
         topic_name,
         None,  # target_core_node (None = any)
         None,  # target_instance_id (None = any)

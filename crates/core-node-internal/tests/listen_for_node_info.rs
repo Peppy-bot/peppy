@@ -202,7 +202,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_1,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_ready service (instance 1)"),
@@ -212,7 +212,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_1,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_health service (instance 1)"),
@@ -222,7 +222,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_2,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_ready service (instance 2)"),
@@ -232,7 +232,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_2,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_health service (instance 2)"),
@@ -243,6 +243,7 @@ async fn node_info_has_instance_ids() {
     let runtime_config_json5_1 = common::default_runtime_config_json5(
         &started_core_node.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID_1,
     );
     let start_response_1 = send_node_run_and_wait(
@@ -268,6 +269,7 @@ async fn node_info_has_instance_ids() {
     let runtime_config_json5_2 = common::default_runtime_config_json5(
         &started_core_node.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID_2,
     );
     let start_response_2 = send_node_run_and_wait(

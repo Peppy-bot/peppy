@@ -2,7 +2,7 @@ use crate::Result;
 use crate::names;
 use core_node_api::encoding::{NodeResetRequest, NodeResetResponse};
 use node_stack::NodeStack;
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -21,8 +21,7 @@ pub async fn listen_for_stack_reset(
         messenger,
         core_node_node,
         instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::STACK_RESET,
     )
     .await?;

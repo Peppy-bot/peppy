@@ -9,7 +9,6 @@ use common::{
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use config::node::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
-use peppylib::messaging::Iface;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -76,6 +75,7 @@ async fn listen_for_node_run_success() {
         messaging_port,
         &started_core_node.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
         Default::default(),
     );
@@ -126,6 +126,7 @@ async fn listen_for_node_run_success() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_timeout() {
     const TARGET_NODE_NAME: &str = "runnable_node";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
     // Use a short health timeout so the test doesn't take too long
@@ -174,7 +175,7 @@ async fn listen_for_node_run_timeout() {
             &ready_handle,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start ready service"),
@@ -187,6 +188,7 @@ async fn listen_for_node_run_timeout() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -196,7 +198,7 @@ async fn listen_for_node_run_timeout() {
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
-        "v1",
+        TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
@@ -240,6 +242,7 @@ async fn listen_for_node_run_timeout() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_not_found() {
     const TARGET_NODE_NAME: &str = "nonexistent_node";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "nonexistent_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -251,6 +254,7 @@ async fn listen_for_node_run_not_found() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -260,7 +264,7 @@ async fn listen_for_node_run_not_found() {
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
-        "v1",
+        TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
@@ -343,7 +347,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node ready service should start"),
@@ -353,7 +357,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node health service should start"),
@@ -365,6 +369,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -461,7 +466,7 @@ async fn listen_for_node_run_writes_log_file() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node ready service should start"),
@@ -471,7 +476,7 @@ async fn listen_for_node_run_writes_log_file() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node health service should start"),
@@ -483,6 +488,7 @@ async fn listen_for_node_run_writes_log_file() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -605,6 +611,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -746,6 +753,7 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
         config::consts::DEFAULT_MESSAGING_PORT,
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
         arguments,
     );
@@ -905,7 +913,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &node_messenger,
             &started.core_node_name,
             FIRST_INSTANCE_ID,
-            FIRST_NODE_NAME,
+            common::test_node_target(FIRST_NODE_NAME),
         )
         .await
         .expect("first ready service should start"),
@@ -915,7 +923,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &node_messenger,
             &started.core_node_name,
             FIRST_INSTANCE_ID,
-            FIRST_NODE_NAME,
+            common::test_node_target(FIRST_NODE_NAME),
         )
         .await
         .expect("first health service should start"),
@@ -926,7 +934,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &node_messenger,
             &started.core_node_name,
             SECOND_INSTANCE_ID,
-            SECOND_NODE_NAME,
+            common::test_node_target(SECOND_NODE_NAME),
         )
         .await
         .expect("second ready service should start"),
@@ -936,7 +944,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &node_messenger,
             &started.core_node_name,
             SECOND_INSTANCE_ID,
-            SECOND_NODE_NAME,
+            common::test_node_target(SECOND_NODE_NAME),
         )
         .await
         .expect("second health service should start"),
@@ -949,6 +957,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     let first_runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         FIRST_NODE_NAME,
+        FIRST_NODE_TAG,
         FIRST_INSTANCE_ID,
     );
 
@@ -965,8 +974,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         &started.caller_handle,
         &started.core_node_name,
         common::CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        Iface::native(),
+        common::core_node_target(&started.core_node_name),
         core_node::names::NODE_RUN_ACTION,
         Some(&started.core_node_name),
         None,
@@ -996,6 +1004,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     let second_runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         SECOND_NODE_NAME,
+        SECOND_NODE_TAG,
         SECOND_INSTANCE_ID,
     );
 
@@ -1081,7 +1090,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
             &instance_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start ready service"),
@@ -1091,7 +1100,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
             &instance_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start health service"),
@@ -1102,6 +1111,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1233,7 +1243,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
             &instance_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start ready service"),
@@ -1243,7 +1253,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
             &instance_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start health service"),
@@ -1254,6 +1264,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1362,7 +1373,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node ready service should start"),
@@ -1372,7 +1383,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node health service should start"),
@@ -1385,6 +1396,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1574,7 +1586,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node ready service should start"),
@@ -1584,7 +1596,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node health service should start"),
@@ -1595,6 +1607,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1728,6 +1741,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1828,6 +1842,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1951,7 +1966,7 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node ready service should start"),
@@ -1961,7 +1976,7 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node health service should start"),
@@ -1973,6 +1988,7 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 

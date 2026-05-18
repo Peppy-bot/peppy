@@ -3,7 +3,7 @@ use crate::names;
 use config::node::Name;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use node_stack::NodeStack;
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
@@ -31,8 +31,7 @@ pub async fn listen_for_node_stop(
         &messenger,
         &core_node_node,
         &core_instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::NODE_STOP,
     )
     .await?;
@@ -184,6 +183,7 @@ async fn handle_node_stop_request_inner(
         core_node_node,
         core_instance_id,
         &node_name,
+        &node_tag,
         &instance_id,
     )
     .await
@@ -242,6 +242,7 @@ async fn send_shutdown_signal(
     core_node_node: &str,
     core_instance_id: &str,
     node_name: &str,
+    node_tag: &str,
     instance_id: &Name,
 ) -> std::result::Result<(), String> {
     let instance_id_str = instance_id.as_str();
@@ -253,8 +254,7 @@ async fn send_shutdown_signal(
         messenger,
         core_node_node,
         core_instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, node_tag).map_err(|e| e.to_string())?,
         SHUTDOWN_SERVICE,
         Some(core_node_node),
         Some(instance_id_str),
@@ -351,6 +351,7 @@ pub(super) async fn stop_instance(
         core_node_node,
         core_instance_id,
         node_name,
+        node_tag,
         instance_id,
     )
     .await?;

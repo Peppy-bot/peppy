@@ -12,15 +12,18 @@ from pathlib import Path
 import pytest
 
 from peppylib import (
-    Iface,
     MessengerHandle,
     NodeRunner,
+    SenderTarget,
     ServiceMessenger,
     StandaloneConfig,
     ZenohdInstance,
 )
 
 CORE_NODE = "standalone-core"
+# Mirrors `core_node_api::names::CORE_NODE_TAG` — the core node always uses
+# this tag on the wire, so reachability probes and stub listeners must too.
+CORE_NODE_TAG = "core"
 CLIENT_INSTANCE = "test_caller"
 SERVER_INSTANCE = "test_server"
 
@@ -46,8 +49,7 @@ async def wait_until_reachable(messenger, service_name: str) -> None:
             messenger,
             CORE_NODE,
             CLIENT_INSTANCE,
-            CORE_NODE,
-            Iface.native(),  # iface
+            SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
             service_name,
             CORE_NODE,
             None,):
@@ -92,8 +94,7 @@ async def spawn_stub_listener(server_handle, service_name: str, response_bytes: 
         server_handle,
         CORE_NODE,
         SERVER_INSTANCE,
-        CORE_NODE,
-        Iface.native(),  # iface
+        SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
         service_name,)
     return asyncio.ensure_future(
         endpoint.handle_next_request(lambda _request: response_bytes)

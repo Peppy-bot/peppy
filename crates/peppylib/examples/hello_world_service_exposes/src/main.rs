@@ -5,7 +5,7 @@ use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, Payload, PeppyResult, ServiceMessenger};
 use rand::rng;
 use tokio::signal;
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 
 const SERVICE_NAME: &str = "hello_service";
 const NODE_NAME: &str = "hello_node";
@@ -74,8 +74,7 @@ async fn main() {
         &receiver_handle,
         &core_node,
         &instance_id,
-        NODE_NAME,
-        Iface::native(),
+        SenderTarget::node(NODE_NAME, "v1").expect("test target"),
         SERVICE_NAME,
     )
 

@@ -2,12 +2,13 @@ import asyncio
 import signal
 from datetime import datetime
 
-from peppylib import Iface, MessengerHandle, ServiceMessenger
+from peppylib import MessengerHandle, SenderTarget, ServiceMessenger
 from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT
 
 SERVICE_NAME = "hello_service"
 NODE_NAME = "hello_node"
+NODE_TAG = "v1"
 
 
 def current_timestamp() -> str:
@@ -49,8 +50,7 @@ async def main():
         receiver_handle,
         core_node,
         instance_id,
-        NODE_NAME,
-        Iface.native(),  # iface
+        SenderTarget.node(NODE_NAME, NODE_TAG),
         SERVICE_NAME,)
 
     print(

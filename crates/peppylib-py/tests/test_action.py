@@ -9,11 +9,12 @@ import asyncio
 
 import pytest
 
-from peppylib import Iface, ActionMessenger, MessengerHandle, QoSProfile, ZenohdInstance
+from peppylib import ActionMessenger, MessengerHandle, QoSProfile, SenderTarget, ZenohdInstance
 
 CORE_NODE = "test_core"
 INSTANCE_ID = "test_instance"
 NODE_NAME = "test_node"
+NODE_TAG = "v1"
 ACTION_NAME = "test_action"
 GOAL_PAYLOAD = b"goal data"
 GOAL_RESPONSE_PAYLOAD = b"goal accepted"
@@ -34,8 +35,7 @@ async def test_action_messenger_communication():
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),  # iface
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,)
 
         # Allow subscriptions to propagate
@@ -72,8 +72,7 @@ async def test_action_messenger_communication():
             client_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),  # iface
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
@@ -117,8 +116,7 @@ async def test_cancel_goal_concurrent_with_feedback():
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),  # iface
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,)
 
         await asyncio.sleep(0.05)
@@ -138,8 +136,7 @@ async def test_cancel_goal_concurrent_with_feedback():
             client_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),  # iface
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
             CORE_NODE,
             INSTANCE_ID,
@@ -175,8 +172,7 @@ async def test_send_goal_rejects_invalid_timeout():
                 client_handle,
                 CORE_NODE,
                 INSTANCE_ID,
-                NODE_NAME,
-                Iface.native(),  # iface
+                SenderTarget.node(NODE_NAME, NODE_TAG),
                 ACTION_NAME,
                 CORE_NODE,
                 INSTANCE_ID,
@@ -196,8 +192,7 @@ async def test_send_goal_honors_target_core_node():
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),  # iface
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,)
 
         await asyncio.sleep(0.05)
@@ -207,8 +202,7 @@ async def test_send_goal_honors_target_core_node():
                 client_handle,
                 CORE_NODE,
                 INSTANCE_ID,
-                NODE_NAME,
-                Iface.native(),  # iface
+                SenderTarget.node(NODE_NAME, NODE_TAG),
                 ACTION_NAME,
                 "wrong_core_node",
                 INSTANCE_ID,
@@ -232,16 +226,14 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             native_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             "move",
         )
         iface_action = await ActionMessenger.expose(
             iface_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.conformed("arm", "v1"),
+            SenderTarget.interface("arm", "v1"),
             "move",
         )
 
@@ -268,8 +260,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             caller_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.native(),
+            SenderTarget.node(NODE_NAME, NODE_TAG),
             "move",
             CORE_NODE,
             INSTANCE_ID,
@@ -283,8 +274,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             caller_handle,
             CORE_NODE,
             INSTANCE_ID,
-            NODE_NAME,
-            Iface.conformed("arm", "v1"),
+            SenderTarget.interface("arm", "v1"),
             "move",
             CORE_NODE,
             INSTANCE_ID,

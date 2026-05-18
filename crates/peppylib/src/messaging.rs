@@ -13,14 +13,17 @@ pub use actions::{
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
-// Public re-exports. `Iface` / `IfaceError` / `ServiceKind` describe the
-// shape of messaging calls and surface in user-facing peppylib APIs.
-// `ActionWireSender` is exposed because peppylib-py caches one to drive
-// subsequent cancel / result calls without locking. The other wire structs
-// (TopicWire*, ServiceWire*, ActionWireReceiver) are internal to peppylib's
-// own messaging implementation — each submodule imports them directly from
-// `pmi::`.
-pub use pmi::{ActionWireSender, Iface, IfaceError, ServiceKind};
+// Public re-exports. `SenderTarget` / `InterfaceIdentifier` / `NodeIdentifier`
+// / `SenderTargetError` / `ServiceKind` describe the shape of messaging calls
+// and surface in user-facing peppylib APIs. `ActionWireSender` is exposed
+// because peppylib-py caches one to drive subsequent cancel / result calls
+// without locking. The other wire structs (TopicWire*, ServiceWire*,
+// ActionWireReceiver) are internal to peppylib's own messaging implementation
+// — each submodule imports them directly from `pmi::`.
+pub use pmi::{
+    ActionWireSender, InterfaceIdentifier, NodeIdentifier, SenderTarget, SenderTargetError,
+    ServiceKind,
+};
 
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};

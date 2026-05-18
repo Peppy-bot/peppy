@@ -2,7 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
-use super::services::iface_python_expr;
+use super::services::sender_target_python_expr;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
@@ -110,14 +110,14 @@ pub fn build_emitted_topic(
         builder.line("payload = b\"\"");
     }
 
-    let iface_expr = iface_python_expr(origin);
+    let target_expr =
+        sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
     builder.line("await peppylib.TopicMessenger.emit(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
-    builder.line("node_runner.node_name(),");
-    builder.line(&format!("{iface_expr},"));
+    builder.line(&format!("{target_expr},"));
     builder.line("TOPIC_NAME,");
     builder.line("qos,");
     builder.line("payload,");
@@ -133,14 +133,9 @@ pub fn build_consumed_topic(
     topic: &ConsumedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
-    dependency_node_name: &str,
+    dependency: &crate::generator::types::DependencyContext,
 ) -> Result<String> {
-    build_consumed_topic_inner(
-        topic.name(),
-        arguments,
-        schema_info,
-        Some(dependency_node_name),
-    )
+    build_consumed_topic_inner(topic.name(), arguments, schema_info, Some(dependency))
 }
 
 pub fn build_external_consumed_topic(
@@ -155,7 +150,7 @@ fn build_consumed_topic_inner(
     topic_name: &str,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
-    dependency_node_name: Option<&str>,
+    dependency: Option<&crate::generator::types::DependencyContext>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
@@ -198,18 +193,18 @@ fn build_consumed_topic_inner(
     builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None, from_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
-    if let Some(node_name) = dependency_node_name {
-        builder.line(&format!("node_name = \"{}\"", node_name));
+    if let Some(dep) = dependency {
         builder.line("subscription = await peppylib.TopicMessenger.subscribe(");
         builder.indent();
         builder.line("node_runner.messenger(),");
         builder.line("node_runner.bound_core_node(),");
         builder.line("node_runner.bound_instance_id(),");
-        builder.line("node_name,");
-        // Consumer-side discovery of the publisher's interface namespace is the
-        // follow-up PR; for now we subscribe with the wildcard iface so the
-        // segments match any publisher.
-        builder.line("peppylib.Iface.wildcard(),");
+        let from_target = sender_target_python_expr(
+            dep.origin.as_ref(),
+            &format!("{:?}", dep.node_name),
+            &format!("{:?}", dep.node_tag),
+        );
+        builder.line(&format!("{from_target},"));
         builder.line("topic_name,");
         builder.line("from_core_node,");
         builder.line("from_instance_id,");

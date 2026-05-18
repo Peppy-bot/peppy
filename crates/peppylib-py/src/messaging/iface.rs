@@ -1,66 +1,84 @@
-use peppylib::messaging::{Iface, IfaceError};
+use peppylib::messaging::{InterfaceIdentifier, NodeIdentifier, SenderTarget, SenderTargetError};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-fn iface_error_to_py(err: IfaceError) -> PyErr {
+fn sender_target_error_to_py(err: SenderTargetError) -> PyErr {
     PyValueError::new_err(err.to_string())
 }
 
-/// Python wrapper for [`Iface`]. Mirrors the Rust API: construct via the
-/// `native()` / `wildcard()` / `conformed()` static methods.
+/// Python wrapper for [`SenderTarget`]. Mirrors the Rust API: construct via
+/// the `node(name, tag)` / `interface(name, tag)` static methods. Each
+/// emission addresses either a node or an interface — never both. The wire
+/// format embeds an `interface` / `node` discriminator so the two namespaces
+/// cannot collide.
 ///
-/// The wire-level segment markers used by the zenoh transport (`_` for native,
-/// `*` for wildcard) live inside `pmi::wire::zenoh_format` and never appear in
-/// user or generator-emitted Python code. Callers that need a non-`conforms_to`
-/// artifact use `Iface.native()`; subscribers that should match any publisher
-/// iface use `Iface.wildcard()`.
-#[pyclass(name = "Iface", frozen, eq, hash, from_py_object)]
+/// Subscribers that should match any publisher pass `None` for `from_target`
+/// in `subscribe()` rather than constructing a wildcard `SenderTarget`.
+#[pyclass(name = "SenderTarget", frozen, eq, hash, from_py_object)]
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct PyIface {
-    pub(crate) inner: Iface,
+pub struct PySenderTarget {
+    pub(crate) inner: SenderTarget,
 }
 
 #[pymethods]
-impl PyIface {
-    /// Iface for an artifact that is not part of a `conforms_to` interface.
+impl PySenderTarget {
+    /// Build a node-shaped target. `name` is the node's `manifest.name`,
+    /// `tag` is the node's `manifest.tag`. Raises `ValueError` if either
+    /// segment fails validation (empty, contains `/`, or collides with a
+    /// reserved sentinel).
     #[staticmethod]
-    fn native() -> Self {
-        Self {
-            inner: Iface::native(),
-        }
+    fn node(name: &str, tag: &str) -> PyResult<Self> {
+        NodeIdentifier::new(name, tag)
+            .map(|inner| Self {
+                inner: SenderTarget::Node(inner),
+            })
+            .map_err(sender_target_error_to_py)
     }
 
-    /// Iface that matches any publisher's iface segments. Used on the consumer
-    /// side when the deployment config doesn't pin the producer's iface.
+    /// Build an interface-shaped target. Used for topics / services / actions
+    /// pulled in via `interfaces.conforms_to`. Raises `ValueError` if either
+    /// segment fails validation.
     #[staticmethod]
-    fn wildcard() -> Self {
-        Self {
-            inner: Iface::wildcard(),
-        }
-    }
-
-    /// Iface pulled in via `interfaces.conforms_to`, identified by `name` /
-    /// `tag`. Raises `ValueError` if either segment fails validation (empty,
-    /// contains `/`, or collides with a reserved sentinel).
-    #[staticmethod]
-    fn conformed(name: &str, tag: &str) -> PyResult<Self> {
-        Iface::new(name, tag)
-            .map(|inner| Self { inner })
-            .map_err(iface_error_to_py)
+    fn interface(name: &str, tag: &str) -> PyResult<Self> {
+        InterfaceIdentifier::new(name, tag)
+            .map(|inner| Self {
+                inner: SenderTarget::Interface(inner),
+            })
+            .map_err(sender_target_error_to_py)
     }
 
     #[getter]
-    fn is_native(&self) -> bool {
-        self.inner.is_native()
+    fn is_node(&self) -> bool {
+        self.inner.is_node()
+    }
+
+    #[getter]
+    fn is_interface(&self) -> bool {
+        self.inner.is_interface()
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    #[getter]
+    fn tag(&self) -> &str {
+        self.inner.tag()
     }
 
     fn __repr__(&self) -> String {
         match &self.inner {
-            Iface::Native => "Iface.native()".to_string(),
-            Iface::Wildcard => "Iface.wildcard()".to_string(),
-            Iface::Conformed { .. } => {
+            SenderTarget::Node(_) => {
                 format!(
-                    "Iface.conformed({:?}, {:?})",
+                    "SenderTarget.node({:?}, {:?})",
+                    self.inner.name(),
+                    self.inner.tag()
+                )
+            }
+            SenderTarget::Interface(_) => {
+                format!(
+                    "SenderTarget.interface({:?}, {:?})",
                     self.inner.name(),
                     self.inner.tag()
                 )
@@ -69,8 +87,8 @@ impl PyIface {
     }
 }
 
-impl PyIface {
-    pub(crate) fn into_inner(self) -> Iface {
+impl PySenderTarget {
+    pub(crate) fn into_inner(self) -> SenderTarget {
         self.inner
     }
 }

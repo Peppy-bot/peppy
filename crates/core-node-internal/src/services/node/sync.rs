@@ -7,7 +7,7 @@ use config::node::NodeConfigParser;
 use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse, RepoResolvedEntry};
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceOrigin, InterfaceVariant};
 use node_stack::NodeStack;
-use peppylib::messaging::Iface;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -28,8 +28,7 @@ pub async fn listen_for_node_sync(
         messenger,
         core_node_node,
         instance_id,
-        node_name,
-        Iface::native(),
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::NODE_SYNC,
     )
     .await?;
@@ -361,6 +360,7 @@ async fn handle_node_sync_request_inner(
                     &node_config.manifest,
                     &node_config.interfaces,
                     resolve_dep,
+                    &peppy_dirs,
                 ) {
                     Ok(v) => v,
                     Err(reason) => {
@@ -623,25 +623,31 @@ pub fn collect_consumed_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
+    peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
     let dep_lookup = build_dependency_lookup(manifest);
 
-    // Pre-resolve each unique (name, tag) into a cloned NodeConfig so the
-    // per-item loops below don't repeatedly hit the resolver (which may take
-    // a NodeStack read lock or do filesystem I/O).
-    let mut dep_configs: std::collections::HashMap<(String, String), config::node::NodeConfig> =
-        std::collections::HashMap::new();
+    // Pre-resolve each unique dependency into a per-dep offerings table that
+    // merges native emits/exposes (origin `None`) with conformed entries
+    // (origin `Some(_)`). Native wins on key collision so the consumer side
+    // still addresses native producers via `SenderTarget::Node` and conformed
+    // ones via `SenderTarget::Interface`.
+    let mut dep_offerings: HashMap<(String, String), DependencyOfferings> = HashMap::new();
     for (dep_name, dep_tag) in dep_lookup.values() {
         let key = (dep_name.clone(), dep_tag.clone());
-        if !dep_configs.contains_key(&key)
-            && let Some(cfg) = resolve(dep_name, dep_tag)
-        {
-            dep_configs.insert(key, cfg);
+        if dep_offerings.contains_key(&key) {
+            continue;
         }
+        let Some(dep_config) = resolve(dep_name, dep_tag) else {
+            continue;
+        };
+        let conformed = resolve_conforms_to(&dep_config.interfaces, peppy_dirs).map_err(|e| {
+            format!("failed to resolve `conforms_to` for dependency `{dep_name}:{dep_tag}`: {e}")
+        })?;
+        dep_offerings.insert(key, build_dependency_offerings(&dep_config, &conformed));
     }
 
-    // Collect consumed topics
     if let Some(topic_interfaces) = &interfaces_cfg.topics
         && let Some(consumed_topics) = &topic_interfaces.consumes
     {
@@ -652,22 +658,19 @@ pub fn collect_consumed_interfaces(
                     else {
                         continue;
                     };
-                    if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
-                        && let Some(dep_topics) = &dep_config.interfaces.topics
-                        && let Some(emitted_topics) = &dep_topics.emits
-                        && let Some(emitted_topic) = emitted_topics
-                            .iter()
-                            .find(|t| t.name.trim() == linked.name.trim())
-                        && let Some(message_format) = &emitted_topic.message_format
-                    {
-                        interfaces.push(DeploymentInterface::new(
-                            InterfaceVariant::ConsumedTopic {
-                                topic: consumed_topic.clone(),
-                                message_format: message_format.clone(),
-                                dependency_node_name: dep_name.clone(),
-                            },
-                        ));
-                    }
+                    let key = (dep_name.clone(), dep_tag.clone());
+                    let Some(offerings) = dep_offerings.get(&key) else {
+                        continue;
+                    };
+                    let Some((message_format, origin)) = offerings.topics.get(linked.name.trim())
+                    else {
+                        continue;
+                    };
+                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
+                        topic: consumed_topic.clone(),
+                        message_format: message_format.clone(),
+                        dependency: build_dependency_context(dep_name, dep_tag, origin.clone()),
+                    }));
                 }
                 config::node::ConsumedTopic::External(external) => {
                     interfaces.push(DeploymentInterface::new(
@@ -681,7 +684,6 @@ pub fn collect_consumed_interfaces(
         }
     }
 
-    // Collect consumed services
     if let Some(service_interfaces) = &interfaces_cfg.services
         && let Some(consumed_services) = &service_interfaces.consumes
     {
@@ -689,32 +691,26 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_service.local_node_id) else {
                 continue;
             };
-            if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
-                && let Some(dep_services) = &dep_config.interfaces.services
-                && let Some(exposed_services) = &dep_services.exposes
-                && let Some(exposed_service) = exposed_services
-                    .iter()
-                    .find(|s| s.name.trim() == consumed_service.name.trim())
-            {
-                interfaces.push(DeploymentInterface::new(
-                    InterfaceVariant::ConsumedService {
-                        service: consumed_service.clone(),
-                        request_format: exposed_service
-                            .request_message_format
-                            .clone()
-                            .unwrap_or_default(),
-                        response_format: exposed_service
-                            .response_message_format
-                            .clone()
-                            .unwrap_or_default(),
-                        dependency_node_name: dep_name.clone(),
-                    },
-                ));
-            }
+            let key = (dep_name.clone(), dep_tag.clone());
+            let Some(offerings) = dep_offerings.get(&key) else {
+                continue;
+            };
+            let Some((request_format, response_format, origin)) =
+                offerings.services.get(consumed_service.name.trim())
+            else {
+                continue;
+            };
+            interfaces.push(DeploymentInterface::new(
+                InterfaceVariant::ConsumedService {
+                    service: consumed_service.clone(),
+                    request_format: request_format.clone(),
+                    response_format: response_format.clone(),
+                    dependency: build_dependency_context(dep_name, dep_tag, origin.clone()),
+                },
+            ));
         }
     }
 
-    // Collect consumed actions
     if let Some(action_interfaces) = &interfaces_cfg.actions
         && let Some(consumed_actions) = &action_interfaces.consumes
     {
@@ -722,46 +718,182 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_action.local_node_id) else {
                 continue;
             };
-            if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
-                && let Some(dep_actions) = &dep_config.interfaces.actions
-                && let Some(exposed_actions) = &dep_actions.exposes
-                && let Some(exposed_action) = exposed_actions
-                    .iter()
-                    .find(|a| a.name.trim() == consumed_action.name.trim())
-            {
-                let action_message = ConsumedActionMessage {
-                    goal_request: exposed_action
-                        .goal_service
-                        .as_ref()
-                        .and_then(|s| s.request_message_format.clone()),
-                    goal_response: exposed_action
-                        .goal_service
-                        .as_ref()
-                        .and_then(|s| s.response_message_format.clone()),
-                    feedback: exposed_action
-                        .feedback_topic
-                        .as_ref()
-                        .and_then(|t| t.message_format.clone()),
-                    result_request: exposed_action
-                        .result_service
-                        .as_ref()
-                        .and_then(|s| s.request_message_format.clone()),
-                    result_response: exposed_action
-                        .result_service
-                        .as_ref()
-                        .and_then(|s| s.response_message_format.clone()),
-                };
-
-                interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
-                    action: consumed_action.clone(),
-                    messages: action_message,
-                    dependency_node_name: dep_name.clone(),
-                }));
-            }
+            let key = (dep_name.clone(), dep_tag.clone());
+            let Some(offerings) = dep_offerings.get(&key) else {
+                continue;
+            };
+            let Some((action_message, origin)) = offerings.actions.get(consumed_action.name.trim())
+            else {
+                continue;
+            };
+            interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
+                action: consumed_action.clone(),
+                messages: action_message.clone(),
+                dependency: build_dependency_context(dep_name, dep_tag, origin.clone()),
+            }));
         }
     }
 
     Ok(interfaces)
+}
+
+fn build_dependency_context(
+    dep_name: &str,
+    dep_tag: &str,
+    origin: Option<generator::InterfaceOrigin>,
+) -> generator::DependencyContext {
+    match origin {
+        Some(o) => generator::DependencyContext::conformed(dep_name, dep_tag, o),
+        None => generator::DependencyContext::native(dep_name, dep_tag),
+    }
+}
+
+/// What a single dependency can provide to consumers — its native
+/// emits/exposes merged with the topics/services/actions it pulls in via
+/// `conforms_to`. Native entries store `None` as origin; conformed entries
+/// carry the `(iface_name, iface_tag)` origin so the consumer can address the
+/// producer via `SenderTarget::Interface`. Keys are trimmed names, matching
+/// the consumer side's `.trim()` comparisons.
+struct DependencyOfferings {
+    topics: HashMap<
+        String,
+        (
+            config::node::MessageFormat,
+            Option<generator::InterfaceOrigin>,
+        ),
+    >,
+    services: HashMap<
+        String,
+        (
+            config::node::MessageFormat,
+            config::node::MessageFormat,
+            Option<generator::InterfaceOrigin>,
+        ),
+    >,
+    actions: HashMap<String, (ConsumedActionMessage, Option<generator::InterfaceOrigin>)>,
+}
+
+fn build_dependency_offerings(
+    dep_config: &config::node::NodeConfig,
+    conformed: &[DeploymentInterface],
+) -> DependencyOfferings {
+    let mut topics: HashMap<
+        String,
+        (
+            config::node::MessageFormat,
+            Option<generator::InterfaceOrigin>,
+        ),
+    > = HashMap::new();
+    let mut services: HashMap<
+        String,
+        (
+            config::node::MessageFormat,
+            config::node::MessageFormat,
+            Option<generator::InterfaceOrigin>,
+        ),
+    > = HashMap::new();
+    let mut actions: HashMap<String, (ConsumedActionMessage, Option<generator::InterfaceOrigin>)> =
+        HashMap::new();
+
+    // Native side first — native entries win on key collision.
+    if let Some(topic_ifaces) = &dep_config.interfaces.topics
+        && let Some(emits) = &topic_ifaces.emits
+    {
+        for emitted in emits {
+            if let Some(fmt) = &emitted.message_format {
+                topics
+                    .entry(emitted.name.trim().to_string())
+                    .or_insert_with(|| (fmt.clone(), None));
+            }
+        }
+    }
+    if let Some(service_ifaces) = &dep_config.interfaces.services
+        && let Some(exposes) = &service_ifaces.exposes
+    {
+        for exposed in exposes {
+            services
+                .entry(exposed.name.trim().to_string())
+                .or_insert_with(|| {
+                    (
+                        exposed.request_message_format.clone().unwrap_or_default(),
+                        exposed.response_message_format.clone().unwrap_or_default(),
+                        None,
+                    )
+                });
+        }
+    }
+    if let Some(action_ifaces) = &dep_config.interfaces.actions
+        && let Some(exposes) = &action_ifaces.exposes
+    {
+        for exposed in exposes {
+            actions
+                .entry(exposed.name.trim().to_string())
+                .or_insert_with(|| (action_message_from_exposed(exposed), None));
+        }
+    }
+
+    // Conformed side fills only the gaps left by native.
+    for iface in conformed {
+        match iface.interface() {
+            InterfaceVariant::EmittedTopic { topic, origin } => {
+                if let Some(fmt) = &topic.message_format {
+                    topics
+                        .entry(topic.name.trim().to_string())
+                        .or_insert_with(|| (fmt.clone(), origin.clone()));
+                }
+            }
+            InterfaceVariant::ExposedService { service, origin } => {
+                services
+                    .entry(service.name.trim().to_string())
+                    .or_insert_with(|| {
+                        (
+                            service.request_message_format.clone().unwrap_or_default(),
+                            service.response_message_format.clone().unwrap_or_default(),
+                            origin.clone(),
+                        )
+                    });
+            }
+            InterfaceVariant::ExposedAction { action, origin } => {
+                actions
+                    .entry(action.name.trim().to_string())
+                    .or_insert_with(|| (action_message_from_exposed(action), origin.clone()));
+            }
+            _ => {}
+        }
+    }
+
+    DependencyOfferings {
+        topics,
+        services,
+        actions,
+    }
+}
+
+fn action_message_from_exposed(
+    exposed_action: &config::node::ExposedAction,
+) -> ConsumedActionMessage {
+    ConsumedActionMessage {
+        goal_request: exposed_action
+            .goal_service
+            .as_ref()
+            .and_then(|s| s.request_message_format.clone()),
+        goal_response: exposed_action
+            .goal_service
+            .as_ref()
+            .and_then(|s| s.response_message_format.clone()),
+        feedback: exposed_action
+            .feedback_topic
+            .as_ref()
+            .and_then(|t| t.message_format.clone()),
+        result_request: exposed_action
+            .result_service
+            .as_ref()
+            .and_then(|s| s.request_message_format.clone()),
+        result_response: exposed_action
+            .result_service
+            .as_ref()
+            .and_then(|s| s.response_message_format.clone()),
+    }
 }
 
 /// Resolves every `interfaces.conforms_to` entry against the local interface
@@ -952,6 +1084,7 @@ pub fn auto_sync_if_missing(
                 params.manifest,
                 params.interfaces,
                 stack_resolver(node_stack),
+                peppy_dirs,
             )
             .map_err(|reason| {
                 crate::Error::Io(std::io::Error::other(format!(

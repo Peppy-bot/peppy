@@ -14,7 +14,7 @@ use core_node_api::encoding::{
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
-use peppylib::messaging::{Iface, MessengerHandle, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, SenderTarget, TopicMessenger};
 use peppylib::runtime::{TaskHandle, spawn};
 use peppylib::{ActionMessenger, PeppyError, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
@@ -25,6 +25,24 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
+
+/// Default tag used by tests when building a [`SenderTarget`]. Matches the
+/// `manifest.tag` value the integration test fixtures emit.
+pub const TEST_NODE_TAG: &str = "v1";
+
+/// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
+/// invalid names — tests use known-good values only.
+pub fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
+}
+
+/// Builds a node-shaped [`SenderTarget`] tagged with [`names::CORE_NODE_TAG`].
+/// Use this when the test caller is addressing one of the daemon's own services
+/// (clock, info, ping, node_add, …) — the daemon's listeners pin their tag to
+/// `CORE_NODE_TAG`, not the `v1` used for ordinary test nodes.
+pub fn core_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, names::CORE_NODE_TAG).expect("core node target")
+}
 
 /// Returns `Ok(())` if the payload is a "result pending" sentinel, or `Err` with a
 /// decode-failure message otherwise.
@@ -68,8 +86,7 @@ pub async fn wait_until_service_reachable(
             messenger,
             bound_core_node,
             "ready_probe",
-            to_node_name,
-            peppylib::messaging::Iface::native(),
+            test_node_target(to_node_name),
             to_service_name,
             Some(to_core_node),
             Some(to_instance_id),
@@ -103,8 +120,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        Iface::native(),
+        core_node_target(&started.core_node_name),
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -148,8 +164,7 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         &started.caller_handle,
         caller_core_node,
         caller_instance_id,
-        &started.core_node_name,
-        Iface::native(),
+        Some(core_node_target(&started.core_node_name)),
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -244,6 +259,7 @@ pub fn build_runtime_config_json5(
     port: u16,
     core_node_name: &str,
     node_name: &str,
+    node_tag: &str,
     instance_id: &str,
     arguments: std::collections::BTreeMap<String, config::AnyType>,
 ) -> String {
@@ -256,6 +272,7 @@ pub fn build_runtime_config_json5(
             framework: Default::default(),
         },
         node_name,
+        node_tag,
         core_node_name,
     )
     .expect("runtime config should be valid");
@@ -267,6 +284,7 @@ pub fn build_runtime_config_json5(
 pub fn default_runtime_config_json5(
     core_node_name: &str,
     node_name: &str,
+    node_tag: &str,
     instance_id: &str,
 ) -> String {
     build_runtime_config_json5(
@@ -274,6 +292,7 @@ pub fn default_runtime_config_json5(
         config::consts::DEFAULT_MESSAGING_PORT,
         core_node_name,
         node_name,
+        node_tag,
         instance_id,
         Default::default(),
     )
@@ -327,8 +346,7 @@ async fn send_node_run_and_wait_internal(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        core_node_name,
-        Iface::native(),
+        core_node_target(core_node_name),
         names::NODE_RUN_ACTION,
         Some(core_node_name),
         None,
@@ -492,8 +510,7 @@ async fn send_node_add_and_wait_internal<'a>(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        core_node_name,
-        Iface::native(),
+        core_node_target(core_node_name),
         names::NODE_ADD_ACTION,
         Some(core_node_name),
         None,
@@ -613,8 +630,7 @@ pub async fn send_node_build_and_wait(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        core_node_name,
-        Iface::native(),
+        core_node_target(core_node_name),
         names::NODE_BUILD_ACTION,
         Some(core_node_name),
         None,
@@ -1424,7 +1440,7 @@ async fn spawn_real_running_instance_inner(
             &shutdown_handle,
             &started.core_node_name,
             instance_id.as_str(),
-            name,
+            test_node_target(name),
         )
         .await
         .expect("failed to start shutdown listener for test instance");

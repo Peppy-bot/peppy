@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
-use pmi::{ActionWireReceiver, ActionWireSender, Iface, PublisherQoS};
+use pmi::{ActionWireReceiver, ActionWireSender, PublisherQoS, SenderTarget};
 use std::sync::Arc;
 use tokio::time::Duration;
 
@@ -272,34 +272,26 @@ pub struct ActionCreation {
 }
 
 impl ActionMessenger {
-    /// Expose an action server. `iface` must match what callers pass to
+    /// Expose an action server. `as_identity` must match what callers pass to
     /// [`Self::send_goal`].
     pub async fn expose(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
-        as_node_name: &str,
-        iface: Iface,
+        as_identity: SenderTarget,
         as_action_name: &str,
     ) -> Result<ActionCreation> {
-        let recv = ActionWireReceiver::new(
-            bound_core_node,
-            as_instance_id,
-            as_node_name,
-            iface,
-            as_action_name,
-        )?;
+        let recv =
+            ActionWireReceiver::new(bound_core_node, as_instance_id, as_identity, as_action_name)?;
         messenger.expose_action(&recv).await
     }
 
     /// Sends a lightweight probe to check whether an action service is listening.
-    #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
-        to_node_name: &str,
-        iface: Iface,
+        to_target: SenderTarget,
         to_action_name: &str,
         to_core_node: Option<&str>,
         to_instance_id: Option<&str>,
@@ -309,8 +301,7 @@ impl ActionMessenger {
             as_instance_id,
             to_core_node,
             to_instance_id,
-            to_node_name,
-            iface,
+            to_target,
             to_action_name,
         )?;
         match messenger
@@ -332,14 +323,14 @@ impl ActionMessenger {
     /// wraps `user_payload` in the per-goal envelope, subscribes to the
     /// matching feedback topic, and polls the goal service.
     ///
-    /// `iface` must match the segments the action server used in [`Self::expose`].
+    /// `to_target` must match the [`SenderTarget`] the action server used in
+    /// [`Self::expose`].
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
-        to_node_name: &str,
-        iface: Iface,
+        to_target: SenderTarget,
         to_action_name: &str,
         to_core_node: Option<&str>,
         to_instance_id: Option<&str>,
@@ -355,8 +346,7 @@ impl ActionMessenger {
             as_instance_id,
             to_core_node,
             to_instance_id,
-            to_node_name,
-            iface,
+            to_target,
             to_action_name,
         )?;
 

@@ -2,7 +2,7 @@
 mod zenoh_tests {
     use bytes::Bytes;
     use pmi::{
-        Iface, MessengerBackend, Payload, PublisherQoS, SubscriberQoS, TopicWireReceiver,
+        MessengerBackend, Payload, PublisherQoS, SenderTarget, SubscriberQoS, TopicWireReceiver,
         TopicWireSender, ZenohAdapter,
     };
     use std::time::Duration;
@@ -12,6 +12,10 @@ mod zenoh_tests {
     /// transient handshake; serializing with a mutex eliminates the flakiness
     /// without adding time-based probes.
     static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
+
+    fn test_node_target(name: &str) -> SenderTarget {
+        SenderTarget::node(name, "v1").expect("test node target")
+    }
 
     const RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -37,8 +41,7 @@ mod zenoh_tests {
         TopicWireSender::new(
             "test_core_node",
             "test_instance",
-            "test_node",
-            Iface::native(),
+            test_node_target("test_node"),
             as_topic_name,
         )
         .expect("valid wire fields")
@@ -50,8 +53,7 @@ mod zenoh_tests {
             "test_instance",
             None,
             None,
-            Some("test_node"),
-            Iface::native(),
+            Some(test_node_target("test_node")),
             to_topic,
         )
         .expect("valid wire fields")

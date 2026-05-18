@@ -231,6 +231,10 @@ impl CoreNode {
         self.node_config.manifest.name.as_str()
     }
 
+    pub fn node_tag(&self) -> &str {
+        self.node_config.manifest.tag.as_str()
+    }
+
     pub fn instance_id(&self) -> &str {
         self.instance_id.as_str()
     }

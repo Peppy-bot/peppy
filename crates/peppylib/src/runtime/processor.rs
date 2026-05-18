@@ -111,6 +111,7 @@ impl Processor {
                 framework: Default::default(),
             },
             &node_name,
+            node_config.manifest.tag.as_str(),
             "standalone-core",
         )?;
 
@@ -158,6 +159,10 @@ impl Processor {
 
     pub fn node_name(&self) -> &str {
         self.runtime_config.node_name.as_str()
+    }
+
+    pub fn node_tag(&self) -> &str {
+        self.runtime_config.node_tag.as_str()
     }
 
     pub fn messaging_host(&self) -> &str {
@@ -242,6 +247,7 @@ mod tests {
                 }
             },
             node_name: "$NODE_NAME",
+            node_tag: "v1",
             bound_core_node: "$CORE_NODE"
         }"#;
 
@@ -320,6 +326,7 @@ mod tests {
                 arguments: { value: 42 }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#;
 
@@ -373,6 +380,7 @@ mod tests {
                 arguments: { value: 42, extra_param: "unexpected" }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#
         .to_string();
@@ -427,6 +435,7 @@ mod tests {
                 arguments: { value: "not_an_integer" }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#
         .to_string();
@@ -491,6 +500,7 @@ mod tests {
                 arguments: { config: { enabled: "yes", threshold: 0.5 } }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#
         .to_string();
@@ -554,6 +564,7 @@ mod tests {
                 arguments: { tags: ["valid", 123, "also_valid"] }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#
         .to_string();
@@ -605,6 +616,7 @@ mod tests {
                 arguments: { value: 42 }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#;
 

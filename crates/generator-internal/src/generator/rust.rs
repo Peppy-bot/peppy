@@ -15,8 +15,9 @@ mod type_mapping;
 pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
-    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, InterfaceOrigin,
-    LanguageGenerator, cancel_action_response_format, non_empty_message_format, scoped_schema_key,
+    CapnpSchema, ConsumedActionMessage, DependencyContext, InterfaceArtifact, InterfaceKind,
+    InterfaceOrigin, LanguageGenerator, cancel_action_response_format, non_empty_message_format,
+    scoped_schema_key,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
@@ -48,7 +49,10 @@ use services::{
     ExposedServiceMethodSpec, ServiceResponseSpec, build_exposed_service_method,
     build_request_struct_with_name_and_impl, deserialize_fields_from_format,
 };
-use topics::{ConsumedTopicCallbackSpec, build_consumed_topic_callback, build_topic_emit};
+use topics::{
+    ConsumedTopicCallbackSpec, build_consumed_topic_callback, build_topic_emit,
+    consumed_to_target_expression,
+};
 use type_mapping::{render_tokens, unused_params_stmt};
 
 /// Rust-specific implementation of the interface generator.
@@ -143,6 +147,7 @@ impl RustGenerator {
         request_format: Option<&MessageFormat>,
         response_format: Option<&MessageFormat>,
         schema_key: &str,
+        dependency: &DependencyContext,
     ) -> Result<(TokenStream, Vec<TokenStream>, bool)> {
         let request_artifacts =
             map_message_format(&format!("{schema_key}_request"), request_format)?;
@@ -261,10 +266,10 @@ impl RustGenerator {
             }
         };
 
-        // Consumer-side discovery of the producer's interface namespace is the
-        // follow-up PR; for now we use native (None).
-        let iface_expr = topics::iface_expression(None);
-
+        // The `to_target` matches the producer's emission shape: address the
+        // dependency as an Interface if it exposes the action via
+        // `conforms_to`, otherwise as its native Node identity.
+        let to_target_expr = consumed_to_target_expression(dependency);
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
@@ -280,8 +285,7 @@ impl RustGenerator {
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
-                    TARGET_NODE_NAME,
-                    #iface_expr,
+                    #to_target_expr,
                     TARGET_ACTION_NAME,
                     to_core_node,
                     to_instance_id,
@@ -989,7 +993,7 @@ impl LanguageGenerator for RustGenerator {
         &mut self,
         topic: &ConsumedTopic,
         arguments: MessageFormat,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()> {
         let ConsumedTopic::Linked(linked) = topic else {
             return Err(Error::InvariantViolation {
@@ -1075,7 +1079,7 @@ impl LanguageGenerator for RustGenerator {
             encoding: &encoding,
             topic,
             struct_prefix: &message_struct_name,
-            dependency_node_name,
+            dependency,
         })?;
         let mut items = context.into_tokens();
         items.push(method_tokens);
@@ -1178,8 +1182,9 @@ impl LanguageGenerator for RustGenerator {
         service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()> {
+        let dependency_node_name = dependency.node_name.as_str();
         let request_arguments = non_empty_message_format(Some(request_arguments));
         let response_arguments = non_empty_message_format(Some(response_arguments));
 
@@ -1297,17 +1302,16 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
-        // Consumer-side discovery of the producer's interface namespace is the
-        // follow-up PR; for now we use native (None) since the deployment
-        // config doesn't record which interface a consumed service originates from.
-        let iface_expr = topics::iface_expression(None);
+        // The `to_target` matches the producer's emission shape: if the
+        // dependency exposes the service via `conforms_to`, address it as the
+        // interface; otherwise as the dependency's node identity.
+        let to_target_expr = consumed_to_target_expression(dependency);
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
-                NODE_NAME,
-                #iface_expr,
+                #to_target_expr,
                 SERVICE_NAME,
                 to_core_node,
                 to_instance_id,
@@ -1441,8 +1445,9 @@ impl LanguageGenerator for RustGenerator {
         &mut self,
         action: &ConsumedAction,
         messages: &ConsumedActionMessage,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()> {
+        let dependency_node_name = dependency.node_name.as_str();
         let node_component = sanitize_component(dependency_node_name);
         let action_component = sanitize_component(action.name.as_str());
         let base_component = match (node_component.is_empty(), action_component.is_empty()) {
@@ -1478,6 +1483,7 @@ impl LanguageGenerator for RustGenerator {
                 goal_request_format,
                 goal_response_format,
                 &goal_schema_key,
+                dependency,
             )?;
         methods.push(goal_method);
         helper_items.append(&mut goal_helpers);

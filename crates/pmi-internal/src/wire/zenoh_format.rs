@@ -8,13 +8,27 @@
 //! diverging this one.
 
 use crate::wire::{
-    ActionWireReceiver, ActionWireSender, BROADCAST_MARKER, Iface, ServiceKind,
+    ActionWireReceiver, ActionWireSender, BROADCAST_MARKER, SenderTarget, ServiceKind,
     ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use std::fmt;
 
 /// Single-chunk wildcard. Matches exactly one path segment.
 const SINGLE_CHUNK_WILDCARD: &str = "*";
+
+/// Returns the three wire segments `(discriminator, name, tag)` for a target.
+/// When the target is `None` (untargeted receiver), all three become the
+/// single-chunk wildcard so the keyexpr matches any publisher's emission.
+fn target_segments(target: Option<&SenderTarget>) -> (&str, &str, &str) {
+    match target {
+        Some(t) => (t.discriminator(), t.name(), t.tag()),
+        None => (
+            SINGLE_CHUNK_WILDCARD,
+            SINGLE_CHUNK_WILDCARD,
+            SINGLE_CHUNK_WILDCARD,
+        ),
+    }
+}
 
 /// Namespace for the zenoh wire format functions. Calls look like
 /// `ZenohWireFormat::topic_publish(&sender)`.
@@ -27,7 +41,7 @@ impl ZenohWireFormat {
     /// addressing. Inverse of [`Self::topic_publish`].
     ///
     /// The publish shape is
-    /// `*/{caller_core}/*/{caller_inst}/topic/{caller_node}/{iface_name}/{iface_tag}/{topic}`
+    /// `*/{caller_core}/*/{caller_inst}/topic/{discriminator}/{name}/{tag}/{topic}`
     /// — caller_core is segment index 1, caller_inst is segment index 3.
     pub(crate) fn parse_topic_keyexpr(
         keyexpr: &str,
@@ -43,34 +57,26 @@ impl ZenohWireFormat {
         })
     }
 
-    /// `*/{as_core}/*/{as_inst}/topic/{as_node}/{iface_name}/{iface_tag}/{as_topic}`
+    /// `*/{as_core}/*/{as_inst}/topic/{discriminator}/{name}/{tag}/{as_topic}`
     pub(crate) fn topic_publish(s: &TopicWireSender) -> String {
+        let (discriminator, name, tag) = target_segments(Some(&s.as_target));
         format!(
-            "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/topic/{}/{}/{}/{}",
-            s.as_core_node,
-            s.as_instance_id,
-            s.as_node_name,
-            s.iface.name(),
-            s.iface.tag(),
-            s.as_topic_name,
+            "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/topic/{discriminator}/{name}/{tag}/{}",
+            s.as_core_node, s.as_instance_id, s.as_topic_name,
         )
     }
 
-    /// `{as_core}/{from_core|*}/{as_inst}/{from_inst|*}/topic/{from_node|*}/{iface_name}/{iface_tag}/{to_topic}`
+    /// `{as_core}/{from_core|*}/{as_inst}/{from_inst|*}/topic/{discriminator|*}/{name|*}/{tag|*}/{to_topic}`
     pub(crate) fn topic_subscribe(r: &TopicWireReceiver) -> String {
         let from_core = r.from_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         let from_inst = r
             .from_instance_id
             .as_deref()
             .unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let from_node = r.from_node_name.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let (discriminator, name, tag) = target_segments(r.from_target.as_ref());
         format!(
-            "{}/{from_core}/{}/{from_inst}/topic/{from_node}/{}/{}/{}",
-            r.as_core_node,
-            r.as_instance_id,
-            r.iface.name(),
-            r.iface.tag(),
-            r.to_topic,
+            "{}/{from_core}/{}/{from_inst}/topic/{discriminator}/{name}/{tag}/{}",
+            r.as_core_node, r.as_instance_id, r.to_topic,
         )
     }
 
@@ -82,7 +88,7 @@ impl ZenohWireFormat {
     /// Order matches the original code's `patterns[0..4]` (bound-specific +
     /// instance-specific first, then progressively broader).
     pub(crate) fn service_listen_patterns(r: &ServiceWireReceiver) -> [String; 4] {
-        let root = service_root(&r.as_node_name, &r.iface, &r.as_service_name, r.kind);
+        let root = service_root(&r.as_identity, &r.as_service_name, r.kind);
         let bound = r.bound_core_node.as_str();
         let inst = r.as_instance_id.as_str();
         [
@@ -104,7 +110,7 @@ impl ZenohWireFormat {
     /// Client → server request publish:
     /// `{target_core|_any_}/{bound_core}/{target_inst|_any_}/{caller_inst}/{service_root}/request/{request_id}`.
     pub(crate) fn service_request_publish(s: &ServiceWireSender, request_id: &str) -> String {
-        let root = service_root(&s.to_node_name, &s.iface, &s.to_service_name, s.kind);
+        let root = service_root(&s.to_target, &s.to_service_name, s.kind);
         let target_core = s.to_core_node.as_deref().unwrap_or(BROADCAST_MARKER);
         let target_inst = s.to_instance_id.as_deref().unwrap_or(BROADCAST_MARKER);
         format!(
@@ -116,7 +122,7 @@ impl ZenohWireFormat {
     /// Client-side response subscribe (wildcards on responder fields, keyed by `request_id`):
     /// `{bound_core}/*/{caller_inst}/*/{service_root}/response/{request_id}`.
     pub(crate) fn service_response_subscribe(s: &ServiceWireSender, request_id: &str) -> String {
-        let root = service_root(&s.to_node_name, &s.iface, &s.to_service_name, s.kind);
+        let root = service_root(&s.to_target, &s.to_service_name, s.kind);
         format!(
             "{}/{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{root}/response/{request_id}",
             s.bound_core_node, s.as_instance_id,
@@ -151,8 +157,7 @@ impl ZenohWireFormat {
             .ok_or(ZenohWireParseError::MissingSegment("caller_instance"))?;
 
         let expected_root = service_root(
-            &receiver.as_node_name,
-            &receiver.iface,
+            &receiver.as_identity,
             &receiver.as_service_name,
             receiver.kind,
         );
@@ -201,9 +206,9 @@ impl ZenohWireFormat {
     // ─── Actions ──────────────────────────────────────────────────────────
 
     /// Server-side per-goal feedback publish:
-    /// `*/{bound_core}/*/{as_inst}/action/{as_node}/{iface_name}/{iface_tag}/{as_action}/feedback/{as_inst}/{goal_id}`.
+    /// `*/{bound_core}/*/{as_inst}/action/{discriminator}/{name}/{tag}/{as_action}/feedback/{as_inst}/{goal_id}`.
     pub(crate) fn action_feedback_publish(r: &ActionWireReceiver, goal_id: &str) -> String {
-        let action_root = action_root(&r.as_node_name, &r.iface, &r.as_action_name);
+        let action_root = action_root(&r.as_identity, &r.as_action_name);
         format!(
             "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/{action_root}/feedback/{}/{goal_id}",
             r.bound_core_node, r.as_instance_id, r.as_instance_id,
@@ -213,7 +218,7 @@ impl ZenohWireFormat {
     /// Client-side per-goal feedback subscribe. Wildcards on server-side fields
     /// when the target is not pinned.
     pub(crate) fn action_feedback_subscribe(s: &ActionWireSender, goal_id: &str) -> String {
-        let action_root = action_root(&s.to_node_name, &s.iface, &s.to_action_name);
+        let action_root = action_root(&s.to_target, &s.to_action_name);
         let target_core = s.to_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         let target_inst_segment = s.to_instance_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         format!(
@@ -244,19 +249,25 @@ fn extract_caller_segment(
 
 /// Builds the service_root segment. For action sub-services, appends the
 /// `goal` / `cancel` / `result` suffix.
-fn service_root(node: &str, iface: &Iface, name: &str, kind: ServiceKind) -> String {
+fn service_root(target: &SenderTarget, name: &str, kind: ServiceKind) -> String {
     let suffix = kind.suffix().map(|s| format!("/{s}")).unwrap_or_default();
     format!(
-        "{}/{node}/{}/{}/{name}{suffix}",
+        "{}/{}/{}/{}/{name}{suffix}",
         kind.root_segment(),
-        iface.name(),
-        iface.tag(),
+        target.discriminator(),
+        target.name(),
+        target.tag(),
     )
 }
 
-/// Builds the action_root segment (`action/{node}/{iface_name}/{iface_tag}/{action}`).
-fn action_root(node: &str, iface: &Iface, action: &str) -> String {
-    format!("action/{node}/{}/{}/{action}", iface.name(), iface.tag())
+/// Builds the action_root segment (`action/{discriminator}/{name}/{tag}/{action}`).
+fn action_root(target: &SenderTarget, action: &str) -> String {
+    format!(
+        "action/{}/{}/{}/{action}",
+        target.discriminator(),
+        target.name(),
+        target.tag(),
+    )
 }
 
 // ─── Parsed envelopes returned to the adapter ────────────────────────────
