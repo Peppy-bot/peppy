@@ -212,7 +212,7 @@ fn service_receiver() -> ServiceWireReceiver {
         "server_core",
         "server_inst",
         test_node_target("robot_arm"),
-        None,
+        &[],
         "ping",
         ServiceKind::Service,
     )
@@ -257,11 +257,12 @@ async fn run_service_roundtrip(sender: ServiceWireSender) {
 
     // Server: wait for the request on whichever pattern fired.
     let received_request = select_listen(&mut subs).await;
-    let parsed_id = instance
+    let parsed = instance
         .messenger()
-        .parse_service_request_id(&receiver, received_request.key_expr())
+        .parse_service_request(&receiver, received_request.key_expr())
         .unwrap();
-    assert_eq!(parsed_id, request_id);
+    assert_eq!(parsed.request_id, request_id);
+    assert_eq!(parsed.link_id, pmi::DEFAULT_LINK_ID);
 
     // Server: respond with the parsed key as the address descriptor.
     let response_body = Bytes::from_static(b"pong");
@@ -311,7 +312,7 @@ fn action_receiver() -> ActionWireReceiver {
         "server_core",
         "server_inst",
         test_node_target("robot_arm"),
-        None,
+        &[],
         "pick_place",
     )
     .expect("valid wire fields")
@@ -373,11 +374,12 @@ async fn action_goal_feedback_result() {
 
     // Server: receive goal, ack with response.
     let goal_request = select_listen(&mut goal_subs).await;
-    let goal_request_id = instance
+    let parsed_goal = instance
         .messenger()
-        .parse_service_request_id(&server.goal_service(), goal_request.key_expr())
+        .parse_service_request(&server.goal_service(), goal_request.key_expr())
         .unwrap();
-    assert_eq!(goal_request_id, "rid_goal");
+    assert_eq!(parsed_goal.request_id, "rid_goal");
+    assert_eq!(parsed_goal.link_id, pmi::DEFAULT_LINK_ID);
     instance
         .messenger()
         .publish_service_response(
@@ -398,7 +400,12 @@ async fn action_goal_feedback_result() {
     // Server publishes feedback for the goal.
     let feedback_pub = instance
         .messenger()
-        .declare_action_feedback_publisher(&server, goal_id, PublisherQoS::Important)
+        .declare_action_feedback_publisher(
+            &server,
+            pmi::DEFAULT_LINK_ID,
+            goal_id,
+            PublisherQoS::Important,
+        )
         .unwrap();
     feedback_pub
         .publish(Bytes::from_static(b"progress=0.5"))

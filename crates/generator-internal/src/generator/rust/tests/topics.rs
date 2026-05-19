@@ -156,7 +156,7 @@ fn emit_topic() {
         &[
             "let as_topic = \"video_stream\";",
             "let qos = peppylib::config::QoSProfile::SensorData;",
-            "peppylib::TopicMessenger::emit_fan_out(",
+            "peppylib::TopicMessenger::emit(",
         ],
     );
 }
@@ -407,7 +407,7 @@ fn consumed_topic() {
         &rendered,
         &[
             "let node_name = \"uvc_camera\";",
-            "peppylib::TopicMessenger::subscribe_with_link_id(",
+            "peppylib::TopicMessenger::subscribe(",
         ],
     );
 

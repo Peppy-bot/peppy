@@ -240,7 +240,7 @@ fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
         as_identity: node("robot_arm", "v1"),
-        link_id: Segment::default_link_id(),
+        link_ids: vec![Segment::default_link_id()],
         as_service_name: seg("ping"),
         kind,
     }
@@ -248,15 +248,17 @@ fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
 
 #[test]
 fn service_listen_patterns_node_identity_plain_service() {
+    // Listener wildcards the link_id slot regardless of the bound set; the
+    // dispatch filter in parse_received_request enforces membership.
     let recv = sample_service_receiver(ServiceKind::Service);
     let patterns = ZenohWireFormat::service_listen_patterns(&recv);
     assert_eq!(
         patterns,
         [
-            "server_core/*/server_inst/*/service/node/robot_arm/v1/_/ping/request/**".to_string(),
-            "server_core/*/_any_/*/service/node/robot_arm/v1/_/ping/request/**".to_string(),
-            "_any_/*/server_inst/*/service/node/robot_arm/v1/_/ping/request/**".to_string(),
-            "_any_/*/_any_/*/service/node/robot_arm/v1/_/ping/request/**".to_string(),
+            "server_core/*/server_inst/*/service/node/robot_arm/v1/*/ping/request/**".to_string(),
+            "server_core/*/_any_/*/service/node/robot_arm/v1/*/ping/request/**".to_string(),
+            "_any_/*/server_inst/*/service/node/robot_arm/v1/*/ping/request/**".to_string(),
+            "_any_/*/_any_/*/service/node/robot_arm/v1/*/ping/request/**".to_string(),
         ]
     );
 }
@@ -268,11 +270,11 @@ fn service_listen_patterns_action_goal_appends_suffix() {
     let patterns = ZenohWireFormat::service_listen_patterns(&recv);
     assert_eq!(
         patterns[0],
-        "server_core/*/server_inst/*/action/node/robot_arm/v1/_/pick_place/goal/request/**"
+        "server_core/*/server_inst/*/action/node/robot_arm/v1/*/pick_place/goal/request/**"
     );
     assert_eq!(
         patterns[3],
-        "_any_/*/_any_/*/action/node/robot_arm/v1/_/pick_place/goal/request/**"
+        "_any_/*/_any_/*/action/node/robot_arm/v1/*/pick_place/goal/request/**"
     );
 }
 
@@ -283,19 +285,22 @@ fn service_listen_patterns_interface_identity_normalizes_tag() {
     let patterns = ZenohWireFormat::service_listen_patterns(&recv);
     assert_eq!(
         patterns[0],
-        "server_core/*/server_inst/*/service/interface/manipulator/v2_beta/_/ping/request/**"
+        "server_core/*/server_inst/*/service/interface/manipulator/v2_beta/*/ping/request/**"
     );
 }
 
 #[test]
-fn service_listen_patterns_with_concrete_link_id() {
+fn service_listen_patterns_multi_link_id_still_wildcards() {
+    // A producer bound to multiple link_ids uses the same wildcard listen;
+    // the bound set is only consulted at parse time. This is the key
+    // architectural property of Option 3 from the design doc.
     let mut recv = sample_service_receiver(ServiceKind::Service);
-    recv.link_id = seg("wrist_left_camera");
+    recv.link_ids = vec![seg("wrist_left"), seg("wrist_right"), seg("torso")];
     recv.as_identity = iface("depth_camera", "v1");
     let patterns = ZenohWireFormat::service_listen_patterns(&recv);
     assert_eq!(
         patterns[0],
-        "server_core/*/server_inst/*/service/interface/depth_camera/v1/wrist_left_camera/ping/request/**"
+        "server_core/*/server_inst/*/service/interface/depth_camera/v1/*/ping/request/**"
     );
 }
 
@@ -449,14 +454,54 @@ fn parse_received_request_rejects_discriminator_mismatch() {
 
 #[test]
 fn parse_received_request_rejects_link_id_mismatch() {
+    // With wildcard listen, an unbound link_id surfaces as a dedicated
+    // `LinkIdNotBound` error rather than a generic `ServiceRootMismatch`.
+    // The peppylib request loop turns this into the silent-skip path.
     let receiver = sample_service_receiver(ServiceKind::Service);
-    // Receiver bound to default `_`; request carries a different link_id.
     let request = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/wrong_link/ping/request/abc";
     let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::ServiceRootMismatch { .. }
-    ));
+    match err {
+        ZenohWireParseError::LinkIdNotBound { got, bound } => {
+            assert_eq!(got, "wrong_link");
+            assert_eq!(bound, vec!["_".to_string()]);
+        }
+        other => panic!("expected LinkIdNotBound, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_received_request_accepts_request_for_any_bound_link_id() {
+    let mut receiver = sample_service_receiver(ServiceKind::Service);
+    receiver.link_ids = vec![seg("wrist_left"), seg("wrist_right")];
+    receiver.as_identity = iface("depth_camera", "v1");
+
+    let left = "server_core/caller_core/server_inst/caller_inst/service/interface/depth_camera/v1/wrist_left/ping/request/abc";
+    let parsed_left =
+        ZenohWireFormat::parse_received_request(&receiver, left).expect("left should parse");
+    assert_eq!(parsed_left.link_id, "wrist_left");
+    assert_eq!(parsed_left.request_id, "abc");
+    assert!(
+        parsed_left
+            .response_keyexpr
+            .contains("/depth_camera/v1/wrist_left/ping/response/"),
+        "response keyexpr should carry the request's link_id, not pick from the bound set: {}",
+        parsed_left.response_keyexpr
+    );
+
+    let right = "server_core/caller_core/server_inst/caller_inst/service/interface/depth_camera/v1/wrist_right/ping/request/def";
+    let parsed_right =
+        ZenohWireFormat::parse_received_request(&receiver, right).expect("right should parse");
+    assert_eq!(parsed_right.link_id, "wrist_right");
+    assert!(
+        parsed_right
+            .response_keyexpr
+            .contains("/depth_camera/v1/wrist_right/ping/response/"),
+    );
+
+    // Unbound link_id rejected even when the producer is bound to several.
+    let torso = "server_core/caller_core/server_inst/caller_inst/service/interface/depth_camera/v1/torso/ping/request/ghi";
+    let err = ZenohWireFormat::parse_received_request(&receiver, torso).unwrap_err();
+    assert!(matches!(err, ZenohWireParseError::LinkIdNotBound { .. }));
 }
 
 #[test]
@@ -503,7 +548,7 @@ fn sample_action_receiver() -> ActionWireReceiver {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
         as_identity: node("robot_arm", "v1"),
-        link_id: Segment::default_link_id(),
+        link_ids: vec![Segment::default_link_id()],
         as_action_name: seg("pick_place"),
     }
 }
@@ -524,7 +569,7 @@ fn sample_action_sender() -> ActionWireSender {
 fn action_feedback_publish_node_identity() {
     let recv = sample_action_receiver();
     assert_eq!(
-        ZenohWireFormat::action_feedback_publish(&recv, "goal_xyz"),
+        ZenohWireFormat::action_feedback_publish(&recv, "_", "goal_xyz"),
         "*/server_core/*/server_inst/action/node/robot_arm/v1/_/pick_place/feedback/server_inst/goal_xyz"
     );
 }
@@ -534,8 +579,21 @@ fn action_feedback_publish_normalizes_interface_tag() {
     let mut recv = sample_action_receiver();
     recv.as_identity = iface("manipulator", "v1-rc1");
     assert_eq!(
-        ZenohWireFormat::action_feedback_publish(&recv, "goal_xyz"),
+        ZenohWireFormat::action_feedback_publish(&recv, "_", "goal_xyz"),
         "*/server_core/*/server_inst/action/interface/manipulator/v1_rc1/_/pick_place/feedback/server_inst/goal_xyz"
+    );
+}
+
+#[test]
+fn action_feedback_publish_uses_goal_link_id_not_receiver_bound_set() {
+    // Producer is bound to two link_ids (wildcard listen + dispatch filter),
+    // but feedback for a specific goal must address the wire identity the
+    // consumer subscribed under, not pick arbitrarily from the bound set.
+    let mut recv = sample_action_receiver();
+    recv.link_ids = vec![seg("wrist_left"), seg("wrist_right")];
+    assert_eq!(
+        ZenohWireFormat::action_feedback_publish(&recv, "wrist_right", "goal_xyz"),
+        "*/server_core/*/server_inst/action/node/robot_arm/v1/wrist_right/pick_place/feedback/server_inst/goal_xyz"
     );
 }
 
@@ -638,7 +696,7 @@ fn action_feedback_distinguishes_node_and_interface_with_same_name_tag() {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
         as_identity: node("placeholder", "v1"),
-        link_id: Segment::default_link_id(),
+        link_ids: vec![Segment::default_link_id()],
         as_action_name: seg("pick_place"),
     };
     let mut as_node = base.clone();
@@ -646,8 +704,8 @@ fn action_feedback_distinguishes_node_and_interface_with_same_name_tag() {
     let mut as_iface = base;
     as_iface.as_identity = iface("widget", "v1");
 
-    let node_key = ZenohWireFormat::action_feedback_publish(&as_node, "goal_xyz");
-    let iface_key = ZenohWireFormat::action_feedback_publish(&as_iface, "goal_xyz");
+    let node_key = ZenohWireFormat::action_feedback_publish(&as_node, "_", "goal_xyz");
+    let iface_key = ZenohWireFormat::action_feedback_publish(&as_iface, "_", "goal_xyz");
 
     assert_ne!(node_key, iface_key);
     assert!(node_key.contains("/action/node/widget/v1/_/pick_place/"));
@@ -751,7 +809,7 @@ fn parse_received_request_node_receiver_rejects_interface_shaped_request() {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
         as_identity: node("widget", "v1"),
-        link_id: Segment::default_link_id(),
+        link_ids: vec![Segment::default_link_id()],
         as_service_name: seg("ping"),
         kind: ServiceKind::Service,
     };

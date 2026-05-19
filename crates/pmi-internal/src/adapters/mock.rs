@@ -148,13 +148,16 @@ impl MessengerBackend for MockAdapter {
         self.publish_keyexpr(parsed.response_keyexpr, payload).await
     }
 
-    fn parse_service_request_id(
+    fn parse_service_request(
         &self,
         recv: &ServiceWireReceiver,
         received_request: &str,
-    ) -> Result<String> {
+    ) -> Result<super::super::types::ParsedServiceRequest> {
         let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
-        Ok(parsed.request_id)
+        Ok(super::super::types::ParsedServiceRequest {
+            request_id: parsed.request_id,
+            link_id: parsed.link_id,
+        })
     }
 
     async fn subscribe_action_feedback(
@@ -263,10 +266,13 @@ impl MockAdapter {
     pub fn declare_action_feedback_publisher(
         &self,
         recv: &ActionWireReceiver,
+        link_id: &str,
         goal_id: &str,
         _qos: PublisherQoS,
     ) -> MockPublisher {
-        self.declare_publisher_keyexpr(ZenohWireFormat::action_feedback_publish(recv, goal_id))
+        self.declare_publisher_keyexpr(ZenohWireFormat::action_feedback_publish(
+            recv, link_id, goal_id,
+        ))
     }
 
     fn declare_publisher_keyexpr(&self, topic: String) -> MockPublisher {

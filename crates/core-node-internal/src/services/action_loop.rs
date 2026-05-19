@@ -243,8 +243,9 @@ async fn process_goal_request<H: GoalHandler>(
     let handler = handler.clone();
     goal_service
         .handle_next_request(|context| async move {
+            let link_id = context.link_id().to_string();
             let wire = context.message().payload().into_inner();
-            let declared = factory.declare_from_wire(wire).await?;
+            let declared = factory.declare_from_wire(&link_id, wire).await?;
             handler
                 .handle_goal(context, declared.user_payload, declared.publisher, state)
                 .await

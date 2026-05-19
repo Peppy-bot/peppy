@@ -310,15 +310,12 @@ impl PyNodeRunner {
 
     /// Returns the link_ids this producer is bound to. Always returns at
     /// least one entry (the reserved default `_` when no `--link-id` is
-    /// supplied).
+    /// supplied). Generated producer code passes this directly to
+    /// `peppylib.ServiceMessenger.listen` / `ActionMessenger.expose` /
+    /// `TopicMessenger.emit` so the wildcard-listen + dispatch-filter
+    /// machinery sees the full bound set.
     fn link_ids(&self) -> Vec<String> {
         self.inner.processor().link_ids().to_vec()
-    }
-
-    /// Convenience for the single-link_id case: returns the first bound
-    /// link_id.
-    fn first_link_id(&self) -> &str {
-        self.inner.processor().first_link_id()
     }
 }
 

@@ -25,6 +25,7 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
+        &[],
         names::STACK_LIST,
     )
     .await

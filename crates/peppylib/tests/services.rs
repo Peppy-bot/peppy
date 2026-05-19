@@ -34,6 +34,7 @@ async fn service_messenger_communication() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        &[],
         service_name,
     )
     .await
@@ -57,6 +58,7 @@ async fn service_messenger_communication() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        None,
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -110,6 +112,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        &[],
         service_name,
     )
     .await
@@ -131,6 +134,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
+        &[],
         service_name,
     )
     .await
@@ -155,6 +159,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        None,
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -175,6 +180,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
+        None,
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -223,6 +229,7 @@ async fn service_iface_tag_hyphen_normalized() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, "v2-stable").expect("test target"),
+        &[],
         service_name,
     )
     .await
@@ -244,6 +251,7 @@ async fn service_iface_tag_hyphen_normalized() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, "v2_stable").expect("test target"),
+        None,
         service_name,
         Some(core_node),
         Some(instance_id),

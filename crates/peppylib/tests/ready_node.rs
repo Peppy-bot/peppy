@@ -53,6 +53,7 @@ async fn ready_node() {
             &client.core_node_name,
             CALLER_INSTANCE_ID,
             test_node_target(TEST_NODE_NAME),
+            None,
             peppylib::messaging::NODE_READY_SERVICE,
             to_core_node,
             to_instance_id,

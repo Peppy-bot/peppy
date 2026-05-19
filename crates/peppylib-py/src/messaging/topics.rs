@@ -95,7 +95,7 @@ impl PyTopicMessenger {
         let handle = messenger.inner.clone();
         let from_target = from_target.map(|t| t.into_inner());
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let subscription = TopicMessenger::subscribe_with_link_id(
+            let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
@@ -149,52 +149,15 @@ impl PyTopicMessenger {
         })
     }
 
-    /// Emit (publish) a message to a topic. Pass `SenderTarget.node(name, tag)`
-    /// or `SenderTarget.interface(name, tag)`. `link_id` `None` falls back to
-    /// the reserved default `_` segment; producers generated against an
-    /// interface fan out by iterating their bound link_ids.
-    #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, payload, link_id=None))]
-    #[allow(clippy::too_many_arguments)]
-    fn emit<'py>(
-        py: Python<'py>,
-        messenger: &PyMessengerHandle,
-        as_core_node: String,
-        as_instance_id: String,
-        as_target: PySenderTarget,
-        as_topic_name: String,
-        qos: PyQoSProfile,
-        payload: Vec<u8>,
-        link_id: Option<String>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let handle = messenger.inner.clone();
-        let as_target = as_target.into_inner();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            TopicMessenger::emit_with_link_id(
-                &handle,
-                &as_core_node,
-                &as_instance_id,
-                as_target,
-                link_id.as_deref(),
-                &as_topic_name,
-                qos.into(),
-                Payload::from(payload),
-            )
-            .await
-            .map_err(to_py_err)?;
-
-            Ok(())
-        })
-    }
-
-    /// Emit a single payload across multiple bound link_ids in one call.
-    /// Generated Python producer code uses this instead of a Python-side
-    /// fan-out loop, avoiding N PyO3 boundary crossings (each of which
-    /// would copy the full payload).
+    /// Emit (publish) a message to a topic across the given bound link_ids.
+    /// One wire publish per link_id (Zenoh `put` keyexprs can't carry
+    /// wildcards). Pass `SenderTarget.node(name, tag)` or
+    /// `SenderTarget.interface(name, tag)`. An empty `link_ids` list is
+    /// normalized to the reserved default `_` segment.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, link_ids, as_topic_name, qos, payload))]
     #[allow(clippy::too_many_arguments)]
-    fn emit_fan_out<'py>(
+    fn emit<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
@@ -208,7 +171,7 @@ impl PyTopicMessenger {
         let handle = messenger.inner.clone();
         let as_target = as_target.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            TopicMessenger::emit_fan_out(
+            TopicMessenger::emit(
                 &handle,
                 &as_core_node,
                 &as_instance_id,

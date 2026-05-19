@@ -345,13 +345,12 @@ pub fn build_exposed_service_method(
             where
                 F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
             {
-                // FIXME(link-id-fanout): binds the first link_id only.
-                let mut service = peppylib::ServiceMessenger::listen_with_link_id(
+                let mut service = peppylib::ServiceMessenger::listen(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     #target_expr,
-                    Some(node_runner.processor().first_link_id()),
+                    node_runner.processor().link_ids(),
                     #service_name_ref,
                 )
                 .await?;
@@ -397,13 +396,12 @@ pub fn build_exposed_service_method(
                 #service_instance_env_stmt
                 #service_name_binding
 
-                // FIXME(link-id-fanout): binds the first link_id only.
-                let mut service = peppylib::ServiceMessenger::listen_with_link_id(
+                let mut service = peppylib::ServiceMessenger::listen(
                     node_runner.messenger(),
                     node_runner.core_node(),
                     service_instance_id.as_str(),
                     #target_expr,
-                    Some(node_runner.processor().first_link_id()),
+                    node_runner.processor().link_ids(),
                     service_name,
                 )
                 .await?;

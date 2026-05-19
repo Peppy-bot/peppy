@@ -13,6 +13,7 @@ use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err
 #[pyclass(name = "ServiceRequestContext")]
 pub struct PyServiceRequestContext {
     request_id: String,
+    link_id: String,
     payload: Vec<u8>,
     instance_id: String,
     core_node: String,
@@ -23,6 +24,11 @@ impl PyServiceRequestContext {
     #[getter]
     fn request_id(&self) -> &str {
         &self.request_id
+    }
+
+    #[getter]
+    fn link_id(&self) -> &str {
+        &self.link_id
     }
 
     #[getter]
@@ -54,9 +60,11 @@ impl PyServiceRequestContext {
 impl From<ServiceRequestContext> for PyServiceRequestContext {
     fn from(ctx: ServiceRequestContext) -> Self {
         let request_id = ctx.request_id().to_string();
+        let link_id = ctx.link_id().to_string();
         let message = ctx.message();
         Self {
             request_id,
+            link_id,
             payload: message.payload().to_vec(),
             instance_id: message.instance_id().to_string(),
             core_node: message.core_node().to_string(),
@@ -153,7 +161,7 @@ impl PyServiceMessenger {
     /// `link_id` `None` falls back to the reserved default `_` segment;
     /// generated producers fan out by calling `listen` once per bound link_id.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_service_name, link_id=None))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, link_ids, as_service_name))]
     #[allow(clippy::too_many_arguments)]
     fn listen<'py>(
         py: Python<'py>,
@@ -161,18 +169,18 @@ impl PyServiceMessenger {
         as_core_node: String,
         as_instance_id: String,
         as_identity: PySenderTarget,
+        link_ids: Vec<String>,
         as_service_name: String,
-        link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_identity = as_identity.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let endpoint = ServiceMessenger::listen_with_link_id(
+            let endpoint = ServiceMessenger::listen(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 as_identity,
-                link_id.as_deref(),
+                &link_ids,
                 &as_service_name,
             )
             .await
@@ -201,7 +209,7 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let reachable = ServiceMessenger::is_reachable_with_link_id(
+            let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
@@ -239,7 +247,7 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let response = ServiceMessenger::poll_with_link_id(
+            let response = ServiceMessenger::poll(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,

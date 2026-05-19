@@ -73,17 +73,19 @@ pub struct PyActionFeedbackPublisherFactory {
 #[pymethods]
 impl PyActionFeedbackPublisherFactory {
     /// Standard server-side entry point used by the Python codegen. Unwraps
-    /// the wire envelope, declares a per-goal publisher, and returns
+    /// the wire envelope, declares a per-goal publisher scoped to the
+    /// link_id the consumer targeted, and returns
     /// `(publisher, goal_id, user_payload)`.
     fn declare_from_wire<'py>(
         &self,
         py: Python<'py>,
+        link_id: String,
         wire: Vec<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let factory = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let declared = factory
-                .declare_from_wire(Bytes::from(wire))
+                .declare_from_wire(&link_id, Bytes::from(wire))
                 .await
                 .map_err(to_py_err)?;
             Ok((
@@ -198,7 +200,7 @@ impl PyActionMessenger {
     /// Pass `SenderTarget.node(name, tag)` for nodes or
     /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_action_name, link_id=None))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, link_ids, as_action_name))]
     #[allow(clippy::too_many_arguments)]
     fn expose<'py>(
         py: Python<'py>,
@@ -206,18 +208,18 @@ impl PyActionMessenger {
         as_core_node: String,
         as_instance_id: String,
         as_identity: PySenderTarget,
+        link_ids: Vec<String>,
         as_action_name: String,
-        link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_identity = as_identity.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let creation = ActionMessenger::expose_with_link_id(
+            let creation = ActionMessenger::expose(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 as_identity,
-                link_id.as_deref(),
+                &link_ids,
                 &as_action_name,
             )
             .await
@@ -259,7 +261,7 @@ impl PyActionMessenger {
         let to_target = to_target.into_inner();
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let goal_handle = ActionMessenger::send_goal_with_link_id(
+            let goal_handle = ActionMessenger::send_goal(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
@@ -358,7 +360,7 @@ impl PyActionMessenger {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let reachable = ActionMessenger::is_reachable_with_link_id(
+            let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,

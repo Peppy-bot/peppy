@@ -10,7 +10,8 @@ use tokio::sync::oneshot;
 
 use crate::error::Error;
 use crate::messaging::{
-    ActionMessenger, MessengerHandle, SenderTarget, ServiceMessenger, TopicMessenger,
+    ActionMessenger, MessengerHandle, NonEmptyPayload, SenderTarget, ServiceMessenger,
+    TopicMessenger,
 };
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
@@ -122,6 +123,7 @@ async fn topic_publish_subscribe_no_from_instance_id() {
         subscriber_core_node,
         subscriber_instance_id,
         Some(test_node_target(node_name)),
+        None,
         topic,
         None, // Accepts any core node that emits
         None, // Accepts any instance id that emits
@@ -141,6 +143,7 @@ async fn topic_publish_subscribe_no_from_instance_id() {
         emitter_core_node,
         emitter_instance_id,
         test_node_target(node_name),
+        &[],
         topic,
         qos,
         payload.clone(),
@@ -188,6 +191,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         subscriber_core_node,
         subscriber_instance_id1,
         Some(test_node_target(node_name)),
+        None,
         topic,
         Some(emitter_core_node),
         Some(emitter_instance_id1),
@@ -203,6 +207,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         subscriber_core_node,
         subscriber_instance_id2,
         Some(test_node_target(node_name)),
+        None,
         topic,
         Some(emitter_core_node),
         Some(emitter_instance_id2),
@@ -220,6 +225,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         emitter_core_node,
         emitter_instance_id2,
         test_node_target(node_name),
+        &[],
         topic,
         qos,
         payload.clone(),
@@ -275,6 +281,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
         subscriber_core_node1,
         subscriber_instance_id,
         Some(test_node_target(node_name)),
+        None,
         topic,
         Some(emitter_core_node1),
         Some(emitter_instance_id),
@@ -290,6 +297,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
         subscriber_core_node2,
         subscriber_instance_id,
         Some(test_node_target(node_name)),
+        None,
         topic,
         Some(emitter_core_node2),
         Some(emitter_instance_id),
@@ -307,6 +315,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
         emitter_core_node2,
         emitter_instance_id,
         test_node_target(node_name),
+        &[],
         topic,
         qos,
         payload.clone(),
@@ -353,6 +362,7 @@ async fn topic_publish_reliable_5000hz_messages() {
         subscriber_core_node,
         subscriber_instance_id,
         Some(test_node_target(node_name)),
+        None,
         topic,
         None,
         None,
@@ -378,6 +388,7 @@ async fn topic_publish_reliable_5000hz_messages() {
             emitter_core_node,
             emitter_instance_id,
             test_node_target(node_name),
+            &[],
             topic,
             qos.clone(),
             payload,
@@ -469,6 +480,7 @@ async fn service_communication_poll_no_instance_id_target() {
             listener_core_node1,
             listener_instance_id1,
             test_node_target(listener_node_name),
+            &[],
             listener_service_name,
         )
         .await
@@ -515,6 +527,7 @@ async fn service_communication_poll_no_instance_id_target() {
             listener_core_node2,
             listener_instance_id2,
             test_node_target(listener_node_name),
+            &[],
             listener_service_name,
         )
         .await
@@ -575,6 +588,7 @@ async fn service_communication_poll_no_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
+            None,
             listener_service_name,
             None, // Here we don't specify any node
             None, // We don't specify any instance_id target either
@@ -648,6 +662,7 @@ async fn service_communication_poll_specific_instance_id() {
             listener_core_node1,
             listener_instance_id1,
             test_node_target(listener_node_name),
+            &[],
             listener_service_name,
         )
         .await
@@ -683,6 +698,7 @@ async fn service_communication_poll_specific_instance_id() {
             listener_core_node2,
             listener_instance_id2,
             test_node_target(listener_node_name),
+            &[],
             listener_service_name,
         )
         .await
@@ -741,6 +757,7 @@ async fn service_communication_poll_specific_instance_id() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
+            None,
             listener_service_name,
             None,                        // Here we don't specify any target core node
             Some(listener_instance_id2), // We specify listener_instance_id2 as the target
@@ -810,6 +827,7 @@ async fn service_communication_poll_wrong_node() {
             listener_core_node,
             listener_instance_id,
             test_node_target(listener_node_name),
+            &[],
             listener_service_name,
         )
         .await
@@ -858,6 +876,7 @@ async fn service_communication_poll_wrong_node() {
                 CALLER_CORE_NODE,
                 CALLER_INSTANCE_ID,
                 test_node_target(listener_node_name),
+                None,
                 listener_service_name,
                 None,               // to_core_node
                 Some("wrong_node"), // Use a wrong instance_id here
@@ -942,6 +961,7 @@ async fn service_communication_poll_wrong_core_node() {
             listener_core_node,
             listener_instance_id,
             test_node_target(listener_node_name),
+            &[],
             listener_service_name,
         )
         .await
@@ -989,6 +1009,7 @@ async fn service_communication_poll_wrong_core_node() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
+            None,
             listener_service_name,
             Some("wrong_core_node"), // to_core_node - wrong one!
             None,                    // no specific to_instance_id
@@ -1050,6 +1071,7 @@ async fn service_communication_fails_service_not_started() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
+            None,
             listener_service_name,
             None,
             None,
@@ -1114,6 +1136,7 @@ async fn service_communication_fails_service_timeouts() {
             listener_core_node,
             listener_instance_id,
             test_node_target(listener_node_name),
+            &[],
             listener_service_name,
         )
         .await
@@ -1175,6 +1198,7 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
+            None,
             listener_service_name,
             None,
             None,
@@ -1195,6 +1219,7 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
+            None,
             listener_service_name,
             None,
             None,
@@ -1274,6 +1299,7 @@ async fn service_handle_request_processes_multiple_messages() {
             listener_core_node,
             listener_instance_id,
             test_node_target(listener_node_name),
+            &[],
             listener_service_name,
         )
         .await
@@ -1315,6 +1341,7 @@ async fn service_handle_request_processes_multiple_messages() {
                 CALLER_CORE_NODE,
                 CALLER_INSTANCE_ID,
                 test_node_target(listener_node_name),
+                None,
                 listener_service_name,
                 None,
                 Some(listener_instance_id),
@@ -1377,6 +1404,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
             listener_core_node,
             listener_instance_id,
             test_node_target(listener_node_name),
+            &[],
             listener_service_name,
         )
         .await
@@ -1457,6 +1485,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         CALLER_CORE_NODE,
                         &caller_id,
                         test_node_target(listener_node_name),
+                        None,
                         listener_service_name,
                         None,
                         Some(listener_instance_id),
@@ -1557,6 +1586,7 @@ async fn action_communication_no_instance_id_target() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 test_node_target(listener_node_name),
+                &[],
                 listener_action_name,
             )
             .await
@@ -1574,7 +1604,7 @@ async fn action_communication_no_instance_id_target() {
                 let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
                 async move {
                     let declared = factory
-                        .declare_from_wire(request.message().payload().into_inner())
+                        .declare_from_wire("_", request.message().payload().into_inner())
                         .await
                         .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
@@ -1654,6 +1684,7 @@ async fn action_communication_no_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
+            None,
             listener_action_name,
             None, // No target core_id
             None, // No target instance_id
@@ -1743,6 +1774,7 @@ async fn action_communication_with_instance_id_target() {
                 LISTENER_CORE_NODE1,
                 LISTENER_INSTANCE_ID1,
                 test_node_target(listener_node_name),
+                &[],
                 listener_action_name,
             )
             .await
@@ -1790,6 +1822,7 @@ async fn action_communication_with_instance_id_target() {
                 LISTENER_CORE_NODE2,
                 LISTENER_INSTANCE_ID2,
                 test_node_target(listener_node_name),
+                &[],
                 listener_action_name,
             )
             .await
@@ -1807,7 +1840,7 @@ async fn action_communication_with_instance_id_target() {
                 let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
                 async move {
                     let declared = factory
-                        .declare_from_wire(request.message().payload().into_inner())
+                        .declare_from_wire("_", request.message().payload().into_inner())
                         .await
                         .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
@@ -1887,6 +1920,7 @@ async fn action_communication_with_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
+            None,
             listener_action_name,
             Some(LISTENER_CORE_NODE2),
             Some(LISTENER_INSTANCE_ID2),
@@ -1981,6 +2015,7 @@ async fn action_communication_goal_cancelled() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 test_node_target(listener_node_name),
+                &[],
                 listener_action_name,
             )
             .await
@@ -1998,7 +2033,7 @@ async fn action_communication_goal_cancelled() {
                 let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
                 async move {
                     let declared = factory
-                        .declare_from_wire(request.message().payload().into_inner())
+                        .declare_from_wire("_", request.message().payload().into_inner())
                         .await
                         .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
@@ -2104,6 +2139,7 @@ async fn action_communication_goal_cancelled() {
         CALLER_CORE_NODE,
         CALLER_INSTANCE_ID,
         test_node_target(listener_node_name),
+        None,
         listener_action_name,
         Some(LISTENER_CORE_NODE),
         Some(LISTENER_INSTANCE_ID),
@@ -2236,6 +2272,7 @@ async fn single_action_communication_multiple_polls() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 test_node_target(listener_node_name),
+                &[],
                 listener_action_name,
             )
             .await
@@ -2267,7 +2304,7 @@ async fn single_action_communication_multiple_polls() {
 
                         async move {
                             let declared = factory
-                                .declare_from_wire(request.message().payload().into_inner())
+                                .declare_from_wire("_", request.message().payload().into_inner())
                                 .await
                                 .expect("declare from wire");
                             let payload_str = std::str::from_utf8(&declared.user_payload)
@@ -2372,6 +2409,7 @@ async fn single_action_communication_multiple_polls() {
                 CALLER_CORE_NODE,
                 &case.client_id,
                 test_node_target(listener_node_name),
+                None,
                 listener_action_name,
                 None,
                 None,
@@ -2435,6 +2473,369 @@ async fn single_action_communication_multiple_polls() {
         .await
         .expect("action handler task panicked")
         .expect("action handler returned error");
+
+    router.shutdown().await;
+}
+
+// ─── link_id wildcard-listen + dispatch-filter ─────────────────────────────
+//
+// These tests pin the producer-side fan-out behavior introduced by the
+// `feature/depends-on-interfaces` branch's Option 3 (wildcard listen + filter
+// against bound link_ids). Cross-talk, ACK ordering, and per-goal feedback
+// routing are the failure modes the design has to not introduce — each gets
+// a dedicated test below.
+
+const LINK_LEFT: &str = "wrist_left";
+const LINK_RIGHT: &str = "wrist_right";
+const LINK_TORSO: &str = "torso";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_listen_dispatches_under_each_bound_link_id() {
+    // Producer binds two link_ids on one listen call. Two consumers pin to
+    // different link_ids; both must reach the same handler and receive the
+    // response addressed to their pinned link_id. Plain happy path.
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
+    let server_handle = router.messenger().await;
+    let mut endpoint = ServiceMessenger::listen(
+        &server_handle,
+        "server_core",
+        "server_inst",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        &bound,
+        "start_recording",
+    )
+    .await
+    .expect("listen should succeed");
+
+    let server_task = tokio::spawn(async move {
+        for _ in 0..2 {
+            endpoint
+                .handle_next_request(|ctx| {
+                    let link_id = ctx.link_id().to_string();
+                    async move { Ok(Payload::from(link_id.into_bytes())) }
+                })
+                .await
+                .expect("handle_next_request should succeed");
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = router.messenger().await;
+    let response_left = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core",
+        "caller_inst_left",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        Some(LINK_LEFT),
+        "start_recording",
+        Some("server_core"),
+        Some("server_inst"),
+        Payload::from_static(b"go"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("left poll should succeed");
+    assert_eq!(response_left.payload().as_ref(), LINK_LEFT.as_bytes());
+
+    let response_right = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core",
+        "caller_inst_right",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        Some(LINK_RIGHT),
+        "start_recording",
+        Some("server_core"),
+        Some("server_inst"),
+        Payload::from_static(b"go"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("right poll should succeed");
+    assert_eq!(response_right.payload().as_ref(), LINK_RIGHT.as_bytes());
+
+    server_task.await.expect("server task should not panic");
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
+    // Producer binds only LINK_LEFT. A consumer pins to LINK_TORSO. The
+    // wildcard listener delivers the request but parse_received_request
+    // rejects it with `LinkIdNotBound`, which becomes the
+    // `InvalidServiceRequest` silent-skip path inside ServiceEndpoint.
+    // The consumer must surface `ServiceUnreachable` (no ACK seen) and the
+    // handler must NEVER fire.
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string()];
+    let server_handle = router.messenger().await;
+    let mut endpoint = ServiceMessenger::listen(
+        &server_handle,
+        "server_core",
+        "server_inst",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        &bound,
+        "start_recording",
+    )
+    .await
+    .expect("listen should succeed");
+
+    let handler_fired = Arc::new(AtomicUsize::new(0));
+    let handler_fired_clone = Arc::clone(&handler_fired);
+    let server_task = tokio::spawn(async move {
+        // Race a request loop against a shutdown signal: the dispatch filter
+        // should drop the unbound-link_id request without firing the handler,
+        // so handle_next_request would block forever. We bail out after a
+        // wall-clock budget; if the handler ever runs the counter trips.
+        let _ = tokio::time::timeout(
+            Duration::from_millis(500),
+            endpoint.handle_next_request(move |_ctx| {
+                let fired = Arc::clone(&handler_fired_clone);
+                async move {
+                    fired.fetch_add(1, Ordering::SeqCst);
+                    Ok(Payload::from_static(b"unexpected"))
+                }
+            }),
+        )
+        .await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = router.messenger().await;
+    let err = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core",
+        "caller_inst_torso",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        Some(LINK_TORSO),
+        "start_recording",
+        Some("server_core"),
+        Some("server_inst"),
+        Payload::from_static(b"go"),
+        Duration::from_millis(250),
+    )
+    .await
+    .expect_err("poll to unbound link_id must not succeed");
+    match err {
+        Error::ServiceUnreachable { .. } => {}
+        other => panic!("expected ServiceUnreachable, got {other:?}"),
+    }
+    assert_eq!(
+        handler_fired.load(Ordering::SeqCst),
+        0,
+        "user handler must not run for an unbound link_id"
+    );
+    server_task.await.expect("server task panicked");
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn action_feedback_routes_per_goal_link_id() {
+    // One producer binds two link_ids. Two consumers send goals targeting
+    // different link_ids. The producer's per-goal feedback must address
+    // each consumer's pinned link_id — a regression of this routing would
+    // either deliver feedback to the wrong consumer or fail to deliver at
+    // all (an invalid keyexpr containing `*`).
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
+    let server_handle = router.messenger().await;
+    let action = ActionMessenger::expose(
+        &server_handle,
+        "server_core",
+        "server_inst",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        &bound,
+        "record",
+    )
+    .await
+    .expect("expose should succeed");
+
+    let mut goal_service = action.goal_service;
+    let mut cancel_service = action.cancel_service;
+    let mut result_service = action.result_service;
+    let factory = action.feedback_publisher_factory;
+
+    // Handle two goals: each emits one feedback message echoing the
+    // observed link_id, then accepts the result request and closes.
+    let server_task = tokio::spawn(async move {
+        for _ in 0..2 {
+            // goal
+            let (ctx, responder) = goal_service
+                .recv_next_request()
+                .await
+                .expect("goal recv")
+                .expect("goal closed");
+            let link_id = ctx.link_id().to_string();
+            let wire = ctx.message().payload().into_inner();
+            let declared = factory
+                .declare_from_wire(&link_id, wire)
+                .await
+                .expect("declare_from_wire");
+            responder
+                .respond(Payload::from(format!("accepted={link_id}").into_bytes()))
+                .await
+                .expect("goal respond");
+            declared
+                .publisher
+                .publish(
+                    NonEmptyPayload::try_new(Payload::from(
+                        format!("feedback={link_id}").into_bytes(),
+                    ))
+                    .expect("non-empty feedback"),
+                )
+                .await
+                .expect("feedback publish");
+
+            // Result request closes the feedback stream and answers.
+            let (_result_ctx, result_responder) = result_service
+                .recv_next_request()
+                .await
+                .expect("result recv")
+                .expect("result closed");
+            // Send end-of-stream so the consumer's feedback loop terminates.
+            declared.publisher.publish_end().await.expect("publish_end");
+            result_responder
+                .respond(Payload::from(format!("result={link_id}").into_bytes()))
+                .await
+                .expect("result respond");
+        }
+        // Drain any spurious cancel deliveries (none expected).
+        let _ = tokio::time::timeout(
+            Duration::from_millis(50),
+            cancel_service.recv_next_request(),
+        )
+        .await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let exercise_link = |link_id: &'static str| {
+        let caller_handle = router.messenger();
+        async move {
+            let caller_handle = caller_handle.await;
+            let mut goal_handle = ActionMessenger::send_goal(
+                &caller_handle,
+                "caller_core",
+                &format!("caller_inst_{link_id}"),
+                SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+                Some(link_id),
+                "record",
+                Some("server_core"),
+                Some("server_inst"),
+                Payload::from_static(b"start"),
+                QoSProfile::Reliable,
+                Duration::from_secs(2),
+            )
+            .await
+            .expect("send_goal should succeed");
+
+            let goal_response = goal_handle.goal_response().payload().as_ref().to_vec();
+            assert_eq!(
+                goal_response,
+                format!("accepted={link_id}").into_bytes(),
+                "goal response should echo the targeted link_id"
+            );
+
+            let feedback = goal_handle
+                .on_next_feedback()
+                .await
+                .expect("feedback should be delivered");
+            assert_eq!(
+                feedback.payload().as_ref(),
+                format!("feedback={link_id}").as_bytes(),
+                "feedback must be scoped to the consumer's link_id, not crossed"
+            );
+
+            let result = ActionMessenger::request_result(
+                &caller_handle,
+                &goal_handle,
+                Duration::from_secs(2),
+            )
+            .await
+            .expect("request_result should succeed");
+            assert_eq!(
+                result.payload().as_ref(),
+                format!("result={link_id}").as_bytes(),
+                "result must come from the same link_id-scoped goal cycle"
+            );
+        }
+    };
+
+    // Sequence the two consumers so the producer task's `for _ in 0..2` is
+    // deterministic; a parallel issue would let the producer pick up goals
+    // in either order.
+    exercise_link(LINK_LEFT).await;
+    exercise_link(LINK_RIGHT).await;
+
+    server_task.await.expect("server task panicked");
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn topic_emit_fans_out_to_every_bound_link_id() {
+    // One emit on the producer side becomes N wire publishes. Two
+    // consumers pin to different link_ids; each must receive its own
+    // copy with the correct link_id in the wire path.
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
+
+    let subscriber_handle = router.messenger().await;
+    let mut sub_left = TopicMessenger::subscribe(
+        &subscriber_handle,
+        "sub_core",
+        "sub_inst_left",
+        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
+        Some(LINK_LEFT),
+        "frames",
+        None,
+        None,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("left subscribe should succeed");
+    let mut sub_right = TopicMessenger::subscribe(
+        &subscriber_handle,
+        "sub_core",
+        "sub_inst_right",
+        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
+        Some(LINK_RIGHT),
+        "frames",
+        None,
+        None,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("right subscribe should succeed");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let emitter_handle = router.messenger().await;
+    TopicMessenger::emit(
+        &emitter_handle,
+        "pub_core",
+        "pub_inst",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        &bound,
+        "frames",
+        QoSProfile::Reliable,
+        Payload::from_static(b"frame-0"),
+    )
+    .await
+    .expect("emit should succeed");
+
+    let recv_left = tokio::time::timeout(Duration::from_secs(2), sub_left.on_next_message())
+        .await
+        .expect("left subscriber should not time out")
+        .expect("left subscriber should receive a message");
+    assert_eq!(recv_left.payload().as_ref(), b"frame-0");
+
+    let recv_right = tokio::time::timeout(Duration::from_secs(2), sub_right.on_next_message())
+        .await
+        .expect("right subscriber should not time out")
+        .expect("right subscriber should receive a message");
+    assert_eq!(recv_right.payload().as_ref(), b"frame-0");
 
     router.shutdown().await;
 }

@@ -160,16 +160,18 @@ impl MessengerHandle {
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    /// Pre-bind a per-goal action-feedback publisher.
+    /// Pre-bind a per-goal action-feedback publisher under the link_id the
+    /// consumer targeted in the goal request.
     pub(crate) async fn declare_action_feedback_publisher(
         &self,
         recv: &ActionWireReceiver,
+        link_id: &str,
         goal_id: &str,
         qos: PublisherQoS,
     ) -> Result<MessengerPublisher> {
         let messenger = self.messenger.lock().await;
         messenger
-            .declare_action_feedback_publisher(recv, goal_id, qos)
+            .declare_action_feedback_publisher(recv, link_id, goal_id, qos)
             .map_err(Error::PeppyMessagingInterface)
     }
 

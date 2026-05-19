@@ -97,6 +97,7 @@ pub async fn listen_for_stack_launch(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        &[],
         names::STACK_LAUNCH_ACTION,
     )
     .await?;

@@ -179,15 +179,17 @@ pub fn build_exposed_service(
     builder.indent();
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
-    // FIXME(link-id-fanout): binds the first link_id only.
+    // Listener wildcards the link_id wire slot; the dispatch filter in
+    // peppylib drops requests outside the bound set, so one listen call
+    // serves every bound link_id.
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
+    builder.line("node_runner.link_ids(),");
     builder.line("SERVICE_NAME,");
-    builder.line("link_id=node_runner.first_link_id(),");
     builder.dedent();
     builder.line(")");
 

@@ -32,7 +32,6 @@ async fn main() {
         SenderTarget::node(node_name, "v1").expect("test target"),
         topic_name,
         None,
-        None,
         qos,
     )
     .await

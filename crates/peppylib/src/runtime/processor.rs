@@ -187,13 +187,6 @@ impl Processor {
     pub fn link_ids(&self) -> &[String] {
         &self.runtime_config.node_instance.link_ids
     }
-
-    /// Convenience for the single-link_id case: returns the first bound
-    /// link_id. Used by producer-side service/action exposes that don't
-    /// (yet) fan out across multiple link_ids.
-    pub fn first_link_id(&self) -> &str {
-        &self.runtime_config.node_instance.link_ids[0]
-    }
 }
 
 /// Mutates `link_ids` in place so it always contains at least one entry. An

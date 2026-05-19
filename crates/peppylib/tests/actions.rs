@@ -41,6 +41,7 @@ async fn action_messenger_communication() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        &[],
         action_name,
     )
     .await
@@ -70,7 +71,7 @@ async fn action_messenger_communication() {
                 async move {
                     let wire = req_ctx.message().payload().into_inner();
                     let declared = factory
-                        .declare_from_wire(wire)
+                        .declare_from_wire("_", wire)
                         .await
                         .expect("declare from wire");
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
@@ -106,6 +107,7 @@ async fn action_messenger_communication() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        None,
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -176,6 +178,7 @@ async fn setup_goal_handshake(
         core_node,
         instance_id,
         test_node_target(node_name),
+        &[],
         action_name,
     )
     .await
@@ -196,7 +199,7 @@ async fn setup_goal_handshake(
                 async move {
                     let wire = req_ctx.message().payload().into_inner();
                     let declared = factory
-                        .declare_from_wire(wire)
+                        .declare_from_wire("_", wire)
                         .await
                         .expect("declare from wire");
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
@@ -218,6 +221,7 @@ async fn setup_goal_handshake(
         core_node,
         instance_id,
         test_node_target(node_name),
+        None,
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -397,6 +401,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        &[],
         action_name,
     )
     .await
@@ -406,6 +411,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
+        &[],
         action_name,
     )
     .await
@@ -430,7 +436,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
                     let kept = Arc::clone(&kept);
                     async move {
                         let declared = factory
-                            .declare_from_wire(req.message().payload().into_inner())
+                            .declare_from_wire("_", req.message().payload().into_inner())
                             .await
                             .expect("declare_from_wire");
                         kept.lock().unwrap().replace(declared.publisher);
@@ -457,6 +463,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        None,
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -477,6 +484,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
+        None,
         action_name,
         Some(core_node),
         Some(instance_id),

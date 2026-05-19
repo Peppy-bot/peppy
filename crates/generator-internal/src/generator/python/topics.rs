@@ -112,7 +112,7 @@ pub fn build_emitted_topic(
 
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
-    builder.line("await peppylib.TopicMessenger.emit_fan_out(");
+    builder.line("await peppylib.TopicMessenger.emit(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");

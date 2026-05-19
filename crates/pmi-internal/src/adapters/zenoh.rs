@@ -369,13 +369,16 @@ impl MessengerBackend for ZenohAdapter {
             .await
     }
 
-    fn parse_service_request_id(
+    fn parse_service_request(
         &self,
         recv: &ServiceWireReceiver,
         received_request: &str,
-    ) -> Result<String> {
+    ) -> Result<crate::types::ParsedServiceRequest> {
         let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
-        Ok(parsed.request_id)
+        Ok(crate::types::ParsedServiceRequest {
+            request_id: parsed.request_id,
+            link_id: parsed.link_id,
+        })
     }
 
     async fn subscribe_action_feedback(
@@ -435,10 +438,14 @@ impl ZenohAdapter {
     pub fn declare_action_feedback_publisher(
         &self,
         recv: &ActionWireReceiver,
+        link_id: &str,
         goal_id: &str,
         qos: PublisherQoS,
     ) -> Result<ZenohPublisher> {
-        self.declare_publisher_keyexpr(ZenohWireFormat::action_feedback_publish(recv, goal_id), qos)
+        self.declare_publisher_keyexpr(
+            ZenohWireFormat::action_feedback_publish(recv, link_id, goal_id),
+            qos,
+        )
     }
 
     fn declare_publisher_keyexpr(

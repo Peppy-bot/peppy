@@ -196,6 +196,7 @@ pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
             core_node,
             names::CORE_NODE_TAG,
         )?),
+        None,
         names::CLOCK,
         Some(core_node),
         None,

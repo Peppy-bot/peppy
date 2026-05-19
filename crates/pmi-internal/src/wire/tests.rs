@@ -171,7 +171,7 @@ fn sample_action_receiver() -> ActionWireReceiver {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
         as_identity: SenderTarget::interface("manipulator", "v1").expect("valid interface target"),
-        link_id: Segment::default_link_id(),
+        link_ids: vec![Segment::default_link_id()],
         as_action_name: seg("pick_place"),
     }
 }

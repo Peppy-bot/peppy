@@ -85,6 +85,16 @@ impl From<QoSProfile> for SubscriberQoS {
     }
 }
 
+/// Result of parsing a received service request keyexpr. Returned by
+/// [`MessengerBackend::parse_service_request`] so peppylib can correlate the
+/// response, route per-goal action feedback under the right link_id, and
+/// surface the link_id to user handlers without re-parsing the wire string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedServiceRequest {
+    pub request_id: String,
+    pub link_id: String,
+}
+
 /// Defines the messaging interface.
 ///
 /// All methods take addressing structs from [`crate::wire`] rather than raw
@@ -143,13 +153,15 @@ pub trait MessengerBackend {
     ) -> impl Future<Output = Result<()>> + Send;
 
     /// Parses a received request keyexpr against the receiver's expected
-    /// shape and returns the request_id. Server-side handlers use this to
-    /// correlate requests with responses without seeing raw keyexpressions.
-    fn parse_service_request_id(
+    /// shape and returns the request_id plus the parsed link_id. Server-side
+    /// handlers use this to correlate requests with responses, route per-goal
+    /// action feedback under the requested link_id, and drop requests that
+    /// the wildcard listener delivered for unbound link_ids.
+    fn parse_service_request(
         &self,
         recv: &ServiceWireReceiver,
         received_request: &str,
-    ) -> Result<String>;
+    ) -> Result<ParsedServiceRequest>;
 
     // ─── Actions ──────────────────────────────────────────────────────────
 
@@ -456,20 +468,24 @@ impl Messenger {
 
     /// Pre-bind a per-goal action-feedback publisher. Mirrors
     /// [`declare_topic_publisher`](Self::declare_topic_publisher) for action
-    /// feedback streams keyed by `goal_id`.
+    /// feedback streams keyed by `goal_id`. `link_id` is the link_id parsed
+    /// from the goal's request keyexpr — feedback for a goal must publish
+    /// under the same wire identity the consumer subscribed for, even when
+    /// the producer is bound to multiple link_ids.
     pub fn declare_action_feedback_publisher(
         &self,
         recv: &ActionWireReceiver,
+        link_id: &str,
         goal_id: &str,
         qos: PublisherQoS,
     ) -> Result<MessengerPublisher> {
         match &self.adapter {
             #[cfg(feature = "zenoh")]
             MessengerAdapter::Zenoh(adapter) => Ok(MessengerPublisher::Zenoh(
-                adapter.declare_action_feedback_publisher(recv, goal_id, qos)?,
+                adapter.declare_action_feedback_publisher(recv, link_id, goal_id, qos)?,
             )),
             MessengerAdapter::Mock(adapter) => Ok(MessengerPublisher::Mock(
-                adapter.declare_action_feedback_publisher(recv, goal_id, qos),
+                adapter.declare_action_feedback_publisher(recv, link_id, goal_id, qos),
             )),
         }
     }
@@ -574,17 +590,12 @@ impl MessengerBackend for Messenger {
         )
     }
 
-    fn parse_service_request_id(
+    fn parse_service_request(
         &self,
         recv: &ServiceWireReceiver,
         received_request: &str,
-    ) -> Result<String> {
-        dispatch_sync!(
-            &self.adapter,
-            parse_service_request_id,
-            recv,
-            received_request
-        )
+    ) -> Result<ParsedServiceRequest> {
+        dispatch_sync!(&self.adapter, parse_service_request, recv, received_request)
     }
 
     async fn subscribe_action_feedback(

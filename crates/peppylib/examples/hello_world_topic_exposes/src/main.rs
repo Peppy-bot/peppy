@@ -34,6 +34,7 @@ async fn main() {
         &core_node,
         &instance_id,
         SenderTarget::node(node_name, "v1").expect("test target"),
+        &[],
         topic_name,
         qos,
         payload,

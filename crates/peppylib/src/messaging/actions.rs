@@ -158,9 +158,16 @@ impl ActionFeedbackPublisherFactory {
     }
 
     /// Standard server-side entry point: unwrap the goal envelope, declare
-    /// a feedback publisher on the per-goal topic, and return both alongside
-    /// the user payload so the caller can dispatch it to the goal handler.
-    pub async fn declare_from_wire(&self, wire: Bytes) -> Result<DeclaredFeedback> {
+    /// a feedback publisher on the per-goal topic scoped to the link_id the
+    /// consumer targeted, and return both alongside the user payload so the
+    /// caller can dispatch it to the goal handler.
+    ///
+    /// `link_id` comes from the goal request's parsed keyexpr (surfaced via
+    /// [`crate::messaging::ServiceRequestContext::link_id`]). A producer
+    /// bound to multiple link_ids will see different link_ids for different
+    /// goal requests, and each goal's feedback must be addressed back under
+    /// the link_id its consumer subscribed for.
+    pub async fn declare_from_wire(&self, link_id: &str, wire: Bytes) -> Result<DeclaredFeedback> {
         let (goal_id, user_payload_offset) = {
             let (goal_id, user_payload) = unwrap_goal_payload(wire.as_ref())?;
             // The goal_id is appended to the feedback topic to scope the
@@ -178,7 +185,7 @@ impl ActionFeedbackPublisherFactory {
             let offset = wire.len() - user_payload.len();
             (goal_id.to_string(), offset)
         };
-        let publisher = self.declare(&goal_id).await?;
+        let publisher = self.declare(link_id, &goal_id).await?;
         let user_payload = wire.slice(user_payload_offset..);
         Ok(DeclaredFeedback {
             publisher,
@@ -187,10 +194,10 @@ impl ActionFeedbackPublisherFactory {
         })
     }
 
-    async fn declare(&self, goal_id: &str) -> Result<ActionFeedbackPublisher> {
+    async fn declare(&self, link_id: &str, goal_id: &str) -> Result<ActionFeedbackPublisher> {
         let inner = self
             .messenger
-            .declare_action_feedback_publisher(&self.receiver, goal_id, self.qos)
+            .declare_action_feedback_publisher(&self.receiver, link_id, goal_id, self.qos)
             .await?;
         Ok(ActionFeedbackPublisher::new(TopicPublisher::new(Arc::new(
             inner,
@@ -272,77 +279,34 @@ pub struct ActionCreation {
 }
 
 impl ActionMessenger {
-    /// Expose an action server. `as_identity` must match what callers pass to
-    /// [`Self::send_goal`]. See [`Self::expose_with_link_id`] for
-    /// producer-side link_id pinning.
+    /// Expose an action server. `link_ids` is the set of producer link_ids
+    /// this process binds; the underlying service listeners wildcard the
+    /// wire link_id slot and the dispatch filter drops requests addressed
+    /// to link_ids outside this set. An empty slice is normalized to the
+    /// reserved default `_` segment. `as_identity` must match what callers
+    /// pass to [`Self::send_goal`].
     pub async fn expose(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
         as_identity: SenderTarget,
-        as_action_name: &str,
-    ) -> Result<ActionCreation> {
-        Self::expose_with_link_id(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            as_identity,
-            None,
-            as_action_name,
-        )
-        .await
-    }
-
-    /// Expose an action server, pinning the listener's bound link_id slot.
-    /// `link_id` `None` listens on the reserved default `_` segment;
-    /// `Some(value)` pins to a specific producer link_id (used when the
-    /// producer fans out across multiple bound link_ids).
-    pub async fn expose_with_link_id(
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        as_identity: SenderTarget,
-        link_id: Option<&str>,
+        link_ids: &[String],
         as_action_name: &str,
     ) -> Result<ActionCreation> {
         let recv = ActionWireReceiver::new(
             bound_core_node,
             as_instance_id,
             as_identity,
-            link_id,
+            link_ids,
             as_action_name,
         )?;
         messenger.expose_action(&recv).await
     }
 
-    /// Sends a lightweight probe to check whether an action service is listening.
-    pub async fn is_reachable(
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        to_target: SenderTarget,
-        to_action_name: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
-    ) -> Result<bool> {
-        Self::is_reachable_with_link_id(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            to_target,
-            None,
-            to_action_name,
-            to_core_node,
-            to_instance_id,
-        )
-        .await
-    }
-
-    /// Probe an action service, pinning the consumer's `to_link_id` slot.
-    /// `to_link_id` `None` broadcasts (matches any producer link_id);
-    /// `Some(value)` targets a specific producer link_id.
+    /// Probe an action service. `to_link_id` `None` targets the default
+    /// link_id; `Some(value)` targets a specific producer link_id.
     #[allow(clippy::too_many_arguments)]
-    pub async fn is_reachable_with_link_id(
+    pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
@@ -380,43 +344,11 @@ impl ActionMessenger {
     /// wraps `user_payload` in the per-goal envelope, subscribes to the
     /// matching feedback topic, and polls the goal service.
     ///
-    /// `to_target` must match the [`SenderTarget`] the action server used in
-    /// [`Self::expose`]. See [`Self::send_goal_with_link_id`] for
-    /// consumer-side link_id pinning.
+    /// `to_target` must match the [`SenderTarget`] the action server used
+    /// in [`Self::expose`]. `to_link_id` `None` targets the default
+    /// link_id; `Some(value)` targets a specific producer link_id.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
-        messenger: &MessengerHandle,
-        as_core_node: &str,
-        as_instance_id: &str,
-        to_target: SenderTarget,
-        to_action_name: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
-        user_payload: Payload,
-        feedback_qos: QoSProfile,
-        goal_timeout: Duration,
-    ) -> Result<ActionGoalHandle> {
-        Self::send_goal_with_link_id(
-            messenger,
-            as_core_node,
-            as_instance_id,
-            to_target,
-            None,
-            to_action_name,
-            to_core_node,
-            to_instance_id,
-            user_payload,
-            feedback_qos,
-            goal_timeout,
-        )
-        .await
-    }
-
-    /// Send a goal to an action server, pinning the consumer's `to_link_id`
-    /// slot. `to_link_id` `None` broadcasts (used by `from_any: true`
-    /// consumers); `Some(value)` targets a specific producer link_id.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn send_goal_with_link_id(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,

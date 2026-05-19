@@ -286,15 +286,14 @@ pub fn build_exposed_action(
     builder.indent();
     let expose_target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
-    // FIXME(link-id-fanout): binds the first link_id only.
     builder.line("action = await peppylib.ActionMessenger.expose(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{expose_target_expr},"));
+    builder.line("node_runner.link_ids(),");
     builder.line("ACTION_NAME,");
-    builder.line("link_id=node_runner.first_link_id(),");
     builder.dedent();
     builder.line(")");
     builder.line("handle = cls()");
@@ -331,8 +330,12 @@ pub fn build_exposed_action(
         builder.indent();
         builder.line("message = request_context.message");
         if has_feedback {
+            // Pass the goal's link_id alongside the payload — the producer
+            // is bound to potentially many link_ids, and the per-goal
+            // feedback publisher must address the wire identity the
+            // consumer subscribed under (not pick from the bound set).
             builder.line(
-                "publisher, goal_id, payload = await self.feedback_publisher_factory.declare_from_wire(message.payload)",
+                "publisher, goal_id, payload = await self.feedback_publisher_factory.declare_from_wire(request_context.link_id, message.payload)",
             );
             // Assign self.current_goal BEFORE awaiting the user handler so
             // emit_feedback() called from within an async handler sees the

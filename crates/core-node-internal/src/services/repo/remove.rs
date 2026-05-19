@@ -25,6 +25,7 @@ pub async fn listen_for_repo_remove(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        &[],
         names::REPO_REMOVE,
     )
     .await?;

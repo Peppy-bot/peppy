@@ -54,6 +54,19 @@ impl Segment {
             None => Ok(Self::default_link_id()),
         }
     }
+
+    /// Producer-side bulk constructor. An empty slice yields a single-element
+    /// vec carrying the reserved default `_` segment (matching the wire
+    /// fallback); a non-empty slice is validated entry by entry via
+    /// [`Self::try_link_id`]. Used by [`ServiceWireReceiver::new`] /
+    /// [`ActionWireReceiver::new`] when materializing the set of link_ids a
+    /// single producer process binds.
+    pub fn link_ids_or_default(values: &[String]) -> Result<Vec<Self>, SegmentError> {
+        if values.is_empty() {
+            return Ok(vec![Self::default_link_id()]);
+        }
+        values.iter().map(|s| Self::try_link_id(s)).collect()
+    }
 }
 
 /// Wire literal used at the `link_id` slot when a producer is run without
@@ -475,25 +488,26 @@ impl ServiceWireSender {
 
 /// Server-side addressing for a service. The four broadcast-Cartesian listen
 /// patterns are derived from this single context by the transport adapter.
-/// `link_id` is the producer's bound link_id; the runtime fans out one
-/// receiver per bound link_id (decision 11).
+/// `link_ids` is the set of producer link_ids this listener binds — the
+/// runtime listens with a wildcard at the link_id wire slot and filters
+/// incoming requests against this set at dispatch time, so one process
+/// bound to N link_ids needs only one listener per service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireReceiver {
     pub(crate) bound_core_node: Segment,
     pub(crate) as_instance_id: Segment,
     pub(crate) as_identity: SenderTarget,
-    pub(crate) link_id: Segment,
+    pub(crate) link_ids: Vec<Segment>,
     pub(crate) as_service_name: Segment,
     pub(crate) kind: ServiceKind,
 }
 
 impl ServiceWireReceiver {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bound_core_node: &str,
         as_instance_id: &str,
         as_identity: SenderTarget,
-        link_id: Option<&str>,
+        link_ids: &[String],
         as_service_name: &str,
         kind: ServiceKind,
     ) -> crate::error::Result<Self> {
@@ -501,10 +515,18 @@ impl ServiceWireReceiver {
             bound_core_node: Segment::try_from(bound_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
             as_identity,
-            link_id: Segment::link_id_or_default(link_id)?,
+            link_ids: Segment::link_ids_or_default(link_ids)?,
             as_service_name: Segment::try_from(as_service_name)?,
             kind,
         })
+    }
+
+    /// True if `candidate` matches any link_id this receiver binds. Used by
+    /// [`zenoh_format::ZenohWireFormat::parse_received_request`] to drop
+    /// wildcard-delivered requests targeted at link_ids the producer does
+    /// not advertise.
+    pub(crate) fn matches_link_id(&self, candidate: &str) -> bool {
+        self.link_ids.iter().any(|s| s.as_str() == candidate)
     }
 }
 
@@ -577,14 +599,18 @@ impl ActionWireSender {
     }
 }
 
-/// Server-side addressing for an action. `link_id` is the producer's bound
-/// link_id; the runtime fans out one receiver per bound link_id.
+/// Server-side addressing for an action. `link_ids` is the set of producer
+/// link_ids this listener binds — the runtime listens with a wildcard at the
+/// link_id wire slot and filters incoming goal / cancel / result requests
+/// against this set at dispatch time. Per-goal feedback publishes use the
+/// goal's own link_id (extracted from the goal request) rather than picking
+/// among the set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionWireReceiver {
     pub(crate) bound_core_node: Segment,
     pub(crate) as_instance_id: Segment,
     pub(crate) as_identity: SenderTarget,
-    pub(crate) link_id: Segment,
+    pub(crate) link_ids: Vec<Segment>,
     pub(crate) as_action_name: Segment,
 }
 
@@ -593,14 +619,14 @@ impl ActionWireReceiver {
         bound_core_node: &str,
         as_instance_id: &str,
         as_identity: SenderTarget,
-        link_id: Option<&str>,
+        link_ids: &[String],
         as_action_name: &str,
     ) -> crate::error::Result<Self> {
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
             as_identity,
-            link_id: Segment::link_id_or_default(link_id)?,
+            link_ids: Segment::link_ids_or_default(link_ids)?,
             as_action_name: Segment::try_from(as_action_name)?,
         })
     }
@@ -622,7 +648,7 @@ impl ActionWireReceiver {
             bound_core_node: self.bound_core_node.clone(),
             as_instance_id: self.as_instance_id.clone(),
             as_identity: self.as_identity.clone(),
-            link_id: self.link_id.clone(),
+            link_ids: self.link_ids.clone(),
             as_service_name: self.as_action_name.clone(),
             kind,
         }

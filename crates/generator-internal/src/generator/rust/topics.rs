@@ -130,7 +130,7 @@ pub fn build_topic_emit(
             let with_core_node = node_runner.processor().bound_core_node();
             let as_target = #target_expr;
 
-            peppylib::TopicMessenger::emit_fan_out(
+            peppylib::TopicMessenger::emit(
                 node_runner.messenger(),
                 with_core_node,
                 as_instance_id,
@@ -206,7 +206,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
             let qos = peppylib::config::QoSProfile::Standard;
 
             let message = {
-                let subscription_future = peppylib::TopicMessenger::subscribe_with_link_id(
+                let subscription_future = peppylib::TopicMessenger::subscribe(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),

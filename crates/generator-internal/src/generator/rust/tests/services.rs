@@ -286,7 +286,7 @@ fn consumed_service() {
         &rendered,
         &[
             "root.set_enable(enable);",
-            "peppylib::ServiceMessenger::poll_with_link_id(",
+            "peppylib::ServiceMessenger::poll(",
             "fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>",
         ],
     );
@@ -376,10 +376,7 @@ fn consumed_service_without_response_payload() {
         artifacts.len()
     );
 
-    assert_artifact_contains(
-        &artifacts,
-        "let _ = peppylib::ServiceMessenger::poll_with_link_id(",
-    );
+    assert_artifact_contains(&artifacts, "let _ = peppylib::ServiceMessenger::poll(");
 }
 
 #[test]

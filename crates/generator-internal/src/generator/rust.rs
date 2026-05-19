@@ -283,7 +283,7 @@ impl RustGenerator {
             ) -> crate::Result<Self> {
                 #goal_payload_tokens
 
-                let action_handle = peppylib::ActionMessenger::send_goal_with_link_id(
+                let action_handle = peppylib::ActionMessenger::send_goal(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
@@ -1312,7 +1312,7 @@ impl LanguageGenerator for RustGenerator {
         let to_link_id_expr =
             crate::generator::rust::topics::consumed_from_link_id_expression(dependency);
         let poll_call = quote! {
-            peppylib::ServiceMessenger::poll_with_link_id(
+            peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
