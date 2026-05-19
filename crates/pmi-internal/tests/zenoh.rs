@@ -42,6 +42,7 @@ mod zenoh_tests {
             "test_core_node",
             "test_instance",
             test_node_target("test_node"),
+            None,
             as_topic_name,
         )
         .expect("valid wire fields")
@@ -54,6 +55,7 @@ mod zenoh_tests {
             None,
             None,
             Some(test_node_target("test_node")),
+            None,
             to_topic,
         )
         .expect("valid wire fields")

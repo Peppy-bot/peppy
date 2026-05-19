@@ -80,6 +80,7 @@ async fn topic_node_vs_interface_no_collision() {
         "core_pub",
         "pub_inst_node",
         test_node_target("widget"),
+        None,
         "frames",
     )
     .unwrap();
@@ -87,6 +88,7 @@ async fn topic_node_vs_interface_no_collision() {
         "core_pub",
         "pub_inst_iface",
         SenderTarget::interface("widget", "v1").expect("valid interface target"),
+        None,
         "frames",
     )
     .unwrap();
@@ -97,6 +99,7 @@ async fn topic_node_vs_interface_no_collision() {
         Some("core_pub"),
         None,
         Some(test_node_target("widget")),
+        None,
         "frames",
     )
     .unwrap();
@@ -106,6 +109,7 @@ async fn topic_node_vs_interface_no_collision() {
         Some("core_pub"),
         None,
         Some(SenderTarget::interface("widget", "v1").expect("valid interface target")),
+        None,
         "frames",
     )
     .unwrap();
@@ -172,6 +176,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
         "core_pub",
         "pub_inst_node",
         test_node_target("widget"),
+        None,
         "frames",
     )
     .unwrap();
@@ -179,6 +184,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
         "core_pub",
         "pub_inst_iface",
         SenderTarget::interface("widget", "v1").unwrap(),
+        None,
         "frames",
     )
     .unwrap();
@@ -187,6 +193,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
         "core_sub",
         "sub_inst",
         Some("core_pub"),
+        None,
         None,
         None,
         "frames",
@@ -256,6 +263,7 @@ async fn service_node_vs_interface_no_collision() {
         "server_core",
         "server_inst_node",
         test_node_target("widget"),
+        None,
         "ping",
         ServiceKind::Service,
     )
@@ -264,6 +272,7 @@ async fn service_node_vs_interface_no_collision() {
         "server_core",
         "server_inst_iface",
         SenderTarget::interface("widget", "v1").unwrap(),
+        None,
         "ping",
         ServiceKind::Service,
     )
@@ -287,6 +296,7 @@ async fn service_node_vs_interface_no_collision() {
         Some("server_core"),
         None,
         test_node_target("widget"),
+        None,
         "ping",
         ServiceKind::Service,
     )
@@ -297,6 +307,7 @@ async fn service_node_vs_interface_no_collision() {
         Some("server_core"),
         None,
         SenderTarget::interface("widget", "v1").unwrap(),
+        None,
         "ping",
         ServiceKind::Service,
     )

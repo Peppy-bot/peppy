@@ -109,6 +109,7 @@ impl Processor {
                 instance_id: instance_id_name,
                 arguments: BTreeMap::new(),
                 framework: Default::default(),
+                link_ids: Vec::new(),
             },
             &node_name,
             node_config.manifest.tag.as_str(),
@@ -178,6 +179,22 @@ impl Processor {
     /// the wall-time and sim-time `PeppyClock` implementations.
     pub fn use_sim_time(&self) -> bool {
         self.runtime_config.node_instance.framework.use_sim_time
+    }
+
+    /// Returns the link_ids this producer is bound to, normalized to
+    /// always contain at least one entry. An empty `--link-id` list (or
+    /// an instance launched without any link_id binding) maps to a
+    /// single-element vec carrying the reserved default `_` segment,
+    /// matching the wire layer's fallback so consumers using
+    /// `from_any: true` (or the wildcard receive path) still match this
+    /// producer's emissions.
+    pub fn link_ids(&self) -> Vec<String> {
+        let raw = &self.runtime_config.node_instance.link_ids;
+        if raw.is_empty() {
+            vec![pmi::DEFAULT_LINK_ID.to_string()]
+        } else {
+            raw.clone()
+        }
     }
 }
 

@@ -75,10 +75,17 @@ pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> Strin
 }
 
 /// Identifies a dependency a consumer pulls from. `node_name` + `node_tag`
-/// pin the producer node; `origin` is `Some` when the consumed artifact comes
-/// from an interface the producer `conforms_to` (so the consumer should match
-/// the producer via [`SenderTarget::Interface`] rather than
-/// [`SenderTarget::Node`]).
+/// pin the producer (a node, or an interface when the consumer pulls in via
+/// `depends_on.interfaces` and `kind` is [`DependencyKind::Interface`]).
+/// `origin` is `Some` when the consumed artifact carries the
+/// `interface`-shaped wire discriminator (either because the producer node
+/// `conforms_to` an interface or because the dependency itself is an
+/// interface contract).
+///
+/// `link_id` is the consumer's declared link_id for this dependency; the
+/// generated subscribe / poll / send_goal calls splice it into the
+/// `link_id` wire slot when [`DependencyContext::wire_link_id`] returns
+/// `Some(value)`, and pass `None` (wildcard) when `from_any` is `true`.
 ///
 /// [`SenderTarget::Interface`]: pmi::SenderTarget::Interface
 /// [`SenderTarget::Node`]: pmi::SenderTarget::Node
@@ -87,19 +94,41 @@ pub struct DependencyContext {
     pub node_name: String,
     pub node_tag: String,
     pub origin: Option<InterfaceOrigin>,
+    pub link_id: Option<String>,
+    pub from_any: bool,
+    pub kind: DependencyKind,
+}
+
+/// Distinguishes a consumer dependency declared under `depends_on.nodes`
+/// from one declared under `depends_on.interfaces`. Drives the
+/// generator's choice of producer-label text in error messages
+/// (`"from node depth_camera_v1:v1 …"` vs `"from interface
+/// depth_camera:v1 …"`) and the resolver branch that loads the
+/// message contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DependencyKind {
+    Node,
+    Interface,
 }
 
 impl DependencyContext {
-    /// Build a context for a dependency that emits natively (no `conforms_to`).
+    /// Build a context for a node dependency that emits natively (no
+    /// `conforms_to`). Defaults `link_id` to `None` and `from_any` to
+    /// `false`; use [`Self::with_link_id`] / [`Self::with_from_any`] to
+    /// override.
     pub fn native(node_name: impl Into<String>, node_tag: impl Into<String>) -> Self {
         Self {
             node_name: node_name.into(),
             node_tag: node_tag.into(),
             origin: None,
+            link_id: None,
+            from_any: false,
+            kind: DependencyKind::Node,
         }
     }
 
-    /// Build a context for a dependency that emits via `conforms_to` interface.
+    /// Build a context for a node dependency that emits via a
+    /// `conforms_to` interface.
     pub fn conformed(
         node_name: impl Into<String>,
         node_tag: impl Into<String>,
@@ -109,6 +138,55 @@ impl DependencyContext {
             node_name: node_name.into(),
             node_tag: node_tag.into(),
             origin: Some(origin),
+            link_id: None,
+            from_any: false,
+            kind: DependencyKind::Node,
+        }
+    }
+
+    /// Build a context for a `depends_on.interfaces` dependency. There is
+    /// no producer node here; `node_name` / `node_tag` carry the
+    /// interface's `(name, tag)` so error message labels stay readable,
+    /// and `origin` is set to the same `(name, tag)` so consumer-side
+    /// codegen reuses the existing `SenderTarget::Interface` path.
+    pub fn interface(iface_name: impl Into<String>, iface_tag: impl Into<String>) -> Self {
+        let iface_name = iface_name.into();
+        let iface_tag = iface_tag.into();
+        Self {
+            node_name: iface_name.clone(),
+            node_tag: iface_tag.clone(),
+            origin: Some(InterfaceOrigin {
+                iface_name,
+                iface_tag,
+            }),
+            link_id: None,
+            from_any: false,
+            kind: DependencyKind::Interface,
+        }
+    }
+
+    /// Pin a specific consumer-side `link_id`. Generator code splices it
+    /// into the wire slot of the emitted subscribe / poll / send_goal call.
+    pub fn with_link_id(mut self, link_id: Option<String>) -> Self {
+        self.link_id = link_id;
+        self
+    }
+
+    /// Mark the consumer as `from_any: true` so the generator emits a
+    /// wildcard at the link_id wire slot.
+    pub fn with_from_any(mut self, from_any: bool) -> Self {
+        self.from_any = from_any;
+        self
+    }
+
+    /// Returns the wire link_id literal to splice for this consumer:
+    /// `Some(link_id)` when the dep pins a specific link_id, `None` when
+    /// `from_any: true` or no link_id is declared.
+    pub fn wire_link_id(&self) -> Option<&str> {
+        if self.from_any {
+            None
+        } else {
+            self.link_id.as_deref()
         }
     }
 }

@@ -286,6 +286,12 @@ pub fn build_exposed_action(
     builder.indent();
     let expose_target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
+    // Producer-side action expose binds to the first configured
+    // link_id; multi-link_id action fan-out is tracked as a follow-up.
+    builder.line("_bound_link_ids = node_runner.link_ids()");
+    builder.line(
+        "_bound_link_id = _bound_link_ids[0] if _bound_link_ids else peppylib.DEFAULT_LINK_ID",
+    );
     builder.line("action = await peppylib.ActionMessenger.expose(");
     builder.indent();
     builder.line("node_runner.messenger(),");
@@ -293,6 +299,7 @@ pub fn build_exposed_action(
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{expose_target_expr},"));
     builder.line("ACTION_NAME,");
+    builder.line("link_id=_bound_link_id,");
     builder.dedent();
     builder.line(")");
     builder.line("handle = cls()");
@@ -784,6 +791,8 @@ pub fn build_consumed_action(
         "TARGET_NODE_NAME",
         &format!("{:?}", dependency.node_tag),
     );
+    let send_goal_link_id_expr =
+        crate::generator::python::services::consumed_link_id_python_expr(dependency);
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
@@ -796,6 +805,7 @@ pub fn build_consumed_action(
     builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");
+    builder.line(&format!("to_link_id={send_goal_link_id_expr},"));
     builder.dedent();
     builder.line(")");
 

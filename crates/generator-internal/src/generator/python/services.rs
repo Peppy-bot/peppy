@@ -28,6 +28,19 @@ pub(crate) fn sender_target_python_expr(
     }
 }
 
+/// Returns the Python expression for the `link_id` keyword argument to
+/// splice into a generated subscribe / poll / send_goal call. Yields a
+/// quoted string when the dependency pins a specific link_id, or `None`
+/// when `from_any: true` or no link_id is declared.
+pub(crate) fn consumed_link_id_python_expr(
+    dependency: &crate::generator::types::DependencyContext,
+) -> String {
+    match dependency.wire_link_id() {
+        Some(link_id) => format!("{link_id:?}"),
+        None => "None".to_string(),
+    }
+}
+
 /// Generates Python code for an exposed (handler) service.
 pub fn build_exposed_service(
     service: &ExposedService,
@@ -166,6 +179,12 @@ pub fn build_exposed_service(
     builder.indent();
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
+    // Producer-side service expose binds to the first configured
+    // link_id; multi-link_id service fan-out is tracked as a follow-up.
+    builder.line("_bound_link_ids = node_runner.link_ids()");
+    builder.line(
+        "_bound_link_id = _bound_link_ids[0] if _bound_link_ids else peppylib.DEFAULT_LINK_ID",
+    );
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
     builder.line("node_runner.messenger(),");
@@ -173,6 +192,7 @@ pub fn build_exposed_service(
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
     builder.line("SERVICE_NAME,");
+    builder.line("link_id=_bound_link_id,");
     builder.dedent();
     builder.line(")");
 
@@ -317,6 +337,7 @@ pub fn build_consumed_service(
         "NODE_NAME",
         &format!("{:?}", dependency.node_tag),
     );
+    let to_link_id_expr = consumed_link_id_python_expr(dependency);
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
@@ -327,6 +348,7 @@ pub fn build_consumed_service(
     builder.line("to_instance_id,");
     builder.line("request_payload,");
     builder.line("timeout,");
+    builder.line(&format!("to_link_id={to_link_id_expr},"));
     builder.dedent();
     builder.line(")");
 

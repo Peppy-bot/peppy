@@ -30,11 +30,12 @@ fn topic_publish_node_target() {
         as_core_node: seg("core_node_a"),
         as_instance_id: seg("publisher_inst"),
         as_target: node("uvc_camera", "v1"),
+        link_id: Segment::default_link_id(),
         as_topic_name: seg("video_stream"),
     };
     assert_eq!(
         ZenohWireFormat::topic_publish(&sender),
-        "*/core_node_a/*/publisher_inst/topic/node/uvc_camera/v1/video_stream"
+        "*/core_node_a/*/publisher_inst/topic/node/uvc_camera/v1/_/video_stream"
     );
 }
 
@@ -44,11 +45,27 @@ fn topic_publish_with_interface_normalizes_tag() {
         as_core_node: seg("core_a"),
         as_instance_id: seg("inst_1"),
         as_target: iface("manipulator", "v1-beta-2"),
+        link_id: Segment::default_link_id(),
         as_topic_name: seg("joint_states"),
     };
     assert_eq!(
         ZenohWireFormat::topic_publish(&sender),
-        "*/core_a/*/inst_1/topic/interface/manipulator/v1_beta_2/joint_states"
+        "*/core_a/*/inst_1/topic/interface/manipulator/v1_beta_2/_/joint_states"
+    );
+}
+
+#[test]
+fn topic_publish_with_concrete_link_id() {
+    let sender = TopicWireSender {
+        as_core_node: seg("core_a"),
+        as_instance_id: seg("inst_1"),
+        as_target: iface("depth_camera", "v1"),
+        link_id: seg("wrist_left_camera"),
+        as_topic_name: seg("video_stream"),
+    };
+    assert_eq!(
+        ZenohWireFormat::topic_publish(&sender),
+        "*/core_a/*/inst_1/topic/interface/depth_camera/v1/wrist_left_camera/video_stream"
     );
 }
 
@@ -60,11 +77,29 @@ fn topic_subscribe_targeted_node() {
         from_core_node: Some(seg("core_publisher")),
         from_instance_id: Some(seg("pub_inst")),
         from_target: Some(node("uvc_camera", "v1")),
+        from_link_id: None,
         to_topic: seg("video_stream"),
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
-        "core_subscriber/core_publisher/sub_inst/pub_inst/topic/node/uvc_camera/v1/video_stream"
+        "core_subscriber/core_publisher/sub_inst/pub_inst/topic/node/uvc_camera/v1/*/video_stream"
+    );
+}
+
+#[test]
+fn topic_subscribe_with_concrete_link_id() {
+    let receiver = TopicWireReceiver {
+        as_core_node: seg("core_subscriber"),
+        as_instance_id: seg("sub_inst"),
+        from_core_node: None,
+        from_instance_id: None,
+        from_target: Some(iface("depth_camera", "v1")),
+        from_link_id: Some(seg("wrist_left_camera")),
+        to_topic: seg("video_stream"),
+    };
+    assert_eq!(
+        ZenohWireFormat::topic_subscribe(&receiver),
+        "core_subscriber/*/sub_inst/*/topic/interface/depth_camera/v1/wrist_left_camera/video_stream"
     );
 }
 
@@ -76,11 +111,12 @@ fn topic_subscribe_untargeted_publisher_core_uses_wildcard() {
         from_core_node: None,
         from_instance_id: None,
         from_target: Some(node("uvc_camera", "v1")),
+        from_link_id: None,
         to_topic: seg("video_stream"),
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
-        "core_subscriber/*/sub_inst/*/topic/node/uvc_camera/v1/video_stream"
+        "core_subscriber/*/sub_inst/*/topic/node/uvc_camera/v1/*/video_stream"
     );
 }
 
@@ -92,11 +128,12 @@ fn topic_subscribe_interface_target() {
         from_core_node: Some(seg("core_publisher")),
         from_instance_id: None,
         from_target: Some(iface("manipulator", "v1")),
+        from_link_id: None,
         to_topic: seg("joint_states"),
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
-        "core_subscriber/core_publisher/sub_inst/*/topic/interface/manipulator/v1/joint_states"
+        "core_subscriber/core_publisher/sub_inst/*/topic/interface/manipulator/v1/*/joint_states"
     );
 }
 
@@ -108,11 +145,12 @@ fn topic_subscribe_external_consumer_wildcards_full_target() {
         from_core_node: None,
         from_instance_id: None,
         from_target: None,
+        from_link_id: None,
         to_topic: seg("video_stream"),
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
-        "core_subscriber/*/sub_inst/*/topic/*/*/*/video_stream"
+        "core_subscriber/*/sub_inst/*/topic/*/*/*/*/video_stream"
     );
 }
 
@@ -120,7 +158,7 @@ fn topic_subscribe_external_consumer_wildcards_full_target() {
 
 #[test]
 fn parse_topic_keyexpr_extracts_caller_addressing() {
-    let key = "core_subscriber/publisher_core/sub_inst/publisher_inst/topic/node/sensor_node/v1/temperature";
+    let key = "core_subscriber/publisher_core/sub_inst/publisher_inst/topic/node/sensor_node/v1/_/temperature";
     let parsed = ZenohWireFormat::parse_topic_keyexpr(key).expect("should parse");
     assert_eq!(parsed.core_node, "publisher_core");
     assert_eq!(parsed.instance_id, "publisher_inst");
@@ -132,6 +170,7 @@ fn parse_topic_keyexpr_roundtrips_through_topic_publish() {
         as_core_node: seg("core_a"),
         as_instance_id: seg("inst_1"),
         as_target: node("sensor", "v1"),
+        link_id: Segment::default_link_id(),
         as_topic_name: seg("humidity"),
     };
     let key = ZenohWireFormat::topic_publish(&sender);
@@ -201,6 +240,7 @@ fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
         as_identity: node("robot_arm", "v1"),
+        link_id: Segment::default_link_id(),
         as_service_name: seg("ping"),
         kind,
     }
@@ -213,10 +253,10 @@ fn service_listen_patterns_node_identity_plain_service() {
     assert_eq!(
         patterns,
         [
-            "server_core/*/server_inst/*/service/node/robot_arm/v1/ping/request/**".to_string(),
-            "server_core/*/_any_/*/service/node/robot_arm/v1/ping/request/**".to_string(),
-            "_any_/*/server_inst/*/service/node/robot_arm/v1/ping/request/**".to_string(),
-            "_any_/*/_any_/*/service/node/robot_arm/v1/ping/request/**".to_string(),
+            "server_core/*/server_inst/*/service/node/robot_arm/v1/_/ping/request/**".to_string(),
+            "server_core/*/_any_/*/service/node/robot_arm/v1/_/ping/request/**".to_string(),
+            "_any_/*/server_inst/*/service/node/robot_arm/v1/_/ping/request/**".to_string(),
+            "_any_/*/_any_/*/service/node/robot_arm/v1/_/ping/request/**".to_string(),
         ]
     );
 }
@@ -228,11 +268,11 @@ fn service_listen_patterns_action_goal_appends_suffix() {
     let patterns = ZenohWireFormat::service_listen_patterns(&recv);
     assert_eq!(
         patterns[0],
-        "server_core/*/server_inst/*/action/node/robot_arm/v1/pick_place/goal/request/**"
+        "server_core/*/server_inst/*/action/node/robot_arm/v1/_/pick_place/goal/request/**"
     );
     assert_eq!(
         patterns[3],
-        "_any_/*/_any_/*/action/node/robot_arm/v1/pick_place/goal/request/**"
+        "_any_/*/_any_/*/action/node/robot_arm/v1/_/pick_place/goal/request/**"
     );
 }
 
@@ -243,7 +283,19 @@ fn service_listen_patterns_interface_identity_normalizes_tag() {
     let patterns = ZenohWireFormat::service_listen_patterns(&recv);
     assert_eq!(
         patterns[0],
-        "server_core/*/server_inst/*/service/interface/manipulator/v2_beta/ping/request/**"
+        "server_core/*/server_inst/*/service/interface/manipulator/v2_beta/_/ping/request/**"
+    );
+}
+
+#[test]
+fn service_listen_patterns_with_concrete_link_id() {
+    let mut recv = sample_service_receiver(ServiceKind::Service);
+    recv.link_id = seg("wrist_left_camera");
+    recv.as_identity = iface("depth_camera", "v1");
+    let patterns = ZenohWireFormat::service_listen_patterns(&recv);
+    assert_eq!(
+        patterns[0],
+        "server_core/*/server_inst/*/service/interface/depth_camera/v1/wrist_left_camera/ping/request/**"
     );
 }
 
@@ -256,6 +308,7 @@ fn sample_service_sender(kind: ServiceKind) -> ServiceWireSender {
         to_core_node: Some(seg("target_core")),
         to_instance_id: Some(seg("target_inst")),
         to_target: node("robot_arm", "v1"),
+        to_link_id: None,
         to_service_name: seg("ping"),
         kind,
     }
@@ -266,7 +319,7 @@ fn service_request_publish_specific_target() {
     let sender = sample_service_sender(ServiceKind::Service);
     assert_eq!(
         ZenohWireFormat::service_request_publish(&sender, "abc123"),
-        "target_core/caller_core/target_inst/caller_inst/service/node/robot_arm/v1/ping/request/abc123"
+        "target_core/caller_core/target_inst/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123"
     );
 }
 
@@ -276,7 +329,7 @@ fn service_request_publish_broadcast_instance() {
     sender.to_instance_id = None;
     assert_eq!(
         ZenohWireFormat::service_request_publish(&sender, "abc123"),
-        "target_core/caller_core/_any_/caller_inst/service/node/robot_arm/v1/ping/request/abc123"
+        "target_core/caller_core/_any_/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123"
     );
 }
 
@@ -286,7 +339,7 @@ fn service_request_publish_broadcast_core() {
     sender.to_core_node = None;
     assert_eq!(
         ZenohWireFormat::service_request_publish(&sender, "abc123"),
-        "_any_/caller_core/target_inst/caller_inst/service/node/robot_arm/v1/ping/request/abc123"
+        "_any_/caller_core/target_inst/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123"
     );
 }
 
@@ -297,7 +350,18 @@ fn service_request_publish_full_broadcast() {
     sender.to_instance_id = None;
     assert_eq!(
         ZenohWireFormat::service_request_publish(&sender, "abc123"),
-        "_any_/caller_core/_any_/caller_inst/service/node/robot_arm/v1/ping/request/abc123"
+        "_any_/caller_core/_any_/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123"
+    );
+}
+
+#[test]
+fn service_request_publish_with_concrete_link_id() {
+    let mut sender = sample_service_sender(ServiceKind::Service);
+    sender.to_link_id = Some(seg("wrist_left_camera"));
+    sender.to_target = iface("depth_camera", "v1");
+    assert_eq!(
+        ZenohWireFormat::service_request_publish(&sender, "abc123"),
+        "target_core/caller_core/target_inst/caller_inst/service/interface/depth_camera/v1/wrist_left_camera/ping/request/abc123"
     );
 }
 
@@ -307,7 +371,7 @@ fn service_request_publish_action_goal() {
     sender.to_service_name = seg("pick_place");
     assert_eq!(
         ZenohWireFormat::service_request_publish(&sender, "rid_42"),
-        "target_core/caller_core/target_inst/caller_inst/action/node/robot_arm/v1/pick_place/goal/request/rid_42"
+        "target_core/caller_core/target_inst/caller_inst/action/node/robot_arm/v1/_/pick_place/goal/request/rid_42"
     );
 }
 
@@ -318,7 +382,7 @@ fn service_response_subscribe_node_target() {
     let sender = sample_service_sender(ServiceKind::Service);
     assert_eq!(
         ZenohWireFormat::service_response_subscribe(&sender, "abc123"),
-        "caller_core/*/caller_inst/*/service/node/robot_arm/v1/ping/response/abc123"
+        "caller_core/*/caller_inst/*/service/node/robot_arm/v1/_/ping/response/abc123"
     );
 }
 
@@ -329,7 +393,7 @@ fn service_response_subscribe_action_result_with_interface() {
     sender.to_target = iface("manipulator", "v1");
     assert_eq!(
         ZenohWireFormat::service_response_subscribe(&sender, "rid_42"),
-        "caller_core/*/caller_inst/*/action/interface/manipulator/v1/pick_place/result/response/rid_42"
+        "caller_core/*/caller_inst/*/action/interface/manipulator/v1/_/pick_place/result/response/rid_42"
     );
 }
 
@@ -338,12 +402,12 @@ fn service_response_subscribe_action_result_with_interface() {
 #[test]
 fn parse_received_request_round_trips_specific() {
     let receiver = sample_service_receiver(ServiceKind::Service);
-    let request = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/ping/request/abc123";
+    let request = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123";
     let parsed = ZenohWireFormat::parse_received_request(&receiver, request).expect("should parse");
     assert_eq!(parsed.request_id, "abc123");
     assert_eq!(
         parsed.response_keyexpr,
-        "caller_core/server_core/caller_inst/server_inst/service/node/robot_arm/v1/ping/response/abc123"
+        "caller_core/server_core/caller_inst/server_inst/service/node/robot_arm/v1/_/ping/response/abc123"
     );
 }
 
@@ -351,18 +415,18 @@ fn parse_received_request_round_trips_specific() {
 fn parse_received_request_response_addresses_caller_with_broadcast_request() {
     let receiver = sample_service_receiver(ServiceKind::Service);
     let request =
-        "_any_/caller_core/_any_/caller_inst/service/node/robot_arm/v1/ping/request/abc123";
+        "_any_/caller_core/_any_/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123";
     let parsed = ZenohWireFormat::parse_received_request(&receiver, request).expect("should parse");
     assert_eq!(
         parsed.response_keyexpr,
-        "caller_core/server_core/caller_inst/server_inst/service/node/robot_arm/v1/ping/response/abc123"
+        "caller_core/server_core/caller_inst/server_inst/service/node/robot_arm/v1/_/ping/response/abc123"
     );
 }
 
 #[test]
 fn parse_received_request_rejects_service_root_mismatch() {
     let receiver = sample_service_receiver(ServiceKind::Service);
-    let request = "server_core/caller_core/server_inst/caller_inst/service/node/different_node/v1/ping/request/abc";
+    let request = "server_core/caller_core/server_inst/caller_inst/service/node/different_node/v1/_/ping/request/abc";
     let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
     assert!(matches!(
         err,
@@ -375,7 +439,19 @@ fn parse_received_request_rejects_discriminator_mismatch() {
     let receiver = sample_service_receiver(ServiceKind::Service);
     // Receiver expects `node/robot_arm/v1`; request uses `interface/robot_arm/v1`.
     // This is the collision-safety property in miniature.
-    let request = "server_core/caller_core/server_inst/caller_inst/service/interface/robot_arm/v1/ping/request/abc";
+    let request = "server_core/caller_core/server_inst/caller_inst/service/interface/robot_arm/v1/_/ping/request/abc";
+    let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
+    assert!(matches!(
+        err,
+        ZenohWireParseError::ServiceRootMismatch { .. }
+    ));
+}
+
+#[test]
+fn parse_received_request_rejects_link_id_mismatch() {
+    let receiver = sample_service_receiver(ServiceKind::Service);
+    // Receiver bound to default `_`; request carries a different link_id.
+    let request = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/wrong_link/ping/request/abc";
     let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
     assert!(matches!(
         err,
@@ -386,8 +462,7 @@ fn parse_received_request_rejects_discriminator_mismatch() {
 #[test]
 fn parse_received_request_rejects_missing_request_marker() {
     let receiver = sample_service_receiver(ServiceKind::Service);
-    let request =
-        "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/ping/wrong/abc";
+    let request = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping/wrong/abc";
     let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
     assert_eq!(err, ZenohWireParseError::NotARequest);
 }
@@ -395,7 +470,7 @@ fn parse_received_request_rejects_missing_request_marker() {
 #[test]
 fn parse_received_request_rejects_trailing_segments() {
     let receiver = sample_service_receiver(ServiceKind::Service);
-    let request = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/ping/request/abc/extra";
+    let request = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping/request/abc/extra";
     let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
     assert_eq!(err, ZenohWireParseError::UnexpectedTrailing);
 }
@@ -412,12 +487,12 @@ fn parse_received_request_rejects_too_short() {
 fn parse_received_request_action_cancel_round_trips() {
     let mut receiver = sample_service_receiver(ServiceKind::ActionCancel);
     receiver.as_service_name = seg("pick_place");
-    let request = "server_core/caller_core/server_inst/caller_inst/action/node/robot_arm/v1/pick_place/cancel/request/rid_42";
+    let request = "server_core/caller_core/server_inst/caller_inst/action/node/robot_arm/v1/_/pick_place/cancel/request/rid_42";
     let parsed = ZenohWireFormat::parse_received_request(&receiver, request).expect("should parse");
     assert_eq!(parsed.request_id, "rid_42");
     assert_eq!(
         parsed.response_keyexpr,
-        "caller_core/server_core/caller_inst/server_inst/action/node/robot_arm/v1/pick_place/cancel/response/rid_42"
+        "caller_core/server_core/caller_inst/server_inst/action/node/robot_arm/v1/_/pick_place/cancel/response/rid_42"
     );
 }
 
@@ -428,6 +503,7 @@ fn sample_action_receiver() -> ActionWireReceiver {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
         as_identity: node("robot_arm", "v1"),
+        link_id: Segment::default_link_id(),
         as_action_name: seg("pick_place"),
     }
 }
@@ -439,6 +515,7 @@ fn sample_action_sender() -> ActionWireSender {
         to_core_node: Some(seg("server_core")),
         to_instance_id: Some(seg("server_inst")),
         to_target: node("robot_arm", "v1"),
+        to_link_id: None,
         to_action_name: seg("pick_place"),
     }
 }
@@ -448,7 +525,7 @@ fn action_feedback_publish_node_identity() {
     let recv = sample_action_receiver();
     assert_eq!(
         ZenohWireFormat::action_feedback_publish(&recv, "goal_xyz"),
-        "*/server_core/*/server_inst/action/node/robot_arm/v1/pick_place/feedback/server_inst/goal_xyz"
+        "*/server_core/*/server_inst/action/node/robot_arm/v1/_/pick_place/feedback/server_inst/goal_xyz"
     );
 }
 
@@ -458,7 +535,7 @@ fn action_feedback_publish_normalizes_interface_tag() {
     recv.as_identity = iface("manipulator", "v1-rc1");
     assert_eq!(
         ZenohWireFormat::action_feedback_publish(&recv, "goal_xyz"),
-        "*/server_core/*/server_inst/action/interface/manipulator/v1_rc1/pick_place/feedback/server_inst/goal_xyz"
+        "*/server_core/*/server_inst/action/interface/manipulator/v1_rc1/_/pick_place/feedback/server_inst/goal_xyz"
     );
 }
 
@@ -467,7 +544,7 @@ fn action_feedback_subscribe_targeted() {
     let sender = sample_action_sender();
     assert_eq!(
         ZenohWireFormat::action_feedback_subscribe(&sender, "goal_xyz"),
-        "client_core/server_core/client_inst/server_inst/action/node/robot_arm/v1/pick_place/feedback/server_inst/goal_xyz"
+        "client_core/server_core/client_inst/server_inst/action/node/robot_arm/v1/*/pick_place/feedback/server_inst/goal_xyz"
     );
 }
 
@@ -478,7 +555,7 @@ fn action_feedback_subscribe_untargeted() {
     sender.to_instance_id = None;
     assert_eq!(
         ZenohWireFormat::action_feedback_subscribe(&sender, "goal_xyz"),
-        "client_core/*/client_inst/*/action/node/robot_arm/v1/pick_place/feedback/*/goal_xyz"
+        "client_core/*/client_inst/*/action/node/robot_arm/v1/*/pick_place/feedback/*/goal_xyz"
     );
 }
 
@@ -489,7 +566,7 @@ fn action_feedback_subscribe_partial_target_uses_wildcard_only_for_missing() {
     sender.to_instance_id = None;
     assert_eq!(
         ZenohWireFormat::action_feedback_subscribe(&sender, "goal_xyz"),
-        "client_core/server_core/client_inst/*/action/node/robot_arm/v1/pick_place/feedback/*/goal_xyz"
+        "client_core/server_core/client_inst/*/action/node/robot_arm/v1/*/pick_place/feedback/*/goal_xyz"
     );
 }
 
@@ -508,6 +585,7 @@ fn topic_publish_distinguishes_node_and_interface_with_same_name_tag() {
         as_instance_id: seg("inst_1"),
         // Replaced per-case below.
         as_target: node("placeholder", "v1"),
+        link_id: Segment::default_link_id(),
         as_topic_name: seg("frames"),
     };
     let mut as_node = common.clone();
@@ -520,11 +598,11 @@ fn topic_publish_distinguishes_node_and_interface_with_same_name_tag() {
 
     assert_ne!(node_key, iface_key);
     assert!(
-        node_key.contains("/topic/node/widget/v1/"),
+        node_key.contains("/topic/node/widget/v1/_/"),
         "node-shaped publish should carry the `node` discriminator: {node_key}"
     );
     assert!(
-        iface_key.contains("/topic/interface/widget/v1/"),
+        iface_key.contains("/topic/interface/widget/v1/_/"),
         "interface-shaped publish should carry the `interface` discriminator: {iface_key}"
     );
 }
@@ -537,6 +615,7 @@ fn service_request_distinguishes_node_and_interface_with_same_name_tag() {
         to_core_node: Some(seg("target_core")),
         to_instance_id: Some(seg("target_inst")),
         to_target: node("placeholder", "v1"),
+        to_link_id: None,
         to_service_name: seg("ping"),
         kind: ServiceKind::Service,
     };
@@ -549,8 +628,8 @@ fn service_request_distinguishes_node_and_interface_with_same_name_tag() {
     let iface_key = ZenohWireFormat::service_request_publish(&as_iface, "rid_xyz");
 
     assert_ne!(node_key, iface_key);
-    assert!(node_key.contains("/service/node/widget/v1/ping/"));
-    assert!(iface_key.contains("/service/interface/widget/v1/ping/"));
+    assert!(node_key.contains("/service/node/widget/v1/_/ping/"));
+    assert!(iface_key.contains("/service/interface/widget/v1/_/ping/"));
 }
 
 #[test]
@@ -559,6 +638,7 @@ fn action_feedback_distinguishes_node_and_interface_with_same_name_tag() {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
         as_identity: node("placeholder", "v1"),
+        link_id: Segment::default_link_id(),
         as_action_name: seg("pick_place"),
     };
     let mut as_node = base.clone();
@@ -570,8 +650,8 @@ fn action_feedback_distinguishes_node_and_interface_with_same_name_tag() {
     let iface_key = ZenohWireFormat::action_feedback_publish(&as_iface, "goal_xyz");
 
     assert_ne!(node_key, iface_key);
-    assert!(node_key.contains("/action/node/widget/v1/pick_place/"));
-    assert!(iface_key.contains("/action/interface/widget/v1/pick_place/"));
+    assert!(node_key.contains("/action/node/widget/v1/_/pick_place/"));
+    assert!(iface_key.contains("/action/interface/widget/v1/_/pick_place/"));
 }
 
 #[test]
@@ -587,18 +667,21 @@ fn topic_subscribe_node_only_segment_does_not_match_interface_publisher() {
         from_core_node: None,
         from_instance_id: None,
         from_target: Some(node("widget", "v1")),
+        from_link_id: None,
         to_topic: seg("frames"),
     };
     let publisher_as_node = TopicWireSender {
         as_core_node: seg("core_a"),
         as_instance_id: seg("inst_2"),
         as_target: node("widget", "v1"),
+        link_id: Segment::default_link_id(),
         as_topic_name: seg("frames"),
     };
     let publisher_as_iface = TopicWireSender {
         as_core_node: seg("core_a"),
         as_instance_id: seg("inst_2"),
         as_target: iface("widget", "v1"),
+        link_id: Segment::default_link_id(),
         as_topic_name: seg("frames"),
     };
 
@@ -606,14 +689,14 @@ fn topic_subscribe_node_only_segment_does_not_match_interface_publisher() {
     let node_pub_key = ZenohWireFormat::topic_publish(&publisher_as_node);
     let iface_pub_key = ZenohWireFormat::topic_publish(&publisher_as_iface);
 
-    // The subscriber keyexpr has `topic/node/widget/v1/frames` in its tail. The
-    // node-shaped publisher key matches segment-by-segment (after the per-`*`
-    // caller-side wildcards) while the interface-shaped one differs on the
-    // discriminator literal. We verify by checking the discriminator segments
-    // appear distinct in the rendered strings.
-    assert!(sub_key.contains("/topic/node/widget/v1/frames"));
-    assert!(node_pub_key.contains("/topic/node/widget/v1/frames"));
-    assert!(iface_pub_key.contains("/topic/interface/widget/v1/frames"));
+    // The subscriber keyexpr has `topic/node/widget/v1/*/frames` in its tail.
+    // The node-shaped publisher key matches segment-by-segment (after the
+    // per-`*` caller-side wildcards) while the interface-shaped one differs
+    // on the discriminator literal. We verify by checking the discriminator
+    // segments appear distinct in the rendered strings.
+    assert!(sub_key.contains("/topic/node/widget/v1/*/frames"));
+    assert!(node_pub_key.contains("/topic/node/widget/v1/_/frames"));
+    assert!(iface_pub_key.contains("/topic/interface/widget/v1/_/frames"));
     // Cross-check: the iface publisher's tail must NOT appear inside the
     // node-pinned subscriber's keyexpr.
     assert!(!sub_key.contains("/topic/interface/"));
@@ -629,10 +712,11 @@ fn topic_subscribe_interface_only_segment_does_not_match_node_publisher() {
         from_core_node: None,
         from_instance_id: None,
         from_target: Some(iface("widget", "v1")),
+        from_link_id: None,
         to_topic: seg("frames"),
     };
     let sub_key = ZenohWireFormat::topic_subscribe(&receiver);
-    assert!(sub_key.contains("/topic/interface/widget/v1/frames"));
+    assert!(sub_key.contains("/topic/interface/widget/v1/*/frames"));
     assert!(!sub_key.contains("/topic/node/"));
 }
 
@@ -648,12 +732,13 @@ fn topic_subscribe_untargeted_wildcards_discriminator_too() {
         from_core_node: None,
         from_instance_id: None,
         from_target: None,
+        from_link_id: None,
         to_topic: seg("frames"),
     };
     let key = ZenohWireFormat::topic_subscribe(&receiver);
     assert!(
-        key.contains("/topic/*/*/*/frames"),
-        "untargeted subscribe should wildcard the discriminator, name, and tag: {key}"
+        key.contains("/topic/*/*/*/*/frames"),
+        "untargeted subscribe should wildcard the discriminator, name, tag, and link_id: {key}"
     );
 }
 
@@ -666,10 +751,11 @@ fn parse_received_request_node_receiver_rejects_interface_shaped_request() {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
         as_identity: node("widget", "v1"),
+        link_id: Segment::default_link_id(),
         as_service_name: seg("ping"),
         kind: ServiceKind::Service,
     };
-    let iface_shaped_request = "server_core/caller_core/server_inst/caller_inst/service/interface/widget/v1/ping/request/abc";
+    let iface_shaped_request = "server_core/caller_core/server_inst/caller_inst/service/interface/widget/v1/_/ping/request/abc";
     let err =
         ZenohWireFormat::parse_received_request(&node_receiver, iface_shaped_request).unwrap_err();
     assert!(matches!(
@@ -682,7 +768,7 @@ fn parse_received_request_node_receiver_rejects_interface_shaped_request() {
         ..node_receiver.clone()
     };
     let node_shaped_request =
-        "server_core/caller_core/server_inst/caller_inst/service/node/widget/v1/ping/request/abc";
+        "server_core/caller_core/server_inst/caller_inst/service/node/widget/v1/_/ping/request/abc";
     let err =
         ZenohWireFormat::parse_received_request(&iface_receiver, node_shaped_request).unwrap_err();
     assert!(matches!(

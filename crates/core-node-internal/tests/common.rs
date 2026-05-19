@@ -270,6 +270,7 @@ pub fn build_runtime_config_json5(
             instance_id: config::launcher::Name::new(instance_id).expect("valid instance id"),
             arguments,
             framework: Default::default(),
+            link_ids: Vec::new(),
         },
         node_name,
         node_tag,

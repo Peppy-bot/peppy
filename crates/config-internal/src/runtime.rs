@@ -18,6 +18,14 @@ pub struct NodeInstanceConfig {
     pub arguments: BTreeMap<String, AnyType>,
     #[serde(default)]
     pub framework: ResolvedFramework,
+    /// Link_ids the producer is bound to. Each emit on a topic with an
+    /// `(interface | node)` producer target fans out into one wire
+    /// emission per bound link_id; service / action exposes register a
+    /// listener per bound link_id. Empty vec → the runtime substitutes
+    /// the reserved default `_` segment so the wire format stays
+    /// uniform.
+    #[serde(default)]
+    pub link_ids: Vec<String>,
 }
 
 /// Framework knobs already resolved by the daemon. Distinct from

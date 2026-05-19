@@ -88,6 +88,7 @@ fn build_runtime_config(
             instance_id: Name::new(instance_id).unwrap(),
             arguments: Default::default(),
             framework: Default::default(),
+            link_ids: Vec::new(),
         },
         node_name,
         "v1",

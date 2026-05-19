@@ -150,8 +150,11 @@ impl PyServiceMessenger {
     /// Start listening for service requests.
     ///
     /// Returns a `ServiceEndpoint` that can be used to handle incoming requests.
+    /// `link_id` `None` falls back to the reserved default `_` segment;
+    /// generated producers fan out by calling `listen` once per bound link_id.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_service_name))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_service_name, link_id=None))]
+    #[allow(clippy::too_many_arguments)]
     fn listen<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -159,15 +162,17 @@ impl PyServiceMessenger {
         as_instance_id: String,
         as_identity: PySenderTarget,
         as_service_name: String,
+        link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_identity = as_identity.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let endpoint = ServiceMessenger::listen(
+            let endpoint = ServiceMessenger::listen_with_link_id(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 as_identity,
+                link_id.as_deref(),
                 &as_service_name,
             )
             .await
@@ -180,7 +185,7 @@ impl PyServiceMessenger {
 
     /// Check if a service has active subscribers.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, to_core_node=None, to_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, to_core_node=None, to_instance_id=None, to_link_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
@@ -191,15 +196,17 @@ impl PyServiceMessenger {
         to_service_name: String,
         to_core_node: Option<String>,
         to_instance_id: Option<String>,
+        to_link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let reachable = ServiceMessenger::is_reachable(
+            let reachable = ServiceMessenger::is_reachable_with_link_id(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 to_target,
+                to_link_id.as_deref(),
                 &to_service_name,
                 to_core_node.as_deref(),
                 to_instance_id.as_deref(),
@@ -212,7 +219,7 @@ impl PyServiceMessenger {
 
     /// Send a request to a service and wait for a response.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, to_core_node=None, to_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, to_core_node=None, to_instance_id=None, request_payload=vec![], response_timeout_secs=2.0, to_link_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn poll<'py>(
         py: Python<'py>,
@@ -225,17 +232,19 @@ impl PyServiceMessenger {
         to_instance_id: Option<String>,
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
+        to_link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let response_timeout =
             duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let response = ServiceMessenger::poll(
+            let response = ServiceMessenger::poll_with_link_id(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 to_target,
+                to_link_id.as_deref(),
                 &to_service_name,
                 to_core_node.as_deref(),
                 to_instance_id.as_deref(),

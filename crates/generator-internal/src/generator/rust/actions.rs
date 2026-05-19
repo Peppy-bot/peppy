@@ -68,11 +68,20 @@ pub fn build_action_expose_method(
 
     quote! {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
-            let action = peppylib::ActionMessenger::expose(
+            // Producer-side action expose binds to the first configured
+            // link_id; multi-link_id action fan-out is tracked as a
+            // follow-up. `link_ids()` always yields at least one entry.
+            let bound_link_ids = node_runner.processor().link_ids();
+            let bound_link_id = bound_link_ids
+                .first()
+                .map(|s| s.as_str())
+                .unwrap_or(peppylib::messaging::DEFAULT_LINK_ID);
+            let action = peppylib::ActionMessenger::expose_with_link_id(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 #target_expr,
+                Some(bound_link_id),
                 ACTION_NAME,
             )
             .await?;

@@ -120,6 +120,7 @@ async fn topics_communication() {
             instance_id: Name::new(receiver_instance_id).unwrap(),
             arguments: Default::default(),
             framework: Default::default(),
+            link_ids: Vec::new(),
         },
         RECEIVER_NODE_NAME,
         "v1",
@@ -204,6 +205,7 @@ if __name__ == "__main__":
             instance_id: Name::new(emitter_instance_id).unwrap(),
             arguments: serde_json5::from_str(r#"{ frequency: 10.0 }"#).unwrap(),
             framework: Default::default(),
+            link_ids: Vec::new(),
         },
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the receiver
         "v1",

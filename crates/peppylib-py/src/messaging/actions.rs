@@ -198,7 +198,8 @@ impl PyActionMessenger {
     /// Pass `SenderTarget.node(name, tag)` for nodes or
     /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_action_name))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_action_name, link_id=None))]
+    #[allow(clippy::too_many_arguments)]
     fn expose<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -206,15 +207,17 @@ impl PyActionMessenger {
         as_instance_id: String,
         as_identity: PySenderTarget,
         as_action_name: String,
+        link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_identity = as_identity.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let creation = ActionMessenger::expose(
+            let creation = ActionMessenger::expose_with_link_id(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 as_identity,
+                link_id.as_deref(),
                 &as_action_name,
             )
             .await
@@ -236,7 +239,7 @@ impl PyActionMessenger {
     /// Pass `SenderTarget.node(name, tag)` for nodes or
     /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, to_core_node=None, to_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, to_core_node=None, to_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0, to_link_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
@@ -250,16 +253,18 @@ impl PyActionMessenger {
         user_payload: Vec<u8>,
         feedback_qos: PyQoSProfile,
         goal_timeout_secs: f64,
+        to_link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let goal_timeout = duration_from_secs_f64("goal_timeout_secs", goal_timeout_secs)?;
         let to_target = to_target.into_inner();
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let goal_handle = ActionMessenger::send_goal(
+            let goal_handle = ActionMessenger::send_goal_with_link_id(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 to_target,
+                to_link_id.as_deref(),
                 &to_action_name,
                 to_core_node.as_deref(),
                 to_instance_id.as_deref(),
@@ -337,7 +342,7 @@ impl PyActionMessenger {
 
     /// Check whether an action server is reachable.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, to_core_node=None, to_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, to_core_node=None, to_instance_id=None, to_link_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
@@ -348,15 +353,17 @@ impl PyActionMessenger {
         to_action_name: String,
         to_core_node: Option<String>,
         to_instance_id: Option<String>,
+        to_link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let reachable = ActionMessenger::is_reachable(
+            let reachable = ActionMessenger::is_reachable_with_link_id(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 to_target,
+                to_link_id.as_deref(),
                 &to_action_name,
                 to_core_node.as_deref(),
                 to_instance_id.as_deref(),

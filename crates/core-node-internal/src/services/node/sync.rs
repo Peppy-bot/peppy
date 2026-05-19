@@ -351,6 +351,20 @@ async fn handle_node_sync_request_inner(
                     .map_err(Into::into);
                 }
 
+                // Validate `depends_on.interfaces` entries can be loaded from
+                // the local interface cache (SHA pins matched, no on-disk
+                // drift). Fail fast with a typed error before the heavier
+                // resolver runs.
+                if let Err(reason) =
+                    validate_interface_dependency_specs(&node_config.manifest, &peppy_dirs)
+                {
+                    return NodeSyncResponse::failure(format!(
+                        "Failed to validate interface dependencies: {reason}"
+                    ))
+                    .encode()
+                    .map_err(Into::into);
+                }
+
                 // Collect consumed interfaces with resolved message formats
                 let mut interfaces = match collect_consumed_interfaces(
                     &node_config.manifest,
@@ -585,25 +599,64 @@ async fn materialize_repo_deps(
     Ok((resolved, provenance, stack_hits))
 }
 
-/// Builds a lookup from `link_id` → `(dep_name, dep_tag)` using the node's `depends_on.nodes`.
+/// Discriminator carried by [`DependencyLookupEntry`] so the resolver knows
+/// whether a `link_id` resolves to a `depends_on.nodes` entry (load
+/// offerings from the producer node config) or a `depends_on.interfaces`
+/// entry (load the contract directly from the interface cache).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DependencyKind {
+    Node,
+    Interface,
+}
+
+/// Resolved `(name, tag, link_id, from_any, kind)` for a single dependency
+/// referenced by a consumer's `interfaces.topics.consumes`,
+/// `interfaces.services.consumes`, or `interfaces.actions.consumes`.
+#[derive(Debug, Clone)]
+pub(crate) struct DependencyLookupEntry {
+    pub name: String,
+    pub tag: String,
+    pub sha256: Option<String>,
+    pub from_any: bool,
+    pub kind: DependencyKind,
+}
+
+/// Builds a lookup from `link_id` → [`DependencyLookupEntry`] using the
+/// node's `depends_on.nodes` and `depends_on.interfaces`. Parse-time
+/// validation has already guaranteed uniqueness of `link_id` across both
+/// lists, so insertion-order is preserved.
 fn build_dependency_lookup(
     manifest: &config::node::Manifest,
-) -> std::collections::HashMap<String, (String, String)> {
-    manifest
-        .depends_on
-        .as_ref()
-        .map(|d| {
-            d.nodes
-                .iter()
-                .map(|n| {
-                    (
-                        n.link_id.clone(),
-                        (n.name.as_str().to_string(), n.tag.clone()),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+) -> std::collections::HashMap<String, DependencyLookupEntry> {
+    let Some(depends_on) = manifest.depends_on.as_ref() else {
+        return std::collections::HashMap::new();
+    };
+    let mut out = std::collections::HashMap::new();
+    for node in &depends_on.nodes {
+        out.insert(
+            node.link_id.clone(),
+            DependencyLookupEntry {
+                name: node.name.as_str().to_string(),
+                tag: node.tag.clone(),
+                sha256: None,
+                from_any: node.from_any,
+                kind: DependencyKind::Node,
+            },
+        );
+    }
+    for iface in &depends_on.interfaces {
+        out.insert(
+            iface.link_id.clone(),
+            DependencyLookupEntry {
+                name: iface.name.as_str().to_string(),
+                tag: iface.tag.clone(),
+                sha256: iface.sha256.clone(),
+                from_any: iface.from_any,
+                kind: DependencyKind::Interface,
+            },
+        );
+    }
+    out
 }
 
 /// Collects consumed interfaces from a node config and resolves their message
@@ -624,24 +677,51 @@ pub fn collect_consumed_interfaces(
     let mut interfaces = Vec::new();
     let dep_lookup = build_dependency_lookup(manifest);
 
-    // Pre-resolve each unique dependency into a per-dep offerings table that
-    // merges native emits/exposes (origin `None`) with conformed entries
+    // Pre-resolve each unique node dependency into a per-dep offerings table
+    // that merges native emits/exposes (origin `None`) with conformed entries
     // (origin `Some(_)`). Native wins on key collision so the consumer side
     // still addresses native producers via `SenderTarget::Node` and conformed
     // ones via `SenderTarget::Interface`.
-    let mut dep_offerings: HashMap<(String, String), DependencyOfferings> = HashMap::new();
-    for (dep_name, dep_tag) in dep_lookup.values() {
-        let key = (dep_name.clone(), dep_tag.clone());
-        if dep_offerings.contains_key(&key) {
-            continue;
+    let mut node_dep_offerings: HashMap<(String, String), DependencyOfferings> = HashMap::new();
+    // Memoized parsed interface contracts for `depends_on.interfaces` entries,
+    // keyed by `(name, tag)`. SHA verification has already happened in
+    // `validate_interface_dependency_specs` upstream and again per-load
+    // inside `resolve_interface_doc`.
+    let mut iface_dep_contracts: HashMap<(String, String), config::interface::PeppyInterface> =
+        HashMap::new();
+
+    for entry in dep_lookup.values() {
+        let key = (entry.name.clone(), entry.tag.clone());
+        match entry.kind {
+            DependencyKind::Node => {
+                if node_dep_offerings.contains_key(&key) {
+                    continue;
+                }
+                let Some(dep_config) = resolve(&entry.name, &entry.tag) else {
+                    continue;
+                };
+                let conformed =
+                    resolve_conforms_to(&dep_config.interfaces, peppy_dirs).map_err(|e| {
+                        format!(
+                            "failed to resolve `conforms_to` for dependency `{}:{}`: {e}",
+                            entry.name, entry.tag
+                        )
+                    })?;
+                node_dep_offerings.insert(key, build_dependency_offerings(&dep_config, &conformed));
+            }
+            DependencyKind::Interface => {
+                if iface_dep_contracts.contains_key(&key) {
+                    continue;
+                }
+                let parsed = resolve_interface_doc(
+                    peppy_dirs,
+                    &entry.name,
+                    &entry.tag,
+                    entry.sha256.as_deref(),
+                )?;
+                iface_dep_contracts.insert(key, parsed);
+            }
         }
-        let Some(dep_config) = resolve(dep_name, dep_tag) else {
-            continue;
-        };
-        let conformed = resolve_conforms_to(&dep_config.interfaces, peppy_dirs).map_err(|e| {
-            format!("failed to resolve `conforms_to` for dependency `{dep_name}:{dep_tag}`: {e}")
-        })?;
-        dep_offerings.insert(key, build_dependency_offerings(&dep_config, &conformed));
     }
 
     if let Some(topic_interfaces) = &interfaces_cfg.topics
@@ -650,21 +730,61 @@ pub fn collect_consumed_interfaces(
         for consumed_topic in consumed_topics {
             match consumed_topic {
                 config::node::ConsumedTopic::Linked(linked) => {
-                    let Some((dep_name, dep_tag)) = dep_lookup.get(linked.link_id.as_str()) else {
+                    let Some(entry) = dep_lookup.get(linked.link_id.as_str()) else {
                         continue;
                     };
-                    let key = (dep_name.clone(), dep_tag.clone());
-                    let Some(offerings) = dep_offerings.get(&key) else {
-                        continue;
-                    };
-                    let Some((message_format, origin)) = offerings.topics.get(linked.name.trim())
-                    else {
-                        continue;
+                    let key = (entry.name.clone(), entry.tag.clone());
+                    let lookup_name = linked.name.trim();
+                    let (message_format, dependency) = match entry.kind {
+                        DependencyKind::Node => {
+                            let Some(offerings) = node_dep_offerings.get(&key) else {
+                                continue;
+                            };
+                            let Some((message_format, origin)) = offerings.topics.get(lookup_name)
+                            else {
+                                continue;
+                            };
+                            (
+                                message_format.clone(),
+                                build_dependency_context_for_node(
+                                    &entry.name,
+                                    &entry.tag,
+                                    origin.clone(),
+                                    &linked.link_id,
+                                    entry.from_any,
+                                ),
+                            )
+                        }
+                        DependencyKind::Interface => {
+                            let Some(parsed) = iface_dep_contracts.get(&key) else {
+                                continue;
+                            };
+                            let Some(emitted) = parsed
+                                .interfaces
+                                .topics
+                                .iter()
+                                .find(|t| t.name.trim() == lookup_name)
+                            else {
+                                continue;
+                            };
+                            let Some(message_format) = emitted.message_format.clone() else {
+                                continue;
+                            };
+                            (
+                                message_format,
+                                build_dependency_context_for_interface(
+                                    &entry.name,
+                                    &entry.tag,
+                                    &linked.link_id,
+                                    entry.from_any,
+                                ),
+                            )
+                        }
                     };
                     interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
                         topic: consumed_topic.clone(),
-                        message_format: message_format.clone(),
-                        dependency: build_dependency_context(dep_name, dep_tag, origin.clone()),
+                        message_format,
+                        dependency,
                     }));
                 }
                 config::node::ConsumedTopic::External(external) => {
@@ -683,24 +803,69 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_services) = &service_interfaces.consumes
     {
         for consumed_service in consumed_services {
-            let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_service.link_id) else {
+            let Some(entry) = dep_lookup.get(&consumed_service.link_id) else {
                 continue;
             };
-            let key = (dep_name.clone(), dep_tag.clone());
-            let Some(offerings) = dep_offerings.get(&key) else {
-                continue;
-            };
-            let Some((request_format, response_format, origin)) =
-                offerings.services.get(consumed_service.name.trim())
-            else {
-                continue;
+            let key = (entry.name.clone(), entry.tag.clone());
+            let lookup_name = consumed_service.name.trim();
+            let (request_format, response_format, dependency) = match entry.kind {
+                DependencyKind::Node => {
+                    let Some(offerings) = node_dep_offerings.get(&key) else {
+                        continue;
+                    };
+                    let Some((request_format, response_format, origin)) =
+                        offerings.services.get(lookup_name)
+                    else {
+                        continue;
+                    };
+                    (
+                        request_format.clone(),
+                        response_format.clone(),
+                        build_dependency_context_for_node(
+                            &entry.name,
+                            &entry.tag,
+                            origin.clone(),
+                            &consumed_service.link_id,
+                            entry.from_any,
+                        ),
+                    )
+                }
+                DependencyKind::Interface => {
+                    let Some(parsed) = iface_dep_contracts.get(&key) else {
+                        continue;
+                    };
+                    let Some(exposed) = parsed
+                        .interfaces
+                        .services
+                        .iter()
+                        .find(|s| s.name.trim() == lookup_name)
+                    else {
+                        continue;
+                    };
+                    let Some(request_format) = exposed.request_message_format.clone() else {
+                        continue;
+                    };
+                    let Some(response_format) = exposed.response_message_format.clone() else {
+                        continue;
+                    };
+                    (
+                        request_format,
+                        response_format,
+                        build_dependency_context_for_interface(
+                            &entry.name,
+                            &entry.tag,
+                            &consumed_service.link_id,
+                            entry.from_any,
+                        ),
+                    )
+                }
             };
             interfaces.push(DeploymentInterface::new(
                 InterfaceVariant::ConsumedService {
                     service: consumed_service.clone(),
-                    request_format: request_format.clone(),
-                    response_format: response_format.clone(),
-                    dependency: build_dependency_context(dep_name, dep_tag, origin.clone()),
+                    request_format,
+                    response_format,
+                    dependency,
                 },
             ));
         }
@@ -710,21 +875,57 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_actions) = &action_interfaces.consumes
     {
         for consumed_action in consumed_actions {
-            let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_action.link_id) else {
+            let Some(entry) = dep_lookup.get(&consumed_action.link_id) else {
                 continue;
             };
-            let key = (dep_name.clone(), dep_tag.clone());
-            let Some(offerings) = dep_offerings.get(&key) else {
-                continue;
-            };
-            let Some((action_message, origin)) = offerings.actions.get(consumed_action.name.trim())
-            else {
-                continue;
+            let key = (entry.name.clone(), entry.tag.clone());
+            let lookup_name = consumed_action.name.trim();
+            let (action_message, dependency) = match entry.kind {
+                DependencyKind::Node => {
+                    let Some(offerings) = node_dep_offerings.get(&key) else {
+                        continue;
+                    };
+                    let Some((action_message, origin)) = offerings.actions.get(lookup_name) else {
+                        continue;
+                    };
+                    (
+                        action_message.clone(),
+                        build_dependency_context_for_node(
+                            &entry.name,
+                            &entry.tag,
+                            origin.clone(),
+                            &consumed_action.link_id,
+                            entry.from_any,
+                        ),
+                    )
+                }
+                DependencyKind::Interface => {
+                    let Some(parsed) = iface_dep_contracts.get(&key) else {
+                        continue;
+                    };
+                    let Some(exposed) = parsed
+                        .interfaces
+                        .actions
+                        .iter()
+                        .find(|a| a.name.trim() == lookup_name)
+                    else {
+                        continue;
+                    };
+                    (
+                        action_message_from_exposed(exposed),
+                        build_dependency_context_for_interface(
+                            &entry.name,
+                            &entry.tag,
+                            &consumed_action.link_id,
+                            entry.from_any,
+                        ),
+                    )
+                }
             };
             interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
                 action: consumed_action.clone(),
-                messages: action_message.clone(),
-                dependency: build_dependency_context(dep_name, dep_tag, origin.clone()),
+                messages: action_message,
+                dependency,
             }));
         }
     }
@@ -732,15 +933,38 @@ pub fn collect_consumed_interfaces(
     Ok(interfaces)
 }
 
-fn build_dependency_context(
+/// Builds a [`generator::DependencyContext`] for a `depends_on.nodes`
+/// resolution path. `origin` carries the optional `(iface_name,
+/// iface_tag)` when the producer node `conforms_to` an interface; `None`
+/// means the producer emits natively.
+fn build_dependency_context_for_node(
     dep_name: &str,
     dep_tag: &str,
     origin: Option<generator::InterfaceOrigin>,
+    link_id: &str,
+    from_any: bool,
 ) -> generator::DependencyContext {
-    match origin {
+    let ctx = match origin {
         Some(o) => generator::DependencyContext::conformed(dep_name, dep_tag, o),
         None => generator::DependencyContext::native(dep_name, dep_tag),
-    }
+    };
+    ctx.with_link_id(Some(link_id.to_string()))
+        .with_from_any(from_any)
+}
+
+/// Builds a [`generator::DependencyContext`] for a
+/// `depends_on.interfaces` resolution path. `node_name` / `node_tag`
+/// carry the interface's `(name, tag)` here (no producer node is
+/// involved).
+fn build_dependency_context_for_interface(
+    iface_name: &str,
+    iface_tag: &str,
+    link_id: &str,
+    from_any: bool,
+) -> generator::DependencyContext {
+    generator::DependencyContext::interface(iface_name, iface_tag)
+        .with_link_id(Some(link_id.to_string()))
+        .with_from_any(from_any)
 }
 
 /// What a single dependency can provide to consumers — its native
@@ -909,6 +1133,80 @@ fn action_message_from_exposed(
 ///   addressable without ambiguity.
 /// - Cache miss — surfaces "run `peppy repo refresh`".
 /// - `sha256` pin set but the on-disk content has drifted.
+/// Loads a `PeppyInterface` document from the local interface cache for
+/// `(name, tag)`, verifying both the SHA pin (when set) and on-disk drift
+/// against the cached fingerprint. Returns the parsed interface document
+/// alongside the cache entry's path, so callers can pass through to the
+/// `InterfaceOrigin` stamping step. Shared between [`resolve_conforms_to`]
+/// (producer side) and the `depends_on.interfaces` resolution path
+/// (consumer side).
+pub(crate) fn resolve_interface_doc(
+    peppy_dirs: &PeppyDirs,
+    name: &str,
+    tag: &str,
+    sha256_pin: Option<&str>,
+) -> std::result::Result<config::interface::PeppyInterface, String> {
+    let cache = repo_cache::load_interface_cache(peppy_dirs)
+        .map_err(|e| format!("failed to load interface cache: {e}"))?;
+
+    let entry = match sha256_pin {
+        Some(sha) => {
+            repo_cache::lookup_interface_by_sha256(&cache, name, tag, sha).ok_or_else(|| {
+                format!(
+                    "interface `{name}:{tag}` (sha256 `{sha}`) not in interface cache; \
+                     run `peppy repo refresh`"
+                )
+            })?
+        }
+        None => repo_cache::lookup_interface(&cache, name, tag).ok_or_else(|| {
+            format!("interface `{name}:{tag}` not in interface cache; run `peppy repo refresh`")
+        })?,
+    };
+
+    let bytes = std::fs::read(&entry.path).map_err(|e| {
+        format!(
+            "failed to read cached interface `{name}:{tag}` at {}: {e}",
+            entry.path
+        )
+    })?;
+    let actual_sha = config::fingerprint::fingerprint_for_bytes(&bytes);
+    if actual_sha != entry.sha256 {
+        return Err(format!(
+            "interface `{name}:{tag}` content drifted from cache fingerprint \
+             (expected `{}`, got `{actual_sha}`); run `peppy repo refresh`",
+            entry.sha256
+        ));
+    }
+
+    let content = std::str::from_utf8(&bytes)
+        .map_err(|e| format!("cached interface `{name}:{tag}` is not UTF-8: {e}"))?;
+    config::interface::PeppyInterfaceParser::from_content(content)
+        .map_err(|e| format!("failed to parse cached interface `{name}:{tag}`: {e}"))
+}
+
+/// Validates that every `depends_on.interfaces` entry on the manifest can
+/// be loaded from the local interface cache (and that pinned SHAs match
+/// and on-disk content has not drifted). Runs early in the sync pipeline
+/// so deployments fail fast with a clear pointer to `peppy repo refresh`
+/// instead of crashing deep in the resolver.
+pub fn validate_interface_dependency_specs(
+    manifest: &config::node::Manifest,
+    peppy_dirs: &PeppyDirs,
+) -> std::result::Result<(), String> {
+    let Some(depends_on) = manifest.depends_on.as_ref() else {
+        return Ok(());
+    };
+    for entry in &depends_on.interfaces {
+        resolve_interface_doc(
+            peppy_dirs,
+            entry.name.as_str(),
+            entry.tag.as_str(),
+            entry.sha256.as_deref(),
+        )?;
+    }
+    Ok(())
+}
+
 pub fn resolve_conforms_to(
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
@@ -949,49 +1247,11 @@ pub fn resolve_conforms_to(
         }
     }
 
-    let cache = repo_cache::load_interface_cache(peppy_dirs)
-        .map_err(|e| format!("failed to load interface cache: {e}"))?;
-
     let mut out: Vec<DeploymentInterface> = Vec::new();
     for item in items {
         let name = item.name.as_str();
         let tag = item.tag.as_str();
-        let entry = match item.sha256.as_deref() {
-            Some(sha) => repo_cache::lookup_interface_by_sha256(&cache, name, tag, sha)
-                .ok_or_else(|| {
-                    format!(
-                        "interface `{name}:{tag}` (sha256 `{sha}`) not in interface cache; \
-                         run `peppy repo refresh`"
-                    )
-                })?,
-            None => repo_cache::lookup_interface(&cache, name, tag).ok_or_else(|| {
-                format!("interface `{name}:{tag}` not in interface cache; run `peppy repo refresh`")
-            })?,
-        };
-
-        // Re-fingerprint the on-disk content to guard against drift between
-        // the cached entry (recorded at `peppy repo refresh`) and what's on
-        // disk now — for both pinned and unpinned entries, since the cache
-        // entry's sha256 reflects the last-refreshed bytes, not live bytes.
-        let bytes = std::fs::read(&entry.path).map_err(|e| {
-            format!(
-                "failed to read cached interface `{name}:{tag}` at {}: {e}",
-                entry.path
-            )
-        })?;
-        let actual_sha = config::fingerprint::fingerprint_for_bytes(&bytes);
-        if actual_sha != entry.sha256 {
-            return Err(format!(
-                "interface `{name}:{tag}` content drifted from cache fingerprint \
-                 (expected `{}`, got `{actual_sha}`); run `peppy repo refresh`",
-                entry.sha256
-            ));
-        }
-
-        let content = std::str::from_utf8(&bytes)
-            .map_err(|e| format!("cached interface `{name}:{tag}` is not UTF-8: {e}"))?;
-        let parsed = config::interface::PeppyInterfaceParser::from_content(content)
-            .map_err(|e| format!("failed to parse cached interface `{name}:{tag}`: {e}"))?;
+        let parsed = resolve_interface_doc(peppy_dirs, name, tag, item.sha256.as_deref())?;
 
         let origin = InterfaceOrigin {
             iface_name: name.to_string(),

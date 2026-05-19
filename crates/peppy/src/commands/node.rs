@@ -197,6 +197,13 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(short = 'i', long)]
         instance_id: Option<String>,
+        /// Bind one or more link_ids on the producer side. Repeatable
+        /// (`--link-id a --link-id b`) or comma-separated
+        /// (`--link-id a,b`). Defaults to the reserved `_` segment when
+        /// omitted; `_` and `*` are reserved and cannot be supplied by
+        /// the user.
+        #[arg(long = "link-id", value_delimiter = ',', action = clap::ArgAction::Append)]
+        link_ids: Vec<String>,
         /// Idle timeout in seconds — resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -346,6 +353,7 @@ impl Command for NodeCommand {
                 tag,
                 args,
                 instance_id,
+                link_ids,
                 idle_timeout,
                 max_timeout,
                 build,
@@ -354,11 +362,22 @@ impl Command for NodeCommand {
                     .or_else(|| node_name.zip(tag))
                     .expect("either node_ref or node_name+tag must be provided");
                 info!("Running node {}:{}...", node_name, tag);
+                let validated_link_ids =
+                    run::validate_link_ids(&link_ids).map_err(crate::error::Error::Sync)?;
                 let timeouts = TimeoutConfig {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
                 };
-                run::run_node(ctx, node_name, tag, args, instance_id, timeouts, build)
+                run::run_node(
+                    ctx,
+                    node_name,
+                    tag,
+                    args,
+                    instance_id,
+                    validated_link_ids,
+                    timeouts,
+                    build,
+                )
             }
             NodeCommands::RuntimeConfig {
                 node_name,

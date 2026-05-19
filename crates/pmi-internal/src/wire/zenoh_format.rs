@@ -57,16 +57,16 @@ impl ZenohWireFormat {
         })
     }
 
-    /// `*/{as_core}/*/{as_inst}/topic/{discriminator}/{name}/{tag}/{as_topic}`
+    /// `*/{as_core}/*/{as_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{as_topic}`
     pub(crate) fn topic_publish(s: &TopicWireSender) -> String {
         let (discriminator, name, tag) = target_segments(Some(&s.as_target));
         format!(
-            "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/topic/{discriminator}/{name}/{tag}/{}",
-            s.as_core_node, s.as_instance_id, s.as_topic_name,
+            "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/topic/{discriminator}/{name}/{tag}/{}/{}",
+            s.as_core_node, s.as_instance_id, s.link_id, s.as_topic_name,
         )
     }
 
-    /// `{as_core}/{from_core|*}/{as_inst}/{from_inst|*}/topic/{discriminator|*}/{name|*}/{tag|*}/{to_topic}`
+    /// `{as_core}/{from_core|*}/{as_inst}/{from_inst|*}/topic/{discriminator|*}/{name|*}/{tag|*}/{link_id|*}/{to_topic}`
     pub(crate) fn topic_subscribe(r: &TopicWireReceiver) -> String {
         let from_core = r.from_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         let from_inst = r
@@ -74,8 +74,9 @@ impl ZenohWireFormat {
             .as_deref()
             .unwrap_or(SINGLE_CHUNK_WILDCARD);
         let (discriminator, name, tag) = target_segments(r.from_target.as_ref());
+        let link_id = r.from_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         format!(
-            "{}/{from_core}/{}/{from_inst}/topic/{discriminator}/{name}/{tag}/{}",
+            "{}/{from_core}/{}/{from_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{}",
             r.as_core_node, r.as_instance_id, r.to_topic,
         )
     }
@@ -88,7 +89,12 @@ impl ZenohWireFormat {
     /// Order matches the original code's `patterns[0..4]` (bound-specific +
     /// instance-specific first, then progressively broader).
     pub(crate) fn service_listen_patterns(r: &ServiceWireReceiver) -> [String; 4] {
-        let root = service_root(&r.as_identity, &r.as_service_name, r.kind);
+        let root = service_root(
+            &r.as_identity,
+            r.link_id.as_str(),
+            &r.as_service_name,
+            r.kind,
+        );
         let bound = r.bound_core_node.as_str();
         let inst = r.as_instance_id.as_str();
         [
@@ -109,8 +115,21 @@ impl ZenohWireFormat {
 
     /// Client → server request publish:
     /// `{target_core|_any_}/{bound_core}/{target_inst|_any_}/{caller_inst}/{service_root}/request/{request_id}`.
+    ///
+    /// Defaults `to_link_id` to the reserved `_` segment (matching the
+    /// producer-side default) when the consumer didn't pin one. Zenoh
+    /// `put` keyexprs can't contain wildcards, so the consumer must
+    /// commit to a concrete link_id at publish time; `from_any: true`
+    /// service consumers currently fall back to the same `_` and
+    /// therefore only reach producers exposed on the default link_id.
+    /// Lifting that restriction needs a producer-side cartesian listen
+    /// pattern (tracked as a follow-up).
     pub(crate) fn service_request_publish(s: &ServiceWireSender, request_id: &str) -> String {
-        let root = service_root(&s.to_target, &s.to_service_name, s.kind);
+        let link_id = s
+            .to_link_id
+            .as_deref()
+            .unwrap_or(crate::wire::DEFAULT_LINK_ID);
+        let root = service_root(&s.to_target, link_id, &s.to_service_name, s.kind);
         let target_core = s.to_core_node.as_deref().unwrap_or(BROADCAST_MARKER);
         let target_inst = s.to_instance_id.as_deref().unwrap_or(BROADCAST_MARKER);
         format!(
@@ -122,7 +141,11 @@ impl ZenohWireFormat {
     /// Client-side response subscribe (wildcards on responder fields, keyed by `request_id`):
     /// `{bound_core}/*/{caller_inst}/*/{service_root}/response/{request_id}`.
     pub(crate) fn service_response_subscribe(s: &ServiceWireSender, request_id: &str) -> String {
-        let root = service_root(&s.to_target, &s.to_service_name, s.kind);
+        let link_id = s
+            .to_link_id
+            .as_deref()
+            .unwrap_or(crate::wire::DEFAULT_LINK_ID);
+        let root = service_root(&s.to_target, link_id, &s.to_service_name, s.kind);
         format!(
             "{}/{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{root}/response/{request_id}",
             s.bound_core_node, s.as_instance_id,
@@ -158,6 +181,7 @@ impl ZenohWireFormat {
 
         let expected_root = service_root(
             &receiver.as_identity,
+            receiver.link_id.as_str(),
             &receiver.as_service_name,
             receiver.kind,
         );
@@ -206,9 +230,9 @@ impl ZenohWireFormat {
     // ─── Actions ──────────────────────────────────────────────────────────
 
     /// Server-side per-goal feedback publish:
-    /// `*/{bound_core}/*/{as_inst}/action/{discriminator}/{name}/{tag}/{as_action}/feedback/{as_inst}/{goal_id}`.
+    /// `*/{bound_core}/*/{as_inst}/action/{discriminator}/{name}/{tag}/{link_id}/{as_action}/feedback/{as_inst}/{goal_id}`.
     pub(crate) fn action_feedback_publish(r: &ActionWireReceiver, goal_id: &str) -> String {
-        let action_root = action_root(&r.as_identity, &r.as_action_name);
+        let action_root = action_root(&r.as_identity, r.link_id.as_str(), &r.as_action_name);
         format!(
             "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/{action_root}/feedback/{}/{goal_id}",
             r.bound_core_node, r.as_instance_id, r.as_instance_id,
@@ -216,9 +240,12 @@ impl ZenohWireFormat {
     }
 
     /// Client-side per-goal feedback subscribe. Wildcards on server-side fields
-    /// when the target is not pinned.
+    /// when the target is not pinned. `to_link_id: None` → match the
+    /// producer's link_id slot via the transport wildcard `*`, since
+    /// subscribes (unlike publishes) accept wildcards.
     pub(crate) fn action_feedback_subscribe(s: &ActionWireSender, goal_id: &str) -> String {
-        let action_root = action_root(&s.to_target, &s.to_action_name);
+        let link_id = s.to_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let action_root = action_root(&s.to_target, link_id, &s.to_action_name);
         let target_core = s.to_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         let target_inst_segment = s.to_instance_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         format!(
@@ -248,11 +275,12 @@ fn extract_caller_segment(
 }
 
 /// Builds the service_root segment. For action sub-services, appends the
-/// `goal` / `cancel` / `result` suffix.
-fn service_root(target: &SenderTarget, name: &str, kind: ServiceKind) -> String {
+/// `goal` / `cancel` / `result` suffix. The `link_id` segment slots between
+/// the producer `(name, tag)` pair and the service / action `name`.
+fn service_root(target: &SenderTarget, link_id: &str, name: &str, kind: ServiceKind) -> String {
     let suffix = kind.suffix().map(|s| format!("/{s}")).unwrap_or_default();
     format!(
-        "{}/{}/{}/{}/{name}{suffix}",
+        "{}/{}/{}/{}/{link_id}/{name}{suffix}",
         kind.root_segment(),
         target.discriminator(),
         target.name(),
@@ -260,10 +288,11 @@ fn service_root(target: &SenderTarget, name: &str, kind: ServiceKind) -> String 
     )
 }
 
-/// Builds the action_root segment (`action/{discriminator}/{name}/{tag}/{action}`).
-fn action_root(target: &SenderTarget, action: &str) -> String {
+/// Builds the action_root segment
+/// (`action/{discriminator}/{name}/{tag}/{link_id}/{action}`).
+fn action_root(target: &SenderTarget, link_id: &str, action: &str) -> String {
     format!(
-        "action/{}/{}/{}/{action}",
+        "action/{}/{}/{}/{link_id}/{action}",
         target.discriminator(),
         target.name(),
         target.tag(),

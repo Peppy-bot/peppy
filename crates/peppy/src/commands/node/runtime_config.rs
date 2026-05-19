@@ -113,6 +113,7 @@ async fn print_runtime_config_async(
             instance_id: Name::new(instance_id).map_err(|e| Error::PeppyConfig(e.into()))?,
             arguments: args_to_node_arguments(&args),
             framework: Default::default(),
+            link_ids: Vec::new(),
         },
         node_name,
         node_tag,

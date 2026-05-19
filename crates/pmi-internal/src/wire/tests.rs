@@ -130,6 +130,7 @@ fn sample_action_sender() -> ActionWireSender {
         to_core_node: Some(seg("target_core")),
         to_instance_id: Some(seg("target_inst")),
         to_target: test_node_target("robot_arm"),
+        to_link_id: Some(seg("link_a")),
         to_action_name: seg("pick_place"),
     }
 }
@@ -170,6 +171,7 @@ fn sample_action_receiver() -> ActionWireReceiver {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
         as_identity: SenderTarget::interface("manipulator", "v1").expect("valid interface target"),
+        link_id: Segment::default_link_id(),
         as_action_name: seg("pick_place"),
     }
 }

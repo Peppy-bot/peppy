@@ -134,6 +134,7 @@ async fn daemon_runner_succeed() {
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
             framework: Default::default(),
+            link_ids: Vec::new(),
         },
         TEST_NODE_NAME,
         "v1",
@@ -339,6 +340,7 @@ async fn node_ready_but_not_healthy() {
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
             framework: Default::default(),
+            link_ids: Vec::new(),
         },
         TEST_NODE_NAME,
         "v1",
@@ -593,6 +595,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
             framework: Default::default(),
+            link_ids: Vec::new(),
         },
         TEST_NODE_NAME,
         "v1",

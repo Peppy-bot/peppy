@@ -35,6 +35,10 @@ impl TopicMessenger {
     /// Subscribe to a topic published by a specific target. `from_target`
     /// `Some(SenderTarget)` filters on the publisher's identity; `None`
     /// wildcards the target segment (any node or interface emits a match).
+    ///
+    /// The producer's link_id slot is wildcarded by this entry point; use
+    /// [`Self::subscribe_with_link_id`] to pin a specific link_id (consumers
+    /// generated from `depends_on.interfaces` with `from_any: false`).
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
@@ -46,12 +50,43 @@ impl TopicMessenger {
         from_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
+        Self::subscribe_with_link_id(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            from_target,
+            None,
+            to_topic,
+            from_core_node,
+            from_instance_id,
+            qos,
+        )
+        .await
+    }
+
+    /// Variant of [`Self::subscribe`] that pins the producer's bound link_id
+    /// slot. `from_link_id` `Some(value)` filters to a producer's specific
+    /// bound link_id; `None` matches any link_id (used for `from_any: true`
+    /// consumers).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn subscribe_with_link_id(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        from_target: Option<SenderTarget>,
+        from_link_id: Option<&str>,
+        to_topic: &str,
+        from_core_node: Option<&str>,
+        from_instance_id: Option<&str>,
+        qos: QoSProfile,
+    ) -> Result<Subscription> {
         let recv = TopicWireReceiver::new(
             as_core_node,
             as_instance_id,
             from_core_node,
             from_instance_id,
             from_target,
+            from_link_id,
             to_topic,
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
@@ -78,13 +113,17 @@ impl TopicMessenger {
             from_core_node,
             from_instance_id,
             None,
+            None,
             to_topic,
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription))
     }
 
-    /// Publishes a payload to a topic on the specified core node.
+    /// Publishes a payload to a topic on the specified core node. Emits on
+    /// the reserved default `_` link_id segment; use
+    /// [`Self::emit_with_link_id`] for producers that fan out across bound
+    /// link_ids.
     pub async fn emit(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -94,7 +133,41 @@ impl TopicMessenger {
         qos: QoSProfile,
         payload: Payload,
     ) -> Result<()> {
-        let sender = TopicWireSender::new(as_core_node, as_instance_id, as_target, as_topic_name)?;
+        Self::emit_with_link_id(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            as_target,
+            None,
+            as_topic_name,
+            qos,
+            payload,
+        )
+        .await
+    }
+
+    /// Variant of [`Self::emit`] that pins the publisher's link_id slot.
+    /// `link_id` `None` falls back to the reserved default `_` segment;
+    /// producers generated against an interface fan out by iterating their
+    /// bound link_ids and passing each as `Some(value)`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn emit_with_link_id(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_target: SenderTarget,
+        link_id: Option<&str>,
+        as_topic_name: &str,
+        qos: QoSProfile,
+        payload: Payload,
+    ) -> Result<()> {
+        let sender = TopicWireSender::new(
+            as_core_node,
+            as_instance_id,
+            as_target,
+            link_id,
+            as_topic_name,
+        )?;
         messenger.emit_topic_message(&sender, qos, payload).await
     }
 
@@ -109,7 +182,36 @@ impl TopicMessenger {
         as_topic_name: &str,
         qos: QoSProfile,
     ) -> Result<TopicPublisher> {
-        let sender = TopicWireSender::new(as_core_node, as_instance_id, as_target, as_topic_name)?;
+        Self::declare_publisher_with_link_id(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            as_target,
+            None,
+            as_topic_name,
+            qos,
+        )
+        .await
+    }
+
+    /// Variant of [`Self::declare_publisher`] that pins the publisher's
+    /// link_id slot. Used by generated producer fan-out loops.
+    pub async fn declare_publisher_with_link_id(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_target: SenderTarget,
+        link_id: Option<&str>,
+        as_topic_name: &str,
+        qos: QoSProfile,
+    ) -> Result<TopicPublisher> {
+        let sender = TopicWireSender::new(
+            as_core_node,
+            as_instance_id,
+            as_target,
+            link_id,
+            as_topic_name,
+        )?;
         let inner = messenger
             .declare_topic_publisher(&sender, qos.into())
             .await?;

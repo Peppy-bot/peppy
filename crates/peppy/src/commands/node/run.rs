@@ -261,8 +261,38 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
+/// Validates `--link-id` CLI input. Rejects empty / whitespace-only
+/// entries, the reserved sentinels `_` and `*` (the former is the default
+/// segment used when no link_id is supplied; the latter is the wire
+/// wildcard), and any value that fails the wire-segment rules. Returns
+/// the validated list with first-seen order preserved and duplicates
+/// removed.
+pub fn validate_link_ids(input: &[String]) -> std::result::Result<Vec<String>, String> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for raw in input {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err("--link-id values must not be empty".to_string());
+        }
+        if matches!(trimmed, "_" | "*") {
+            return Err(format!(
+                "--link-id `{trimmed}` is reserved (use a different identifier)"
+            ));
+        }
+        if pmi::Segment::try_link_id(trimmed).is_err() {
+            return Err(format!("--link-id `{trimmed}` is not a valid wire segment"));
+        }
+        if seen.insert(trimmed.to_string()) {
+            out.push(trimmed.to_string());
+        }
+    }
+    Ok(out)
+}
+
 /// Shared logic for running a node instance.
 /// Used by both `run_node` and `add_node` (when --run is set).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
     core_node_name: &str,
@@ -270,6 +300,7 @@ pub async fn run_instance_async(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
+    link_ids: Vec<String>,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     // Generate or use provided instance_id
@@ -303,6 +334,7 @@ pub async fn run_instance_async(
                 .map_err(|e| Error::PeppyConfig(e.into()))?,
             arguments,
             framework: Default::default(),
+            link_ids,
         },
         node_name,
         tag,
@@ -352,12 +384,14 @@ pub async fn run_instance_async(
     Ok(instance_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_node(
     ctx: &Arc<AppContext>,
     node_name: String,
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
+    link_ids: Vec<String>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -367,17 +401,20 @@ pub fn run_node(
         tag,
         args,
         instance_id,
+        link_ids,
         timeouts,
         build,
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_node_async(
     ctx: &Arc<AppContext>,
     node_name: String,
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
+    link_ids: Vec<String>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -456,6 +493,7 @@ async fn run_node_async(
         &tag,
         &args,
         instance_id,
+        link_ids,
         &remaining_timeouts(&timeouts, start, "run")?,
     )
     .await?;
@@ -466,6 +504,80 @@ async fn run_node_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_link_ids_accepts_single_value() {
+        let parsed = validate_link_ids(&["wrist_left_camera".to_string()]).expect("should accept");
+        assert_eq!(parsed, vec!["wrist_left_camera".to_string()]);
+    }
+
+    #[test]
+    fn validate_link_ids_accepts_multiple_values() {
+        let parsed = validate_link_ids(&[
+            "wrist_left_camera".to_string(),
+            "wrist_right_camera".to_string(),
+            "torso_camera".to_string(),
+        ])
+        .expect("should accept");
+        assert_eq!(
+            parsed,
+            vec![
+                "wrist_left_camera".to_string(),
+                "wrist_right_camera".to_string(),
+                "torso_camera".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn validate_link_ids_deduplicates_preserving_first_seen_order() {
+        let parsed = validate_link_ids(&[
+            "wrist_left_camera".to_string(),
+            "wrist_right_camera".to_string(),
+            "wrist_left_camera".to_string(),
+            "torso_camera".to_string(),
+        ])
+        .expect("should accept");
+        assert_eq!(
+            parsed,
+            vec![
+                "wrist_left_camera".to_string(),
+                "wrist_right_camera".to_string(),
+                "torso_camera".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn validate_link_ids_rejects_empty_string() {
+        let err = validate_link_ids(&["".to_string()]).expect_err("empty should error");
+        assert!(err.contains("must not be empty"), "msg: {err}");
+    }
+
+    #[test]
+    fn validate_link_ids_rejects_whitespace_only() {
+        let err = validate_link_ids(&["   ".to_string()]).expect_err("whitespace should error");
+        assert!(err.contains("must not be empty"), "msg: {err}");
+    }
+
+    #[test]
+    fn validate_link_ids_rejects_underscore_sentinel() {
+        let err = validate_link_ids(&["_".to_string()]).expect_err("`_` should error");
+        assert!(err.contains("reserved"), "msg: {err}");
+    }
+
+    #[test]
+    fn validate_link_ids_rejects_wildcard_sentinel() {
+        let err = validate_link_ids(&["*".to_string()]).expect_err("`*` should error");
+        assert!(err.contains("reserved"), "msg: {err}");
+    }
+
+    #[test]
+    fn validate_link_ids_rejects_segment_containing_slash() {
+        let err = validate_link_ids(&["wrist/left".to_string()])
+            .expect_err("`/` in segment should error");
+        assert!(err.contains("valid wire segment"), "msg: {err}");
+    }
 
     #[test]
     fn parse_bool_values() {

@@ -2,7 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
-use super::services::sender_target_python_expr;
+use super::services::{consumed_link_id_python_expr, sender_target_python_expr};
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
@@ -112,6 +112,10 @@ pub fn build_emitted_topic(
 
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
+    // Fan out: one emission per bound link_id. The Python `link_ids()`
+    // accessor mirrors Rust's and always returns at least one entry.
+    builder.line("for _link_id in node_runner.link_ids():");
+    builder.indent();
     builder.line("await peppylib.TopicMessenger.emit(");
     builder.indent();
     builder.line("node_runner.messenger(),");
@@ -121,8 +125,10 @@ pub fn build_emitted_topic(
     builder.line("TOPIC_NAME,");
     builder.line("qos,");
     builder.line("payload,");
+    builder.line("link_id=_link_id,");
     builder.dedent();
     builder.line(")");
+    builder.dedent();
     builder.dedent();
 
     Ok(builder.build())
@@ -209,6 +215,8 @@ fn build_consumed_topic_inner(
         builder.line("from_core_node,");
         builder.line("from_instance_id,");
         builder.line("peppylib.QoSProfile.Standard,");
+        let from_link_id = consumed_link_id_python_expr(dep);
+        builder.line(&format!("from_link_id={from_link_id},"));
         builder.dedent();
         builder.line(")");
     } else {

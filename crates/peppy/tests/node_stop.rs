@@ -169,6 +169,7 @@ async fn node_stop_command_succeeds() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            link_ids: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,

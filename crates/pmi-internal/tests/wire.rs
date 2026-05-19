@@ -72,6 +72,7 @@ async fn topic_native_roundtrip() {
         "core_pub",
         "publisher_inst",
         test_node_target("uvc_camera"),
+        None,
         "video_stream",
     )
     .expect("valid wire fields");
@@ -81,6 +82,7 @@ async fn topic_native_roundtrip() {
         Some("core_pub"),
         Some("publisher_inst"),
         Some(test_node_target("uvc_camera")),
+        None,
         "video_stream",
     )
     .expect("valid wire fields");
@@ -118,7 +120,7 @@ async fn topic_iface_roundtrip() {
     instance.messenger().start_session().await.unwrap();
 
     let target = SenderTarget::interface("manipulator", "v1-rc2").expect("valid target");
-    let sender = TopicWireSender::new("core_pub", "pub_inst", target.clone(), "joint_states")
+    let sender = TopicWireSender::new("core_pub", "pub_inst", target.clone(), None, "joint_states")
         .expect("valid wire fields");
     let receiver = TopicWireReceiver::new(
         "core_sub",
@@ -126,6 +128,7 @@ async fn topic_iface_roundtrip() {
         Some("core_pub"),
         Some("pub_inst"),
         Some(target),
+        None,
         "joint_states",
     )
     .expect("valid wire fields");
@@ -164,6 +167,7 @@ async fn topic_wildcard_subscriber() {
         "any_publisher_core",
         "any_publisher_inst",
         test_node_target("uvc_camera"),
+        None,
         "frames",
     )
     .expect("valid wire fields");
@@ -174,6 +178,7 @@ async fn topic_wildcard_subscriber() {
         None,
         None,
         Some(test_node_target("uvc_camera")),
+        None,
         "frames",
     )
     .expect("valid wire fields");
@@ -207,6 +212,7 @@ fn service_receiver() -> ServiceWireReceiver {
         "server_core",
         "server_inst",
         test_node_target("robot_arm"),
+        None,
         "ping",
         ServiceKind::Service,
     )
@@ -220,6 +226,7 @@ fn service_sender(to_core_node: Option<&str>, to_instance_id: Option<&str>) -> S
         to_core_node,
         to_instance_id,
         test_node_target("robot_arm"),
+        None,
         "ping",
         ServiceKind::Service,
     )
@@ -304,6 +311,7 @@ fn action_receiver() -> ActionWireReceiver {
         "server_core",
         "server_inst",
         test_node_target("robot_arm"),
+        None,
         "pick_place",
     )
     .expect("valid wire fields")
@@ -316,6 +324,7 @@ fn action_sender() -> ActionWireSender {
         Some("server_core"),
         Some("server_inst"),
         test_node_target("robot_arm"),
+        None,
         "pick_place",
     )
     .expect("valid wire fields")

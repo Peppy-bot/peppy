@@ -277,7 +277,9 @@ impl fmt::Debug for ServiceRequestContext {
 
 impl ServiceMessenger {
     /// Listening as a service is a 2-way stream, so the process that exposes
-    /// the service provides its own `instance_id`.
+    /// the service provides its own `instance_id`. Listens on the reserved
+    /// default `_` link_id segment; use [`Self::listen_with_link_id`] when
+    /// the producer is generated to fan out across bound link_ids.
     ///
     /// `as_identity` must match the [`SenderTarget`] callers will use in
     /// [`Self::poll`].
@@ -288,10 +290,33 @@ impl ServiceMessenger {
         as_identity: SenderTarget,
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
+        Self::listen_with_link_id(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            as_identity,
+            None,
+            as_service_name,
+        )
+        .await
+    }
+
+    /// Variant of [`Self::listen`] that pins the listener's bound link_id
+    /// slot. Producers generated against an interface call this once per
+    /// bound link_id (one endpoint per link_id).
+    pub async fn listen_with_link_id(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_identity: SenderTarget,
+        link_id: Option<&str>,
+        as_service_name: &str,
+    ) -> Result<ServiceEndpoint> {
         let recv = ServiceWireReceiver::new(
             as_core_node,
             as_instance_id,
             as_identity,
+            link_id,
             as_service_name,
             ServiceKind::Service,
         )?;
@@ -299,7 +324,8 @@ impl ServiceMessenger {
     }
 
     /// If `to_instance_id` is `None`, this call returns with the first
-    /// service instance that responds.
+    /// service instance that responds. Broadcasts on the link_id slot; use
+    /// [`Self::poll_with_link_id`] to pin a consumer-side link_id.
     ///
     /// `to_target` must match the [`SenderTarget`] the responder used in
     /// [`Self::listen`].
@@ -315,12 +341,44 @@ impl ServiceMessenger {
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
+        Self::poll_with_link_id(
+            messenger,
+            bound_core_node,
+            as_instance_id,
+            to_target,
+            None,
+            to_service_name,
+            to_core_node,
+            to_instance_id,
+            request_payload,
+            response_timeout,
+        )
+        .await
+    }
+
+    /// Variant of [`Self::poll`] that pins the consumer's `to_link_id` slot.
+    /// `to_link_id` `None` broadcasts (used by `from_any: true` consumers);
+    /// `Some(value)` targets a specific producer link_id.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn poll_with_link_id(
+        messenger: &MessengerHandle,
+        bound_core_node: &str,
+        as_instance_id: &str,
+        to_target: SenderTarget,
+        to_link_id: Option<&str>,
+        to_service_name: &str,
+        to_core_node: Option<&str>,
+        to_instance_id: Option<&str>,
+        request_payload: Payload,
+        response_timeout: impl Into<Option<Duration>>,
+    ) -> Result<Message> {
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
             to_core_node,
             to_instance_id,
             to_target,
+            to_link_id,
             to_service_name,
             ServiceKind::Service,
         )?;
@@ -334,6 +392,7 @@ impl ServiceMessenger {
     /// The probe is handled transparently by the service's request loop — the user
     /// handler is never invoked. Returns `true` if the service responds within
     /// [`PROBE_TIMEOUT`], `false` if unreachable.
+    #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_core_node: &str,
@@ -343,11 +402,38 @@ impl ServiceMessenger {
         to_core_node: Option<&str>,
         to_instance_id: Option<&str>,
     ) -> Result<bool> {
-        match Self::poll(
+        Self::is_reachable_with_link_id(
             messenger,
             bound_core_node,
             as_instance_id,
             to_target,
+            None,
+            to_service_name,
+            to_core_node,
+            to_instance_id,
+        )
+        .await
+    }
+
+    /// Variant of [`Self::is_reachable`] that pins the consumer's
+    /// `to_link_id` slot.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn is_reachable_with_link_id(
+        messenger: &MessengerHandle,
+        bound_core_node: &str,
+        as_instance_id: &str,
+        to_target: SenderTarget,
+        to_link_id: Option<&str>,
+        to_service_name: &str,
+        to_core_node: Option<&str>,
+        to_instance_id: Option<&str>,
+    ) -> Result<bool> {
+        match Self::poll_with_link_id(
+            messenger,
+            bound_core_node,
+            as_instance_id,
+            to_target,
+            to_link_id,
             to_service_name,
             to_core_node,
             to_instance_id,

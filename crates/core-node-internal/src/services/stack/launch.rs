@@ -1288,6 +1288,7 @@ async fn start_node_instances(
                 instance_id: instance.instance_id.clone(),
                 arguments: instance.arguments.clone(),
                 framework: resolve_framework(&instance.framework, ctx.daemon_use_sim_time),
+                link_ids: Vec::new(),
             };
             let runtime_config = match RuntimeConfig::new(
                 messaging_host.as_str(),

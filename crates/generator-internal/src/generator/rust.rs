@@ -270,6 +270,8 @@ impl RustGenerator {
         // dependency as an Interface if it exposes the action via
         // `conforms_to`, otherwise as its native Node identity.
         let to_target_expr = consumed_to_target_expression(dependency);
+        let to_link_id_expr =
+            crate::generator::rust::topics::consumed_from_link_id_expression(dependency);
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
@@ -281,11 +283,12 @@ impl RustGenerator {
             ) -> crate::Result<Self> {
                 #goal_payload_tokens
 
-                let action_handle = peppylib::ActionMessenger::send_goal(
+                let action_handle = peppylib::ActionMessenger::send_goal_with_link_id(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     #to_target_expr,
+                    #to_link_id_expr,
                     TARGET_ACTION_NAME,
                     to_core_node,
                     to_instance_id,
@@ -1306,12 +1309,15 @@ impl LanguageGenerator for RustGenerator {
         // dependency exposes the service via `conforms_to`, address it as the
         // interface; otherwise as the dependency's node identity.
         let to_target_expr = consumed_to_target_expression(dependency);
+        let to_link_id_expr =
+            crate::generator::rust::topics::consumed_from_link_id_expression(dependency);
         let poll_call = quote! {
-            peppylib::ServiceMessenger::poll(
+            peppylib::ServiceMessenger::poll_with_link_id(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 #to_target_expr,
+                #to_link_id_expr,
                 SERVICE_NAME,
                 to_core_node,
                 to_instance_id,

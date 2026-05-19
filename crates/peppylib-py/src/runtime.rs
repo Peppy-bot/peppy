@@ -307,6 +307,13 @@ impl PyNodeRunner {
     fn node_tag(&self) -> &str {
         self.inner.processor().node_tag()
     }
+
+    /// Returns the link_ids this producer is bound to. Always returns at
+    /// least one entry (the reserved default `_` when no `--link-id` is
+    /// supplied).
+    fn link_ids(&self) -> Vec<String> {
+        self.inner.processor().link_ids()
+    }
 }
 
 /// Python wrapper for StandaloneConfig.
