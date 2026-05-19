@@ -2479,11 +2479,10 @@ async fn single_action_communication_multiple_polls() {
 
 // ─── link_id wildcard-listen + dispatch-filter ─────────────────────────────
 //
-// These tests pin the producer-side fan-out behavior introduced by the
-// `feature/depends-on-interfaces` branch's Option 3 (wildcard listen + filter
-// against bound link_ids). Cross-talk, ACK ordering, and per-goal feedback
-// routing are the failure modes the design has to not introduce — each gets
-// a dedicated test below.
+// These tests pin the producer-side fan-out behavior: wildcard listen plus
+// filter against bound link_ids. Cross-talk, ACK ordering, and per-goal
+// feedback routing are the failure modes the design must not introduce;
+// each gets a dedicated test below.
 
 const LINK_LEFT: &str = "wrist_left";
 const LINK_RIGHT: &str = "wrist_right";
@@ -2635,7 +2634,7 @@ async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
 async fn action_feedback_routes_per_goal_link_id() {
     // One producer binds two link_ids. Two consumers send goals targeting
     // different link_ids. The producer's per-goal feedback must address
-    // each consumer's pinned link_id — a regression of this routing would
+    // each consumer's pinned link_id. A regression of this routing would
     // either deliver feedback to the wrong consumer or fail to deliver at
     // all (an invalid keyexpr containing `*`).
     let router = TestRouterContext::start().await;

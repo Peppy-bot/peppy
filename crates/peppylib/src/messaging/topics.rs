@@ -91,7 +91,7 @@ impl TopicMessenger {
     }
 
     /// Publishes a payload to a topic. `link_ids` is the set of producer
-    /// link_ids this emission should appear under on the wire — Zenoh `put`
+    /// link_ids this emission should appear under on the wire. Zenoh `put`
     /// keyexprs can't carry wildcards, so a producer bound to N link_ids
     /// performs N publishes per emit. An empty slice is normalized to the
     /// reserved default `_` segment. On the first publish error the loop

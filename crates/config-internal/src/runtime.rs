@@ -29,7 +29,7 @@ pub struct NodeInstanceConfig {
 }
 
 impl NodeInstanceConfig {
-    /// Builds a config with everything except `instance_id` defaulted —
+    /// Builds a config with everything except `instance_id` defaulted:
     /// empty arguments, default framework, empty link_ids. Use with
     /// struct-update syntax to override a field:
     /// `NodeInstanceConfig { arguments, ..NodeInstanceConfig::new(id) }`.

@@ -129,10 +129,7 @@ impl ZenohWireFormat {
     /// Lifting that restriction needs a producer-side cartesian listen
     /// pattern (tracked as a follow-up).
     pub(crate) fn service_request_publish(s: &ServiceWireSender, request_id: &str) -> String {
-        let link_id = s
-            .to_link_id
-            .as_deref()
-            .unwrap_or(crate::wire::DEFAULT_LINK_ID);
+        let link_id = s.to_link_id_or_default();
         let root = service_root(&s.to_target, link_id, &s.to_service_name, s.kind);
         let target_core = s.to_core_node.as_deref().unwrap_or(BROADCAST_MARKER);
         let target_inst = s.to_instance_id.as_deref().unwrap_or(BROADCAST_MARKER);
@@ -145,10 +142,7 @@ impl ZenohWireFormat {
     /// Client-side response subscribe (wildcards on responder fields, keyed by `request_id`):
     /// `{bound_core}/*/{caller_inst}/*/{service_root}/response/{request_id}`.
     pub(crate) fn service_response_subscribe(s: &ServiceWireSender, request_id: &str) -> String {
-        let link_id = s
-            .to_link_id
-            .as_deref()
-            .unwrap_or(crate::wire::DEFAULT_LINK_ID);
+        let link_id = s.to_link_id_or_default();
         let root = service_root(&s.to_target, link_id, &s.to_service_name, s.kind);
         format!(
             "{}/{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{root}/response/{request_id}",
@@ -190,7 +184,7 @@ impl ZenohWireFormat {
             .next()
             .ok_or(ZenohWireParseError::MissingSegment("caller_instance"))?;
 
-        // service_root prefix: {root}/{discriminator}/{name}/{tag} — fixed
+        // service_root prefix: {root}/{discriminator}/{name}/{tag}, fixed
         // by the receiver's identity. Matched segment by segment so we can
         // splice in the parsed link_id between the tag and the service name.
         let expected_root_prefix = service_root_prefix(&receiver.as_identity, receiver.kind);
@@ -288,7 +282,7 @@ impl ZenohWireFormat {
     /// Server-side per-goal feedback publish:
     /// `*/{bound_core}/*/{as_inst}/action/{discriminator}/{name}/{tag}/{link_id}/{as_action}/feedback/{as_inst}/{goal_id}`.
     ///
-    /// `link_id` is the link_id parsed from the goal's request keyexpr — not
+    /// `link_id` is the link_id parsed from the goal's request keyexpr, not
     /// the receiver's bound set, since a producer bound to multiple link_ids
     /// publishes feedback addressed to whichever link_id the goal targeted.
     pub(crate) fn action_feedback_publish(
@@ -393,7 +387,7 @@ pub(crate) struct ParsedTopicKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedRequest {
     pub(crate) request_id: String,
-    /// link_id segment parsed from the request keyexpr — already verified
+    /// link_id segment parsed from the request keyexpr, already verified
     /// against the receiver's bound set.
     pub(crate) link_id: String,
     /// Server-side response publish keyexpr.

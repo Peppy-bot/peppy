@@ -469,7 +469,7 @@ impl Messenger {
     /// Pre-bind a per-goal action-feedback publisher. Mirrors
     /// [`declare_topic_publisher`](Self::declare_topic_publisher) for action
     /// feedback streams keyed by `goal_id`. `link_id` is the link_id parsed
-    /// from the goal's request keyexpr — feedback for a goal must publish
+    /// from the goal's request keyexpr; feedback for a goal must publish
     /// under the same wire identity the consumer subscribed for, even when
     /// the producer is bound to multiple link_ids.
     pub fn declare_action_feedback_publisher(

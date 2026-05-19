@@ -330,7 +330,7 @@ pub fn build_exposed_action(
         builder.indent();
         builder.line("message = request_context.message");
         if has_feedback {
-            // Pass the goal's link_id alongside the payload — the producer
+            // Pass the goal's link_id alongside the payload: the producer
             // is bound to potentially many link_ids, and the per-goal
             // feedback publisher must address the wire identity the
             // consumer subscribed under (not pick from the bound set).

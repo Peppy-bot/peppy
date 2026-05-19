@@ -246,7 +246,7 @@ impl ServiceEndpoint {
 pub struct ServiceRequestContext {
     message: Message,
     request_id: String,
-    /// link_id segment parsed from the request keyexpr — already verified
+    /// link_id segment parsed from the request keyexpr, already verified
     /// against the producer's bound set by the wire-format dispatch filter.
     /// Surfaced so action goal handlers can scope per-goal feedback under
     /// the link_id the consumer actually targeted, instead of inheriting
@@ -356,7 +356,7 @@ impl ServiceMessenger {
 
     /// Sends a lightweight probe to check whether a service is listening at
     /// the targeted link_id. The probe is handled transparently by the
-    /// service's request loop — the user handler is never invoked. Returns
+    /// service's request loop; the user handler is never invoked. Returns
     /// `true` if the service responds within [`PROBE_TIMEOUT`], `false` if
     /// unreachable.
     #[allow(clippy::too_many_arguments)]

@@ -484,11 +484,18 @@ impl ServiceWireSender {
     pub fn to_instance_id(&self) -> Option<&str> {
         self.to_instance_id.as_deref()
     }
+
+    /// Returns the pinned `to_link_id`, defaulting to the reserved `_` segment
+    /// when the consumer didn't pin one. Used at publish/subscribe time, since
+    /// Zenoh `put` keyexprs can't carry wildcards.
+    pub(crate) fn to_link_id_or_default(&self) -> &str {
+        self.to_link_id.as_deref().unwrap_or(DEFAULT_LINK_ID)
+    }
 }
 
 /// Server-side addressing for a service. The four broadcast-Cartesian listen
 /// patterns are derived from this single context by the transport adapter.
-/// `link_ids` is the set of producer link_ids this listener binds — the
+/// `link_ids` is the set of producer link_ids this listener binds. The
 /// runtime listens with a wildcard at the link_id wire slot and filters
 /// incoming requests against this set at dispatch time, so one process
 /// bound to N link_ids needs only one listener per service.
@@ -600,7 +607,7 @@ impl ActionWireSender {
 }
 
 /// Server-side addressing for an action. `link_ids` is the set of producer
-/// link_ids this listener binds — the runtime listens with a wildcard at the
+/// link_ids this listener binds. The runtime listens with a wildcard at the
 /// link_id wire slot and filters incoming goal / cancel / result requests
 /// against this set at dispatch time. Per-goal feedback publishes use the
 /// goal's own link_id (extracted from the goal request) rather than picking
