@@ -191,6 +191,7 @@ impl ZenohAdapter {
             };
 
             let adapter = Self::with_router(ZenohNetProtocol::Tcp, host, port)?;
+            let probe_config = adapter.client_config.zenoh_config.clone();
             let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
 
             // Drop the port reservation before starting the router so zenohd can bind to it
@@ -198,11 +199,31 @@ impl ZenohAdapter {
 
             match messenger.start_router().await {
                 Ok(()) => {
-                    return Ok(ZenohdInstance {
-                        messenger: Some(messenger),
-                        host: host.to_string(),
-                        port,
-                    });
+                    // Readiness signal: zenohd's TCP listener can accept before the
+                    // protocol handshake is settled, so a real zenoh::open is the only
+                    // reliable signal that subsequent sessions will succeed. The probe
+                    // session is dropped immediately; the caller opens their own.
+                    match zenoh::open(probe_config).await {
+                        Ok(probe) => {
+                            drop(probe);
+                            return Ok(ZenohdInstance {
+                                messenger: Some(messenger),
+                                host: host.to_string(),
+                                port,
+                            });
+                        }
+                        Err(_) if attempt + 1 < max_attempts => {
+                            // Drop messenger to stop the router, then retry on a fresh port.
+                            drop(messenger);
+                            continue;
+                        }
+                        Err(e) => {
+                            return Err(Error::BackendError(format!(
+                                "Zenoh readiness probe failed: {}",
+                                e
+                            )));
+                        }
+                    }
                 }
                 Err(Error::BackendError(_)) if attempt + 1 < max_attempts => {
                     continue;
