@@ -156,7 +156,7 @@ fn emit_topic() {
         &[
             "let as_topic = \"video_stream\";",
             "let qos = peppylib::config::QoSProfile::SensorData;",
-            "peppylib::TopicMessenger::emit_with_link_id(",
+            "peppylib::TopicMessenger::emit_fan_out(",
         ],
     );
 }

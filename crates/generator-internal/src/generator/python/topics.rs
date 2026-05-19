@@ -112,23 +112,18 @@ pub fn build_emitted_topic(
 
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
-    // Fan out: one emission per bound link_id. The Python `link_ids()`
-    // accessor mirrors Rust's and always returns at least one entry.
-    builder.line("for _link_id in node_runner.link_ids():");
-    builder.indent();
-    builder.line("await peppylib.TopicMessenger.emit(");
+    builder.line("await peppylib.TopicMessenger.emit_fan_out(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
+    builder.line("node_runner.link_ids(),");
     builder.line("TOPIC_NAME,");
     builder.line("qos,");
     builder.line("payload,");
-    builder.line("link_id=_link_id,");
     builder.dedent();
     builder.line(")");
-    builder.dedent();
     builder.dedent();
 
     Ok(builder.build())

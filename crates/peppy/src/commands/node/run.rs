@@ -261,28 +261,23 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
-/// Validates `--link-id` CLI input. Rejects empty / whitespace-only
-/// entries, the reserved sentinels `_` and `*` (the former is the default
-/// segment used when no link_id is supplied; the latter is the wire
-/// wildcard), and any value that fails the wire-segment rules. Returns
-/// the validated list with first-seen order preserved and duplicates
-/// removed.
+/// Validates `--link-id` CLI input. Rejects the reserved default segment
+/// `_` (which the runtime materializes when no `--link-id` is supplied),
+/// plus anything else `Segment::try_link_id` rejects (empty, contains `/`,
+/// wildcard sentinels). Returns the validated list with first-seen order
+/// preserved and duplicates removed.
 pub fn validate_link_ids(input: &[String]) -> std::result::Result<Vec<String>, String> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out = Vec::new();
     for raw in input {
         let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Err("--link-id values must not be empty".to_string());
-        }
-        if matches!(trimmed, "_" | "*") {
+        if trimmed == pmi::DEFAULT_LINK_ID {
             return Err(format!(
                 "--link-id `{trimmed}` is reserved (use a different identifier)"
             ));
         }
-        if pmi::Segment::try_link_id(trimmed).is_err() {
-            return Err(format!("--link-id `{trimmed}` is not a valid wire segment"));
-        }
+        pmi::Segment::try_link_id(trimmed)
+            .map_err(|_| format!("--link-id `{trimmed}` is not a valid wire segment"))?;
         if seen.insert(trimmed.to_string()) {
             out.push(trimmed.to_string());
         }
@@ -330,11 +325,11 @@ pub async fn run_instance_async(
         messaging_host.as_str(),
         messaging_port,
         NodeInstanceConfig {
-            instance_id: Name::new(instance_id.clone())
-                .map_err(|e| Error::PeppyConfig(e.into()))?,
             arguments,
-            framework: Default::default(),
             link_ids,
+            ..NodeInstanceConfig::new(
+                Name::new(instance_id.clone()).map_err(|e| Error::PeppyConfig(e.into()))?,
+            )
         },
         node_name,
         tag,
@@ -551,13 +546,13 @@ mod tests {
     #[test]
     fn validate_link_ids_rejects_empty_string() {
         let err = validate_link_ids(&["".to_string()]).expect_err("empty should error");
-        assert!(err.contains("must not be empty"), "msg: {err}");
+        assert!(err.contains("valid wire segment"), "msg: {err}");
     }
 
     #[test]
     fn validate_link_ids_rejects_whitespace_only() {
         let err = validate_link_ids(&["   ".to_string()]).expect_err("whitespace should error");
-        assert!(err.contains("must not be empty"), "msg: {err}");
+        assert!(err.contains("valid wire segment"), "msg: {err}");
     }
 
     #[test]
@@ -569,7 +564,7 @@ mod tests {
     #[test]
     fn validate_link_ids_rejects_wildcard_sentinel() {
         let err = validate_link_ids(&["*".to_string()]).expect_err("`*` should error");
-        assert!(err.contains("reserved"), "msg: {err}");
+        assert!(err.contains("valid wire segment"), "msg: {err}");
     }
 
     #[test]

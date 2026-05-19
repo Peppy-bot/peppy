@@ -277,9 +277,8 @@ impl fmt::Debug for ServiceRequestContext {
 
 impl ServiceMessenger {
     /// Listening as a service is a 2-way stream, so the process that exposes
-    /// the service provides its own `instance_id`. Listens on the reserved
-    /// default `_` link_id segment; use [`Self::listen_with_link_id`] when
-    /// the producer is generated to fan out across bound link_ids.
+    /// the service provides its own `instance_id`. See
+    /// [`Self::listen_with_link_id`] for producer-side link_id pinning.
     ///
     /// `as_identity` must match the [`SenderTarget`] callers will use in
     /// [`Self::poll`].
@@ -301,9 +300,10 @@ impl ServiceMessenger {
         .await
     }
 
-    /// Variant of [`Self::listen`] that pins the listener's bound link_id
-    /// slot. Producers generated against an interface call this once per
-    /// bound link_id (one endpoint per link_id).
+    /// Listen as a service, pinning the listener's bound link_id slot.
+    /// `link_id` `None` listens on the reserved default `_` segment;
+    /// `Some(value)` pins to a specific producer link_id. Producers
+    /// generated against an interface call this once per bound link_id.
     pub async fn listen_with_link_id(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -324,8 +324,8 @@ impl ServiceMessenger {
     }
 
     /// If `to_instance_id` is `None`, this call returns with the first
-    /// service instance that responds. Broadcasts on the link_id slot; use
-    /// [`Self::poll_with_link_id`] to pin a consumer-side link_id.
+    /// service instance that responds. See [`Self::poll_with_link_id`]
+    /// for consumer-side link_id pinning.
     ///
     /// `to_target` must match the [`SenderTarget`] the responder used in
     /// [`Self::listen`].
@@ -356,7 +356,7 @@ impl ServiceMessenger {
         .await
     }
 
-    /// Variant of [`Self::poll`] that pins the consumer's `to_link_id` slot.
+    /// Poll a service, pinning the consumer's `to_link_id` slot.
     /// `to_link_id` `None` broadcasts (used by `from_any: true` consumers);
     /// `Some(value)` targets a specific producer link_id.
     #[allow(clippy::too_many_arguments)]
@@ -415,8 +415,9 @@ impl ServiceMessenger {
         .await
     }
 
-    /// Variant of [`Self::is_reachable`] that pins the consumer's
-    /// `to_link_id` slot.
+    /// Probe a service, pinning the consumer's `to_link_id` slot.
+    /// `to_link_id` `None` broadcasts (matches any producer link_id);
+    /// `Some(value)` targets a specific producer link_id.
     #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable_with_link_id(
         messenger: &MessengerHandle,

@@ -28,6 +28,21 @@ pub struct NodeInstanceConfig {
     pub link_ids: Vec<String>,
 }
 
+impl NodeInstanceConfig {
+    /// Builds a config with everything except `instance_id` defaulted —
+    /// empty arguments, default framework, empty link_ids. Use with
+    /// struct-update syntax to override a field:
+    /// `NodeInstanceConfig { arguments, ..NodeInstanceConfig::new(id) }`.
+    pub fn new(instance_id: Name) -> Self {
+        Self {
+            instance_id,
+            arguments: BTreeMap::new(),
+            framework: ResolvedFramework::default(),
+            link_ids: Vec::new(),
+        }
+    }
+}
+
 /// Framework knobs already resolved by the daemon. Distinct from
 /// `launcher::FrameworkOverrides` so the type system enforces "resolution
 /// happens once": the launcher form carries optional overrides; this form

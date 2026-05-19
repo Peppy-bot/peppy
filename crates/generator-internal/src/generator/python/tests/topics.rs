@@ -194,7 +194,7 @@ fn emit_topic() {
         &[
             "TOPIC_NAME = \"video_stream\"",
             "peppylib.QoSProfile.SensorData",
-            "peppylib.TopicMessenger.emit(",
+            "peppylib.TopicMessenger.emit_fan_out(",
             "TOPIC_NAME,",
             "payload,",
         ],

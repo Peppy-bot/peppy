@@ -16,10 +16,6 @@ fn _peppylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "__version__",
         option_env!("PEPPY_GIT_TAG").unwrap_or("0.0.1"),
     )?;
-    // Re-export the reserved default link_id segment so generated Python
-    // code can reference the same constant as the Rust side without
-    // duplicating the literal.
-    m.add("DEFAULT_LINK_ID", peppylib::messaging::DEFAULT_LINK_ID)?;
     config::register(m)?;
     core_node::register(m)?;
     messaging::register(m)?;

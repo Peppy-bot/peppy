@@ -164,12 +164,7 @@ async fn actions_communication() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -246,12 +241,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         "v1",
         TEST_CORE_NODE,
@@ -491,12 +481,7 @@ async fn actions_communication_cancel_goal() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -569,12 +554,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         "v1",
         TEST_CORE_NODE,
@@ -840,12 +820,7 @@ async fn actions_communication_drain_loop_until_end_signal() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -935,12 +910,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1216,12 +1186,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1305,12 +1270,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1574,12 +1534,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1674,12 +1629,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
         "v1",
         TEST_CORE_NODE,

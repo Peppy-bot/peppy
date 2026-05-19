@@ -273,9 +273,8 @@ pub struct ActionCreation {
 
 impl ActionMessenger {
     /// Expose an action server. `as_identity` must match what callers pass to
-    /// [`Self::send_goal`]. Listens on the reserved default `_` link_id
-    /// segment; use [`Self::expose_with_link_id`] when the producer fans out
-    /// across bound link_ids.
+    /// [`Self::send_goal`]. See [`Self::expose_with_link_id`] for
+    /// producer-side link_id pinning.
     pub async fn expose(
         messenger: &MessengerHandle,
         bound_core_node: &str,
@@ -294,8 +293,10 @@ impl ActionMessenger {
         .await
     }
 
-    /// Variant of [`Self::expose`] that pins the listener's bound link_id
-    /// slot. Generated producer code calls this once per bound link_id.
+    /// Expose an action server, pinning the listener's bound link_id slot.
+    /// `link_id` `None` listens on the reserved default `_` segment;
+    /// `Some(value)` pins to a specific producer link_id (used when the
+    /// producer fans out across multiple bound link_ids).
     pub async fn expose_with_link_id(
         messenger: &MessengerHandle,
         bound_core_node: &str,
@@ -337,8 +338,9 @@ impl ActionMessenger {
         .await
     }
 
-    /// Variant of [`Self::is_reachable`] that pins the consumer's
-    /// `to_link_id` slot.
+    /// Probe an action service, pinning the consumer's `to_link_id` slot.
+    /// `to_link_id` `None` broadcasts (matches any producer link_id);
+    /// `Some(value)` targets a specific producer link_id.
     #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable_with_link_id(
         messenger: &MessengerHandle,
@@ -379,8 +381,8 @@ impl ActionMessenger {
     /// matching feedback topic, and polls the goal service.
     ///
     /// `to_target` must match the [`SenderTarget`] the action server used in
-    /// [`Self::expose`]. Broadcasts on the consumer-side link_id slot; use
-    /// [`Self::send_goal_with_link_id`] to pin a specific link_id.
+    /// [`Self::expose`]. See [`Self::send_goal_with_link_id`] for
+    /// consumer-side link_id pinning.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
@@ -410,7 +412,7 @@ impl ActionMessenger {
         .await
     }
 
-    /// Variant of [`Self::send_goal`] that pins the consumer's `to_link_id`
+    /// Send a goal to an action server, pinning the consumer's `to_link_id`
     /// slot. `to_link_id` `None` broadcasts (used by `from_any: true`
     /// consumers); `Some(value)` targets a specific producer link_id.
     #[allow(clippy::too_many_arguments)]

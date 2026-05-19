@@ -186,4 +186,42 @@ impl PyTopicMessenger {
             Ok(())
         })
     }
+
+    /// Emit a single payload across multiple bound link_ids in one call.
+    /// Generated Python producer code uses this instead of a Python-side
+    /// fan-out loop, avoiding N PyO3 boundary crossings (each of which
+    /// would copy the full payload).
+    #[staticmethod]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, link_ids, as_topic_name, qos, payload))]
+    #[allow(clippy::too_many_arguments)]
+    fn emit_fan_out<'py>(
+        py: Python<'py>,
+        messenger: &PyMessengerHandle,
+        as_core_node: String,
+        as_instance_id: String,
+        as_target: PySenderTarget,
+        link_ids: Vec<String>,
+        as_topic_name: String,
+        qos: PyQoSProfile,
+        payload: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let handle = messenger.inner.clone();
+        let as_target = as_target.into_inner();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            TopicMessenger::emit_fan_out(
+                &handle,
+                &as_core_node,
+                &as_instance_id,
+                as_target,
+                &link_ids,
+                &as_topic_name,
+                qos.into(),
+                Payload::from(payload),
+            )
+            .await
+            .map_err(to_py_err)?;
+
+            Ok(())
+        })
+    }
 }

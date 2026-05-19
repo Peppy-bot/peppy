@@ -351,20 +351,6 @@ async fn handle_node_sync_request_inner(
                     .map_err(Into::into);
                 }
 
-                // Validate `depends_on.interfaces` entries can be loaded from
-                // the local interface cache (SHA pins matched, no on-disk
-                // drift). Fail fast with a typed error before the heavier
-                // resolver runs.
-                if let Err(reason) =
-                    validate_interface_dependency_specs(&node_config.manifest, &peppy_dirs)
-                {
-                    return NodeSyncResponse::failure(format!(
-                        "Failed to validate interface dependencies: {reason}"
-                    ))
-                    .encode()
-                    .map_err(Into::into);
-                }
-
                 // Collect consumed interfaces with resolved message formats
                 let mut interfaces = match collect_consumed_interfaces(
                     &node_config.manifest,
@@ -684,9 +670,8 @@ pub fn collect_consumed_interfaces(
     // ones via `SenderTarget::Interface`.
     let mut node_dep_offerings: HashMap<(String, String), DependencyOfferings> = HashMap::new();
     // Memoized parsed interface contracts for `depends_on.interfaces` entries,
-    // keyed by `(name, tag)`. SHA verification has already happened in
-    // `validate_interface_dependency_specs` upstream and again per-load
-    // inside `resolve_interface_doc`.
+    // keyed by `(name, tag)`. `resolve_interface_doc` handles SHA-pin
+    // matching and on-disk drift detection per load.
     let mut iface_dep_contracts: HashMap<(String, String), config::interface::PeppyInterface> =
         HashMap::new();
 
@@ -1115,24 +1100,6 @@ fn action_message_from_exposed(
     }
 }
 
-/// Resolves every `interfaces.conforms_to` entry against the local interface
-/// cache and returns the pulled interface's topics/services/actions as a
-/// `Vec<DeploymentInterface>` ready to feed [`generator::generate_peppygen_lib`].
-///
-/// Each returned `DeploymentInterface` is stamped with an
-/// [`InterfaceOrigin`] so the generator nests it under
-/// `emitted_topics/{iface_name}/{iface_tag}/{leaf}` (and similar for services
-/// and actions) and embeds the matching `(iface_name, iface_tag)` segments in
-/// the generated wire-path calls.
-///
-/// Errors:
-/// - Duplicate raw `(name, tag)` entries (sha256 differences do not count).
-/// - Two entries that sanitize to the same `(iface_name, iface_tag)` — e.g.
-///   `v1` and `v-1` collide because the wire-path tag normalization replaces
-///   hyphens with underscores. Refusing this keeps generated symbols
-///   addressable without ambiguity.
-/// - Cache miss — surfaces "run `peppy repo refresh`".
-/// - `sha256` pin set but the on-disk content has drifted.
 /// Loads a `PeppyInterface` document from the local interface cache for
 /// `(name, tag)`, verifying both the SHA pin (when set) and on-disk drift
 /// against the cached fingerprint. Returns the parsed interface document
@@ -1184,29 +1151,24 @@ pub(crate) fn resolve_interface_doc(
         .map_err(|e| format!("failed to parse cached interface `{name}:{tag}`: {e}"))
 }
 
-/// Validates that every `depends_on.interfaces` entry on the manifest can
-/// be loaded from the local interface cache (and that pinned SHAs match
-/// and on-disk content has not drifted). Runs early in the sync pipeline
-/// so deployments fail fast with a clear pointer to `peppy repo refresh`
-/// instead of crashing deep in the resolver.
-pub fn validate_interface_dependency_specs(
-    manifest: &config::node::Manifest,
-    peppy_dirs: &PeppyDirs,
-) -> std::result::Result<(), String> {
-    let Some(depends_on) = manifest.depends_on.as_ref() else {
-        return Ok(());
-    };
-    for entry in &depends_on.interfaces {
-        resolve_interface_doc(
-            peppy_dirs,
-            entry.name.as_str(),
-            entry.tag.as_str(),
-            entry.sha256.as_deref(),
-        )?;
-    }
-    Ok(())
-}
-
+/// Resolves every `interfaces.conforms_to` entry against the local interface
+/// cache and returns the pulled interface's topics/services/actions as a
+/// `Vec<DeploymentInterface>` ready to feed [`generator::generate_peppygen_lib`].
+///
+/// Each returned `DeploymentInterface` is stamped with an
+/// [`InterfaceOrigin`] so the generator nests it under
+/// `emitted_topics/{iface_name}/{iface_tag}/{leaf}` (and similar for services
+/// and actions) and embeds the matching `(iface_name, iface_tag)` segments in
+/// the generated wire-path calls.
+///
+/// Errors:
+/// - Duplicate raw `(name, tag)` entries (sha256 differences do not count).
+/// - Two entries that sanitize to the same `(iface_name, iface_tag)` — e.g.
+///   `v1` and `v-1` collide because the wire-path tag normalization replaces
+///   hyphens with underscores. Refusing this keeps generated symbols
+///   addressable without ambiguity.
+/// - Cache miss — surfaces "run `peppy repo refresh`".
+/// - `sha256` pin set but the on-disk content has drifted.
 pub fn resolve_conforms_to(
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,

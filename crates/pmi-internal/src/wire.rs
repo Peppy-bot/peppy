@@ -44,6 +44,16 @@ impl Segment {
         }
         Ok(Self(s.to_string()))
     }
+
+    /// `Some(value)` → [`Self::try_link_id`]; `None` →
+    /// [`Self::default_link_id`]. Used by wire constructors to map the
+    /// optional consumer/producer `link_id` argument.
+    pub fn link_id_or_default(value: Option<&str>) -> Result<Self, SegmentError> {
+        match value {
+            Some(s) => Self::try_link_id(s),
+            None => Ok(Self::default_link_id()),
+        }
+    }
 }
 
 /// Wire literal used at the `link_id` slot when a producer is run without
@@ -363,15 +373,11 @@ impl TopicWireSender {
         link_id: Option<&str>,
         as_topic_name: &str,
     ) -> crate::error::Result<Self> {
-        let link_id = match link_id {
-            Some(value) => Segment::try_link_id(value)?,
-            None => Segment::default_link_id(),
-        };
         Ok(Self {
             as_core_node: Segment::try_from(as_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
             as_target,
-            link_id,
+            link_id: Segment::link_id_or_default(link_id)?,
             as_topic_name: Segment::try_from(as_topic_name)?,
         })
     }
@@ -491,15 +497,11 @@ impl ServiceWireReceiver {
         as_service_name: &str,
         kind: ServiceKind,
     ) -> crate::error::Result<Self> {
-        let link_id = match link_id {
-            Some(value) => Segment::try_link_id(value)?,
-            None => Segment::default_link_id(),
-        };
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
             as_identity,
-            link_id,
+            link_id: Segment::link_id_or_default(link_id)?,
             as_service_name: Segment::try_from(as_service_name)?,
             kind,
         })
@@ -594,15 +596,11 @@ impl ActionWireReceiver {
         link_id: Option<&str>,
         as_action_name: &str,
     ) -> crate::error::Result<Self> {
-        let link_id = match link_id {
-            Some(value) => Segment::try_link_id(value)?,
-            None => Segment::default_link_id(),
-        };
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
             as_identity,
-            link_id,
+            link_id: Segment::link_id_or_default(link_id)?,
             as_action_name: Segment::try_from(as_action_name)?,
         })
     }

@@ -105,12 +105,7 @@ async fn topics_communication() {
     let receiver_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(receiver_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(receiver_instance_id).unwrap()),
         RECEIVER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -176,10 +171,8 @@ fn main() -> Result<()> {
         &router_host,
         router_port,
         NodeInstanceConfig {
-            instance_id: Name::new(emitter_instance_id).unwrap(),
             arguments: serde_json5::from_str(r#"{ frequency: 10.0 }"#).unwrap(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
+            ..NodeInstanceConfig::new(Name::new(emitter_instance_id).unwrap())
         },
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the receiver
         "v1",

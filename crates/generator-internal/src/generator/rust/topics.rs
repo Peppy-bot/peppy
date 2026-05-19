@@ -130,23 +130,17 @@ pub fn build_topic_emit(
             let with_core_node = node_runner.processor().bound_core_node();
             let as_target = #target_expr;
 
-            // Fan out: one wire emission per bound link_id. `link_ids()`
-            // always yields at least one entry (the reserved default `_`
-            // when no `--link-id` is set), so the wire format stays
-            // uniform whether or not the producer is multi-bound.
-            for link_id in node_runner.processor().link_ids() {
-                peppylib::TopicMessenger::emit_with_link_id(
-                    node_runner.messenger(),
-                    with_core_node,
-                    as_instance_id,
-                    as_target.clone(),
-                    Some(link_id.as_str()),
-                    as_topic,
-                    qos.clone(),
-                    payload.clone(),
-                )
-                    .await?;
-            }
+            peppylib::TopicMessenger::emit_fan_out(
+                node_runner.messenger(),
+                with_core_node,
+                as_instance_id,
+                as_target,
+                node_runner.processor().link_ids(),
+                as_topic,
+                qos,
+                payload,
+            )
+                .await?;
         },
         error_context: quote!(String::from(#label_literal)),
         suppress_unused: vec![quote!(let _ = node_runner;)],

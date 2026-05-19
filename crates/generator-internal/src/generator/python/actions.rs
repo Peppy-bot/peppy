@@ -286,12 +286,7 @@ pub fn build_exposed_action(
     builder.indent();
     let expose_target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
-    // Producer-side action expose binds to the first configured
-    // link_id; multi-link_id action fan-out is tracked as a follow-up.
-    builder.line("_bound_link_ids = node_runner.link_ids()");
-    builder.line(
-        "_bound_link_id = _bound_link_ids[0] if _bound_link_ids else peppylib.DEFAULT_LINK_ID",
-    );
+    // FIXME(link-id-fanout): binds the first link_id only.
     builder.line("action = await peppylib.ActionMessenger.expose(");
     builder.indent();
     builder.line("node_runner.messenger(),");
@@ -299,7 +294,7 @@ pub fn build_exposed_action(
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{expose_target_expr},"));
     builder.line("ACTION_NAME,");
-    builder.line("link_id=_bound_link_id,");
+    builder.line("link_id=node_runner.first_link_id(),");
     builder.dedent();
     builder.line(")");
     builder.line("handle = cls()");

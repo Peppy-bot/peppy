@@ -76,11 +76,10 @@ pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> Strin
 
 /// Identifies a dependency a consumer pulls from. `node_name` + `node_tag`
 /// pin the producer (a node, or an interface when the consumer pulls in via
-/// `depends_on.interfaces` and `kind` is [`DependencyKind::Interface`]).
-/// `origin` is `Some` when the consumed artifact carries the
-/// `interface`-shaped wire discriminator (either because the producer node
-/// `conforms_to` an interface or because the dependency itself is an
-/// interface contract).
+/// `depends_on.interfaces`). `origin` is `Some` when the consumed artifact
+/// carries the `interface`-shaped wire discriminator (either because the
+/// producer node `conforms_to` an interface or because the dependency itself
+/// is an interface contract).
 ///
 /// `link_id` is the consumer's declared link_id for this dependency; the
 /// generated subscribe / poll / send_goal calls splice it into the
@@ -96,19 +95,6 @@ pub struct DependencyContext {
     pub origin: Option<InterfaceOrigin>,
     pub link_id: Option<String>,
     pub from_any: bool,
-    pub kind: DependencyKind,
-}
-
-/// Distinguishes a consumer dependency declared under `depends_on.nodes`
-/// from one declared under `depends_on.interfaces`. Drives the
-/// generator's choice of producer-label text in error messages
-/// (`"from node depth_camera_v1:v1 …"` vs `"from interface
-/// depth_camera:v1 …"`) and the resolver branch that loads the
-/// message contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DependencyKind {
-    Node,
-    Interface,
 }
 
 impl DependencyContext {
@@ -123,7 +109,6 @@ impl DependencyContext {
             origin: None,
             link_id: None,
             from_any: false,
-            kind: DependencyKind::Node,
         }
     }
 
@@ -140,7 +125,6 @@ impl DependencyContext {
             origin: Some(origin),
             link_id: None,
             from_any: false,
-            kind: DependencyKind::Node,
         }
     }
 
@@ -161,7 +145,6 @@ impl DependencyContext {
             }),
             link_id: None,
             from_any: false,
-            kind: DependencyKind::Interface,
         }
     }
 

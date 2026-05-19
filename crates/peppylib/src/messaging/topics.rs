@@ -35,10 +35,8 @@ impl TopicMessenger {
     /// Subscribe to a topic published by a specific target. `from_target`
     /// `Some(SenderTarget)` filters on the publisher's identity; `None`
     /// wildcards the target segment (any node or interface emits a match).
-    ///
-    /// The producer's link_id slot is wildcarded by this entry point; use
-    /// [`Self::subscribe_with_link_id`] to pin a specific link_id (consumers
-    /// generated from `depends_on.interfaces` with `from_any: false`).
+    /// See [`Self::subscribe_with_link_id`] for producer-side link_id
+    /// pinning.
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
@@ -64,8 +62,8 @@ impl TopicMessenger {
         .await
     }
 
-    /// Variant of [`Self::subscribe`] that pins the producer's bound link_id
-    /// slot. `from_link_id` `Some(value)` filters to a producer's specific
+    /// Subscribe to a topic, pinning the producer's bound link_id slot.
+    /// `from_link_id` `Some(value)` filters to a producer's specific
     /// bound link_id; `None` matches any link_id (used for `from_any: true`
     /// consumers).
     #[allow(clippy::too_many_arguments)]
@@ -120,10 +118,9 @@ impl TopicMessenger {
         Ok(Subscription::new(subscription))
     }
 
-    /// Publishes a payload to a topic on the specified core node. Emits on
-    /// the reserved default `_` link_id segment; use
-    /// [`Self::emit_with_link_id`] for producers that fan out across bound
-    /// link_ids.
+    /// Publishes a payload to a topic on the specified core node. See
+    /// [`Self::emit_with_link_id`] for producer-side link_id pinning, and
+    /// [`Self::emit_fan_out`] for emitting once across multiple bound link_ids.
     pub async fn emit(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -146,10 +143,10 @@ impl TopicMessenger {
         .await
     }
 
-    /// Variant of [`Self::emit`] that pins the publisher's link_id slot.
+    /// Publishes a payload to a topic, pinning the publisher's link_id slot.
     /// `link_id` `None` falls back to the reserved default `_` segment;
-    /// producers generated against an interface fan out by iterating their
-    /// bound link_ids and passing each as `Some(value)`.
+    /// `Some(value)` pins to a specific producer link_id. For multi-link_id
+    /// fan-out from a single emission, prefer [`Self::emit_fan_out`].
     #[allow(clippy::too_many_arguments)]
     pub async fn emit_with_link_id(
         messenger: &MessengerHandle,
@@ -194,8 +191,8 @@ impl TopicMessenger {
         .await
     }
 
-    /// Variant of [`Self::declare_publisher`] that pins the publisher's
-    /// link_id slot. Used by generated producer fan-out loops.
+    /// Pre-binds a topic publisher, pinning the publisher's link_id slot.
+    /// `link_id` `None` falls back to the reserved default `_` segment.
     pub async fn declare_publisher_with_link_id(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -216,6 +213,38 @@ impl TopicMessenger {
             .declare_topic_publisher(&sender, qos.into())
             .await?;
         Ok(TopicPublisher::new(Arc::new(inner)))
+    }
+
+    /// Emit a single payload to a topic across multiple bound link_ids,
+    /// one wire emission per link_id. Saves the per-link_id PyO3 round-trip
+    /// (the Python codegen calls this once instead of looping per link_id),
+    /// and centralizes the fan-out so the implementation can later batch
+    /// the `Messenger` lock acquires (one acquire per link_id today). On
+    /// the first error the loop aborts and the error is returned.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn emit_fan_out(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_target: SenderTarget,
+        link_ids: &[String],
+        as_topic_name: &str,
+        qos: QoSProfile,
+        payload: Payload,
+    ) -> Result<()> {
+        for link_id in link_ids {
+            let sender = TopicWireSender::new(
+                as_core_node,
+                as_instance_id,
+                as_target.clone(),
+                Some(link_id.as_str()),
+                as_topic_name,
+            )?;
+            messenger
+                .emit_topic_message(&sender, qos.clone(), payload.clone())
+                .await?;
+        }
+        Ok(())
     }
 }
 

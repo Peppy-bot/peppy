@@ -126,12 +126,7 @@ async fn services_communication_no_to_instance_id() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -191,12 +186,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         UVC_CAMERA_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -424,12 +414,7 @@ async fn services_communication_exposed_service_without_request_body() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -486,12 +471,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         UVC_CAMERA_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -710,12 +690,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_to_i
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -774,12 +749,7 @@ fn main() -> Result<()> {
     let exposer1_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer1_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer1_instance_id).unwrap()),
         UVC_CAMERA_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -838,12 +808,7 @@ fn main() -> Result<()> {
     let exposer2_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer2_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer2_instance_id).unwrap()),
         UVC_CAMERA_NODE_NAME,
         "v1",
         TEST_CORE_NODE,

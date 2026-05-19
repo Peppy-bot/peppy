@@ -345,21 +345,13 @@ pub fn build_exposed_service_method(
             where
                 F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
             {
-                // Producer-side service expose binds to the first
-                // configured link_id; multi-link_id service fan-out is
-                // tracked as a follow-up. `link_ids()` always yields at
-                // least one entry (the reserved `_` default).
-                let bound_link_ids = node_runner.processor().link_ids();
-                let bound_link_id = bound_link_ids
-                    .first()
-                    .map(|s| s.as_str())
-                    .unwrap_or(peppylib::messaging::DEFAULT_LINK_ID);
+                // FIXME(link-id-fanout): binds the first link_id only.
                 let mut service = peppylib::ServiceMessenger::listen_with_link_id(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     #target_expr,
-                    Some(bound_link_id),
+                    Some(node_runner.processor().first_link_id()),
                     #service_name_ref,
                 )
                 .await?;
@@ -405,17 +397,13 @@ pub fn build_exposed_service_method(
                 #service_instance_env_stmt
                 #service_name_binding
 
-                let bound_link_ids = node_runner.processor().link_ids();
-                let bound_link_id = bound_link_ids
-                    .first()
-                    .map(|s| s.as_str())
-                    .unwrap_or(peppylib::messaging::DEFAULT_LINK_ID);
+                // FIXME(link-id-fanout): binds the first link_id only.
                 let mut service = peppylib::ServiceMessenger::listen_with_link_id(
                     node_runner.messenger(),
                     node_runner.core_node(),
                     service_instance_id.as_str(),
                     #target_expr,
-                    Some(bound_link_id),
+                    Some(node_runner.processor().first_link_id()),
                     service_name,
                 )
                 .await?;

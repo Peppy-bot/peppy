@@ -21,8 +21,8 @@ pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 // ActionWireReceiver) are internal to peppylib's own messaging implementation
 // — each submodule imports them directly from `pmi::`.
 pub use pmi::{
-    ActionWireSender, DEFAULT_LINK_ID, InterfaceIdentifier, NodeIdentifier, SenderTarget,
-    SenderTargetError, ServiceKind,
+    ActionWireSender, InterfaceIdentifier, NodeIdentifier, SenderTarget, SenderTargetError,
+    ServiceKind,
 };
 
 use crate::error::{Error, Result};

@@ -130,11 +130,11 @@ async fn daemon_runner_succeed() {
         &router_host,
         router_port,
         NodeInstanceConfig {
-            instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
-            framework: Default::default(),
-            link_ids: Vec::new(),
+            ..NodeInstanceConfig::new(
+                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
+            )
         },
         TEST_NODE_NAME,
         "v1",
@@ -336,11 +336,11 @@ async fn node_ready_but_not_healthy() {
         &router_host,
         router_port,
         NodeInstanceConfig {
-            instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
-            framework: Default::default(),
-            link_ids: Vec::new(),
+            ..NodeInstanceConfig::new(
+                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
+            )
         },
         TEST_NODE_NAME,
         "v1",
@@ -591,11 +591,11 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         &router_host,
         router_port,
         NodeInstanceConfig {
-            instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
-            framework: Default::default(),
-            link_ids: Vec::new(),
+            ..NodeInstanceConfig::new(
+                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
+            )
         },
         TEST_NODE_NAME,
         "v1",

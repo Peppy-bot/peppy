@@ -84,12 +84,7 @@ fn build_runtime_config(
     let cfg = RuntimeConfig::new(
         router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-            link_ids: Vec::new(),
-        },
+        NodeInstanceConfig::new(Name::new(instance_id).unwrap()),
         node_name,
         "v1",
         TEST_CORE_NODE,

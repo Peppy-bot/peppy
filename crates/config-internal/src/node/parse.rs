@@ -344,8 +344,7 @@ mod tests {
 
     #[test]
     fn test_unique_link_ids_parse_ok() {
-        // Mirrors the openarm01_backbone scenario: same (name, tag) repeated
-        // under distinct link_ids must remain valid.
+        // Same (name, tag) repeated under distinct link_ids must parse.
         let json5 = r#"{
             peppy_schema: "node_v1",
             manifest: {
@@ -412,9 +411,8 @@ mod tests {
 
     #[test]
     fn test_from_any_explicit_true_parses() {
-        // Mirrors the brief's first openarm example: a single `from_any: true`
-        // node entry alongside three plain interface entries with the same
-        // (name, tag).
+        // A single `from_any: true` node entry alongside three plain
+        // interface entries with the same (name, tag).
         let json5 = r#"{
             peppy_schema: "node_v1",
             manifest: {
@@ -446,8 +444,8 @@ mod tests {
 
     #[test]
     fn test_from_any_explicit_true_on_interface_with_node_duplicate() {
-        // Mirrors the brief's second openarm example: the wildcard is on an
-        // interface entry instead, and a plain node entry shares (name, tag).
+        // The wildcard is on an interface entry; a plain node entry shares
+        // (name, tag).
         let json5 = r#"{
             peppy_schema: "node_v1",
             manifest: {

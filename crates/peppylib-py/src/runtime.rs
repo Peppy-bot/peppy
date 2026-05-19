@@ -312,7 +312,13 @@ impl PyNodeRunner {
     /// least one entry (the reserved default `_` when no `--link-id` is
     /// supplied).
     fn link_ids(&self) -> Vec<String> {
-        self.inner.processor().link_ids()
+        self.inner.processor().link_ids().to_vec()
+    }
+
+    /// Convenience for the single-link_id case: returns the first bound
+    /// link_id.
+    fn first_link_id(&self) -> &str {
+        self.inner.processor().first_link_id()
     }
 }
 
