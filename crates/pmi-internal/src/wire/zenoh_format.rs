@@ -187,8 +187,7 @@ impl ZenohWireFormat {
         // service_root prefix: {root}/{discriminator}/{name}/{tag}, fixed
         // by the receiver's identity. Matched segment by segment so we can
         // splice in the parsed link_id between the tag and the service name.
-        let expected_root_prefix = service_root_prefix(&receiver.as_identity, receiver.kind);
-        for expected in expected_root_prefix.iter() {
+        for expected in receiver.service_root_prefix_segments() {
             let got = parts
                 .next()
                 .ok_or(ZenohWireParseError::MissingSegment("service_root"))?;
@@ -200,14 +199,13 @@ impl ZenohWireFormat {
             }
         }
 
-        let link_id = parts
+        let link_id_segment = parts
             .next()
             .filter(|s| !s.is_empty())
-            .ok_or(ZenohWireParseError::MissingSegment("link_id"))?
-            .to_string();
-        if !receiver.matches_link_id(&link_id) {
+            .ok_or(ZenohWireParseError::MissingSegment("link_id"))?;
+        if !receiver.matches_link_id(link_id_segment) {
             return Err(ZenohWireParseError::LinkIdNotBound {
-                got: link_id,
+                got: link_id_segment.to_string(),
                 bound: receiver
                     .link_ids
                     .iter()
@@ -215,6 +213,7 @@ impl ZenohWireFormat {
                     .collect(),
             });
         }
+        let link_id = link_id_segment.to_string();
 
         // service name + optional action suffix.
         let expected_name = receiver.as_service_name.as_str();
@@ -344,19 +343,6 @@ fn service_root(target: &SenderTarget, link_id: &str, name: &str, kind: ServiceK
         target.name(),
         target.tag(),
     )
-}
-
-/// Returns the fixed service_root prefix segments that precede the link_id
-/// slot: `[{root}, {discriminator}, {name}, {tag}]`. Used by
-/// [`ZenohWireFormat::parse_received_request`] to validate everything up to
-/// the link_id without committing to a single bound value.
-fn service_root_prefix(target: &SenderTarget, kind: ServiceKind) -> [String; 4] {
-    [
-        kind.root_segment().to_string(),
-        target.discriminator().to_string(),
-        target.name().to_string(),
-        target.tag().to_string(),
-    ]
 }
 
 /// Builds the action_root segment

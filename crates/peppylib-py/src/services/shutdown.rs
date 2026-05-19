@@ -40,7 +40,9 @@ pub struct PyShutdownService;
 impl PyShutdownService {
     /// Start listening for shutdown requests.
     ///
-    /// Returns a tuple of (`ServiceTask`, `ShutdownReceiver`).
+    /// Returns a tuple of (`ServiceTask`, `ShutdownReceiver`). `link_ids` is
+    /// the set of producer link_ids this listener binds; an empty list is
+    /// normalized to the reserved default `_` segment.
     #[staticmethod]
     fn listen<'py>(
         py: Python<'py>,
@@ -48,12 +50,13 @@ impl PyShutdownService {
         core_node: String,
         instance_id: String,
         as_identity: crate::messaging::PySenderTarget,
+        link_ids: Vec<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_identity = as_identity.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let (join_handle, shutdown_rx) =
-                listen_for_shutdown(&handle, &core_node, &instance_id, as_identity)
+                listen_for_shutdown(&handle, &core_node, &instance_id, as_identity, &link_ids)
                     .await
                     .map_err(to_py_err)?;
 

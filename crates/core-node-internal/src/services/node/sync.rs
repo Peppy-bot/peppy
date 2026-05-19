@@ -716,56 +716,28 @@ pub fn collect_consumed_interfaces(
         for consumed_topic in consumed_topics {
             match consumed_topic {
                 config::node::ConsumedTopic::Linked(linked) => {
-                    let Some(entry) = dep_lookup.get(linked.link_id.as_str()) else {
-                        continue;
-                    };
-                    let key = (entry.name.clone(), entry.tag.clone());
-                    let lookup_name = linked.name.trim();
-                    let (message_format, dependency) = match entry.kind {
-                        DependencyKind::Node => {
-                            let Some(offerings) = node_dep_offerings.get(&key) else {
-                                continue;
-                            };
-                            let Some((message_format, origin)) = offerings.topics.get(lookup_name)
-                            else {
-                                continue;
-                            };
-                            (
-                                message_format.clone(),
-                                build_dependency_context_for_node(
-                                    &entry.name,
-                                    &entry.tag,
-                                    origin.clone(),
-                                    &linked.link_id,
-                                    entry.from_any,
-                                ),
-                            )
-                        }
-                        DependencyKind::Interface => {
-                            let Some(parsed) = iface_dep_contracts.get(&key) else {
-                                continue;
-                            };
-                            let Some(emitted) = parsed
+                    let Some((message_format, dependency)) = resolve_consumed_offering(
+                        &dep_lookup,
+                        &node_dep_offerings,
+                        &iface_dep_contracts,
+                        &linked.link_id,
+                        linked.name.trim(),
+                        |offerings, name| {
+                            offerings
+                                .topics
+                                .get(name)
+                                .map(|(mf, origin)| (mf.clone(), origin.clone()))
+                        },
+                        |parsed, name| {
+                            parsed
                                 .interfaces
                                 .topics
                                 .iter()
-                                .find(|t| t.name.trim() == lookup_name)
-                            else {
-                                continue;
-                            };
-                            let Some(message_format) = emitted.message_format.clone() else {
-                                continue;
-                            };
-                            (
-                                message_format,
-                                build_dependency_context_for_interface(
-                                    &entry.name,
-                                    &entry.tag,
-                                    &linked.link_id,
-                                    entry.from_any,
-                                ),
-                            )
-                        }
+                                .find(|t| t.name.trim() == name)
+                                .and_then(|emitted| emitted.message_format.clone())
+                        },
+                    ) else {
+                        continue;
                     };
                     interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
                         topic: consumed_topic.clone(),
@@ -789,62 +761,30 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_services) = &service_interfaces.consumes
     {
         for consumed_service in consumed_services {
-            let Some(entry) = dep_lookup.get(&consumed_service.link_id) else {
-                continue;
-            };
-            let key = (entry.name.clone(), entry.tag.clone());
-            let lookup_name = consumed_service.name.trim();
-            let (request_format, response_format, dependency) = match entry.kind {
-                DependencyKind::Node => {
-                    let Some(offerings) = node_dep_offerings.get(&key) else {
-                        continue;
-                    };
-                    let Some((request_format, response_format, origin)) =
-                        offerings.services.get(lookup_name)
-                    else {
-                        continue;
-                    };
-                    (
-                        request_format.clone(),
-                        response_format.clone(),
-                        build_dependency_context_for_node(
-                            &entry.name,
-                            &entry.tag,
-                            origin.clone(),
-                            &consumed_service.link_id,
-                            entry.from_any,
-                        ),
-                    )
-                }
-                DependencyKind::Interface => {
-                    let Some(parsed) = iface_dep_contracts.get(&key) else {
-                        continue;
-                    };
-                    let Some(exposed) = parsed
+            let Some(((request_format, response_format), dependency)) = resolve_consumed_offering(
+                &dep_lookup,
+                &node_dep_offerings,
+                &iface_dep_contracts,
+                &consumed_service.link_id,
+                consumed_service.name.trim(),
+                |offerings, name| {
+                    offerings
+                        .services
+                        .get(name)
+                        .map(|(req, resp, origin)| ((req.clone(), resp.clone()), origin.clone()))
+                },
+                |parsed, name| {
+                    let exposed = parsed
                         .interfaces
                         .services
                         .iter()
-                        .find(|s| s.name.trim() == lookup_name)
-                    else {
-                        continue;
-                    };
-                    let Some(request_format) = exposed.request_message_format.clone() else {
-                        continue;
-                    };
-                    let Some(response_format) = exposed.response_message_format.clone() else {
-                        continue;
-                    };
-                    (
-                        request_format,
-                        response_format,
-                        build_dependency_context_for_interface(
-                            &entry.name,
-                            &entry.tag,
-                            &consumed_service.link_id,
-                            entry.from_any,
-                        ),
-                    )
-                }
+                        .find(|s| s.name.trim() == name)?;
+                    let request_format = exposed.request_message_format.clone()?;
+                    let response_format = exposed.response_message_format.clone()?;
+                    Some((request_format, response_format))
+                },
+            ) else {
+                continue;
             };
             interfaces.push(DeploymentInterface::new(
                 InterfaceVariant::ConsumedService {
@@ -861,52 +801,28 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_actions) = &action_interfaces.consumes
     {
         for consumed_action in consumed_actions {
-            let Some(entry) = dep_lookup.get(&consumed_action.link_id) else {
-                continue;
-            };
-            let key = (entry.name.clone(), entry.tag.clone());
-            let lookup_name = consumed_action.name.trim();
-            let (action_message, dependency) = match entry.kind {
-                DependencyKind::Node => {
-                    let Some(offerings) = node_dep_offerings.get(&key) else {
-                        continue;
-                    };
-                    let Some((action_message, origin)) = offerings.actions.get(lookup_name) else {
-                        continue;
-                    };
-                    (
-                        action_message.clone(),
-                        build_dependency_context_for_node(
-                            &entry.name,
-                            &entry.tag,
-                            origin.clone(),
-                            &consumed_action.link_id,
-                            entry.from_any,
-                        ),
-                    )
-                }
-                DependencyKind::Interface => {
-                    let Some(parsed) = iface_dep_contracts.get(&key) else {
-                        continue;
-                    };
-                    let Some(exposed) = parsed
+            let Some((action_message, dependency)) = resolve_consumed_offering(
+                &dep_lookup,
+                &node_dep_offerings,
+                &iface_dep_contracts,
+                &consumed_action.link_id,
+                consumed_action.name.trim(),
+                |offerings, name| {
+                    offerings
+                        .actions
+                        .get(name)
+                        .map(|(msg, origin)| (msg.clone(), origin.clone()))
+                },
+                |parsed, name| {
+                    parsed
                         .interfaces
                         .actions
                         .iter()
-                        .find(|a| a.name.trim() == lookup_name)
-                    else {
-                        continue;
-                    };
-                    (
-                        action_message_from_exposed(exposed),
-                        build_dependency_context_for_interface(
-                            &entry.name,
-                            &entry.tag,
-                            &consumed_action.link_id,
-                            entry.from_any,
-                        ),
-                    )
-                }
+                        .find(|a| a.name.trim() == name)
+                        .map(action_message_from_exposed)
+                },
+            ) else {
+                continue;
             };
             interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
                 action: consumed_action.clone(),
@@ -917,6 +833,56 @@ pub fn collect_consumed_interfaces(
     }
 
     Ok(interfaces)
+}
+
+/// Resolves a single consumed interface to its message-format payload plus the
+/// `DependencyContext` the generator needs to address it. Walks both node and
+/// interface backings via the caller-supplied extractors; for nodes the
+/// extractor must surface the `Option<InterfaceOrigin>` from the offering so
+/// the consumer reaches `conforms_to` producers via `SenderTarget::Interface`.
+fn resolve_consumed_offering<T>(
+    dep_lookup: &HashMap<String, DependencyLookupEntry>,
+    node_dep_offerings: &HashMap<(String, String), DependencyOfferings>,
+    iface_dep_contracts: &HashMap<(String, String), config::interface::PeppyInterface>,
+    link_id: &str,
+    lookup_name: &str,
+    extract_from_node: impl FnOnce(
+        &DependencyOfferings,
+        &str,
+    ) -> Option<(T, Option<generator::InterfaceOrigin>)>,
+    extract_from_interface: impl FnOnce(&config::interface::PeppyInterface, &str) -> Option<T>,
+) -> Option<(T, generator::DependencyContext)> {
+    let entry = dep_lookup.get(link_id)?;
+    let key = (entry.name.clone(), entry.tag.clone());
+    match entry.kind {
+        DependencyKind::Node => {
+            let offerings = node_dep_offerings.get(&key)?;
+            let (extracted, origin) = extract_from_node(offerings, lookup_name)?;
+            Some((
+                extracted,
+                build_dependency_context_for_node(
+                    &entry.name,
+                    &entry.tag,
+                    origin,
+                    link_id,
+                    entry.from_any,
+                ),
+            ))
+        }
+        DependencyKind::Interface => {
+            let parsed = iface_dep_contracts.get(&key)?;
+            let extracted = extract_from_interface(parsed, lookup_name)?;
+            Some((
+                extracted,
+                build_dependency_context_for_interface(
+                    &entry.name,
+                    &entry.tag,
+                    link_id,
+                    entry.from_any,
+                ),
+            ))
+        }
+    }
 }
 
 /// Builds a [`generator::DependencyContext`] for a `depends_on.nodes`
@@ -934,8 +900,7 @@ fn build_dependency_context_for_node(
         Some(o) => generator::DependencyContext::conformed(dep_name, dep_tag, o),
         None => generator::DependencyContext::native(dep_name, dep_tag),
     };
-    ctx.with_link_id(Some(link_id.to_string()))
-        .with_from_any(from_any)
+    ctx.with_link_id(generator::WireLinkId::from_link_id(link_id, from_any))
 }
 
 /// Builds a [`generator::DependencyContext`] for a
@@ -949,8 +914,7 @@ fn build_dependency_context_for_interface(
     from_any: bool,
 ) -> generator::DependencyContext {
     generator::DependencyContext::interface(iface_name, iface_tag)
-        .with_link_id(Some(link_id.to_string()))
-        .with_from_any(from_any)
+        .with_link_id(generator::WireLinkId::from_link_id(link_id, from_any))
 }
 
 /// What a single dependency can provide to consumers — its native

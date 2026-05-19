@@ -425,6 +425,7 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
         processor.bound_core_node(),
         processor.bound_instance_id(),
         as_identity.clone(),
+        processor.link_ids(),
     )
     .await?;
 
@@ -433,6 +434,7 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
         processor.bound_core_node(),
         processor.bound_instance_id(),
         as_identity,
+        processor.link_ids(),
     )
     .await?;
 
@@ -460,6 +462,7 @@ async fn run_post_setup_services(
         processor.bound_core_node(),
         processor.bound_instance_id(),
         as_identity,
+        processor.link_ids(),
     )
     .await?;
 

@@ -603,7 +603,7 @@ pub fn build_consumed_action(
     schema_info: ConsumedActionSchemaInfo<'_>,
     dependency: &crate::generator::types::DependencyContext,
 ) -> Result<String> {
-    let dependency_node_name = dependency.node_name.as_str();
+    let dependency_node_name = dependency.producer_name.as_str();
     let mut builder = PythonCodeBuilder::new();
 
     let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
@@ -787,7 +787,7 @@ pub fn build_consumed_action(
     let send_goal_target_expr = sender_target_python_expr(
         dependency.origin.as_ref(),
         "TARGET_NODE_NAME",
-        &format!("{:?}", dependency.node_tag),
+        &format!("{:?}", dependency.producer_tag),
     );
     let send_goal_link_id_expr =
         crate::generator::python::services::consumed_link_id_python_expr(dependency);

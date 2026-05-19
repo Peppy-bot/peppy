@@ -1448,6 +1448,7 @@ async fn spawn_real_running_instance_inner(
             &started.core_node_name,
             instance_id.as_str(),
             test_node_target(name),
+            &[],
         )
         .await
         .expect("failed to start shutdown listener for test instance");

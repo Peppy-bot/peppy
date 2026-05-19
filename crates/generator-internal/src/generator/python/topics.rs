@@ -202,8 +202,8 @@ fn build_consumed_topic_inner(
         builder.line("node_runner.bound_instance_id(),");
         let from_target = sender_target_python_expr(
             dep.origin.as_ref(),
-            &format!("{:?}", dep.node_name),
-            &format!("{:?}", dep.node_tag),
+            &format!("{:?}", dep.producer_name),
+            &format!("{:?}", dep.producer_tag),
         );
         builder.line(&format!("{from_target},"));
         builder.line("topic_name,");

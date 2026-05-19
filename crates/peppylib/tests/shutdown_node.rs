@@ -24,6 +24,7 @@ async fn shutdown_node() {
         TEST_CORE_NODE_NAME,
         TEST_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
+        &[],
     )
     .await
     .expect("failed to start shutdown service");

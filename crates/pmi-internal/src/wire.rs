@@ -58,14 +58,17 @@ impl Segment {
     /// Producer-side bulk constructor. An empty slice yields a single-element
     /// vec carrying the reserved default `_` segment (matching the wire
     /// fallback); a non-empty slice is validated entry by entry via
-    /// [`Self::try_link_id`]. Used by [`ServiceWireReceiver::new`] /
+    /// [`Self::link_id_or_default`]. Used by [`ServiceWireReceiver::new`] /
     /// [`ActionWireReceiver::new`] when materializing the set of link_ids a
     /// single producer process binds.
     pub fn link_ids_or_default(values: &[String]) -> Result<Vec<Self>, SegmentError> {
         if values.is_empty() {
-            return Ok(vec![Self::default_link_id()]);
+            return Ok(vec![Self::link_id_or_default(None)?]);
         }
-        values.iter().map(|s| Self::try_link_id(s)).collect()
+        values
+            .iter()
+            .map(|s| Self::link_id_or_default(Some(s)))
+            .collect()
     }
 }
 
@@ -507,6 +510,10 @@ pub struct ServiceWireReceiver {
     pub(crate) link_ids: Vec<Segment>,
     pub(crate) as_service_name: Segment,
     pub(crate) kind: ServiceKind,
+    /// Precomputed `[root, discriminator, name, tag]` segments of the
+    /// service_root prefix. Derived from `(as_identity, kind)` at construction
+    /// so the per-request dispatch path can match without rebuilding strings.
+    service_root_prefix: [String; 4],
 }
 
 impl ServiceWireReceiver {
@@ -518,6 +525,12 @@ impl ServiceWireReceiver {
         as_service_name: &str,
         kind: ServiceKind,
     ) -> crate::error::Result<Self> {
+        let service_root_prefix = [
+            kind.root_segment().to_string(),
+            as_identity.discriminator().to_string(),
+            as_identity.name().to_string(),
+            as_identity.tag().to_string(),
+        ];
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
@@ -525,6 +538,7 @@ impl ServiceWireReceiver {
             link_ids: Segment::link_ids_or_default(link_ids)?,
             as_service_name: Segment::try_from(as_service_name)?,
             kind,
+            service_root_prefix,
         })
     }
 
@@ -534,6 +548,10 @@ impl ServiceWireReceiver {
     /// not advertise.
     pub(crate) fn matches_link_id(&self, candidate: &str) -> bool {
         self.link_ids.iter().any(|s| s.as_str() == candidate)
+    }
+
+    pub(crate) fn service_root_prefix_segments(&self) -> &[String; 4] {
+        &self.service_root_prefix
     }
 }
 
@@ -651,6 +669,12 @@ impl ActionWireReceiver {
     }
 
     fn action_service(&self, kind: ServiceKind) -> ServiceWireReceiver {
+        let service_root_prefix = [
+            kind.root_segment().to_string(),
+            self.as_identity.discriminator().to_string(),
+            self.as_identity.name().to_string(),
+            self.as_identity.tag().to_string(),
+        ];
         ServiceWireReceiver {
             bound_core_node: self.bound_core_node.clone(),
             as_instance_id: self.as_instance_id.clone(),
@@ -658,6 +682,7 @@ impl ActionWireReceiver {
             link_ids: self.link_ids.clone(),
             as_service_name: self.as_action_name.clone(),
             kind,
+            service_root_prefix,
         }
     }
 }

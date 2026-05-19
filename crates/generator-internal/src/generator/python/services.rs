@@ -242,7 +242,7 @@ pub fn build_consumed_service(
     }
 
     // Constants
-    builder.line(&format!("NODE_NAME = \"{}\"", dependency.node_name));
+    builder.line(&format!("NODE_NAME = \"{}\"", dependency.producer_name));
     builder.line(&format!("SERVICE_NAME = \"{}\"", service.name));
     builder.blank_line();
 
@@ -332,7 +332,7 @@ pub fn build_consumed_service(
     let target_expr = sender_target_python_expr(
         dependency.origin.as_ref(),
         "NODE_NAME",
-        &format!("{:?}", dependency.node_tag),
+        &format!("{:?}", dependency.producer_tag),
     );
     let to_link_id_expr = consumed_link_id_python_expr(dependency);
     builder.indent();

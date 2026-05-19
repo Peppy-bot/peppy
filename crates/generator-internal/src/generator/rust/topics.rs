@@ -182,7 +182,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
         dependency,
     } = spec;
     let topic_literal = Literal::string(topic.name());
-    let node_name_literal = Literal::string(&dependency.node_name);
+    let node_name_literal = Literal::string(&dependency.producer_name);
     let helper_fn_tokens = build_topic_deserialize_helper(
         helper_fn_ident,
         args_struct_ident,
@@ -283,8 +283,8 @@ pub fn consumed_to_target_expression(
             quote!(peppylib::messaging::SenderTarget::interface(#name, #tag)?)
         }
         None => {
-            let node_name = Literal::string(&dependency.node_name);
-            let node_tag = Literal::string(&dependency.node_tag);
+            let node_name = Literal::string(&dependency.producer_name);
+            let node_tag = Literal::string(&dependency.producer_tag);
             quote!(peppylib::messaging::SenderTarget::node(#node_name, #node_tag)?)
         }
     }

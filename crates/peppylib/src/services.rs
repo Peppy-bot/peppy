@@ -16,6 +16,7 @@ pub(crate) async fn listen_for_echo_service(
     core_node: &str,
     instance_id: &str,
     as_identity: SenderTarget,
+    link_ids: &[String],
     service_name: &str,
     log_label: &'static str,
 ) -> PeppyResult<TaskHandle<PeppyResult<()>>> {
@@ -24,7 +25,7 @@ pub(crate) async fn listen_for_echo_service(
         core_node,
         instance_id,
         as_identity,
-        &[],
+        link_ids,
         service_name,
     )
     .await?;

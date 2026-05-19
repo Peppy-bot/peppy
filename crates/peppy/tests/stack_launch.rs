@@ -184,6 +184,7 @@ async fn node_launch_command_succeed() {
         &core_node_name,
         instance_id,
         test_node_target(node_b_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -192,6 +193,7 @@ async fn node_launch_command_succeed() {
         &core_node_name,
         instance_id,
         test_node_target(node_b_name),
+        &[],
     )
     .await
     .expect("node health service should start");
@@ -200,6 +202,7 @@ async fn node_launch_command_succeed() {
         &core_node_name,
         instance_id,
         test_node_target(node_b_name),
+        &[],
     )
     .await
     .expect("node shutdown service should start");

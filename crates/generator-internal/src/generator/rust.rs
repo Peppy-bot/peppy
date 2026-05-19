@@ -1187,7 +1187,7 @@ impl LanguageGenerator for RustGenerator {
         response_arguments: &MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
-        let dependency_node_name = dependency.node_name.as_str();
+        let dependency_node_name = dependency.producer_name.as_str();
         let request_arguments = non_empty_message_format(Some(request_arguments));
         let response_arguments = non_empty_message_format(Some(response_arguments));
 
@@ -1453,7 +1453,7 @@ impl LanguageGenerator for RustGenerator {
         messages: &ConsumedActionMessage,
         dependency: &DependencyContext,
     ) -> Result<()> {
-        let dependency_node_name = dependency.node_name.as_str();
+        let dependency_node_name = dependency.producer_name.as_str();
         let node_component = sanitize_component(dependency_node_name);
         let action_component = sanitize_component(action.name.as_str());
         let base_component = match (node_component.is_empty(), action_component.is_empty()) {

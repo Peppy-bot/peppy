@@ -158,8 +158,11 @@ impl PyServiceMessenger {
     /// Start listening for service requests.
     ///
     /// Returns a `ServiceEndpoint` that can be used to handle incoming requests.
-    /// `link_id` `None` falls back to the reserved default `_` segment;
-    /// generated producers fan out by calling `listen` once per bound link_id.
+    /// `link_ids` is the set of producer link_ids this listener binds; pass a
+    /// list with one or many values. An empty list is normalized to the
+    /// reserved default `_` segment, matching producers launched without
+    /// `--link-id`. A single wildcard listen is registered and incoming
+    /// requests addressed to link_ids outside this set are dropped.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, link_ids, as_service_name))]
     #[allow(clippy::too_many_arguments)]

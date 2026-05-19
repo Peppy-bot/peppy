@@ -137,6 +137,7 @@ async fn node_run_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -145,6 +146,7 @@ async fn node_run_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node health service should start");
@@ -366,6 +368,7 @@ async fn node_run_command_with_args_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -374,6 +377,7 @@ async fn node_run_command_with_args_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node health service should start");
@@ -570,6 +574,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         &core_node_name,
         custom_instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -578,6 +583,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         &core_node_name,
         custom_instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node health service should start");
@@ -751,6 +757,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -759,6 +766,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node health service should start");
@@ -920,6 +928,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -928,6 +937,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node health service should start");

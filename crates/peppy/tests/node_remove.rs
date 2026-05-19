@@ -218,6 +218,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
+            &[],
         ))
         .expect("node ready service should start");
     let _node_health_handle = rt
@@ -226,6 +227,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
+            &[],
         ))
         .expect("node health service should start");
     let (_node_shutdown_handle, node_shutdown_rx) = rt
@@ -234,6 +236,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
+            &[],
         ))
         .expect("node shutdown service should start");
 
@@ -360,6 +363,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
+            &[],
         ))
         .expect("node ready service should start");
 
@@ -369,6 +373,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
+            &[],
         ))
         .expect("node health service should start");
 
@@ -378,6 +383,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
+            &[],
         ))
         .expect("node shutdown service should start");
 

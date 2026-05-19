@@ -236,14 +236,15 @@ fn parse_topic_keyexpr_rejects_wildcard_in_caller_instance_id() {
 // ─── Services — listen patterns ───────────────────────────────────────────
 
 fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
-    ServiceWireReceiver {
-        bound_core_node: seg("server_core"),
-        as_instance_id: seg("server_inst"),
-        as_identity: node("robot_arm", "v1"),
-        link_ids: vec![Segment::default_link_id()],
-        as_service_name: seg("ping"),
+    ServiceWireReceiver::new(
+        "server_core",
+        "server_inst",
+        node("robot_arm", "v1"),
+        &[],
+        "ping",
         kind,
-    }
+    )
+    .expect("valid sample service receiver")
 }
 
 #[test]
@@ -265,8 +266,15 @@ fn service_listen_patterns_node_identity_plain_service() {
 
 #[test]
 fn service_listen_patterns_action_goal_appends_suffix() {
-    let mut recv = sample_service_receiver(ServiceKind::ActionGoal);
-    recv.as_service_name = seg("pick_place");
+    let recv = ServiceWireReceiver::new(
+        "server_core",
+        "server_inst",
+        node("robot_arm", "v1"),
+        &[],
+        "pick_place",
+        ServiceKind::ActionGoal,
+    )
+    .expect("valid receiver");
     let patterns = ZenohWireFormat::service_listen_patterns(&recv);
     assert_eq!(
         patterns[0],
@@ -280,8 +288,15 @@ fn service_listen_patterns_action_goal_appends_suffix() {
 
 #[test]
 fn service_listen_patterns_interface_identity_normalizes_tag() {
-    let mut recv = sample_service_receiver(ServiceKind::Service);
-    recv.as_identity = iface("manipulator", "v2-beta");
+    let recv = ServiceWireReceiver::new(
+        "server_core",
+        "server_inst",
+        iface("manipulator", "v2-beta"),
+        &[],
+        "ping",
+        ServiceKind::Service,
+    )
+    .expect("valid receiver");
     let patterns = ZenohWireFormat::service_listen_patterns(&recv);
     assert_eq!(
         patterns[0],
@@ -294,9 +309,19 @@ fn service_listen_patterns_multi_link_id_still_wildcards() {
     // A producer bound to multiple link_ids uses the same wildcard listen;
     // the bound set is only consulted at parse time. This is the key
     // architectural property of Option 3 from the design doc.
-    let mut recv = sample_service_receiver(ServiceKind::Service);
-    recv.link_ids = vec![seg("wrist_left"), seg("wrist_right"), seg("torso")];
-    recv.as_identity = iface("depth_camera", "v1");
+    let recv = ServiceWireReceiver::new(
+        "server_core",
+        "server_inst",
+        iface("depth_camera", "v1"),
+        &[
+            "wrist_left".to_string(),
+            "wrist_right".to_string(),
+            "torso".to_string(),
+        ],
+        "ping",
+        ServiceKind::Service,
+    )
+    .expect("valid receiver");
     let patterns = ZenohWireFormat::service_listen_patterns(&recv);
     assert_eq!(
         patterns[0],
@@ -471,9 +496,15 @@ fn parse_received_request_rejects_link_id_mismatch() {
 
 #[test]
 fn parse_received_request_accepts_request_for_any_bound_link_id() {
-    let mut receiver = sample_service_receiver(ServiceKind::Service);
-    receiver.link_ids = vec![seg("wrist_left"), seg("wrist_right")];
-    receiver.as_identity = iface("depth_camera", "v1");
+    let receiver = ServiceWireReceiver::new(
+        "server_core",
+        "server_inst",
+        iface("depth_camera", "v1"),
+        &["wrist_left".to_string(), "wrist_right".to_string()],
+        "ping",
+        ServiceKind::Service,
+    )
+    .expect("valid receiver");
 
     let left = "server_core/caller_core/server_inst/caller_inst/service/interface/depth_camera/v1/wrist_left/ping/request/abc";
     let parsed_left =
@@ -530,8 +561,15 @@ fn parse_received_request_rejects_too_short() {
 
 #[test]
 fn parse_received_request_action_cancel_round_trips() {
-    let mut receiver = sample_service_receiver(ServiceKind::ActionCancel);
-    receiver.as_service_name = seg("pick_place");
+    let receiver = ServiceWireReceiver::new(
+        "server_core",
+        "server_inst",
+        node("robot_arm", "v1"),
+        &[],
+        "pick_place",
+        ServiceKind::ActionCancel,
+    )
+    .expect("valid receiver");
     let request = "server_core/caller_core/server_inst/caller_inst/action/node/robot_arm/v1/_/pick_place/cancel/request/rid_42";
     let parsed = ZenohWireFormat::parse_received_request(&receiver, request).expect("should parse");
     assert_eq!(parsed.request_id, "rid_42");
@@ -805,14 +843,15 @@ fn parse_received_request_node_receiver_rejects_interface_shaped_request() {
     // A server bound as a `Node` must not handle a request addressed under the
     // `Interface` discriminator with the same name+tag (and vice-versa). The
     // wire format's service_root parse catches the mismatch.
-    let node_receiver = ServiceWireReceiver {
-        bound_core_node: seg("server_core"),
-        as_instance_id: seg("server_inst"),
-        as_identity: node("widget", "v1"),
-        link_ids: vec![Segment::default_link_id()],
-        as_service_name: seg("ping"),
-        kind: ServiceKind::Service,
-    };
+    let node_receiver = ServiceWireReceiver::new(
+        "server_core",
+        "server_inst",
+        node("widget", "v1"),
+        &[],
+        "ping",
+        ServiceKind::Service,
+    )
+    .expect("valid receiver");
     let iface_shaped_request = "server_core/caller_core/server_inst/caller_inst/service/interface/widget/v1/_/ping/request/abc";
     let err =
         ZenohWireFormat::parse_received_request(&node_receiver, iface_shaped_request).unwrap_err();
@@ -821,10 +860,15 @@ fn parse_received_request_node_receiver_rejects_interface_shaped_request() {
         ZenohWireParseError::ServiceRootMismatch { .. }
     ));
 
-    let iface_receiver = ServiceWireReceiver {
-        as_identity: iface("widget", "v1"),
-        ..node_receiver.clone()
-    };
+    let iface_receiver = ServiceWireReceiver::new(
+        "server_core",
+        "server_inst",
+        iface("widget", "v1"),
+        &[],
+        "ping",
+        ServiceKind::Service,
+    )
+    .expect("valid receiver");
     let node_shaped_request =
         "server_core/caller_core/server_inst/caller_inst/service/node/widget/v1/_/ping/request/abc";
     let err =

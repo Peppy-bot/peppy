@@ -47,6 +47,9 @@ macro_rules! service_listener {
         #[pymethods]
         impl $struct_name {
             /// Start listening for requests, returning a background `ServiceTask`.
+            ///
+            /// `link_ids` is the set of producer link_ids this listener binds;
+            /// an empty list is normalized to the reserved default `_` segment.
             #[staticmethod]
             fn listen<'py>(
                 py: Python<'py>,
@@ -54,13 +57,15 @@ macro_rules! service_listener {
                 core_node: String,
                 instance_id: String,
                 as_identity: $crate::messaging::PySenderTarget,
+                link_ids: Vec<String>,
             ) -> PyResult<Bound<'py, PyAny>> {
                 let handle = messenger.inner.clone();
                 let as_identity = as_identity.into_inner();
                 pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                    let join_handle = $listen_fn(&handle, &core_node, &instance_id, as_identity)
-                        .await
-                        .map_err(to_py_err)?;
+                    let join_handle =
+                        $listen_fn(&handle, &core_node, &instance_id, as_identity, &link_ids)
+                            .await
+                            .map_err(to_py_err)?;
                     Ok(PyServiceTask::new(join_handle))
                 })
             }

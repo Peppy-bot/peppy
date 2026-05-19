@@ -105,6 +105,7 @@ async fn node_stop_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -113,6 +114,7 @@ async fn node_stop_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node health service should start");
@@ -122,6 +124,7 @@ async fn node_stop_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node shutdown service should start");

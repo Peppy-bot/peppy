@@ -3,6 +3,7 @@ use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 pub struct Subscription {
@@ -93,9 +94,11 @@ impl TopicMessenger {
     /// Publishes a payload to a topic. `link_ids` is the set of producer
     /// link_ids this emission should appear under on the wire. Zenoh `put`
     /// keyexprs can't carry wildcards, so a producer bound to N link_ids
-    /// performs N publishes per emit. An empty slice is normalized to the
-    /// reserved default `_` segment. On the first publish error the loop
-    /// aborts and the error is returned.
+    /// performs N publishes per emit. Duplicate entries are collapsed so
+    /// each scoped subscriber receives one message per unique link_id; the
+    /// first occurrence wins for ordering. An empty slice is normalized to
+    /// the reserved default `_` segment. On the first publish error the
+    /// loop aborts and the error is returned.
     #[allow(clippy::too_many_arguments)]
     pub async fn emit(
         messenger: &MessengerHandle,
@@ -107,13 +110,17 @@ impl TopicMessenger {
         qos: QoSProfile,
         payload: Payload,
     ) -> Result<()> {
-        let default = [pmi::DEFAULT_LINK_ID.to_string()];
-        let effective: &[String] = if link_ids.is_empty() {
-            &default
+        let effective: Vec<String> = if link_ids.is_empty() {
+            vec![pmi::DEFAULT_LINK_ID.to_string()]
         } else {
+            let mut seen = HashSet::with_capacity(link_ids.len());
             link_ids
+                .iter()
+                .filter(|id| seen.insert((*id).clone()))
+                .cloned()
+                .collect()
         };
-        for link_id in effective {
+        for link_id in &effective {
             let sender = TopicWireSender::new(
                 as_core_node,
                 as_instance_id,

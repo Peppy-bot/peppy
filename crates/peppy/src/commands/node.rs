@@ -458,6 +458,18 @@ mod tests {
         }
     }
 
+    fn parse_run_link_ids(args: &[&str]) -> Vec<String> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("run"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Run { link_ids, .. } => link_ids,
+            _ => panic!("expected Run variant"),
+        }
+    }
+
     fn parse_subcommand_force(subcommand: &str, args: &[&str]) -> bool {
         let full: Vec<&str> = std::iter::once("peppy")
             .chain(std::iter::once(subcommand))
@@ -603,5 +615,29 @@ mod tests {
     #[test]
     fn remove_without_force_flag_defaults_to_false() {
         assert!(!parse_subcommand_force("remove", &["foo:v1"]));
+    }
+
+    #[test]
+    fn test_link_id_repeated() {
+        assert_eq!(
+            parse_run_link_ids(&["foo:v1", "--link-id", "a", "--link-id", "b"]),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_link_id_comma_delimited() {
+        assert_eq!(
+            parse_run_link_ids(&["foo:v1", "--link-id", "a,b"]),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_link_id_mixed() {
+        assert_eq!(
+            parse_run_link_ids(&["foo:v1", "--link-id", "a,b", "--link-id", "c"]),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
     }
 }

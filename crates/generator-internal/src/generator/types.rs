@@ -74,41 +74,71 @@ pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> Strin
     }
 }
 
-/// Identifies a dependency a consumer pulls from. `node_name` + `node_tag`
-/// pin the producer (a node, or an interface when the consumer pulls in via
-/// `depends_on.interfaces`). `origin` is `Some` when the consumed artifact
-/// carries the `interface`-shaped wire discriminator (either because the
-/// producer node `conforms_to` an interface or because the dependency itself
-/// is an interface contract).
+/// What the generator should splice into the `link_id` wire slot for a
+/// consumer's subscribe / poll / send_goal call.
+#[derive(Debug, Clone)]
+pub enum WireLinkId {
+    /// Subscribe under a specific link_id. Set when the consumer's
+    /// `depends_on` entry pins a link_id and `from_any` is false.
+    Pinned(String),
+    /// Subscribe with a wildcard at the wire slot. Set when the consumer's
+    /// `depends_on` entry has `from_any: true`, and used as the default in
+    /// generator-test fixtures that don't model the consumer's link_id.
+    Wildcard,
+}
+
+impl WireLinkId {
+    /// `Pinned(s)` when `from_any` is false, `Wildcard` when true.
+    pub fn from_link_id(link_id: impl Into<String>, from_any: bool) -> Self {
+        if from_any {
+            Self::Wildcard
+        } else {
+            Self::Pinned(link_id.into())
+        }
+    }
+
+    /// The pinned link_id literal, or `None` for wildcard.
+    pub fn pinned(&self) -> Option<&str> {
+        match self {
+            Self::Pinned(s) => Some(s.as_str()),
+            Self::Wildcard => None,
+        }
+    }
+}
+
+/// Identifies a dependency a consumer pulls from. `producer_name` +
+/// `producer_tag` pin the labelled producer for codegen: a real node for
+/// `depends_on.nodes`, or the interface's `(name, tag)` when the consumer
+/// pulls in via `depends_on.interfaces` (there's no producer node in that
+/// case, but the labels still need a stable identity). `origin` is `Some`
+/// when the consumed artifact carries the `interface`-shaped wire
+/// discriminator (either because the producer node `conforms_to` an
+/// interface or because the dependency itself is an interface contract).
 ///
-/// `link_id` is the consumer's declared link_id for this dependency; the
-/// generated subscribe / poll / send_goal calls splice it into the
-/// `link_id` wire slot when [`DependencyContext::wire_link_id`] returns
-/// `Some(value)`, and pass `None` (wildcard) when `from_any` is `true`.
+/// `link_id` carries the wire-slot intent: `Pinned(s)` for a specific
+/// consumer link_id, `Wildcard` when `from_any: true` or when no link_id is
+/// declared (the test-fixture default).
 ///
 /// [`SenderTarget::Interface`]: pmi::SenderTarget::Interface
 /// [`SenderTarget::Node`]: pmi::SenderTarget::Node
 #[derive(Debug, Clone)]
 pub struct DependencyContext {
-    pub node_name: String,
-    pub node_tag: String,
+    pub producer_name: String,
+    pub producer_tag: String,
     pub origin: Option<InterfaceOrigin>,
-    pub link_id: Option<String>,
-    pub from_any: bool,
+    pub link_id: WireLinkId,
 }
 
 impl DependencyContext {
     /// Build a context for a node dependency that emits natively (no
-    /// `conforms_to`). Defaults `link_id` to `None` and `from_any` to
-    /// `false`; use [`Self::with_link_id`] / [`Self::with_from_any`] to
-    /// override.
+    /// `conforms_to`). Defaults `link_id` to [`WireLinkId::Wildcard`]; use
+    /// [`Self::with_link_id`] to pin a value.
     pub fn native(node_name: impl Into<String>, node_tag: impl Into<String>) -> Self {
         Self {
-            node_name: node_name.into(),
-            node_tag: node_tag.into(),
+            producer_name: node_name.into(),
+            producer_tag: node_tag.into(),
             origin: None,
-            link_id: None,
-            from_any: false,
+            link_id: WireLinkId::Wildcard,
         }
     }
 
@@ -120,57 +150,44 @@ impl DependencyContext {
         origin: InterfaceOrigin,
     ) -> Self {
         Self {
-            node_name: node_name.into(),
-            node_tag: node_tag.into(),
+            producer_name: node_name.into(),
+            producer_tag: node_tag.into(),
             origin: Some(origin),
-            link_id: None,
-            from_any: false,
+            link_id: WireLinkId::Wildcard,
         }
     }
 
     /// Build a context for a `depends_on.interfaces` dependency. There is
-    /// no producer node here; `node_name` / `node_tag` carry the
-    /// interface's `(name, tag)` so error message labels stay readable,
-    /// and `origin` is set to the same `(name, tag)` so consumer-side
-    /// codegen reuses the existing `SenderTarget::Interface` path.
+    /// no producer node here; `producer_name` / `producer_tag` carry the
+    /// interface's `(name, tag)` so codegen labels stay readable, and
+    /// `origin` is set to the same `(name, tag)` so consumer-side codegen
+    /// reuses the existing `SenderTarget::Interface` path.
     pub fn interface(iface_name: impl Into<String>, iface_tag: impl Into<String>) -> Self {
         let iface_name = iface_name.into();
         let iface_tag = iface_tag.into();
         Self {
-            node_name: iface_name.clone(),
-            node_tag: iface_tag.clone(),
+            producer_name: iface_name.clone(),
+            producer_tag: iface_tag.clone(),
             origin: Some(InterfaceOrigin {
                 iface_name,
                 iface_tag,
             }),
-            link_id: None,
-            from_any: false,
+            link_id: WireLinkId::Wildcard,
         }
     }
 
-    /// Pin a specific consumer-side `link_id`. Generator code splices it
-    /// into the wire slot of the emitted subscribe / poll / send_goal call.
-    pub fn with_link_id(mut self, link_id: Option<String>) -> Self {
+    /// Set the wire-slot binding. Generator code splices [`WireLinkId::Pinned`]
+    /// into the wire slot and emits a wildcard for [`WireLinkId::Wildcard`].
+    pub fn with_link_id(mut self, link_id: WireLinkId) -> Self {
         self.link_id = link_id;
         self
     }
 
-    /// Mark the consumer as `from_any: true` so the generator emits a
-    /// wildcard at the link_id wire slot.
-    pub fn with_from_any(mut self, from_any: bool) -> Self {
-        self.from_any = from_any;
-        self
-    }
-
     /// Returns the wire link_id literal to splice for this consumer:
-    /// `Some(link_id)` when the dep pins a specific link_id, `None` when
-    /// `from_any: true` or no link_id is declared.
+    /// `Some(link_id)` when [`WireLinkId::Pinned`], `None` when
+    /// [`WireLinkId::Wildcard`].
     pub fn wire_link_id(&self) -> Option<&str> {
-        if self.from_any {
-            None
-        } else {
-            self.link_id.as_deref()
-        }
+        self.link_id.pinned()
     }
 }
 
