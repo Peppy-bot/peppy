@@ -36,6 +36,7 @@ async def test_action_messenger_communication():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
+            [],
             ACTION_NAME,)
 
         # Allow subscriptions to propagate
@@ -52,7 +53,8 @@ async def test_action_messenger_communication():
                 _goal_id,
                 _user_payload,
             ) = await action.feedback_publisher_factory.declare_from_wire(
-                bytes(req.message.payload)
+                req.link_id,
+                bytes(req.message.payload),
             )
             captured_publisher[0] = publisher
             return GOAL_RESPONSE_PAYLOAD
@@ -117,6 +119,7 @@ async def test_cancel_goal_concurrent_with_feedback():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
+            [],
             ACTION_NAME,)
 
         await asyncio.sleep(0.05)
@@ -193,6 +196,7 @@ async def test_send_goal_honors_target_core_node():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
+            [],
             ACTION_NAME,)
 
         await asyncio.sleep(0.05)
@@ -227,6 +231,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
+            [],
             "move",
         )
         iface_action = await ActionMessenger.expose(
@@ -234,6 +239,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.interface("arm", "v1"),
+            [],
             "move",
         )
 
@@ -243,7 +249,8 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
 
             async def on_goal(req):
                 publisher, _goal_id, _user_payload = await action.feedback_publisher_factory.declare_from_wire(
-                    bytes(req.message.payload)
+                    req.link_id,
+                    bytes(req.message.payload),
                 )
                 captured[0] = publisher
                 return response

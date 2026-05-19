@@ -49,6 +49,7 @@ async def test_messenger_communication():
             core_node,
             instance_id,
             SenderTarget.node(node_name, NODE_TAG),
+            [],
             topic_name,
             qos,
             payload,

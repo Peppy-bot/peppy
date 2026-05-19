@@ -92,6 +92,7 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
             CORE_NODE,
             SERVER_INSTANCE,
             SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
+            [],
             "clock",
             QoSProfile.SensorData,
             canned.encode(),
