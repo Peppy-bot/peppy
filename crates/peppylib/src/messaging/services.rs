@@ -76,31 +76,45 @@ impl ServiceEndpoint {
     /// Waits for the next service request, auto-handles probes, sends ACK, and returns the
     /// request context together with a [`ServiceResponder`] that must be used to send the reply.
     ///
-    /// Returns `Ok(None)` when the subscription stream has closed.
+    /// Returns `Ok(None)` when the subscription stream has closed. ACK send
+    /// failures (e.g. the caller dropped its reply stream before we replied)
+    /// are logged and the request is silently dropped so a single misbehaving
+    /// client cannot tear down the listener.
     pub async fn recv_next_request(
         &mut self,
     ) -> Result<Option<(ServiceRequestContext, ServiceResponder)>> {
-        match self.next_request().await {
-            Ok((context, token)) => {
-                // ACK reply before invoking the user handler — the caller's
-                // poll loop uses this to distinguish ServiceUnreachable
-                // (no ACK at all) from ServiceTimeout (ACK but no handler
-                // response within the timeout).
-                token
-                    .respond(bytes::Bytes::from_static(SERVICE_ACK_PAYLOAD).into())
-                    .await
-                    .map_err(Error::PeppyMessagingInterface)?;
-                Ok(Some((context, ServiceResponder { token })))
+        loop {
+            match self.next_request().await {
+                Ok((context, token)) => {
+                    // ACK reply before invoking the user handler. The caller's
+                    // poll loop uses this to distinguish ServiceUnreachable
+                    // (no ACK at all) from ServiceTimeout (ACK but no handler
+                    // response within the timeout).
+                    if let Err(err) = token
+                        .respond(bytes::Bytes::from_static(SERVICE_ACK_PAYLOAD).into())
+                        .await
+                    {
+                        warn!(
+                            %err,
+                            request_id = %context.request_id(),
+                            "failed to send service ACK; dropping request and continuing"
+                        );
+                        continue;
+                    }
+                    return Ok(Some((context, ServiceResponder { token })));
+                }
+                Err(Error::ServiceRequestStreamClosed) => return Ok(None),
+                Err(err) => return Err(err),
             }
-            Err(Error::ServiceRequestStreamClosed) => Ok(None),
-            Err(err) => Err(err),
         }
     }
 
     /// Handles a single incoming request using the provided callback.
     ///
-    /// Returns `Ok(true)` after successfully processing a request, or `Ok(false)` when the
-    /// subscription stream has closed.
+    /// Returns `Ok(true)` after attempting to process a request (even if
+    /// sending the response failed — that failure is logged and swallowed so
+    /// a single bad client cannot bubble out as a hard error), or `Ok(false)`
+    /// when the subscription stream has closed.
     pub async fn handle_next_request<F, Fut>(&mut self, handler: F) -> Result<bool>
     where
         F: FnOnce(ServiceRequestContext) -> Fut,
@@ -109,22 +123,36 @@ impl ServiceEndpoint {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(false);
         };
-        responder
-            .respond(run_handler(handler, context).await)
-            .await?;
+        let request_id = context.request_id().to_string();
+        let response = run_handler(handler, context).await;
+        if let Err(err) = responder.respond(response).await {
+            warn!(
+                %err,
+                %request_id,
+                "failed to send service response; dropping request"
+            );
+        }
         Ok(true)
     }
 
-    /// Handles requests until the subscription stream ends.
+    /// Handles requests until the subscription stream ends. Response send
+    /// failures for individual requests are logged and skipped so the loop
+    /// keeps serving subsequent callers.
     pub async fn handle_requests<F, Fut>(&mut self, mut handler: F) -> Result<()>
     where
         F: FnMut(ServiceRequestContext) -> Fut,
         Fut: std::future::Future<Output = Result<Payload>>,
     {
         while let Some((context, responder)) = self.recv_next_request().await? {
-            responder
-                .respond(run_handler(&mut handler, context).await)
-                .await?;
+            let request_id = context.request_id().to_string();
+            let response = run_handler(&mut handler, context).await;
+            if let Err(err) = responder.respond(response).await {
+                warn!(
+                    %err,
+                    %request_id,
+                    "failed to send service response; dropping request"
+                );
+            }
         }
         Ok(())
     }
