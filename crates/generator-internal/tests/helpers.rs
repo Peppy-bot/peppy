@@ -11,6 +11,7 @@ use peppylib::{MessengerHandle, ServiceMessenger};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::{fs, thread, time::Duration};
 use tempfile::TempDir;
@@ -145,6 +146,162 @@ pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std:
     }
 
     command.spawn().expect("failed to spawn cargo run")
+}
+
+/// Wraps a spawned child whose stdout/stderr are piped, draining them
+/// from background threads into shared buffers. This lets a test
+/// inspect stdout while the child is still running — for example, to
+/// wait for a specific line to appear before sending shutdown — without
+/// blocking on the pipe. Existing helpers that take a plain
+/// `&mut std::process::Child` keep working against the exposed `child`
+/// field.
+pub struct CapturedChild {
+    pub child: std::process::Child,
+    stdout: Arc<Mutex<Vec<u8>>>,
+    stderr: Arc<Mutex<Vec<u8>>>,
+}
+
+impl CapturedChild {
+    pub fn new(mut child: std::process::Child) -> Self {
+        let stdout = Arc::new(Mutex::new(Vec::new()));
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+
+        if let Some(pipe) = child.stdout.take() {
+            let buf = Arc::clone(&stdout);
+            thread::spawn(move || drain_pipe(pipe, buf));
+        }
+        if let Some(pipe) = child.stderr.take() {
+            let buf = Arc::clone(&stderr);
+            thread::spawn(move || drain_pipe(pipe, buf));
+        }
+
+        Self {
+            child,
+            stdout,
+            stderr,
+        }
+    }
+
+    /// Blocks until captured stdout contains `pattern` (as a substring).
+    /// Panics if the child exits first or if `timeout` elapses.
+    pub fn wait_for_stdout_contains(
+        &mut self,
+        pattern: &str,
+        timeout: Duration,
+        dir: &std::path::Path,
+    ) {
+        let start = Instant::now();
+        let needle = pattern.as_bytes();
+        loop {
+            if stdout_contains(&self.stdout, needle) {
+                return;
+            }
+
+            if let Some(status) = self
+                .child
+                .try_wait()
+                .expect("failed to poll process status for generated project")
+            {
+                let stdout = lossy_snapshot(&self.stdout);
+                let stderr = lossy_snapshot(&self.stderr);
+                panic!(
+                    "process exited before stdout contained {:?} (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
+                    pattern,
+                    status.code(),
+                    dir.display(),
+                    stdout,
+                    stderr,
+                );
+            }
+
+            if start.elapsed() > timeout {
+                let stdout = lossy_snapshot(&self.stdout);
+                let stderr = lossy_snapshot(&self.stderr);
+                panic!(
+                    "timed out after {:?} waiting for stdout to contain {:?} for project at {}\nstdout so far:\n{}\nstderr so far:\n{}",
+                    timeout,
+                    pattern,
+                    dir.display(),
+                    stdout,
+                    stderr,
+                );
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Waits for the child to exit and returns the captured output.
+    /// Mirrors [`wait_for_child`] but pulls from the background buffers
+    /// instead of reading the pipes directly (the drainer threads now
+    /// own them).
+    pub fn wait(
+        mut self,
+        timeout: Option<Duration>,
+        dir: &std::path::Path,
+    ) -> std::process::Output {
+        let start = Instant::now();
+        loop {
+            if let Some(limit) = timeout
+                && start.elapsed() > limit
+            {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                panic!(
+                    "process timed out after {:?} for project at {}\nstdout:\n{}\nstderr:\n{}",
+                    limit,
+                    dir.display(),
+                    lossy_snapshot(&self.stdout),
+                    lossy_snapshot(&self.stderr),
+                );
+            }
+
+            if let Some(status) = self
+                .child
+                .try_wait()
+                .expect("failed to poll process status for generated project")
+            {
+                // The drainer threads exit on EOF, which Linux delivers
+                // after the child closes its pipe ends. `wait()` above
+                // ensures the child is reaped before we read the buffers;
+                // a brief sleep lets any tail bytes land.
+                thread::sleep(Duration::from_millis(50));
+                let stdout = std::mem::take(&mut *self.stdout.lock().unwrap());
+                let stderr = std::mem::take(&mut *self.stderr.lock().unwrap());
+                return std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                };
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+fn drain_pipe<R: Read + Send + 'static>(mut pipe: R, buf: Arc<Mutex<Vec<u8>>>) {
+    let mut chunk = [0u8; 4096];
+    while let Ok(n) = pipe.read(&mut chunk) {
+        if n == 0 {
+            break;
+        }
+        if let Ok(mut guard) = buf.lock() {
+            guard.extend_from_slice(&chunk[..n]);
+        }
+    }
+}
+
+fn stdout_contains(buf: &Arc<Mutex<Vec<u8>>>, needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let guard = buf.lock().unwrap();
+    guard.windows(needle.len()).any(|w| w == needle)
+}
+
+fn lossy_snapshot(buf: &Arc<Mutex<Vec<u8>>>) -> String {
+    String::from_utf8_lossy(&buf.lock().unwrap()).into_owned()
 }
 
 pub fn wait_for_child(

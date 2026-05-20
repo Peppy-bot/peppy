@@ -1,8 +1,8 @@
 use crate::helpers::{
-    STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output, init_python_project_venv,
-    init_python_user_node, init_test_env, send_shutdown, spawn_python_run, test_peppy_dirs,
-    try_send_shutdown, wait_for_child, wait_for_health_service_reachable_or_exit,
-    wait_for_service_reachable_or_exit,
+    CapturedChild, STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output,
+    init_python_project_venv, init_python_user_node, init_test_env, send_shutdown,
+    spawn_python_run, test_peppy_dirs, try_send_shutdown, wait_for_child,
+    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -292,16 +292,16 @@ if __name__ == "__main__":
     )
     .await;
 
-    let mut consumer_child = spawn_python_run(
+    let mut consumer = CapturedChild::new(spawn_python_run(
         &user_node_consumer,
         &[(RUNTIME_CONFIG_VAR_NAME, &user_node_consumer_config_str)],
-    );
+    ));
 
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
         consumer_instance_id,
-        &mut consumer_child,
+        &mut consumer.child,
         &user_node_consumer,
     )
     .await;
@@ -313,6 +313,19 @@ if __name__ == "__main__":
         &user_node_exposer,
     )
     .await;
+
+    // Consumer's poll runs as a background task created in `setup`. Wait
+    // for the result line to appear in its stdout before sending shutdown,
+    // otherwise the event loop can stop mid-poll and the print is lost.
+    let expected_consumer_log = format!(
+        "enable_camera result: service_id={} enabled=True error=handled",
+        exposer_instance_id
+    );
+    consumer.wait_for_stdout_contains(
+        &expected_consumer_log,
+        Duration::from_secs(10),
+        &user_node_consumer,
+    );
 
     // The consumer may have already exited after completing the request.
     try_send_shutdown(
@@ -336,11 +349,7 @@ if __name__ == "__main__":
     )
     .await;
 
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
+    let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
     let exposer_output = wait_for_child(
         &mut exposer_child,
         Some(Duration::from_secs(10)),
@@ -356,10 +365,9 @@ if __name__ == "__main__":
         consumer_stdout,
         consumer_stderr
     );
-    let expected_consumer_log = format!(
-        "enable_camera result: service_id={} enabled=True error=handled",
-        exposer_instance_id
-    );
+    // `wait_for_stdout_contains` above already proved the line was printed,
+    // but we re-assert here so the failure points at the right location if
+    // the captured-output flow ever regresses.
     assert!(
         consumer_stdout.contains(&expected_consumer_log),
         "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
@@ -575,16 +583,16 @@ if __name__ == "__main__":
     )
     .await;
 
-    let mut consumer_child = spawn_python_run(
+    let mut consumer = CapturedChild::new(spawn_python_run(
         &user_node_consumer,
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
+    ));
 
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
         consumer_instance_id,
-        &mut consumer_child,
+        &mut consumer.child,
         &user_node_consumer,
     )
     .await;
@@ -597,6 +605,19 @@ if __name__ == "__main__":
     )
     .await;
 
+    // Consumer's poll runs as a background task created in `setup`. Wait
+    // for the result line to appear in its stdout before sending shutdown,
+    // otherwise the event loop can stop mid-poll and the print is lost.
+    let expected_consumer_log = format!(
+        "get_system_status result: service_id={} healthy=True",
+        exposer_instance_id
+    );
+    consumer.wait_for_stdout_contains(
+        &expected_consumer_log,
+        Duration::from_secs(10),
+        &user_node_consumer,
+    );
+
     send_shutdown(
         &messenger,
         TEST_CORE_NODE,
@@ -618,11 +639,7 @@ if __name__ == "__main__":
     )
     .await;
 
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
+    let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
     let exposer_output = wait_for_child(
         &mut exposer_child,
         Some(Duration::from_secs(10)),
@@ -638,10 +655,9 @@ if __name__ == "__main__":
         consumer_stdout,
         consumer_stderr
     );
-    let expected_consumer_log = format!(
-        "get_system_status result: service_id={} healthy=True",
-        exposer_instance_id
-    );
+    // `wait_for_stdout_contains` above already proved the line was printed,
+    // but we re-assert here so the failure points at the right location if
+    // the captured-output flow ever regresses.
     assert!(
         consumer_stdout.contains(&expected_consumer_log),
         "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
@@ -945,16 +961,16 @@ if __name__ == "__main__":
     )
     .await;
 
-    let mut consumer_child = spawn_python_run(
+    let mut consumer = CapturedChild::new(spawn_python_run(
         &user_node_consumer,
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
+    ));
 
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
         consumer_instance_id,
-        &mut consumer_child,
+        &mut consumer.child,
         &user_node_consumer,
     )
     .await;
@@ -975,6 +991,20 @@ if __name__ == "__main__":
     )
     .await;
 
+    // Consumer's poll runs as a background task created in `setup`. Wait
+    // for the result line to appear in its stdout before sending shutdown,
+    // otherwise the event loop can stop mid-poll and the print is lost.
+    // exposer1 responds immediately (no sleep), so its response is what
+    // the consumer should print — we wait for exactly that line, with the
+    // exposer1 marker, to also catch the case where exposer2 somehow won
+    // the race.
+    let expected_consumer_log = "enable_camera result: enabled=True error=handled\n";
+    consumer.wait_for_stdout_contains(
+        expected_consumer_log,
+        Duration::from_secs(10),
+        &user_node_consumer,
+    );
+
     send_shutdown(
         &messenger,
         TEST_CORE_NODE,
@@ -1006,11 +1036,7 @@ if __name__ == "__main__":
     )
     .await;
 
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
+    let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
     let exposer_output1 = wait_for_child(
         &mut exposer1_child,
         Some(Duration::from_secs(10)),
@@ -1058,9 +1084,13 @@ if __name__ == "__main__":
         exposer2_stderr
     );
 
-    // Consumer should have received a response from exposer1 (the faster responder)
+    // Consumer should have received a response from exposer1 (the faster
+    // responder). The trailing `\n` makes the match strict — exposer2's
+    // `error=handled_by_exposer2\n` would not satisfy it. `wait_for_stdout_contains`
+    // above already enforced this, but re-asserting here points failures
+    // at the right line if the captured-output flow ever regresses.
     assert!(
-        consumer_stdout.contains("enable_camera result: enabled=True error=handled"),
+        consumer_stdout.contains(expected_consumer_log),
         "consumer should have received response from exposer1 (the faster responder), not exposer2.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr
