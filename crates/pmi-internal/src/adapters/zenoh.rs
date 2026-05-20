@@ -364,20 +364,26 @@ impl MessengerBackend for ZenohAdapter {
             tokio::sync::mpsc::channel::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
         let mut tasks = tokio::task::JoinSet::new();
 
-        for link_id_seg in &recv.link_ids {
-            let link_id = link_id_seg.as_str().to_string();
-            let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv, &link_id);
-            let queryable = session
-                .declare_queryable(&declare_keyexpr)
-                .complete(true)
-                .await
-                .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
-            let recv_clone = recv.clone();
-            let tx = tx.clone();
-            tasks.spawn(async move {
-                handle_queryable(queryable, link_id, recv_clone, tx).await;
-            });
-        }
+        // One queryable per listen call. The declared keyexpr has `*` at the
+        // link_id slot so a single queryable absorbs every bound link_id —
+        // `handle_queryable` does the dispatch by parsing the selector. Two
+        // queryables for one process would let a `from_any` consumer's `*`
+        // selector double-deliver via `QueryTarget::All`.
+        let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
+        let queryable = session
+            .declare_queryable(&declare_keyexpr)
+            .complete(true)
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+        let bound_link_ids: Vec<String> = recv
+            .link_ids
+            .iter()
+            .map(|s| s.as_str().to_string())
+            .collect();
+        let recv_clone = recv.clone();
+        tasks.spawn(async move {
+            handle_queryable(queryable, bound_link_ids, recv_clone, tx).await;
+        });
 
         Ok(ServiceQueryable::new(rx, tasks))
     }
@@ -596,17 +602,20 @@ impl ZenohAdapter {
 }
 
 /// Per-queryable forwarder loop. Pulls inbound queries off `queryable`,
-/// parses the caller identity slots from the selector, builds an
+/// parses the selector, resolves the caller's link_id intent against
+/// `bound_link_ids` via [`ParsedInboundQuery::choose_link_id`], builds an
 /// [`IncomingRequest`] with a [`ResponseToken::Zenoh`] (carrying the
 /// concrete reply keyexpr) and pushes it onto `tx`.
 ///
 /// Probe / ACK semantics are handled by peppylib's request loop, not here —
-/// every query (including probes) is delivered to peppylib via `tx`, and
-/// peppylib decides whether to reply inline or hand the request to the
-/// user handler.
+/// every claimed query (including probes) is delivered to peppylib via
+/// `tx`, and peppylib decides whether to reply inline or hand the request
+/// to the user handler. Queries whose selector pins a link_id outside
+/// `bound_link_ids` are dropped silently (defensive — Zenoh's matcher
+/// should already have filtered them out).
 async fn handle_queryable(
     queryable: zenoh::query::Queryable<zenoh::handlers::FifoChannelHandler<zenoh::query::Query>>,
-    link_id: String,
+    bound_link_ids: Vec<String>,
     recv: ServiceWireReceiver,
     tx: tokio::sync::mpsc::Sender<IncomingRequest>,
 ) {
@@ -631,9 +640,21 @@ async fn handle_queryable(
             }
         };
 
+        let chosen_link_id = match parsed.choose_link_id(&bound_link_ids) {
+            Some(l) => l.to_string(),
+            None => {
+                tracing::trace!(
+                    query_keyexpr = %query.key_expr().as_str(),
+                    parsed_link_id = %parsed.link_id,
+                    "dropping inbound query: parsed link_id not in bound set",
+                );
+                continue;
+            }
+        };
+
         let reply_keyexpr = ZenohWireFormat::service_reply_keyexpr(
             &recv,
-            &link_id,
+            &chosen_link_id,
             &parsed.caller_core,
             &parsed.caller_inst,
         );
@@ -646,7 +667,7 @@ async fn handle_queryable(
         let token = ResponseToken::Zenoh(ZenohResponseToken::new(query, reply_keyexpr));
         let request = IncomingRequest {
             payload,
-            link_id: link_id.clone(),
+            link_id: chosen_link_id,
             caller_core: parsed.caller_core,
             caller_inst: parsed.caller_inst,
             token,

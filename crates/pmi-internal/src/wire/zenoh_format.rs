@@ -84,23 +84,28 @@ impl ZenohWireFormat {
     // ─── Services ─────────────────────────────────────────────────────────
     //
     // Services and action sub-services (goal / cancel / result) ride on
-    // Zenoh queryables. The producer declares one queryable per bound
-    // link_id; the consumer's `session.get(selector)` matches via Zenoh's
-    // native keyexpr matcher. No `_any_` broadcast marker, no `request_id`
-    // tail, no dispatch-time link_id filter — the single-chunk Zenoh
-    // wildcard `*` carries the same intent for broadcast slots and for
-    // `from_any: true` consumers, and `session.get` accepts wildcards
-    // (unlike `put`).
+    // Zenoh queryables. The producer declares exactly one queryable per
+    // `listen_service` call with `*` at the link_id slot, regardless of how
+    // many link_ids the receiver binds. Producer-side dispatch (in the
+    // adapter's `handle_queryable`) picks the concrete link_id from the
+    // bound set when claiming each inbound query — `from_any` consumers
+    // claim `bound_link_ids[0]`, pinned consumers claim the literal they
+    // sent. This keeps the user handler firing exactly once per consumer
+    // call, even when a single producer process binds N link_ids.
 
-    /// Producer-side queryable keyexpr, declared once per bound link_id.
+    /// Producer-side queryable keyexpr, declared once per `listen_service`.
     /// Layout `{bound_core}/*/{as_inst}/*/{service_root}` — the `*` slots
     /// match any caller's `core_node` / `instance_id`, and the link_id slot
-    /// inside `service_root` is the concrete `link_id_literal`.
-    pub(crate) fn service_queryable_declare(
-        r: &ServiceWireReceiver,
-        link_id_literal: &str,
-    ) -> String {
-        let root = service_root(&r.as_identity, link_id_literal, &r.as_service_name, r.kind);
+    /// inside `service_root` is also `*` so a single queryable absorbs every
+    /// link_id literal the producer binds. The adapter resolves which
+    /// concrete link_id to bind each request to after parsing the selector.
+    pub(crate) fn service_queryable_declare(r: &ServiceWireReceiver) -> String {
+        let root = service_root(
+            &r.as_identity,
+            SINGLE_CHUNK_WILDCARD,
+            &r.as_service_name,
+            r.kind,
+        );
         format!(
             "{}/{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{root}",
             r.bound_core_node, r.as_instance_id,
@@ -145,10 +150,11 @@ impl ZenohWireFormat {
 
     /// Parses a query selector keyexpr (the caller's get-side keyexpr, as
     /// delivered to the producer via `query.key_expr()`) to extract the
-    /// caller's identity slots. No link_id parsing: the producer already
-    /// knows its own bound link_id from the queryable being drained, and
-    /// the dispatch filter is gone — Zenoh keyexpr matching guarantees
-    /// the selector only lands on a queryable whose link_id is acceptable.
+    /// caller's identity slots and the link_id slot. The producer's single
+    /// queryable declares `*` at the link_id position, so the selector's
+    /// literal-or-`*` at that slot is the only signal of which bound link_id
+    /// the consumer wanted — [`ParsedInboundQuery::choose_link_id`] resolves
+    /// that into a concrete claim from the producer's bound set.
     pub(crate) fn parse_inbound_query(
         receiver: &ServiceWireReceiver,
         query_keyexpr: &str,
@@ -188,9 +194,15 @@ impl ZenohWireFormat {
             }
         }
 
+        let link_id = parts
+            .next()
+            .ok_or(ZenohWireParseError::MissingSegment("link_id"))?
+            .to_string();
+
         Ok(ParsedInboundQuery {
             caller_core,
             caller_inst,
+            link_id,
         })
     }
 
@@ -285,14 +297,43 @@ pub(crate) struct ParsedTopicKey {
     pub(crate) instance_id: String,
 }
 
-/// Result of parsing an inbound queryable selector. Carries just the
-/// caller-identity slots — the producer's bound link_id is already known
-/// to the adapter spawn that owns the matching queryable, and Zenoh's
-/// keyexpr matcher has already filtered out anything else.
+/// Result of parsing an inbound queryable selector. Carries the
+/// caller-identity slots plus the link_id slot from the selector — the
+/// producer's single queryable declares `*` at the link_id slot, so the
+/// adapter inspects this field to decide which of its bound link_ids to
+/// claim for the inbound request via [`Self::choose_link_id`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedInboundQuery {
     pub(crate) caller_core: String,
     pub(crate) caller_inst: String,
+    /// Raw value of the link_id slot in the selector. Either the
+    /// single-chunk wildcard `*` (a `from_any` consumer) or a concrete
+    /// literal (a pinned consumer).
+    pub(crate) link_id: String,
+}
+
+impl ParsedInboundQuery {
+    /// Resolves the link_id the producer should bind this request to.
+    ///
+    /// - Wildcard selector (`from_any` consumer): claims `bound_link_ids[0]`.
+    ///   First-bound is deterministic and keeps `ctx.link_id()` stable across
+    ///   an action's goal / cancel / result sub-services, which dispatch
+    ///   independently but must agree on the link_id for a given goal_id.
+    /// - Literal selector matching a bound link_id: claims that literal.
+    /// - Literal selector NOT in the bound set: returns `None`, signaling
+    ///   the adapter to drop the query without replying. Unreachable in
+    ///   practice because Zenoh's keyexpr matcher already filtered the
+    ///   selector against the producer's queryable, but kept as a defensive
+    ///   guard against mid-rollout schema skew.
+    pub(crate) fn choose_link_id<'a>(&self, bound_link_ids: &'a [String]) -> Option<&'a str> {
+        if self.link_id == SINGLE_CHUNK_WILDCARD {
+            return bound_link_ids.first().map(String::as_str);
+        }
+        bound_link_ids
+            .iter()
+            .find(|b| b.as_str() == self.link_id)
+            .map(String::as_str)
+    }
 }
 
 /// Reasons a request keyexpr can fail to match the expected request shape.

@@ -143,16 +143,20 @@ impl MessengerBackend for MockAdapter {
         let (tx, rx) = mpsc::channel::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
         let mut tasks = tokio::task::JoinSet::new();
 
-        for link_id_seg in &recv.link_ids {
-            let link_id = link_id_seg.as_str().to_string();
-            let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv, &link_id);
-            let query_rx = self.declare_queryable_keyexpr(declare_keyexpr);
-            let tx = tx.clone();
-            let recv_clone = recv.clone();
-            tasks.spawn(async move {
-                handle_mock_queryable(query_rx, link_id, recv_clone, tx).await;
-            });
-        }
+        // One queryable per listen call (see `ZenohAdapter::listen_service`
+        // for the rationale — the same shape applies here so peppylib tests
+        // exercise the same dispatch logic against the mock).
+        let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
+        let query_rx = self.declare_queryable_keyexpr(declare_keyexpr);
+        let bound_link_ids: Vec<String> = recv
+            .link_ids
+            .iter()
+            .map(|s| s.as_str().to_string())
+            .collect();
+        let recv_clone = recv.clone();
+        tasks.spawn(async move {
+            handle_mock_queryable(query_rx, bound_link_ids, recv_clone, tx).await;
+        });
 
         Ok(ServiceQueryable::new(rx, tasks))
     }
@@ -427,12 +431,16 @@ impl MockAdapter {
 
 /// Per-queryable forwarder for the mock adapter. Mirrors
 /// [`super::zenoh::handle_queryable`]: drains inbound `MockQuery`s, parses
-/// the caller identity, builds an [`IncomingRequest`] with a
+/// the caller identity and link_id slot, dispatches to a concrete link_id
+/// from `bound_link_ids`, builds an [`IncomingRequest`] with a
 /// [`ResponseToken::Mock`] carrying the per-query reply channel, and
-/// pushes it to peppylib.
+/// pushes it to peppylib. Queries whose selector pins a link_id outside
+/// `bound_link_ids` are dropped (the `mock_query`'s reply_tx clone falls
+/// out of scope at end of iteration so the caller's reply stream finalizes
+/// once every reply_tx is dropped).
 async fn handle_mock_queryable(
     mut query_rx: mpsc::Receiver<MockQuery>,
-    link_id: String,
+    bound_link_ids: Vec<String>,
     recv: ServiceWireReceiver,
     tx: mpsc::Sender<IncomingRequest>,
 ) {
@@ -450,9 +458,21 @@ async fn handle_mock_queryable(
             }
         };
 
+        let chosen_link_id = match parsed.choose_link_id(&bound_link_ids) {
+            Some(l) => l.to_string(),
+            None => {
+                tracing::trace!(
+                    selector = %mock_query.selector_keyexpr,
+                    parsed_link_id = %parsed.link_id,
+                    "mock queryable: dropping query with link_id not in bound set",
+                );
+                continue;
+            }
+        };
+
         let reply_keyexpr = ZenohWireFormat::service_reply_keyexpr(
             &recv,
-            &link_id,
+            &chosen_link_id,
             &parsed.caller_core,
             &parsed.caller_inst,
         );
@@ -460,7 +480,7 @@ async fn handle_mock_queryable(
         let token = ResponseToken::Mock(MockResponseToken::new(mock_query.reply_tx, reply_keyexpr));
         let request = IncomingRequest {
             payload: mock_query.payload,
-            link_id: link_id.clone(),
+            link_id: chosen_link_id,
             caller_core: parsed.caller_core,
             caller_inst: parsed.caller_inst,
             token,

@@ -249,14 +249,15 @@ fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
 
 #[test]
 fn service_queryable_declare_node_identity_plain_service() {
-    // Producer with no `--link-id` materializes `Segment::default_link_id()`
-    // (`_`) at the link_id slot. One queryable per bound link_id; the
-    // declared keyexpr wildcards only the caller-identity slots.
+    // One queryable per `listen_service` regardless of bound link_id count.
+    // The link_id slot is `*` so the queryable absorbs every literal a
+    // consumer's selector may carry — producer-side dispatch in
+    // `handle_queryable` decides which bound link_id to claim per request.
     let recv = sample_service_receiver(ServiceKind::Service);
-    let key = ZenohWireFormat::service_queryable_declare(&recv, "_");
+    let key = ZenohWireFormat::service_queryable_declare(&recv);
     assert_eq!(
         key,
-        "server_core/*/server_inst/*/service/node/robot_arm/v1/_/ping"
+        "server_core/*/server_inst/*/service/node/robot_arm/v1/*/ping"
     );
 }
 
@@ -272,8 +273,8 @@ fn service_queryable_declare_action_goal_appends_suffix() {
     )
     .expect("valid receiver");
     assert_eq!(
-        ZenohWireFormat::service_queryable_declare(&recv, "_"),
-        "server_core/*/server_inst/*/action/node/robot_arm/v1/_/pick_place/goal"
+        ZenohWireFormat::service_queryable_declare(&recv),
+        "server_core/*/server_inst/*/action/node/robot_arm/v1/*/pick_place/goal"
     );
 }
 
@@ -289,16 +290,17 @@ fn service_queryable_declare_interface_identity_normalizes_tag() {
     )
     .expect("valid receiver");
     assert_eq!(
-        ZenohWireFormat::service_queryable_declare(&recv, "_"),
-        "server_core/*/server_inst/*/service/interface/manipulator/v2_beta/_/ping"
+        ZenohWireFormat::service_queryable_declare(&recv),
+        "server_core/*/server_inst/*/service/interface/manipulator/v2_beta/*/ping"
     );
 }
 
 #[test]
-fn service_queryable_declare_per_bound_link_id() {
-    // A producer bound to multiple link_ids declares one queryable per
-    // entry. Zenoh keyexpr matching dispatches inbound queries to the
-    // right one — no dispatch-time filter required.
+fn service_queryable_declare_wildcard_link_id_regardless_of_bound_set() {
+    // A multi-link receiver still declares exactly one queryable with `*`
+    // at the link_id slot. Without this invariant a `from_any` consumer's
+    // `*` selector would intersect every per-link queryable and
+    // double-deliver through `QueryTarget::All`.
     let recv = ServiceWireReceiver::new(
         "server_core",
         "server_inst",
@@ -308,17 +310,10 @@ fn service_queryable_declare_per_bound_link_id() {
         ServiceKind::Service,
     )
     .expect("valid receiver");
-    let left = ZenohWireFormat::service_queryable_declare(&recv, "wrist_left");
-    let right = ZenohWireFormat::service_queryable_declare(&recv, "wrist_right");
     assert_eq!(
-        left,
-        "server_core/*/server_inst/*/service/interface/depth_camera/v1/wrist_left/ping"
+        ZenohWireFormat::service_queryable_declare(&recv),
+        "server_core/*/server_inst/*/service/interface/depth_camera/v1/*/ping"
     );
-    assert_eq!(
-        right,
-        "server_core/*/server_inst/*/service/interface/depth_camera/v1/wrist_right/ping"
-    );
-    assert_ne!(left, right);
 }
 
 // ─── Services — get selector ──────────────────────────────────────────────
@@ -480,24 +475,101 @@ fn service_reply_keyexpr_action_result_appends_suffix() {
 // ─── Services — parse_inbound_query ───────────────────────────────────────
 
 #[test]
-fn parse_inbound_query_extracts_caller_identity() {
+fn parse_inbound_query_extracts_caller_identity_and_literal_link_id() {
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping";
     let parsed = ZenohWireFormat::parse_inbound_query(&receiver, query).expect("should parse");
     assert_eq!(parsed.caller_core, "caller_core");
     assert_eq!(parsed.caller_inst, "caller_inst");
+    assert_eq!(
+        parsed.link_id, "_",
+        "default-link-id producer selector should surface `_` literal"
+    );
 }
 
 #[test]
-fn parse_inbound_query_accepts_wildcard_in_target_slots() {
+fn parse_inbound_query_accepts_wildcard_in_target_slots_and_link_id() {
     // A `from_any` consumer's selector wildcards the to_core/to_inst slots
-    // with Zenoh `*`. The producer-side parser ignores those slots — Zenoh
-    // keyexpr matching has already routed the query to the right queryable.
+    // and the link_id slot with Zenoh `*`. The producer-side parser
+    // surfaces the `*` at the link_id slot so the adapter's dispatcher can
+    // claim a bound link_id; the to_core/to_inst slots are ignored here
+    // because Zenoh keyexpr matching has already routed the query.
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "*/caller_core/*/caller_inst/service/node/robot_arm/v1/*/ping";
     let parsed = ZenohWireFormat::parse_inbound_query(&receiver, query).expect("should parse");
     assert_eq!(parsed.caller_core, "caller_core");
     assert_eq!(parsed.caller_inst, "caller_inst");
+    assert_eq!(
+        parsed.link_id, "*",
+        "from_any consumer's selector should surface `*` at the link_id slot"
+    );
+}
+
+#[test]
+fn parse_inbound_query_surfaces_concrete_link_id_literal() {
+    // Pinned consumer (`to_link_id: Some("wrist_right")`) surfaces the
+    // literal at the link_id slot — the dispatcher then checks it against
+    // the producer's bound set.
+    let receiver = sample_service_receiver(ServiceKind::Service);
+    let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/wrist_right/ping";
+    let parsed = ZenohWireFormat::parse_inbound_query(&receiver, query).expect("should parse");
+    assert_eq!(parsed.link_id, "wrist_right");
+}
+
+#[test]
+fn parsed_inbound_query_choose_link_id_wildcard_claims_first_bound() {
+    // `from_any` consumer (`*` at link_id slot) + multi-link producer:
+    // dispatcher claims `bound_link_ids[0]`. First-bound is deterministic
+    // so action goal/cancel/result sub-services (which each run dispatch
+    // independently) agree on a single link_id per goal_id.
+    let parsed = ParsedInboundQuery {
+        caller_core: "caller_core".to_string(),
+        caller_inst: "caller_inst".to_string(),
+        link_id: SINGLE_CHUNK_WILDCARD.to_string(),
+    };
+    let bound = vec!["wrist_left".to_string(), "wrist_right".to_string()];
+    assert_eq!(parsed.choose_link_id(&bound), Some("wrist_left"));
+}
+
+#[test]
+fn parsed_inbound_query_choose_link_id_literal_matches_bound() {
+    let parsed = ParsedInboundQuery {
+        caller_core: "caller_core".to_string(),
+        caller_inst: "caller_inst".to_string(),
+        link_id: "wrist_right".to_string(),
+    };
+    let bound = vec!["wrist_left".to_string(), "wrist_right".to_string()];
+    assert_eq!(parsed.choose_link_id(&bound), Some("wrist_right"));
+}
+
+#[test]
+fn parsed_inbound_query_choose_link_id_literal_outside_bound_set_drops() {
+    // Defensive guard: Zenoh's matcher should already have rejected a
+    // selector whose link_id literal isn't in the producer's bound set,
+    // but if one slips through (mid-rollout schema skew, manual probe),
+    // the dispatcher returns `None` and the adapter drops the query.
+    let parsed = ParsedInboundQuery {
+        caller_core: "caller_core".to_string(),
+        caller_inst: "caller_inst".to_string(),
+        link_id: "torso".to_string(),
+    };
+    let bound = vec!["wrist_left".to_string()];
+    assert!(parsed.choose_link_id(&bound).is_none());
+}
+
+#[test]
+fn parsed_inbound_query_choose_link_id_wildcard_with_empty_bound_set_drops() {
+    // `Segment::link_ids_or_default` normalizes an empty `&[]` to the
+    // single `_` reserved segment before this struct is ever constructed,
+    // so the empty case shouldn't appear in practice — but guarantee the
+    // dispatcher never panics on it.
+    let parsed = ParsedInboundQuery {
+        caller_core: "caller_core".to_string(),
+        caller_inst: "caller_inst".to_string(),
+        link_id: SINGLE_CHUNK_WILDCARD.to_string(),
+    };
+    let bound: Vec<String> = Vec::new();
+    assert!(parsed.choose_link_id(&bound).is_none());
 }
 
 #[test]

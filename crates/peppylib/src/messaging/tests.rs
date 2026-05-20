@@ -2477,12 +2477,15 @@ async fn single_action_communication_multiple_polls() {
     router.shutdown().await;
 }
 
-// ─── link_id queryable fan-out ─────────────────────────────────────────────
+// ─── link_id queryable dispatch ────────────────────────────────────────────
 //
-// These tests pin the producer-side fan-out behavior: one queryable per
-// bound link_id, with Zenoh's keyexpr matcher doing the dispatch.
-// Cross-talk, ACK ordering, and per-goal feedback routing are the failure
-// modes the design must not introduce; each gets a dedicated test below.
+// These tests pin the producer-side dispatch behavior: a single queryable
+// per `listen_service` call (`*` at the link_id slot) with the adapter's
+// `handle_queryable` claiming a concrete bound link_id per inbound request
+// via `ParsedInboundQuery::choose_link_id`. Cross-talk, ACK ordering,
+// per-goal feedback routing, and `from_any` single-invocation are the
+// failure modes the design must not introduce; each gets a dedicated
+// test below.
 
 const LINK_LEFT: &str = "wrist_left";
 const LINK_RIGHT: &str = "wrist_right";
@@ -2560,12 +2563,14 @@ async fn service_listen_dispatches_under_each_bound_link_id() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
-    // Producer binds only LINK_LEFT. A consumer pins to LINK_TORSO. With
-    // queryables, the producer's declared keyexpr carries `wrist_left` at
-    // the link_id slot; the consumer's get selector carries `torso`. Zenoh's
-    // keyexpr matcher refuses to intersect the two, so the query never
-    // reaches the producer and the consumer surfaces `ServiceUnreachable`
-    // (no ACK seen). The user handler must NEVER fire.
+    // Producer binds only LINK_LEFT. A consumer pins to LINK_TORSO.
+    // The producer's queryable now carries `*` at the link_id slot, so
+    // the consumer's `torso` literal selector intersects and the query
+    // does reach the producer's `handle_queryable`. The dispatcher then
+    // checks the parsed link_id against the bound set (`["wrist_left"]`),
+    // finds no match, and drops the query silently — no reply, no ACK.
+    // The consumer surfaces `ServiceUnreachable` and the user handler
+    // must NEVER fire.
     let router = TestRouterContext::start().await;
     let bound = vec![LINK_LEFT.to_string()];
     let server_handle = router.messenger().await;
@@ -2830,6 +2835,247 @@ async fn action_feedback_routes_per_goal_link_id() {
     exercise_link(LINK_RIGHT).await;
 
     server_task.await.expect("server task panicked");
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_multi_link_producer_from_any_consumer_fires_handler_exactly_once() {
+    // Regression test for the duplicate-dispatch bug: a producer binding two
+    // link_ids on one `listen_service` and a `from_any` consumer (no
+    // `to_link_id` pin) used to fire the user handler twice — once per bound
+    // link_id — because each link_id declared its own queryable and Zenoh's
+    // `QueryTarget::All` delivered the consumer's `*` selector to every
+    // matching queryable in the same process. After the fix a single
+    // queryable absorbs both and the dispatcher claims `bound_link_ids[0]`,
+    // so the handler fires exactly once.
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
+    let server_handle = router.messenger().await;
+    let mut endpoint = ServiceMessenger::listen(
+        &server_handle,
+        "server_core",
+        "server_inst",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        &bound,
+        "start_recording",
+    )
+    .await
+    .expect("listen should succeed");
+
+    let handler_fired = Arc::new(AtomicUsize::new(0));
+    let handler_fired_clone = Arc::clone(&handler_fired);
+    let server_task = tokio::spawn(async move {
+        // Serve the one expected request, then race the second
+        // `handle_next_request` against a short deadline so a duplicate
+        // dispatch trips the counter without hanging the test forever.
+        endpoint
+            .handle_next_request(move |ctx| {
+                let fired = Arc::clone(&handler_fired_clone);
+                let link_id = ctx.link_id().to_string();
+                async move {
+                    fired.fetch_add(1, Ordering::SeqCst);
+                    Ok(Payload::from(link_id.into_bytes()))
+                }
+            })
+            .await
+            .expect("first handle_next_request should succeed");
+
+        let _ = tokio::time::timeout(
+            Duration::from_millis(250),
+            endpoint.handle_next_request(|_ctx| async move {
+                Ok(Payload::from_static(b"unexpected_duplicate"))
+            }),
+        )
+        .await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = router.messenger().await;
+    let response = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core",
+        "from_any_caller",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        None, // ← `from_any: true` — the case that double-dispatched before.
+        "start_recording",
+        Some("server_core"),
+        Some("server_inst"),
+        Payload::from_static(b"go"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("from_any poll against multi-link producer should succeed");
+    assert_eq!(
+        response.payload().as_ref(),
+        LINK_LEFT.as_bytes(),
+        "first-bound dispatch policy: producer should claim bound_link_ids[0]"
+    );
+
+    server_task.await.expect("server task panicked");
+
+    assert_eq!(
+        handler_fired.load(Ordering::SeqCst),
+        1,
+        "user handler must fire exactly once for one from_any consumer call",
+    );
+
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn action_multi_link_producer_from_any_consumer_fires_goal_handler_exactly_once() {
+    // Action-flavored regression: each action sub-service (goal, cancel,
+    // result) runs the dispatcher independently. First-bound policy keeps
+    // the link_id consistent across the lifecycle, so the user observes a
+    // single goal/cancel/result invocation per consumer call. Without the
+    // fix the producer would race two goal handlers on the same
+    // consumer-generated `goal_id` and declare two feedback publishers.
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
+    let server_handle = router.messenger().await;
+    let action = ActionMessenger::expose(
+        &server_handle,
+        "server_core",
+        "server_inst",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        &bound,
+        "record",
+    )
+    .await
+    .expect("expose should succeed");
+
+    let mut goal_service = action.goal_service;
+    let mut cancel_service = action.cancel_service;
+    let mut result_service = action.result_service;
+    let factory = action.feedback_publisher_factory;
+
+    let goal_handler_count = Arc::new(AtomicUsize::new(0));
+    let result_handler_count = Arc::new(AtomicUsize::new(0));
+    let goal_count_clone = Arc::clone(&goal_handler_count);
+    let result_count_clone = Arc::clone(&result_handler_count);
+
+    let server_task = tokio::spawn(async move {
+        // Goal
+        let (ctx, responder) = goal_service
+            .recv_next_request()
+            .await
+            .expect("goal recv")
+            .expect("goal closed");
+        let link_id = ctx.link_id().to_string();
+        let wire = ctx.message().payload().into_inner();
+        let declared = factory
+            .declare_from_wire(&link_id, wire)
+            .await
+            .expect("declare_from_wire");
+        goal_count_clone.fetch_add(1, Ordering::SeqCst);
+        responder
+            .respond(Payload::from(format!("accepted={link_id}").into_bytes()))
+            .await
+            .expect("goal respond");
+        declared
+            .publisher
+            .publish(
+                NonEmptyPayload::try_new(Payload::from(format!("feedback={link_id}").into_bytes()))
+                    .expect("non-empty feedback"),
+            )
+            .await
+            .expect("feedback publish");
+
+        // Result
+        let (_result_ctx, result_responder) = result_service
+            .recv_next_request()
+            .await
+            .expect("result recv")
+            .expect("result closed");
+        result_count_clone.fetch_add(1, Ordering::SeqCst);
+        declared.publisher.publish_end().await.expect("publish_end");
+        result_responder
+            .respond(Payload::from(format!("result={link_id}").into_bytes()))
+            .await
+            .expect("result respond");
+
+        // Drain a potential duplicate goal that would only arrive if the
+        // bug were still present; bounded so the test ends in finite time.
+        let dup_goal =
+            tokio::time::timeout(Duration::from_millis(250), goal_service.recv_next_request())
+                .await;
+        if let Ok(Ok(Some((dup_ctx, dup_responder)))) = dup_goal {
+            goal_count_clone.fetch_add(1, Ordering::SeqCst);
+            // Best-effort respond so the consumer side doesn't hang on
+            // unexpected extra deliveries while we fail the assertion.
+            let dup_link_id = dup_ctx.link_id().to_string();
+            let _ = dup_responder
+                .respond(Payload::from(format!("dup={dup_link_id}").into_bytes()))
+                .await;
+        }
+
+        // Cancel must not be invoked at all.
+        let _ = tokio::time::timeout(
+            Duration::from_millis(50),
+            cancel_service.recv_next_request(),
+        )
+        .await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let caller_handle = router.messenger().await;
+    let mut goal_handle = ActionMessenger::send_goal(
+        &caller_handle,
+        "caller_core",
+        "from_any_caller",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        None, // ← `from_any: true` — the case that double-dispatched before.
+        "record",
+        Some("server_core"),
+        Some("server_inst"),
+        Payload::from_static(b"start"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("send_goal should succeed");
+
+    assert_eq!(
+        goal_handle.goal_response().payload().as_ref(),
+        format!("accepted={LINK_LEFT}").into_bytes(),
+        "first-bound dispatch policy: goal handler should observe bound_link_ids[0]",
+    );
+
+    let feedback = goal_handle
+        .on_next_feedback()
+        .await
+        .expect("feedback should be delivered");
+    assert_eq!(
+        feedback.payload().as_ref(),
+        format!("feedback={LINK_LEFT}").as_bytes(),
+        "only one feedback publisher should exist — under the first-bound link_id",
+    );
+
+    let result =
+        ActionMessenger::request_result(&caller_handle, &goal_handle, Duration::from_secs(2))
+            .await
+            .expect("request_result should succeed");
+    assert_eq!(
+        result.payload().as_ref(),
+        format!("result={LINK_LEFT}").as_bytes(),
+        "result handler must observe the same link_id the goal handler did",
+    );
+
+    server_task.await.expect("server task panicked");
+
+    assert_eq!(
+        goal_handler_count.load(Ordering::SeqCst),
+        1,
+        "goal handler must fire exactly once for one from_any send_goal call",
+    );
+    assert_eq!(
+        result_handler_count.load(Ordering::SeqCst),
+        1,
+        "result handler must fire exactly once for one from_any request_result call",
+    );
+
     router.shutdown().await;
 }
 
