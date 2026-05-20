@@ -280,11 +280,11 @@ pub struct ActionCreation {
 
 impl ActionMessenger {
     /// Expose an action server. `link_ids` is the set of producer link_ids
-    /// this process binds; the underlying service listeners wildcard the
-    /// wire link_id slot and the dispatch filter drops requests addressed
-    /// to link_ids outside this set. An empty slice is normalized to the
-    /// reserved default `_` segment. `as_identity` must match what callers
-    /// pass to [`Self::send_goal`].
+    /// this process binds; the underlying service queryables are declared
+    /// one per bound link_id so Zenoh's keyexpr matcher routes inbound
+    /// goal / cancel / result requests to the right queryable. An empty
+    /// slice is normalized to the reserved default `_` segment.
+    /// `as_identity` must match what callers pass to [`Self::send_goal`].
     pub async fn expose(
         messenger: &MessengerHandle,
         bound_core_node: &str,

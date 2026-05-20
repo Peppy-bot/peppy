@@ -85,9 +85,7 @@ impl ServiceEndpoint {
                 // ACK reply before invoking the user handler — the caller's
                 // poll loop uses this to distinguish ServiceUnreachable
                 // (no ACK at all) from ServiceTimeout (ACK but no handler
-                // response within the timeout). Zenoh queryables allow
-                // multiple replies per query, so the same token is reused
-                // for the real response.
+                // response within the timeout).
                 token
                     .respond(bytes::Bytes::from_static(SERVICE_ACK_PAYLOAD).into())
                     .await
@@ -153,28 +151,20 @@ impl ServiceEndpoint {
         loop {
             match self.queryable.rx.recv().await {
                 Some(incoming) => {
-                    let payload_bytes = incoming.payload.to_bytes();
-
                     // Auto-handle probes: respond immediately without invoking
                     // the user handler, so is_reachable() checks are transparent.
-                    if is_service_probe_payload(payload_bytes.as_ref()) {
+                    if is_service_probe_payload(&incoming.payload.as_bytes()) {
                         if let Err(err) = incoming.token.respond(bytes::Bytes::new().into()).await {
                             warn!(%err, "failed to publish probe response");
                         }
                         continue;
                     }
 
-                    // Synthesize a topic-shape keyexpr so the resulting
-                    // `TopicMessage` exposes the caller's identity via
-                    // `core_node()` / `instance_id()`. Segments 1 and 3 are the
-                    // caller's slots; 0 and 2 are filler that the topic parser
-                    // skips.
-                    let synthetic_keyexpr = format!(
-                        "svc/{}/svc/{}/req",
-                        incoming.caller_core, incoming.caller_inst
+                    let topic_message = TopicMessage::from_parts(
+                        incoming.caller_core,
+                        incoming.caller_inst,
+                        incoming.payload,
                     );
-                    let topic_message = TopicMessage::new(&synthetic_keyexpr, payload_bytes)
-                        .map_err(Error::PeppyMessagingInterface)?;
 
                     let request_id = generate_short_id("request");
                     let context =
@@ -190,12 +180,10 @@ impl ServiceEndpoint {
 pub struct ServiceRequestContext {
     message: Message,
     request_id: String,
-    /// link_id segment parsed from the request keyexpr, already verified
-    /// against the producer's bound set by the wire-format dispatch filter.
-    /// Surfaced so action goal handlers can scope per-goal feedback under
-    /// the link_id the consumer actually targeted, instead of inheriting
-    /// the listener's pinned link_id (which doesn't exist under wildcard
-    /// listen).
+    /// Producer-side link_id that received this request — whichever bound
+    /// link_id's queryable yielded the inbound query. Surfaced so action
+    /// goal handlers can scope per-goal feedback under the link_id the
+    /// consumer actually targeted.
     link_id: String,
 }
 
@@ -234,11 +222,10 @@ impl fmt::Debug for ServiceRequestContext {
 
 impl ServiceMessenger {
     /// Listen as a service. `link_ids` is the set of producer link_ids this
-    /// process binds; the listener wildcards the wire link_id slot and the
-    /// dispatch filter inside the wire-format module drops requests
-    /// addressed to link_ids not in this set. An empty slice is normalized
-    /// to the reserved default `_` segment, matching producers launched
-    /// without `--link-id`.
+    /// process binds; the adapter declares one queryable per bound link_id
+    /// so Zenoh's keyexpr matcher routes each request to the right
+    /// queryable. An empty slice is normalized to the reserved default `_`
+    /// segment, matching producers launched without `--link-id`.
     ///
     /// `as_identity` must match the [`SenderTarget`] callers will use in
     /// [`Self::poll`].
@@ -262,10 +249,11 @@ impl ServiceMessenger {
         messenger.expose_service(&recv).await
     }
 
-    /// Poll a service. `to_link_id` `None` broadcasts on the default
-    /// link_id (used by consumers without a pinned link_id); `Some(value)`
-    /// targets a specific producer link_id, used when a `depends_on` entry
-    /// declares a link_id.
+    /// Poll a service. `to_link_id` `None` emits the wildcard `*` in the
+    /// link_id slot so any matching producer queryable replies (used by
+    /// consumers without a pinned link_id); `Some(value)` targets a
+    /// specific producer link_id, used when a `depends_on` entry declares
+    /// a link_id.
     ///
     /// If `to_instance_id` is `None`, this call returns with the first
     /// service instance that responds. `to_target` must match the

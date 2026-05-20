@@ -269,11 +269,7 @@ impl MessengerHandle {
         // ack immediately upon receiving the request (before the handler runs).
         // With a timeout, ack-without-response → ServiceTimeout, no ack at all →
         // ServiceUnreachable. With no timeout (None), we wait indefinitely — used
-        // in tests to avoid wall-clock dependencies.
-        //
-        // With queryables, the reply stream closes when either the get's timeout
-        // fires at the Zenoh layer (no replies came back at all) or every matching
-        // queryable's response has been delivered. A closed channel without an
+        // in tests to avoid wall-clock dependencies. A closed channel without an
         // ACK means no queryable matched (ServiceUnreachable); closed after an
         // ACK means the producer received the request but never replied with the
         // user payload (ServiceTimeout).

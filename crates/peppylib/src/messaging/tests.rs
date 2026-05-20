@@ -2477,12 +2477,12 @@ async fn single_action_communication_multiple_polls() {
     router.shutdown().await;
 }
 
-// ─── link_id wildcard-listen + dispatch-filter ─────────────────────────────
+// ─── link_id queryable fan-out ─────────────────────────────────────────────
 //
-// These tests pin the producer-side fan-out behavior: wildcard listen plus
-// filter against bound link_ids. Cross-talk, ACK ordering, and per-goal
-// feedback routing are the failure modes the design must not introduce;
-// each gets a dedicated test below.
+// These tests pin the producer-side fan-out behavior: one queryable per
+// bound link_id, with Zenoh's keyexpr matcher doing the dispatch.
+// Cross-talk, ACK ordering, and per-goal feedback routing are the failure
+// modes the design must not introduce; each gets a dedicated test below.
 
 const LINK_LEFT: &str = "wrist_left";
 const LINK_RIGHT: &str = "wrist_right";
@@ -2583,10 +2583,11 @@ async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
     let handler_fired = Arc::new(AtomicUsize::new(0));
     let handler_fired_clone = Arc::clone(&handler_fired);
     let server_task = tokio::spawn(async move {
-        // Race a request loop against a shutdown signal: the dispatch filter
-        // should drop the unbound-link_id request without firing the handler,
-        // so handle_next_request would block forever. We bail out after a
-        // wall-clock budget; if the handler ever runs the counter trips.
+        // Race a request loop against a shutdown signal: Zenoh's keyexpr
+        // matcher should refuse to route the unbound-link_id selector to any
+        // of this producer's queryables, so handle_next_request would block
+        // forever. We bail out after a wall-clock budget; if the handler
+        // ever runs the counter trips.
         let _ = tokio::time::timeout(
             Duration::from_millis(500),
             endpoint.handle_next_request(move |_ctx| {
@@ -2632,17 +2633,10 @@ async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_from_any_consumer_reaches_concrete_link_id_producer() {
-    // Regression test for the silent-drop bug that prompted this refactor.
-    // Before queryables, a `from_any: true` consumer (here: `to_link_id: None`)
-    // substituted the reserved `_` sentinel at the link_id wire slot because
-    // Zenoh `put` keyexprs cannot carry wildcards. A producer started with
-    // `--link-id wrist_left` only bound `wrist_left`, so the wildcard listener
-    // received the request addressed to `_` and the dispatch filter silently
-    // dropped it — the consumer hung until timeout.
-    //
-    // With queryables, `session.get` accepts wildcards, so `to_link_id: None`
-    // emits `*` at the link_id slot and Zenoh's keyexpr matcher routes the
-    // query to the producer's concrete-link_id queryable.
+    // A `from_any: true` consumer (`to_link_id: None`) must reach a producer
+    // bound to a specific link_id. `session.get` accepts Zenoh wildcards, so
+    // `to_link_id: None` emits `*` at the link_id slot and the matcher routes
+    // the query to the producer's concrete-link_id queryable.
     let router = TestRouterContext::start().await;
     let bound = vec![LINK_LEFT.to_string()];
     let server_handle = router.messenger().await;

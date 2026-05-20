@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::types::{
-    IncomingRequest, Payload, PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable,
-    SubscriberQoS, TopicMessage, ZenohResponseToken,
+    IncomingRequest, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
+    ServiceQueryable, SubscriberQoS, TopicMessage, ZenohResponseToken,
 };
 use crate::wire::zenoh_format::ZenohWireFormat;
 use crate::wire::{
@@ -394,8 +394,7 @@ impl MessengerBackend for ZenohAdapter {
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
         let selector = ZenohWireFormat::service_get_selector(sender);
 
-        // No timeout → effectively unlimited (Zenoh requires some value).
-        let timeout = timeout.unwrap_or(std::time::Duration::from_secs(86_400));
+        let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
 
         let replies = session
             .get(&selector)
@@ -418,9 +417,9 @@ impl MessengerBackend for ZenohAdapter {
                         continue;
                     }
                 };
-                let key_expr = sample.key_expr().as_str().to_string();
+                let key_expr = sample.key_expr().as_str();
                 let zbytes = sample.payload().clone();
-                match TopicMessage::from_zbytes(&key_expr, zbytes) {
+                match TopicMessage::from_zbytes(key_expr, zbytes) {
                     Ok(message) => {
                         if tx.send(message).await.is_err() {
                             break;
@@ -620,12 +619,11 @@ async fn handle_queryable(
             }
         };
 
-        let query_keyexpr = query.key_expr().as_str().to_string();
-        let parsed = match ZenohWireFormat::parse_inbound_query(&recv, &query_keyexpr) {
+        let parsed = match ZenohWireFormat::parse_inbound_query(&recv, query.key_expr().as_str()) {
             Ok(p) => p,
             Err(err) => {
                 tracing::warn!(
-                    %query_keyexpr,
+                    query_keyexpr = %query.key_expr().as_str(),
                     %err,
                     "failed to parse inbound service query selector",
                 );

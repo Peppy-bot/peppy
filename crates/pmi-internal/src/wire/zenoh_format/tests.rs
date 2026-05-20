@@ -579,8 +579,8 @@ fn action_feedback_publish_normalizes_interface_tag() {
 
 #[test]
 fn action_feedback_publish_uses_goal_link_id_not_receiver_bound_set() {
-    // Producer is bound to two link_ids (wildcard listen + dispatch filter),
-    // but feedback for a specific goal must address the wire identity the
+    // Producer is bound to two link_ids (one queryable per link_id), but
+    // feedback for a specific goal must address the wire identity the
     // consumer subscribed under, not pick arbitrarily from the bound set.
     let mut recv = sample_action_receiver();
     recv.link_ids = vec![seg("wrist_left"), seg("wrist_right")];

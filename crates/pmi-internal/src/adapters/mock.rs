@@ -1,8 +1,8 @@
 use super::super::error::{Error, Result};
 use super::super::types::{
     IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend, MockResponseToken,
-    Payload, PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable, SubscriberQoS,
-    Subscription, TopicMessage,
+    NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable,
+    SubscriberQoS, Subscription, TopicMessage,
 };
 use super::super::wire::zenoh_format::ZenohWireFormat;
 use super::super::wire::{
@@ -170,7 +170,7 @@ impl MessengerBackend for MockAdapter {
         }
 
         let selector = ZenohWireFormat::service_get_selector(sender);
-        let timeout = timeout.unwrap_or(std::time::Duration::from_secs(86_400));
+        let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
 
         let (reply_tx, mut reply_rx) =
             mpsc::channel::<TopicMessage>(SubscriberQoS::Standard.channel_size());

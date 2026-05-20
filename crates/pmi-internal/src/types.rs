@@ -85,6 +85,13 @@ impl From<QoSProfile> for SubscriberQoS {
     }
 }
 
+/// Sentinel used by adapters when [`MessengerBackend::call_service`] is
+/// invoked with `timeout: None`. Zenoh's `get` builder demands a finite
+/// `Duration`; one day is far longer than any in-process or interactive
+/// test wait, so it stands in for "wait indefinitely" without forcing
+/// each adapter to track its own value.
+pub(crate) const NO_TIMEOUT_SENTINEL: std::time::Duration = std::time::Duration::from_secs(86_400);
+
 /// Defines the messaging interface.
 ///
 /// All methods take addressing structs from [`crate::wire`] rather than raw
@@ -129,7 +136,9 @@ pub trait MessengerBackend {
     /// Issue a service `get` and return a stream of replies (ACK + final
     /// response, possibly fanned out across multiple matching producers).
     /// Query/reply correlation is internal to Zenoh — no `request_id`
-    /// threaded through the wire format.
+    /// threaded through the wire format. Pass `timeout: None` to wait
+    /// indefinitely (adapters substitute [`NO_TIMEOUT_SENTINEL`] since
+    /// the underlying Zenoh `get` requires a finite value).
     fn call_service(
         &self,
         sender: &ServiceWireSender,
@@ -189,7 +198,7 @@ impl Drop for Subscription {
     }
 }
 
-/// Server-side handle yielded by [`MessengerBackend::listen_service_v2`] for a
+/// Server-side handle yielded by [`MessengerBackend::listen_service`] for a
 /// service or action sub-service. Internally holds one Zenoh `Queryable` (or
 /// mock equivalent) per producer-bound link_id, fanned into a single
 /// [`IncomingRequest`] channel.
@@ -510,6 +519,22 @@ impl TopicMessage {
             core_node: parsed.core_node,
             payload: payload.into(),
         })
+    }
+
+    /// Build a `TopicMessage` from already-parsed sender identity. Used for
+    /// messages whose source isn't a topic keyexpr — currently the service
+    /// request path, where the caller's `core_node` and `instance_id` come
+    /// out of the Zenoh queryable selector and round-tripping them through
+    /// a synthetic keyexpr only to re-parse would be wasted work. The
+    /// internal `key_expr` field is left empty since no consumer reads it
+    /// for this path.
+    pub fn from_parts(core_node: String, instance_id: String, payload: impl Into<Payload>) -> Self {
+        Self {
+            key_expr: String::new(),
+            instance_id,
+            core_node,
+            payload: payload.into(),
+        }
     }
 
     #[cfg(feature = "zenoh")]
