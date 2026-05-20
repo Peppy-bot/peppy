@@ -1,13 +1,13 @@
 use super::{
     MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD,
-    encode_service_handler_error, is_service_probe_payload,
+    encode_service_handler_error, generate_short_id, is_service_probe_payload,
 };
 use crate::error::{Error, Result};
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
 use pmi::{
-    Messenger, MessengerBackend, SenderTarget, ServiceKind, ServiceWireReceiver, ServiceWireSender,
-    Subscription, TopicMessage,
+    Messenger, ResponseToken, SenderTarget, ServiceKind, ServiceQueryable, ServiceWireReceiver,
+    ServiceWireSender, TopicMessage,
 };
 use std::{fmt, sync::Arc};
 use tokio::{sync::Mutex, time::Duration};
@@ -31,52 +31,42 @@ where
 
 pub struct ServiceMessenger;
 
-/// Server-side endpoint for a single service. Holds the four broadcast-Cartesian
-/// listen subscriptions plus the addressing context needed to validate incoming
-/// requests and route responses.
+/// Server-side endpoint for a single service. Wraps the per-link-id queryable
+/// fan-in produced by [`pmi::MessengerBackend::listen_service`]: each inbound
+/// request carries its own [`ResponseToken`], so responding no longer needs
+/// the central messenger mutex.
+///
+/// `_messenger` is kept solely to anchor the underlying Zenoh session's
+/// lifetime — the queryable's inbound callback (and the flume sender feeding
+/// `queryable.rx`) lives in the session's queryable registry, so once every
+/// strong reference to the messenger drops the session disappears and the
+/// channel closes mid-flight.
 pub struct ServiceEndpoint {
-    messenger: Arc<Mutex<Messenger>>,
-    /// Subscriptions to service requests. Four patterns are needed to match:
-    /// - [0] Requests targeting this specific core node and instance
-    /// - [1] Requests targeting this specific core node with broadcast instance
-    /// - [2] Broadcast requests (any core node) targeting this specific instance
-    /// - [3] Full broadcast requests (any core node, any instance)
-    subscriptions: [Subscription; 4],
-    receiver: ServiceWireReceiver,
+    queryable: ServiceQueryable,
+    _messenger: Arc<Mutex<Messenger>>,
 }
 
 impl ServiceEndpoint {
-    pub(crate) fn new(
-        messenger: Arc<Mutex<Messenger>>,
-        subscriptions: [Subscription; 4],
-        receiver: ServiceWireReceiver,
-    ) -> Self {
+    pub(crate) fn new(messenger: Arc<Mutex<Messenger>>, queryable: ServiceQueryable) -> Self {
         Self {
-            messenger,
-            subscriptions,
-            receiver,
+            queryable,
+            _messenger: messenger,
         }
     }
 }
 
-/// Handle returned by [`ServiceEndpoint::recv_next_request`] that must be used to send the
-/// response back to the caller.
+/// Handle returned by [`ServiceEndpoint::recv_next_request`] that must be used
+/// to send the response back to the caller. Wraps the inbound query's
+/// [`ResponseToken`] — `respond` issues a single reply on it.
 pub struct ServiceResponder {
-    messenger: Arc<Mutex<Messenger>>,
-    receiver: ServiceWireReceiver,
-    received_request: String,
+    token: ResponseToken,
 }
 
 impl ServiceResponder {
     /// Send the response payload for this request.
     pub async fn respond(self, payload: Payload) -> Result<()> {
-        let mut messenger = self.messenger.lock().await;
-        messenger
-            .publish_service_response(
-                &self.receiver,
-                &self.received_request,
-                payload.into_inner().into(),
-            )
+        self.token
+            .respond(payload.into_inner().into())
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
@@ -91,16 +81,18 @@ impl ServiceEndpoint {
         &mut self,
     ) -> Result<Option<(ServiceRequestContext, ServiceResponder)>> {
         match self.next_request().await {
-            Ok((context, received_request)) => {
-                self.publish_ack(&received_request).await?;
-                Ok(Some((
-                    context,
-                    ServiceResponder {
-                        messenger: Arc::clone(&self.messenger),
-                        receiver: self.receiver.clone(),
-                        received_request,
-                    },
-                )))
+            Ok((context, token)) => {
+                // ACK reply before invoking the user handler — the caller's
+                // poll loop uses this to distinguish ServiceUnreachable
+                // (no ACK at all) from ServiceTimeout (ACK but no handler
+                // response within the timeout). Zenoh queryables allow
+                // multiple replies per query, so the same token is reused
+                // for the real response.
+                token
+                    .respond(bytes::Bytes::from_static(SERVICE_ACK_PAYLOAD).into())
+                    .await
+                    .map_err(Error::PeppyMessagingInterface)?;
+                Ok(Some((context, ServiceResponder { token })))
             }
             Err(Error::ServiceRequestStreamClosed) => Ok(None),
             Err(err) => Err(err),
@@ -157,89 +149,41 @@ impl ServiceEndpoint {
         Ok(Some(task))
     }
 
-    async fn next_request(&mut self) -> Result<(ServiceRequestContext, String)> {
+    async fn next_request(&mut self) -> Result<(ServiceRequestContext, ResponseToken)> {
         loop {
-            let [sub0, sub1, sub2, sub3] = &mut self.subscriptions;
-            let request = tokio::select! {
-                msg = sub0.rx.recv() => msg,
-                msg = sub1.rx.recv() => msg,
-                msg = sub2.rx.recv() => msg,
-                msg = sub3.rx.recv() => msg,
-            };
+            match self.queryable.rx.recv().await {
+                Some(incoming) => {
+                    let payload_bytes = incoming.payload.to_bytes();
 
-            match request {
-                Some(request) => {
-                    match self.build_request_context(request).await {
-                        Ok((context, received_keyexpr)) => {
-                            // Auto-handle probes: respond immediately without invoking
-                            // the user handler, so is_reachable() checks are transparent.
-                            if is_service_probe_payload(context.message().payload().as_ref()) {
-                                if let Err(err) = self
-                                    .publish_response(&received_keyexpr, Payload::new())
-                                    .await
-                                {
-                                    warn!(
-                                        %received_keyexpr,
-                                        %err,
-                                        "failed to publish probe response"
-                                    );
-                                }
-                                continue;
-                            }
-                            return Ok((context, received_keyexpr));
+                    // Auto-handle probes: respond immediately without invoking
+                    // the user handler, so is_reachable() checks are transparent.
+                    if is_service_probe_payload(payload_bytes.as_ref()) {
+                        if let Err(err) = incoming.token.respond(bytes::Bytes::new().into()).await {
+                            warn!(%err, "failed to publish probe response");
                         }
-                        Err(Error::InvalidServiceRequest { .. }) => {
-                            // Skip messages that do not match this service endpoint.
-                            continue;
-                        }
-                        Err(err) => return Err(err),
+                        continue;
                     }
+
+                    // Synthesize a topic-shape keyexpr so the resulting
+                    // `TopicMessage` exposes the caller's identity via
+                    // `core_node()` / `instance_id()`. Segments 1 and 3 are the
+                    // caller's slots; 0 and 2 are filler that the topic parser
+                    // skips.
+                    let synthetic_keyexpr = format!(
+                        "svc/{}/svc/{}/req",
+                        incoming.caller_core, incoming.caller_inst
+                    );
+                    let topic_message = TopicMessage::new(&synthetic_keyexpr, payload_bytes)
+                        .map_err(Error::PeppyMessagingInterface)?;
+
+                    let request_id = generate_short_id("request");
+                    let context =
+                        ServiceRequestContext::new(topic_message, request_id, incoming.link_id);
+                    return Ok((context, incoming.token));
                 }
                 None => return Err(Error::ServiceRequestStreamClosed),
             }
         }
-    }
-
-    async fn build_request_context(
-        &self,
-        request: TopicMessage,
-    ) -> Result<(ServiceRequestContext, String)> {
-        let identifier = request.key_expr().to_string();
-        let messenger = self.messenger.lock().await;
-        let parsed = messenger
-            .parse_service_request(&self.receiver, &identifier)
-            .map_err(|err| Error::InvalidServiceRequest {
-                identifier: identifier.clone(),
-                reason: err.to_string(),
-            })?;
-        drop(messenger);
-
-        let context = ServiceRequestContext::new(request, parsed.request_id, parsed.link_id);
-        Ok((context, identifier))
-    }
-
-    async fn publish_ack(&self, received_request: &str) -> Result<()> {
-        let mut messenger = self.messenger.lock().await;
-        messenger
-            .publish_service_response(
-                &self.receiver,
-                received_request,
-                bytes::Bytes::from_static(SERVICE_ACK_PAYLOAD).into(),
-            )
-            .await
-            .map_err(Error::PeppyMessagingInterface)
-    }
-
-    async fn publish_response(&self, received_request: &str, payload: Payload) -> Result<()> {
-        let mut messenger = self.messenger.lock().await;
-        messenger
-            .publish_service_response(
-                &self.receiver,
-                received_request,
-                payload.into_inner().into(),
-            )
-            .await
-            .map_err(Error::PeppyMessagingInterface)
     }
 }
 

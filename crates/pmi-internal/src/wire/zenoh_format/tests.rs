@@ -233,7 +233,7 @@ fn parse_topic_keyexpr_rejects_wildcard_in_caller_instance_id() {
     ));
 }
 
-// ─── Services — listen patterns ───────────────────────────────────────────
+// ─── Services — queryable declare ─────────────────────────────────────────
 
 fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
     ServiceWireReceiver::new(
@@ -248,24 +248,20 @@ fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
 }
 
 #[test]
-fn service_listen_patterns_node_identity_plain_service() {
-    // Listener wildcards the link_id slot regardless of the bound set; the
-    // dispatch filter in parse_received_request enforces membership.
+fn service_queryable_declare_node_identity_plain_service() {
+    // Producer with no `--link-id` materializes `Segment::default_link_id()`
+    // (`_`) at the link_id slot. One queryable per bound link_id; the
+    // declared keyexpr wildcards only the caller-identity slots.
     let recv = sample_service_receiver(ServiceKind::Service);
-    let patterns = ZenohWireFormat::service_listen_patterns(&recv);
+    let key = ZenohWireFormat::service_queryable_declare(&recv, "_");
     assert_eq!(
-        patterns,
-        [
-            "server_core/*/server_inst/*/service/node/robot_arm/v1/*/ping/request/**".to_string(),
-            "server_core/*/_any_/*/service/node/robot_arm/v1/*/ping/request/**".to_string(),
-            "_any_/*/server_inst/*/service/node/robot_arm/v1/*/ping/request/**".to_string(),
-            "_any_/*/_any_/*/service/node/robot_arm/v1/*/ping/request/**".to_string(),
-        ]
+        key,
+        "server_core/*/server_inst/*/service/node/robot_arm/v1/_/ping"
     );
 }
 
 #[test]
-fn service_listen_patterns_action_goal_appends_suffix() {
+fn service_queryable_declare_action_goal_appends_suffix() {
     let recv = ServiceWireReceiver::new(
         "server_core",
         "server_inst",
@@ -275,19 +271,14 @@ fn service_listen_patterns_action_goal_appends_suffix() {
         ServiceKind::ActionGoal,
     )
     .expect("valid receiver");
-    let patterns = ZenohWireFormat::service_listen_patterns(&recv);
     assert_eq!(
-        patterns[0],
-        "server_core/*/server_inst/*/action/node/robot_arm/v1/*/pick_place/goal/request/**"
-    );
-    assert_eq!(
-        patterns[3],
-        "_any_/*/_any_/*/action/node/robot_arm/v1/*/pick_place/goal/request/**"
+        ZenohWireFormat::service_queryable_declare(&recv, "_"),
+        "server_core/*/server_inst/*/action/node/robot_arm/v1/_/pick_place/goal"
     );
 }
 
 #[test]
-fn service_listen_patterns_interface_identity_normalizes_tag() {
+fn service_queryable_declare_interface_identity_normalizes_tag() {
     let recv = ServiceWireReceiver::new(
         "server_core",
         "server_inst",
@@ -297,39 +288,40 @@ fn service_listen_patterns_interface_identity_normalizes_tag() {
         ServiceKind::Service,
     )
     .expect("valid receiver");
-    let patterns = ZenohWireFormat::service_listen_patterns(&recv);
     assert_eq!(
-        patterns[0],
-        "server_core/*/server_inst/*/service/interface/manipulator/v2_beta/*/ping/request/**"
+        ZenohWireFormat::service_queryable_declare(&recv, "_"),
+        "server_core/*/server_inst/*/service/interface/manipulator/v2_beta/_/ping"
     );
 }
 
 #[test]
-fn service_listen_patterns_multi_link_id_still_wildcards() {
-    // A producer bound to multiple link_ids uses the same wildcard listen;
-    // the bound set is only consulted at parse time. This is the key
-    // architectural property of Option 3 from the design doc.
+fn service_queryable_declare_per_bound_link_id() {
+    // A producer bound to multiple link_ids declares one queryable per
+    // entry. Zenoh keyexpr matching dispatches inbound queries to the
+    // right one — no dispatch-time filter required.
     let recv = ServiceWireReceiver::new(
         "server_core",
         "server_inst",
         iface("depth_camera", "v1"),
-        &[
-            "wrist_left".to_string(),
-            "wrist_right".to_string(),
-            "torso".to_string(),
-        ],
+        &["wrist_left".to_string(), "wrist_right".to_string()],
         "ping",
         ServiceKind::Service,
     )
     .expect("valid receiver");
-    let patterns = ZenohWireFormat::service_listen_patterns(&recv);
+    let left = ZenohWireFormat::service_queryable_declare(&recv, "wrist_left");
+    let right = ZenohWireFormat::service_queryable_declare(&recv, "wrist_right");
     assert_eq!(
-        patterns[0],
-        "server_core/*/server_inst/*/service/interface/depth_camera/v1/*/ping/request/**"
+        left,
+        "server_core/*/server_inst/*/service/interface/depth_camera/v1/wrist_left/ping"
     );
+    assert_eq!(
+        right,
+        "server_core/*/server_inst/*/service/interface/depth_camera/v1/wrist_right/ping"
+    );
+    assert_ne!(left, right);
 }
 
-// ─── Services — request publish ───────────────────────────────────────────
+// ─── Services — get selector ──────────────────────────────────────────────
 
 fn sample_service_sender(kind: ServiceKind) -> ServiceWireSender {
     ServiceWireSender {
@@ -345,157 +337,109 @@ fn sample_service_sender(kind: ServiceKind) -> ServiceWireSender {
 }
 
 #[test]
-fn service_request_publish_specific_target() {
+fn service_get_selector_specific_target() {
     let sender = sample_service_sender(ServiceKind::Service);
     assert_eq!(
-        ZenohWireFormat::service_request_publish(&sender, "abc123"),
-        "target_core/caller_core/target_inst/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123"
+        ZenohWireFormat::service_get_selector(&sender),
+        "target_core/caller_core/target_inst/caller_inst/service/node/robot_arm/v1/*/ping"
     );
 }
 
 #[test]
-fn service_request_publish_broadcast_instance() {
+fn service_get_selector_broadcast_instance() {
+    // `to_instance_id: None` becomes the Zenoh single-chunk wildcard, not
+    // the legacy `_any_` literal — `session.get` accepts wildcards.
     let mut sender = sample_service_sender(ServiceKind::Service);
     sender.to_instance_id = None;
     assert_eq!(
-        ZenohWireFormat::service_request_publish(&sender, "abc123"),
-        "target_core/caller_core/_any_/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123"
+        ZenohWireFormat::service_get_selector(&sender),
+        "target_core/caller_core/*/caller_inst/service/node/robot_arm/v1/*/ping"
     );
 }
 
 #[test]
-fn service_request_publish_broadcast_core() {
+fn service_get_selector_broadcast_core() {
     let mut sender = sample_service_sender(ServiceKind::Service);
     sender.to_core_node = None;
     assert_eq!(
-        ZenohWireFormat::service_request_publish(&sender, "abc123"),
-        "_any_/caller_core/target_inst/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123"
+        ZenohWireFormat::service_get_selector(&sender),
+        "*/caller_core/target_inst/caller_inst/service/node/robot_arm/v1/*/ping"
     );
 }
 
 #[test]
-fn service_request_publish_full_broadcast() {
+fn service_get_selector_full_broadcast() {
     let mut sender = sample_service_sender(ServiceKind::Service);
     sender.to_core_node = None;
     sender.to_instance_id = None;
     assert_eq!(
-        ZenohWireFormat::service_request_publish(&sender, "abc123"),
-        "_any_/caller_core/_any_/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123"
+        ZenohWireFormat::service_get_selector(&sender),
+        "*/caller_core/*/caller_inst/service/node/robot_arm/v1/*/ping"
     );
 }
 
 #[test]
-fn service_request_publish_with_concrete_link_id() {
+fn service_get_selector_with_concrete_link_id() {
+    // Pinned `to_link_id` becomes a literal segment, not a wildcard.
     let mut sender = sample_service_sender(ServiceKind::Service);
     sender.to_link_id = Some(seg("wrist_left_camera"));
     sender.to_target = iface("depth_camera", "v1");
     assert_eq!(
-        ZenohWireFormat::service_request_publish(&sender, "abc123"),
-        "target_core/caller_core/target_inst/caller_inst/service/interface/depth_camera/v1/wrist_left_camera/ping/request/abc123"
+        ZenohWireFormat::service_get_selector(&sender),
+        "target_core/caller_core/target_inst/caller_inst/service/interface/depth_camera/v1/wrist_left_camera/ping"
     );
 }
 
 #[test]
-fn service_request_publish_action_goal() {
+fn service_get_selector_from_any_consumer_wildcards_link_id() {
+    // Regression test for the original bug: `to_link_id: None` must emit
+    // `*` (Zenoh wildcard) at the link_id slot, not `_` (default link id
+    // literal). Wildcard `*` matches any producer-declared link_id literal,
+    // including `wrist_left`, `arm_left`, etc. — fixing the previous
+    // silent-drop behavior where `_` only matched producers without
+    // `--link-id`.
+    let sender = sample_service_sender(ServiceKind::Service);
+    assert!(sender.to_link_id.is_none());
+    let key = ZenohWireFormat::service_get_selector(&sender);
+    assert!(
+        key.contains("/robot_arm/v1/*/ping"),
+        "from_any consumer must wildcard the link_id slot: {key}"
+    );
+    assert!(
+        !key.contains("/robot_arm/v1/_/ping"),
+        "from_any consumer must NOT pin the default link_id literal: {key}"
+    );
+}
+
+#[test]
+fn service_get_selector_action_goal() {
     let mut sender = sample_service_sender(ServiceKind::ActionGoal);
     sender.to_service_name = seg("pick_place");
     assert_eq!(
-        ZenohWireFormat::service_request_publish(&sender, "rid_42"),
-        "target_core/caller_core/target_inst/caller_inst/action/node/robot_arm/v1/_/pick_place/goal/request/rid_42"
+        ZenohWireFormat::service_get_selector(&sender),
+        "target_core/caller_core/target_inst/caller_inst/action/node/robot_arm/v1/*/pick_place/goal"
     );
 }
 
-// ─── Services — response subscribe ────────────────────────────────────────
+// ─── Services — reply keyexpr ─────────────────────────────────────────────
 
 #[test]
-fn service_response_subscribe_node_target() {
-    let sender = sample_service_sender(ServiceKind::Service);
+fn service_reply_keyexpr_topic_shape_addresses_caller() {
+    // The reply keyexpr is topic-shape (caller at segments 0/2, responder
+    // at segments 1/3) so the caller's `parse_topic_keyexpr` surfaces the
+    // responder's identity via `Message::core_node()` / `instance_id()`.
+    let receiver = sample_service_receiver(ServiceKind::Service);
     assert_eq!(
-        ZenohWireFormat::service_response_subscribe(&sender, "abc123"),
-        "caller_core/*/caller_inst/*/service/node/robot_arm/v1/_/ping/response/abc123"
+        ZenohWireFormat::service_reply_keyexpr(&receiver, "_", "caller_core", "caller_inst"),
+        "caller_core/server_core/caller_inst/server_inst/service/node/robot_arm/v1/_/ping"
     );
 }
 
 #[test]
-fn service_response_subscribe_action_result_with_interface() {
-    let mut sender = sample_service_sender(ServiceKind::ActionResult);
-    sender.to_service_name = seg("pick_place");
-    sender.to_target = iface("manipulator", "v1");
-    assert_eq!(
-        ZenohWireFormat::service_response_subscribe(&sender, "rid_42"),
-        "caller_core/*/caller_inst/*/action/interface/manipulator/v1/_/pick_place/result/response/rid_42"
-    );
-}
-
-// ─── Services — parse_received_request (server-side response publish) ─────
-
-#[test]
-fn parse_received_request_round_trips_specific() {
-    let receiver = sample_service_receiver(ServiceKind::Service);
-    let request = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123";
-    let parsed = ZenohWireFormat::parse_received_request(&receiver, request).expect("should parse");
-    assert_eq!(parsed.request_id, "abc123");
-    assert_eq!(
-        parsed.response_keyexpr,
-        "caller_core/server_core/caller_inst/server_inst/service/node/robot_arm/v1/_/ping/response/abc123"
-    );
-}
-
-#[test]
-fn parse_received_request_response_addresses_caller_with_broadcast_request() {
-    let receiver = sample_service_receiver(ServiceKind::Service);
-    let request =
-        "_any_/caller_core/_any_/caller_inst/service/node/robot_arm/v1/_/ping/request/abc123";
-    let parsed = ZenohWireFormat::parse_received_request(&receiver, request).expect("should parse");
-    assert_eq!(
-        parsed.response_keyexpr,
-        "caller_core/server_core/caller_inst/server_inst/service/node/robot_arm/v1/_/ping/response/abc123"
-    );
-}
-
-#[test]
-fn parse_received_request_rejects_service_root_mismatch() {
-    let receiver = sample_service_receiver(ServiceKind::Service);
-    let request = "server_core/caller_core/server_inst/caller_inst/service/node/different_node/v1/_/ping/request/abc";
-    let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::ServiceRootMismatch { .. }
-    ));
-}
-
-#[test]
-fn parse_received_request_rejects_discriminator_mismatch() {
-    let receiver = sample_service_receiver(ServiceKind::Service);
-    // Receiver expects `node/robot_arm/v1`; request uses `interface/robot_arm/v1`.
-    // This is the collision-safety property in miniature.
-    let request = "server_core/caller_core/server_inst/caller_inst/service/interface/robot_arm/v1/_/ping/request/abc";
-    let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::ServiceRootMismatch { .. }
-    ));
-}
-
-#[test]
-fn parse_received_request_rejects_link_id_mismatch() {
-    // With wildcard listen, an unbound link_id surfaces as a dedicated
-    // `LinkIdNotBound` error rather than a generic `ServiceRootMismatch`.
-    // The peppylib request loop turns this into the silent-skip path.
-    let receiver = sample_service_receiver(ServiceKind::Service);
-    let request = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/wrong_link/ping/request/abc";
-    let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
-    match err {
-        ZenohWireParseError::LinkIdNotBound { got, bound } => {
-            assert_eq!(got, "wrong_link");
-            assert_eq!(bound, vec!["_".to_string()]);
-        }
-        other => panic!("expected LinkIdNotBound, got {other:?}"),
-    }
-}
-
-#[test]
-fn parse_received_request_accepts_request_for_any_bound_link_id() {
+fn service_reply_keyexpr_uses_request_link_id() {
+    // Producer is bound to two link_ids; the reply must address the
+    // specific link_id the consumer's selector matched, so the consumer's
+    // wildcard `*` collapses back to the same concrete literal here.
     let receiver = ServiceWireReceiver::new(
         "server_core",
         "server_inst",
@@ -505,78 +449,89 @@ fn parse_received_request_accepts_request_for_any_bound_link_id() {
         ServiceKind::Service,
     )
     .expect("valid receiver");
-
-    let left = "server_core/caller_core/server_inst/caller_inst/service/interface/depth_camera/v1/wrist_left/ping/request/abc";
-    let parsed_left =
-        ZenohWireFormat::parse_received_request(&receiver, left).expect("left should parse");
-    assert_eq!(parsed_left.link_id, "wrist_left");
-    assert_eq!(parsed_left.request_id, "abc");
-    assert!(
-        parsed_left
-            .response_keyexpr
-            .contains("/depth_camera/v1/wrist_left/ping/response/"),
-        "response keyexpr should carry the request's link_id, not pick from the bound set: {}",
-        parsed_left.response_keyexpr
+    assert_eq!(
+        ZenohWireFormat::service_reply_keyexpr(
+            &receiver,
+            "wrist_right",
+            "caller_core",
+            "caller_inst"
+        ),
+        "caller_core/server_core/caller_inst/server_inst/service/interface/depth_camera/v1/wrist_right/ping"
     );
-
-    let right = "server_core/caller_core/server_inst/caller_inst/service/interface/depth_camera/v1/wrist_right/ping/request/def";
-    let parsed_right =
-        ZenohWireFormat::parse_received_request(&receiver, right).expect("right should parse");
-    assert_eq!(parsed_right.link_id, "wrist_right");
-    assert!(
-        parsed_right
-            .response_keyexpr
-            .contains("/depth_camera/v1/wrist_right/ping/response/"),
-    );
-
-    // Unbound link_id rejected even when the producer is bound to several.
-    let torso = "server_core/caller_core/server_inst/caller_inst/service/interface/depth_camera/v1/torso/ping/request/ghi";
-    let err = ZenohWireFormat::parse_received_request(&receiver, torso).unwrap_err();
-    assert!(matches!(err, ZenohWireParseError::LinkIdNotBound { .. }));
 }
 
 #[test]
-fn parse_received_request_rejects_missing_request_marker() {
-    let receiver = sample_service_receiver(ServiceKind::Service);
-    let request = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping/wrong/abc";
-    let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
-    assert_eq!(err, ZenohWireParseError::NotARequest);
-}
-
-#[test]
-fn parse_received_request_rejects_trailing_segments() {
-    let receiver = sample_service_receiver(ServiceKind::Service);
-    let request = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping/request/abc/extra";
-    let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
-    assert_eq!(err, ZenohWireParseError::UnexpectedTrailing);
-}
-
-#[test]
-fn parse_received_request_rejects_too_short() {
-    let receiver = sample_service_receiver(ServiceKind::Service);
-    let request = "only/two/segments";
-    let err = ZenohWireFormat::parse_received_request(&receiver, request).unwrap_err();
-    assert!(matches!(err, ZenohWireParseError::MissingSegment(_)));
-}
-
-#[test]
-fn parse_received_request_action_cancel_round_trips() {
+fn service_reply_keyexpr_action_result_appends_suffix() {
     let receiver = ServiceWireReceiver::new(
         "server_core",
         "server_inst",
-        node("robot_arm", "v1"),
+        iface("manipulator", "v1"),
         &[],
         "pick_place",
-        ServiceKind::ActionCancel,
+        ServiceKind::ActionResult,
     )
     .expect("valid receiver");
-    let request = "server_core/caller_core/server_inst/caller_inst/action/node/robot_arm/v1/_/pick_place/cancel/request/rid_42";
-    let parsed = ZenohWireFormat::parse_received_request(&receiver, request).expect("should parse");
-    assert_eq!(parsed.request_id, "rid_42");
     assert_eq!(
-        parsed.response_keyexpr,
-        "caller_core/server_core/caller_inst/server_inst/action/node/robot_arm/v1/_/pick_place/cancel/response/rid_42"
+        ZenohWireFormat::service_reply_keyexpr(&receiver, "_", "caller_core", "caller_inst"),
+        "caller_core/server_core/caller_inst/server_inst/action/interface/manipulator/v1/_/pick_place/result"
     );
+}
+
+// ─── Services — parse_inbound_query ───────────────────────────────────────
+
+#[test]
+fn parse_inbound_query_extracts_caller_identity() {
+    let receiver = sample_service_receiver(ServiceKind::Service);
+    let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping";
+    let parsed = ZenohWireFormat::parse_inbound_query(&receiver, query).expect("should parse");
+    assert_eq!(parsed.caller_core, "caller_core");
+    assert_eq!(parsed.caller_inst, "caller_inst");
+}
+
+#[test]
+fn parse_inbound_query_accepts_wildcard_in_target_slots() {
+    // A `from_any` consumer's selector wildcards the to_core/to_inst slots
+    // with Zenoh `*`. The producer-side parser ignores those slots — Zenoh
+    // keyexpr matching has already routed the query to the right queryable.
+    let receiver = sample_service_receiver(ServiceKind::Service);
+    let query = "*/caller_core/*/caller_inst/service/node/robot_arm/v1/*/ping";
+    let parsed = ZenohWireFormat::parse_inbound_query(&receiver, query).expect("should parse");
+    assert_eq!(parsed.caller_core, "caller_core");
+    assert_eq!(parsed.caller_inst, "caller_inst");
+}
+
+#[test]
+fn parse_inbound_query_rejects_service_root_mismatch() {
+    let receiver = sample_service_receiver(ServiceKind::Service);
+    let query =
+        "server_core/caller_core/server_inst/caller_inst/service/node/different_node/v1/_/ping";
+    let err = ZenohWireFormat::parse_inbound_query(&receiver, query).unwrap_err();
+    assert!(matches!(
+        err,
+        ZenohWireParseError::ServiceRootMismatch { .. }
+    ));
+}
+
+#[test]
+fn parse_inbound_query_rejects_discriminator_mismatch() {
+    // Receiver expects `node/robot_arm/v1`; query uses `interface/robot_arm/v1`.
+    // The wire format's service_root parse catches the collision.
+    let receiver = sample_service_receiver(ServiceKind::Service);
+    let query =
+        "server_core/caller_core/server_inst/caller_inst/service/interface/robot_arm/v1/_/ping";
+    let err = ZenohWireFormat::parse_inbound_query(&receiver, query).unwrap_err();
+    assert!(matches!(
+        err,
+        ZenohWireParseError::ServiceRootMismatch { .. }
+    ));
+}
+
+#[test]
+fn parse_inbound_query_rejects_too_short() {
+    let receiver = sample_service_receiver(ServiceKind::Service);
+    let query = "only/two/segments";
+    let err = ZenohWireFormat::parse_inbound_query(&receiver, query).unwrap_err();
+    assert!(matches!(err, ZenohWireParseError::MissingSegment(_)));
 }
 
 // ─── Actions — feedback ───────────────────────────────────────────────────
@@ -704,7 +659,7 @@ fn topic_publish_distinguishes_node_and_interface_with_same_name_tag() {
 }
 
 #[test]
-fn service_request_distinguishes_node_and_interface_with_same_name_tag() {
+fn service_get_selector_distinguishes_node_and_interface_with_same_name_tag() {
     let base = ServiceWireSender {
         bound_core_node: seg("caller_core"),
         as_instance_id: seg("caller_inst"),
@@ -720,12 +675,12 @@ fn service_request_distinguishes_node_and_interface_with_same_name_tag() {
     let mut as_iface = base;
     as_iface.to_target = iface("widget", "v1");
 
-    let node_key = ZenohWireFormat::service_request_publish(&as_node, "rid_xyz");
-    let iface_key = ZenohWireFormat::service_request_publish(&as_iface, "rid_xyz");
+    let node_key = ZenohWireFormat::service_get_selector(&as_node);
+    let iface_key = ZenohWireFormat::service_get_selector(&as_iface);
 
     assert_ne!(node_key, iface_key);
-    assert!(node_key.contains("/service/node/widget/v1/_/ping/"));
-    assert!(iface_key.contains("/service/interface/widget/v1/_/ping/"));
+    assert!(node_key.contains("/service/node/widget/v1/*/ping"));
+    assert!(iface_key.contains("/service/interface/widget/v1/*/ping"));
 }
 
 #[test]
@@ -839,8 +794,8 @@ fn topic_subscribe_untargeted_wildcards_discriminator_too() {
 }
 
 #[test]
-fn parse_received_request_node_receiver_rejects_interface_shaped_request() {
-    // A server bound as a `Node` must not handle a request addressed under the
+fn parse_inbound_query_node_receiver_rejects_interface_shaped_query() {
+    // A server bound as a `Node` must not handle a query addressed under the
     // `Interface` discriminator with the same name+tag (and vice-versa). The
     // wire format's service_root parse catches the mismatch.
     let node_receiver = ServiceWireReceiver::new(
@@ -852,9 +807,9 @@ fn parse_received_request_node_receiver_rejects_interface_shaped_request() {
         ServiceKind::Service,
     )
     .expect("valid receiver");
-    let iface_shaped_request = "server_core/caller_core/server_inst/caller_inst/service/interface/widget/v1/_/ping/request/abc";
-    let err =
-        ZenohWireFormat::parse_received_request(&node_receiver, iface_shaped_request).unwrap_err();
+    let iface_shaped_query =
+        "server_core/caller_core/server_inst/caller_inst/service/interface/widget/v1/_/ping";
+    let err = ZenohWireFormat::parse_inbound_query(&node_receiver, iface_shaped_query).unwrap_err();
     assert!(matches!(
         err,
         ZenohWireParseError::ServiceRootMismatch { .. }
@@ -869,10 +824,9 @@ fn parse_received_request_node_receiver_rejects_interface_shaped_request() {
         ServiceKind::Service,
     )
     .expect("valid receiver");
-    let node_shaped_request =
-        "server_core/caller_core/server_inst/caller_inst/service/node/widget/v1/_/ping/request/abc";
-    let err =
-        ZenohWireFormat::parse_received_request(&iface_receiver, node_shaped_request).unwrap_err();
+    let node_shaped_query =
+        "server_core/caller_core/server_inst/caller_inst/service/node/widget/v1/_/ping";
+    let err = ZenohWireFormat::parse_inbound_query(&iface_receiver, node_shaped_query).unwrap_err();
     assert!(matches!(
         err,
         ZenohWireParseError::ServiceRootMismatch { .. }

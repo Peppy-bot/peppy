@@ -161,11 +161,6 @@ pub(crate) const INTERFACE_DISCRIMINATOR: &str = "interface";
 /// is a node (no `conforms_to`).
 pub(crate) const NODE_DISCRIMINATOR: &str = "node";
 
-/// Wire marker used to indicate "any" target in broadcast routing. Distinct
-/// from a transport-level wildcard: broadcasts are explicit at the protocol
-/// level so the responder can decide whether to answer.
-pub(crate) const BROADCAST_MARKER: &str = "_any_";
-
 /// Hyphen-to-underscore normalization applied at construction time to any tag
 /// segment. The generator emits tags with hyphens (config-side identifier rule);
 /// the wire form requires identifier-safe segments.
@@ -487,21 +482,12 @@ impl ServiceWireSender {
     pub fn to_instance_id(&self) -> Option<&str> {
         self.to_instance_id.as_deref()
     }
-
-    /// Returns the pinned `to_link_id`, defaulting to the reserved `_` segment
-    /// when the consumer didn't pin one. Used at publish/subscribe time, since
-    /// Zenoh `put` keyexprs can't carry wildcards.
-    pub(crate) fn to_link_id_or_default(&self) -> &str {
-        self.to_link_id.as_deref().unwrap_or(DEFAULT_LINK_ID)
-    }
 }
 
-/// Server-side addressing for a service. The four broadcast-Cartesian listen
-/// patterns are derived from this single context by the transport adapter.
-/// `link_ids` is the set of producer link_ids this listener binds. The
-/// runtime listens with a wildcard at the link_id wire slot and filters
-/// incoming requests against this set at dispatch time, so one process
-/// bound to N link_ids needs only one listener per service.
+/// Server-side addressing for a service. `link_ids` is the set of producer
+/// link_ids this process binds; the transport adapter declares one queryable
+/// per entry so Zenoh keyexpr matching dispatches requests to the right
+/// process without a runtime filter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireReceiver {
     pub(crate) bound_core_node: Segment,
@@ -512,7 +498,7 @@ pub struct ServiceWireReceiver {
     pub(crate) kind: ServiceKind,
     /// Precomputed `[root, discriminator, name, tag]` segments of the
     /// service_root prefix. Derived from `(as_identity, kind)` at construction
-    /// so the per-request dispatch path can match without rebuilding strings.
+    /// so the inbound query parser can match without rebuilding strings.
     service_root_prefix: [String; 4],
 }
 
@@ -540,14 +526,6 @@ impl ServiceWireReceiver {
             kind,
             service_root_prefix,
         })
-    }
-
-    /// True if `candidate` matches any link_id this receiver binds. Used by
-    /// [`zenoh_format::ZenohWireFormat::parse_received_request`] to drop
-    /// wildcard-delivered requests targeted at link_ids the producer does
-    /// not advertise.
-    pub(crate) fn matches_link_id(&self, candidate: &str) -> bool {
-        self.link_ids.iter().any(|s| s.as_str() == candidate)
     }
 
     pub(crate) fn service_root_prefix_segments(&self) -> &[String; 4] {

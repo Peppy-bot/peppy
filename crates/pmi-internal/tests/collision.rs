@@ -14,9 +14,9 @@
 
 use bytes::Bytes;
 use pmi::{
-    MessengerBackend, Payload, PublisherQoS, SenderTarget, ServiceKind, ServiceWireReceiver,
-    ServiceWireSender, SubscriberQoS, Subscription, TopicWireReceiver, TopicWireSender,
-    ZenohAdapter,
+    MessengerBackend, Payload, PublisherQoS, SenderTarget, ServiceKind, ServiceQueryable,
+    ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription, TopicWireReceiver,
+    TopicWireSender, ZenohAdapter,
 };
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -278,12 +278,12 @@ async fn service_node_vs_interface_no_collision() {
     )
     .unwrap();
 
-    let mut node_server_subs = instance
+    let mut node_server_queryable = instance
         .messenger()
         .listen_service(&node_server_receiver)
         .await
         .unwrap();
-    let mut iface_server_subs = instance
+    let mut iface_server_queryable = instance
         .messenger()
         .listen_service(&iface_server_receiver)
         .await
@@ -313,87 +313,70 @@ async fn service_node_vs_interface_no_collision() {
     )
     .unwrap();
 
-    // Send one request through each target.
+    // Issue one get through each target — held alive for the duration of the
+    // test so dropping the reply stream doesn't cancel the query before the
+    // server side has a chance to observe it.
     let node_request_payload = Bytes::from_static(b"to_node_server");
     let iface_request_payload = Bytes::from_static(b"to_iface_server");
-    let _node_response_sub = instance
+    let _node_replies = instance
         .messenger()
-        .open_service_call(
+        .call_service(
             &node_caller_sender,
-            "rid_node",
             Payload::from_bytes(node_request_payload.clone()),
+            Some(RECV_TIMEOUT),
         )
         .await
         .unwrap();
-    let _iface_response_sub = instance
+    let _iface_replies = instance
         .messenger()
-        .open_service_call(
+        .call_service(
             &iface_caller_sender,
-            "rid_iface",
             Payload::from_bytes(iface_request_payload.clone()),
+            Some(RECV_TIMEOUT),
         )
         .await
         .unwrap();
 
-    // The node server must receive ONLY the node-shaped request.
-    let node_msg = recv_first_from_listen_patterns(&mut node_server_subs)
+    // The node server must receive ONLY the node-shaped query.
+    let node_request = recv_first_query(&mut node_server_queryable)
         .await
-        .expect("node server should receive its caller's request");
+        .expect("node server should receive its caller's query");
     assert_eq!(
-        node_msg.payload(),
-        &node_request_payload,
+        node_request.payload.to_bytes(),
+        node_request_payload,
         "node server received the wrong payload (collision)"
     );
-    assert_no_further_message(&mut node_server_subs, "node server").await;
+    assert_no_further_query(&mut node_server_queryable, "node server").await;
 
-    // The interface server must receive ONLY the interface-shaped request.
-    let iface_msg = recv_first_from_listen_patterns(&mut iface_server_subs)
+    // The interface server must receive ONLY the interface-shaped query.
+    let iface_request = recv_first_query(&mut iface_server_queryable)
         .await
-        .expect("interface server should receive its caller's request");
+        .expect("interface server should receive its caller's query");
     assert_eq!(
-        iface_msg.payload(),
-        &iface_request_payload,
+        iface_request.payload.to_bytes(),
+        iface_request_payload,
         "interface server received the wrong payload (collision)"
     );
-    assert_no_further_message(&mut iface_server_subs, "interface server").await;
+    assert_no_further_query(&mut iface_server_queryable, "interface server").await;
 }
 
-/// Waits for the first message landing on any of the four service listen
-/// patterns. Returns `None` on timeout.
-async fn recv_first_from_listen_patterns(
-    subs: &mut [Subscription; 4],
-) -> Option<pmi::TopicMessage> {
-    let [s0, s1, s2, s3] = subs;
-    tokio::time::timeout(RECV_TIMEOUT, async {
-        tokio::select! {
-            Some(msg) = s0.rx.recv() => msg,
-            Some(msg) = s1.rx.recv() => msg,
-            Some(msg) = s2.rx.recv() => msg,
-            Some(msg) = s3.rx.recv() => msg,
-        }
-    })
-    .await
-    .ok()
+/// Waits for the first inbound request on the service queryable's fan-in
+/// channel. Returns `None` on timeout.
+async fn recv_first_query(queryable: &mut ServiceQueryable) -> Option<pmi::IncomingRequest> {
+    tokio::time::timeout(RECV_TIMEOUT, queryable.rx.recv())
+        .await
+        .ok()
+        .flatten()
 }
 
-/// Fails the test if any of the four listen patterns produces another message
-/// within `NO_MESSAGE_TIMEOUT`. Used after consuming the expected request to
-/// confirm no cross-talk from the opposite target.
-async fn assert_no_further_message(subs: &mut [Subscription; 4], label: &str) {
-    let [s0, s1, s2, s3] = subs;
-    let result = tokio::time::timeout(NO_MESSAGE_TIMEOUT, async {
-        tokio::select! {
-            msg = s0.rx.recv() => msg,
-            msg = s1.rx.recv() => msg,
-            msg = s2.rx.recv() => msg,
-            msg = s3.rx.recv() => msg,
-        }
-    })
-    .await;
-    if let Ok(Some(msg)) = result {
+/// Fails the test if the queryable yields another request within
+/// `NO_MESSAGE_TIMEOUT`. Used after consuming the expected query to confirm
+/// no cross-talk from the opposite target.
+async fn assert_no_further_query(queryable: &mut ServiceQueryable, label: &str) {
+    if let Ok(Some(req)) = tokio::time::timeout(NO_MESSAGE_TIMEOUT, queryable.rx.recv()).await {
         panic!(
             "{label}: received unexpected cross-talk payload of {} bytes",
-            msg.payload().len()
+            req.payload.len()
         );
     }
 }

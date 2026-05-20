@@ -1,6 +1,7 @@
 use super::super::error::{Error, Result};
 use super::super::types::{
-    Message, Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS, SubscriberQoS,
+    IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend, MockResponseToken,
+    Payload, PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable, SubscriberQoS,
     Subscription, TopicMessage,
 };
 use super::super::wire::zenoh_format::ZenohWireFormat;
@@ -57,11 +58,27 @@ type MessageLog = Arc<Mutex<HashMap<String, Vec<Message>>>>;
 /// published.
 type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<TopicMessage>>>>>;
 
+/// One in-flight query routed from a `get_keyexpr` caller to a queryable
+/// whose declared keyexpr intersects the caller's selector.
+pub(crate) struct MockQuery {
+    selector_keyexpr: String,
+    payload: Payload,
+    reply_tx: mpsc::Sender<TopicMessage>,
+}
+
+/// Shared map of declared queryables, keyed by the producer's declared
+/// keyexpr. Each entry holds the channels feeding the forwarder tasks
+/// behind a [`ServiceQueryable`] — `get_keyexpr` finds matching entries
+/// via [`MockAdapter::key_exprs_intersect`] and pushes a [`MockQuery`]
+/// onto each.
+type QueryableMap = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<MockQuery>>>>>;
+
 pub struct MockAdapter {
     pub is_session_connected: bool,
     pub is_router_started: bool,
     pub messages: MessageLog,
     pub subscriptions: SubscriptionMap,
+    pub(crate) queryables: QueryableMap,
 }
 
 impl Default for MockAdapter {
@@ -71,6 +88,7 @@ impl Default for MockAdapter {
             is_router_started: false,
             messages: Arc::new(Mutex::new(HashMap::new())),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            queryables: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -91,6 +109,7 @@ impl MessengerBackend for MockAdapter {
 
         self.messages.lock().unwrap().clear();
         self.subscriptions.lock().unwrap().clear();
+        self.queryables.lock().unwrap().clear();
 
         Ok(())
     }
@@ -114,50 +133,87 @@ impl MessengerBackend for MockAdapter {
             .await
     }
 
-    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<[Subscription; 4]> {
-        let [p0, p1, p2, p3] = ZenohWireFormat::service_listen_patterns(recv);
-        let s0 = self.subscribe_keyexpr(&p0, SubscriberQoS::Standard).await?;
-        let s1 = self.subscribe_keyexpr(&p1, SubscriberQoS::Standard).await?;
-        let s2 = self.subscribe_keyexpr(&p2, SubscriberQoS::Standard).await?;
-        let s3 = self.subscribe_keyexpr(&p3, SubscriberQoS::Standard).await?;
-        Ok([s0, s1, s2, s3])
+    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceQueryable> {
+        if !self.is_session_connected {
+            return Err(Error::SubscribeError {
+                topic: recv.as_service_name.as_str().to_string(),
+            });
+        }
+
+        let (tx, rx) = mpsc::channel::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
+        let mut tasks = tokio::task::JoinSet::new();
+
+        for link_id_seg in &recv.link_ids {
+            let link_id = link_id_seg.as_str().to_string();
+            let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv, &link_id);
+            let query_rx = self.declare_queryable_keyexpr(declare_keyexpr);
+            let tx = tx.clone();
+            let recv_clone = recv.clone();
+            tasks.spawn(async move {
+                handle_mock_queryable(query_rx, link_id, recv_clone, tx).await;
+            });
+        }
+
+        Ok(ServiceQueryable::new(rx, tasks))
     }
 
-    async fn open_service_call(
-        &mut self,
-        sender: &ServiceWireSender,
-        request_id: &str,
-        payload: Payload,
-    ) -> Result<Subscription> {
-        let response_keyexpr = ZenohWireFormat::service_response_subscribe(sender, request_id);
-        let response_sub = self
-            .subscribe_keyexpr(&response_keyexpr, SubscriberQoS::Standard)
-            .await?;
-        let request_keyexpr = ZenohWireFormat::service_request_publish(sender, request_id);
-        self.publish_keyexpr(request_keyexpr, payload).await?;
-        Ok(response_sub)
-    }
-
-    async fn publish_service_response(
-        &mut self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-        payload: Payload,
-    ) -> Result<()> {
-        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
-        self.publish_keyexpr(parsed.response_keyexpr, payload).await
-    }
-
-    fn parse_service_request(
+    async fn call_service(
         &self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-    ) -> Result<super::super::types::ParsedServiceRequest> {
-        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
-        Ok(super::super::types::ParsedServiceRequest {
-            request_id: parsed.request_id,
-            link_id: parsed.link_id,
-        })
+        sender: &ServiceWireSender,
+        payload: Payload,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<ReplyStream> {
+        if !self.is_session_connected {
+            return Err(Error::PublishError {
+                topic: sender.to_service_name().to_string(),
+            });
+        }
+
+        let selector = ZenohWireFormat::service_get_selector(sender);
+        let timeout = timeout.unwrap_or(std::time::Duration::from_secs(86_400));
+
+        let (reply_tx, mut reply_rx) =
+            mpsc::channel::<TopicMessage>(SubscriberQoS::Standard.channel_size());
+
+        // Snapshot matching queryable channels under the map lock, then dispatch
+        // outside the lock so async send doesn't hold a sync mutex across await.
+        let matching: Vec<mpsc::Sender<MockQuery>> = {
+            let queryables = self.queryables.lock().unwrap();
+            queryables
+                .iter()
+                .filter(|(declared, _)| Self::key_exprs_intersect(declared, &selector))
+                .flat_map(|(_, senders)| senders.iter().cloned())
+                .collect()
+        };
+
+        for tx in matching {
+            let q = MockQuery {
+                selector_keyexpr: selector.clone(),
+                payload: payload.clone(),
+                reply_tx: reply_tx.clone(),
+            };
+            let _ = tx.send(q).await;
+        }
+
+        // Drop the local clone so the reply channel closes once every queryable
+        // forwarder's `MockResponseToken` (each holding a `reply_tx` clone) is
+        // dropped — typically after the user handler's final `respond` call.
+        drop(reply_tx);
+
+        let (output_tx, output_rx) =
+            mpsc::channel::<TopicMessage>(SubscriberQoS::Standard.channel_size());
+        let pump_task = tokio::spawn(async move {
+            let _ = tokio::time::timeout(timeout, async move {
+                while let Some(msg) = reply_rx.recv().await {
+                    if output_tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .await;
+        });
+
+        Ok(ReplyStream::new(output_rx, pump_task.abort_handle()))
     }
 
     async fn subscribe_action_feedback(
@@ -330,6 +386,18 @@ impl MockAdapter {
         Ok(())
     }
 
+    /// Register a queryable under `declared_keyexpr` and return the channel
+    /// the per-queryable forwarder task reads inbound queries from. Senders
+    /// stored in the map outlive the forwarder task — `get_keyexpr` ignores
+    /// closed senders rather than garbage-collecting them, mirroring the
+    /// topic [`SubscriptionMap`] convention.
+    fn declare_queryable_keyexpr(&self, declared_keyexpr: String) -> mpsc::Receiver<MockQuery> {
+        let (tx, rx) = mpsc::channel(SubscriberQoS::Standard.channel_size());
+        let mut queryables = self.queryables.lock().unwrap();
+        queryables.entry(declared_keyexpr).or_default().push(tx);
+        rx
+    }
+
     async fn subscribe_keyexpr(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
         if !self.is_session_connected {
             return Err(Error::SubscribeError {
@@ -354,6 +422,53 @@ impl MockAdapter {
         let abort_handle = join_handle.abort_handle();
 
         Ok(Subscription::new(rx, abort_handle))
+    }
+}
+
+/// Per-queryable forwarder for the mock adapter. Mirrors
+/// [`super::zenoh::handle_queryable`]: drains inbound `MockQuery`s, parses
+/// the caller identity, builds an [`IncomingRequest`] with a
+/// [`ResponseToken::Mock`] carrying the per-query reply channel, and
+/// pushes it to peppylib.
+async fn handle_mock_queryable(
+    mut query_rx: mpsc::Receiver<MockQuery>,
+    link_id: String,
+    recv: ServiceWireReceiver,
+    tx: mpsc::Sender<IncomingRequest>,
+) {
+    while let Some(mock_query) = query_rx.recv().await {
+        let parsed = match ZenohWireFormat::parse_inbound_query(&recv, &mock_query.selector_keyexpr)
+        {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::warn!(
+                    selector = %mock_query.selector_keyexpr,
+                    %err,
+                    "mock queryable: failed to parse selector",
+                );
+                continue;
+            }
+        };
+
+        let reply_keyexpr = ZenohWireFormat::service_reply_keyexpr(
+            &recv,
+            &link_id,
+            &parsed.caller_core,
+            &parsed.caller_inst,
+        );
+
+        let token = ResponseToken::Mock(MockResponseToken::new(mock_query.reply_tx, reply_keyexpr));
+        let request = IncomingRequest {
+            payload: mock_query.payload,
+            link_id: link_id.clone(),
+            caller_core: parsed.caller_core,
+            caller_inst: parsed.caller_inst,
+            token,
+        };
+
+        if tx.send(request).await.is_err() {
+            break;
+        }
     }
 }
 
@@ -477,5 +592,79 @@ mod tests {
         let subscriber = "caller_core/core_node/caller_inst/responder_inst/topic/clock/clock";
         assert!(MockAdapter::key_exprs_intersect(subscriber, publisher));
         assert!(MockAdapter::key_exprs_intersect(publisher, subscriber));
+    }
+
+    #[tokio::test]
+    async fn mock_queryable_roundtrip_wildcard_selector() {
+        // Direct exercise of the mock's queryable plumbing: a producer declares
+        // a queryable on a concrete keyexpr; a `get` selector with a Zenoh
+        // wildcard at one slot must still match and deliver the query, and the
+        // responder must be able to push a reply that the caller observes.
+        // This is the in-process counterpart to the `from_any` regression
+        // test in peppylib — without going through a real zenohd.
+        use crate::wire::{SenderTarget, ServiceKind, ServiceWireReceiver, ServiceWireSender};
+
+        let mut adapter = MockAdapter::default();
+        adapter.start_session().await.expect("session should start");
+
+        let receiver = ServiceWireReceiver::new(
+            "server_core",
+            "server_inst",
+            SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+            &["wrist_left".to_string()],
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid receiver");
+
+        // `to_link_id: None` ⇒ `*` at the link_id slot — the regression case.
+        let sender = ServiceWireSender::new(
+            "caller_core",
+            "caller_inst",
+            Some("server_core"),
+            Some("server_inst"),
+            SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+            None,
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid sender");
+
+        let mut queryable = adapter
+            .listen_service(&receiver)
+            .await
+            .expect("queryable declare should succeed");
+
+        let mut reply_stream = adapter
+            .call_service(
+                &sender,
+                Payload::from_bytes(bytes::Bytes::from_static(b"ping?")),
+                Some(std::time::Duration::from_millis(500)),
+            )
+            .await
+            .expect("call_service should succeed");
+
+        let incoming = queryable
+            .rx
+            .recv()
+            .await
+            .expect("producer should receive the query");
+        assert_eq!(incoming.payload.to_bytes().as_ref(), b"ping?");
+        assert_eq!(incoming.link_id, "wrist_left");
+        assert_eq!(incoming.caller_core, "caller_core");
+        assert_eq!(incoming.caller_inst, "caller_inst");
+
+        incoming
+            .token
+            .respond(Payload::from_bytes(bytes::Bytes::from_static(b"pong")))
+            .await
+            .expect("respond should succeed");
+
+        let reply = reply_stream
+            .rx
+            .recv()
+            .await
+            .expect("caller should receive the reply");
+        assert_eq!(reply.payload().to_bytes().as_ref(), b"pong");
     }
 }

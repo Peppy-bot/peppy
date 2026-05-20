@@ -1,5 +1,8 @@
 use crate::error::{Error, Result};
-use crate::types::{Payload, PublisherQoS, SubscriberQoS, TopicMessage};
+use crate::types::{
+    IncomingRequest, Payload, PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable,
+    SubscriberQoS, TopicMessage, ZenohResponseToken,
+};
 use crate::wire::zenoh_format::ZenohWireFormat;
 use crate::wire::{
     ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
@@ -351,55 +354,86 @@ impl MessengerBackend for ZenohAdapter {
             .await
     }
 
-    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<[Subscription; 4]> {
-        let patterns = ZenohWireFormat::service_listen_patterns(recv);
-        let [p0, p1, p2, p3] = patterns;
-        let s0 = self.subscribe_keyexpr(p0, SubscriberQoS::Standard).await?;
-        let s1 = self.subscribe_keyexpr(p1, SubscriberQoS::Standard).await?;
-        let s2 = self.subscribe_keyexpr(p2, SubscriberQoS::Standard).await?;
-        let s3 = self.subscribe_keyexpr(p3, SubscriberQoS::Standard).await?;
-        Ok([s0, s1, s2, s3])
+    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceQueryable> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
+        let mut tasks = tokio::task::JoinSet::new();
+
+        for link_id_seg in &recv.link_ids {
+            let link_id = link_id_seg.as_str().to_string();
+            let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv, &link_id);
+            let queryable = session
+                .declare_queryable(&declare_keyexpr)
+                .complete(true)
+                .await
+                .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+            let recv_clone = recv.clone();
+            let tx = tx.clone();
+            tasks.spawn(async move {
+                handle_queryable(queryable, link_id, recv_clone, tx).await;
+            });
+        }
+
+        Ok(ServiceQueryable::new(rx, tasks))
     }
 
-    async fn open_service_call(
-        &mut self,
-        sender: &ServiceWireSender,
-        request_id: &str,
-        payload: Payload,
-    ) -> Result<Subscription> {
-        let response_keyexpr = ZenohWireFormat::service_response_subscribe(sender, request_id);
-        let response_sub = self
-            .subscribe_keyexpr(response_keyexpr, SubscriberQoS::Standard)
-            .await?;
-
-        let request_keyexpr = ZenohWireFormat::service_request_publish(sender, request_id);
-        self.publish_keyexpr(&request_keyexpr, payload, PublisherQoS::Standard)
-            .await?;
-
-        Ok(response_sub)
-    }
-
-    async fn publish_service_response(
-        &mut self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-        payload: Payload,
-    ) -> Result<()> {
-        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
-        self.publish_keyexpr(&parsed.response_keyexpr, payload, PublisherQoS::Standard)
-            .await
-    }
-
-    fn parse_service_request(
+    async fn call_service(
         &self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-    ) -> Result<crate::types::ParsedServiceRequest> {
-        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
-        Ok(crate::types::ParsedServiceRequest {
-            request_id: parsed.request_id,
-            link_id: parsed.link_id,
-        })
+        sender: &ServiceWireSender,
+        payload: Payload,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<ReplyStream> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let selector = ZenohWireFormat::service_get_selector(sender);
+
+        // No timeout → effectively unlimited (Zenoh requires some value).
+        let timeout = timeout.unwrap_or(std::time::Duration::from_secs(86_400));
+
+        let replies = session
+            .get(&selector)
+            .payload(payload.into_zbytes())
+            .target(zenoh::query::QueryTarget::All)
+            .consolidation(zenoh::query::ConsolidationMode::None)
+            .accept_replies(zenoh::query::ReplyKeyExpr::Any)
+            .timeout(timeout)
+            .await
+            .map_err(|e| Error::BackendError(e.to_string()))?;
+
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<TopicMessage>(SubscriberQoS::Standard.channel_size());
+        let join_handle = tokio::spawn(async move {
+            while let Ok(reply) = replies.recv_async().await {
+                let sample = match reply.result() {
+                    Ok(sample) => sample,
+                    Err(err) => {
+                        tracing::warn!(?err, "service reply contained an error");
+                        continue;
+                    }
+                };
+                let key_expr = sample.key_expr().as_str().to_string();
+                let zbytes = sample.payload().clone();
+                match TopicMessage::from_zbytes(&key_expr, zbytes) {
+                    Ok(message) => {
+                        if tx.send(message).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!(%key_expr, %err, "failed to parse service reply keyexpr");
+                    }
+                }
+            }
+        });
+
+        Ok(ReplyStream::new(rx, join_handle.abort_handle()))
     }
 
     async fn subscribe_action_feedback(
@@ -559,6 +593,72 @@ impl ZenohAdapter {
         });
         let abort_handle = join_handle.abort_handle();
         Ok(Subscription::new(rx, abort_handle))
+    }
+}
+
+/// Per-queryable forwarder loop. Pulls inbound queries off `queryable`,
+/// parses the caller identity slots from the selector, builds an
+/// [`IncomingRequest`] with a [`ResponseToken::Zenoh`] (carrying the
+/// concrete reply keyexpr) and pushes it onto `tx`.
+///
+/// Probe / ACK semantics are handled by peppylib's request loop, not here —
+/// every query (including probes) is delivered to peppylib via `tx`, and
+/// peppylib decides whether to reply inline or hand the request to the
+/// user handler.
+async fn handle_queryable(
+    queryable: zenoh::query::Queryable<zenoh::handlers::FifoChannelHandler<zenoh::query::Query>>,
+    link_id: String,
+    recv: ServiceWireReceiver,
+    tx: tokio::sync::mpsc::Sender<IncomingRequest>,
+) {
+    loop {
+        let query = match queryable.recv_async().await {
+            Ok(q) => q,
+            Err(e) => {
+                tracing::warn!(error = %e, "service queryable stopped");
+                break;
+            }
+        };
+
+        let query_keyexpr = query.key_expr().as_str().to_string();
+        let parsed = match ZenohWireFormat::parse_inbound_query(&recv, &query_keyexpr) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::warn!(
+                    %query_keyexpr,
+                    %err,
+                    "failed to parse inbound service query selector",
+                );
+                continue;
+            }
+        };
+
+        let reply_keyexpr = ZenohWireFormat::service_reply_keyexpr(
+            &recv,
+            &link_id,
+            &parsed.caller_core,
+            &parsed.caller_inst,
+        );
+
+        let payload = match query.payload() {
+            Some(zb) => Payload::from_zbytes(zb.clone()),
+            None => Payload::from_bytes(bytes::Bytes::new()),
+        };
+
+        let token = ResponseToken::Zenoh(ZenohResponseToken::new(query, reply_keyexpr));
+        let request = IncomingRequest {
+            payload,
+            link_id: link_id.clone(),
+            caller_core: parsed.caller_core,
+            caller_inst: parsed.caller_inst,
+            token,
+        };
+
+        if tx.send(request).await.is_err() {
+            // Peppylib dropped the receiver; the ServiceQueryable is being
+            // torn down. Exit the loop and let the queryable drop.
+            break;
+        }
     }
 }
 

@@ -30,9 +30,9 @@ use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{
     ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    PeppyMessagingInterfaceError, PublisherQoS, ServiceWireReceiver, ServiceWireSender,
-    SubscriberQoS, Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender,
-    ZenohAdapter, ZenohNetProtocol,
+    PublisherQoS, ServiceWireReceiver, ServiceWireSender, SubscriberQoS,
+    Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender, ZenohAdapter,
+    ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -135,10 +135,6 @@ pub(crate) fn generate_short_id(domain: &str) -> String {
     hex
 }
 
-fn generate_request_id() -> String {
-    generate_short_id("request")
-}
-
 impl MessengerHandle {
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
         Self { messenger }
@@ -239,18 +235,14 @@ impl MessengerHandle {
         &self,
         recv: &ServiceWireReceiver,
     ) -> Result<ServiceEndpoint> {
-        let subscriptions = {
+        let queryable = {
             let messenger = self.messenger.lock().await;
             messenger
                 .listen_service(recv)
                 .await
                 .map_err(Error::PeppyMessagingInterface)?
         };
-        Ok(ServiceEndpoint::new(
-            Arc::clone(&self.messenger),
-            subscriptions,
-            recv.clone(),
-        ))
+        Ok(ServiceEndpoint::new(Arc::clone(&self.messenger), queryable))
     }
 
     pub(crate) async fn poll_service(
@@ -260,12 +252,15 @@ impl MessengerHandle {
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
         let response_timeout: Option<Duration> = response_timeout.into();
-        let request_id = generate_request_id();
 
         let mut response_subscription = {
-            let mut messenger = self.messenger.lock().await;
+            let messenger = self.messenger.lock().await;
             messenger
-                .open_service_call(sender, &request_id, request_payload.into_inner().into())
+                .call_service(
+                    sender,
+                    request_payload.into_inner().into(),
+                    response_timeout,
+                )
                 .await
                 .map_err(Error::PeppyMessagingInterface)?
         };
@@ -275,13 +270,23 @@ impl MessengerHandle {
         // With a timeout, ack-without-response → ServiceTimeout, no ack at all →
         // ServiceUnreachable. With no timeout (None), we wait indefinitely — used
         // in tests to avoid wall-clock dependencies.
-        let channel_closed_err = || {
-            Error::PeppyMessagingInterface(PeppyMessagingInterfaceError::BackendError(
-                "service response channel closed".to_string(),
-            ))
-        };
+        //
+        // With queryables, the reply stream closes when either the get's timeout
+        // fires at the Zenoh layer (no replies came back at all) or every matching
+        // queryable's response has been delivered. A closed channel without an
+        // ACK means no queryable matched (ServiceUnreachable); closed after an
+        // ACK means the producer received the request but never replied with the
+        // user payload (ServiceTimeout).
         let to_service_name = sender.to_service_name().to_string();
         let to_instance_id = sender.to_instance_id().map(str::to_string);
+        let unreachable = || Error::ServiceUnreachable {
+            instance_id: to_instance_id.clone(),
+            service_name: to_service_name.clone(),
+        };
+        let timed_out = || Error::ServiceTimeout {
+            instance_id: to_instance_id.clone(),
+            service_name: to_service_name.clone(),
+        };
 
         let response = match response_timeout {
             Some(response_timeout) => {
@@ -291,17 +296,11 @@ impl MessengerHandle {
                 loop {
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     if remaining.is_zero() {
-                        if received_ack {
-                            return Err(Error::ServiceTimeout {
-                                instance_id: to_instance_id,
-                                service_name: to_service_name,
-                            });
+                        return Err(if received_ack {
+                            timed_out()
                         } else {
-                            return Err(Error::ServiceUnreachable {
-                                instance_id: to_instance_id,
-                                service_name: to_service_name,
-                            });
-                        }
+                            unreachable()
+                        });
                     }
 
                     match timeout(remaining, response_subscription.rx.recv()).await {
@@ -312,19 +311,12 @@ impl MessengerHandle {
                             }
                             break message;
                         }
-                        Ok(None) => return Err(channel_closed_err()),
-                        Err(_) => {
-                            if received_ack {
-                                return Err(Error::ServiceTimeout {
-                                    instance_id: to_instance_id,
-                                    service_name: to_service_name,
-                                });
+                        Ok(None) | Err(_) => {
+                            return Err(if received_ack {
+                                timed_out()
                             } else {
-                                return Err(Error::ServiceUnreachable {
-                                    instance_id: to_instance_id,
-                                    service_name: to_service_name,
-                                });
-                            }
+                                unreachable()
+                            });
                         }
                     }
                 }
@@ -337,7 +329,7 @@ impl MessengerHandle {
                         }
                         break message;
                     }
-                    None => return Err(channel_closed_err()),
+                    None => return Err(unreachable()),
                 }
             },
         };

@@ -2560,12 +2560,12 @@ async fn service_listen_dispatches_under_each_bound_link_id() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
-    // Producer binds only LINK_LEFT. A consumer pins to LINK_TORSO. The
-    // wildcard listener delivers the request but parse_received_request
-    // rejects it with `LinkIdNotBound`, which becomes the
-    // `InvalidServiceRequest` silent-skip path inside ServiceEndpoint.
-    // The consumer must surface `ServiceUnreachable` (no ACK seen) and the
-    // handler must NEVER fire.
+    // Producer binds only LINK_LEFT. A consumer pins to LINK_TORSO. With
+    // queryables, the producer's declared keyexpr carries `wrist_left` at
+    // the link_id slot; the consumer's get selector carries `torso`. Zenoh's
+    // keyexpr matcher refuses to intersect the two, so the query never
+    // reaches the producer and the consumer surfaces `ServiceUnreachable`
+    // (no ACK seen). The user handler must NEVER fire.
     let router = TestRouterContext::start().await;
     let bound = vec![LINK_LEFT.to_string()];
     let server_handle = router.messenger().await;
@@ -2627,6 +2627,73 @@ async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
         "user handler must not run for an unbound link_id"
     );
     server_task.await.expect("server task panicked");
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_from_any_consumer_reaches_concrete_link_id_producer() {
+    // Regression test for the silent-drop bug that prompted this refactor.
+    // Before queryables, a `from_any: true` consumer (here: `to_link_id: None`)
+    // substituted the reserved `_` sentinel at the link_id wire slot because
+    // Zenoh `put` keyexprs cannot carry wildcards. A producer started with
+    // `--link-id wrist_left` only bound `wrist_left`, so the wildcard listener
+    // received the request addressed to `_` and the dispatch filter silently
+    // dropped it — the consumer hung until timeout.
+    //
+    // With queryables, `session.get` accepts wildcards, so `to_link_id: None`
+    // emits `*` at the link_id slot and Zenoh's keyexpr matcher routes the
+    // query to the producer's concrete-link_id queryable.
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string()];
+    let server_handle = router.messenger().await;
+    let mut endpoint = ServiceMessenger::listen(
+        &server_handle,
+        "server_core",
+        "server_inst",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        &bound,
+        "start_recording",
+    )
+    .await
+    .expect("listen should succeed");
+
+    let server_task = tokio::spawn(async move {
+        endpoint
+            .handle_next_request(|ctx| {
+                let link_id = ctx.link_id().to_string();
+                async move { Ok(Payload::from(link_id.into_bytes())) }
+            })
+            .await
+            .expect("handle_next_request should succeed");
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = router.messenger().await;
+    let response = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core",
+        "from_any_caller",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        None, // ← `from_any: true` semantics — the exact case that was broken
+        "start_recording",
+        Some("server_core"),
+        Some("server_inst"),
+        Payload::from_static(b"go"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect(
+        "from_any consumer must reach the concrete-link_id producer (queryable selector wildcards \
+         the link_id slot, so Zenoh matches it against the producer's `wrist_left` literal)",
+    );
+    assert_eq!(
+        response.payload().as_ref(),
+        LINK_LEFT.as_bytes(),
+        "producer should respond stamped with its own bound link_id"
+    );
+
+    server_task.await.expect("server task should not panic");
     router.shutdown().await;
 }
 

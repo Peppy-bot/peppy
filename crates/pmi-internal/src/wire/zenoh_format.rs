@@ -8,8 +8,8 @@
 //! diverging this one.
 
 use crate::wire::{
-    ActionWireReceiver, ActionWireSender, BROADCAST_MARKER, SenderTarget, ServiceKind,
-    ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
+    ActionWireReceiver, ActionWireSender, SenderTarget, ServiceKind, ServiceWireReceiver,
+    ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use std::fmt;
 
@@ -82,111 +82,100 @@ impl ZenohWireFormat {
     }
 
     // ─── Services ─────────────────────────────────────────────────────────
+    //
+    // Services and action sub-services (goal / cancel / result) ride on
+    // Zenoh queryables. The producer declares one queryable per bound
+    // link_id; the consumer's `session.get(selector)` matches via Zenoh's
+    // native keyexpr matcher. No `_any_` broadcast marker, no `request_id`
+    // tail, no dispatch-time link_id filter — the single-chunk Zenoh
+    // wildcard `*` carries the same intent for broadcast slots and for
+    // `from_any: true` consumers, and `session.get` accepts wildcards
+    // (unlike `put`).
 
-    /// All 4 broadcast-Cartesian listen patterns:
-    /// `{bound|_any_}/*/{inst|_any_}/*/{service_root}/request/**`.
-    ///
-    /// Order matches the original code's `patterns[0..4]` (bound-specific +
-    /// instance-specific first, then progressively broader). The link_id
-    /// slot inside `service_root` is the single-chunk wildcard `*`: the
-    /// listener accepts requests for any link_id and
-    /// [`Self::parse_received_request`] filters against the receiver's
-    /// bound set at dispatch time.
-    pub(crate) fn service_listen_patterns(r: &ServiceWireReceiver) -> [String; 4] {
-        let root = service_root(
-            &r.as_identity,
-            SINGLE_CHUNK_WILDCARD,
-            &r.as_service_name,
-            r.kind,
-        );
-        let bound = r.bound_core_node.as_str();
-        let inst = r.as_instance_id.as_str();
-        [
-            format!(
-                "{bound}/{SINGLE_CHUNK_WILDCARD}/{inst}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
-            ),
-            format!(
-                "{bound}/{SINGLE_CHUNK_WILDCARD}/{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
-            ),
-            format!(
-                "{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{inst}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
-            ),
-            format!(
-                "{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
-            ),
-        ]
+    /// Producer-side queryable keyexpr, declared once per bound link_id.
+    /// Layout `{bound_core}/*/{as_inst}/*/{service_root}` — the `*` slots
+    /// match any caller's `core_node` / `instance_id`, and the link_id slot
+    /// inside `service_root` is the concrete `link_id_literal`.
+    pub(crate) fn service_queryable_declare(
+        r: &ServiceWireReceiver,
+        link_id_literal: &str,
+    ) -> String {
+        let root = service_root(&r.as_identity, link_id_literal, &r.as_service_name, r.kind);
+        format!(
+            "{}/{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{root}",
+            r.bound_core_node, r.as_instance_id,
+        )
     }
 
-    /// Client → server request publish:
-    /// `{target_core|_any_}/{bound_core}/{target_inst|_any_}/{caller_inst}/{service_root}/request/{request_id}`.
+    /// Caller-side get selector. Layout
+    /// `{to_core|*}/{bound_core_caller}/{to_inst|*}/{caller_inst}/{service_root}`.
     ///
-    /// Defaults `to_link_id` to the reserved `_` segment (matching the
-    /// producer-side default) when the consumer didn't pin one. Zenoh
-    /// `put` keyexprs can't contain wildcards, so the consumer must
-    /// commit to a concrete link_id at publish time; `from_any: true`
-    /// service consumers currently fall back to the same `_` and
-    /// therefore only reach producers exposed on the default link_id.
-    /// Lifting that restriction needs a producer-side cartesian listen
-    /// pattern (tracked as a follow-up).
-    pub(crate) fn service_request_publish(s: &ServiceWireSender, request_id: &str) -> String {
-        let link_id = s.to_link_id_or_default();
+    /// The link_id slot inside `service_root` is `*` when the caller didn't
+    /// pin one (the `from_any: true` fix — `get` selectors may carry Zenoh
+    /// wildcards, unlike `put` keyexprs) and a concrete literal otherwise.
+    /// Likewise the `to_core` / `to_inst` slots use `*` when the caller
+    /// broadcasts, replacing the legacy `_any_` marker.
+    pub(crate) fn service_get_selector(s: &ServiceWireSender) -> String {
+        let link_id = s.to_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         let root = service_root(&s.to_target, link_id, &s.to_service_name, s.kind);
-        let target_core = s.to_core_node.as_deref().unwrap_or(BROADCAST_MARKER);
-        let target_inst = s.to_instance_id.as_deref().unwrap_or(BROADCAST_MARKER);
+        let target_core = s.to_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_inst = s.to_instance_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         format!(
-            "{target_core}/{}/{target_inst}/{}/{root}/request/{request_id}",
+            "{target_core}/{}/{target_inst}/{}/{root}",
             s.bound_core_node, s.as_instance_id,
         )
     }
 
-    /// Client-side response subscribe (wildcards on responder fields, keyed by `request_id`):
-    /// `{bound_core}/*/{caller_inst}/*/{service_root}/response/{request_id}`.
-    pub(crate) fn service_response_subscribe(s: &ServiceWireSender, request_id: &str) -> String {
-        let link_id = s.to_link_id_or_default();
-        let root = service_root(&s.to_target, link_id, &s.to_service_name, s.kind);
+    /// Concrete topic-shape reply keyexpr passed to `query.reply()`. Builds
+    /// `{caller_core}/{bound_core_producer}/{caller_inst}/{as_inst_producer}/{service_root_with_link_id_literal}`,
+    /// so the caller's [`ZenohWireFormat::parse_topic_keyexpr`] surfaces the
+    /// responder's `(core_node, instance_id)` to the user.
+    pub(crate) fn service_reply_keyexpr(
+        r: &ServiceWireReceiver,
+        link_id_literal: &str,
+        caller_core: &str,
+        caller_inst: &str,
+    ) -> String {
+        let root = service_root(&r.as_identity, link_id_literal, &r.as_service_name, r.kind);
         format!(
-            "{}/{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{root}/response/{request_id}",
-            s.bound_core_node, s.as_instance_id,
+            "{caller_core}/{}/{caller_inst}/{}/{root}",
+            r.bound_core_node, r.as_instance_id,
         )
     }
 
-    /// Parses a received request keyexpr against the receiver's expected service
-    /// shape and returns the request_id, the parsed link_id, and the server-side
-    /// response publish key.
-    ///
-    /// Returns an error if the keyexpr doesn't match the expected request shape
-    /// (wrong segment count, mismatched service_root prefix, missing `request`
-    /// marker, etc.) or if the parsed link_id is not in the receiver's bound
-    /// set. The link_id check is the producer-side dispatch filter that makes
-    /// wildcard listen safe: a process bound to `["wrist_left"]` may still
-    /// receive a request addressed to `wrist_right` (because both share the
-    /// wildcard listener), and that request must be silently dropped before
-    /// the user handler runs.
-    pub(crate) fn parse_received_request(
+    /// Parses a query selector keyexpr (the caller's get-side keyexpr, as
+    /// delivered to the producer via `query.key_expr()`) to extract the
+    /// caller's identity slots. No link_id parsing: the producer already
+    /// knows its own bound link_id from the queryable being drained, and
+    /// the dispatch filter is gone — Zenoh keyexpr matching guarantees
+    /// the selector only lands on a queryable whose link_id is acceptable.
+    pub(crate) fn parse_inbound_query(
         receiver: &ServiceWireReceiver,
-        request_keyexpr: &str,
-    ) -> Result<ParsedRequest, ZenohWireParseError> {
-        let mut parts = request_keyexpr.split('/').filter(|s| !s.is_empty());
+        query_keyexpr: &str,
+    ) -> Result<ParsedInboundQuery, ZenohWireParseError> {
+        let mut parts = query_keyexpr.split('/').filter(|s| !s.is_empty());
 
-        // to_core / to_inst are consumed but unused: the receiver's listen
-        // patterns already filter on these via Zenoh keyexpr matching, so any
-        // mismatch would have caused the message to land on a different listener.
+        // Segment 0 is the consumer's `to_core` slot (may be a literal or `*`);
+        // ignored here because the queryable's listen keyexpr already filtered
+        // on it via Zenoh's matcher.
         let _to_core = parts
             .next()
             .ok_or(ZenohWireParseError::MissingSegment("to_core_node"))?;
         let caller_core = parts
             .next()
-            .ok_or(ZenohWireParseError::MissingSegment("caller_core_node"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("caller_core_node"))?
+            .to_string();
         let _to_inst = parts
             .next()
             .ok_or(ZenohWireParseError::MissingSegment("to_instance"))?;
         let caller_inst = parts
             .next()
-            .ok_or(ZenohWireParseError::MissingSegment("caller_instance"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("caller_instance"))?
+            .to_string();
 
-        // service_root prefix: {root}/{discriminator}/{name}/{tag}, fixed
-        // by the receiver's identity. Matched segment by segment so we can
-        // splice in the parsed link_id between the tag and the service name.
+        // Re-validate the service_root prefix segments so a stray
+        // matched-but-mismatched selector (e.g. mid-rollout schema skew)
+        // surfaces as a structured error rather than a routing surprise.
         for expected in receiver.service_root_prefix_segments() {
             let got = parts
                 .next()
@@ -199,80 +188,9 @@ impl ZenohWireFormat {
             }
         }
 
-        let link_id_segment = parts
-            .next()
-            .filter(|s| !s.is_empty())
-            .ok_or(ZenohWireParseError::MissingSegment("link_id"))?;
-        if !receiver.matches_link_id(link_id_segment) {
-            return Err(ZenohWireParseError::LinkIdNotBound {
-                got: link_id_segment.to_string(),
-                bound: receiver
-                    .link_ids
-                    .iter()
-                    .map(|s| s.as_str().to_string())
-                    .collect(),
-            });
-        }
-        let link_id = link_id_segment.to_string();
-
-        // service name + optional action suffix.
-        let expected_name = receiver.as_service_name.as_str();
-        let got_name = parts
-            .next()
-            .ok_or(ZenohWireParseError::MissingSegment("service_name"))?;
-        if got_name != expected_name {
-            return Err(ZenohWireParseError::ServiceRootMismatch {
-                expected: expected_name.to_string(),
-                got: got_name.to_string(),
-            });
-        }
-        if let Some(expected_suffix) = receiver.kind.suffix() {
-            let got_suffix = parts
-                .next()
-                .ok_or(ZenohWireParseError::MissingSegment("action_suffix"))?;
-            if got_suffix != expected_suffix {
-                return Err(ZenohWireParseError::ServiceRootMismatch {
-                    expected: expected_suffix.to_string(),
-                    got: got_suffix.to_string(),
-                });
-            }
-        }
-
-        let marker = parts
-            .next()
-            .ok_or(ZenohWireParseError::MissingSegment("request"))?;
-        if marker != "request" {
-            return Err(ZenohWireParseError::NotARequest);
-        }
-
-        let request_id = parts
-            .next()
-            .filter(|s| !s.is_empty())
-            .ok_or(ZenohWireParseError::MissingSegment("request_id"))?
-            .to_string();
-
-        if parts.next().is_some() {
-            return Err(ZenohWireParseError::UnexpectedTrailing);
-        }
-
-        // Server-side response publish uses the parsed link_id (not the
-        // listener's bound set) so the response addresses the same wire
-        // identity the consumer subscribed for.
-        let resolved_root = service_root(
-            &receiver.as_identity,
-            &link_id,
-            &receiver.as_service_name,
-            receiver.kind,
-        );
-        let response_keyexpr = format!(
-            "{caller_core}/{}/{caller_inst}/{}/{resolved_root}/response/{request_id}",
-            receiver.bound_core_node, receiver.as_instance_id,
-        );
-
-        Ok(ParsedRequest {
-            request_id,
-            link_id,
-            response_keyexpr,
+        Ok(ParsedInboundQuery {
+            caller_core,
+            caller_inst,
         })
     }
 
@@ -367,17 +285,14 @@ pub(crate) struct ParsedTopicKey {
     pub(crate) instance_id: String,
 }
 
-/// Result of parsing a received service request keyexpr. Fields are
-/// `pub(crate)` so the adapter can use the response keyexpr without exposing
-/// raw wire strings to peppylib.
+/// Result of parsing an inbound queryable selector. Carries just the
+/// caller-identity slots — the producer's bound link_id is already known
+/// to the adapter spawn that owns the matching queryable, and Zenoh's
+/// keyexpr matcher has already filtered out anything else.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ParsedRequest {
-    pub(crate) request_id: String,
-    /// link_id segment parsed from the request keyexpr, already verified
-    /// against the receiver's bound set.
-    pub(crate) link_id: String,
-    /// Server-side response publish keyexpr.
-    pub(crate) response_keyexpr: String,
+pub(crate) struct ParsedInboundQuery {
+    pub(crate) caller_core: String,
+    pub(crate) caller_inst: String,
 }
 
 /// Reasons a request keyexpr can fail to match the expected request shape.
@@ -385,21 +300,7 @@ pub(crate) struct ParsedRequest {
 pub(crate) enum ZenohWireParseError {
     MissingSegment(&'static str),
     WildcardInCallerSegment(&'static str),
-    UnexpectedTrailing,
-    NotARequest,
-    ServiceRootMismatch {
-        expected: String,
-        got: String,
-    },
-    /// Producer-side dispatch filter: a wildcard listener received a request
-    /// addressed to a link_id this producer doesn't bind. Service-loop
-    /// callers convert it to [`crate::error::Error::BackendError`] and the
-    /// peppylib `ServiceEndpoint` turns that into the
-    /// `InvalidServiceRequest` silent-skip path.
-    LinkIdNotBound {
-        got: String,
-        bound: Vec<String>,
-    },
+    ServiceRootMismatch { expected: String, got: String },
 }
 
 impl fmt::Display for ZenohWireParseError {
@@ -410,17 +311,9 @@ impl fmt::Display for ZenohWireParseError {
                 f,
                 "caller segment `{segment}` must not be the single-chunk wildcard `*`"
             ),
-            Self::UnexpectedTrailing => {
-                f.write_str("request contains unexpected trailing segments")
-            }
-            Self::NotARequest => f.write_str("expected `request` marker segment"),
             Self::ServiceRootMismatch { expected, got } => write!(
                 f,
                 "service root segment mismatch: expected `{expected}`, got `{got}`"
-            ),
-            Self::LinkIdNotBound { got, bound } => write!(
-                f,
-                "request link_id `{got}` is not in producer's bound set {bound:?}"
             ),
         }
     }
