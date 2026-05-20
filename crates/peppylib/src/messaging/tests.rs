@@ -3145,3 +3145,111 @@ async fn topic_emit_fans_out_to_every_bound_link_id() {
 
     router.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn topic_emit_delivers_once_to_wildcard_subscriber() {
+    // Producer bound to two link_ids. A `from_link_id: None` subscriber
+    // wildcards the link_id slot and intersects every per-link_id publish
+    // the emit loop produces. The "primary marker" attachment must collapse
+    // those N publishes back to one delivery on the wildcard axis. Pinned
+    // subscribers on each bound link_id must continue to receive one
+    // message each — specifically the regression case is the publish for
+    // `effective[1..]` (marked secondary) that pinned subscribers still
+    // need to receive on their pinned keyexpr.
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
+
+    let subscriber_handle = router.messenger().await;
+    let mut sub_any = TopicMessenger::subscribe(
+        &subscriber_handle,
+        "sub_core",
+        "sub_inst_any",
+        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
+        None,
+        "frames",
+        None,
+        None,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("wildcard subscribe should succeed");
+    let mut sub_left = TopicMessenger::subscribe(
+        &subscriber_handle,
+        "sub_core",
+        "sub_inst_left",
+        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
+        Some(LINK_LEFT),
+        "frames",
+        None,
+        None,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("left subscribe should succeed");
+    let mut sub_right = TopicMessenger::subscribe(
+        &subscriber_handle,
+        "sub_core",
+        "sub_inst_right",
+        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
+        Some(LINK_RIGHT),
+        "frames",
+        None,
+        None,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("right subscribe should succeed");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let emitter_handle = router.messenger().await;
+    TopicMessenger::emit(
+        &emitter_handle,
+        "pub_core",
+        "pub_inst",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        &bound,
+        "frames",
+        QoSProfile::Reliable,
+        Payload::from_static(b"frame-0"),
+    )
+    .await
+    .expect("emit should succeed");
+
+    // Wildcard subscriber: exactly one delivery.
+    let first = tokio::time::timeout(Duration::from_secs(2), sub_any.on_next_message())
+        .await
+        .expect("wildcard subscriber should not time out")
+        .expect("wildcard subscriber should receive a message");
+    assert_eq!(first.payload().as_ref(), b"frame-0");
+
+    // Grace window: no duplicate arrives. 300ms is well past the loopback
+    // round-trip the previous publish completed in.
+    let second = tokio::time::timeout(Duration::from_millis(300), sub_any.on_next_message()).await;
+    assert!(
+        second.is_err(),
+        "wildcard subscriber must not receive a duplicate (got {:?})",
+        second
+            .ok()
+            .flatten()
+            .map(|m| m.payload().as_ref().to_vec())
+    );
+
+    // Pinned subscribers each still receive their one copy. This proves the
+    // secondary publish for the non-first-bound link_id (LINK_RIGHT here)
+    // still reaches its pinned subscriber — pinned subscribers ignore the
+    // primary/secondary marker because their keyexpr already filters to
+    // exactly one publish per emit.
+    let left = tokio::time::timeout(Duration::from_secs(1), sub_left.on_next_message())
+        .await
+        .expect("left subscriber should not time out")
+        .expect("left subscriber should receive a message");
+    assert_eq!(left.payload().as_ref(), b"frame-0");
+    let right = tokio::time::timeout(Duration::from_secs(1), sub_right.on_next_message())
+        .await
+        .expect("right subscriber should not time out")
+        .expect("right subscriber should receive a message");
+    assert_eq!(right.payload().as_ref(), b"frame-0");
+
+    router.shutdown().await;
+}

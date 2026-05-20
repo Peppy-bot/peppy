@@ -53,10 +53,19 @@ impl Drop for MockInstance {
 /// publish for later assertions.
 type MessageLog = Arc<Mutex<HashMap<String, Vec<Message>>>>;
 
+/// One active subscription entry. `drop_secondary` is set when the
+/// subscriber wildcards the link_id slot at the keyexpr level (the topic
+/// `from_link_id: None` case) — `route_publish` drops non-primary fan-out
+/// for those entries so a multi-link `emit` yields one delivery.
+pub struct MockSubscription {
+    tx: mpsc::Sender<TopicMessage>,
+    drop_secondary: bool,
+}
+
 /// Shared map of active subscriptions, keyed by pattern. Each pattern maps to
 /// the senders that should receive a fanout when an intersecting topic is
 /// published.
-type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<TopicMessage>>>>>;
+pub type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<MockSubscription>>>>;
 
 /// One in-flight query routed from a `get_keyexpr` caller to a queryable
 /// whose declared keyexpr intersects the caller's selector.
@@ -119,7 +128,12 @@ impl MessengerBackend for MockAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        self.subscribe_keyexpr(&ZenohWireFormat::topic_subscribe(recv), qos)
+        // Mirrors the Zenoh adapter: wildcard-link_id subscribers drop the
+        // secondary publishes a multi-link `emit` produces; pinned
+        // subscribers don't, since their keyexpr already selects a single
+        // publish per emit.
+        let drop_secondary = recv.from_link_id.is_none();
+        self.subscribe_keyexpr(&ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }
 
@@ -128,8 +142,9 @@ impl MessengerBackend for MockAdapter {
         sender: &TopicWireSender,
         payload: Payload,
         _qos: PublisherQoS,
+        is_primary: bool,
     ) -> Result<()> {
-        self.publish_keyexpr(ZenohWireFormat::topic_publish(sender), payload)
+        self.publish_keyexpr(ZenohWireFormat::topic_publish(sender), payload, is_primary)
             .await
     }
 
@@ -226,9 +241,14 @@ impl MessengerBackend for MockAdapter {
         goal_id: &str,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
+        // Action feedback publishes exactly once per goal (see the wire
+        // comment on `action_feedback_publish`), so there are no secondaries
+        // to drop even though the subscribe keyexpr wildcards the link_id
+        // slot. See the matching note in `ZenohAdapter::subscribe_action_feedback`.
         self.subscribe_keyexpr(
             &ZenohWireFormat::action_feedback_subscribe(sender, goal_id),
             qos,
+            false,
         )
         .await
     }
@@ -343,23 +363,38 @@ impl MockAdapter {
         }
     }
 
-    async fn publish_keyexpr(&self, topic: String, payload: Payload) -> Result<()> {
+    async fn publish_keyexpr(
+        &self,
+        topic: String,
+        payload: Payload,
+        is_primary: bool,
+    ) -> Result<()> {
         if !self.is_session_connected {
             return Err(Error::PublishError { topic });
         }
 
         let message = Message::new(&topic, payload.to_bytes());
-        Self::route_publish(&topic, &message, &self.messages, &self.subscriptions).await
+        Self::route_publish(
+            &topic,
+            &message,
+            is_primary,
+            &self.messages,
+            &self.subscriptions,
+        )
+        .await
     }
 
     /// Records `message` against `topic` in the mock's message log and fans
     /// it out to every subscription whose pattern intersects `topic`. Shared
     /// by [`MockAdapter::publish_keyexpr`] (which holds the adapter
     /// directly) and [`MockPublisher::publish`] (which clones the same
-    /// `Arc`s for lock-free per-topic publishing).
+    /// `Arc`s for lock-free per-topic publishing). `is_primary` is the
+    /// wire-attachment dedup marker — subscribers that wildcarded the
+    /// link_id slot drop non-primary fan-out.
     async fn route_publish(
         topic: &str,
         message: &Message,
+        is_primary: bool,
         messages: &MessageLog,
         subscriptions: &SubscriptionMap,
     ) -> Result<()> {
@@ -373,12 +408,18 @@ impl MockAdapter {
                 .push(message.clone());
         }
 
-        let senders = {
+        let senders: Vec<mpsc::Sender<TopicMessage>> = {
             let subscriptions = subscriptions.lock().unwrap();
             let mut matched = Vec::new();
-            for (pattern, senders) in subscriptions.iter() {
-                if Self::key_exprs_intersect(pattern, topic) {
-                    matched.extend(senders.iter().cloned());
+            for (pattern, subs) in subscriptions.iter() {
+                if !Self::key_exprs_intersect(pattern, topic) {
+                    continue;
+                }
+                for sub in subs.iter() {
+                    if sub.drop_secondary && !is_primary {
+                        continue;
+                    }
+                    matched.push(sub.tx.clone());
                 }
             }
             matched
@@ -402,7 +443,12 @@ impl MockAdapter {
         rx
     }
 
-    async fn subscribe_keyexpr(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
+    async fn subscribe_keyexpr(
+        &self,
+        topic: &str,
+        qos: SubscriberQoS,
+        drop_secondary: bool,
+    ) -> Result<Subscription> {
         if !self.is_session_connected {
             return Err(Error::SubscribeError {
                 topic: topic.to_string(),
@@ -416,7 +462,10 @@ impl MockAdapter {
             subscriptions
                 .entry(topic.to_string())
                 .or_default()
-                .push(tx.clone());
+                .push(MockSubscription {
+                    tx: tx.clone(),
+                    drop_secondary,
+                });
         }
 
         // No background task is needed — the mock writes directly into the
@@ -503,8 +552,17 @@ pub struct MockPublisher {
 
 impl MockPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
+        // Pre-bound publishers are single-link, so each publish is its own
+        // emit's only sample — always primary, mirroring the Zenoh side.
         let message = Message::new(&self.topic, payload);
-        MockAdapter::route_publish(&self.topic, &message, &self.messages, &self.subscriptions).await
+        MockAdapter::route_publish(
+            &self.topic,
+            &message,
+            true,
+            &self.messages,
+            &self.subscriptions,
+        )
+        .await
     }
 }
 
@@ -686,5 +744,109 @@ mod tests {
             .await
             .expect("caller should receive the reply");
         assert_eq!(reply.payload().to_bytes().as_ref(), b"pong");
+    }
+
+    #[tokio::test]
+    async fn mock_topic_wildcard_subscriber_drops_secondary_publish() {
+        // Mirrors the peppylib integration test against zenohd, but in
+        // process. Two `publish_topic` calls with the same payload on
+        // different link_ids — the first marked primary, the second
+        // secondary — must deliver to a wildcard subscriber exactly once
+        // (primary only) and to each pinned subscriber exactly once
+        // (regardless of marker).
+        use crate::wire::{SenderTarget, TopicWireReceiver, TopicWireSender};
+
+        let mut adapter = MockAdapter::default();
+        adapter.start_session().await.expect("session should start");
+
+        let target = SenderTarget::interface("depth_camera", "v1").expect("iface target");
+
+        let sender_left = TopicWireSender::new(
+            "pub_core",
+            "pub_inst",
+            target.clone(),
+            Some("wrist_left"),
+            "frames",
+        )
+        .expect("sender left");
+        let sender_right = TopicWireSender::new(
+            "pub_core",
+            "pub_inst",
+            target.clone(),
+            Some("wrist_right"),
+            "frames",
+        )
+        .expect("sender right");
+
+        let recv_any = TopicWireReceiver::new(
+            "sub_core",
+            "sub_any",
+            None,
+            None,
+            Some(target.clone()),
+            None,
+            "frames",
+        )
+        .expect("recv any");
+        let recv_left = TopicWireReceiver::new(
+            "sub_core",
+            "sub_left",
+            None,
+            None,
+            Some(target.clone()),
+            Some("wrist_left"),
+            "frames",
+        )
+        .expect("recv left");
+        let recv_right = TopicWireReceiver::new(
+            "sub_core",
+            "sub_right",
+            None,
+            None,
+            Some(target.clone()),
+            Some("wrist_right"),
+            "frames",
+        )
+        .expect("recv right");
+
+        let mut sub_any = adapter
+            .subscribe_topic(&recv_any, SubscriberQoS::Standard)
+            .await
+            .expect("wildcard subscribe");
+        let mut sub_left = adapter
+            .subscribe_topic(&recv_left, SubscriberQoS::Standard)
+            .await
+            .expect("pinned left subscribe");
+        let mut sub_right = adapter
+            .subscribe_topic(&recv_right, SubscriberQoS::Standard)
+            .await
+            .expect("pinned right subscribe");
+
+        let payload = || Payload::from_bytes(bytes::Bytes::from_static(b"frame-0"));
+
+        adapter
+            .publish_topic(&sender_left, payload(), PublisherQoS::Standard, true)
+            .await
+            .expect("primary publish");
+        adapter
+            .publish_topic(&sender_right, payload(), PublisherQoS::Standard, false)
+            .await
+            .expect("secondary publish");
+
+        // Wildcard subscriber: receives the primary only.
+        let first = sub_any.rx.recv().await.expect("wildcard receives once");
+        assert_eq!(first.payload().to_bytes().as_ref(), b"frame-0");
+        // No second delivery in-process — the secondary was dropped.
+        assert!(
+            sub_any.rx.try_recv().is_err(),
+            "wildcard subscriber must not receive a duplicate"
+        );
+
+        // Pinned subscribers each receive their one publish, regardless of
+        // whether it was tagged primary or secondary.
+        let left = sub_left.rx.recv().await.expect("pinned left receives");
+        assert_eq!(left.payload().to_bytes().as_ref(), b"frame-0");
+        let right = sub_right.rx.recv().await.expect("pinned right receives");
+        assert_eq!(right.payload().to_bytes().as_ref(), b"frame-0");
     }
 }

@@ -114,12 +114,16 @@ pub trait MessengerBackend {
         qos: SubscriberQoS,
     ) -> impl Future<Output = Result<Subscription>> + Send;
 
-    /// Publish a one-shot topic message.
+    /// Publish a one-shot topic message. `is_primary` rides on a wire
+    /// attachment so subscribers can disambiguate the N publishes a
+    /// multi-link_id `emit` produces — see the topic-attachment section
+    /// in [`crate::wire::zenoh_format`] for the dedup contract.
     fn publish_topic(
         &mut self,
         sender: &TopicWireSender,
         payload: Payload,
         qos: PublisherQoS,
+        is_primary: bool,
     ) -> impl Future<Output = Result<()>> + Send;
 
     // ─── Services ─────────────────────────────────────────────────────────
@@ -698,8 +702,16 @@ impl MessengerBackend for Messenger {
         sender: &TopicWireSender,
         payload: Payload,
         qos: PublisherQoS,
+        is_primary: bool,
     ) -> Result<()> {
-        dispatch!(&mut self.adapter, publish_topic, sender, payload, qos)
+        dispatch!(
+            &mut self.adapter,
+            publish_topic,
+            sender,
+            payload,
+            qos,
+            is_primary
+        )
     }
 
     async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceQueryable> {

@@ -100,6 +100,7 @@ async fn topic_native_roundtrip() {
             &sender,
             Payload::from_bytes(body.clone()),
             PublisherQoS::Standard,
+            true,
         )
         .await
         .unwrap();
@@ -146,6 +147,7 @@ async fn topic_iface_roundtrip() {
             &sender,
             Payload::from_bytes(body.clone()),
             PublisherQoS::Standard,
+            true,
         )
         .await
         .unwrap();
@@ -196,6 +198,7 @@ async fn topic_wildcard_subscriber() {
             &sender,
             Payload::from_bytes(body.clone()),
             PublisherQoS::Standard,
+            true,
         )
         .await
         .unwrap();

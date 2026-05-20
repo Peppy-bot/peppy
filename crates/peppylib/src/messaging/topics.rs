@@ -99,6 +99,13 @@ impl TopicMessenger {
     /// first occurrence wins for ordering. An empty slice is normalized to
     /// the reserved default `_` segment. On the first publish error the
     /// loop aborts and the error is returned.
+    ///
+    /// The first publish (for `effective[0]`) is marked primary on the
+    /// wire; the rest are marked secondary. Wildcard subscribers
+    /// (`from_link_id: None`) drop secondaries so one `emit` yields one
+    /// delivery on the wildcard axis, even though the wire still carries N
+    /// publishes for pinned-subscriber reachability. See the topic-
+    /// attachment block in `pmi::wire::zenoh_format`.
     #[allow(clippy::too_many_arguments)]
     pub async fn emit(
         messenger: &MessengerHandle,
@@ -120,7 +127,7 @@ impl TopicMessenger {
                 .cloned()
                 .collect()
         };
-        for link_id in &effective {
+        for (idx, link_id) in effective.iter().enumerate() {
             let sender = TopicWireSender::new(
                 as_core_node,
                 as_instance_id,
@@ -129,7 +136,7 @@ impl TopicMessenger {
                 as_topic_name,
             )?;
             messenger
-                .emit_topic_message(&sender, qos.clone(), payload.clone())
+                .emit_topic_message(&sender, qos.clone(), payload.clone(), idx == 0)
                 .await?;
         }
         Ok(())
@@ -139,6 +146,13 @@ impl TopicMessenger {
     /// bypassing the central `Messenger` mutex on every subsequent publish.
     /// Use this in publish loops; use [`emit`] for one-shot publishes.
     /// `link_id` `None` falls back to the reserved default `_` segment.
+    ///
+    /// A pre-bound publisher always tags its publishes as primary on the
+    /// wire (it can't know about a parallel multi-link `emit` loop), so
+    /// mixing this with [`emit`] on the *same* topic isn't supported — a
+    /// wildcard subscriber would observe the pre-bound publish and the
+    /// `emit`'s primary publish as two separate deliveries. Pick one
+    /// publication path per topic.
     #[allow(clippy::too_many_arguments)]
     pub async fn declare_publisher(
         messenger: &MessengerHandle,

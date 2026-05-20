@@ -3,7 +3,7 @@ use crate::types::{
     IncomingRequest, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
     ServiceQueryable, SubscriberQoS, TopicMessage, ZenohResponseToken,
 };
-use crate::wire::zenoh_format::ZenohWireFormat;
+use crate::wire::zenoh_format::{TopicAttachment, ZenohWireFormat};
 use crate::wire::{
     ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
     TopicWireReceiver, TopicWireSender,
@@ -340,7 +340,14 @@ impl MessengerBackend for ZenohAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos)
+        // Wildcard subscribers (from_link_id: None) match every per-link_id
+        // publish a multi-link `emit` produces and must drop secondaries —
+        // see the topic-attachment block in `wire::zenoh_format`. Pinned
+        // subscribers ignore the attachment because their keyexpr already
+        // selects a single publish per emit, so this flag is only set for
+        // the wildcard case.
+        let drop_secondary = recv.from_link_id.is_none();
+        self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }
 
@@ -349,9 +356,15 @@ impl MessengerBackend for ZenohAdapter {
         sender: &TopicWireSender,
         payload: Payload,
         qos: PublisherQoS,
+        is_primary: bool,
     ) -> Result<()> {
-        self.publish_keyexpr(&ZenohWireFormat::topic_publish(sender), payload, qos)
-            .await
+        self.publish_keyexpr(
+            &ZenohWireFormat::topic_publish(sender),
+            payload,
+            qos,
+            is_primary,
+        )
+        .await
     }
 
     async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceQueryable> {
@@ -447,9 +460,15 @@ impl MessengerBackend for ZenohAdapter {
         goal_id: &str,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
+        // Action feedback shares the wildcard-link_id keyexpr shape with
+        // topic subscribe but doesn't multi-publish per goal — feedback is
+        // emitted under the single link_id chosen at goal time (see the
+        // `action_feedback_publish` comment in `wire::zenoh_format`). So
+        // there are no secondaries to drop; pass `false`.
         self.subscribe_keyexpr(
             ZenohWireFormat::action_feedback_subscribe(sender, goal_id),
             qos,
+            false,
         )
         .await
     }
@@ -529,6 +548,7 @@ impl ZenohAdapter {
         keyexpr: &str,
         payload: Payload,
         qos: PublisherQoS,
+        is_primary: bool,
     ) -> Result<()> {
         let session = self
             .session
@@ -542,6 +562,7 @@ impl ZenohAdapter {
         // targeting.
         session
             .put(keyexpr, payload.as_bytes().as_ref())
+            .attachment(TopicAttachment { is_primary }.encode().to_vec())
             .congestion_control(zenoh_qos.congestion_control)
             .priority(zenoh_qos.priority)
             .express(zenoh_qos.express)
@@ -552,7 +573,12 @@ impl ZenohAdapter {
         Ok(())
     }
 
-    async fn subscribe_keyexpr(&self, keyexpr: String, qos: SubscriberQoS) -> Result<Subscription> {
+    async fn subscribe_keyexpr(
+        &self,
+        keyexpr: String,
+        qos: SubscriberQoS,
+        drop_secondary: bool,
+    ) -> Result<Subscription> {
         let (tx, rx) = tokio::sync::mpsc::channel(qos.channel_size());
 
         let session = self
@@ -570,8 +596,20 @@ impl ZenohAdapter {
                 match subscriber.recv_async().await {
                     Ok(sample) => {
                         let SampleFields {
-                            key_expr, payload, ..
+                            key_expr,
+                            payload,
+                            attachment,
+                            ..
                         } = sample.into();
+                        if drop_secondary {
+                            let raw = attachment
+                                .as_ref()
+                                .map(|z| z.to_bytes())
+                                .unwrap_or_default();
+                            if !TopicAttachment::decode(raw.as_ref()).is_primary {
+                                continue;
+                            }
+                        }
                         let key_expr = key_expr.as_str();
                         match TopicMessage::from_zbytes(key_expr, payload) {
                             Ok(message) => {
@@ -696,8 +734,15 @@ pub struct ZenohPublisher {
 
 impl ZenohPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
+        // Pre-bound publishers are single-link (one keyexpr per declare),
+        // so from a wildcard subscriber's view this publish is the only
+        // one for its emit and must be marked primary. Topic publishers
+        // that need multi-link fan-out should go through `emit`, not
+        // `declare_publisher` — see the rustdoc on
+        // `TopicMessenger::declare_publisher`.
         self.session
             .put(&self.topic, payload.as_ref())
+            .attachment(TopicAttachment { is_primary: true }.encode().to_vec())
             .congestion_control(self.qos.congestion_control)
             .priority(self.qos.priority)
             .express(self.qos.express)

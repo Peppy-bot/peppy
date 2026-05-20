@@ -904,3 +904,38 @@ fn parse_inbound_query_node_receiver_rejects_interface_shaped_query() {
         ZenohWireParseError::ServiceRootMismatch { .. }
     ));
 }
+
+// ─── Topic attachment ────────────────────────────────────────────────────
+
+#[test]
+fn topic_attachment_primary_roundtrip() {
+    let encoded = TopicAttachment { is_primary: true }.encode();
+    assert_eq!(encoded.as_ref(), &[0x01u8]);
+    assert!(TopicAttachment::decode(&encoded).is_primary);
+}
+
+#[test]
+fn topic_attachment_secondary_roundtrip() {
+    let encoded = TopicAttachment { is_primary: false }.encode();
+    assert_eq!(encoded.as_ref(), &[0x00u8]);
+    assert!(!TopicAttachment::decode(&encoded).is_primary);
+}
+
+#[test]
+fn topic_attachment_missing_decodes_as_primary() {
+    // Defensive: a publish that drops or omits the attachment should not
+    // cause wildcard subscribers to silently drop every message. Missing
+    // attachment == primary so the failure mode is "duplicates" (the
+    // pre-fix behavior), not "silence".
+    assert!(TopicAttachment::decode(&[]).is_primary);
+}
+
+#[test]
+fn topic_attachment_unknown_byte_decodes_as_primary() {
+    // Any byte other than the explicit 0x00 secondary marker decodes as
+    // primary — keeps forward compat if the marker schema grows fields
+    // (additional bytes are ignored by the current decoder).
+    assert!(TopicAttachment::decode(&[0xff]).is_primary);
+    assert!(TopicAttachment::decode(&[0x01, 0xaa]).is_primary);
+}
+

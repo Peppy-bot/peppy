@@ -81,6 +81,18 @@ impl ZenohWireFormat {
         )
     }
 
+    // ─── Topic attachment ─────────────────────────────────────────────────
+    //
+    // A producer bound to N link_ids issues N `put`s per `emit` because Zenoh
+    // `put` keyexprs can't carry wildcards. A subscriber that wildcards the
+    // link_id slot intersects all N — without help, it receives the same
+    // payload N times per emit. The producer marks the publish for
+    // `effective[0]` (first-bound) as primary and the rest as secondary; the
+    // adapter drops secondaries for wildcard subscribers. Pinned subscribers
+    // ignore the marker because their keyexpr already filters to a single
+    // publish per emit. This is the topic-side analog of the service
+    // "first-bound dispatch" pattern in [`ParsedInboundQuery::choose_link_id`].
+
     // ─── Services ─────────────────────────────────────────────────────────
     //
     // Services and action sub-services (goal / cancel / result) ride on
@@ -295,6 +307,27 @@ fn action_root(target: &SenderTarget, link_id: &str, action: &str) -> String {
 pub(crate) struct ParsedTopicKey {
     pub(crate) core_node: String,
     pub(crate) instance_id: String,
+}
+
+/// Topic-publish attachment marker. See the comment block in the topic
+/// section of [`ZenohWireFormat`] for the rationale. One byte on the wire:
+/// `0x01` = primary, `0x00` = secondary. A missing or empty attachment
+/// decodes as primary so producers that don't set it (no path today,
+/// defensive) behave as if every publish is the only one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TopicAttachment {
+    pub(crate) is_primary: bool,
+}
+
+impl TopicAttachment {
+    pub(crate) fn encode(&self) -> bytes::Bytes {
+        bytes::Bytes::from_static(if self.is_primary { &[0x01u8] } else { &[0x00u8] })
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Self {
+        let is_primary = bytes.first().is_none_or(|b| *b != 0x00);
+        Self { is_primary }
+    }
 }
 
 /// Result of parsing an inbound queryable selector. Carries the

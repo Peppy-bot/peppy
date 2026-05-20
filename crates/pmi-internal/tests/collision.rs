@@ -135,6 +135,7 @@ async fn topic_node_vs_interface_no_collision() {
             &node_sender,
             Payload::from_bytes(node_payload.clone()),
             PublisherQoS::Standard,
+            true,
         )
         .await
         .unwrap();
@@ -144,6 +145,7 @@ async fn topic_node_vs_interface_no_collision() {
             &iface_sender,
             Payload::from_bytes(iface_payload.clone()),
             PublisherQoS::Standard,
+            true,
         )
         .await
         .unwrap();
@@ -216,6 +218,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
             &node_sender,
             Payload::from_bytes(node_payload.clone()),
             PublisherQoS::Standard,
+            true,
         )
         .await
         .unwrap();
@@ -225,6 +228,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
             &iface_sender,
             Payload::from_bytes(iface_payload.clone()),
             PublisherQoS::Standard,
+            true,
         )
         .await
         .unwrap();

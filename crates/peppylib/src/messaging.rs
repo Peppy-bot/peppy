@@ -223,10 +223,11 @@ impl MessengerHandle {
         sender: &TopicWireSender,
         qos: QoSProfile,
         payload: Payload,
+        is_primary: bool,
     ) -> Result<()> {
         let mut messenger = self.messenger.lock().await;
         messenger
-            .publish_topic(sender, payload.into_inner().into(), qos.into())
+            .publish_topic(sender, payload.into_inner().into(), qos.into(), is_primary)
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
