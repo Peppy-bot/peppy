@@ -75,8 +75,8 @@ pub async fn wait_until_service_reachable(
     bound_core_node: &str,
     to_node_name: &str,
     to_service_name: &str,
-    to_core_node: &str,
-    to_instance_id: &str,
+    target_core_node: &str,
+    target_instance_id: &str,
     timeout: Duration,
 ) {
     use peppylib::messaging::ServiceMessenger;
@@ -89,8 +89,8 @@ pub async fn wait_until_service_reachable(
             test_node_target(to_node_name),
             None,
             to_service_name,
-            Some(to_core_node),
-            Some(to_instance_id),
+            Some(target_core_node),
+            Some(target_instance_id),
         )
         .await
         {
@@ -99,7 +99,7 @@ pub async fn wait_until_service_reachable(
         if std::time::Instant::now() >= deadline {
             panic!(
                 "service {to_node_name}/{to_service_name} on \
-                 {to_core_node}/{to_instance_id} did not become \
+                 {target_core_node}/{target_instance_id} did not become \
                  reachable within {timeout:?}"
             );
         }

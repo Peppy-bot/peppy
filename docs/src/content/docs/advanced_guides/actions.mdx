@@ -259,8 +259,6 @@ fn main() -> Result<()> {
         let mut goal = brain_move_arm::fire_goal(
             &node_runner,
             Duration::from_secs(5),       // timeout
-            None,                          // target_core_node (None = any)
-            None,                          // target_instance_id (None = any)
             request,
             QoSProfile::SensorData,        // QoS for the feedback topic
         )
@@ -273,9 +271,28 @@ fn main() -> Result<()> {
 }
 ```
 
+The example above is for a **pinned** dependency. When the dependency
+declares `from_any: true`, `fire_goal` gains an extra
+`target_instance_id: Option<&str>` parameter — see
+[Instance targeting](#instance-targeting) below.
+
 The `fire_goal` function returns a `GoalResponse` containing:
 - `data.accepted` — whether the goal was accepted.
 - `action_handle` — a handle used for subsequent feedback, result, and cancel calls.
+
+#### Lifecycle latching
+
+When `fire_goal` is called against a `from_any: true` dependency with
+`target_instance_id = None`, the goal request fans out to every matching
+producer. As soon as the first goal response arrives, the returned
+`action_handle` is **latched** to the producer that won: subsequent
+`cancel_goal`, `get_result`, and feedback calls only reach that producer.
+Feedback messages from losing producers (which may have started running
+the same goal) are filtered out at delivery time.
+
+For pinned dependencies and for `from_any` calls with an explicit
+`target_instance_id`, the goal already addresses exactly one producer and
+no fan-out happens — latching is effectively a no-op in those cases.
 
 ### Receiving feedback
 
@@ -332,6 +349,72 @@ println!(
 ```
 
 After a goal is cancelled, requesting the result will fail with a timeout since the server stops processing that goal.
+
+### Pinned `link_id` takes precedence over `from_any`
+
+When the same `(name, tag)` appears in `depends_on` with both a pinned
+entry and a `from_any: true` entry, a `from_any` `send_goal` is routed
+to a producer link_id that **no pinned sibling claims**. The producer's
+goal / cancel / result sub-services agree on the same link_id for a
+given `goal_id`, so the feedback channel for that goal arrives under
+the chosen link_id — the consumer doesn't need to think about which
+sub-service it's talking to.
+
+For example, with a producer bound to `wrist_left_camera` and
+`wrist_right_camera`:
+
+```json5
+{
+  depends_on: {
+    interfaces: [
+      { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+      { name: "depth_camera", tag: "v1", link_id: "extra_camera", from_any: true },
+    ],
+  },
+}
+```
+
+| User calls | Producer routes goal / cancel / result to |
+| --- | --- |
+| `wrist_left_camera_capture::fire_goal(...)` | `wrist_left_camera` handler |
+| `extra_camera_capture::fire_goal(...)` | `wrist_right_camera` handler |
+
+If every bound link_id is claimed by a pinned sibling, the `from_any`
+goal falls back to the first-bound link_id so the call doesn't fail
+purely because of the exclusion. Pinned callers always reach the
+literal link_id they request — the exclusion only applies to wildcard
+(`from_any: true`) callers.
+
+## Instance targeting
+
+When the consumer's dependency has `from_any: true` and several producer
+instances expose the same action, the generator emits an extra
+`target_instance_id: Option<&str>` parameter on `fire_goal` so the
+caller can pin the goal to a specific producer:
+
+- **`None`** (default) — the goal request fans out to every matching
+  producer. The first producer to respond wins the goal; the returned
+  `action_handle` is latched to that producer so `cancel_goal`,
+  `get_result`, and feedback only reach the winner (see
+  [Lifecycle latching](#lifecycle-latching) above).
+- **`Some("instance_id")`** — the goal request is pinned to the producer
+  whose `as_instance_id` matches. Only that producer ever sees the goal,
+  cancel, result, or feedback for this goal cycle.
+
+```rust
+// Target a specific producer instance for the goal.
+let goal = brain_move_arm::fire_goal(
+    &node_runner,
+    Duration::from_secs(5),
+    Some("left-arm-1"),
+    request,
+    QoSProfile::SensorData,
+)
+.await?;
+```
+
+`target_instance_id` is **not** emitted on pinned dependencies — those
+already address one producer via the pinned `link_id` literal.
 
 ## Serial processing
 

@@ -819,16 +819,17 @@ fn consumer_filter_params_use_directional_prefix() {
         "expected `from_instance_id` once on the topic subscriber; rendered:\n{rendered}"
     );
 
-    // Service caller (poll) + action caller (fire_goal): request flows TO the
-    // server → `to_*`. Service contributes 1, action contributes 1.
-    assert_eq!(
-        rendered.matches("to_core_node: Option<&str>").count(),
-        2,
-        "expected `to_core_node` twice (service + action callers); rendered:\n{rendered}"
+    // Service caller (poll) + action caller (fire_goal): the fixture's
+    // `DependencyContext::native` defaults to `WireLinkId::Wildcard`, so
+    // `target_instance_id` is exposed on both. `target_core_node` is never
+    // exposed in the user-facing generated API.
+    assert!(
+        !rendered.contains("target_core_node"),
+        "target_core_node should not appear in the generated API; rendered:\n{rendered}"
     );
     assert_eq!(
-        rendered.matches("to_instance_id: Option<&str>").count(),
+        rendered.matches("target_instance_id: Option<&str>").count(),
         2,
-        "expected `to_instance_id` twice (service + action callers); rendered:\n{rendered}"
+        "expected `target_instance_id` twice (service + action callers); rendered:\n{rendered}"
     );
 }

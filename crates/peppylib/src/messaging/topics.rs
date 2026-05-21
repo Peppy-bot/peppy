@@ -8,25 +8,67 @@ use std::sync::Arc;
 
 pub struct Subscription {
     inner: pmi::Subscription,
+    /// Producer link_ids a sibling pinned `depends_on` entry on the same
+    /// `(name, tag)` already claims. Set by [`TopicMessenger::subscribe`]
+    /// when the receiver wildcards the link_id slot and the messenger has
+    /// a registered sibling set; empty otherwise. The receive paths skip
+    /// messages whose producer `link_id()` is in this set.
+    excluded_link_ids: Vec<String>,
 }
 
 impl Subscription {
     pub(crate) fn new(inner: pmi::Subscription) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            excluded_link_ids: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_excluded_link_ids(mut self, excluded: Vec<String>) -> Self {
+        self.excluded_link_ids = excluded;
+        self
     }
 
     pub async fn on_next_message(&mut self) -> Option<Message> {
-        self.inner.rx.recv().await.map(Message::from)
+        // Drop sibling-claimed publishes before they cross into user code.
+        // The adapter's primary/secondary filter (for wildcard subscribers
+        // on a multi-link `emit`) already ran upstream; this is a separate
+        // policy layer that translates the consumer's manifest knowledge
+        // into a runtime drop.
+        loop {
+            let raw = self.inner.rx.recv().await?;
+            if self.should_drop(&raw) {
+                continue;
+            }
+            return Some(Message::from(raw));
+        }
     }
 
     pub(crate) fn try_on_next_message(
         &mut self,
     ) -> std::result::Result<Message, crate::types::TryRecvError> {
-        self.inner
-            .rx
-            .try_recv()
-            .map(Message::from)
-            .map_err(crate::types::TryRecvError::from)
+        loop {
+            let raw = self
+                .inner
+                .rx
+                .try_recv()
+                .map_err(crate::types::TryRecvError::from)?;
+            if self.should_drop(&raw) {
+                continue;
+            }
+            return Ok(Message::from(raw));
+        }
+    }
+
+    fn should_drop(&self, msg: &pmi::TopicMessage) -> bool {
+        if self.excluded_link_ids.is_empty() {
+            return false;
+        }
+        let link_id = msg.link_id();
+        if link_id.is_empty() {
+            return false;
+        }
+        self.excluded_link_ids.iter().any(|e| e == link_id)
     }
 }
 
@@ -51,6 +93,15 @@ impl TopicMessenger {
         from_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
+        // A wildcard receiver (`from_link_id: None`) for a known producer
+        // target may still need to skip messages on link_ids claimed by a
+        // sibling pinned dependency. The exclusion set is registered on
+        // the MessengerHandle once at node bootstrap; we look it up here
+        // by the producer's (name, tag).
+        let excluded = match (&from_target, from_link_id) {
+            (Some(target), None) => messenger.excluded_link_ids_for(target.name(), target.tag()),
+            _ => Vec::new(),
+        };
         let recv = TopicWireReceiver::new(
             as_core_node,
             as_instance_id,
@@ -59,9 +110,10 @@ impl TopicMessenger {
             from_target,
             from_link_id,
             to_topic,
-        )?;
+        )?
+        .with_excluded_link_ids(excluded.clone());
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
-        Ok(Subscription::new(subscription))
+        Ok(Subscription::new(subscription).with_excluded_link_ids(excluded))
     }
 
     /// Consumes a topic from any publisher (external/unlinked topics).

@@ -42,6 +42,8 @@ pub struct PythonGenerator {
     parameters: config::ParameterSchema,
     schemas: HashMap<String, CapnpSchema>,
     is_container: bool,
+    /// See `RustGenerator::pinned_siblings_map`.
+    pinned_siblings_map: HashMap<(String, String), Vec<String>>,
 }
 
 impl PythonGenerator {
@@ -70,6 +72,11 @@ impl PythonGenerator {
     /// host platform's `.so` is used.
     pub fn set_container(&mut self, is_container: bool) {
         self.is_container = is_container;
+    }
+
+    /// See `RustGenerator::set_pinned_siblings_map`.
+    pub fn set_pinned_siblings_map(&mut self, map: HashMap<(String, String), Vec<String>>) {
+        self.pinned_siblings_map = map;
     }
 
     fn push_section(&mut self, section: InterfaceArtifact) {

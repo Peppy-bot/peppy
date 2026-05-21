@@ -645,8 +645,8 @@ async fn process_node_run(
         caller_instance_id: &ctx.action.caller_instance_id,
         to_node_name: runtime_config.node_name.as_str(),
         to_node_tag: runtime_config.node_tag.as_str(),
-        to_core_node: runtime_config.bound_core_node.as_str(),
-        to_instance_id: instance_id_str,
+        target_core_node: runtime_config.bound_core_node.as_str(),
+        target_instance_id: instance_id_str,
     };
 
     debug!(
@@ -746,8 +746,8 @@ async fn process_node_run(
                         core_node_name: ctx.action.core_node_name.clone(),
                         caller_instance_id: ctx.action.caller_instance_id.clone(),
                         to_node_name: runtime_config.node_name.as_str().to_owned(),
-                        to_core_node: runtime_config.bound_core_node.as_str().to_owned(),
-                        to_instance_id: instance_id.clone(),
+                        target_core_node: runtime_config.bound_core_node.as_str().to_owned(),
+                        target_instance_id: instance_id.clone(),
                         node_tag: tag.clone(),
                         node_stack: Arc::clone(&ctx.action.node_stack),
                         peppy_dirs: ctx.action.peppy_dirs.clone(),
@@ -885,8 +885,8 @@ struct NodeSignalTarget<'a> {
     caller_instance_id: &'a str,
     to_node_name: &'a str,
     to_node_tag: &'a str,
-    to_core_node: &'a str,
-    to_instance_id: &'a str,
+    target_core_node: &'a str,
+    target_instance_id: &'a str,
 }
 
 /// Performs a health check on a newly started node instance.
@@ -920,7 +920,7 @@ async fn perform_health_check(
         let now = Instant::now();
         if now >= deadline {
             let err = last_err.unwrap_or_else(|| PeppyError::ServiceTimeout {
-                instance_id: Some(target.to_instance_id.to_string()),
+                instance_id: Some(target.target_instance_id.to_string()),
                 service_name: NODE_HEALTH_SERVICE.to_string(),
             });
             return Err(format!("health check timed out: {err}"));
@@ -936,8 +936,8 @@ async fn perform_health_check(
             SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             None,
             NODE_HEALTH_SERVICE,
-            Some(target.to_core_node),
-            Some(target.to_instance_id),
+            Some(target.target_core_node),
+            Some(target.target_instance_id),
             request_payload.clone(),
             attempt_timeout,
         )
@@ -985,7 +985,7 @@ async fn wait_for_ready_signal(
         let now = Instant::now();
         if now >= deadline {
             let err = last_err.unwrap_or_else(|| PeppyError::ServiceTimeout {
-                instance_id: Some(target.to_instance_id.to_string()),
+                instance_id: Some(target.target_instance_id.to_string()),
                 service_name: NODE_READY_SERVICE.to_string(),
             });
             return Err(format!(
@@ -1003,8 +1003,8 @@ async fn wait_for_ready_signal(
             SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             None,
             NODE_READY_SERVICE,
-            Some(target.to_core_node),
-            Some(target.to_instance_id),
+            Some(target.target_core_node),
+            Some(target.target_instance_id),
             request_payload.clone(),
             attempt_timeout,
         )
@@ -1024,8 +1024,8 @@ struct HealthMonitorParams {
     core_node_name: String,
     caller_instance_id: String,
     to_node_name: String,
-    to_core_node: String,
-    to_instance_id: Name,
+    target_core_node: String,
+    target_instance_id: Name,
     node_tag: String,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
@@ -1043,7 +1043,7 @@ struct HealthMonitorParams {
 /// - The health checks fail consecutively `max_failures` times.
 fn spawn_health_monitor(p: HealthMonitorParams) {
     tokio::spawn(async move {
-        let instance_id_str = p.to_instance_id.as_str().to_owned();
+        let instance_id_str = p.target_instance_id.as_str().to_owned();
         let request_payload = match NodeHealthRequest::new().encode() {
             Ok(payload) => payload,
             Err(e) => {
@@ -1061,10 +1061,10 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
         loop {
             tokio::time::sleep(p.interval).await;
 
-            // If the monitored instance (`p.to_instance_id`) was removed
+            // If the monitored instance (`p.target_instance_id`) was removed
             // externally (e.g. user ran `node stop`), our job is done.
             if p.node_stack
-                .find_by_instance_id(&p.to_instance_id)
+                .find_by_instance_id(&p.target_instance_id)
                 .is_none()
             {
                 debug!(
@@ -1081,8 +1081,8 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 SenderTarget::node_from_validated(&p.to_node_name, &p.node_tag),
                 None,
                 NODE_HEALTH_SERVICE,
-                Some(&p.to_core_node),
-                Some(p.to_instance_id.as_str()),
+                Some(&p.target_core_node),
+                Some(p.target_instance_id.as_str()),
                 request_payload.clone(),
                 p.timeout,
             )
@@ -1105,10 +1105,11 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                             p.max_failures
                         );
 
-                        if let Some(entity_handle) =
-                            p.node_stack.find_entity_by_instance_id(&p.to_instance_id)
+                        if let Some(entity_handle) = p
+                            .node_stack
+                            .find_entity_by_instance_id(&p.target_instance_id)
                         {
-                            entity_handle.write().stop_instance(&p.to_instance_id);
+                            entity_handle.write().stop_instance(&p.target_instance_id);
                         }
 
                         super::append_stack_log(

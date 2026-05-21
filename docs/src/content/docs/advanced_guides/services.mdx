@@ -181,7 +181,12 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 ### Calling a service
 
 The code generator creates a module for each consumed service under `peppygen::consumed_services`.
-Use `poll` to send a request and wait for a response:
+Use `poll` to send a request and wait for a response. The exact signature
+depends on whether the dependency is pinned to a `link_id` or has
+`from_any: true`.
+
+For a **pinned** dependency, the generator does not emit any addressing
+parameter — the pinned `link_id` literal already identifies one producer:
 
 ```rust
 use peppygen::consumed_services::uvc_camera_enable_camera;
@@ -194,8 +199,6 @@ fn main() -> Result<()> {
         let response = uvc_camera_enable_camera::poll(
             &node_runner,
             Duration::from_secs(5), // timeout
-            None,                   // target_core_node (None = any)
-            None,                   // target_instance_id (None = any)
             request,
         )
         .await?;
@@ -212,18 +215,16 @@ fn main() -> Result<()> {
 }
 ```
 
-The `poll` function takes:
-- `node_runner` — the node runner reference.
-- `timeout` — maximum time to wait for a response.
-- `target_core_node` — optionally target a specific core node, or `None` for any.
-- `target_instance_id` — optionally target a specific instance, or `None` for any.
-- `request` — the request payload.
+For a `from_any: true` dependency, the generator emits an extra
+`target_instance_id: Option<&str>` parameter so the caller can pick a
+specific producer instance at call time. See
+[Instance targeting](#instance-targeting) below.
 
 The response contains:
 - `instance_id` — the instance that handled the request.
 - `data` — the deserialized response payload.
 
-For a service without a request body, `poll` does not take a request argument:
+For a service without a request body, `poll` simply takes no request:
 
 ```rust
 use peppygen::consumed_services::uvc_camera_get_camera_info;
@@ -231,31 +232,71 @@ use peppygen::consumed_services::uvc_camera_get_camera_info;
 let response = uvc_camera_get_camera_info::poll(
     &node_runner,
     Duration::from_secs(5),
-    None,
-    None,
 ).await?;
 
 println!("Camera: {} {}", response.data.card_type, response.data.size);
 ```
 
+### Pinned `link_id` takes precedence over `from_any`
+
+When the same `(name, tag)` appears in `depends_on` with both a pinned
+entry and a `from_any: true` entry, a `from_any` poll is routed to a
+producer link_id that **no pinned sibling claims**. The producer's
+dispatcher reads the consumer's sibling-claim set from the request
+attachment and picks the first bound link_id that's not in the set.
+
+For example, with a producer bound to `wrist_left_camera` and
+`wrist_right_camera`:
+
+```json5
+{
+  depends_on: {
+    interfaces: [
+      { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+      { name: "depth_camera", tag: "v1", link_id: "extra_camera", from_any: true },
+    ],
+  },
+}
+```
+
+| User calls | Producer routes to |
+| --- | --- |
+| `wrist_left_camera_get_status::poll(...)` | `wrist_left_camera` handler |
+| `extra_camera_get_status::poll(...)` | `wrist_right_camera` handler |
+
+If every bound link_id is claimed by a pinned sibling, the `from_any`
+call falls back to the first-bound link_id so the call doesn't fail
+purely because of the exclusion. Pinned callers always reach the
+literal link_id they request — the exclusion only applies to wildcard
+(`from_any: true`) callers.
+
 ## Instance targeting
 
-When multiple instances of the same node are running, you can control which instance handles your service request:
+When the consumer's dependency has `from_any: true` and several producer
+instances are advertising the same service, the generator emits an extra
+`target_instance_id: Option<&str>` parameter on `poll` so the caller can
+choose which producer to reach:
 
-- **`None`** (default) — the request is sent to all instances and the first response wins.
-- **`Some("instance_id")`** — the request is sent to a specific instance.
+- **`None`** (default) — the request fans out to every matching producer
+  instance. Every producer's handler fires; the consumer keeps the first
+  reply and discards the rest. Use this when any instance can answer and
+  you only need one response.
+- **`Some("instance_id")`** — the request is pinned to the producer whose
+  `as_instance_id` matches. Only that producer's handler runs.
 
 ```rust
-// Target a specific instance
+// Target a specific producer instance.
 let response = uvc_camera_enable_camera::poll(
     &node_runner,
     Duration::from_secs(5),
-    None,
     Some("my-camera-instance"),
     request,
 )
 .await?;
 ```
+
+`target_instance_id` is **not** emitted on pinned dependencies — those
+already route to one producer via the pinned `link_id` literal.
 
 ## Error handling
 

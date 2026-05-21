@@ -280,8 +280,18 @@ pub fn build_consumed_service(
 
     // poll async function
     builder.add_import("import peppylib");
-    // Always needed: poll() signature uses Optional[str] for to_core_node/to_instance_id
-    builder.add_import("from typing import Optional");
+
+    // `target_instance_id` is exposed to callers only when the dependency is
+    // wildcard (`from_any: true`). Pinned deps already route to exactly one
+    // producer via the link_id literal. `target_core_node` is never exposed
+    // to the user-facing generated API.
+    let expose_target_instance_id = matches!(
+        dependency.link_id,
+        crate::generator::types::WireLinkId::Wildcard
+    );
+    if expose_target_instance_id {
+        builder.add_import("from typing import Optional");
+    }
     builder.blank_line();
 
     let has_request = request_format.is_some();
@@ -292,13 +302,18 @@ pub fn build_consumed_service(
         " -> None"
     };
 
+    let target_instance_id_param = if expose_target_instance_id {
+        ", target_instance_id: Optional[str] = None"
+    } else {
+        ""
+    };
     let signature = if has_request {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float{target_instance_id_param}){return_type}:"
         )
     } else {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, timeout: float, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, timeout: float{target_instance_id_param}){return_type}:"
         )
     };
     builder.line(&signature);
@@ -341,8 +356,12 @@ pub fn build_consumed_service(
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
     builder.line("SERVICE_NAME,");
-    builder.line("to_core_node,");
-    builder.line("to_instance_id,");
+    builder.line("None,");
+    if expose_target_instance_id {
+        builder.line("target_instance_id,");
+    } else {
+        builder.line("None,");
+    }
     builder.line("request_payload,");
     builder.line("timeout,");
     builder.line(&format!("to_link_id={to_link_id_expr},"));

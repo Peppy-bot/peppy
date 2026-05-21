@@ -380,7 +380,7 @@ if __name__ == "__main__":
             messenger: &messenger,
             bound_core_node: TEST_CORE_NODE,
             caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-            to_core_node: None,
+            target_core_node: None,
         },
         PRODUCER_NODE_NAME,
         ACTION_NAME,
@@ -399,7 +399,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -686,7 +686,7 @@ from peppygen.consumed_services import producer_report_status
 
 async def poll_service(node_runner, done):
     request = producer_report_status.Request(detail=True)
-    response = await producer_report_status.poll(node_runner, request, 5.0, None, None)
+    response = await producer_report_status.poll(node_runner, request, 5.0, None)
     print(
         f"response ok={response.data.ok} status={response.data.status} "
         f"measurements={response.data.measurements} elapsed={response.data.elapsed}",
@@ -732,7 +732,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_service_reachable_or_exit(
         &ctx,
@@ -1084,7 +1084,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,

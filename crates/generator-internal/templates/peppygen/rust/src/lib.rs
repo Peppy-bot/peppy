@@ -1,4 +1,5 @@
 pub mod clock;
+pub mod consumer_dependencies;
 pub mod parameters;
 
 pub mod capnp;

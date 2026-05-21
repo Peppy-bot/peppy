@@ -241,7 +241,7 @@ impl PyActionMessenger {
     /// Pass `SenderTarget.node(name, tag)` for nodes or
     /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, to_core_node=None, to_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0, to_link_id=None))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, target_core_node=None, target_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0, to_link_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
@@ -250,8 +250,8 @@ impl PyActionMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_action_name: String,
-        to_core_node: Option<String>,
-        to_instance_id: Option<String>,
+        target_core_node: Option<String>,
+        target_instance_id: Option<String>,
         user_payload: Vec<u8>,
         feedback_qos: PyQoSProfile,
         goal_timeout_secs: f64,
@@ -268,8 +268,8 @@ impl PyActionMessenger {
                 to_target,
                 to_link_id.as_deref(),
                 &to_action_name,
-                to_core_node.as_deref(),
-                to_instance_id.as_deref(),
+                target_core_node.as_deref(),
+                target_instance_id.as_deref(),
                 Payload::from(user_payload),
                 feedback_qos.into(),
                 goal_timeout,
@@ -344,7 +344,7 @@ impl PyActionMessenger {
 
     /// Check whether an action server is reachable.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, to_core_node=None, to_instance_id=None, to_link_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, target_core_node=None, target_instance_id=None, to_link_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
@@ -353,8 +353,8 @@ impl PyActionMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_action_name: String,
-        to_core_node: Option<String>,
-        to_instance_id: Option<String>,
+        target_core_node: Option<String>,
+        target_instance_id: Option<String>,
         to_link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
@@ -367,8 +367,8 @@ impl PyActionMessenger {
                 to_target,
                 to_link_id.as_deref(),
                 &to_action_name,
-                to_core_node.as_deref(),
-                to_instance_id.as_deref(),
+                target_core_node.as_deref(),
+                target_instance_id.as_deref(),
             )
             .await
             .map_err(to_py_err)?;

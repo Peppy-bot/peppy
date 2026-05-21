@@ -399,6 +399,14 @@ impl TopicWireSender {
 /// `None` means "any" (translated to the transport's single-chunk wildcard).
 /// `from_link_id` follows the same rule: `Some` pins to a producer's specific
 /// link_id, `None` matches any (used for `from_any: true` consumers).
+///
+/// `excluded_link_ids` is the set of producer link_ids a sibling pinned
+/// `depends_on` entry on the same `(name, tag)` already claims. The adapter
+/// returns those messages to peppylib regardless, but peppylib's
+/// `Subscription` wrapper drops samples whose `link_id()` is in this set so
+/// a `from_any: true` callback doesn't fire for a message a pinned sibling
+/// also receives. Empty when the consumer didn't register sibling claims —
+/// preserves today's behavior unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopicWireReceiver {
     pub(crate) as_core_node: Segment,
@@ -408,6 +416,7 @@ pub struct TopicWireReceiver {
     pub(crate) from_target: Option<SenderTarget>,
     pub(crate) from_link_id: Option<Segment>,
     pub(crate) to_topic: Segment,
+    pub(crate) excluded_link_ids: Vec<String>,
 }
 
 impl TopicWireReceiver {
@@ -429,26 +438,52 @@ impl TopicWireReceiver {
             from_target,
             from_link_id: from_link_id.map(Segment::try_link_id).transpose()?,
             to_topic: Segment::try_from(to_topic)?,
+            excluded_link_ids: Vec::new(),
         })
+    }
+
+    /// Replaces the sibling-pinned exclusion set. Peppylib's `subscribe`
+    /// looks up the set on `MessengerHandle` when `from_link_id` is `None`
+    /// and a sibling pinned dependency is registered for the same
+    /// `(name, tag)`; pinned subscribers leave it empty.
+    pub fn with_excluded_link_ids(mut self, excluded: Vec<String>) -> Self {
+        self.excluded_link_ids = excluded;
+        self
+    }
+
+    /// Read-only access to the sibling-pinned exclusion set. The peppylib
+    /// `Subscription` wrapper clones this once at construction; the wire
+    /// adapter ignores it (the filter runs above the adapter).
+    pub fn excluded_link_ids(&self) -> &[String] {
+        &self.excluded_link_ids
     }
 }
 
 // ─── Services ────────────────────────────────────────────────────────────────
 
-/// Caller-side addressing for a service. `to_core_node` / `to_instance_id`
+/// Caller-side addressing for a service. `target_core_node` / `target_instance_id`
 /// are `None` for broadcast (translated to the protocol's `_any_` marker).
 /// `to_link_id` `None` means "any link_id" (wildcard at the wire slot), used
 /// by consumers with `from_any: true` on the dependency.
+///
+/// `excluded_link_ids` is the set of producer link_ids the consumer's
+/// sibling pinned `depends_on` entries already claim. It is serialized as
+/// the query attachment so the producer's `choose_link_id` can skip
+/// first-bound entries in this set, ensuring a from_any caller doesn't
+/// silently alias a pinned sibling's request. Falls back to first-bound if
+/// every bound link_id is excluded (keeps the call reachable). Empty when
+/// no siblings are registered for this `(name, tag)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireSender {
     pub(crate) bound_core_node: Segment,
     pub(crate) as_instance_id: Segment,
-    pub(crate) to_core_node: Option<Segment>,
-    pub(crate) to_instance_id: Option<Segment>,
+    pub(crate) target_core_node: Option<Segment>,
+    pub(crate) target_instance_id: Option<Segment>,
     pub(crate) to_target: SenderTarget,
     pub(crate) to_link_id: Option<Segment>,
     pub(crate) to_service_name: Segment,
     pub(crate) kind: ServiceKind,
+    pub(crate) excluded_link_ids: Vec<Segment>,
 }
 
 impl ServiceWireSender {
@@ -456,8 +491,8 @@ impl ServiceWireSender {
     pub fn new(
         bound_core_node: &str,
         as_instance_id: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
         to_target: SenderTarget,
         to_link_id: Option<&str>,
         to_service_name: &str,
@@ -466,21 +501,37 @@ impl ServiceWireSender {
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
-            to_core_node: to_core_node.map(Segment::try_from).transpose()?,
-            to_instance_id: to_instance_id.map(Segment::try_from).transpose()?,
+            target_core_node: target_core_node.map(Segment::try_from).transpose()?,
+            target_instance_id: target_instance_id.map(Segment::try_from).transpose()?,
             to_target,
             to_link_id: to_link_id.map(Segment::try_link_id).transpose()?,
             to_service_name: Segment::try_from(to_service_name)?,
             kind,
+            excluded_link_ids: Vec::new(),
         })
+    }
+
+    /// Replaces the sibling-pinned exclusion set. Peppylib's `poll` looks up
+    /// the set on `MessengerHandle` when `to_link_id` is `None` and a sibling
+    /// pinned dependency is registered for the same `(name, tag)`; pinned
+    /// callers leave it empty. Each entry is validated as a link_id segment
+    /// (rejects empty / `/` / `*` / `**`) so degenerate exclusions can't
+    /// reach the wire.
+    pub fn with_excluded_link_ids(mut self, excluded: &[String]) -> crate::error::Result<Self> {
+        let validated: Vec<Segment> = excluded
+            .iter()
+            .map(|s| Segment::try_link_id(s))
+            .collect::<Result<_, _>>()?;
+        self.excluded_link_ids = validated;
+        Ok(self)
     }
 
     pub fn to_service_name(&self) -> &str {
         &self.to_service_name
     }
 
-    pub fn to_instance_id(&self) -> Option<&str> {
-        self.to_instance_id.as_deref()
+    pub fn target_instance_id(&self) -> Option<&str> {
+        self.target_instance_id.as_deref()
     }
 }
 
@@ -539,15 +590,22 @@ impl ServiceWireReceiver {
 /// as derived [`ServiceWireSender`]s with the appropriate [`ServiceKind`].
 /// Feedback subscription is built per `goal_id` by the transport adapter.
 /// `to_link_id` `None` means "any link_id" (wildcard).
+///
+/// `excluded_link_ids` is propagated into every derived
+/// [`ServiceWireSender`] (goal / cancel / result) so each sub-service's
+/// query attachment carries the same exclusion set — keeping the producer's
+/// link_id claim consistent across the three sub-services for a single
+/// goal_id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionWireSender {
     pub(crate) as_core_node: Segment,
     pub(crate) as_instance_id: Segment,
-    pub(crate) to_core_node: Option<Segment>,
-    pub(crate) to_instance_id: Option<Segment>,
+    pub(crate) target_core_node: Option<Segment>,
+    pub(crate) target_instance_id: Option<Segment>,
     pub(crate) to_target: SenderTarget,
     pub(crate) to_link_id: Option<Segment>,
     pub(crate) to_action_name: Segment,
+    pub(crate) excluded_link_ids: Vec<Segment>,
 }
 
 impl ActionWireSender {
@@ -555,8 +613,8 @@ impl ActionWireSender {
     pub fn new(
         as_core_node: &str,
         as_instance_id: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
         to_target: SenderTarget,
         to_link_id: Option<&str>,
         to_action_name: &str,
@@ -564,12 +622,26 @@ impl ActionWireSender {
         Ok(Self {
             as_core_node: Segment::try_from(as_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
-            to_core_node: to_core_node.map(Segment::try_from).transpose()?,
-            to_instance_id: to_instance_id.map(Segment::try_from).transpose()?,
+            target_core_node: target_core_node.map(Segment::try_from).transpose()?,
+            target_instance_id: target_instance_id.map(Segment::try_from).transpose()?,
             to_target,
             to_link_id: to_link_id.map(Segment::try_link_id).transpose()?,
             to_action_name: Segment::try_from(to_action_name)?,
+            excluded_link_ids: Vec::new(),
         })
+    }
+
+    /// Replaces the sibling-pinned exclusion set. See
+    /// [`ServiceWireSender::with_excluded_link_ids`] — the set propagates
+    /// into each derived sub-service so goal / cancel / result agree on the
+    /// producer link_id claim.
+    pub fn with_excluded_link_ids(mut self, excluded: &[String]) -> crate::error::Result<Self> {
+        let validated: Vec<Segment> = excluded
+            .iter()
+            .map(|s| Segment::try_link_id(s))
+            .collect::<Result<_, _>>()?;
+        self.excluded_link_ids = validated;
+        Ok(self)
     }
 
     pub fn goal_service(&self) -> ServiceWireSender {
@@ -588,16 +660,38 @@ impl ActionWireSender {
         &self.to_action_name
     }
 
+    pub fn target_core_node(&self) -> Option<&str> {
+        self.target_core_node.as_deref()
+    }
+
+    pub fn target_instance_id(&self) -> Option<&str> {
+        self.target_instance_id.as_deref()
+    }
+
+    /// Returns a clone with `target_core_node` and `target_instance_id`
+    /// overwritten by the given values. Used by `ActionMessenger::send_goal`
+    /// to latch the stored sender to the responding producer after the first
+    /// `goal_response` arrives, so cancel / result / feedback all target the
+    /// winner instead of fanning out to every producer that received the
+    /// wildcard goal.
+    pub fn pinned_to(&self, core_node: &str, instance_id: &str) -> crate::error::Result<Self> {
+        let mut out = self.clone();
+        out.target_core_node = Some(Segment::try_from(core_node)?);
+        out.target_instance_id = Some(Segment::try_from(instance_id)?);
+        Ok(out)
+    }
+
     fn action_service(&self, kind: ServiceKind) -> ServiceWireSender {
         ServiceWireSender {
             bound_core_node: self.as_core_node.clone(),
             as_instance_id: self.as_instance_id.clone(),
-            to_core_node: self.to_core_node.clone(),
-            to_instance_id: self.to_instance_id.clone(),
+            target_core_node: self.target_core_node.clone(),
+            target_instance_id: self.target_instance_id.clone(),
             to_target: self.to_target.clone(),
             to_link_id: self.to_link_id.clone(),
             to_service_name: self.to_action_name.clone(),
             kind,
+            excluded_link_ids: self.excluded_link_ids.clone(),
         }
     }
 }

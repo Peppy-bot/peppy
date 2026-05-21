@@ -283,7 +283,7 @@ impl ServiceMessenger {
     /// specific producer link_id, used when a `depends_on` entry declares
     /// a link_id.
     ///
-    /// If `to_instance_id` is `None`, this call returns with the first
+    /// If `target_instance_id` is `None`, this call returns with the first
     /// service instance that responds. `to_target` must match the
     /// [`SenderTarget`] the responder used in [`Self::listen`].
     #[allow(clippy::too_many_arguments)]
@@ -294,21 +294,32 @@ impl ServiceMessenger {
         to_target: SenderTarget,
         to_link_id: Option<&str>,
         to_service_name: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
+        // A from_any caller (`to_link_id: None`) may need to skip producer
+        // link_ids already claimed by a sibling pinned `depends_on` entry.
+        // The set is registered on the MessengerHandle at node bootstrap
+        // and serialized as a query attachment on the wire — the producer's
+        // `choose_link_id` honors it when dispatching to a bound handler.
+        let excluded = if to_link_id.is_none() {
+            messenger.excluded_link_ids_for(to_target.name(), to_target.tag())
+        } else {
+            Vec::new()
+        };
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
-            to_core_node,
-            to_instance_id,
+            target_core_node,
+            target_instance_id,
             to_target,
             to_link_id,
             to_service_name,
             ServiceKind::Service,
-        )?;
+        )?
+        .with_excluded_link_ids(&excluded)?;
         messenger
             .poll_service(&sender, request_payload, response_timeout)
             .await
@@ -327,8 +338,8 @@ impl ServiceMessenger {
         to_target: SenderTarget,
         to_link_id: Option<&str>,
         to_service_name: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
     ) -> Result<bool> {
         match Self::poll(
             messenger,
@@ -337,8 +348,8 @@ impl ServiceMessenger {
             to_target,
             to_link_id,
             to_service_name,
-            to_core_node,
-            to_instance_id,
+            target_core_node,
+            target_instance_id,
             Payload::from_static(SERVICE_PROBE_PAYLOAD),
             PROBE_TIMEOUT,
         )

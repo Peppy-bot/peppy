@@ -344,9 +344,19 @@ impl MessengerBackend for ZenohAdapter {
         // publish a multi-link `emit` produces and must drop secondaries —
         // see the topic-attachment block in `wire::zenoh_format`. Pinned
         // subscribers ignore the attachment because their keyexpr already
-        // selects a single publish per emit, so this flag is only set for
-        // the wildcard case.
-        let drop_secondary = recv.from_link_id.is_none();
+        // selects a single publish per emit.
+        //
+        // The exclusion bypass: when the consumer has registered a
+        // sibling-pinned set, peppylib filters by `link_id()` above the
+        // adapter (the primary may be excluded and the secondary may be
+        // the one to keep). Dropping secondaries here would silence the
+        // only acceptable publish in that case. The peppylib filter still
+        // dedupes — every publish in the emit either lands in the
+        // exclusion set (dropped) or doesn't, and at most one bound
+        // link_id can be "not in the excluded set" per consumer manifest
+        // by construction (the sibling pinned dependencies claim all the
+        // others).
+        let drop_secondary = recv.from_link_id.is_none() && recv.excluded_link_ids.is_empty();
         self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }
@@ -412,16 +422,25 @@ impl MessengerBackend for ZenohAdapter {
             .as_ref()
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
         let selector = ZenohWireFormat::service_get_selector(sender);
+        let attachment = ZenohWireFormat::service_get_selector_attachment(sender);
 
         let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
 
-        let replies = session
+        // Only attach the exclusion set when non-empty. An empty attachment
+        // would round-trip but signals nothing — keep the wire silent so
+        // tcpdump / zenoh-introspection of single-pin / no-sibling consumers
+        // looks identical to today's traffic.
+        let mut get_builder = session
             .get(&selector)
             .payload(payload.into_zbytes())
             .target(zenoh::query::QueryTarget::All)
             .consolidation(zenoh::query::ConsolidationMode::None)
             .accept_replies(zenoh::query::ReplyKeyExpr::Any)
-            .timeout(timeout)
+            .timeout(timeout);
+        if !attachment.is_empty() {
+            get_builder = get_builder.attachment(attachment.to_vec());
+        }
+        let replies = get_builder
             .await
             .map_err(|e| Error::BackendError(e.to_string()))?;
 
@@ -666,7 +685,12 @@ async fn handle_queryable(
             }
         };
 
-        let parsed = match ZenohWireFormat::parse_inbound_query(&recv, query.key_expr().as_str()) {
+        let attachment_bytes = query.attachment().map(|z| z.to_bytes()).unwrap_or_default();
+        let parsed = match ZenohWireFormat::parse_inbound_query(
+            &recv,
+            query.key_expr().as_str(),
+            attachment_bytes.as_ref(),
+        ) {
             Ok(p) => p,
             Err(err) => {
                 tracing::warn!(

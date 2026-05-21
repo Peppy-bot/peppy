@@ -748,8 +748,17 @@ pub fn build_consumed_action(
     let has_result_response = result_response_format.is_some();
 
     builder.add_import("import peppylib");
-    builder.add_import("from typing import Optional");
     builder.add_import("from typing import Self");
+    // `target_instance_id` is exposed to fire_goal callers only when the
+    // dependency is wildcard (`from_any: true`). Pinned deps route to
+    // exactly one producer via the link_id literal.
+    let expose_target_instance_id = matches!(
+        dependency.link_id,
+        crate::generator::types::WireLinkId::Wildcard
+    );
+    if expose_target_instance_id {
+        builder.add_import("from typing import Optional");
+    }
     builder.blank_line();
 
     builder.line("class ActionHandle:");
@@ -757,10 +766,15 @@ pub fn build_consumed_action(
 
     // fire_goal @classmethod
     builder.line("@classmethod");
-    if has_goal_request {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None) -> Self:");
+    let target_instance_id_param = if expose_target_instance_id {
+        ", target_instance_id: Optional[str] = None"
     } else {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile, to_core_node: Optional[str] = None, to_instance_id: Optional[str] = None) -> Self:");
+        ""
+    };
+    if has_goal_request {
+        builder.line(&format!("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile{target_instance_id_param}) -> Self:"));
+    } else {
+        builder.line(&format!("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile{target_instance_id_param}) -> Self:"));
     }
     builder.indent();
 
@@ -798,8 +812,12 @@ pub fn build_consumed_action(
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{send_goal_target_expr},"));
     builder.line("TARGET_ACTION_NAME,");
-    builder.line("to_core_node,");
-    builder.line("to_instance_id,");
+    builder.line("None,");
+    if expose_target_instance_id {
+        builder.line("target_instance_id,");
+    } else {
+        builder.line("None,");
+    }
     builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");

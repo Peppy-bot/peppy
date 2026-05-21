@@ -68,10 +68,13 @@ pub struct MockSubscription {
 pub type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<MockSubscription>>>>;
 
 /// One in-flight query routed from a `get_keyexpr` caller to a queryable
-/// whose declared keyexpr intersects the caller's selector.
+/// whose declared keyexpr intersects the caller's selector. `attachment`
+/// mirrors the Zenoh query attachment so the in-process matcher honors the
+/// same sibling-pinned exclusion semantic as the live transport.
 pub(crate) struct MockQuery {
     selector_keyexpr: String,
     payload: Payload,
+    attachment: bytes::Bytes,
     reply_tx: mpsc::Sender<TopicMessage>,
 }
 
@@ -131,8 +134,10 @@ impl MessengerBackend for MockAdapter {
         // Mirrors the Zenoh adapter: wildcard-link_id subscribers drop the
         // secondary publishes a multi-link `emit` produces; pinned
         // subscribers don't, since their keyexpr already selects a single
-        // publish per emit.
-        let drop_secondary = recv.from_link_id.is_none();
+        // publish per emit. The sibling-exclusion path bypasses the
+        // secondary drop and defers to peppylib's `link_id()` filter — see
+        // the matching comment in [`super::zenoh::ZenohAdapter::subscribe_topic`].
+        let drop_secondary = recv.from_link_id.is_none() && recv.excluded_link_ids.is_empty();
         self.subscribe_keyexpr(&ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }
@@ -189,6 +194,7 @@ impl MessengerBackend for MockAdapter {
         }
 
         let selector = ZenohWireFormat::service_get_selector(sender);
+        let attachment = ZenohWireFormat::service_get_selector_attachment(sender);
         let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
 
         let (reply_tx, mut reply_rx) =
@@ -209,6 +215,7 @@ impl MessengerBackend for MockAdapter {
             let q = MockQuery {
                 selector_keyexpr: selector.clone(),
                 payload: payload.clone(),
+                attachment: attachment.clone(),
                 reply_tx: reply_tx.clone(),
             };
             let _ = tx.send(q).await;
@@ -494,8 +501,11 @@ async fn handle_mock_queryable(
     tx: mpsc::Sender<IncomingRequest>,
 ) {
     while let Some(mock_query) = query_rx.recv().await {
-        let parsed = match ZenohWireFormat::parse_inbound_query(&recv, &mock_query.selector_keyexpr)
-        {
+        let parsed = match ZenohWireFormat::parse_inbound_query(
+            &recv,
+            &mock_query.selector_keyexpr,
+            mock_query.attachment.as_ref(),
+        ) {
             Ok(p) => p,
             Err(err) => {
                 tracing::warn!(
@@ -623,7 +633,7 @@ mod tests {
     fn test_key_exprs_intersect_service_patterns() {
         // Real patterns from the service messenger
         // Subscription pattern: {bound_core_node}/*/{as_instance_id}/*/{service_root}/request/**
-        // Request topic: {to_core_node}/{caller_core_node}/{to_instance}/{caller_instance}/{service_root}/request/{request_id}
+        // Request topic: {target_core_node}/{caller_core_node}/{to_instance}/{caller_instance}/{service_root}/request/{request_id}
 
         // Pattern 1: Specific core node, specific instance
         // Service bound to core node "listener_core_node" with instance "listener_instance"

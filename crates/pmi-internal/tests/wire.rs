@@ -221,12 +221,15 @@ fn service_receiver() -> ServiceWireReceiver {
     .expect("valid wire fields")
 }
 
-fn service_sender(to_core_node: Option<&str>, to_instance_id: Option<&str>) -> ServiceWireSender {
+fn service_sender(
+    target_core_node: Option<&str>,
+    target_instance_id: Option<&str>,
+) -> ServiceWireSender {
     ServiceWireSender::new(
         "client_core",
         "client_inst",
-        to_core_node,
-        to_instance_id,
+        target_core_node,
+        target_instance_id,
         test_node_target("robot_arm"),
         None,
         "ping",

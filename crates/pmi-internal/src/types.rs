@@ -511,6 +511,7 @@ pub struct TopicMessage {
     key_expr: String,
     instance_id: String,
     core_node: String,
+    link_id: String,
     payload: Payload,
 }
 
@@ -521,6 +522,7 @@ impl TopicMessage {
             key_expr: key_expr.to_string(),
             instance_id: parsed.instance_id,
             core_node: parsed.core_node,
+            link_id: parsed.link_id,
             payload: payload.into(),
         })
     }
@@ -530,13 +532,14 @@ impl TopicMessage {
     /// request path, where the caller's `core_node` and `instance_id` come
     /// out of the Zenoh queryable selector and round-tripping them through
     /// a synthetic keyexpr only to re-parse would be wasted work. The
-    /// internal `key_expr` field is left empty since no consumer reads it
-    /// for this path.
+    /// internal `key_expr` and `link_id` fields are left empty since no
+    /// consumer reads them for this path.
     pub fn from_parts(core_node: String, instance_id: String, payload: impl Into<Payload>) -> Self {
         Self {
             key_expr: String::new(),
             instance_id,
             core_node,
+            link_id: String::new(),
             payload: payload.into(),
         }
     }
@@ -552,6 +555,16 @@ impl TopicMessage {
 
     pub fn core_node(&self) -> &str {
         &self.core_node
+    }
+
+    /// Producer's bound link_id, parsed out of the inbound keyexpr at
+    /// segment 8 of the topic publish format. Used by the consumer-side
+    /// filter that drops messages whose producer link_id is already claimed
+    /// by a sibling pinned subscription on the same `(name, tag)`. Empty
+    /// when the message arrived via a non-topic path (e.g. service replies
+    /// constructed via [`Self::from_parts`]).
+    pub fn link_id(&self) -> &str {
+        &self.link_id
     }
 
     pub fn payload(&self) -> &Payload {

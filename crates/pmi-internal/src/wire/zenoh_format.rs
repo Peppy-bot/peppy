@@ -41,19 +41,32 @@ impl ZenohWireFormat {
     /// addressing. Inverse of [`Self::topic_publish`].
     ///
     /// The publish shape is
-    /// `*/{caller_core}/*/{caller_inst}/topic/{discriminator}/{name}/{tag}/{topic}`
-    /// — caller_core is segment index 1, caller_inst is segment index 3.
+    /// `*/{caller_core}/*/{caller_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{topic}`
+    /// — caller_core is segment index 1, caller_inst is segment index 3,
+    /// link_id is segment index 8. The link_id segment is surfaced so
+    /// consumer-side filters can drop messages whose producer link_id is
+    /// already claimed by a sibling pinned subscription.
     pub(crate) fn parse_topic_keyexpr(
         keyexpr: &str,
     ) -> Result<ParsedTopicKey, ZenohWireParseError> {
-        let mut segments = keyexpr.splitn(5, '/');
-        let _target_core = segments.next();
-        let core_node = extract_caller_segment(segments.next(), "caller_core_node")?;
-        let _target_instance = segments.next();
-        let instance_id = extract_caller_segment(segments.next(), "caller_instance_id")?;
+        let segments: Vec<&str> = keyexpr.split('/').collect();
+        let core_node = extract_caller_segment(segments.get(1).copied(), "caller_core_node")?;
+        let instance_id = extract_caller_segment(segments.get(3).copied(), "caller_instance_id")?;
+        // link_id is at index 8 in the topic publish format. It may be absent
+        // for non-topic keyexprs that share the caller-prefix shape (e.g.
+        // service reply keyexprs), in which case we leave it empty — the
+        // sibling-precedence filter only consults link_id for topic
+        // subscriptions, and an empty value never matches a pinned literal.
+        let link_id = segments
+            .get(8)
+            .copied()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+            .to_string();
         Ok(ParsedTopicKey {
             core_node,
             instance_id,
+            link_id,
         })
     }
 
@@ -135,8 +148,14 @@ impl ZenohWireFormat {
     pub(crate) fn service_get_selector(s: &ServiceWireSender) -> String {
         let link_id = s.to_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         let root = service_root(&s.to_target, link_id, &s.to_service_name, s.kind);
-        let target_core = s.to_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let target_inst = s.to_instance_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_core = s
+            .target_core_node
+            .as_deref()
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_inst = s
+            .target_instance_id
+            .as_deref()
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
         format!(
             "{target_core}/{}/{target_inst}/{}/{root}",
             s.bound_core_node, s.as_instance_id,
@@ -170,6 +189,7 @@ impl ZenohWireFormat {
     pub(crate) fn parse_inbound_query(
         receiver: &ServiceWireReceiver,
         query_keyexpr: &str,
+        attachment_bytes: &[u8],
     ) -> Result<ParsedInboundQuery, ZenohWireParseError> {
         let mut parts = query_keyexpr.split('/').filter(|s| !s.is_empty());
 
@@ -178,7 +198,7 @@ impl ZenohWireFormat {
         // on it via Zenoh's matcher.
         let _to_core = parts
             .next()
-            .ok_or(ZenohWireParseError::MissingSegment("to_core_node"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("target_core_node"))?;
         let caller_core = parts
             .next()
             .ok_or(ZenohWireParseError::MissingSegment("caller_core_node"))?
@@ -211,11 +231,31 @@ impl ZenohWireFormat {
             .ok_or(ZenohWireParseError::MissingSegment("link_id"))?
             .to_string();
 
+        let attachment = ServiceQueryAttachment::decode(attachment_bytes);
+
         Ok(ParsedInboundQuery {
             caller_core,
             caller_inst,
             link_id,
+            excluded_link_ids: attachment.excluded_link_ids,
         })
+    }
+
+    /// Caller-side attachment bytes for the consumer's "excluded link_ids"
+    /// set. The producer's [`ParsedInboundQuery::choose_link_id`] consults
+    /// the decoded set when claiming a bound link_id for a wildcard
+    /// selector. An empty set produces empty bytes, preserving today's
+    /// first-bound dispatch on the producer side.
+    pub(crate) fn service_get_selector_attachment(s: &ServiceWireSender) -> bytes::Bytes {
+        let excluded: Vec<String> = s
+            .excluded_link_ids
+            .iter()
+            .map(|seg| seg.as_str().to_string())
+            .collect();
+        ServiceQueryAttachment {
+            excluded_link_ids: excluded,
+        }
+        .encode()
     }
 
     // ─── Actions ──────────────────────────────────────────────────────────
@@ -245,8 +285,14 @@ impl ZenohWireFormat {
     pub(crate) fn action_feedback_subscribe(s: &ActionWireSender, goal_id: &str) -> String {
         let link_id = s.to_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         let action_root = action_root(&s.to_target, link_id, &s.to_action_name);
-        let target_core = s.to_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let target_inst_segment = s.to_instance_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_core = s
+            .target_core_node
+            .as_deref()
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_inst_segment = s
+            .target_instance_id
+            .as_deref()
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
         format!(
             "{}/{target_core}/{}/{target_inst_segment}/{action_root}/feedback/{target_inst_segment}/{goal_id}",
             s.as_core_node, s.as_instance_id,
@@ -303,10 +349,16 @@ fn action_root(target: &SenderTarget, link_id: &str, action: &str) -> String {
 /// Result of parsing the publisher half of a topic keyexpr — extracts the
 /// caller's `core_node` and `instance_id` so the adapter can build a
 /// [`crate::types::TopicMessage`] without re-parsing the wire string.
+/// `link_id` is the producer's bound link_id (segment 8 of the publish
+/// shape), surfaced so wildcard subscribers can drop messages whose link_id
+/// is claimed by a sibling pinned subscription on the same `(name, tag)`.
+/// Empty when the source keyexpr isn't a topic publish (e.g. service reply
+/// keyexprs that share the caller-prefix shape).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedTopicKey {
     pub(crate) core_node: String,
     pub(crate) instance_id: String,
+    pub(crate) link_id: String,
 }
 
 /// Topic-publish attachment marker. See the comment block in the topic
@@ -321,7 +373,11 @@ pub(crate) struct TopicAttachment {
 
 impl TopicAttachment {
     pub(crate) fn encode(&self) -> bytes::Bytes {
-        bytes::Bytes::from_static(if self.is_primary { &[0x01u8] } else { &[0x00u8] })
+        bytes::Bytes::from_static(if self.is_primary {
+            &[0x01u8]
+        } else {
+            &[0x00u8]
+        })
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Self {
@@ -330,11 +386,101 @@ impl TopicAttachment {
     }
 }
 
+/// Service / action query attachment carrying the consumer's "excluded
+/// link_ids" set — the producer link_ids a sibling pinned dependency on
+/// the same `(name, tag)` has already claimed. The producer's
+/// [`ParsedInboundQuery::choose_link_id`] skips first-bound entries in this
+/// set so a `from_any: true` consumer doesn't silently alias a pinned
+/// sibling's request.
+///
+/// Wire layout:
+/// - byte 0: magic + version, `0x01`. A missing or empty attachment
+///   decodes to an empty set, preserving today's "no exclusion" behavior
+///   for producers that talk to old consumers (or for consumer call sites
+///   that haven't registered manifest siblings).
+/// - byte 1: count `N` (max 255 — far above any realistic sibling count).
+/// - then `N` entries, each `(u8 len)(len bytes utf-8)`.
+///
+/// Decoding is lenient on the trailing bytes (truncated input returns an
+/// empty set rather than an error) because the attachment is an
+/// optimization, not a correctness boundary — the absence of an exclusion
+/// set falls back to today's first-bound dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ServiceQueryAttachment {
+    pub(crate) excluded_link_ids: Vec<String>,
+}
+
+impl ServiceQueryAttachment {
+    pub(crate) const MAGIC_V1: u8 = 0x01;
+
+    pub(crate) fn encode(&self) -> bytes::Bytes {
+        // Empty set: emit an empty attachment so producers and intermediate
+        // proxies don't allocate / decode a degenerate header. Receivers
+        // that decode an empty byte slice get back an empty set.
+        if self.excluded_link_ids.is_empty() {
+            return bytes::Bytes::new();
+        }
+        let count = self.excluded_link_ids.len().min(u8::MAX as usize);
+        let mut buf = Vec::with_capacity(
+            2 + self
+                .excluded_link_ids
+                .iter()
+                .map(|s| 1 + s.len())
+                .sum::<usize>(),
+        );
+        buf.push(Self::MAGIC_V1);
+        buf.push(count as u8);
+        for s in self.excluded_link_ids.iter().take(count) {
+            let len = s.len().min(u8::MAX as usize) as u8;
+            buf.push(len);
+            buf.extend_from_slice(&s.as_bytes()[..len as usize]);
+        }
+        bytes::Bytes::from(buf)
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Self {
+        if bytes.is_empty() {
+            return Self::default();
+        }
+        if bytes[0] != Self::MAGIC_V1 {
+            return Self::default();
+        }
+        let Some(&count) = bytes.get(1) else {
+            return Self::default();
+        };
+        let mut excluded = Vec::with_capacity(count as usize);
+        let mut cursor = 2usize;
+        for _ in 0..count {
+            let Some(&len_byte) = bytes.get(cursor) else {
+                break;
+            };
+            cursor += 1;
+            let len = len_byte as usize;
+            if cursor + len > bytes.len() {
+                break;
+            }
+            match std::str::from_utf8(&bytes[cursor..cursor + len]) {
+                Ok(s) => excluded.push(s.to_string()),
+                Err(_) => break,
+            }
+            cursor += len;
+        }
+        Self {
+            excluded_link_ids: excluded,
+        }
+    }
+}
+
 /// Result of parsing an inbound queryable selector. Carries the
 /// caller-identity slots plus the link_id slot from the selector — the
 /// producer's single queryable declares `*` at the link_id slot, so the
 /// adapter inspects this field to decide which of its bound link_ids to
 /// claim for the inbound request via [`Self::choose_link_id`].
+///
+/// `excluded_link_ids` is the consumer's "claimed by a sibling pinned
+/// dependency" set, decoded from the query attachment. The producer's
+/// `choose_link_id` skips first-bound entries in this set so a from_any
+/// consumer doesn't silently alias a pinned sibling's request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedInboundQuery {
     pub(crate) caller_core: String,
@@ -343,16 +489,26 @@ pub(crate) struct ParsedInboundQuery {
     /// single-chunk wildcard `*` (a `from_any` consumer) or a concrete
     /// literal (a pinned consumer).
     pub(crate) link_id: String,
+    /// Link_ids the consumer's sibling pinned dependencies already claim.
+    /// Empty when the consumer didn't attach an exclusion set (single
+    /// pinned / from_any without siblings, or old-shape callers).
+    pub(crate) excluded_link_ids: Vec<String>,
 }
 
 impl ParsedInboundQuery {
     /// Resolves the link_id the producer should bind this request to.
     ///
-    /// - Wildcard selector (`from_any` consumer): claims `bound_link_ids[0]`.
-    ///   First-bound is deterministic and keeps `ctx.link_id()` stable across
-    ///   an action's goal / cancel / result sub-services, which dispatch
+    /// - Wildcard selector (`from_any` consumer): claims the first bound
+    ///   link_id NOT in `excluded_link_ids`. If every bound link_id is
+    ///   excluded, falls back to `bound_link_ids[0]` so the call doesn't
+    ///   fail purely because of the consumer's sibling claims — first-bound
+    ///   is the historical contract that keeps the call reachable. The
+    ///   non-excluded preference keeps `ctx.link_id()` stable across an
+    ///   action's goal / cancel / result sub-services, which dispatch
     ///   independently but must agree on the link_id for a given goal_id.
-    /// - Literal selector matching a bound link_id: claims that literal.
+    /// - Literal selector matching a bound link_id: claims that literal
+    ///   (the exclusion set is ignored — a pinned caller asked specifically
+    ///   for this link_id).
     /// - Literal selector NOT in the bound set: returns `None`, signaling
     ///   the adapter to drop the query without replying. Unreachable in
     ///   practice because Zenoh's keyexpr matcher already filtered the
@@ -360,6 +516,12 @@ impl ParsedInboundQuery {
     ///   guard against mid-rollout schema skew.
     pub(crate) fn choose_link_id<'a>(&self, bound_link_ids: &'a [String]) -> Option<&'a str> {
         if self.link_id == SINGLE_CHUNK_WILDCARD {
+            if let Some(found) = bound_link_ids
+                .iter()
+                .find(|b| !self.excluded_link_ids.iter().any(|e| e == b.as_str()))
+            {
+                return Some(found.as_str());
+            }
             return bound_link_ids.first().map(String::as_str);
         }
         bound_link_ids

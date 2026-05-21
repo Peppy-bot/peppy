@@ -87,6 +87,84 @@ pub fn add_parameters_to_lib(
     Ok(())
 }
 
+/// Writes `src/consumer_dependencies.rs` carrying the precomputed
+/// `(producer_name, producer_tag) → pinned_link_ids` map and an
+/// `ensure_registered(&MessengerHandle)` helper that installs it on the
+/// first call. Each generated consumed-interface function invokes
+/// `ensure_registered` before its `subscribe` / `poll` / `send_goal` so the
+/// runtime sibling-precedence lookup is always seeded.
+///
+/// The helper uses a `OnceLock` per process — registration happens at most
+/// once. If the user constructs multiple `MessengerHandle`s in one process
+/// (an unusual pattern), only the first observes the registration. The
+/// generated map is the same regardless of which handle it lands on, so
+/// per-handle re-registration would be redundant.
+pub fn add_consumer_dependencies_to_lib(
+    lib_path: impl AsRef<Path>,
+    pinned_siblings_map: &std::collections::HashMap<(String, String), Vec<String>>,
+) -> Result<()> {
+    let lib_path = lib_path.as_ref();
+    let src_dir = lib_path.join("src");
+    fs::create_dir_all(&src_dir)?;
+
+    let mut entries: Vec<(&(String, String), &Vec<String>)> = pinned_siblings_map.iter().collect();
+    // Sort for deterministic output — fingerprint stability depends on it.
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+
+    let inserts: Vec<String> = entries
+        .iter()
+        .map(|((name, tag), link_ids)| {
+            let lits: Vec<String> = link_ids
+                .iter()
+                .map(|s| format!("{:?}.to_string()", s))
+                .collect();
+            format!(
+                "        map.insert(\n            ({:?}.to_string(), {:?}.to_string()),\n            vec![{}],\n        );",
+                name,
+                tag,
+                lits.join(", ")
+            )
+        })
+        .collect();
+
+    let body = if inserts.is_empty() {
+        "    // No pinned-sibling dependencies declared in this node's manifest.\n".to_string()
+    } else {
+        format!(
+            "    let mut map: std::collections::HashMap<(String, String), Vec<String>> =\n        std::collections::HashMap::new();\n{}\n    messenger.register_consumer_dependencies(map);\n",
+            inserts.join("\n")
+        )
+    };
+
+    let code = format!(
+        "//! Auto-generated. Installs the consumer's `depends_on` pinned-sibling\n\
+         //! map on the messenger so `from_any: true` dependencies skip producer\n\
+         //! link_ids already claimed by a sibling pinned entry on the same\n\
+         //! `(producer_name, producer_tag)`.\n\
+         \n\
+         use std::sync::OnceLock;\n\
+         use peppylib::MessengerHandle;\n\
+         \n\
+         /// Idempotent registration entry point. Called by every generated\n\
+         /// consumed-interface function before it talks to the messenger.\n\
+         /// The `OnceLock` ensures the registration happens exactly once per\n\
+         /// process even when many consumed interfaces are exercised.\n\
+         pub fn ensure_registered(messenger: &MessengerHandle) {{\n\
+             static REGISTERED: OnceLock<()> = OnceLock::new();\n\
+             REGISTERED.get_or_init(|| {{\n\
+                 register(messenger);\n\
+             }});\n\
+         }}\n\
+         \n\
+         #[allow(unused_variables)]\n\
+         fn register(messenger: &MessengerHandle) {{\n\
+         {body}}}\n",
+    );
+
+    fs::write(src_dir.join("consumer_dependencies.rs"), code)?;
+    Ok(())
+}
+
 pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Path) -> Result<()> {
     let src_dir = crate_root.join("src");
     if schemas.is_empty() {

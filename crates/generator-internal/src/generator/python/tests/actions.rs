@@ -684,7 +684,10 @@ fn consumed_action() {
     // ActionHandle class
     assert_contains_all(&rendered, &["class ActionHandle:"]);
 
-    // fire_goal @classmethod with typed signature, serialization, and ActionHandle construction
+    // fire_goal @classmethod with typed signature, serialization, and
+    // ActionHandle construction. The fixture defaults to
+    // `WireLinkId::Wildcard`, so `target_instance_id` is exposed;
+    // `target_core_node` is never exposed in the generated API.
     assert_contains_all(
         &rendered,
         &[
@@ -694,8 +697,7 @@ fn consumed_action() {
             "request: GoalRequest",
             "timeout: float",
             "feedback_qos: peppylib.QoSProfile",
-            "to_core_node: Optional[str] = None",
-            "to_instance_id: Optional[str] = None",
+            "target_instance_id: Optional[str] = None",
             ") -> Self:",
             "user_goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
@@ -707,6 +709,10 @@ fn consumed_action() {
             "handle.data = goal_response_data",
             "return handle",
         ],
+    );
+    assert!(
+        !rendered.contains("target_core_node"),
+        "target_core_node should not appear in the generated API; got:\n{rendered}"
     );
 
     // cancel_goal as self method with deserialization

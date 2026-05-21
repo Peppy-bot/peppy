@@ -89,7 +89,7 @@ const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 "#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_no_to_instance_id() {
+async fn services_communication_no_target_instance_id() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -146,7 +146,7 @@ from peppygen.consumed_services import uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)
-    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0, None, None)
+    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0, None)
     error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
     print(
         f"enable_camera result: service_id={response.instance_id} enabled={response.data.enabled} error={error_msg}",
@@ -254,7 +254,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn exposer first so it's ready to handle requests
@@ -455,7 +455,7 @@ from peppygen import NodeBuilder
 from peppygen.consumed_services import uvc_camera_get_system_status
 
 async def poll_service(node_runner):
-    response = await uvc_camera_get_system_status.poll(node_runner, 5.0, None, None)
+    response = await uvc_camera_get_system_status.poll(node_runner, 5.0, None)
     print(
         f"get_system_status result: service_id={response.instance_id} healthy={response.data.healthy}",
         flush=True,
@@ -548,7 +548,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn exposer first so it's ready to handle requests
@@ -690,7 +690,7 @@ if __name__ == "__main__":
 
 /// If there are multiple services of the same name and the consumer does not specify an instance_id, it's the first service that responds that connects with the consumer
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_multiple_exposed_instances_same_service_not_to_instance_id() {
+async fn services_communication_multiple_exposed_instances_same_service_not_target_instance_id() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -747,7 +747,7 @@ from peppygen.consumed_services import uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)
-    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0, None, None)
+    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0, None)
     error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
     print(
         f"enable_camera result: enabled={response.data.enabled} error={error_msg}",
@@ -913,7 +913,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn both exposers first so they're ready to handle requests

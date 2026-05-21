@@ -27,9 +27,9 @@ struct ServiceRoute<'a> {
     messenger: &'a MessengerHandle,
     bound_core_node: &'a str,
     as_instance_id: &'a str,
-    to_core_node: &'a str,
+    target_core_node: &'a str,
     /// Target of the service. For daemon-hosted core_node services this is
-    /// `SenderTarget::node(to_core_node, CORE_NODE_TAG)`. For per-instance
+    /// `SenderTarget::node(target_core_node, CORE_NODE_TAG)`. For per-instance
     /// services (e.g. `node_stop`) it carries the target node's name+tag.
     to_target: SenderTarget,
     service_name: &'a str,
@@ -42,8 +42,8 @@ struct GoalRoute<'a> {
     as_core_node: &'a str,
     as_instance_id: &'a str,
     action_name: &'a str,
-    to_core_node: Option<&'a str>,
-    to_instance_id: Option<&'a str>,
+    target_core_node: Option<&'a str>,
+    target_instance_id: Option<&'a str>,
 }
 
 async fn poll_core_node_service<Response>(
@@ -59,7 +59,7 @@ async fn poll_core_node_service<Response>(
         route.to_target,
         None,
         route.service_name,
-        Some(route.to_core_node),
+        Some(route.target_core_node),
         None,
         request_payload,
         response_timeout,
@@ -73,7 +73,7 @@ async fn send_core_node_goal(
     goal_payload: Payload,
     goal_timeout: Duration,
 ) -> Result<ActionGoalHandle> {
-    let to_core = route.to_core_node.unwrap_or(route.as_core_node);
+    let to_core = route.target_core_node.unwrap_or(route.as_core_node);
     ActionMessenger::send_goal(
         route.messenger,
         route.as_core_node,
@@ -81,8 +81,8 @@ async fn send_core_node_goal(
         SenderTarget::node(to_core, names::CORE_NODE_TAG)?,
         None,
         route.action_name,
-        route.to_core_node,
-        route.to_instance_id,
+        route.target_core_node,
+        route.target_instance_id,
         goal_payload,
         QoSProfile::default(),
         goal_timeout,
@@ -99,7 +99,7 @@ macro_rules! poll_service {
             messenger: &MessengerHandle,
             bound_core_node: &str,
             as_instance_id: &str,
-            to_core_node: &str,
+            target_core_node: &str,
             response_timeout: impl Into<Option<Duration>> + Send,
         ) -> Result<$resp> {
             poll_core_node_service(
@@ -107,8 +107,8 @@ macro_rules! poll_service {
                     messenger,
                     bound_core_node,
                     as_instance_id,
-                    to_core_node,
-                    to_target: SenderTarget::node(to_core_node, names::CORE_NODE_TAG)?,
+                    target_core_node,
+                    to_target: SenderTarget::node(target_core_node, names::CORE_NODE_TAG)?,
                     service_name: $service,
                 },
                 request.encode()?,
@@ -129,8 +129,8 @@ macro_rules! send_goal {
             messenger: &MessengerHandle,
             as_core_node: &str,
             as_instance_id: &str,
-            to_core_node: Option<&str>,
-            to_instance_id: Option<&str>,
+            target_core_node: Option<&str>,
+            target_instance_id: Option<&str>,
             goal_timeout: Duration,
         ) -> Result<ActionGoalHandle> {
             send_core_node_goal(
@@ -139,8 +139,8 @@ macro_rules! send_goal {
                     as_core_node,
                     as_instance_id,
                     action_name: $action,
-                    to_core_node,
-                    to_instance_id,
+                    target_core_node,
+                    target_instance_id,
                 },
                 goal.encode()?,
                 goal_timeout,
@@ -179,7 +179,7 @@ pub async fn poll_node_stop(
     bound_core_node: &str,
     as_instance_id: &str,
     to_target: SenderTarget,
-    to_core_node: &str,
+    target_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeStopResponse> {
     poll_core_node_service(
@@ -187,7 +187,7 @@ pub async fn poll_node_stop(
             messenger,
             bound_core_node,
             as_instance_id,
-            to_core_node,
+            target_core_node,
             to_target,
             service_name: names::NODE_STOP,
         },

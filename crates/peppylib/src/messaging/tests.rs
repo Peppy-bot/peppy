@@ -878,7 +878,7 @@ async fn service_communication_poll_wrong_node() {
                 test_node_target(listener_node_name),
                 None,
                 listener_service_name,
-                None,               // to_core_node
+                None,               // target_core_node
                 Some("wrong_node"), // Use a wrong instance_id here
                 request_payload.clone(),
                 Duration::from_secs(1),
@@ -1011,8 +1011,8 @@ async fn service_communication_poll_wrong_core_node() {
             test_node_target(listener_node_name),
             None,
             listener_service_name,
-            Some("wrong_core_node"), // to_core_node - wrong one!
-            None,                    // no specific to_instance_id
+            Some("wrong_core_node"), // target_core_node - wrong one!
+            None,                    // no specific target_instance_id
             request_payload.clone(),
             Duration::from_millis(200),
         )
@@ -3229,10 +3229,7 @@ async fn topic_emit_delivers_once_to_wildcard_subscriber() {
     assert!(
         second.is_err(),
         "wildcard subscriber must not receive a duplicate (got {:?})",
-        second
-            .ok()
-            .flatten()
-            .map(|m| m.payload().as_ref().to_vec())
+        second.ok().flatten().map(|m| m.payload().as_ref().to_vec())
     );
 
     // Pinned subscribers each still receive their one copy. This proves the
@@ -3250,6 +3247,498 @@ async fn topic_emit_delivers_once_to_wildcard_subscriber() {
         .expect("right subscriber should not time out")
         .expect("right subscriber should receive a message");
     assert_eq!(right.payload().as_ref(), b"frame-0");
+
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn topic_pinned_subscriber_claims_link_id_from_wildcard_sibling() {
+    // Regression for the `from_any` sibling-precedence bug. A consumer
+    // process subscribes to the same `(name, tag)` twice: once pinned to
+    // LINK_LEFT and once via a `from_link_id: None` wildcard with
+    // LINK_LEFT registered as a sibling-claimed link_id. The producer emits
+    // on both bound link_ids; we expect:
+    //   - the pinned subscriber receives the LINK_LEFT publish (and only
+    //     that one);
+    //   - the wildcard subscriber receives the LINK_RIGHT publish (the
+    //     one NOT claimed by the pinned sibling) and skips LINK_LEFT.
+    //
+    // Without the precedence filter the wildcard subscription would still
+    // receive both publishes (the existing primary/secondary attachment
+    // marker collapses N copies of one emit, but it doesn't coordinate
+    // across sibling subscriptions in the same consumer process).
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
+
+    let subscriber_handle = router.messenger().await;
+    // Register the sibling-pinned map before subscribing — the messenger
+    // looks it up at subscribe time when `from_link_id` is None.
+    let mut pinned_map = HashMap::new();
+    pinned_map.insert(
+        ("depth_camera".to_string(), "v1".to_string()),
+        vec![LINK_LEFT.to_string()],
+    );
+    subscriber_handle.register_consumer_dependencies(pinned_map);
+
+    let mut sub_pinned = TopicMessenger::subscribe(
+        &subscriber_handle,
+        "sub_core",
+        "sub_inst_pinned",
+        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
+        Some(LINK_LEFT),
+        "frames",
+        None,
+        None,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("pinned subscribe should succeed");
+    let mut sub_from_any = TopicMessenger::subscribe(
+        &subscriber_handle,
+        "sub_core",
+        "sub_inst_from_any",
+        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
+        None,
+        "frames",
+        None,
+        None,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("from_any subscribe should succeed");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let emitter_handle = router.messenger().await;
+    TopicMessenger::emit(
+        &emitter_handle,
+        "pub_core",
+        "pub_inst",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        &bound,
+        "frames",
+        QoSProfile::Reliable,
+        Payload::from_static(b"frame-0"),
+    )
+    .await
+    .expect("emit should succeed");
+
+    // Pinned subscriber: receives exactly one message and it's on LINK_LEFT.
+    let pinned_msg = tokio::time::timeout(Duration::from_secs(2), sub_pinned.on_next_message())
+        .await
+        .expect("pinned subscriber should not time out")
+        .expect("pinned subscriber should receive a message");
+    assert_eq!(pinned_msg.payload().as_ref(), b"frame-0");
+    assert_eq!(pinned_msg.link_id(), LINK_LEFT);
+    // No second delivery on the pinned axis (defensive — pinned keyexpr
+    // already filters to one publish per emit, but this also guards
+    // against future fan-out changes).
+    let pinned_dup =
+        tokio::time::timeout(Duration::from_millis(250), sub_pinned.on_next_message()).await;
+    assert!(
+        pinned_dup.is_err(),
+        "pinned subscriber must not receive a duplicate"
+    );
+
+    // From_any subscriber: receives exactly one message and it's on
+    // LINK_RIGHT — the LINK_LEFT publish is dropped because a sibling
+    // pinned subscription claims it.
+    let from_any_msg = tokio::time::timeout(Duration::from_secs(2), sub_from_any.on_next_message())
+        .await
+        .expect("from_any subscriber should not time out")
+        .expect("from_any subscriber should receive a message");
+    assert_eq!(from_any_msg.payload().as_ref(), b"frame-0");
+    assert_eq!(
+        from_any_msg.link_id(),
+        LINK_RIGHT,
+        "from_any must skip LINK_LEFT (claimed by pinned sibling) and surface LINK_RIGHT instead"
+    );
+    let from_any_dup =
+        tokio::time::timeout(Duration::from_millis(250), sub_from_any.on_next_message()).await;
+    assert!(
+        from_any_dup.is_err(),
+        "from_any subscriber must not also receive the pinned-sibling-claimed link_id"
+    );
+
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_pinned_consumer_claims_link_id_from_from_any_sibling() {
+    // The consumer process has a pinned `depends_on` entry for LINK_LEFT and
+    // a separate `from_any: true` entry on the same (name, tag). After
+    // registering the sibling map, a from_any poll must NOT route to the
+    // producer's LINK_LEFT handler — `choose_link_id` skips it on the
+    // producer side after decoding the consumer's query attachment, and
+    // claims LINK_RIGHT instead. The pinned poll behaves as today.
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
+    let server_handle = router.messenger().await;
+    let mut endpoint = ServiceMessenger::listen(
+        &server_handle,
+        "server_core",
+        "server_inst",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        &bound,
+        "start_recording",
+    )
+    .await
+    .expect("listen should succeed");
+
+    let observed_link_ids = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let observed_clone = Arc::clone(&observed_link_ids);
+    let server_task = tokio::spawn(async move {
+        for _ in 0..2 {
+            endpoint
+                .handle_next_request(|ctx| {
+                    let observed = Arc::clone(&observed_clone);
+                    let link_id = ctx.link_id().to_string();
+                    async move {
+                        observed.lock().await.push(link_id.clone());
+                        Ok(Payload::from(link_id.into_bytes()))
+                    }
+                })
+                .await
+                .expect("handle_next_request should succeed");
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = router.messenger().await;
+    // Register only AFTER the first pinned call so the test also exercises
+    // a registration that arrives between calls — the second call (from_any)
+    // must observe the registration.
+    let pinned_response = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core",
+        "pinned_caller",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        Some(LINK_LEFT),
+        "start_recording",
+        Some("server_core"),
+        Some("server_inst"),
+        Payload::from_static(b"go"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("pinned poll should succeed");
+    assert_eq!(
+        pinned_response.payload().as_ref(),
+        LINK_LEFT.as_bytes(),
+        "pinned caller should reach LINK_LEFT"
+    );
+
+    let mut pinned_map = HashMap::new();
+    pinned_map.insert(
+        ("depth_camera".to_string(), "v1".to_string()),
+        vec![LINK_LEFT.to_string()],
+    );
+    caller_handle.register_consumer_dependencies(pinned_map);
+
+    let from_any_response = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core",
+        "from_any_caller",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        None,
+        "start_recording",
+        Some("server_core"),
+        Some("server_inst"),
+        Payload::from_static(b"go"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("from_any poll should succeed");
+    assert_eq!(
+        from_any_response.payload().as_ref(),
+        LINK_RIGHT.as_bytes(),
+        "from_any caller must claim LINK_RIGHT after the sibling exclusion is registered — LINK_LEFT is claimed by the pinned sibling"
+    );
+
+    server_task.await.expect("server task panicked");
+
+    let observed = observed_link_ids.lock().await.clone();
+    assert_eq!(
+        observed,
+        vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()],
+        "handler must observe LINK_LEFT for the pinned call and LINK_RIGHT for the from_any call"
+    );
+
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn action_pinned_consumer_claims_link_id_from_from_any_sibling() {
+    // Action equivalent of the service test above. The sibling exclusion
+    // set rides on the query attachment for each sub-service (goal /
+    // cancel / result), so first-bound dispatch picks LINK_RIGHT for a
+    // from_any send_goal even though LINK_LEFT is bound first.
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
+    let server_handle = router.messenger().await;
+    let action = ActionMessenger::expose(
+        &server_handle,
+        "server_core",
+        "server_inst",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        &bound,
+        "record",
+    )
+    .await
+    .expect("expose should succeed");
+
+    let mut goal_service = action.goal_service;
+    let mut result_service = action.result_service;
+    let factory = action.feedback_publisher_factory;
+
+    let observed_goal_link_id = Arc::new(tokio::sync::Mutex::new(String::new()));
+    let observed_clone = Arc::clone(&observed_goal_link_id);
+    let server_task = tokio::spawn(async move {
+        // Goal
+        let (ctx, responder) = goal_service
+            .recv_next_request()
+            .await
+            .expect("goal recv")
+            .expect("goal closed");
+        let link_id = ctx.link_id().to_string();
+        let wire = ctx.message().payload().into_inner();
+        *observed_clone.lock().await = link_id.clone();
+        let declared = factory
+            .declare_from_wire(&link_id, wire)
+            .await
+            .expect("declare_from_wire");
+        responder
+            .respond(Payload::from(format!("accepted={link_id}").into_bytes()))
+            .await
+            .expect("goal respond");
+
+        // Result
+        let (_result_ctx, result_responder) = result_service
+            .recv_next_request()
+            .await
+            .expect("result recv")
+            .expect("result closed");
+        declared.publisher.publish_end().await.expect("publish_end");
+        result_responder
+            .respond(Payload::from(format!("result={link_id}").into_bytes()))
+            .await
+            .expect("result respond");
+    });
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let caller_handle = router.messenger().await;
+    let mut pinned_map = HashMap::new();
+    pinned_map.insert(
+        ("depth_camera".to_string(), "v1".to_string()),
+        vec![LINK_LEFT.to_string()],
+    );
+    caller_handle.register_consumer_dependencies(pinned_map);
+
+    let goal_handle = ActionMessenger::send_goal(
+        &caller_handle,
+        "caller_core",
+        "from_any_caller",
+        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+        None, // from_any
+        "record",
+        Some("server_core"),
+        Some("server_inst"),
+        Payload::from_static(b"start"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("send_goal should succeed");
+
+    assert_eq!(
+        goal_handle.goal_response().payload().as_ref(),
+        format!("accepted={LINK_RIGHT}").as_bytes(),
+        "from_any send_goal must claim LINK_RIGHT after the sibling exclusion is registered"
+    );
+
+    let result_response =
+        ActionMessenger::request_result(&caller_handle, &goal_handle, Duration::from_secs(2))
+            .await
+            .expect("request_result should succeed");
+    assert_eq!(
+        result_response.payload().as_ref(),
+        format!("result={LINK_RIGHT}").as_bytes(),
+        "result sub-service must agree on the chosen link_id (same exclusion set on the attachment)"
+    );
+
+    server_task.await.expect("server task panicked");
+
+    assert_eq!(
+        observed_goal_link_id.lock().await.clone(),
+        LINK_RIGHT,
+        "producer goal handler must observe LINK_RIGHT (sibling LINK_LEFT is excluded)"
+    );
+
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn action_from_any_latches_cancel_to_first_goal_responder() {
+    // Two producer processes expose the same action. A consumer sends a
+    // wildcard goal (target_instance_id = None) — both producers receive
+    // the goal and respond, but the consumer keeps only the first
+    // response. `send_goal` then latches the stored sender to the
+    // responder's identity, so a subsequent `cancel_goal` must reach
+    // **only** that producer. Without latching, cancel would fan out and
+    // both producers' cancel handlers would fire.
+    let router = TestRouterContext::start().await;
+
+    let server_a_core = "server_a_core";
+    let server_a_inst = "server_a_inst";
+    let server_b_core = "server_b_core";
+    let server_b_inst = "server_b_inst";
+    let action_target = SenderTarget::interface("manipulator", "v1").expect("iface target");
+    let action_name = "abort_safe";
+
+    async fn spawn_producer(
+        router: &TestRouterContext,
+        core: &'static str,
+        inst: &'static str,
+        target: SenderTarget,
+        action_name: &'static str,
+        cancel_count: Arc<AtomicUsize>,
+        ready: oneshot::Sender<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        let handle = router.messenger().await;
+        tokio::spawn(async move {
+            let action = ActionMessenger::expose(&handle, core, inst, target, &[], action_name)
+                .await
+                .expect("expose should succeed");
+
+            let mut goal_service = action.goal_service;
+            let mut cancel_service = action.cancel_service;
+            ready.send(()).expect("ready");
+
+            // Respond to the goal so the caller's poll resolves.
+            let (_goal_ctx, goal_responder) = goal_service
+                .recv_next_request()
+                .await
+                .expect("goal recv")
+                .expect("goal closed");
+            goal_responder
+                .respond(Payload::from(inst.as_bytes().to_vec()))
+                .await
+                .expect("goal respond");
+
+            // Wait briefly for a cancel; the loser must time out (it
+            // should never see the cancel because of the latching).
+            match tokio::time::timeout(
+                Duration::from_millis(500),
+                cancel_service.recv_next_request(),
+            )
+            .await
+            {
+                Ok(Ok(Some((_ctx, responder)))) => {
+                    cancel_count.fetch_add(1, Ordering::SeqCst);
+                    responder
+                        .respond(Payload::from_static(b"cancelled"))
+                        .await
+                        .expect("cancel respond");
+                }
+                Ok(Ok(None)) | Ok(Err(_)) => {
+                    // queue closed before a cancel arrived — treat as no
+                    // delivery, same as the timeout branch.
+                }
+                Err(_) => {
+                    // timed out — this is the expected outcome for the
+                    // producer that did NOT win the goal-response race.
+                }
+            }
+        })
+    }
+
+    let cancel_a = Arc::new(AtomicUsize::new(0));
+    let cancel_b = Arc::new(AtomicUsize::new(0));
+    let (ready_a_tx, ready_a_rx) = oneshot::channel();
+    let (ready_b_tx, ready_b_rx) = oneshot::channel();
+
+    let task_a = spawn_producer(
+        &router,
+        server_a_core,
+        server_a_inst,
+        action_target.clone(),
+        action_name,
+        Arc::clone(&cancel_a),
+        ready_a_tx,
+    )
+    .await;
+    let task_b = spawn_producer(
+        &router,
+        server_b_core,
+        server_b_inst,
+        action_target.clone(),
+        action_name,
+        Arc::clone(&cancel_b),
+        ready_b_tx,
+    )
+    .await;
+
+    ready_a_rx.await.expect("server A ready");
+    ready_b_rx.await.expect("server B ready");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = router.messenger().await;
+    let goal_handle = ActionMessenger::send_goal(
+        &caller_handle,
+        "caller_core",
+        "caller_inst",
+        action_target,
+        None,
+        action_name,
+        None, // wildcard target_core_node
+        None, // wildcard target_instance_id
+        Payload::from_static(b"go"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("send_goal should succeed");
+
+    let winner_inst = goal_handle.goal_response().instance_id().to_string();
+    let winner_core = goal_handle.goal_response().core_node().to_string();
+    assert!(
+        winner_inst == server_a_inst || winner_inst == server_b_inst,
+        "goal_response identity must come from one of the producers, got {winner_inst:?}",
+    );
+    assert!(
+        winner_core == server_a_core || winner_core == server_b_core,
+        "goal_response core_node must come from one of the producers, got {winner_core:?}",
+    );
+
+    // Issue cancel — only the winner should see it because the stored
+    // sender was latched in send_goal.
+    let _ = ActionMessenger::cancel_goal(&caller_handle, &goal_handle, Duration::from_secs(1))
+        .await
+        .expect("cancel_goal should reach the latched producer");
+
+    task_a.await.expect("server A task panicked");
+    task_b.await.expect("server B task panicked");
+
+    let winner_count = if winner_inst == server_a_inst {
+        cancel_a.load(Ordering::SeqCst)
+    } else {
+        cancel_b.load(Ordering::SeqCst)
+    };
+    let loser_count = if winner_inst == server_a_inst {
+        cancel_b.load(Ordering::SeqCst)
+    } else {
+        cancel_a.load(Ordering::SeqCst)
+    };
+    assert_eq!(
+        winner_count, 1,
+        "winning producer ({winner_inst}) should have received exactly one cancel",
+    );
+    assert_eq!(
+        loser_count, 0,
+        "losing producer should not have received any cancel — latching is broken if this fires",
+    );
 
     router.shutdown().await;
 }

@@ -239,6 +239,25 @@ impl ActionGoalHandle {
         &self.goal_id
     }
 
+    /// `(core_node, instance_id)` of the producer that won this goal's
+    /// response race. The feedback filter drops messages whose
+    /// `(core_node, instance_id)` does not match — preventing a wildcard
+    /// `from_any` goal from surfacing feedback published by losing producers
+    /// that also received the broadcast. Always `Some` after `send_goal`
+    /// returns because the sender is latched there.
+    fn latched_identity(&self) -> Option<(&str, &str)> {
+        let core = self.sender.target_core_node()?;
+        let inst = self.sender.target_instance_id()?;
+        Some((core, inst))
+    }
+
+    fn matches_latched_producer(&self, message: &Message) -> bool {
+        match self.latched_identity() {
+            Some((core, inst)) => message.core_node() == core && message.instance_id() == inst,
+            None => true,
+        }
+    }
+
     /// Receives the next feedback message.
     ///
     /// Returns `Err(Error::ActionFeedbackChannelClosed)` when the server
@@ -246,25 +265,37 @@ impl ActionGoalHandle {
     /// the server begins handling the result request, accepts a cancel,
     /// or the cancel handler errors.
     pub async fn on_next_feedback(&mut self) -> Result<Message> {
-        let msg = self
-            .feedback
-            .on_next_message()
-            .await
-            .ok_or(Error::ActionFeedbackChannelClosed)?;
-        if is_end_sentinel(&msg) {
-            return Err(Error::ActionFeedbackChannelClosed);
+        loop {
+            let msg = self
+                .feedback
+                .on_next_message()
+                .await
+                .ok_or(Error::ActionFeedbackChannelClosed)?;
+            if is_end_sentinel(&msg) {
+                return Err(Error::ActionFeedbackChannelClosed);
+            }
+            if self.matches_latched_producer(&msg) {
+                return Ok(msg);
+            }
         }
-        Ok(msg)
     }
 
     /// Non-blocking variant of [`Self::on_next_feedback`].
     pub fn try_next_feedback(&mut self) -> Result<Option<Message>> {
-        match self.feedback.try_on_next_message() {
-            Ok(message) if is_end_sentinel(&message) => Err(Error::ActionFeedbackChannelClosed),
-            Ok(message) => Ok(Some(message)),
-            Err(crate::types::TryRecvError::Empty) => Ok(None),
-            Err(crate::types::TryRecvError::Disconnected) => {
-                Err(Error::ActionFeedbackChannelClosed)
+        loop {
+            match self.feedback.try_on_next_message() {
+                Ok(message) if is_end_sentinel(&message) => {
+                    return Err(Error::ActionFeedbackChannelClosed);
+                }
+                Ok(message) => {
+                    if self.matches_latched_producer(&message) {
+                        return Ok(Some(message));
+                    }
+                }
+                Err(crate::types::TryRecvError::Empty) => return Ok(None),
+                Err(crate::types::TryRecvError::Disconnected) => {
+                    return Err(Error::ActionFeedbackChannelClosed);
+                }
             }
         }
     }
@@ -313,14 +344,14 @@ impl ActionMessenger {
         to_target: SenderTarget,
         to_link_id: Option<&str>,
         to_action_name: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
     ) -> Result<bool> {
         let sender = ActionWireSender::new(
             bound_core_node,
             as_instance_id,
-            to_core_node,
-            to_instance_id,
+            target_core_node,
+            target_instance_id,
             to_target,
             to_link_id,
             to_action_name,
@@ -355,8 +386,8 @@ impl ActionMessenger {
         to_target: SenderTarget,
         to_link_id: Option<&str>,
         to_action_name: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
         user_payload: Payload,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
@@ -364,15 +395,28 @@ impl ActionMessenger {
         let goal_id = generate_goal_id();
         let goal_payload = wrap_goal_payload(&goal_id, user_payload.as_ref())?;
 
+        // A from_any caller may need to skip producer link_ids claimed by
+        // sibling pinned `depends_on` entries on the same (action_name,
+        // tag). The exclusion set is registered on the MessengerHandle and
+        // serialized into the goal / cancel / result query attachments so
+        // each sub-service agrees on the chosen producer link_id for this
+        // goal_id (the feedback channel is goal_id-pinned and independent
+        // of link_id, so it's unaffected).
+        let excluded = if to_link_id.is_none() {
+            messenger.excluded_link_ids_for(to_target.name(), to_target.tag())
+        } else {
+            Vec::new()
+        };
         let sender = ActionWireSender::new(
             as_core_node,
             as_instance_id,
-            to_core_node,
-            to_instance_id,
+            target_core_node,
+            target_instance_id,
             to_target,
             to_link_id,
             to_action_name,
-        )?;
+        )?
+        .with_excluded_link_ids(&excluded)?;
 
         let feedback_subscription = messenger
             .subscribe_action_feedback(&sender, &goal_id, feedback_qos.into())
@@ -382,8 +426,16 @@ impl ActionMessenger {
             .poll_service(&sender.goal_service(), goal_payload, goal_timeout)
             .await?;
 
+        // Latch the stored sender to the producer that won the goal response.
+        // For a wildcard `from_any` goal this prevents cancel / result /
+        // feedback from fanning out to every producer that received the
+        // wildcard goal; for an already-pinned dep this is a no-op
+        // (`pinned_to` writes the same identity that was already there).
+        let latched_sender =
+            sender.pinned_to(goal_response.core_node(), goal_response.instance_id())?;
+
         Ok(ActionGoalHandle {
-            sender,
+            sender: latched_sender,
             goal_id,
             goal_response,
             feedback: Subscription::new(feedback_subscription),

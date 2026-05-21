@@ -35,8 +35,9 @@ use pmi::{
     ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::sync::{
-    Arc,
+    Arc, RwLock,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -100,9 +101,19 @@ fn decode_service_error_payload(payload: &[u8]) -> Option<String> {
     }
 }
 
+/// Per-`(producer_name, producer_tag)` set of link_ids that this consumer
+/// process has pinned via `depends_on`. Populated once at node bootstrap by
+/// codegen via [`MessengerHandle::register_consumer_dependencies`]; consulted
+/// at subscribe / poll / send_goal time when the caller's `from_link_id` is
+/// `None` (a `from_any: true` consumer) to derive the producer link_ids the
+/// from_any path must skip. Empty / absent groups behave like today —
+/// no exclusion, no filter.
+type PinnedSiblingMap = HashMap<(String, String), Vec<String>>;
+
 #[derive(Clone)]
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
+    pinned_siblings: Arc<RwLock<PinnedSiblingMap>>,
 }
 
 /// 16 hex chars (64 bits) of correlation entropy, salted with `domain` so
@@ -137,7 +148,44 @@ pub(crate) fn generate_short_id(domain: &str) -> String {
 
 impl MessengerHandle {
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
-        Self { messenger }
+        Self {
+            messenger,
+            pinned_siblings: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Seed the per-`(producer_name, producer_tag)` map of pinned sibling
+    /// link_ids. Codegen calls this once at node bootstrap with the entries
+    /// it discovered in `depends_on.{nodes,interfaces}` — for each `(name,
+    /// tag)` group that contains at least one pinned dependency, the value
+    /// is the list of pinned link_ids on that group. Groups with only one
+    /// entry (whether pinned or from_any) can be omitted; the exclusion
+    /// only matters when a from_any sibling needs to skip pinned link_ids.
+    ///
+    /// Replaces any previous registration in full — multiple calls are
+    /// supported but only the latest map is observed. Callers that don't
+    /// register anything observe today's behavior (no exclusion).
+    pub fn register_consumer_dependencies(&self, pinned_per_group: PinnedSiblingMap) {
+        if let Ok(mut guard) = self.pinned_siblings.write() {
+            *guard = pinned_per_group;
+        }
+    }
+
+    /// Look up the pinned-sibling link_ids registered for a given
+    /// `(producer_name, producer_tag)`. Returns an empty vec when nothing
+    /// is registered or the (name, tag) pair isn't present. Callers
+    /// (TopicMessenger::subscribe, ServiceMessenger::poll,
+    /// ActionMessenger::send_goal) consult this when their `from_link_id`
+    /// argument is `None` to derive the excluded set for the wire receiver
+    /// / sender.
+    pub(crate) fn excluded_link_ids_for(&self, name: &str, tag: &str) -> Vec<String> {
+        let Ok(guard) = self.pinned_siblings.read() else {
+            return Vec::new();
+        };
+        guard
+            .get(&(name.to_string(), tag.to_string()))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Pre-bind a per-topic publisher. Locks the messenger once at
@@ -193,6 +241,7 @@ impl MessengerHandle {
         let messenger = Self::new_session(adapter).await?;
         Ok(Self {
             messenger: Arc::new(Mutex::new(messenger)),
+            pinned_siblings: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -275,13 +324,13 @@ impl MessengerHandle {
         // ACK means the producer received the request but never replied with the
         // user payload (ServiceTimeout).
         let to_service_name = sender.to_service_name().to_string();
-        let to_instance_id = sender.to_instance_id().map(str::to_string);
+        let target_instance_id = sender.target_instance_id().map(str::to_string);
         let unreachable = || Error::ServiceUnreachable {
-            instance_id: to_instance_id.clone(),
+            instance_id: target_instance_id.clone(),
             service_name: to_service_name.clone(),
         };
         let timed_out = || Error::ServiceTimeout {
-            instance_id: to_instance_id.clone(),
+            instance_id: target_instance_id.clone(),
             service_name: to_service_name.clone(),
         };
 
@@ -335,7 +384,7 @@ impl MessengerHandle {
         let response_payload = response.payload();
         if let Some(reason) = decode_service_error_payload(response_payload.as_ref()) {
             return Err(Error::ServiceError {
-                instance_id: to_instance_id,
+                instance_id: target_instance_id,
                 service_name: to_service_name,
                 reason,
             });

@@ -72,7 +72,12 @@ mod zenoh_tests {
         let payload = Payload::from_bytes(Bytes::from_static(b"This should fail"));
         let result = instance
             .messenger()
-            .publish_topic(&sender("should_fail"), payload, PublisherQoS::Standard, true)
+            .publish_topic(
+                &sender("should_fail"),
+                payload,
+                PublisherQoS::Standard,
+                true,
+            )
             .await;
         assert!(
             result.is_err(),
