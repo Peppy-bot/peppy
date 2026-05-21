@@ -1,7 +1,8 @@
 use crate::helpers::{
-    STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
-    init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs, try_send_shutdown,
-    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output,
+    init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
+    try_send_shutdown, wait_for_child, wait_for_health_service_reachable_or_exit,
+    wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -256,6 +257,7 @@ fn main() -> Result<()> {
         Some(exposer_instance_id),
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -272,6 +274,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -286,6 +289,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -294,6 +298,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -534,6 +539,7 @@ fn main() -> Result<()> {
         Some(exposer_instance_id),
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -550,6 +556,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -564,6 +571,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -572,6 +580,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -884,6 +893,7 @@ fn main() -> Result<()> {
         Some(exposer1_instance_id),
         &mut exposer1_child,
         &user_node_exposer1,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_service_reachable_or_exit(
@@ -893,6 +903,7 @@ fn main() -> Result<()> {
         Some(exposer2_instance_id),
         &mut exposer2_child,
         &user_node_exposer2,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -909,6 +920,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer1_child,
         &user_node_exposer1,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -923,18 +935,21 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     // Do NOT wait for health on the exposers here. Under discover-then-pin
     // only the winning exposer's `handle_next_request` returns and lets
     // `setup_fn` complete; the loser stays parked on its queryable, so
     // `run_post_setup_services` (which registers the health endpoint) never
-    // runs there. Probing health on the loser would loop forever. The
-    // pre-setup shutdown queryable is up on both exposers, so the
-    // `send_shutdown` calls below still land cleanly. The consumer's
-    // health probe above already implies the response round-trip
-    // completed, which guarantees the winner printed
-    // `enable_camera handler finished` before we send shutdown.
+    // runs there. Probing health on the loser would now panic with a
+    // wait-timeout (post-`DEFAULT_WAIT_TIMEOUT` addition) instead of
+    // hanging, but it's still the wrong question to ask. The pre-setup
+    // shutdown queryable is up on both exposers, so the `send_shutdown`
+    // calls below land cleanly. The consumer's health probe above already
+    // implies the response round-trip completed, which guarantees the
+    // winner printed `enable_camera handler finished` before we send
+    // shutdown.
 
     send_shutdown(
         &messenger,

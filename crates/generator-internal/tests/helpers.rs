@@ -494,6 +494,15 @@ pub struct WaitContext<'a> {
     pub target_core_node: Option<&'a str>,
 }
 
+/// Default deadline for the wait-family helpers. Long enough for slow CI
+/// (zenoh discovery + queryable propagation can take a couple of seconds
+/// on a cold session); short enough that a true hang (e.g. a probed
+/// endpoint that will never come up) fails loudly with a clear panic
+/// instead of stalling the whole test binary. Each helper accepts an
+/// explicit `timeout` so call sites can opt into something larger or
+/// smaller — pass [`DEFAULT_WAIT_TIMEOUT`] when no value is meaningful.
+pub const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub async fn wait_for_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
     to_node_name: &str,
@@ -501,8 +510,21 @@ pub async fn wait_for_service_reachable_or_exit(
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
+    timeout: Duration,
 ) {
+    let start = Instant::now();
     loop {
+        if start.elapsed() > timeout {
+            panic!(
+                "timed out after {:?} waiting for service `{}` (node={}, instance={:?}) to become reachable for project at {}",
+                timeout,
+                to_service_name,
+                to_node_name,
+                target_instance_id,
+                dir.display(),
+            );
+        }
+
         if let Some(status) = child
             .try_wait()
             .expect("failed to poll process status for generated project")
@@ -558,8 +580,21 @@ pub async fn wait_for_action_service_reachable_or_exit(
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
+    timeout: Duration,
 ) {
+    let start = Instant::now();
     loop {
+        if start.elapsed() > timeout {
+            panic!(
+                "timed out after {:?} waiting for action `{}` (node={}, instance={:?}) to become reachable for project at {}",
+                timeout,
+                to_action_name,
+                to_node_name,
+                target_instance_id,
+                dir.display(),
+            );
+        }
+
         if let Some(status) = child
             .try_wait()
             .expect("failed to poll process status for generated project")
@@ -614,6 +649,7 @@ pub async fn wait_for_shutdown_service_reachable_or_exit(
     target_instance_id: &str,
     child: &mut std::process::Child,
     dir: &std::path::Path,
+    timeout: Duration,
 ) {
     wait_for_service_reachable_or_exit(
         ctx,
@@ -622,6 +658,7 @@ pub async fn wait_for_shutdown_service_reachable_or_exit(
         Some(target_instance_id),
         child,
         dir,
+        timeout,
     )
     .await;
 }
@@ -632,6 +669,7 @@ pub async fn wait_for_health_service_reachable_or_exit(
     target_instance_id: &str,
     child: &mut std::process::Child,
     dir: &std::path::Path,
+    timeout: Duration,
 ) {
     wait_for_service_reachable_or_exit(
         ctx,
@@ -640,6 +678,7 @@ pub async fn wait_for_health_service_reachable_or_exit(
         Some(target_instance_id),
         child,
         dir,
+        timeout,
     )
     .await;
 }

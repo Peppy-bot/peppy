@@ -1,7 +1,8 @@
 use crate::helpers::{
-    STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output, init_python_project_venv,
-    init_python_user_node, init_test_env, send_shutdown, spawn_python_run, test_peppy_dirs,
-    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output,
+    init_python_project_venv, init_python_user_node, init_test_env, send_shutdown,
+    spawn_python_run, test_peppy_dirs, wait_for_child, wait_for_health_service_reachable_or_exit,
+    wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -299,6 +300,7 @@ if __name__ == "__main__":
         receiver_instance_id,
         &mut receiver_child,
         &user_node_receiver,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -307,6 +309,7 @@ if __name__ == "__main__":
         emitter_instance_id,
         &mut emitter_child,
         &user_node_emitter,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -318,6 +321,7 @@ if __name__ == "__main__":
         Some(receiver_instance_id),
         &mut receiver_child,
         &user_node_receiver,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     send_shutdown(

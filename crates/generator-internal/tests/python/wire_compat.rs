@@ -29,9 +29,9 @@
 //! -- the capnp schema generation under test is language-agnostic.
 
 use crate::helpers::{
-    WaitContext, init_python_project_venv, init_python_user_node, send_shutdown, spawn_python_run,
-    test_peppy_dirs, wait_for_action_service_reachable_or_exit, wait_for_child,
-    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, WaitContext, init_python_project_venv, init_python_user_node,
+    send_shutdown, spawn_python_run, test_peppy_dirs, wait_for_action_service_reachable_or_exit,
+    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
 use config::json5_pretty;
@@ -387,6 +387,7 @@ if __name__ == "__main__":
         None,
         &mut producer_child,
         &producer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -407,6 +408,7 @@ if __name__ == "__main__":
         CONSUMER_INSTANCE_ID,
         &mut consumer_child,
         &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -415,6 +417,7 @@ if __name__ == "__main__":
         PRODUCER_INSTANCE_ID,
         &mut producer_child,
         &producer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -428,6 +431,7 @@ if __name__ == "__main__":
         Some(CONSUMER_INSTANCE_ID),
         &mut consumer_child,
         &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -741,6 +745,7 @@ if __name__ == "__main__":
         Some(PRODUCER_INSTANCE_ID),
         &mut producer_child,
         &producer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -755,6 +760,7 @@ if __name__ == "__main__":
         CONSUMER_INSTANCE_ID,
         &mut consumer_child,
         &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -763,6 +769,7 @@ if __name__ == "__main__":
         PRODUCER_INSTANCE_ID,
         &mut producer_child,
         &producer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -776,6 +783,7 @@ if __name__ == "__main__":
         Some(CONSUMER_INSTANCE_ID),
         &mut consumer_child,
         &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1092,6 +1100,7 @@ if __name__ == "__main__":
         CONSUMER_INSTANCE_ID,
         &mut consumer_child,
         &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -1100,6 +1109,7 @@ if __name__ == "__main__":
         PRODUCER_INSTANCE_ID,
         &mut producer_child,
         &producer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1113,6 +1123,7 @@ if __name__ == "__main__":
         Some(CONSUMER_INSTANCE_ID),
         &mut consumer_child,
         &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 

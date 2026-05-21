@@ -457,6 +457,21 @@ async fn run_post_setup_services(
     let as_identity =
         crate::messaging::SenderTarget::node(processor.node_name(), processor.node_tag())?;
 
+    // `node_health` stays in post-setup on purpose: many tests use
+    // `wait_for_health` as a "setup completed" signal — they spawn a
+    // consumer, wait for its health endpoint, and only then send shutdown,
+    // relying on health reachability to imply that the consumer's
+    // `setup_fn` already produced its observable output (e.g. the printed
+    // response from a `poll` call). Registering health pre-setup
+    // collapses that signal: probes succeed immediately after the process
+    // connects to messaging, before `setup_fn` runs, and the test's
+    // subsequent `send_shutdown` cancels `setup_fn` mid-flight. Keeping
+    // health post-setup preserves the "I've finished setup" contract.
+    // The corollary: a `setup_fn` that intentionally blocks forever
+    // (e.g. `handle_next_request` on a discover-then-pin loser) never
+    // exposes `node_health`. Tests covering that case must skip the
+    // health probe and either rely on pre-setup signals (`shutdown` /
+    // `node_ready`) or wait on a domain-specific signal instead.
     let health_handle = listen_for_node_health(
         node_runner.messenger(),
         processor.bound_core_node(),

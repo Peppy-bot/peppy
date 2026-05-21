@@ -1,6 +1,6 @@
 use crate::helpers::{
-    STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
-    init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
+    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output,
+    init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
     wait_for_action_service_reachable_or_exit, wait_for_child,
     wait_for_health_service_reachable_or_exit,
 };
@@ -329,6 +329,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -349,6 +350,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -357,6 +359,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -637,6 +640,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -657,6 +661,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -665,6 +670,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -993,6 +999,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1013,6 +1020,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -1021,6 +1029,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1341,6 +1350,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1361,6 +1371,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -1369,6 +1380,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1710,6 +1722,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1730,6 +1743,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -1738,6 +1752,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 

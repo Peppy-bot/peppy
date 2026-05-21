@@ -1,7 +1,7 @@
 use crate::helpers::{
-    CapturedChild, STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output,
-    init_python_project_venv, init_python_user_node, init_test_env, send_shutdown,
-    spawn_python_run, test_peppy_dirs, try_send_shutdown, wait_for_child,
+    CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
+    copy_config_to_output, init_python_project_venv, init_python_user_node, init_test_env,
+    send_shutdown, spawn_python_run, test_peppy_dirs, try_send_shutdown, wait_for_child,
     wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
@@ -273,6 +273,7 @@ if __name__ == "__main__":
         Some(exposer_instance_id),
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -289,6 +290,7 @@ if __name__ == "__main__":
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -303,6 +305,7 @@ if __name__ == "__main__":
         consumer_instance_id,
         &mut consumer.child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -311,6 +314,7 @@ if __name__ == "__main__":
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -564,6 +568,7 @@ if __name__ == "__main__":
         Some(exposer_instance_id),
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -580,6 +585,7 @@ if __name__ == "__main__":
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -594,6 +600,7 @@ if __name__ == "__main__":
         consumer_instance_id,
         &mut consumer.child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -602,6 +609,7 @@ if __name__ == "__main__":
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -933,6 +941,7 @@ if __name__ == "__main__":
         Some(exposer1_instance_id),
         &mut exposer1_child,
         &user_node_exposer1,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_service_reachable_or_exit(
@@ -942,6 +951,7 @@ if __name__ == "__main__":
         Some(exposer2_instance_id),
         &mut exposer2_child,
         &user_node_exposer2,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -958,6 +968,7 @@ if __name__ == "__main__":
         None,
         &mut exposer1_child,
         &user_node_exposer1,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -972,17 +983,20 @@ if __name__ == "__main__":
         consumer_instance_id,
         &mut consumer.child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     // Do NOT wait for health on the exposers here. Under discover-then-pin
     // only the winning exposer's `handle_next_request` returns and lets
     // `setup` complete; the loser stays parked on its queryable, so
     // `run_post_setup_services` (which registers the health endpoint) never
-    // runs there. Probing health on the loser would loop forever. The
-    // pre-setup shutdown queryable is up on both exposers, so the
-    // `send_shutdown` calls below still land cleanly. The
-    // `wait_for_stdout_contains` below guarantees the winner already
-    // produced the response that the consumer's poll observed.
+    // runs there. Probing health on the loser would now panic with a
+    // wait-timeout (post-`DEFAULT_WAIT_TIMEOUT` addition) instead of
+    // hanging, but it's still the wrong question to ask. The pre-setup
+    // shutdown queryable is up on both exposers, so the `send_shutdown`
+    // calls below land cleanly. The `wait_for_stdout_contains` below
+    // guarantees the winner already produced the response that the
+    // consumer's poll observed.
 
     // Consumer's poll runs as a background task created in `setup`. Wait
     // for the result line to appear in its stdout before sending shutdown,
