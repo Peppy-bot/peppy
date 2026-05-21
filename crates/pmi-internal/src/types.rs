@@ -1,9 +1,9 @@
 use super::adapters::mock::{MockAdapter, MockPublisher};
 use super::error::Result;
-use super::wire::zenoh_format::ZenohWireFormat;
+use super::wire::zenoh_format::{ServiceReplyAttachment, ZenohWireFormat};
 use super::wire::{
-    ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
-    TopicWireReceiver, TopicWireSender,
+    ActionWireReceiver, ActionWireSender, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
+    ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use config::node::QoSProfile;
 use std::borrow::Cow;
@@ -139,14 +139,17 @@ pub trait MessengerBackend {
 
     /// Issue a service `get` and return a stream of replies (ACK + final
     /// response, possibly fanned out across multiple matching producers).
-    /// Query/reply correlation is internal to Zenoh — no `request_id`
-    /// threaded through the wire format. Pass `timeout: None` to wait
-    /// indefinitely (adapters substitute [`NO_TIMEOUT_SENTINEL`] since
-    /// the underlying Zenoh `get` requires a finite value).
+    /// `kind` rides on the query attachment so the producer can
+    /// discriminate user requests from discovery probes without inspecting
+    /// payload bytes. Query/reply correlation is internal to Zenoh — no
+    /// `request_id` threaded through the wire format. Pass `timeout: None`
+    /// to wait indefinitely (adapters substitute [`NO_TIMEOUT_SENTINEL`]
+    /// since the underlying Zenoh `get` requires a finite value).
     fn call_service(
         &self,
         sender: &ServiceWireSender,
         payload: Payload,
+        kind: ServiceQueryKind,
         timeout: Option<std::time::Duration>,
     ) -> impl Future<Output = Result<ReplyStream>> + Send;
 
@@ -226,19 +229,49 @@ impl ServiceQueryable {
     }
 }
 
+/// One reply delivered by [`MessengerBackend::call_service`]. Pairs the
+/// topic-shape reply [`TopicMessage`] (caller-visible payload + responder
+/// identity, parsed from the reply keyexpr) with the [`ServiceReplyKind`]
+/// the producer set on the reply attachment. The consumer's poll loop
+/// matches on `kind` to skip ACKs, return regular responses, and surface
+/// handler errors — without inspecting payload bytes for legacy sentinels.
+pub struct ServiceReply {
+    message: TopicMessage,
+    kind: ServiceReplyKind,
+}
+
+impl ServiceReply {
+    pub fn new(message: TopicMessage, kind: ServiceReplyKind) -> Self {
+        Self { message, kind }
+    }
+
+    pub fn message(&self) -> &TopicMessage {
+        &self.message
+    }
+
+    pub fn into_message(self) -> TopicMessage {
+        self.message
+    }
+
+    pub fn kind(&self) -> ServiceReplyKind {
+        self.kind
+    }
+}
+
 /// Caller-side reply stream returned by [`MessengerBackend::call_service`]. A
 /// single in-flight service call may receive multiple replies — at minimum an
 /// ACK followed by the real response, plus additional replies from sibling
-/// producers in `from_any` / broadcast scenarios. Peppylib filters by payload
-/// to distinguish ACK from response.
+/// producers in `from_any` / broadcast scenarios. Each [`ServiceReply`]
+/// carries the producer-set kind on its attachment so peppylib can
+/// discriminate without inspecting payload bytes.
 pub struct ReplyStream {
-    pub rx: tokio::sync::mpsc::Receiver<TopicMessage>,
+    pub rx: tokio::sync::mpsc::Receiver<ServiceReply>,
     abort_handle: tokio::task::AbortHandle,
 }
 
 impl ReplyStream {
     pub fn new(
-        rx: tokio::sync::mpsc::Receiver<TopicMessage>,
+        rx: tokio::sync::mpsc::Receiver<ServiceReply>,
         abort_handle: tokio::task::AbortHandle,
     ) -> Self {
         Self { rx, abort_handle }
@@ -251,12 +284,17 @@ impl Drop for ReplyStream {
     }
 }
 
-/// A single service request delivered to the responder. The `token` is the
-/// only legal way to send a reply back to the originating caller; multiple
-/// `token.respond()` calls are allowed (peppylib uses one for ACK then one
-/// for the final response payload).
+/// A single service request delivered to the responder. `token` is the
+/// only legal way to send replies — peppylib calls `respond_ack` first
+/// (lets the consumer distinguish ServiceUnreachable from ServiceTimeout),
+/// then exactly one terminal `respond_response` / `respond_handler_error`.
 pub struct IncomingRequest {
     pub payload: Payload,
+    /// Whether this is a user request (handler should run) or a discovery
+    /// probe (the framework auto-replies with [`ServiceReplyKind::Response`]
+    /// and an empty payload, never invoking the user handler). Decoded
+    /// from the mandatory query attachment.
+    pub kind: ServiceQueryKind,
     /// The producer-side link_id that received this request — set by the
     /// adapter to whichever bound link_id's queryable yielded the query.
     /// Surfaced to action goal handlers so per-goal feedback addresses the
@@ -270,11 +308,14 @@ pub struct IncomingRequest {
 }
 
 /// Opaque handle that lets the responder send replies back to a specific
-/// in-flight caller. One token per [`IncomingRequest`]. Constructed inside the
-/// adapter; peppylib stores it on a `ServiceResponder` and calls
-/// [`Self::respond`] one or more times (ACK + final payload). Dropping the
-/// token without responding signals "no more replies" to the caller — Zenoh
-/// closes the caller's reply stream when the underlying `Query` drops.
+/// in-flight caller. One token per [`IncomingRequest`]. Constructed inside
+/// the adapter; peppylib stores it on a `ServiceResponder`.
+///
+/// The reply protocol is two-step: `respond_ack` is non-consuming and runs
+/// first, then exactly one terminal `respond_response` or
+/// `respond_handler_error` consumes the token. Consuming the token drops
+/// the underlying Zenoh `Query` (or mock reply channel), closing the
+/// consumer's reply stream after the final reply is observed.
 pub enum ResponseToken {
     #[cfg(feature = "zenoh")]
     Zenoh(ZenohResponseToken),
@@ -282,15 +323,57 @@ pub enum ResponseToken {
 }
 
 impl ResponseToken {
-    /// Send a reply for this in-flight request. Callable multiple times — the
-    /// adapter is responsible for translating each call into a single reply
-    /// frame. The caller's reply stream surfaces every call until the token
-    /// drops.
-    pub async fn respond(&self, payload: Payload) -> Result<()> {
+    /// Sends the ACK reply (empty payload, `ServiceReplyKind::Ack` on the
+    /// reply attachment). Non-consuming so the same token can deliver the
+    /// terminal response afterward. The consumer's poll loop uses the ACK
+    /// to distinguish `ServiceUnreachable` (no ACK at all) from
+    /// `ServiceTimeout` (ACK received but handler didn't reply in time).
+    pub async fn respond_ack(&self) -> Result<()> {
+        let empty = Payload::from_bytes(bytes::Bytes::new());
         match self {
             #[cfg(feature = "zenoh")]
-            ResponseToken::Zenoh(t) => t.respond(payload).await,
-            ResponseToken::Mock(t) => t.respond(payload).await,
+            ResponseToken::Zenoh(t) => t.respond_with_kind(empty, ServiceReplyKind::Ack).await,
+            ResponseToken::Mock(t) => t.respond_with_kind(empty, ServiceReplyKind::Ack).await,
+        }
+    }
+
+    /// Sends the terminal user response (`ServiceReplyKind::Response`).
+    /// Consumes the token so no further replies can be sent for this
+    /// request. Also used for the producer's transparent reply to a
+    /// `ServiceQueryKind::Probe` query, with an empty payload — probes
+    /// must NOT use [`Self::respond_ack`] because the consumer's poll
+    /// loop would otherwise skip the only reply the probe path produces.
+    pub async fn respond_response(self, payload: Payload) -> Result<()> {
+        match self {
+            #[cfg(feature = "zenoh")]
+            ResponseToken::Zenoh(t) => {
+                t.respond_with_kind(payload, ServiceReplyKind::Response)
+                    .await
+            }
+            ResponseToken::Mock(t) => {
+                t.respond_with_kind(payload, ServiceReplyKind::Response)
+                    .await
+            }
+        }
+    }
+
+    /// Sends a handler-error reply: the reason rides in the payload as
+    /// UTF-8, with `ServiceReplyKind::HandlerError` on the attachment so
+    /// the consumer's poll loop surfaces `Error::ServiceError { reason }`
+    /// instead of returning the bytes as a normal response. Consumes the
+    /// token.
+    pub async fn respond_handler_error(self, reason: String) -> Result<()> {
+        let payload = Payload::from_bytes(bytes::Bytes::from(reason.into_bytes()));
+        match self {
+            #[cfg(feature = "zenoh")]
+            ResponseToken::Zenoh(t) => {
+                t.respond_with_kind(payload, ServiceReplyKind::HandlerError)
+                    .await
+            }
+            ResponseToken::Mock(t) => {
+                t.respond_with_kind(payload, ServiceReplyKind::HandlerError)
+                    .await
+            }
         }
     }
 }
@@ -314,35 +397,37 @@ impl ZenohResponseToken {
         }
     }
 
-    pub async fn respond(&self, payload: Payload) -> Result<()> {
+    async fn respond_with_kind(&self, payload: Payload, kind: ServiceReplyKind) -> Result<()> {
+        let attachment = ServiceReplyAttachment { kind }.encode();
         self.query
             .reply(self.reply_keyexpr.as_str(), payload.into_zbytes())
+            .attachment(attachment.to_vec())
             .await
             .map_err(|e| crate::error::Error::BackendError(e.to_string()))?;
         Ok(())
     }
 }
 
-/// In-process variant of [`ResponseToken`]. Holds the reply channel half the
-/// mock's `get_keyexpr` is reading from, so each `respond` pushes one reply
-/// item back to the caller.
+/// In-process variant of [`ResponseToken`]. Holds the reply channel half
+/// the mock's `get_keyexpr` is reading from, so each reply pushes one
+/// [`ServiceReply`] back to the caller.
 pub struct MockResponseToken {
-    reply_tx: tokio::sync::mpsc::Sender<TopicMessage>,
+    reply_tx: tokio::sync::mpsc::Sender<ServiceReply>,
     reply_keyexpr: String,
 }
 
 impl MockResponseToken {
-    pub fn new(reply_tx: tokio::sync::mpsc::Sender<TopicMessage>, reply_keyexpr: String) -> Self {
+    pub fn new(reply_tx: tokio::sync::mpsc::Sender<ServiceReply>, reply_keyexpr: String) -> Self {
         Self {
             reply_tx,
             reply_keyexpr,
         }
     }
 
-    pub async fn respond(&self, payload: Payload) -> Result<()> {
+    async fn respond_with_kind(&self, payload: Payload, kind: ServiceReplyKind) -> Result<()> {
         let message = TopicMessage::new(&self.reply_keyexpr, payload)?;
         self.reply_tx
-            .send(message)
+            .send(ServiceReply::new(message, kind))
             .await
             .map_err(|_| crate::error::Error::BackendError("mock reply channel closed".into()))?;
         Ok(())
@@ -735,9 +820,10 @@ impl MessengerBackend for Messenger {
         &self,
         sender: &ServiceWireSender,
         payload: Payload,
+        kind: ServiceQueryKind,
         timeout: Option<std::time::Duration>,
     ) -> Result<ReplyStream> {
-        dispatch!(&self.adapter, call_service, sender, payload, timeout)
+        dispatch!(&self.adapter, call_service, sender, payload, kind, timeout)
     }
 
     async fn subscribe_action_feedback(

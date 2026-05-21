@@ -1,14 +1,12 @@
 use super::discovery::discover_producer;
 use super::generate_short_id;
 use super::topics::Subscription;
-use super::{
-    MessengerHandle, PROBE_TIMEOUT, SERVICE_PROBE_PAYLOAD, ServiceEndpoint, TopicPublisher,
-};
+use super::{MessengerHandle, PROBE_TIMEOUT, ServiceEndpoint, TopicPublisher};
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
-use pmi::{ActionWireReceiver, ActionWireSender, PublisherQoS, SenderTarget};
+use pmi::{ActionWireReceiver, ActionWireSender, PublisherQoS, SenderTarget, ServiceQueryKind};
 use std::sync::Arc;
 use tokio::time::Duration;
 
@@ -329,7 +327,8 @@ impl ActionMessenger {
         match messenger
             .poll_service(
                 &sender.goal_service(),
-                Payload::from_static(SERVICE_PROBE_PAYLOAD),
+                Payload::new(),
+                ServiceQueryKind::Probe,
                 PROBE_TIMEOUT,
             )
             .await
@@ -427,7 +426,12 @@ impl ActionMessenger {
             .await?;
 
         let goal_response = messenger
-            .poll_service(&sender.goal_service(), goal_payload, goal_timeout)
+            .poll_service(
+                &sender.goal_service(),
+                goal_payload,
+                ServiceQueryKind::UserRequest,
+                goal_timeout,
+            )
             .await?;
 
         Ok(ActionGoalHandle {
@@ -456,7 +460,12 @@ impl ActionMessenger {
         cancel_timeout: Duration,
     ) -> Result<Message> {
         messenger_handle
-            .poll_service(&sender.cancel_service(), Payload::new(), cancel_timeout)
+            .poll_service(
+                &sender.cancel_service(),
+                Payload::new(),
+                ServiceQueryKind::UserRequest,
+                cancel_timeout,
+            )
             .await
     }
 
@@ -478,7 +487,12 @@ impl ActionMessenger {
     ) -> Result<Message> {
         let action_name = sender.to_action_name().to_string();
         messenger_handle
-            .poll_service(&sender.result_service(), Payload::new(), result_timeout)
+            .poll_service(
+                &sender.result_service(),
+                Payload::new(),
+                ServiceQueryKind::UserRequest,
+                result_timeout,
+            )
             .await
             .map_err(|err| Self::map_result_error(err, &action_name))
     }

@@ -2,11 +2,11 @@ use super::super::error::{Error, Result};
 use super::super::types::{
     IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend, MockResponseToken,
     NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable,
-    SubscriberQoS, Subscription, TopicMessage,
+    ServiceReply, SubscriberQoS, Subscription, TopicMessage,
 };
 use super::super::wire::zenoh_format::ZenohWireFormat;
 use super::super::wire::{
-    ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
+    ActionWireReceiver, ActionWireSender, ServiceQueryKind, ServiceWireReceiver, ServiceWireSender,
     TopicWireReceiver, TopicWireSender,
 };
 use std::collections::HashMap;
@@ -69,13 +69,14 @@ pub type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<MockSubscription>>>>;
 
 /// One in-flight query routed from a `get_keyexpr` caller to a queryable
 /// whose declared keyexpr intersects the caller's selector. `attachment`
-/// mirrors the Zenoh query attachment so the in-process matcher honors the
-/// same sibling-pinned exclusion semantic as the live transport.
+/// mirrors the Zenoh query attachment (carrying the request kind plus the
+/// sibling-pinned exclusion set) so the in-process matcher honors the
+/// same protocol semantics as the live transport.
 pub(crate) struct MockQuery {
     selector_keyexpr: String,
     payload: Payload,
     attachment: bytes::Bytes,
-    reply_tx: mpsc::Sender<TopicMessage>,
+    reply_tx: mpsc::Sender<ServiceReply>,
 }
 
 /// Shared map of declared queryables, keyed by the producer's declared
@@ -185,6 +186,7 @@ impl MessengerBackend for MockAdapter {
         &self,
         sender: &ServiceWireSender,
         payload: Payload,
+        kind: ServiceQueryKind,
         timeout: Option<std::time::Duration>,
     ) -> Result<ReplyStream> {
         if !self.is_session_connected {
@@ -194,11 +196,11 @@ impl MessengerBackend for MockAdapter {
         }
 
         let selector = ZenohWireFormat::service_get_selector(sender);
-        let attachment = ZenohWireFormat::service_get_selector_attachment(sender);
+        let attachment = ZenohWireFormat::service_get_selector_attachment(sender, kind);
         let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
 
         let (reply_tx, mut reply_rx) =
-            mpsc::channel::<TopicMessage>(SubscriberQoS::Standard.channel_size());
+            mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
 
         // Snapshot matching queryable channels under the map lock, then dispatch
         // outside the lock so async send doesn't hold a sync mutex across await.
@@ -227,7 +229,7 @@ impl MessengerBackend for MockAdapter {
         drop(reply_tx);
 
         let (output_tx, output_rx) =
-            mpsc::channel::<TopicMessage>(SubscriberQoS::Standard.channel_size());
+            mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
         let pump_task = tokio::spawn(async move {
             let _ = tokio::time::timeout(timeout, async move {
                 while let Some(msg) = reply_rx.recv().await {
@@ -539,6 +541,7 @@ async fn handle_mock_queryable(
         let token = ResponseToken::Mock(MockResponseToken::new(mock_query.reply_tx, reply_keyexpr));
         let request = IncomingRequest {
             payload: mock_query.payload,
+            kind: parsed.kind,
             link_id: chosen_link_id,
             caller_core: parsed.caller_core,
             caller_inst: parsed.caller_inst,
@@ -690,7 +693,10 @@ mod tests {
         // responder must be able to push a reply that the caller observes.
         // This is the in-process counterpart to the `from_any` regression
         // test in peppylib — without going through a real zenohd.
-        use crate::wire::{SenderTarget, ServiceKind, ServiceWireReceiver, ServiceWireSender};
+        use crate::wire::{
+            SenderTarget, ServiceKind, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
+            ServiceWireSender,
+        };
 
         let mut adapter = MockAdapter::default();
         adapter.start_session().await.expect("session should start");
@@ -727,6 +733,7 @@ mod tests {
             .call_service(
                 &sender,
                 Payload::from_bytes(bytes::Bytes::from_static(b"ping?")),
+                ServiceQueryKind::UserRequest,
                 Some(std::time::Duration::from_millis(500)),
             )
             .await
@@ -738,13 +745,14 @@ mod tests {
             .await
             .expect("producer should receive the query");
         assert_eq!(incoming.payload.to_bytes().as_ref(), b"ping?");
+        assert_eq!(incoming.kind, ServiceQueryKind::UserRequest);
         assert_eq!(incoming.link_id, "wrist_left");
         assert_eq!(incoming.caller_core, "caller_core");
         assert_eq!(incoming.caller_inst, "caller_inst");
 
         incoming
             .token
-            .respond(Payload::from_bytes(bytes::Bytes::from_static(b"pong")))
+            .respond_response(Payload::from_bytes(bytes::Bytes::from_static(b"pong")))
             .await
             .expect("respond should succeed");
 
@@ -753,7 +761,8 @@ mod tests {
             .recv()
             .await
             .expect("caller should receive the reply");
-        assert_eq!(reply.payload().to_bytes().as_ref(), b"pong");
+        assert_eq!(reply.kind(), ServiceReplyKind::Response);
+        assert_eq!(reply.message().payload().to_bytes().as_ref(), b"pong");
     }
 
     #[tokio::test]

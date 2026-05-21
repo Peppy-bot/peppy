@@ -11,9 +11,9 @@
 use bytes::Bytes;
 use pmi::{
     ActionWireReceiver, ActionWireSender, IncomingRequest, MessengerBackend, Payload, PublisherQoS,
-    ReplyStream, SenderTarget, ServiceKind, ServiceQueryable, ServiceWireReceiver,
-    ServiceWireSender, SubscriberQoS, Subscription, TopicMessage, TopicWireReceiver,
-    TopicWireSender, ZenohAdapter,
+    ReplyStream, SenderTarget, ServiceKind, ServiceQueryKind, ServiceQueryable,
+    ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription, TopicMessage,
+    TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -49,12 +49,16 @@ async fn recv_request(queryable: &mut ServiceQueryable) -> IncomingRequest {
         .unwrap_or_else(|| panic!("service queryable channel closed before request arrived"))
 }
 
-/// Waits for the next reply on a service `ReplyStream`. Panics on timeout.
+/// Waits for the next reply on a service `ReplyStream` and returns its
+/// underlying [`TopicMessage`] (caller-visible payload + responder identity).
+/// Panics on timeout. Tests in this file send a single `Response`-kind
+/// reply per request, so callers don't need to inspect the reply kind.
 async fn recv_reply(stream: &mut ReplyStream, label: &str) -> TopicMessage {
     tokio::time::timeout(RECV_TIMEOUT, stream.rx.recv())
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for reply on {label}"))
         .unwrap_or_else(|| panic!("reply stream closed before message on {label}"))
+        .into_message()
 }
 
 // ─── Topics ───────────────────────────────────────────────────────────────
@@ -255,19 +259,25 @@ async fn run_service_roundtrip(sender: ServiceWireSender) {
     let request_payload = Payload::from_bytes(Bytes::from_static(b"ping?"));
     let mut reply_stream = instance
         .messenger()
-        .call_service(&sender, request_payload, Some(RECV_TIMEOUT))
+        .call_service(
+            &sender,
+            request_payload,
+            ServiceQueryKind::UserRequest,
+            Some(RECV_TIMEOUT),
+        )
         .await
         .unwrap();
 
     // Server: wait for the request and verify the producer-bound link_id.
     let incoming = recv_request(&mut queryable).await;
     assert_eq!(incoming.link_id, pmi::DEFAULT_LINK_ID);
+    assert_eq!(incoming.kind, ServiceQueryKind::UserRequest);
 
     // Server: respond via the token.
     let response_body = Bytes::from_static(b"pong");
     incoming
         .token
-        .respond(Payload::from_bytes(response_body.clone()))
+        .respond_response(Payload::from_bytes(response_body.clone()))
         .await
         .unwrap();
 
@@ -366,7 +376,12 @@ async fn action_goal_feedback_result() {
     let goal_payload = Payload::from_bytes(Bytes::from_static(b"goal_data"));
     let mut goal_replies = instance
         .messenger()
-        .call_service(&client.goal_service(), goal_payload, Some(RECV_TIMEOUT))
+        .call_service(
+            &client.goal_service(),
+            goal_payload,
+            ServiceQueryKind::UserRequest,
+            Some(RECV_TIMEOUT),
+        )
         .await
         .unwrap();
 
@@ -375,7 +390,7 @@ async fn action_goal_feedback_result() {
     assert_eq!(goal_request.link_id, pmi::DEFAULT_LINK_ID);
     goal_request
         .token
-        .respond(Payload::from_bytes(Bytes::from_static(b"goal_accepted")))
+        .respond_response(Payload::from_bytes(Bytes::from_static(b"goal_accepted")))
         .await
         .unwrap();
 
@@ -409,13 +424,18 @@ async fn action_goal_feedback_result() {
     let result_payload = Payload::from_bytes(Bytes::from_static(b"result_query"));
     let mut result_replies = instance
         .messenger()
-        .call_service(&client.result_service(), result_payload, Some(RECV_TIMEOUT))
+        .call_service(
+            &client.result_service(),
+            result_payload,
+            ServiceQueryKind::UserRequest,
+            Some(RECV_TIMEOUT),
+        )
         .await
         .unwrap();
     let result_request = recv_request(&mut result_queryable).await;
     result_request
         .token
-        .respond(Payload::from_bytes(Bytes::from_static(b"result=done")))
+        .respond_response(Payload::from_bytes(Bytes::from_static(b"result=done")))
         .await
         .unwrap();
     let result_response = recv_reply(&mut result_replies, "result_replies").await;
@@ -446,14 +466,19 @@ async fn action_cancel_roundtrip() {
     let cancel_payload = Payload::from_bytes(Bytes::from_static(b"cancel_goal_xyz"));
     let mut cancel_replies = instance
         .messenger()
-        .call_service(&client.cancel_service(), cancel_payload, Some(RECV_TIMEOUT))
+        .call_service(
+            &client.cancel_service(),
+            cancel_payload,
+            ServiceQueryKind::UserRequest,
+            Some(RECV_TIMEOUT),
+        )
         .await
         .unwrap();
 
     let cancel_request = recv_request(&mut cancel_queryable).await;
     cancel_request
         .token
-        .respond(Payload::from_bytes(Bytes::from_static(b"cancel_accepted")))
+        .respond_response(Payload::from_bytes(Bytes::from_static(b"cancel_accepted")))
         .await
         .unwrap();
 

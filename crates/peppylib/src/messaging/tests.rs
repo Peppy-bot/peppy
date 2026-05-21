@@ -3777,3 +3777,184 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
 
     router.shutdown().await;
 }
+
+// ─── Legacy-sentinel collision regression tests ────────────────────────────
+//
+// The previous service protocol distinguished probe / ACK / handler-error
+// frames from user data by inspecting magic byte prefixes inside the
+// payload. A user payload that happened to start with one of those
+// sequences was misclassified by the framework — at worst, a wildcard
+// `poll` would return `Ok(empty)` while the producer silently dropped the
+// request. These tests pin that the new attachment-based discriminator
+// keeps arbitrary byte sequences (including all three legacy sentinels)
+// flowing through the user payload unchanged.
+
+const LEGACY_PROBE_SENTINEL: &[u8] = b"\0peppy_service_probe\0and-more-bytes";
+const LEGACY_ACK_SENTINEL: &[u8] = b"\0peppy_service_ack\0extra-bytes";
+const LEGACY_ERROR_SENTINEL: &[u8] = b"\0peppy_service_error\0arbitrary";
+
+async fn run_sentinel_collision_test(
+    request_bytes: &'static [u8],
+    response_bytes: &'static [u8],
+    target_instance_id: Option<&str>,
+) {
+    let router = TestRouterContext::start().await;
+
+    let listener_node_name = "sentinel_probe";
+    let listener_service_name = "echo";
+    let listener_core_node = "listener_core";
+    let listener_instance_id = "listener_inst";
+
+    const CALLER_CORE_NODE: &str = "caller_core";
+    const CALLER_INSTANCE_ID: &str = "caller_inst";
+
+    let request_payload = Payload::from_static(request_bytes);
+    let response_payload = Payload::from_static(response_bytes);
+    let handler_invocations = Arc::new(AtomicUsize::new(0));
+    let observed_payload: Arc<tokio::sync::Mutex<Option<Payload>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
+
+    let (ready_tx, ready_rx) = oneshot::channel();
+
+    let service_task = {
+        let expose_handle = router.messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &expose_handle,
+            listener_core_node,
+            listener_instance_id,
+            test_node_target(listener_node_name),
+            &[],
+            listener_service_name,
+        )
+        .await
+        .expect("service should start");
+
+        let handler_invocations = Arc::clone(&handler_invocations);
+        let observed_payload = Arc::clone(&observed_payload);
+        let response_payload = response_payload.clone();
+        tokio::spawn(async move {
+            let handler = service.handle_next_request(|request| {
+                let handler_invocations = Arc::clone(&handler_invocations);
+                let observed_payload = Arc::clone(&observed_payload);
+                let response_payload = response_payload.clone();
+                async move {
+                    handler_invocations.fetch_add(1, Ordering::SeqCst);
+                    *observed_payload.lock().await = Some(request.message().payload().clone());
+                    Ok(response_payload)
+                }
+            });
+            ready_tx.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), handler)
+                .await
+                .expect("handler should run within timeout")
+                .expect("handler should not error")
+        })
+    };
+
+    ready_rx.await.expect("service ready");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let caller_handle = router.messenger().await;
+    let response = ServiceMessenger::poll(
+        &caller_handle,
+        CALLER_CORE_NODE,
+        CALLER_INSTANCE_ID,
+        test_node_target(listener_node_name),
+        None,
+        listener_service_name,
+        None,
+        target_instance_id,
+        request_payload.clone(),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("poll should succeed");
+
+    assert_eq!(
+        handler_invocations.load(Ordering::SeqCst),
+        1,
+        "user handler must be invoked exactly once, even when request bytes start with a legacy sentinel",
+    );
+    let observed = observed_payload
+        .lock()
+        .await
+        .clone()
+        .expect("handler should have observed a payload");
+    assert_eq!(
+        observed.as_ref(),
+        request_bytes,
+        "request payload must round-trip byte-equal — no framework byte-stripping",
+    );
+    assert_eq!(
+        response.payload().as_ref(),
+        response_bytes,
+        "response payload must round-trip byte-equal — no framework byte-stripping",
+    );
+
+    let handled = tokio::time::timeout(Duration::from_secs(2), service_task)
+        .await
+        .expect("service task should finish")
+        .expect("service task panicked");
+    assert!(handled, "handler should have processed the request");
+
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_user_payload_starting_with_probe_sentinel_is_delivered_to_handler() {
+    // Pinned (specific instance_id) — the request bypasses discover-then-pin
+    // entirely. With the old byte-prefix discriminator a payload starting
+    // with the probe sentinel would be auto-handled by the producer's
+    // request loop. The new attachment-based kind makes the request kind
+    // (UserRequest vs Probe) independent of payload bytes.
+    run_sentinel_collision_test(
+        LEGACY_PROBE_SENTINEL,
+        b"opaque-response",
+        Some("listener_inst"),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_user_payload_starting_with_probe_sentinel_is_delivered_via_wildcard_discovery() {
+    // Wildcard (target_instance_id: None) — the consumer runs
+    // discover-then-pin first. Pre-fix, the real-request payload starting
+    // with the probe sentinel would be auto-handled by the producer's
+    // request loop (handler never invoked), the consumer's poll would
+    // return `Ok(empty)`, and the request would be silently dropped. Pin
+    // the new behavior: the real request is delivered to the handler
+    // verbatim.
+    run_sentinel_collision_test(LEGACY_PROBE_SENTINEL, b"opaque-response", None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_user_response_starting_with_ack_sentinel_is_returned_to_caller() {
+    // The producer sends an ACK reply before invoking the handler. Pre-fix,
+    // the consumer's poll loop matched ACK by payload bytes — a user
+    // response that happened to start with the ACK sentinel would be
+    // skipped, and the call would time out. The new attachment-based kind
+    // matches on `ServiceReplyKind::Ack`, so a payload-shaped ACK collision
+    // round-trips unchanged.
+    run_sentinel_collision_test(
+        b"opaque-request",
+        LEGACY_ACK_SENTINEL,
+        Some("listener_inst"),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_user_response_starting_with_error_sentinel_is_returned_to_caller() {
+    // Pre-fix, a handler returning a payload starting with the error
+    // sentinel would be misclassified as `ServiceError { reason }`. With
+    // the attachment-based kind, the consumer only treats the reply as a
+    // handler error when `ServiceReplyKind::HandlerError` is set on the
+    // attachment — a normal `Ok(response)` from the handler always rides
+    // as `ServiceReplyKind::Response`, regardless of payload bytes.
+    run_sentinel_collision_test(
+        b"opaque-request",
+        LEGACY_ERROR_SENTINEL,
+        Some("listener_inst"),
+    )
+    .await;
+}

@@ -1,32 +1,45 @@
 use super::discovery::discover_producer;
-use super::{
-    MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD,
-    encode_service_handler_error, generate_short_id, is_service_probe_payload,
-};
+use super::{MessengerHandle, PROBE_TIMEOUT, generate_short_id};
 use crate::error::{Error, Result};
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
 use pmi::{
-    Messenger, ResponseToken, SenderTarget, ServiceKind, ServiceQueryable, ServiceWireReceiver,
-    ServiceWireSender, TopicMessage,
+    Messenger, ResponseToken, SenderTarget, ServiceKind, ServiceQueryKind, ServiceQueryable,
+    ServiceWireReceiver, ServiceWireSender, TopicMessage,
 };
 use std::{fmt, sync::Arc};
 use tokio::{sync::Mutex, time::Duration};
 use tracing::{error, warn};
 
-/// Runs a service handler and converts any error into a protocol-level error payload.
-async fn run_handler<F, Fut>(handler: F, context: ServiceRequestContext) -> Payload
+/// Outcome of running a user service handler — either a payload to surface
+/// to the caller as a normal response, or a UTF-8 reason that the
+/// framework wraps as `Error::ServiceError`. Splitting the outcome at this
+/// layer lets the producer reply with the right `ServiceReplyKind` on the
+/// attachment instead of smuggling a sentinel through the payload.
+enum HandlerOutcome {
+    Response(Payload),
+    HandlerError(String),
+}
+
+async fn run_handler<F, Fut>(handler: F, context: ServiceRequestContext) -> HandlerOutcome
 where
     F: FnOnce(ServiceRequestContext) -> Fut,
     Fut: std::future::Future<Output = Result<Payload>>,
 {
     match handler(context).await {
-        Ok(payload) => payload,
+        Ok(payload) => HandlerOutcome::Response(payload),
         Err(err) => {
             let reason = err.to_string();
             error!(%reason, "service handler returned error");
-            encode_service_handler_error(&reason)
+            HandlerOutcome::HandlerError(reason)
         }
+    }
+}
+
+async fn deliver_outcome(responder: ServiceResponder, outcome: HandlerOutcome) -> Result<()> {
+    match outcome {
+        HandlerOutcome::Response(payload) => responder.respond(payload).await,
+        HandlerOutcome::HandlerError(reason) => responder.respond_error(reason).await,
     }
 }
 
@@ -64,10 +77,25 @@ pub struct ServiceResponder {
 }
 
 impl ServiceResponder {
-    /// Send the response payload for this request.
+    /// Send the regular response payload for this request. The reply
+    /// carries `ServiceReplyKind::Response` on the attachment; the
+    /// payload bytes are opaque to the framework and round-trip
+    /// unchanged — including the legacy byte-prefix patterns that the
+    /// previous protocol used as sentinels.
     pub async fn respond(self, payload: Payload) -> Result<()> {
         self.token
-            .respond(payload.into_inner().into())
+            .respond_response(payload.into_inner().into())
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
+
+    /// Send a handler-error reply. `reason` rides in the reply payload
+    /// as UTF-8 and the attachment is marked
+    /// `ServiceReplyKind::HandlerError`; the caller's `poll` surfaces
+    /// the reason as `Error::ServiceError { reason, .. }`.
+    pub async fn respond_error(self, reason: String) -> Result<()> {
+        self.token
+            .respond_handler_error(reason)
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
@@ -90,11 +118,10 @@ impl ServiceEndpoint {
                     // ACK reply before invoking the user handler. The caller's
                     // poll loop uses this to distinguish ServiceUnreachable
                     // (no ACK at all) from ServiceTimeout (ACK but no handler
-                    // response within the timeout).
-                    if let Err(err) = token
-                        .respond(bytes::Bytes::from_static(SERVICE_ACK_PAYLOAD).into())
-                        .await
-                    {
+                    // response within the timeout). The ACK kind lives on
+                    // the reply attachment — the user payload is never
+                    // touched.
+                    if let Err(err) = token.respond_ack().await {
                         warn!(
                             %err,
                             request_id = %context.request_id(),
@@ -125,8 +152,8 @@ impl ServiceEndpoint {
             return Ok(false);
         };
         let request_id = context.request_id().to_string();
-        let response = run_handler(handler, context).await;
-        if let Err(err) = responder.respond(response).await {
+        let outcome = run_handler(handler, context).await;
+        if let Err(err) = deliver_outcome(responder, outcome).await {
             warn!(
                 %err,
                 %request_id,
@@ -146,8 +173,8 @@ impl ServiceEndpoint {
     {
         while let Some((context, responder)) = self.recv_next_request().await? {
             let request_id = context.request_id().to_string();
-            let response = run_handler(&mut handler, context).await;
-            if let Err(err) = responder.respond(response).await {
+            let outcome = run_handler(&mut handler, context).await;
+            if let Err(err) = deliver_outcome(responder, outcome).await {
                 warn!(
                     %err,
                     %request_id,
@@ -171,8 +198,10 @@ impl ServiceEndpoint {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(None);
         };
-        let task =
-            spawn(async move { responder.respond(run_handler(handler, context).await).await });
+        let task = spawn(async move {
+            let outcome = run_handler(handler, context).await;
+            deliver_outcome(responder, outcome).await
+        });
         Ok(Some(task))
     }
 
@@ -180,25 +209,40 @@ impl ServiceEndpoint {
         loop {
             match self.queryable.rx.recv().await {
                 Some(incoming) => {
-                    // Auto-handle probes: respond immediately without invoking
-                    // the user handler, so is_reachable() checks are transparent.
-                    if is_service_probe_payload(&incoming.payload.as_bytes()) {
-                        if let Err(err) = incoming.token.respond(bytes::Bytes::new().into()).await {
-                            warn!(%err, "failed to publish probe response");
+                    match incoming.kind {
+                        ServiceQueryKind::Probe => {
+                            // Auto-handle probes: reply with `Response` kind
+                            // and an empty payload, never invoking the user
+                            // handler. **Critical**: probes do NOT get an
+                            // ACK — the consumer's poll loop pins the
+                            // responder's identity off the first non-Ack
+                            // reply, so an Ack-kind probe reply would
+                            // deadlock the wildcard discover-then-pin flow.
+                            if let Err(err) = incoming
+                                .token
+                                .respond_response(bytes::Bytes::new().into())
+                                .await
+                            {
+                                warn!(%err, "failed to publish probe response");
+                            }
+                            continue;
                         }
-                        continue;
+                        ServiceQueryKind::UserRequest => {
+                            let topic_message = TopicMessage::from_parts(
+                                incoming.caller_core,
+                                incoming.caller_inst,
+                                incoming.payload,
+                            );
+
+                            let request_id = generate_short_id("request");
+                            let context = ServiceRequestContext::new(
+                                topic_message,
+                                request_id,
+                                incoming.link_id,
+                            );
+                            return Ok((context, incoming.token));
+                        }
                     }
-
-                    let topic_message = TopicMessage::from_parts(
-                        incoming.caller_core,
-                        incoming.caller_inst,
-                        incoming.payload,
-                    );
-
-                    let request_id = generate_short_id("request");
-                    let context =
-                        ServiceRequestContext::new(topic_message, request_id, incoming.link_id);
-                    return Ok((context, incoming.token));
                 }
                 None => return Err(Error::ServiceRequestStreamClosed),
             }
@@ -352,7 +396,12 @@ impl ServiceMessenger {
         )?
         .with_excluded_link_ids(&excluded)?;
         messenger
-            .poll_service(&sender, request_payload, response_timeout)
+            .poll_service(
+                &sender,
+                request_payload,
+                ServiceQueryKind::UserRequest,
+                response_timeout,
+            )
             .await
     }
 
@@ -392,7 +441,8 @@ impl ServiceMessenger {
         match messenger
             .poll_service(
                 &sender,
-                Payload::from_static(SERVICE_PROBE_PAYLOAD),
+                Payload::new(),
+                ServiceQueryKind::Probe,
                 PROBE_TIMEOUT,
             )
             .await

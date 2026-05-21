@@ -22,6 +22,18 @@ fn iface(name: &str, tag: &str) -> SenderTarget {
     SenderTarget::interface(name, tag).expect("test interface target should be valid")
 }
 
+/// Test-local shorthand: encoded bytes for a default UserRequest query
+/// attachment (no exclusion set). Lets selector-shape tests focus on
+/// keyexpr parsing without restating the attachment payload at every
+/// call site.
+fn user_request_attachment_bytes() -> bytes::Bytes {
+    ServiceQueryAttachment {
+        kind: ServiceQueryKind::UserRequest,
+        excluded_link_ids: Vec::new(),
+    }
+    .encode()
+}
+
 // ─── Topics ───────────────────────────────────────────────────────────────
 
 #[test]
@@ -484,13 +496,16 @@ fn service_reply_keyexpr_action_result_appends_suffix() {
 fn parse_inbound_query_extracts_caller_identity_and_literal_link_id() {
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping";
-    let parsed = ZenohWireFormat::parse_inbound_query(&receiver, query, &[]).expect("should parse");
+    let parsed =
+        ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
+            .expect("should parse");
     assert_eq!(parsed.caller_core, "caller_core");
     assert_eq!(parsed.caller_inst, "caller_inst");
     assert_eq!(
         parsed.link_id, "_",
         "default-link-id producer selector should surface `_` literal"
     );
+    assert_eq!(parsed.kind, ServiceQueryKind::UserRequest);
 }
 
 #[test]
@@ -502,7 +517,9 @@ fn parse_inbound_query_accepts_wildcard_in_target_slots_and_link_id() {
     // because Zenoh keyexpr matching has already routed the query.
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "*/caller_core/*/caller_inst/service/node/robot_arm/v1/*/ping";
-    let parsed = ZenohWireFormat::parse_inbound_query(&receiver, query, &[]).expect("should parse");
+    let parsed =
+        ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
+            .expect("should parse");
     assert_eq!(parsed.caller_core, "caller_core");
     assert_eq!(parsed.caller_inst, "caller_inst");
     assert_eq!(
@@ -518,8 +535,57 @@ fn parse_inbound_query_surfaces_concrete_link_id_literal() {
     // the producer's bound set.
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/wrist_right/ping";
-    let parsed = ZenohWireFormat::parse_inbound_query(&receiver, query, &[]).expect("should parse");
+    let parsed =
+        ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
+            .expect("should parse");
     assert_eq!(parsed.link_id, "wrist_right");
+}
+
+#[test]
+fn parse_inbound_query_surfaces_probe_kind_from_attachment() {
+    // The probe kind discriminator lives on the attachment. A user payload
+    // that happens to start with the legacy probe sentinel bytes no longer
+    // reaches this layer — discrimination happens entirely on the
+    // attachment, not the payload.
+    let receiver = sample_service_receiver(ServiceKind::Service);
+    let query = "*/caller_core/*/caller_inst/service/node/robot_arm/v1/*/ping";
+    let probe_attachment = ServiceQueryAttachment {
+        kind: ServiceQueryKind::Probe,
+        excluded_link_ids: Vec::new(),
+    }
+    .encode();
+    let parsed = ZenohWireFormat::parse_inbound_query(&receiver, query, &probe_attachment)
+        .expect("should parse");
+    assert_eq!(parsed.kind, ServiceQueryKind::Probe);
+}
+
+#[test]
+fn parse_inbound_query_rejects_missing_attachment_with_structured_error() {
+    // Mid-rollout safety: a peer running the old protocol sends queries
+    // with no attachment. The producer must surface the structured error
+    // rather than silently treating the query as a default UserRequest —
+    // dropping the query is what triggers the consumer's ServiceUnreachable.
+    let receiver = sample_service_receiver(ServiceKind::Service);
+    let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping";
+    let err = ZenohWireFormat::parse_inbound_query(&receiver, query, &[]).unwrap_err();
+    assert!(matches!(
+        err,
+        ZenohWireParseError::MissingServiceQueryAttachment
+    ));
+}
+
+#[test]
+fn parse_inbound_query_rejects_v1_magic_with_structured_error() {
+    // Old-protocol attachment bytes (V1 magic) must produce a structured
+    // mismatch error so mid-rollout skew is loud, not silent.
+    let receiver = sample_service_receiver(ServiceKind::Service);
+    let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping";
+    let v1_bytes: &[u8] = &[0x01, 0x00];
+    let err = ZenohWireFormat::parse_inbound_query(&receiver, query, v1_bytes).unwrap_err();
+    assert!(matches!(
+        err,
+        ZenohWireParseError::ServiceQueryAttachmentMagicMismatch { .. }
+    ));
 }
 
 #[test]
@@ -532,6 +598,7 @@ fn parsed_inbound_query_choose_link_id_wildcard_claims_first_bound() {
         caller_core: "caller_core".to_string(),
         caller_inst: "caller_inst".to_string(),
         link_id: SINGLE_CHUNK_WILDCARD.to_string(),
+        kind: ServiceQueryKind::UserRequest,
         excluded_link_ids: Vec::new(),
     };
     let bound = vec!["wrist_left".to_string(), "wrist_right".to_string()];
@@ -544,6 +611,7 @@ fn parsed_inbound_query_choose_link_id_literal_matches_bound() {
         caller_core: "caller_core".to_string(),
         caller_inst: "caller_inst".to_string(),
         link_id: "wrist_right".to_string(),
+        kind: ServiceQueryKind::UserRequest,
         excluded_link_ids: Vec::new(),
     };
     let bound = vec!["wrist_left".to_string(), "wrist_right".to_string()];
@@ -560,6 +628,7 @@ fn parsed_inbound_query_choose_link_id_literal_outside_bound_set_drops() {
         caller_core: "caller_core".to_string(),
         caller_inst: "caller_inst".to_string(),
         link_id: "torso".to_string(),
+        kind: ServiceQueryKind::UserRequest,
         excluded_link_ids: Vec::new(),
     };
     let bound = vec!["wrist_left".to_string()];
@@ -576,6 +645,7 @@ fn parsed_inbound_query_choose_link_id_wildcard_with_empty_bound_set_drops() {
         caller_core: "caller_core".to_string(),
         caller_inst: "caller_inst".to_string(),
         link_id: SINGLE_CHUNK_WILDCARD.to_string(),
+        kind: ServiceQueryKind::UserRequest,
         excluded_link_ids: Vec::new(),
     };
     let bound: Vec<String> = Vec::new();
@@ -587,7 +657,9 @@ fn parse_inbound_query_rejects_service_root_mismatch() {
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query =
         "server_core/caller_core/server_inst/caller_inst/service/node/different_node/v1/_/ping";
-    let err = ZenohWireFormat::parse_inbound_query(&receiver, query, &[]).unwrap_err();
+    let err =
+        ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
+            .unwrap_err();
     assert!(matches!(
         err,
         ZenohWireParseError::ServiceRootMismatch { .. }
@@ -601,7 +673,9 @@ fn parse_inbound_query_rejects_discriminator_mismatch() {
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query =
         "server_core/caller_core/server_inst/caller_inst/service/interface/robot_arm/v1/_/ping";
-    let err = ZenohWireFormat::parse_inbound_query(&receiver, query, &[]).unwrap_err();
+    let err =
+        ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
+            .unwrap_err();
     assert!(matches!(
         err,
         ZenohWireParseError::ServiceRootMismatch { .. }
@@ -612,7 +686,9 @@ fn parse_inbound_query_rejects_discriminator_mismatch() {
 fn parse_inbound_query_rejects_too_short() {
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "only/two/segments";
-    let err = ZenohWireFormat::parse_inbound_query(&receiver, query, &[]).unwrap_err();
+    let err =
+        ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
+            .unwrap_err();
     assert!(matches!(err, ZenohWireParseError::MissingSegment(_)));
 }
 
@@ -896,8 +972,12 @@ fn parse_inbound_query_node_receiver_rejects_interface_shaped_query() {
     .expect("valid receiver");
     let iface_shaped_query =
         "server_core/caller_core/server_inst/caller_inst/service/interface/widget/v1/_/ping";
-    let err =
-        ZenohWireFormat::parse_inbound_query(&node_receiver, iface_shaped_query, &[]).unwrap_err();
+    let err = ZenohWireFormat::parse_inbound_query(
+        &node_receiver,
+        iface_shaped_query,
+        &user_request_attachment_bytes(),
+    )
+    .unwrap_err();
     assert!(matches!(
         err,
         ZenohWireParseError::ServiceRootMismatch { .. }
@@ -914,8 +994,12 @@ fn parse_inbound_query_node_receiver_rejects_interface_shaped_query() {
     .expect("valid receiver");
     let node_shaped_query =
         "server_core/caller_core/server_inst/caller_inst/service/node/widget/v1/_/ping";
-    let err =
-        ZenohWireFormat::parse_inbound_query(&iface_receiver, node_shaped_query, &[]).unwrap_err();
+    let err = ZenohWireFormat::parse_inbound_query(
+        &iface_receiver,
+        node_shaped_query,
+        &user_request_attachment_bytes(),
+    )
+    .unwrap_err();
     assert!(matches!(
         err,
         ZenohWireParseError::ServiceRootMismatch { .. }
@@ -956,40 +1040,54 @@ fn topic_attachment_unknown_byte_decodes_as_primary() {
     assert!(TopicAttachment::decode(&[0x01, 0xaa]).is_primary);
 }
 
-// ─── Service query attachment (sibling exclusion set) ────────────────────
+// ─── Service query attachment (kind + sibling exclusion set) ─────────────
 
 #[test]
-fn service_query_attachment_empty_set_encodes_to_empty_bytes() {
-    // Empty exclusion → empty attachment. The adapter checks for empty
-    // before calling `.attachment(...)` on the Zenoh builder so the wire
-    // doesn't carry an unnecessary header on every from_any call.
+fn service_query_attachment_user_request_no_exclusions_roundtrips() {
     let attachment = ServiceQueryAttachment {
+        kind: ServiceQueryKind::UserRequest,
         excluded_link_ids: Vec::new(),
     };
-    assert!(attachment.encode().is_empty());
+    let decoded = ServiceQueryAttachment::decode(attachment.encode().as_ref())
+        .expect("encoded attachment decodes");
+    assert_eq!(decoded.kind, ServiceQueryKind::UserRequest);
+    assert!(decoded.excluded_link_ids.is_empty());
+}
+
+#[test]
+fn service_query_attachment_probe_kind_roundtrips() {
+    let attachment = ServiceQueryAttachment {
+        kind: ServiceQueryKind::Probe,
+        excluded_link_ids: Vec::new(),
+    };
+    let decoded = ServiceQueryAttachment::decode(attachment.encode().as_ref())
+        .expect("encoded attachment decodes");
+    assert_eq!(decoded.kind, ServiceQueryKind::Probe);
 }
 
 #[test]
 fn service_query_attachment_roundtrip_single_entry() {
     let attachment = ServiceQueryAttachment {
+        kind: ServiceQueryKind::UserRequest,
         excluded_link_ids: vec!["wrist_left".to_string()],
     };
-    let encoded = attachment.encode();
-    let decoded = ServiceQueryAttachment::decode(encoded.as_ref());
+    let decoded = ServiceQueryAttachment::decode(attachment.encode().as_ref())
+        .expect("encoded attachment decodes");
     assert_eq!(decoded.excluded_link_ids, vec!["wrist_left".to_string()]);
 }
 
 #[test]
 fn service_query_attachment_roundtrip_multiple_entries_preserves_order() {
     let attachment = ServiceQueryAttachment {
+        kind: ServiceQueryKind::UserRequest,
         excluded_link_ids: vec![
             "wrist_left".to_string(),
             "wrist_right".to_string(),
             "torso".to_string(),
         ],
     };
-    let encoded = attachment.encode();
-    let decoded = ServiceQueryAttachment::decode(encoded.as_ref());
+    let decoded = ServiceQueryAttachment::decode(attachment.encode().as_ref())
+        .expect("encoded attachment decodes");
     assert_eq!(
         decoded.excluded_link_ids,
         vec![
@@ -1001,39 +1099,105 @@ fn service_query_attachment_roundtrip_multiple_entries_preserves_order() {
 }
 
 #[test]
-fn service_query_attachment_decode_missing_or_unknown_magic_is_empty() {
-    // Empty bytes ⇒ empty set (preserves today's no-exclusion behavior for
-    // producers that talk to old consumers, and for from_any callers that
-    // don't have any sibling pinned dependencies).
-    assert!(
-        ServiceQueryAttachment::decode(&[])
-            .excluded_link_ids
-            .is_empty()
-    );
-    // Unknown magic byte ⇒ empty set (defensive: future versions can
-    // introduce a 0x02 schema; older producers must treat it as no
-    // exclusion rather than panic or misroute).
-    assert!(
-        ServiceQueryAttachment::decode(&[0x02, 0x01, 0x04, b't', b'e', b's', b't'])
-            .excluded_link_ids
-            .is_empty()
-    );
+fn service_query_attachment_decode_rejects_empty_bytes() {
+    assert!(matches!(
+        ServiceQueryAttachment::decode(&[]),
+        Err(ZenohWireParseError::MissingServiceQueryAttachment)
+    ));
 }
 
 #[test]
-fn service_query_attachment_decode_truncated_payload_returns_what_was_parsed() {
-    // Truncation after a complete entry: only the complete entries survive.
-    // The leftover length byte advertises a payload that isn't present.
-    // The decoder stops cleanly rather than panicking.
-    let mut bytes = Vec::new();
-    bytes.push(ServiceQueryAttachment::MAGIC_V1);
-    bytes.push(2); // count
-    bytes.push(3); // len
-    bytes.extend_from_slice(b"abc");
-    bytes.push(10); // promised len exceeds remaining
-    bytes.extend_from_slice(b"xy"); // only 2 bytes
-    let decoded = ServiceQueryAttachment::decode(&bytes);
-    assert_eq!(decoded.excluded_link_ids, vec!["abc".to_string()]);
+fn service_query_attachment_decode_rejects_v1_magic() {
+    // V1 was kindless. New producers MUST refuse it so mid-rollout skew
+    // surfaces loudly.
+    assert!(matches!(
+        ServiceQueryAttachment::decode(&[0x01, 0x00]),
+        Err(ZenohWireParseError::ServiceQueryAttachmentMagicMismatch { .. })
+    ));
+}
+
+#[test]
+fn service_query_attachment_decode_rejects_unknown_kind_byte() {
+    let bytes = [ServiceQueryAttachment::MAGIC_V2, 0xff, 0x00];
+    assert!(matches!(
+        ServiceQueryAttachment::decode(&bytes),
+        Err(ZenohWireParseError::UnknownServiceQueryKind(0xff))
+    ));
+}
+
+#[test]
+fn service_query_attachment_decode_rejects_truncated_payload() {
+    // V2 header present, but the promised entry length exceeds the buffer.
+    // Decode returns an error (rather than the lenient "what was parsed"
+    // semantic of the old V1 attachment) — the wire is now strict.
+    let bytes = vec![
+        ServiceQueryAttachment::MAGIC_V2,
+        ServiceQueryKind::UserRequest.as_byte(),
+        1,    // count: 1
+        10,   // promised entry length
+        b'a', // only 1 byte provided
+    ];
+    assert!(matches!(
+        ServiceQueryAttachment::decode(&bytes),
+        Err(ZenohWireParseError::TruncatedServiceQueryAttachment)
+    ));
+}
+
+// ─── Service reply attachment (Ack / Response / HandlerError) ────────────
+
+#[test]
+fn service_reply_attachment_ack_roundtrips() {
+    let attachment = ServiceReplyAttachment {
+        kind: ServiceReplyKind::Ack,
+    };
+    let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())
+        .expect("encoded reply attachment decodes");
+    assert_eq!(decoded.kind, ServiceReplyKind::Ack);
+}
+
+#[test]
+fn service_reply_attachment_response_roundtrips() {
+    let attachment = ServiceReplyAttachment {
+        kind: ServiceReplyKind::Response,
+    };
+    let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())
+        .expect("encoded reply attachment decodes");
+    assert_eq!(decoded.kind, ServiceReplyKind::Response);
+}
+
+#[test]
+fn service_reply_attachment_handler_error_roundtrips() {
+    let attachment = ServiceReplyAttachment {
+        kind: ServiceReplyKind::HandlerError,
+    };
+    let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())
+        .expect("encoded reply attachment decodes");
+    assert_eq!(decoded.kind, ServiceReplyKind::HandlerError);
+}
+
+#[test]
+fn service_reply_attachment_decode_rejects_empty_bytes() {
+    assert!(matches!(
+        ServiceReplyAttachment::decode(&[]),
+        Err(ZenohWireParseError::MissingServiceReplyAttachment)
+    ));
+}
+
+#[test]
+fn service_reply_attachment_decode_rejects_unknown_magic() {
+    assert!(matches!(
+        ServiceReplyAttachment::decode(&[0xff, 0x00]),
+        Err(ZenohWireParseError::ServiceReplyAttachmentMagicMismatch { .. })
+    ));
+}
+
+#[test]
+fn service_reply_attachment_decode_rejects_unknown_kind_byte() {
+    let bytes = [ServiceReplyAttachment::MAGIC_V1, 0xff];
+    assert!(matches!(
+        ServiceReplyAttachment::decode(&bytes),
+        Err(ZenohWireParseError::UnknownServiceReplyKind(0xff))
+    ));
 }
 
 // ─── ParsedInboundQuery::choose_link_id with excluded set ────────────────
@@ -1047,6 +1211,7 @@ fn choose_link_id_wildcard_skips_excluded_first_bound() {
         caller_core: "caller_core".to_string(),
         caller_inst: "caller_inst".to_string(),
         link_id: SINGLE_CHUNK_WILDCARD.to_string(),
+        kind: ServiceQueryKind::UserRequest,
         excluded_link_ids: vec!["wrist_left".to_string()],
     };
     let bound = vec!["wrist_left".to_string(), "wrist_right".to_string()];
@@ -1063,6 +1228,7 @@ fn choose_link_id_wildcard_falls_back_to_first_bound_when_all_excluded() {
         caller_core: "caller_core".to_string(),
         caller_inst: "caller_inst".to_string(),
         link_id: SINGLE_CHUNK_WILDCARD.to_string(),
+        kind: ServiceQueryKind::UserRequest,
         excluded_link_ids: vec!["wrist_left".to_string(), "wrist_right".to_string()],
     };
     let bound = vec!["wrist_left".to_string(), "wrist_right".to_string()];
@@ -1079,6 +1245,7 @@ fn choose_link_id_literal_ignores_excluded_set() {
         caller_core: "caller_core".to_string(),
         caller_inst: "caller_inst".to_string(),
         link_id: "wrist_left".to_string(),
+        kind: ServiceQueryKind::UserRequest,
         excluded_link_ids: vec!["wrist_left".to_string()],
     };
     let bound = vec!["wrist_left".to_string(), "wrist_right".to_string()];

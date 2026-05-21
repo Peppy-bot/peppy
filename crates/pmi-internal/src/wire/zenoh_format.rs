@@ -231,28 +231,33 @@ impl ZenohWireFormat {
             .ok_or(ZenohWireParseError::MissingSegment("link_id"))?
             .to_string();
 
-        let attachment = ServiceQueryAttachment::decode(attachment_bytes);
+        let attachment = ServiceQueryAttachment::decode(attachment_bytes)?;
 
         Ok(ParsedInboundQuery {
             caller_core,
             caller_inst,
             link_id,
+            kind: attachment.kind,
             excluded_link_ids: attachment.excluded_link_ids,
         })
     }
 
-    /// Caller-side attachment bytes for the consumer's "excluded link_ids"
-    /// set. The producer's [`ParsedInboundQuery::choose_link_id`] consults
-    /// the decoded set when claiming a bound link_id for a wildcard
-    /// selector. An empty set produces empty bytes, preserving today's
-    /// first-bound dispatch on the producer side.
-    pub(crate) fn service_get_selector_attachment(s: &ServiceWireSender) -> bytes::Bytes {
+    /// Caller-side attachment bytes for a service query. Carries both the
+    /// request kind (UserRequest vs Probe — discriminates probes from real
+    /// requests without smuggling sentinels through the payload) and the
+    /// consumer's "excluded link_ids" set (sibling-pinned dependencies the
+    /// `from_any` caller has already claimed).
+    pub(crate) fn service_get_selector_attachment(
+        s: &ServiceWireSender,
+        kind: ServiceQueryKind,
+    ) -> bytes::Bytes {
         let excluded: Vec<String> = s
             .excluded_link_ids
             .iter()
             .map(|seg| seg.as_str().to_string())
             .collect();
         ServiceQueryAttachment {
+            kind,
             excluded_link_ids: excluded,
         }
         .encode()
@@ -386,49 +391,72 @@ impl TopicAttachment {
     }
 }
 
-/// Service / action query attachment carrying the consumer's "excluded
-/// link_ids" set: the producer link_ids a sibling pinned dependency on
-/// the same `(name, tag)` has already claimed. The producer's
-/// [`ParsedInboundQuery::choose_link_id`] skips first-bound entries in this
-/// set so a `from_any: true` consumer doesn't silently alias a pinned
-/// sibling's request.
+/// Whether a service query carries a user request (handler should run) or
+/// a discovery probe (auto-replied by the producer's request loop before
+/// the handler is invoked). The producer reads this from the query
+/// attachment to discriminate the two without inspecting payload bytes,
+/// closing the silent-data-loss class that occurred when a user payload
+/// happened to start with the legacy `\0peppy_service_probe\0` sentinel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceQueryKind {
+    UserRequest,
+    Probe,
+}
+
+impl ServiceQueryKind {
+    fn as_byte(self) -> u8 {
+        match self {
+            Self::UserRequest => 0x00,
+            Self::Probe => 0x01,
+        }
+    }
+
+    fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0x00 => Some(Self::UserRequest),
+            0x01 => Some(Self::Probe),
+            _ => None,
+        }
+    }
+}
+
+/// Service / action query attachment carrying the request kind plus the
+/// consumer's "excluded link_ids" set (the producer link_ids a sibling
+/// pinned dependency on the same `(name, tag)` has already claimed —
+/// consulted by [`ParsedInboundQuery::choose_link_id`] so a `from_any: true`
+/// consumer doesn't silently alias a pinned sibling's request).
 ///
-/// Wire layout:
-/// - byte 0: magic + version, `0x01`. A missing or empty attachment
-///   decodes to an empty set, preserving today's "no exclusion" behavior
-///   for producers that talk to old consumers (or for consumer call sites
-///   that haven't registered manifest siblings).
-/// - byte 1: count `N` (max 255; far above any realistic sibling count).
+/// Wire layout (mandatory on every service query):
+/// - byte 0: magic + version, `0x02`. Earlier `0x01` had no kind byte —
+///   any peer that produces V1 is mid-rollout and must redeploy.
+/// - byte 1: kind discriminator (see [`ServiceQueryKind::as_byte`]).
+/// - byte 2: count `N` of excluded link_ids (max 255).
 /// - then `N` entries, each `(u8 len)(len bytes utf-8)`.
 ///
-/// Decoding is lenient on the trailing bytes (truncated input returns an
-/// empty set rather than an error) because the attachment is an
-/// optimization, not a correctness boundary; the absence of an exclusion
-/// set falls back to today's first-bound dispatch.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Decode is strict: a missing attachment, wrong magic, unknown kind byte,
+/// or a truncated entry is reported as a [`ZenohWireParseError`] so
+/// mid-rollout schema skew surfaces loudly instead of as silent
+/// misclassification.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ServiceQueryAttachment {
+    pub(crate) kind: ServiceQueryKind,
     pub(crate) excluded_link_ids: Vec<String>,
 }
 
 impl ServiceQueryAttachment {
-    pub(crate) const MAGIC_V1: u8 = 0x01;
+    pub(crate) const MAGIC_V2: u8 = 0x02;
 
     pub(crate) fn encode(&self) -> bytes::Bytes {
-        // Empty set: emit an empty attachment so producers and intermediate
-        // proxies don't allocate / decode a degenerate header. Receivers
-        // that decode an empty byte slice get back an empty set.
-        if self.excluded_link_ids.is_empty() {
-            return bytes::Bytes::new();
-        }
         let count = self.excluded_link_ids.len().min(u8::MAX as usize);
         let mut buf = Vec::with_capacity(
-            2 + self
+            3 + self
                 .excluded_link_ids
                 .iter()
                 .map(|s| 1 + s.len())
                 .sum::<usize>(),
         );
-        buf.push(Self::MAGIC_V1);
+        buf.push(Self::MAGIC_V2);
+        buf.push(self.kind.as_byte());
         buf.push(count as u8);
         for s in self.excluded_link_ids.iter().take(count) {
             let len = s.len().min(u8::MAX as usize) as u8;
@@ -438,36 +466,122 @@ impl ServiceQueryAttachment {
         bytes::Bytes::from(buf)
     }
 
-    pub(crate) fn decode(bytes: &[u8]) -> Self {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, ZenohWireParseError> {
         if bytes.is_empty() {
-            return Self::default();
+            return Err(ZenohWireParseError::MissingServiceQueryAttachment);
         }
-        if bytes[0] != Self::MAGIC_V1 {
-            return Self::default();
+        if bytes[0] != Self::MAGIC_V2 {
+            return Err(ZenohWireParseError::ServiceQueryAttachmentMagicMismatch {
+                expected: Self::MAGIC_V2,
+                got: bytes[0],
+            });
         }
-        let Some(&count) = bytes.get(1) else {
-            return Self::default();
-        };
+        let kind_byte = *bytes
+            .get(1)
+            .ok_or(ZenohWireParseError::TruncatedServiceQueryAttachment)?;
+        let kind = ServiceQueryKind::from_byte(kind_byte)
+            .ok_or(ZenohWireParseError::UnknownServiceQueryKind(kind_byte))?;
+        let count = *bytes
+            .get(2)
+            .ok_or(ZenohWireParseError::TruncatedServiceQueryAttachment)?;
         let mut excluded = Vec::with_capacity(count as usize);
-        let mut cursor = 2usize;
+        let mut cursor = 3usize;
         for _ in 0..count {
-            let Some(&len_byte) = bytes.get(cursor) else {
-                break;
-            };
+            let len_byte = *bytes
+                .get(cursor)
+                .ok_or(ZenohWireParseError::TruncatedServiceQueryAttachment)?;
             cursor += 1;
             let len = len_byte as usize;
             if cursor + len > bytes.len() {
-                break;
+                return Err(ZenohWireParseError::TruncatedServiceQueryAttachment);
             }
-            match std::str::from_utf8(&bytes[cursor..cursor + len]) {
-                Ok(s) => excluded.push(s.to_string()),
-                Err(_) => break,
-            }
+            let s = std::str::from_utf8(&bytes[cursor..cursor + len])
+                .map_err(|_| ZenohWireParseError::InvalidUtf8InServiceQueryAttachment)?;
+            excluded.push(s.to_string());
             cursor += len;
         }
-        Self {
+        Ok(Self {
+            kind,
             excluded_link_ids: excluded,
+        })
+    }
+}
+
+/// Service reply kind, encoded in the [`ServiceReplyAttachment`] that
+/// rides on every `query.reply()`. The consumer's poll loop matches on
+/// this to skip ACKs, return regular responses, and surface handler
+/// errors — without inspecting payload bytes for legacy sentinels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceReplyKind {
+    /// Sent immediately by the producer when a real user request arrives,
+    /// before the user handler is invoked. Lets the consumer distinguish
+    /// `ServiceUnreachable` (no ACK at all) from `ServiceTimeout`
+    /// (ACK arrived, handler didn't reply in time). Payload is empty.
+    Ack,
+    /// The user handler returned `Ok(payload)` — payload bytes are the
+    /// handler's response, opaque to the framework. Also used for the
+    /// producer's transparent reply to a `Probe` request (empty payload).
+    Response,
+    /// The user handler returned `Err(reason)` (or a Python handler raised
+    /// an exception). Payload bytes are the UTF-8 reason; the consumer
+    /// surfaces this as [`crate::error::Error::ServiceError`] (in peppylib).
+    HandlerError,
+}
+
+impl ServiceReplyKind {
+    fn as_byte(self) -> u8 {
+        match self {
+            Self::Ack => 0x00,
+            Self::Response => 0x01,
+            Self::HandlerError => 0x02,
         }
+    }
+
+    fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0x00 => Some(Self::Ack),
+            0x01 => Some(Self::Response),
+            0x02 => Some(Self::HandlerError),
+            _ => None,
+        }
+    }
+}
+
+/// Reply attachment carrying the [`ServiceReplyKind`]. Mandatory on every
+/// service reply.
+///
+/// Wire layout: `[0x01 magic][kind u8]` — 2 bytes total. Reasons for
+/// [`ServiceReplyKind::HandlerError`] ride in the reply payload as UTF-8
+/// (variable length stays out of the attachment lane), keeping this
+/// attachment compact and fixed-size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ServiceReplyAttachment {
+    pub(crate) kind: ServiceReplyKind,
+}
+
+impl ServiceReplyAttachment {
+    pub(crate) const MAGIC_V1: u8 = 0x01;
+
+    pub(crate) fn encode(self) -> bytes::Bytes {
+        bytes::Bytes::from(vec![Self::MAGIC_V1, self.kind.as_byte()])
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, ZenohWireParseError> {
+        if bytes.is_empty() {
+            return Err(ZenohWireParseError::MissingServiceReplyAttachment);
+        }
+        if bytes[0] != Self::MAGIC_V1 {
+            return Err(ZenohWireParseError::ServiceReplyAttachmentMagicMismatch {
+                expected: Self::MAGIC_V1,
+                got: bytes[0],
+            });
+        }
+        let kind_byte = *bytes
+            .get(1)
+            .ok_or(ZenohWireParseError::TruncatedServiceReplyAttachment)?;
+        let kind = ServiceReplyKind::from_byte(kind_byte)
+            .ok_or(ZenohWireParseError::UnknownServiceReplyKind(kind_byte))?;
+        Ok(Self { kind })
     }
 }
 
@@ -477,10 +591,12 @@ impl ServiceQueryAttachment {
 /// adapter inspects this field to decide which of its bound link_ids to
 /// claim for the inbound request via [`Self::choose_link_id`].
 ///
-/// `excluded_link_ids` is the consumer's "claimed by a sibling pinned
-/// dependency" set, decoded from the query attachment. The producer's
-/// `choose_link_id` skips first-bound entries in this set so a from_any
-/// consumer doesn't silently alias a pinned sibling's request.
+/// `kind` is decoded from the query attachment and distinguishes user
+/// requests (handler runs) from probes (auto-replied without invoking the
+/// handler). `excluded_link_ids` is the consumer's "claimed by a sibling
+/// pinned dependency" set — `choose_link_id` skips first-bound entries in
+/// it so a from_any consumer doesn't silently alias a pinned sibling's
+/// request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedInboundQuery {
     pub(crate) caller_core: String,
@@ -489,9 +605,12 @@ pub(crate) struct ParsedInboundQuery {
     /// single-chunk wildcard `*` (a `from_any` consumer) or a concrete
     /// literal (a pinned consumer).
     pub(crate) link_id: String,
+    /// Whether this query is a real user request or a discovery probe.
+    /// Decoded from the mandatory query attachment.
+    pub(crate) kind: ServiceQueryKind,
     /// Link_ids the consumer's sibling pinned dependencies already claim.
-    /// Empty when the consumer didn't attach an exclusion set (single
-    /// pinned / from_any without siblings, or old-shape callers).
+    /// Empty when the consumer hasn't registered manifest siblings for
+    /// this `(name, tag)`.
     pub(crate) excluded_link_ids: Vec<String>,
 }
 
@@ -531,12 +650,39 @@ impl ParsedInboundQuery {
     }
 }
 
-/// Reasons a request keyexpr can fail to match the expected request shape.
+/// Reasons a request keyexpr or attachment can fail to match the expected
+/// wire shape. Mid-rollout schema skew surfaces as a structured error
+/// (one of these) rather than silently falling back to a default — the
+/// load-bearing safety property for the sentinel removal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ZenohWireParseError {
     MissingSegment(&'static str),
     WildcardInCallerSegment(&'static str),
-    ServiceRootMismatch { expected: String, got: String },
+    ServiceRootMismatch {
+        expected: String,
+        got: String,
+    },
+    /// Inbound service query arrived with no attachment. Either an
+    /// old-protocol peer or a non-peppy client. The producer must drop
+    /// the query (no reply) so the consumer sees `ServiceUnreachable`.
+    MissingServiceQueryAttachment,
+    ServiceQueryAttachmentMagicMismatch {
+        expected: u8,
+        got: u8,
+    },
+    TruncatedServiceQueryAttachment,
+    UnknownServiceQueryKind(u8),
+    InvalidUtf8InServiceQueryAttachment,
+    /// Service reply arrived with no attachment. Treated as a malformed
+    /// reply and dropped — the consumer's poll loop ignores it and the
+    /// usual timeout / unreachable path applies.
+    MissingServiceReplyAttachment,
+    ServiceReplyAttachmentMagicMismatch {
+        expected: u8,
+        got: u8,
+    },
+    TruncatedServiceReplyAttachment,
+    UnknownServiceReplyKind(u8),
 }
 
 impl fmt::Display for ZenohWireParseError {
@@ -551,6 +697,36 @@ impl fmt::Display for ZenohWireParseError {
                 f,
                 "service root segment mismatch: expected `{expected}`, got `{got}`"
             ),
+            Self::MissingServiceQueryAttachment => write!(
+                f,
+                "service query arrived with no attachment (peer is on an older protocol)"
+            ),
+            Self::ServiceQueryAttachmentMagicMismatch { expected, got } => write!(
+                f,
+                "service query attachment magic mismatch: expected {expected:#04x}, got {got:#04x}"
+            ),
+            Self::TruncatedServiceQueryAttachment => {
+                write!(f, "service query attachment truncated")
+            }
+            Self::UnknownServiceQueryKind(byte) => {
+                write!(f, "unknown service query kind discriminator: {byte:#04x}")
+            }
+            Self::InvalidUtf8InServiceQueryAttachment => {
+                write!(f, "service query attachment contained invalid UTF-8")
+            }
+            Self::MissingServiceReplyAttachment => {
+                write!(f, "service reply arrived with no attachment")
+            }
+            Self::ServiceReplyAttachmentMagicMismatch { expected, got } => write!(
+                f,
+                "service reply attachment magic mismatch: expected {expected:#04x}, got {got:#04x}"
+            ),
+            Self::TruncatedServiceReplyAttachment => {
+                write!(f, "service reply attachment truncated")
+            }
+            Self::UnknownServiceReplyKind(byte) => {
+                write!(f, "unknown service reply kind discriminator: {byte:#04x}")
+            }
         }
     }
 }

@@ -925,22 +925,16 @@ fn main() -> Result<()> {
         &user_node_consumer,
     )
     .await;
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        UVC_CAMERA_NODE_NAME,
-        exposer1_instance_id,
-        &mut exposer1_child,
-        &user_node_exposer1,
-    )
-    .await;
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        UVC_CAMERA_NODE_NAME,
-        exposer2_instance_id,
-        &mut exposer2_child,
-        &user_node_exposer2,
-    )
-    .await;
+    // Do NOT wait for health on the exposers here. Under discover-then-pin
+    // only the winning exposer's `handle_next_request` returns and lets
+    // `setup_fn` complete; the loser stays parked on its queryable, so
+    // `run_post_setup_services` (which registers the health endpoint) never
+    // runs there. Probing health on the loser would loop forever. The
+    // pre-setup shutdown queryable is up on both exposers, so the
+    // `send_shutdown` calls below still land cleanly. The consumer's
+    // health probe above already implies the response round-trip
+    // completed, which guarantees the winner printed
+    // `enable_camera handler finished` before we send shutdown.
 
     send_shutdown(
         &messenger,
@@ -1005,31 +999,61 @@ fn main() -> Result<()> {
     let exposer2_stdout = String::from_utf8_lossy(&exposer_output2.stdout).into_owned();
     let exposer2_stderr = String::from_utf8_lossy(&exposer_output2.stderr).into_owned();
 
-    // Both exposers should have received the request
+    // Under discover-then-pin, the consumer probes both exposers and pins
+    // to whichever responds first; the real request goes only to the
+    // winner. The loser must NOT run its handler — that's the load-bearing
+    // safety guarantee of the wildcard flow. Either exposer can win the
+    // probe race; identify the winner by the response marker the consumer
+    // printed (exposer1 emits `error=handled`, exposer2 emits
+    // `error=handled_by_exposer2`).
     let expected_request_log = format!(
         "received enable_camera request for {}: true",
         consumer_instance_id
     );
+    let consumer_saw_exposer2 = consumer_stdout.contains("error=handled_by_exposer2");
+    let consumer_saw_exposer1 = consumer_stdout
+        .lines()
+        .any(|line| line.trim_end() == "enable_camera result: enabled=true error=handled");
     assert!(
-        exposer1_stdout.contains(&expected_request_log)
-            && exposer1_stdout.contains("enable_camera handler finished"),
-        "exposer1 did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
-        exposer1_stdout,
-        exposer1_stderr
-    );
-    assert!(
-        exposer2_stdout.contains(&expected_request_log)
-            && exposer2_stdout.contains("enable_camera handler finished"),
-        "exposer2 did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
-        exposer2_stdout,
-        exposer2_stderr
-    );
-
-    // Consumer should have received a response from exposer1 (the faster responder)
-    assert!(
-        consumer_stdout.contains("enable_camera result: enabled=true error=handled"),
-        "consumer should have received response from exposer1 (the faster responder), not exposer2.\nstdout:\n{}\nstderr:\n{}",
+        consumer_saw_exposer1 ^ consumer_saw_exposer2,
+        "consumer must have received exactly one response.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr
+    );
+
+    let (winner_stdout, winner_stderr, loser_stdout, loser_stderr, winner_label, loser_label) =
+        if consumer_saw_exposer1 {
+            (
+                &exposer1_stdout,
+                &exposer1_stderr,
+                &exposer2_stdout,
+                &exposer2_stderr,
+                "exposer1",
+                "exposer2",
+            )
+        } else {
+            (
+                &exposer2_stdout,
+                &exposer2_stderr,
+                &exposer1_stdout,
+                &exposer1_stderr,
+                "exposer2",
+                "exposer1",
+            )
+        };
+    assert!(
+        winner_stdout.contains(&expected_request_log)
+            && winner_stdout.contains("enable_camera handler finished"),
+        "{} won the discover-then-pin race but did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
+        winner_label,
+        winner_stdout,
+        winner_stderr
+    );
+    assert!(
+        !loser_stdout.contains(&expected_request_log),
+        "{} must NOT process the enable_camera request — discover-then-pin pins the consumer to the first responder before the real request is sent.\nstdout:\n{}\nstderr:\n{}",
+        loser_label,
+        loser_stdout,
+        loser_stderr
     );
 }

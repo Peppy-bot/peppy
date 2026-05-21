@@ -31,9 +31,9 @@ use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{
     ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    PublisherQoS, ServiceWireReceiver, ServiceWireSender, SubscriberQoS,
-    Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender, ZenohAdapter,
-    ZenohNetProtocol,
+    PublisherQoS, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver, ServiceWireSender,
+    SubscriberQoS, Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender,
+    ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -52,55 +52,8 @@ pub const NODE_HEALTH_SERVICE: &str = "node_health";
 pub const NODE_READY_SERVICE: &str = "node_ready";
 pub const SHUTDOWN_SERVICE: &str = "shutdown";
 
-/// Prefix used for encoding service-side handler errors into response payloads.
-///
-/// This allows callers to get a useful error response instead of timing out, and prevents a
-/// single bad request from killing the entire service listener loop.
-const SERVICE_ERROR_PREFIX: &[u8] = b"\0peppy_service_error\0";
-
-/// Sentinel payload sent by the service immediately upon receiving a request, before the handler
-/// runs. The caller uses this to distinguish `ServiceTimeout` (ack received but no response)
-/// from `ServiceUnreachable` (no ack at all within the timeout).
-const SERVICE_ACK_PAYLOAD: &[u8] = b"\0peppy_service_ack\0";
-
-/// Sentinel payload used by `is_reachable` to probe whether a service is listening without
-/// invoking the user handler. The service auto-responds to probes inside `next_request()`.
-const SERVICE_PROBE_PAYLOAD: &[u8] = b"\0peppy_service_probe\0";
-
 /// Timeout for reachability probes sent by `is_reachable`.
-const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
-
-fn is_service_ack_payload(payload: &[u8]) -> bool {
-    payload == SERVICE_ACK_PAYLOAD
-}
-
-fn is_service_probe_payload(payload: &[u8]) -> bool {
-    payload == SERVICE_PROBE_PAYLOAD
-}
-
-/// Encodes a service handler failure as a protocol-level error payload.
-///
-/// External wrappers (for example Python bindings) can use this to ensure
-/// handler exceptions are reported to callers as `ServiceError` instead of
-/// surfacing as request timeouts.
-pub fn encode_service_handler_error(reason: &str) -> Payload {
-    let mut payload = Vec::with_capacity(SERVICE_ERROR_PREFIX.len() + reason.len());
-    payload.extend_from_slice(SERVICE_ERROR_PREFIX);
-    payload.extend_from_slice(reason.as_bytes());
-    Payload::from(payload)
-}
-
-fn decode_service_error_payload(payload: &[u8]) -> Option<String> {
-    if !payload.starts_with(SERVICE_ERROR_PREFIX) {
-        return None;
-    }
-
-    let reason_bytes = &payload[SERVICE_ERROR_PREFIX.len()..];
-    match std::str::from_utf8(reason_bytes) {
-        Ok(reason) => Some(reason.to_owned()),
-        Err(_) => Some("service returned a non-UTF8 error payload".to_string()),
-    }
-}
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Per-`(producer_name, producer_tag)` set of link_ids that this consumer
 /// process has pinned via `depends_on`. Populated once at node bootstrap by
@@ -314,6 +267,7 @@ impl MessengerHandle {
         &self,
         sender: &ServiceWireSender,
         request_payload: Payload,
+        kind: ServiceQueryKind,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
         let response_timeout: Option<Duration> = response_timeout.into();
@@ -324,20 +278,21 @@ impl MessengerHandle {
                 .call_service(
                     sender,
                     request_payload.into_inner().into(),
+                    kind,
                     response_timeout,
                 )
                 .await
                 .map_err(Error::PeppyMessagingInterface)?
         };
 
-        // Wait for the response, filtering out service acks. The service sends an
-        // ack immediately upon receiving the request (before the handler runs).
-        // With a timeout, ack-without-response → ServiceTimeout, no ack at all →
-        // ServiceUnreachable. With no timeout (None), we wait indefinitely — used
-        // in tests to avoid wall-clock dependencies. A closed channel without an
-        // ACK means no queryable matched (ServiceUnreachable); closed after an
-        // ACK means the producer received the request but never replied with the
-        // user payload (ServiceTimeout).
+        // Wait for the response, filtering replies by their attachment-side
+        // `ServiceReplyKind`. The producer sends `Ack` immediately on receiving
+        // a real user request (before the handler runs) and a terminal
+        // `Response` or `HandlerError` once the handler returns. With a
+        // timeout, ack-without-response → ServiceTimeout, no ack at all →
+        // ServiceUnreachable. Probes get a single `Response` reply with an
+        // empty payload (no ACK), so a probe consumer is guaranteed to break
+        // the loop on the first reply.
         let to_service_name = sender.to_service_name().to_string();
         let target_instance_id = sender.target_instance_id().map(str::to_string);
         let unreachable = || Error::ServiceUnreachable {
@@ -349,7 +304,7 @@ impl MessengerHandle {
             service_name: to_service_name.clone(),
         };
 
-        let response = match response_timeout {
+        let reply = match response_timeout {
             Some(response_timeout) => {
                 let deadline = Instant::now() + response_timeout;
                 let mut received_ack = false;
@@ -365,13 +320,15 @@ impl MessengerHandle {
                     }
 
                     match timeout(remaining, response_subscription.rx.recv()).await {
-                        Ok(Some(message)) => {
-                            if is_service_ack_payload(&message.payload().as_bytes()) {
+                        Ok(Some(reply)) => match reply.kind() {
+                            ServiceReplyKind::Ack => {
                                 received_ack = true;
                                 continue;
                             }
-                            break message;
-                        }
+                            ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
+                                break reply;
+                            }
+                        },
                         Ok(None) | Err(_) => {
                             return Err(if received_ack {
                                 timed_out()
@@ -384,28 +341,34 @@ impl MessengerHandle {
             }
             None => loop {
                 match response_subscription.rx.recv().await {
-                    Some(message) => {
-                        if is_service_ack_payload(&message.payload().as_bytes()) {
-                            continue;
+                    Some(reply) => match reply.kind() {
+                        ServiceReplyKind::Ack => continue,
+                        ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
+                            break reply;
                         }
-                        break message;
-                    }
+                    },
                     None => return Err(unreachable()),
                 }
             },
         };
 
-        let response = Message::from(response);
-        let response_payload = response.payload();
-        if let Some(reason) = decode_service_error_payload(response_payload.as_ref()) {
-            return Err(Error::ServiceError {
-                instance_id: target_instance_id,
-                service_name: to_service_name,
-                reason,
-            });
+        let kind = reply.kind();
+        let message = Message::from(reply.into_message());
+        match kind {
+            ServiceReplyKind::HandlerError => {
+                let reason = match std::str::from_utf8(message.payload().as_ref()) {
+                    Ok(s) => s.to_string(),
+                    Err(_) => "service returned a non-UTF8 error payload".to_string(),
+                };
+                Err(Error::ServiceError {
+                    instance_id: target_instance_id,
+                    service_name: to_service_name,
+                    reason,
+                })
+            }
+            ServiceReplyKind::Response => Ok(message),
+            ServiceReplyKind::Ack => unreachable!("ACK replies are skipped above"),
         }
-
-        Ok(response)
     }
 
     pub(crate) async fn expose_action(&self, recv: &ActionWireReceiver) -> Result<ActionCreation> {

@@ -757,5 +757,7 @@ impl ActionWireReceiver {
 
 pub(crate) mod zenoh_format;
 
+pub use zenoh_format::{ServiceQueryKind, ServiceReplyKind};
+
 #[cfg(test)]
 mod tests;

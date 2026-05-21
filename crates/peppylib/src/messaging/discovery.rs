@@ -1,14 +1,15 @@
-use super::{MessengerHandle, SERVICE_PROBE_PAYLOAD};
+use super::MessengerHandle;
 use crate::error::Result;
 use crate::types::Payload;
-use pmi::ServiceWireSender;
+use pmi::{ServiceQueryKind, ServiceWireSender};
 use tokio::time::Duration;
 
 /// Resolves a wildcard service or action target to a single concrete producer
 /// `(core_node, instance_id)` before the real request is dispatched.
 ///
-/// Sends `SERVICE_PROBE_PAYLOAD` to `probe_sender`; producer-side request
-/// loops auto-respond to probes before the user handler runs (see
+/// Sends a probe (empty payload, `ServiceQueryKind::Probe` on the
+/// attachment) to `probe_sender`; producer-side request loops auto-respond
+/// to probes before the user handler runs (see
 /// [`crate::messaging::services::ServiceEndpoint`]), so the discovery is
 /// side-effect-free even when multiple producers match the wildcard.
 ///
@@ -31,7 +32,8 @@ pub(super) async fn discover_producer(
     let response = messenger
         .poll_service(
             probe_sender,
-            Payload::from_static(SERVICE_PROBE_PAYLOAD),
+            Payload::new(),
+            ServiceQueryKind::Probe,
             discovery_timeout,
         )
         .await?;

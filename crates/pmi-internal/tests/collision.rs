@@ -14,9 +14,9 @@
 
 use bytes::Bytes;
 use pmi::{
-    MessengerBackend, Payload, PublisherQoS, SenderTarget, ServiceKind, ServiceQueryable,
-    ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription, TopicWireReceiver,
-    TopicWireSender, ZenohAdapter,
+    MessengerBackend, Payload, PublisherQoS, SenderTarget, ServiceKind, ServiceQueryKind,
+    ServiceQueryable, ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription,
+    TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -327,6 +327,7 @@ async fn service_node_vs_interface_no_collision() {
         .call_service(
             &node_caller_sender,
             Payload::from_bytes(node_request_payload.clone()),
+            ServiceQueryKind::UserRequest,
             Some(RECV_TIMEOUT),
         )
         .await
@@ -336,6 +337,7 @@ async fn service_node_vs_interface_no_collision() {
         .call_service(
             &iface_caller_sender,
             Payload::from_bytes(iface_request_payload.clone()),
+            ServiceQueryKind::UserRequest,
             Some(RECV_TIMEOUT),
         )
         .await

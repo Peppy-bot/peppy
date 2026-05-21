@@ -1,5 +1,5 @@
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, encode_service_handler_error};
+use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext};
 use peppylib::types::Payload;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -115,7 +115,11 @@ impl PyServiceEndpoint {
                     Ok((None, Some(result.extract::<Vec<u8>>(py)?)))
                 }
             });
-            let response_payload = match handler_call {
+            // Phase 3: send response (pure Rust). Handler errors take the
+            // structured `respond_error` path so the caller sees
+            // `ServiceError { reason }` without the framework smuggling a
+            // sentinel through the response payload.
+            let send_result = match handler_call {
                 Ok((maybe_future, sync_bytes)) => {
                     let response_bytes = if let Some(future) = maybe_future {
                         match future.await {
@@ -131,18 +135,15 @@ impl PyServiceEndpoint {
                     };
 
                     match response_bytes {
-                        Ok(response_bytes) => Payload::from(response_bytes),
-                        Err(reason) => encode_service_handler_error(&reason),
+                        Ok(response_bytes) => {
+                            responder.respond(Payload::from(response_bytes)).await
+                        }
+                        Err(reason) => responder.respond_error(reason).await,
                     }
                 }
-                Err(err) => encode_service_handler_error(&err.to_string()),
+                Err(err) => responder.respond_error(err.to_string()).await,
             };
-
-            // Phase 3: send response (pure Rust)
-            responder
-                .respond(response_payload)
-                .await
-                .map_err(to_py_err)?;
+            send_result.map_err(to_py_err)?;
 
             Ok(true)
         })

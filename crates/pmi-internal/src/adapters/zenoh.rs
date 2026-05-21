@@ -1,11 +1,11 @@
 use crate::error::{Error, Result};
 use crate::types::{
     IncomingRequest, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
-    ServiceQueryable, SubscriberQoS, TopicMessage, ZenohResponseToken,
+    ServiceQueryable, ServiceReply, SubscriberQoS, TopicMessage, ZenohResponseToken,
 };
-use crate::wire::zenoh_format::{TopicAttachment, ZenohWireFormat};
+use crate::wire::zenoh_format::{ServiceReplyAttachment, TopicAttachment, ZenohWireFormat};
 use crate::wire::{
-    ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
+    ActionWireReceiver, ActionWireSender, ServiceQueryKind, ServiceWireReceiver, ServiceWireSender,
     TopicWireReceiver, TopicWireSender,
 };
 use crate::zenohd::{self, ZenohNetProtocol};
@@ -415,6 +415,7 @@ impl MessengerBackend for ZenohAdapter {
         &self,
         sender: &ServiceWireSender,
         payload: Payload,
+        kind: ServiceQueryKind,
         timeout: Option<std::time::Duration>,
     ) -> Result<ReplyStream> {
         let session = self
@@ -422,30 +423,28 @@ impl MessengerBackend for ZenohAdapter {
             .as_ref()
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
         let selector = ZenohWireFormat::service_get_selector(sender);
-        let attachment = ZenohWireFormat::service_get_selector_attachment(sender);
+        // Mandatory query attachment: carries the request kind (UserRequest
+        // vs Probe) plus the consumer's sibling-exclusion set. The producer
+        // refuses queries with no attachment, which is what makes the
+        // mid-rollout failure mode loud (consumer sees ServiceUnreachable
+        // instead of misclassifying the request as a default).
+        let attachment = ZenohWireFormat::service_get_selector_attachment(sender, kind);
 
         let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
 
-        // Only attach the exclusion set when non-empty. An empty attachment
-        // would round-trip but signals nothing; keep the wire silent so
-        // tcpdump / zenoh-introspection of single-pin / no-sibling consumers
-        // looks identical to today's traffic.
-        let mut get_builder = session
+        let replies = session
             .get(&selector)
             .payload(payload.into_zbytes())
+            .attachment(attachment.to_vec())
             .target(zenoh::query::QueryTarget::All)
             .consolidation(zenoh::query::ConsolidationMode::None)
             .accept_replies(zenoh::query::ReplyKeyExpr::Any)
-            .timeout(timeout);
-        if !attachment.is_empty() {
-            get_builder = get_builder.attachment(attachment.to_vec());
-        }
-        let replies = get_builder
+            .timeout(timeout)
             .await
             .map_err(|e| Error::BackendError(e.to_string()))?;
 
         let (tx, rx) =
-            tokio::sync::mpsc::channel::<TopicMessage>(SubscriberQoS::Standard.channel_size());
+            tokio::sync::mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
         let join_handle = tokio::spawn(async move {
             while let Ok(reply) = replies.recv_async().await {
                 let sample = match reply.result() {
@@ -457,9 +456,24 @@ impl MessengerBackend for ZenohAdapter {
                 };
                 let key_expr = sample.key_expr().as_str();
                 let zbytes = sample.payload().clone();
+                let attachment_bytes = sample
+                    .attachment()
+                    .map(|z| z.to_bytes())
+                    .unwrap_or_default();
+                let reply_kind = match ServiceReplyAttachment::decode(attachment_bytes.as_ref()) {
+                    Ok(a) => a.kind,
+                    Err(err) => {
+                        tracing::error!(%key_expr, %err, "dropping service reply with malformed attachment");
+                        continue;
+                    }
+                };
                 match TopicMessage::from_zbytes(key_expr, zbytes) {
                     Ok(message) => {
-                        if tx.send(message).await.is_err() {
+                        if tx
+                            .send(ServiceReply::new(message, reply_kind))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -729,6 +743,7 @@ async fn handle_queryable(
         let token = ResponseToken::Zenoh(ZenohResponseToken::new(query, reply_keyexpr));
         let request = IncomingRequest {
             payload,
+            kind: parsed.kind,
             link_id: chosen_link_id,
             caller_core: parsed.caller_core,
             caller_inst: parsed.caller_inst,
