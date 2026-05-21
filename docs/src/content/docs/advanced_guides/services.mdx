@@ -277,12 +277,14 @@ instances are advertising the same service, the generator emits an extra
 `target_instance_id: Option<&str>` parameter on `poll` so the caller can
 choose which producer to reach:
 
-- **`None`** (default): the request fans out to every matching producer
-  instance. Every producer's handler fires; the consumer keeps the first
-  reply and discards the rest. Use this when any instance can answer and
-  you only need one response.
-- **`Some("instance_id")`**: the request is pinned to the producer whose
-  `as_instance_id` matches. Only that producer's handler runs.
+- **`None`** (default): the framework runs a **discover-then-pin** step
+  before sending the real request. A lightweight probe is broadcast to
+  every matching producer; the first to respond is pinned, and the real
+  request is delivered only to that producer. Only the pinned producer's
+  user handler runs. Use this when any instance can answer and you only
+  want one to execute.
+- **`Some("instance_id")`**: the request is pinned directly to the
+  producer whose `as_instance_id` matches. No discovery is performed.
 
 ```rust
 // Target a specific producer instance.
@@ -297,6 +299,29 @@ let response = uvc_camera_enable_camera::poll(
 
 `target_instance_id` is **not** emitted on pinned dependencies; those
 already route to one producer via the pinned `link_id` literal.
+
+### Why discover-then-pin?
+
+The underlying Zenoh transport broadcasts a wildcard service query to
+every matching producer (`QueryTarget::All`). Without discovery, every
+producer's user handler would run, even though the consumer only ever
+consumes the first reply. For idempotent reads that wastes work; for
+state-changing services it can cause real-world side effects on producers
+the consumer never intended to reach. The discover-then-pin step uses a
+probe payload that is auto-handled by the framework before the user
+handler is invoked, so non-winning producers stay idle.
+
+The cost is one additional round-trip on wildcard calls (typically a
+few milliseconds). Pinned `Some(target_instance_id)` callers skip
+discovery entirely and pay no overhead. If a tighter `response_timeout`
+is passed, discovery is capped at that budget rather than the framework's
+default probe timeout, so tight-budget failure modes still surface
+quickly.
+
+If the discovered producer dies between the probe and the real request,
+the call surfaces `ServiceUnreachable` and the caller can retry — the
+next attempt will re-discover and pin to a different producer if one is
+available.
 
 ## Error handling
 

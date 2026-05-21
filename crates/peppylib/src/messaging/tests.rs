@@ -517,7 +517,11 @@ async fn service_communication_poll_no_instance_id_target() {
         })
     };
 
-    // Creates a second listener (emulates a second instance) that is slower than the listener 1 to respond
+    // Second listener, slower to respond. With discover-then-pin, the
+    // discovery probe goes to both listeners but only the fastest will
+    // receive the real request; this listener's user handler should
+    // therefore never run. We still spawn the listener so the discovery
+    // race has two contestants on the wire.
     let listener_core_node2 = "listener_core_node2";
     let listener_instance_id2 = "listener_instance2";
     let service_task2 = {
@@ -541,27 +545,19 @@ async fn service_communication_poll_no_instance_id_target() {
             let handler = service.handle_next_request(|request| {
                 let response_payload = response_payload.clone();
                 async move {
-                    // This listener also receive the request, it just won't repond in time
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &request_payload);
                     call_count.fetch_add(1, Ordering::SeqCst);
-                    // This second service instance is a bit slow for processing, so the first listener service will respond first
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     Ok(response_payload)
                 }
             });
 
             service_ready_tx2.send(()).unwrap();
-            let handled = tokio::time::timeout(service_wait_timeout, handler)
-                .await
-                .expect("service handler timed out");
-            let handled = handled.expect("service should receive exactly one request");
-
-            assert!(
-                handled,
-                "service subscription closed before handling request"
-            );
+            // The handler will time out because discovery picked the other
+            // listener; that is the expected outcome here.
+            let _ = tokio::time::timeout(Duration::from_millis(800), handler).await;
 
             Ok::<(), Error>(())
         })
@@ -616,11 +612,15 @@ async fn service_communication_poll_no_instance_id_target() {
         .expect("service task panicked")
         .expect("service task returned error");
 
-    // The two services received the request, but only the fastest one has reponded to the sender
+    // Only the fastest responder ran its user handler. `ServiceMessenger::poll`'s
+    // discover-then-pin sequence sends a lightweight probe first (filtered
+    // server-side before the user handler runs), then dispatches the real
+    // request pinned to the first responding producer. Without discovery,
+    // both producers' handlers would have run.
     assert_eq!(
         call_count.load(Ordering::SeqCst),
-        2,
-        "service callback should have been called exactly once"
+        1,
+        "only the discovered producer should run the user handler",
     );
 
     tokio::time::timeout(service_task_timeout, router.shutdown())
@@ -1248,8 +1248,9 @@ async fn service_communication_fails_service_timeouts() {
 
     assert_eq!(
         err_instance_id.as_deref(),
-        None,
-        "should report unreachable target instance (unknown when no target instance was specified)"
+        Some(listener_instance_id),
+        "discover-then-pin resolves the wildcard target before the real poll, \
+         so the timeout error carries the discovered instance_id",
     );
     assert_eq!(err_service_name.as_str(), listener_service_name);
 
@@ -3580,14 +3581,14 @@ async fn action_pinned_consumer_claims_link_id_from_from_any_sibling() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn action_from_any_latches_cancel_to_first_goal_responder() {
-    // Two producer processes expose the same action. A consumer sends a
-    // wildcard goal (target_instance_id = None); both producers receive
-    // the goal and respond, but the consumer keeps only the first
-    // response. `send_goal` then latches the stored sender to the
-    // responder's identity, so a subsequent `cancel_goal` must reach
-    // **only** that producer. Without latching, cancel would fan out and
-    // both producers' cancel handlers would fire.
+async fn action_from_any_send_goal_runs_handler_on_winner_only() {
+    // Two producer processes expose the same action and a consumer sends
+    // a wildcard goal. With discover-then-pin, only ONE producer's goal
+    // handler must run — the one that responds first to the discovery
+    // probe. The loser sees the probe (filtered internally, no handler
+    // invocation) but never sees the real goal. The subsequent
+    // `cancel_goal` also targets only the winner because the wire sender
+    // was pinned at discovery time.
     let router = TestRouterContext::start().await;
 
     let server_a_core = "server_a_core";
@@ -3597,63 +3598,75 @@ async fn action_from_any_latches_cancel_to_first_goal_responder() {
     let action_target = SenderTarget::interface("manipulator", "v1").expect("iface target");
     let action_name = "abort_safe";
 
-    async fn spawn_producer(
-        router: &TestRouterContext,
+    struct ProducerSpec {
         core: &'static str,
         inst: &'static str,
         target: SenderTarget,
         action_name: &'static str,
-        cancel_count: Arc<AtomicUsize>,
+    }
+
+    struct ProducerCounters {
+        goal: Arc<AtomicUsize>,
+        cancel: Arc<AtomicUsize>,
+    }
+
+    async fn spawn_producer(
+        router: &TestRouterContext,
+        spec: ProducerSpec,
+        counters: ProducerCounters,
         ready: oneshot::Sender<()>,
     ) -> tokio::task::JoinHandle<()> {
         let handle = router.messenger().await;
         tokio::spawn(async move {
-            let action = ActionMessenger::expose(&handle, core, inst, target, &[], action_name)
-                .await
-                .expect("expose should succeed");
+            let action = ActionMessenger::expose(
+                &handle,
+                spec.core,
+                spec.inst,
+                spec.target,
+                &[],
+                spec.action_name,
+            )
+            .await
+            .expect("expose should succeed");
 
             let mut goal_service = action.goal_service;
             let mut cancel_service = action.cancel_service;
             ready.send(()).expect("ready");
 
-            // Respond to the goal so the caller's poll resolves.
-            let (_goal_ctx, goal_responder) = goal_service
-                .recv_next_request()
+            // The loser must time out here; the winner returns immediately.
+            match tokio::time::timeout(Duration::from_millis(800), goal_service.recv_next_request())
                 .await
-                .expect("goal recv")
-                .expect("goal closed");
-            goal_responder
-                .respond(Payload::from(inst.as_bytes().to_vec()))
-                .await
-                .expect("goal respond");
+            {
+                Ok(Ok(Some((_ctx, goal_responder)))) => {
+                    counters.goal.fetch_add(1, Ordering::SeqCst);
+                    goal_responder
+                        .respond(Payload::from(spec.inst.as_bytes().to_vec()))
+                        .await
+                        .expect("goal respond");
+                }
+                _ => {
+                    // No goal arrived within the budget; producer must be
+                    // the loser of the discovery race.
+                    return;
+                }
+            }
 
-            // Wait briefly for a cancel; the loser must time out (it
-            // should never see the cancel because of the latching).
-            match tokio::time::timeout(
-                Duration::from_millis(500),
+            // Only the winner reaches this point. Wait for the cancel
+            // that send_goal's pinned sender will direct here.
+            if let Ok(Ok(Some((_ctx, responder)))) = tokio::time::timeout(
+                Duration::from_millis(800),
                 cancel_service.recv_next_request(),
             )
             .await
             {
-                Ok(Ok(Some((_ctx, responder)))) => {
-                    cancel_count.fetch_add(1, Ordering::SeqCst);
-                    responder
-                        .respond(Payload::from_static(b"cancelled"))
-                        .await
-                        .expect("cancel respond");
-                }
-                Ok(Ok(None)) | Ok(Err(_)) => {
-                    // queue closed before a cancel arrived; treat as no
-                    // delivery, same as the timeout branch.
-                }
-                Err(_) => {
-                    // timed out: expected outcome for the producer that
-                    // did NOT win the goal-response race.
-                }
+                counters.cancel.fetch_add(1, Ordering::SeqCst);
+                let _ = responder.respond(Payload::from_static(b"cancelled")).await;
             }
         })
     }
 
+    let goal_a = Arc::new(AtomicUsize::new(0));
+    let goal_b = Arc::new(AtomicUsize::new(0));
     let cancel_a = Arc::new(AtomicUsize::new(0));
     let cancel_b = Arc::new(AtomicUsize::new(0));
     let (ready_a_tx, ready_a_rx) = oneshot::channel();
@@ -3661,21 +3674,31 @@ async fn action_from_any_latches_cancel_to_first_goal_responder() {
 
     let task_a = spawn_producer(
         &router,
-        server_a_core,
-        server_a_inst,
-        action_target.clone(),
-        action_name,
-        Arc::clone(&cancel_a),
+        ProducerSpec {
+            core: server_a_core,
+            inst: server_a_inst,
+            target: action_target.clone(),
+            action_name,
+        },
+        ProducerCounters {
+            goal: Arc::clone(&goal_a),
+            cancel: Arc::clone(&cancel_a),
+        },
         ready_a_tx,
     )
     .await;
     let task_b = spawn_producer(
         &router,
-        server_b_core,
-        server_b_inst,
-        action_target.clone(),
-        action_name,
-        Arc::clone(&cancel_b),
+        ProducerSpec {
+            core: server_b_core,
+            inst: server_b_inst,
+            target: action_target.clone(),
+            action_name,
+        },
+        ProducerCounters {
+            goal: Arc::clone(&goal_b),
+            cancel: Arc::clone(&cancel_b),
+        },
         ready_b_tx,
     )
     .await;
@@ -3712,8 +3735,6 @@ async fn action_from_any_latches_cancel_to_first_goal_responder() {
         "goal_response core_node must come from one of the producers, got {winner_core:?}",
     );
 
-    // Issue cancel: only the winner should see it because the stored
-    // sender was latched in send_goal.
     let _ = ActionMessenger::cancel_goal(&caller_handle, &goal_handle, Duration::from_secs(1))
         .await
         .expect("cancel_goal should reach the latched producer");
@@ -3721,23 +3742,37 @@ async fn action_from_any_latches_cancel_to_first_goal_responder() {
     task_a.await.expect("server A task panicked");
     task_b.await.expect("server B task panicked");
 
-    let winner_count = if winner_inst == server_a_inst {
-        cancel_a.load(Ordering::SeqCst)
+    let (winner_goal, loser_goal, winner_cancel, loser_cancel) = if winner_inst == server_a_inst {
+        (
+            goal_a.load(Ordering::SeqCst),
+            goal_b.load(Ordering::SeqCst),
+            cancel_a.load(Ordering::SeqCst),
+            cancel_b.load(Ordering::SeqCst),
+        )
     } else {
-        cancel_b.load(Ordering::SeqCst)
+        (
+            goal_b.load(Ordering::SeqCst),
+            goal_a.load(Ordering::SeqCst),
+            cancel_b.load(Ordering::SeqCst),
+            cancel_a.load(Ordering::SeqCst),
+        )
     };
-    let loser_count = if winner_inst == server_a_inst {
-        cancel_b.load(Ordering::SeqCst)
-    } else {
-        cancel_a.load(Ordering::SeqCst)
-    };
+
     assert_eq!(
-        winner_count, 1,
-        "winning producer ({winner_inst}) should have received exactly one cancel",
+        winner_goal, 1,
+        "winning producer ({winner_inst}) should have run its goal handler exactly once",
     );
     assert_eq!(
-        loser_count, 0,
-        "losing producer should not have received any cancel; latching is broken if this fires",
+        loser_goal, 0,
+        "losing producer must NOT run its goal handler — discovery pins to the winner before the real goal is sent",
+    );
+    assert_eq!(
+        winner_cancel, 1,
+        "winning producer should have received the cancel",
+    );
+    assert_eq!(
+        loser_cancel, 0,
+        "losing producer must NOT receive the cancel — sender was pinned at discovery time",
     );
 
     router.shutdown().await;

@@ -1,3 +1,4 @@
+use super::discovery::discover_producer;
 use super::generate_short_id;
 use super::topics::Subscription;
 use super::{
@@ -239,25 +240,6 @@ impl ActionGoalHandle {
         &self.goal_id
     }
 
-    /// `(core_node, instance_id)` of the producer that won this goal's
-    /// response race. The feedback filter drops messages whose
-    /// `(core_node, instance_id)` does not match, preventing a wildcard
-    /// `from_any` goal from surfacing feedback published by losing producers
-    /// that also received the broadcast. Always `Some` after `send_goal`
-    /// returns because the sender is latched there.
-    fn latched_identity(&self) -> Option<(&str, &str)> {
-        let core = self.sender.target_core_node()?;
-        let inst = self.sender.target_instance_id()?;
-        Some((core, inst))
-    }
-
-    fn matches_latched_producer(&self, message: &Message) -> bool {
-        match self.latched_identity() {
-            Some((core, inst)) => message.core_node() == core && message.instance_id() == inst,
-            None => true,
-        }
-    }
-
     /// Receives the next feedback message.
     ///
     /// Returns `Err(Error::ActionFeedbackChannelClosed)` when the server
@@ -265,37 +247,25 @@ impl ActionGoalHandle {
     /// the server begins handling the result request, accepts a cancel,
     /// or the cancel handler errors.
     pub async fn on_next_feedback(&mut self) -> Result<Message> {
-        loop {
-            let msg = self
-                .feedback
-                .on_next_message()
-                .await
-                .ok_or(Error::ActionFeedbackChannelClosed)?;
-            if is_end_sentinel(&msg) {
-                return Err(Error::ActionFeedbackChannelClosed);
-            }
-            if self.matches_latched_producer(&msg) {
-                return Ok(msg);
-            }
+        let msg = self
+            .feedback
+            .on_next_message()
+            .await
+            .ok_or(Error::ActionFeedbackChannelClosed)?;
+        if is_end_sentinel(&msg) {
+            return Err(Error::ActionFeedbackChannelClosed);
         }
+        Ok(msg)
     }
 
     /// Non-blocking variant of [`Self::on_next_feedback`].
     pub fn try_next_feedback(&mut self) -> Result<Option<Message>> {
-        loop {
-            match self.feedback.try_on_next_message() {
-                Ok(message) if is_end_sentinel(&message) => {
-                    return Err(Error::ActionFeedbackChannelClosed);
-                }
-                Ok(message) => {
-                    if self.matches_latched_producer(&message) {
-                        return Ok(Some(message));
-                    }
-                }
-                Err(crate::types::TryRecvError::Empty) => return Ok(None),
-                Err(crate::types::TryRecvError::Disconnected) => {
-                    return Err(Error::ActionFeedbackChannelClosed);
-                }
+        match self.feedback.try_on_next_message() {
+            Ok(message) if is_end_sentinel(&message) => Err(Error::ActionFeedbackChannelClosed),
+            Ok(message) => Ok(Some(message)),
+            Err(crate::types::TryRecvError::Empty) => Ok(None),
+            Err(crate::types::TryRecvError::Disconnected) => {
+                Err(Error::ActionFeedbackChannelClosed)
             }
         }
     }
@@ -378,6 +348,18 @@ impl ActionMessenger {
     /// `to_target` must match the [`SenderTarget`] the action server used
     /// in [`Self::expose`]. `to_link_id` `None` targets the default
     /// link_id; `Some(value)` targets a specific producer link_id.
+    ///
+    /// When `target_instance_id` is `None` (wildcard / from_any), this
+    /// performs a discover-then-pin sequence: a lightweight probe to the
+    /// goal sub-service identifies a single responding producer, then the
+    /// real goal is delivered pinned to that producer. The probe is
+    /// filtered server-side before the user handler runs (see
+    /// [`crate::messaging::services::ServiceEndpoint`]), so non-winning
+    /// producers never execute the goal handler. Without this, every
+    /// matching producer would run the handler concurrently; for actions
+    /// with side effects (motor commands, file writes) that is a real-world
+    /// safety hazard. Pinned callers (`target_instance_id: Some`) skip
+    /// discovery and pay no overhead.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
@@ -396,17 +378,50 @@ impl ActionMessenger {
         let goal_payload = wrap_goal_payload(&goal_id, user_payload.as_ref())?;
 
         let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
+
+        // Discover a single producer when the caller did not pin. The probe
+        // runs server-side without invoking the goal handler; only the
+        // discovered producer will receive the real goal request.
+        let (resolved_core, resolved_inst) = if target_instance_id.is_none() {
+            let probe_sender = ActionWireSender::new(
+                as_core_node,
+                as_instance_id,
+                target_core_node,
+                target_instance_id,
+                to_target.clone(),
+                to_link_id,
+                to_action_name,
+            )?
+            .with_excluded_link_ids(&excluded)?;
+            // Cap discovery at PROBE_TIMEOUT or the caller's goal budget,
+            // whichever is shorter, so a tight `goal_timeout` still fails
+            // fast against unreachable producers.
+            let discovery_timeout = goal_timeout.min(PROBE_TIMEOUT);
+            let (core, inst) =
+                discover_producer(messenger, &probe_sender.goal_service(), discovery_timeout)
+                    .await?;
+            (Some(core), Some(inst))
+        } else {
+            (
+                target_core_node.map(str::to_string),
+                target_instance_id.map(str::to_string),
+            )
+        };
+
         let sender = ActionWireSender::new(
             as_core_node,
             as_instance_id,
-            target_core_node,
-            target_instance_id,
+            resolved_core.as_deref(),
+            resolved_inst.as_deref(),
             to_target,
             to_link_id,
             to_action_name,
         )?
         .with_excluded_link_ids(&excluded)?;
 
+        // Feedback subscription is built from the pinned sender, so its
+        // wire keyexpr targets only the discovered producer. Losers cannot
+        // publish feedback under this goal_id to a slot we are listening on.
         let feedback_subscription = messenger
             .subscribe_action_feedback(&sender, &goal_id, feedback_qos.into())
             .await?;
@@ -415,16 +430,8 @@ impl ActionMessenger {
             .poll_service(&sender.goal_service(), goal_payload, goal_timeout)
             .await?;
 
-        // Latch the stored sender to the producer that won the goal response.
-        // For a wildcard `from_any` goal this prevents cancel / result /
-        // feedback from fanning out to every producer that received the
-        // wildcard goal; for an already-pinned dep this is a no-op
-        // (`pinned_to` writes the same identity that was already there).
-        let latched_sender =
-            sender.pinned_to(goal_response.core_node(), goal_response.instance_id())?;
-
         Ok(ActionGoalHandle {
-            sender: latched_sender,
+            sender,
             goal_id,
             goal_response,
             feedback: Subscription::new(feedback_subscription),

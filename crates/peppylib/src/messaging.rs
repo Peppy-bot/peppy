@@ -2,6 +2,7 @@
 mod tests;
 
 mod actions;
+mod discovery;
 mod services;
 mod topics;
 

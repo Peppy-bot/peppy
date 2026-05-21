@@ -1,3 +1,4 @@
+use super::discovery::discover_producer;
 use super::{
     MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD,
     encode_service_handler_error, generate_short_id, is_service_probe_payload,
@@ -283,9 +284,17 @@ impl ServiceMessenger {
     /// specific producer link_id, used when a `depends_on` entry declares
     /// a link_id.
     ///
-    /// If `target_instance_id` is `None`, this call returns with the first
-    /// service instance that responds. `to_target` must match the
-    /// [`SenderTarget`] the responder used in [`Self::listen`].
+    /// When `target_instance_id` is `None` (wildcard / from_any), this
+    /// performs a discover-then-pin sequence: a lightweight probe is sent
+    /// to identify a single responding producer's `(core_node, instance_id)`,
+    /// then the real request is delivered pinned to that producer. The
+    /// probe is filtered server-side before the user handler runs, so
+    /// non-winning producers never see the request. This costs one extra
+    /// round-trip; pinned callers (`target_instance_id: Some`) skip
+    /// discovery and pay no overhead.
+    ///
+    /// `to_target` must match the [`SenderTarget`] the responder used in
+    /// [`Self::listen`].
     #[allow(clippy::too_many_arguments)]
     pub async fn poll(
         messenger: &MessengerHandle,
@@ -300,11 +309,42 @@ impl ServiceMessenger {
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
         let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
+        let response_timeout: Option<Duration> = response_timeout.into();
+
+        let (resolved_core, resolved_inst) = if target_instance_id.is_none() {
+            let probe_sender = ServiceWireSender::new(
+                bound_core_node,
+                as_instance_id,
+                target_core_node,
+                target_instance_id,
+                to_target.clone(),
+                to_link_id,
+                to_service_name,
+                ServiceKind::Service,
+            )?
+            .with_excluded_link_ids(&excluded)?;
+            // Discovery is capped at PROBE_TIMEOUT or the caller's response
+            // budget, whichever is shorter; this preserves the user contract
+            // that a tight `response_timeout` fails fast against unreachable
+            // targets.
+            let discovery_timeout = response_timeout
+                .map(|t| t.min(PROBE_TIMEOUT))
+                .unwrap_or(PROBE_TIMEOUT);
+            let (core, inst) =
+                discover_producer(messenger, &probe_sender, discovery_timeout).await?;
+            (Some(core), Some(inst))
+        } else {
+            (
+                target_core_node.map(str::to_string),
+                target_instance_id.map(str::to_string),
+            )
+        };
+
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
-            target_core_node,
-            target_instance_id,
+            resolved_core.as_deref(),
+            resolved_inst.as_deref(),
             to_target,
             to_link_id,
             to_service_name,
@@ -321,6 +361,11 @@ impl ServiceMessenger {
     /// service's request loop; the user handler is never invoked. Returns
     /// `true` if the service responds within [`PROBE_TIMEOUT`], `false` if
     /// unreachable.
+    ///
+    /// Bypasses `Self::poll`'s discover-then-pin sequence because a probe
+    /// IS the discovery step; routing through `poll` would issue two probes
+    /// back to back. Calls the raw messenger path directly with the same
+    /// wire-sender shape `poll` builds.
     #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
@@ -332,19 +377,25 @@ impl ServiceMessenger {
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
     ) -> Result<bool> {
-        match Self::poll(
-            messenger,
+        let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
+        let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
+            target_core_node,
+            target_instance_id,
             to_target,
             to_link_id,
             to_service_name,
-            target_core_node,
-            target_instance_id,
-            Payload::from_static(SERVICE_PROBE_PAYLOAD),
-            PROBE_TIMEOUT,
-        )
-        .await
+            ServiceKind::Service,
+        )?
+        .with_excluded_link_ids(&excluded)?;
+        match messenger
+            .poll_service(
+                &sender,
+                Payload::from_static(SERVICE_PROBE_PAYLOAD),
+                PROBE_TIMEOUT,
+            )
+            .await
         {
             Ok(_) => Ok(true),
             Err(Error::ServiceUnreachable { .. }) => Ok(false),

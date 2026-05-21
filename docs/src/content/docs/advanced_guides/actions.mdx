@@ -280,19 +280,38 @@ The `fire_goal` function returns a `GoalResponse` containing:
 - `data.accepted` — whether the goal was accepted.
 - `action_handle` — a handle used for subsequent feedback, result, and cancel calls.
 
-#### Lifecycle latching
+#### Discover-then-pin
 
 When `fire_goal` is called against a `from_any: true` dependency with
-`target_instance_id = None`, the goal request fans out to every matching
-producer. As soon as the first goal response arrives, the returned
-`action_handle` is **latched** to the producer that won: subsequent
-`cancel_goal`, `get_result`, and feedback calls only reach that producer.
-Feedback messages from losing producers (which may have started running
-the same goal) are filtered out at delivery time.
+`target_instance_id = None`, the framework runs a **discover-then-pin**
+sequence before sending the real goal:
+
+1. A lightweight probe is broadcast to every matching producer. The
+   probe is auto-handled by the framework before any user goal handler
+   runs.
+2. The first producer to respond is captured and the wire sender is
+   pinned to its `(core_node, instance_id)`.
+3. The real goal request is delivered only to that pinned producer.
+   All subsequent `cancel_goal`, `get_result`, and feedback calls also
+   target the same producer.
+
+The non-winning producers see only the probe — their goal handler
+**never runs**. Without this step every matching producer would execute
+the goal concurrently, which for state-changing actions (motor commands,
+file writes, payment dispatches) is a real-world hazard.
 
 For pinned dependencies and for `from_any` calls with an explicit
-`target_instance_id`, the goal already addresses exactly one producer and
-no fan-out happens; latching is effectively a no-op in those cases.
+`target_instance_id`, the goal already addresses exactly one producer
+and discovery is skipped.
+
+The cost is one additional round-trip on wildcard `fire_goal` calls
+(typically a few milliseconds). If the discovered producer dies between
+the probe and the real goal, `fire_goal` surfaces `ServiceUnreachable`
+and the caller can retry — the next attempt re-discovers a different
+producer if one is available. Discovery is capped at the caller's
+`goal_timeout` if that is tighter than the framework's default probe
+timeout, so a fast-fail budget still surfaces unreachable producers
+quickly.
 
 ### Receiving feedback
 
@@ -392,14 +411,14 @@ instances expose the same action, the generator emits an extra
 `target_instance_id: Option<&str>` parameter on `fire_goal` so the
 caller can pin the goal to a specific producer:
 
-- **`None`** (default): the goal request fans out to every matching
-  producer. The first producer to respond wins the goal; the returned
-  `action_handle` is latched to that producer so `cancel_goal`,
-  `get_result`, and feedback only reach the winner (see
-  [Lifecycle latching](#lifecycle-latching) above).
-- **`Some("instance_id")`**: the goal request is pinned to the producer
-  whose `as_instance_id` matches. Only that producer ever sees the goal,
-  cancel, result, or feedback for this goal cycle.
+- **`None`** (default): the framework discovers a single producer via a
+  probe and pins the goal to that one. Only the discovered producer
+  receives the real goal request; non-winning producers stay idle. See
+  [Discover-then-pin](#discover-then-pin) above.
+- **`Some("instance_id")`**: the goal request is pinned directly to the
+  producer whose `as_instance_id` matches. Only that producer ever sees
+  the goal, cancel, result, or feedback for this goal cycle, and no
+  discovery is performed.
 
 ```rust
 // Target a specific producer instance for the goal.
