@@ -186,7 +186,7 @@ depends on whether the dependency is pinned to a `link_id` or has
 `from_any: true`.
 
 For a **pinned** dependency, the generator does not emit any addressing
-parameter — the pinned `link_id` literal already identifies one producer:
+parameter; the pinned `link_id` literal already identifies one producer:
 
 ```rust
 use peppygen::consumed_services::uvc_camera_enable_camera;
@@ -267,7 +267,7 @@ For example, with a producer bound to `wrist_left_camera` and
 If every bound link_id is claimed by a pinned sibling, the `from_any`
 call falls back to the first-bound link_id so the call doesn't fail
 purely because of the exclusion. Pinned callers always reach the
-literal link_id they request — the exclusion only applies to wildcard
+literal link_id they request; the exclusion only applies to wildcard
 (`from_any: true`) callers.
 
 ## Instance targeting
@@ -277,11 +277,11 @@ instances are advertising the same service, the generator emits an extra
 `target_instance_id: Option<&str>` parameter on `poll` so the caller can
 choose which producer to reach:
 
-- **`None`** (default) — the request fans out to every matching producer
+- **`None`** (default): the request fans out to every matching producer
   instance. Every producer's handler fires; the consumer keeps the first
   reply and discards the rest. Use this when any instance can answer and
   you only need one response.
-- **`Some("instance_id")`** — the request is pinned to the producer whose
+- **`Some("instance_id")`**: the request is pinned to the producer whose
   `as_instance_id` matches. Only that producer's handler runs.
 
 ```rust
@@ -295,7 +295,7 @@ let response = uvc_camera_enable_camera::poll(
 .await?;
 ```
 
-`target_instance_id` is **not** emitted on pinned dependencies — those
+`target_instance_id` is **not** emitted on pinned dependencies; those
 already route to one producer via the pinned `link_id` literal.
 
 ## Error handling

@@ -652,7 +652,7 @@ fn main() -> Result<()> {
 
 /// If there are multiple services of the same name and the consumer does not specify an instance_id, it's the first service that respond that connects with the consumer
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_multiple_exposed_instances_same_service_not_target_instance_id() {
+async fn services_communication_multiple_exposed_instances_same_service_no_target_instance_id() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");

@@ -16,7 +16,7 @@ use std::{
 /// node bootstrap so from_any consumers know which producer link_ids a
 /// sibling pinned dependency on the same `(name, tag)` already claims.
 ///
-/// Groups without any from_any sibling are still included — the registration
+/// Groups without any from_any sibling are still included; the registration
 /// is a no-op when nothing wildcards on this `(name, tag)`. Filtering at
 /// codegen time would require tracking the from_any/pinned split twice, so
 /// the runtime lookup just returns an empty exclusion set in that case.
@@ -44,7 +44,7 @@ pub(crate) fn pinned_siblings_per_group(
             .push(iface.link_id.clone());
     }
     // Sort entries within each group so the generated code is
-    // deterministic — important for codegen caching / fingerprints.
+    // deterministic; important for codegen caching / fingerprints.
     for ids in out.values_mut() {
         ids.sort();
         ids.dedup();

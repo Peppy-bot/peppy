@@ -41,8 +41,8 @@ impl ZenohWireFormat {
     /// addressing. Inverse of [`Self::topic_publish`].
     ///
     /// The publish shape is
-    /// `*/{caller_core}/*/{caller_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{topic}`
-    /// — caller_core is segment index 1, caller_inst is segment index 3,
+    /// `*/{caller_core}/*/{caller_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{topic}`:
+    /// caller_core is segment index 1, caller_inst is segment index 3,
     /// link_id is segment index 8. The link_id segment is surfaced so
     /// consumer-side filters can drop messages whose producer link_id is
     /// already claimed by a sibling pinned subscription.
@@ -54,7 +54,7 @@ impl ZenohWireFormat {
         let instance_id = extract_caller_segment(segments.get(3).copied(), "caller_instance_id")?;
         // link_id is at index 8 in the topic publish format. It may be absent
         // for non-topic keyexprs that share the caller-prefix shape (e.g.
-        // service reply keyexprs), in which case we leave it empty — the
+        // service reply keyexprs), in which case we leave it empty; the
         // sibling-precedence filter only consults link_id for topic
         // subscriptions, and an empty value never matches a pinned literal.
         let link_id = segments
@@ -387,7 +387,7 @@ impl TopicAttachment {
 }
 
 /// Service / action query attachment carrying the consumer's "excluded
-/// link_ids" set — the producer link_ids a sibling pinned dependency on
+/// link_ids" set: the producer link_ids a sibling pinned dependency on
 /// the same `(name, tag)` has already claimed. The producer's
 /// [`ParsedInboundQuery::choose_link_id`] skips first-bound entries in this
 /// set so a `from_any: true` consumer doesn't silently alias a pinned
@@ -398,12 +398,12 @@ impl TopicAttachment {
 ///   decodes to an empty set, preserving today's "no exclusion" behavior
 ///   for producers that talk to old consumers (or for consumer call sites
 ///   that haven't registered manifest siblings).
-/// - byte 1: count `N` (max 255 — far above any realistic sibling count).
+/// - byte 1: count `N` (max 255; far above any realistic sibling count).
 /// - then `N` entries, each `(u8 len)(len bytes utf-8)`.
 ///
 /// Decoding is lenient on the trailing bytes (truncated input returns an
 /// empty set rather than an error) because the attachment is an
-/// optimization, not a correctness boundary — the absence of an exclusion
+/// optimization, not a correctness boundary; the absence of an exclusion
 /// set falls back to today's first-bound dispatch.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ServiceQueryAttachment {
@@ -501,13 +501,13 @@ impl ParsedInboundQuery {
     /// - Wildcard selector (`from_any` consumer): claims the first bound
     ///   link_id NOT in `excluded_link_ids`. If every bound link_id is
     ///   excluded, falls back to `bound_link_ids[0]` so the call doesn't
-    ///   fail purely because of the consumer's sibling claims — first-bound
+    ///   fail purely because of the consumer's sibling claims; first-bound
     ///   is the historical contract that keeps the call reachable. The
     ///   non-excluded preference keeps `ctx.link_id()` stable across an
     ///   action's goal / cancel / result sub-services, which dispatch
     ///   independently but must agree on the link_id for a given goal_id.
     /// - Literal selector matching a bound link_id: claims that literal
-    ///   (the exclusion set is ignored — a pinned caller asked specifically
+    ///   (the exclusion set is ignored; a pinned caller asked specifically
     ///   for this link_id).
     /// - Literal selector NOT in the bound set: returns `None`, signaling
     ///   the adapter to drop the query without replying. Unreachable in

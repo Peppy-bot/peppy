@@ -205,10 +205,6 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
             let node_name = #node_name_literal;
             let qos = peppylib::config::QoSProfile::Standard;
 
-            // Seed the messenger's sibling-precedence map on first use so
-            // a `from_any: true` subscription on this `(name, tag)` skips
-            // producer link_ids already claimed by a pinned sibling. Cheap
-            // and idempotent — see `consumer_dependencies::ensure_registered`.
             crate::consumer_dependencies::ensure_registered(node_runner.messenger());
 
             let message = {

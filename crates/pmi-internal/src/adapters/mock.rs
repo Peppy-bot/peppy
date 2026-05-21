@@ -135,9 +135,9 @@ impl MessengerBackend for MockAdapter {
         // secondary publishes a multi-link `emit` produces; pinned
         // subscribers don't, since their keyexpr already selects a single
         // publish per emit. The sibling-exclusion path bypasses the
-        // secondary drop and defers to peppylib's `link_id()` filter — see
+        // secondary drop and defers to peppylib's `link_id()` filter; see
         // the matching comment in [`super::zenoh::ZenohAdapter::subscribe_topic`].
-        let drop_secondary = recv.from_link_id.is_none() && recv.excluded_link_ids.is_empty();
+        let drop_secondary = recv.from_link_id.is_none() && !recv.defers_secondary_drop;
         self.subscribe_keyexpr(&ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }

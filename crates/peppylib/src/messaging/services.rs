@@ -299,16 +299,7 @@ impl ServiceMessenger {
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
-        // A from_any caller (`to_link_id: None`) may need to skip producer
-        // link_ids already claimed by a sibling pinned `depends_on` entry.
-        // The set is registered on the MessengerHandle at node bootstrap
-        // and serialized as a query attachment on the wire — the producer's
-        // `choose_link_id` honors it when dispatching to a bound handler.
-        let excluded = if to_link_id.is_none() {
-            messenger.excluded_link_ids_for(to_target.name(), to_target.tag())
-        } else {
-            Vec::new()
-        };
+        let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,

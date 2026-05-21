@@ -274,7 +274,7 @@ For example, with a producer bound to `wrist_left_camera` and
 | `wrist_right_camera` | not matched | ✓ delivered |
 
 This precedence is computed once at codegen time from the manifest and
-seeded onto the messenger at node bootstrap — no runtime configuration
+seeded onto the messenger at node bootstrap; no runtime configuration
 needed. If the producer binds only link_ids that the pinned siblings
 claim, the `from_any` subscription receives nothing for that emit.
 

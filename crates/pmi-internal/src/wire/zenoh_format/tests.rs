@@ -79,7 +79,7 @@ fn topic_subscribe_targeted_node() {
         from_target: Some(node("uvc_camera", "v1")),
         from_link_id: None,
         to_topic: seg("video_stream"),
-        excluded_link_ids: Vec::new(),
+        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -97,7 +97,7 @@ fn topic_subscribe_with_concrete_link_id() {
         from_target: Some(iface("depth_camera", "v1")),
         from_link_id: Some(seg("wrist_left_camera")),
         to_topic: seg("video_stream"),
-        excluded_link_ids: Vec::new(),
+        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -115,7 +115,7 @@ fn topic_subscribe_untargeted_publisher_core_uses_wildcard() {
         from_target: Some(node("uvc_camera", "v1")),
         from_link_id: None,
         to_topic: seg("video_stream"),
-        excluded_link_ids: Vec::new(),
+        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -133,7 +133,7 @@ fn topic_subscribe_interface_target() {
         from_target: Some(iface("manipulator", "v1")),
         from_link_id: None,
         to_topic: seg("joint_states"),
-        excluded_link_ids: Vec::new(),
+        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -151,7 +151,7 @@ fn topic_subscribe_external_consumer_wildcards_full_target() {
         from_target: None,
         from_link_id: None,
         to_topic: seg("video_stream"),
-        excluded_link_ids: Vec::new(),
+        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -804,7 +804,7 @@ fn topic_subscribe_node_only_segment_does_not_match_interface_publisher() {
         from_target: Some(node("widget", "v1")),
         from_link_id: None,
         to_topic: seg("frames"),
-        excluded_link_ids: Vec::new(),
+        defers_secondary_drop: false,
     };
     let publisher_as_node = TopicWireSender {
         as_core_node: seg("core_a"),
@@ -850,7 +850,7 @@ fn topic_subscribe_interface_only_segment_does_not_match_node_publisher() {
         from_target: Some(iface("widget", "v1")),
         from_link_id: None,
         to_topic: seg("frames"),
-        excluded_link_ids: Vec::new(),
+        defers_secondary_drop: false,
     };
     let sub_key = ZenohWireFormat::topic_subscribe(&receiver);
     assert!(sub_key.contains("/topic/interface/widget/v1/*/frames"));
@@ -871,7 +871,7 @@ fn topic_subscribe_untargeted_wildcards_discriminator_too() {
         from_target: None,
         from_link_id: None,
         to_topic: seg("frames"),
-        excluded_link_ids: Vec::new(),
+        defers_secondary_drop: false,
     };
     let key = ZenohWireFormat::topic_subscribe(&receiver);
     assert!(
@@ -1010,7 +1010,7 @@ fn service_query_attachment_decode_missing_or_unknown_magic_is_empty() {
             .excluded_link_ids
             .is_empty()
     );
-    // Unknown magic byte ⇒ empty set (defensive — future versions can
+    // Unknown magic byte ⇒ empty set (defensive: future versions can
     // introduce a 0x02 schema; older producers must treat it as no
     // exclusion rather than panic or misroute).
     assert!(
@@ -1022,8 +1022,8 @@ fn service_query_attachment_decode_missing_or_unknown_magic_is_empty() {
 
 #[test]
 fn service_query_attachment_decode_truncated_payload_returns_what_was_parsed() {
-    // Truncation after a complete entry: only the complete entries survive
-    // — the leftover length byte advertises a payload that isn't present.
+    // Truncation after a complete entry: only the complete entries survive.
+    // The leftover length byte advertises a payload that isn't present.
     // The decoder stops cleanly rather than panicking.
     let mut bytes = Vec::new();
     bytes.push(ServiceQueryAttachment::MAGIC_V1);
@@ -1057,7 +1057,7 @@ fn choose_link_id_wildcard_skips_excluded_first_bound() {
 fn choose_link_id_wildcard_falls_back_to_first_bound_when_all_excluded() {
     // Defensive: if every bound link_id is in the exclusion set, the call
     // would otherwise return None and the consumer would silently time
-    // out. Fall back to first-bound so the call stays reachable — the
+    // out. Fall back to first-bound so the call stays reachable; the
     // exclusion is a preference, not a hard constraint.
     let parsed = ParsedInboundQuery {
         caller_core: "caller_core".to_string(),
@@ -1072,7 +1072,7 @@ fn choose_link_id_wildcard_falls_back_to_first_bound_when_all_excluded() {
 #[test]
 fn choose_link_id_literal_ignores_excluded_set() {
     // A pinned caller (literal at link_id slot) asked specifically for this
-    // link_id. The exclusion set comes from the from_any sibling — it
+    // link_id. The exclusion set comes from the from_any sibling; it
     // doesn't apply to the pinned path. The dispatcher must honor the
     // literal even when it appears in the excluded set.
     let parsed = ParsedInboundQuery {
@@ -1101,7 +1101,7 @@ fn parse_topic_keyexpr_surfaces_concrete_link_id_at_segment_eight() {
 #[test]
 fn parse_topic_keyexpr_surfaces_default_link_id_literal() {
     // A producer without `--link-id` publishes under the reserved `_` slot.
-    // It still surfaces — the filter compares against the consumer's
+    // It still surfaces; the filter compares against the consumer's
     // excluded set, and `_` is a valid literal that just doesn't appear
     // there in practice.
     let key = "*/publisher_core/*/publisher_inst/topic/node/sensor_node/v1/_/temperature";

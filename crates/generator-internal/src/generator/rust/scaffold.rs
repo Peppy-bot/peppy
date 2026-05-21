@@ -94,7 +94,7 @@ pub fn add_parameters_to_lib(
 /// `ensure_registered` before its `subscribe` / `poll` / `send_goal` so the
 /// runtime sibling-precedence lookup is always seeded.
 ///
-/// The helper uses a `OnceLock` per process — registration happens at most
+/// The helper uses a `OnceLock` per process: registration happens at most
 /// once. If the user constructs multiple `MessengerHandle`s in one process
 /// (an unusual pattern), only the first observes the registration. The
 /// generated map is the same regardless of which handle it lands on, so
@@ -108,7 +108,7 @@ pub fn add_consumer_dependencies_to_lib(
     fs::create_dir_all(&src_dir)?;
 
     let mut entries: Vec<(&(String, String), &Vec<String>)> = pinned_siblings_map.iter().collect();
-    // Sort for deterministic output — fingerprint stability depends on it.
+    // Sort for deterministic output; fingerprint stability depends on it.
     entries.sort_by(|a, b| a.0.cmp(b.0));
 
     let inserts: Vec<String> = entries
@@ -127,12 +127,18 @@ pub fn add_consumer_dependencies_to_lib(
         })
         .collect();
 
-    let body = if inserts.is_empty() {
-        "    // No pinned-sibling dependencies declared in this node's manifest.\n".to_string()
+    let (register_param, body) = if inserts.is_empty() {
+        (
+            "_messenger",
+            "    // No pinned-sibling dependencies declared in this node's manifest.\n".to_string(),
+        )
     } else {
-        format!(
-            "    let mut map: std::collections::HashMap<(String, String), Vec<String>> =\n        std::collections::HashMap::new();\n{}\n    messenger.register_consumer_dependencies(map);\n",
-            inserts.join("\n")
+        (
+            "messenger",
+            format!(
+                "    let mut map: std::collections::HashMap<(String, String), Vec<String>> =\n        std::collections::HashMap::new();\n{}\n    messenger.register_consumer_dependencies(map);\n",
+                inserts.join("\n")
+            ),
         )
     };
 
@@ -156,8 +162,7 @@ pub fn add_consumer_dependencies_to_lib(
              }});\n\
          }}\n\
          \n\
-         #[allow(unused_variables)]\n\
-         fn register(messenger: &MessengerHandle) {{\n\
+         fn register({register_param}: &MessengerHandle) {{\n\
          {body}}}\n",
     );
 

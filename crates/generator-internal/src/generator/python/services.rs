@@ -285,10 +285,7 @@ pub fn build_consumed_service(
     // wildcard (`from_any: true`). Pinned deps already route to exactly one
     // producer via the link_id literal. `target_core_node` is never exposed
     // to the user-facing generated API.
-    let expose_target_instance_id = matches!(
-        dependency.link_id,
-        crate::generator::types::WireLinkId::Wildcard
-    );
+    let expose_target_instance_id = dependency.link_id.is_wildcard();
     if expose_target_instance_id {
         builder.add_import("from typing import Optional");
     }

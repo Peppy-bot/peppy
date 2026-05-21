@@ -93,15 +93,7 @@ impl TopicMessenger {
         from_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        // A wildcard receiver (`from_link_id: None`) for a known producer
-        // target may still need to skip messages on link_ids claimed by a
-        // sibling pinned dependency. The exclusion set is registered on
-        // the MessengerHandle once at node bootstrap; we look it up here
-        // by the producer's (name, tag).
-        let excluded = match (&from_target, from_link_id) {
-            (Some(target), None) => messenger.excluded_link_ids_for(target.name(), target.tag()),
-            _ => Vec::new(),
-        };
+        let excluded = messenger.excluded_link_ids_for_wildcard(from_target.as_ref(), from_link_id);
         let recv = TopicWireReceiver::new(
             as_core_node,
             as_instance_id,
@@ -111,7 +103,7 @@ impl TopicMessenger {
             from_link_id,
             to_topic,
         )?
-        .with_excluded_link_ids(excluded.clone());
+        .with_defers_secondary_drop(!excluded.is_empty());
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription).with_excluded_link_ids(excluded))
     }

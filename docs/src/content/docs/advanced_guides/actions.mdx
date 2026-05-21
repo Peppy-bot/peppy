@@ -273,7 +273,7 @@ fn main() -> Result<()> {
 
 The example above is for a **pinned** dependency. When the dependency
 declares `from_any: true`, `fire_goal` gains an extra
-`target_instance_id: Option<&str>` parameter — see
+`target_instance_id: Option<&str>` parameter; see
 [Instance targeting](#instance-targeting) below.
 
 The `fire_goal` function returns a `GoalResponse` containing:
@@ -292,7 +292,7 @@ the same goal) are filtered out at delivery time.
 
 For pinned dependencies and for `from_any` calls with an explicit
 `target_instance_id`, the goal already addresses exactly one producer and
-no fan-out happens — latching is effectively a no-op in those cases.
+no fan-out happens; latching is effectively a no-op in those cases.
 
 ### Receiving feedback
 
@@ -357,7 +357,7 @@ entry and a `from_any: true` entry, a `from_any` `send_goal` is routed
 to a producer link_id that **no pinned sibling claims**. The producer's
 goal / cancel / result sub-services agree on the same link_id for a
 given `goal_id`, so the feedback channel for that goal arrives under
-the chosen link_id — the consumer doesn't need to think about which
+the chosen link_id; the consumer doesn't need to think about which
 sub-service it's talking to.
 
 For example, with a producer bound to `wrist_left_camera` and
@@ -382,7 +382,7 @@ For example, with a producer bound to `wrist_left_camera` and
 If every bound link_id is claimed by a pinned sibling, the `from_any`
 goal falls back to the first-bound link_id so the call doesn't fail
 purely because of the exclusion. Pinned callers always reach the
-literal link_id they request — the exclusion only applies to wildcard
+literal link_id they request; the exclusion only applies to wildcard
 (`from_any: true`) callers.
 
 ## Instance targeting
@@ -392,12 +392,12 @@ instances expose the same action, the generator emits an extra
 `target_instance_id: Option<&str>` parameter on `fire_goal` so the
 caller can pin the goal to a specific producer:
 
-- **`None`** (default) — the goal request fans out to every matching
+- **`None`** (default): the goal request fans out to every matching
   producer. The first producer to respond wins the goal; the returned
   `action_handle` is latched to that producer so `cancel_goal`,
   `get_result`, and feedback only reach the winner (see
   [Lifecycle latching](#lifecycle-latching) above).
-- **`Some("instance_id")`** — the goal request is pinned to the producer
+- **`Some("instance_id")`**: the goal request is pinned to the producer
   whose `as_instance_id` matches. Only that producer ever sees the goal,
   cancel, result, or feedback for this goal cycle.
 
@@ -413,7 +413,7 @@ let goal = brain_move_arm::fire_goal(
 .await?;
 ```
 
-`target_instance_id` is **not** emitted on pinned dependencies — those
+`target_instance_id` is **not** emitted on pinned dependencies; those
 already address one producer via the pinned `link_id` literal.
 
 ## Serial processing

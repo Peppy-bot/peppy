@@ -18,8 +18,8 @@ pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 // and surface in user-facing peppylib APIs. `ActionWireSender` is exposed
 // because peppylib-py caches one to drive subsequent cancel / result calls
 // without locking. The other wire structs (TopicWire*, ServiceWire*,
-// ActionWireReceiver) are internal to peppylib's own messaging implementation
-// — each submodule imports them directly from `pmi::`.
+// ActionWireReceiver) are internal to peppylib's own messaging
+// implementation; each submodule imports them directly from `pmi::`.
 pub use pmi::{
     ActionWireSender, InterfaceIdentifier, NodeIdentifier, SenderTarget, SenderTargetError,
     ServiceKind,
@@ -106,8 +106,7 @@ fn decode_service_error_payload(payload: &[u8]) -> Option<String> {
 /// codegen via [`MessengerHandle::register_consumer_dependencies`]; consulted
 /// at subscribe / poll / send_goal time when the caller's `from_link_id` is
 /// `None` (a `from_any: true` consumer) to derive the producer link_ids the
-/// from_any path must skip. Empty / absent groups behave like today —
-/// no exclusion, no filter.
+/// from_any path must skip. Empty / absent groups apply no exclusion.
 type PinnedSiblingMap = HashMap<(String, String), Vec<String>>;
 
 #[derive(Clone)]
@@ -156,15 +155,14 @@ impl MessengerHandle {
 
     /// Seed the per-`(producer_name, producer_tag)` map of pinned sibling
     /// link_ids. Codegen calls this once at node bootstrap with the entries
-    /// it discovered in `depends_on.{nodes,interfaces}` — for each `(name,
+    /// it discovered in `depends_on.{nodes,interfaces}`: for each `(name,
     /// tag)` group that contains at least one pinned dependency, the value
     /// is the list of pinned link_ids on that group. Groups with only one
     /// entry (whether pinned or from_any) can be omitted; the exclusion
     /// only matters when a from_any sibling needs to skip pinned link_ids.
     ///
-    /// Replaces any previous registration in full — multiple calls are
-    /// supported but only the latest map is observed. Callers that don't
-    /// register anything observe today's behavior (no exclusion).
+    /// Replaces any previous registration in full; multiple calls are
+    /// supported but only the latest map is observed.
     pub fn register_consumer_dependencies(&self, pinned_per_group: PinnedSiblingMap) {
         if let Ok(mut guard) = self.pinned_siblings.write() {
             *guard = pinned_per_group;
@@ -186,6 +184,22 @@ impl MessengerHandle {
             .get(&(name.to_string(), tag.to_string()))
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Returns the sibling-pinned exclusion set when this caller is a
+    /// wildcard consumer of `target` (i.e. `link_id` is `None`). Returns
+    /// an empty vec for pinned callers and for topic subscriptions with no
+    /// addressable target. Centralizes the "only consult the map when
+    /// wildcard" gate so the three messaging entry points stay one-line.
+    pub(crate) fn excluded_link_ids_for_wildcard(
+        &self,
+        target: Option<&SenderTarget>,
+        link_id: Option<&str>,
+    ) -> Vec<String> {
+        let (Some(target), None) = (target, link_id) else {
+            return Vec::new();
+        };
+        self.excluded_link_ids_for(target.name(), target.tag())
     }
 
     /// Pre-bind a per-topic publisher. Locks the messenger once at

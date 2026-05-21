@@ -241,7 +241,7 @@ impl ActionGoalHandle {
 
     /// `(core_node, instance_id)` of the producer that won this goal's
     /// response race. The feedback filter drops messages whose
-    /// `(core_node, instance_id)` does not match — preventing a wildcard
+    /// `(core_node, instance_id)` does not match, preventing a wildcard
     /// `from_any` goal from surfacing feedback published by losing producers
     /// that also received the broadcast. Always `Some` after `send_goal`
     /// returns because the sender is latched there.
@@ -395,18 +395,7 @@ impl ActionMessenger {
         let goal_id = generate_goal_id();
         let goal_payload = wrap_goal_payload(&goal_id, user_payload.as_ref())?;
 
-        // A from_any caller may need to skip producer link_ids claimed by
-        // sibling pinned `depends_on` entries on the same (action_name,
-        // tag). The exclusion set is registered on the MessengerHandle and
-        // serialized into the goal / cancel / result query attachments so
-        // each sub-service agrees on the chosen producer link_id for this
-        // goal_id (the feedback channel is goal_id-pinned and independent
-        // of link_id, so it's unaffected).
-        let excluded = if to_link_id.is_none() {
-            messenger.excluded_link_ids_for(to_target.name(), to_target.tag())
-        } else {
-            Vec::new()
-        };
+        let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
         let sender = ActionWireSender::new(
             as_core_node,
             as_instance_id,

@@ -3271,7 +3271,7 @@ async fn topic_pinned_subscriber_claims_link_id_from_wildcard_sibling() {
     let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
 
     let subscriber_handle = router.messenger().await;
-    // Register the sibling-pinned map before subscribing — the messenger
+    // Register the sibling-pinned map before subscribing; the messenger
     // looks it up at subscribe time when `from_link_id` is None.
     let mut pinned_map = HashMap::new();
     pinned_map.insert(
@@ -3330,7 +3330,7 @@ async fn topic_pinned_subscriber_claims_link_id_from_wildcard_sibling() {
         .expect("pinned subscriber should receive a message");
     assert_eq!(pinned_msg.payload().as_ref(), b"frame-0");
     assert_eq!(pinned_msg.link_id(), LINK_LEFT);
-    // No second delivery on the pinned axis (defensive — pinned keyexpr
+    // No second delivery on the pinned axis (defensive: pinned keyexpr
     // already filters to one publish per emit, but this also guards
     // against future fan-out changes).
     let pinned_dup =
@@ -3341,7 +3341,7 @@ async fn topic_pinned_subscriber_claims_link_id_from_wildcard_sibling() {
     );
 
     // From_any subscriber: receives exactly one message and it's on
-    // LINK_RIGHT — the LINK_LEFT publish is dropped because a sibling
+    // LINK_RIGHT; the LINK_LEFT publish is dropped because a sibling
     // pinned subscription claims it.
     let from_any_msg = tokio::time::timeout(Duration::from_secs(2), sub_from_any.on_next_message())
         .await
@@ -3368,7 +3368,7 @@ async fn service_pinned_consumer_claims_link_id_from_from_any_sibling() {
     // The consumer process has a pinned `depends_on` entry for LINK_LEFT and
     // a separate `from_any: true` entry on the same (name, tag). After
     // registering the sibling map, a from_any poll must NOT route to the
-    // producer's LINK_LEFT handler — `choose_link_id` skips it on the
+    // producer's LINK_LEFT handler; `choose_link_id` skips it on the
     // producer side after decoding the consumer's query attachment, and
     // claims LINK_RIGHT instead. The pinned poll behaves as today.
     let router = TestRouterContext::start().await;
@@ -3407,7 +3407,7 @@ async fn service_pinned_consumer_claims_link_id_from_from_any_sibling() {
 
     let caller_handle = router.messenger().await;
     // Register only AFTER the first pinned call so the test also exercises
-    // a registration that arrives between calls — the second call (from_any)
+    // a registration that arrives between calls; the second call (from_any)
     // must observe the registration.
     let pinned_response = ServiceMessenger::poll(
         &caller_handle,
@@ -3453,7 +3453,7 @@ async fn service_pinned_consumer_claims_link_id_from_from_any_sibling() {
     assert_eq!(
         from_any_response.payload().as_ref(),
         LINK_RIGHT.as_bytes(),
-        "from_any caller must claim LINK_RIGHT after the sibling exclusion is registered — LINK_LEFT is claimed by the pinned sibling"
+        "from_any caller must claim LINK_RIGHT after the sibling exclusion is registered; LINK_LEFT is claimed by the pinned sibling"
     );
 
     server_task.await.expect("server task panicked");
@@ -3582,7 +3582,7 @@ async fn action_pinned_consumer_claims_link_id_from_from_any_sibling() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn action_from_any_latches_cancel_to_first_goal_responder() {
     // Two producer processes expose the same action. A consumer sends a
-    // wildcard goal (target_instance_id = None) — both producers receive
+    // wildcard goal (target_instance_id = None); both producers receive
     // the goal and respond, but the consumer keeps only the first
     // response. `send_goal` then latches the stored sender to the
     // responder's identity, so a subsequent `cancel_goal` must reach
@@ -3643,12 +3643,12 @@ async fn action_from_any_latches_cancel_to_first_goal_responder() {
                         .expect("cancel respond");
                 }
                 Ok(Ok(None)) | Ok(Err(_)) => {
-                    // queue closed before a cancel arrived — treat as no
+                    // queue closed before a cancel arrived; treat as no
                     // delivery, same as the timeout branch.
                 }
                 Err(_) => {
-                    // timed out — this is the expected outcome for the
-                    // producer that did NOT win the goal-response race.
+                    // timed out: expected outcome for the producer that
+                    // did NOT win the goal-response race.
                 }
             }
         })
@@ -3712,7 +3712,7 @@ async fn action_from_any_latches_cancel_to_first_goal_responder() {
         "goal_response core_node must come from one of the producers, got {winner_core:?}",
     );
 
-    // Issue cancel — only the winner should see it because the stored
+    // Issue cancel: only the winner should see it because the stored
     // sender was latched in send_goal.
     let _ = ActionMessenger::cancel_goal(&caller_handle, &goal_handle, Duration::from_secs(1))
         .await
@@ -3737,7 +3737,7 @@ async fn action_from_any_latches_cancel_to_first_goal_responder() {
     );
     assert_eq!(
         loser_count, 0,
-        "losing producer should not have received any cancel — latching is broken if this fires",
+        "losing producer should not have received any cancel; latching is broken if this fires",
     );
 
     router.shutdown().await;

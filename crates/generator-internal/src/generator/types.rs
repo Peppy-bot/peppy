@@ -104,6 +104,12 @@ impl WireLinkId {
             Self::Wildcard => None,
         }
     }
+
+    /// `true` when the dependency declared `from_any: true`. Used by
+    /// codegen to gate the user-facing `target_instance_id` parameter.
+    pub fn is_wildcard(&self) -> bool {
+        matches!(self, Self::Wildcard)
+    }
 }
 
 /// Identifies a dependency a consumer pulls from. `producer_name` +

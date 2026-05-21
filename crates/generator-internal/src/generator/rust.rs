@@ -289,8 +289,7 @@ impl RustGenerator {
         // Same gating as consumed services: expose `target_instance_id` only
         // for wildcard (`from_any: true`) deps. Pinned deps already route to
         // exactly one producer.
-        let expose_target_instance_id =
-            matches!(dependency.link_id, super::types::WireLinkId::Wildcard);
+        let expose_target_instance_id = dependency.link_id.is_wildcard();
         let target_instance_id_param = if expose_target_instance_id {
             quote!(target_instance_id: Option<&str>,)
         } else {
@@ -309,9 +308,6 @@ impl RustGenerator {
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
             ) -> crate::Result<Self> {
-                // Seed sibling-precedence map. See the matching call in the
-                // topic codegen for the rationale; the OnceLock makes
-                // repeat invocations effectively free.
                 crate::consumer_dependencies::ensure_registered(node_runner.messenger());
 
                 #goal_payload_tokens
@@ -1345,12 +1341,11 @@ impl LanguageGenerator for RustGenerator {
         let to_link_id_expr =
             crate::generator::rust::topics::consumed_from_link_id_expression(dependency);
         // `target_instance_id` is exposed to the caller only when the
-        // dependency is wildcard (`from_any: true`) — pinned deps already
+        // dependency is wildcard (`from_any: true`): pinned deps already
         // route to exactly one producer via the link_id literal and have
         // nothing more for the caller to address. `target_core_node` is
         // never exposed in the generated API.
-        let expose_target_instance_id =
-            matches!(dependency.link_id, super::types::WireLinkId::Wildcard);
+        let expose_target_instance_id = dependency.link_id.is_wildcard();
         let target_instance_id_arg = if expose_target_instance_id {
             quote!(target_instance_id)
         } else {
@@ -1455,10 +1450,6 @@ impl LanguageGenerator for RustGenerator {
 
         let function_token = quote! {
             pub async fn #method_ident(#(#fn_param_tokens),*) -> crate::Result<#return_ty> {
-                // Seed the messenger's sibling-precedence map on first use
-                // so a `from_any: true` poll skips producer link_ids that
-                // pinned siblings already claim. See
-                // `consumer_dependencies::ensure_registered` — idempotent.
                 crate::consumer_dependencies::ensure_registered(node_runner.messenger());
 
                 #request_payload_tokens

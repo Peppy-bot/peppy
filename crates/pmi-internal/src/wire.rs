@@ -400,13 +400,13 @@ impl TopicWireSender {
 /// `from_link_id` follows the same rule: `Some` pins to a producer's specific
 /// link_id, `None` matches any (used for `from_any: true` consumers).
 ///
-/// `excluded_link_ids` is the set of producer link_ids a sibling pinned
-/// `depends_on` entry on the same `(name, tag)` already claims. The adapter
-/// returns those messages to peppylib regardless, but peppylib's
-/// `Subscription` wrapper drops samples whose `link_id()` is in this set so
-/// a `from_any: true` callback doesn't fire for a message a pinned sibling
-/// also receives. Empty when the consumer didn't register sibling claims —
-/// preserves today's behavior unchanged.
+/// `defers_secondary_drop` tells the adapter that peppylib's `Subscription`
+/// wrapper applies its own per-link_id filter above the adapter, so the
+/// adapter must stop dropping the secondary publishes of a multi-link
+/// `emit` (which is its default behavior for wildcard subscribers). Set by
+/// peppylib whenever the consumer has registered sibling-pinned link_ids
+/// for this `(name, tag)`; the actual filter values live on
+/// [`crate::Subscription`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopicWireReceiver {
     pub(crate) as_core_node: Segment,
@@ -416,7 +416,7 @@ pub struct TopicWireReceiver {
     pub(crate) from_target: Option<SenderTarget>,
     pub(crate) from_link_id: Option<Segment>,
     pub(crate) to_topic: Segment,
-    pub(crate) excluded_link_ids: Vec<String>,
+    pub(crate) defers_secondary_drop: bool,
 }
 
 impl TopicWireReceiver {
@@ -438,28 +438,32 @@ impl TopicWireReceiver {
             from_target,
             from_link_id: from_link_id.map(Segment::try_link_id).transpose()?,
             to_topic: Segment::try_from(to_topic)?,
-            excluded_link_ids: Vec::new(),
+            defers_secondary_drop: false,
         })
     }
 
-    /// Replaces the sibling-pinned exclusion set. Peppylib's `subscribe`
-    /// looks up the set on `MessengerHandle` when `from_link_id` is `None`
-    /// and a sibling pinned dependency is registered for the same
-    /// `(name, tag)`; pinned subscribers leave it empty.
-    pub fn with_excluded_link_ids(mut self, excluded: Vec<String>) -> Self {
-        self.excluded_link_ids = excluded;
+    /// Tells the adapter to skip its built-in secondary-publish drop because
+    /// peppylib will apply a sibling-pinned link_id filter above it. Set to
+    /// `true` only when the consumer's manifest registers sibling-pinned
+    /// link_ids for this `(name, tag)`.
+    pub fn with_defers_secondary_drop(mut self, defers: bool) -> Self {
+        self.defers_secondary_drop = defers;
         self
-    }
-
-    /// Read-only access to the sibling-pinned exclusion set. The peppylib
-    /// `Subscription` wrapper clones this once at construction; the wire
-    /// adapter ignores it (the filter runs above the adapter).
-    pub fn excluded_link_ids(&self) -> &[String] {
-        &self.excluded_link_ids
     }
 }
 
 // ─── Services ────────────────────────────────────────────────────────────────
+
+/// Validates each entry as a link_id `Segment` (rejects empty / `/` / `*` /
+/// `**`) so degenerate exclusions can't reach the wire. Used by every
+/// `with_excluded_link_ids` setter that converts a peppylib-supplied
+/// `&[String]` into a `Vec<Segment>` on a wire sender.
+fn validate_excluded_link_ids(excluded: &[String]) -> crate::error::Result<Vec<Segment>> {
+    Ok(excluded
+        .iter()
+        .map(|s| Segment::try_link_id(s))
+        .collect::<Result<_, _>>()?)
+}
 
 /// Caller-side addressing for a service. `target_core_node` / `target_instance_id`
 /// are `None` for broadcast (translated to the protocol's `_any_` marker).
@@ -518,11 +522,7 @@ impl ServiceWireSender {
     /// (rejects empty / `/` / `*` / `**`) so degenerate exclusions can't
     /// reach the wire.
     pub fn with_excluded_link_ids(mut self, excluded: &[String]) -> crate::error::Result<Self> {
-        let validated: Vec<Segment> = excluded
-            .iter()
-            .map(|s| Segment::try_link_id(s))
-            .collect::<Result<_, _>>()?;
-        self.excluded_link_ids = validated;
+        self.excluded_link_ids = validate_excluded_link_ids(excluded)?;
         Ok(self)
     }
 
@@ -593,7 +593,7 @@ impl ServiceWireReceiver {
 ///
 /// `excluded_link_ids` is propagated into every derived
 /// [`ServiceWireSender`] (goal / cancel / result) so each sub-service's
-/// query attachment carries the same exclusion set — keeping the producer's
+/// query attachment carries the same exclusion set, keeping the producer's
 /// link_id claim consistent across the three sub-services for a single
 /// goal_id.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -632,15 +632,11 @@ impl ActionWireSender {
     }
 
     /// Replaces the sibling-pinned exclusion set. See
-    /// [`ServiceWireSender::with_excluded_link_ids`] — the set propagates
+    /// [`ServiceWireSender::with_excluded_link_ids`]; the set propagates
     /// into each derived sub-service so goal / cancel / result agree on the
     /// producer link_id claim.
     pub fn with_excluded_link_ids(mut self, excluded: &[String]) -> crate::error::Result<Self> {
-        let validated: Vec<Segment> = excluded
-            .iter()
-            .map(|s| Segment::try_link_id(s))
-            .collect::<Result<_, _>>()?;
-        self.excluded_link_ids = validated;
+        self.excluded_link_ids = validate_excluded_link_ids(excluded)?;
         Ok(self)
     }
 

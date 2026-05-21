@@ -752,10 +752,7 @@ pub fn build_consumed_action(
     // `target_instance_id` is exposed to fire_goal callers only when the
     // dependency is wildcard (`from_any: true`). Pinned deps route to
     // exactly one producer via the link_id literal.
-    let expose_target_instance_id = matches!(
-        dependency.link_id,
-        crate::generator::types::WireLinkId::Wildcard
-    );
+    let expose_target_instance_id = dependency.link_id.is_wildcard();
     if expose_target_instance_id {
         builder.add_import("from typing import Optional");
     }

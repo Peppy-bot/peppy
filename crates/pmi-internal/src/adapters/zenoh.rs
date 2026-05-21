@@ -351,12 +351,12 @@ impl MessengerBackend for ZenohAdapter {
         // adapter (the primary may be excluded and the secondary may be
         // the one to keep). Dropping secondaries here would silence the
         // only acceptable publish in that case. The peppylib filter still
-        // dedupes — every publish in the emit either lands in the
+        // dedupes: every publish in the emit either lands in the
         // exclusion set (dropped) or doesn't, and at most one bound
         // link_id can be "not in the excluded set" per consumer manifest
         // by construction (the sibling pinned dependencies claim all the
         // others).
-        let drop_secondary = recv.from_link_id.is_none() && recv.excluded_link_ids.is_empty();
+        let drop_secondary = recv.from_link_id.is_none() && !recv.defers_secondary_drop;
         self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }
@@ -427,7 +427,7 @@ impl MessengerBackend for ZenohAdapter {
         let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
 
         // Only attach the exclusion set when non-empty. An empty attachment
-        // would round-trip but signals nothing — keep the wire silent so
+        // would round-trip but signals nothing; keep the wire silent so
         // tcpdump / zenoh-introspection of single-pin / no-sibling consumers
         // looks identical to today's traffic.
         let mut get_builder = session
