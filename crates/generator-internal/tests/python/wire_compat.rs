@@ -29,9 +29,9 @@
 //! -- the capnp schema generation under test is language-agnostic.
 
 use crate::helpers::{
-    WaitContext, init_python_project_venv, init_python_user_node, send_shutdown, spawn_python_run,
-    test_peppy_dirs, try_send_shutdown, wait_for_action_service_reachable_or_exit, wait_for_child,
-    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, WaitContext, init_python_project_venv, init_python_user_node,
+    send_shutdown, spawn_python_run, test_peppy_dirs, wait_for_action_service_reachable_or_exit,
+    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
 use config::json5_pretty;
@@ -84,11 +84,7 @@ fn build_runtime_config(
     let cfg = RuntimeConfig::new(
         router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(instance_id).unwrap()),
         node_name,
         "v1",
         TEST_CORE_NODE,
@@ -102,6 +98,7 @@ fn build_runtime_config(
 // ---------------------------------------------------------------------------
 
 const ACTION_NAME: &str = "perform_scan";
+const ACTION_RESULT_RECEIVED_SERVICE: &str = "result_received";
 // `result_service.response_message_format` is intentionally declared in
 // an order whose alphabetical sort swaps its two pointer-typed fields
 // (`status: Text`, `measurements: List(Float64)`); see module docstring.
@@ -157,6 +154,11 @@ const ACTION_CONSUMER_CONFIG: &str = r#"{
     actions: {
       consumes: [
         { link_id: "producer", name: "perform_scan" }
+      ]
+    },
+    services: {
+      exposes: [
+        { name: "result_received" }
       ]
     }
   },
@@ -310,12 +312,18 @@ if __name__ == "__main__":
     );
 
     init_python_user_node(&consumer_dir);
+    // The consumer drives the full goal/feedback/result cycle, then
+    // exposes `result_received` to signal the test that all three decodes
+    // succeeded. Without this handshake, the test would race shutdown
+    // against the consumer's three sequential awaits and intermittently
+    // tear down a pending task under parallel load.
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
+from peppygen.exposed_services import result_received
 from peppygen.consumed_actions import producer_perform_scan
 
-async def consume_action(node_runner):
+async def consume_action(node_runner, done):
     request = producer_perform_scan.GoalRequest(scan_id=7)
     goal = await producer_perform_scan.ActionHandle.fire_goal(
         node_runner, request, 5.0, QoSProfile.SensorData
@@ -331,9 +339,18 @@ async def consume_action(node_runner):
         f"measurements={result.data.measurements} duration={result.data.duration}",
         flush=True,
     )
+    done.set()
+
+async def ack_when_done(node_runner, done):
+    await done.wait()
+    await result_received.handle_next_request(node_runner, lambda _: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
-    return [asyncio.create_task(consume_action(node_runner))]
+    done = asyncio.Event()
+    return [
+        asyncio.create_task(consume_action(node_runner, done)),
+        asyncio.create_task(ack_when_done(node_runner, done)),
+    ]
 
 def main():
     NodeBuilder().run(setup)
@@ -363,13 +380,14 @@ if __name__ == "__main__":
             messenger: &messenger,
             bound_core_node: TEST_CORE_NODE,
             caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-            to_core_node: None,
+            target_core_node: None,
         },
         PRODUCER_NODE_NAME,
         ACTION_NAME,
         None,
         &mut producer_child,
         &producer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -382,7 +400,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -390,6 +408,7 @@ if __name__ == "__main__":
         CONSUMER_INSTANCE_ID,
         &mut consumer_child,
         &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -398,10 +417,25 @@ if __name__ == "__main__":
         PRODUCER_INSTANCE_ID,
         &mut producer_child,
         &producer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
-    try_send_shutdown(
+    // Block until the consumer has decoded goal, feedback, and result and
+    // exposed its ack service. This converts a shutdown-vs-workflow race
+    // into a deterministic handshake.
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        CONSUMER_NODE_NAME,
+        ACTION_RESULT_RECEIVED_SERVICE,
+        Some(CONSUMER_INSTANCE_ID),
+        &mut consumer_child,
+        &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    send_shutdown(
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
@@ -470,6 +504,7 @@ if __name__ == "__main__":
 // ---------------------------------------------------------------------------
 
 const SERVICE_NAME: &str = "report_status";
+const SERVICE_RESPONSE_RECEIVED_SERVICE: &str = "response_received";
 // `response_message_format` is intentionally declared in an order whose
 // alphabetical sort swaps its two pointer-typed fields (`status: Text`,
 // `measurements: List(Float64)`); see module docstring.
@@ -516,6 +551,9 @@ const SERVICE_CONSUMER_CONFIG: &str = r#"{
     services: {
       consumes: [
         { link_id: "producer", name: "report_status" }
+      ],
+      exposes: [
+        { name: "response_received" }
       ]
     }
   },
@@ -641,22 +679,35 @@ if __name__ == "__main__":
     );
 
     init_python_user_node(&consumer_dir);
+    // The consumer polls once, then exposes `response_received` to signal
+    // the test that the decode succeeded. The single poll has a narrow
+    // race window vs. shutdown but the handshake removes it entirely.
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
+from peppygen.exposed_services import response_received
 from peppygen.consumed_services import producer_report_status
 
-async def poll_service(node_runner):
+async def poll_service(node_runner, done):
     request = producer_report_status.Request(detail=True)
-    response = await producer_report_status.poll(node_runner, request, 5.0, None, None)
+    response = await producer_report_status.poll(node_runner, request, 5.0, None)
     print(
         f"response ok={response.data.ok} status={response.data.status} "
         f"measurements={response.data.measurements} elapsed={response.data.elapsed}",
         flush=True,
     )
+    done.set()
+
+async def ack_when_done(node_runner, done):
+    await done.wait()
+    await response_received.handle_next_request(node_runner, lambda _: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
-    return [asyncio.create_task(poll_service(node_runner))]
+    done = asyncio.Event()
+    return [
+        asyncio.create_task(poll_service(node_runner, done)),
+        asyncio.create_task(ack_when_done(node_runner, done)),
+    ]
 
 def main():
     NodeBuilder().run(setup)
@@ -685,7 +736,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_service_reachable_or_exit(
         &ctx,
@@ -694,6 +745,7 @@ if __name__ == "__main__":
         Some(PRODUCER_INSTANCE_ID),
         &mut producer_child,
         &producer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -708,6 +760,7 @@ if __name__ == "__main__":
         CONSUMER_INSTANCE_ID,
         &mut consumer_child,
         &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -716,11 +769,25 @@ if __name__ == "__main__":
         PRODUCER_INSTANCE_ID,
         &mut producer_child,
         &producer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
-    // The consumer may exit immediately after the single poll completes.
-    try_send_shutdown(
+    // Block until the consumer has decoded the response and exposed its
+    // ack service. This converts a shutdown-vs-poll race into a
+    // deterministic handshake.
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        CONSUMER_NODE_NAME,
+        SERVICE_RESPONSE_RECEIVED_SERVICE,
+        Some(CONSUMER_INSTANCE_ID),
+        &mut consumer_child,
+        &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    send_shutdown(
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
@@ -1025,7 +1092,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -1033,6 +1100,7 @@ if __name__ == "__main__":
         CONSUMER_INSTANCE_ID,
         &mut consumer_child,
         &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -1041,6 +1109,7 @@ if __name__ == "__main__":
         PRODUCER_INSTANCE_ID,
         &mut producer_child,
         &producer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1054,6 +1123,7 @@ if __name__ == "__main__":
         Some(CONSUMER_INSTANCE_ID),
         &mut consumer_child,
         &consumer_dir,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 

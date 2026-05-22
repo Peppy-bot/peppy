@@ -110,9 +110,10 @@ async fn print_runtime_config_async(
         messaging_host.as_str(),
         messaging_port,
         NodeInstanceConfig {
-            instance_id: Name::new(instance_id).map_err(|e| Error::PeppyConfig(e.into()))?,
             arguments: args_to_node_arguments(&args),
-            framework: Default::default(),
+            ..NodeInstanceConfig::new(
+                Name::new(instance_id).map_err(|e| Error::PeppyConfig(e.into()))?,
+            )
         },
         node_name,
         node_tag,

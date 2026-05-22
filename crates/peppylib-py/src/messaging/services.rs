@@ -1,5 +1,5 @@
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, encode_service_handler_error};
+use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext};
 use peppylib::types::Payload;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -13,6 +13,7 @@ use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err
 #[pyclass(name = "ServiceRequestContext")]
 pub struct PyServiceRequestContext {
     request_id: String,
+    link_id: String,
     payload: Vec<u8>,
     instance_id: String,
     core_node: String,
@@ -23,6 +24,11 @@ impl PyServiceRequestContext {
     #[getter]
     fn request_id(&self) -> &str {
         &self.request_id
+    }
+
+    #[getter]
+    fn link_id(&self) -> &str {
+        &self.link_id
     }
 
     #[getter]
@@ -54,9 +60,11 @@ impl PyServiceRequestContext {
 impl From<ServiceRequestContext> for PyServiceRequestContext {
     fn from(ctx: ServiceRequestContext) -> Self {
         let request_id = ctx.request_id().to_string();
+        let link_id = ctx.link_id().to_string();
         let message = ctx.message();
         Self {
             request_id,
+            link_id,
             payload: message.payload().to_vec(),
             instance_id: message.instance_id().to_string(),
             core_node: message.core_node().to_string(),
@@ -107,7 +115,11 @@ impl PyServiceEndpoint {
                     Ok((None, Some(result.extract::<Vec<u8>>(py)?)))
                 }
             });
-            let response_payload = match handler_call {
+            // Phase 3: send response (pure Rust). Handler errors take the
+            // structured `respond_error` path so the caller sees
+            // `ServiceError { reason }` without the framework smuggling a
+            // sentinel through the response payload.
+            let send_result = match handler_call {
                 Ok((maybe_future, sync_bytes)) => {
                     let response_bytes = if let Some(future) = maybe_future {
                         match future.await {
@@ -123,18 +135,15 @@ impl PyServiceEndpoint {
                     };
 
                     match response_bytes {
-                        Ok(response_bytes) => Payload::from(response_bytes),
-                        Err(reason) => encode_service_handler_error(&reason),
+                        Ok(response_bytes) => {
+                            responder.respond(Payload::from(response_bytes)).await
+                        }
+                        Err(reason) => responder.respond_error(reason).await,
                     }
                 }
-                Err(err) => encode_service_handler_error(&err.to_string()),
+                Err(err) => responder.respond_error(err.to_string()).await,
             };
-
-            // Phase 3: send response (pure Rust)
-            responder
-                .respond(response_payload)
-                .await
-                .map_err(to_py_err)?;
+            send_result.map_err(to_py_err)?;
 
             Ok(true)
         })
@@ -150,14 +159,21 @@ impl PyServiceMessenger {
     /// Start listening for service requests.
     ///
     /// Returns a `ServiceEndpoint` that can be used to handle incoming requests.
+    /// `link_ids` is the set of producer link_ids this listener binds; pass a
+    /// list with one or many values. An empty list is normalized to the
+    /// reserved default `_` segment, matching producers launched without
+    /// `--link-id`. A single wildcard listen is registered and incoming
+    /// requests addressed to link_ids outside this set are dropped.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_service_name))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, link_ids, as_service_name))]
+    #[allow(clippy::too_many_arguments)]
     fn listen<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
         as_identity: PySenderTarget,
+        link_ids: Vec<String>,
         as_service_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
@@ -168,6 +184,7 @@ impl PyServiceMessenger {
                 &as_core_node,
                 &as_instance_id,
                 as_identity,
+                &link_ids,
                 &as_service_name,
             )
             .await
@@ -180,7 +197,7 @@ impl PyServiceMessenger {
 
     /// Check if a service has active subscribers.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, to_core_node=None, to_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, target_core_node=None, target_instance_id=None, to_link_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
@@ -189,8 +206,9 @@ impl PyServiceMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_service_name: String,
-        to_core_node: Option<String>,
-        to_instance_id: Option<String>,
+        target_core_node: Option<String>,
+        target_instance_id: Option<String>,
+        to_link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
@@ -200,9 +218,10 @@ impl PyServiceMessenger {
                 &bound_core_node,
                 &as_instance_id,
                 to_target,
+                to_link_id.as_deref(),
                 &to_service_name,
-                to_core_node.as_deref(),
-                to_instance_id.as_deref(),
+                target_core_node.as_deref(),
+                target_instance_id.as_deref(),
             )
             .await
             .map_err(to_py_err)?;
@@ -212,7 +231,7 @@ impl PyServiceMessenger {
 
     /// Send a request to a service and wait for a response.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, to_core_node=None, to_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, target_core_node=None, target_instance_id=None, request_payload=vec![], response_timeout_secs=2.0, to_link_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn poll<'py>(
         py: Python<'py>,
@@ -221,10 +240,11 @@ impl PyServiceMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_service_name: String,
-        to_core_node: Option<String>,
-        to_instance_id: Option<String>,
+        target_core_node: Option<String>,
+        target_instance_id: Option<String>,
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
+        to_link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let response_timeout =
             duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
@@ -236,9 +256,10 @@ impl PyServiceMessenger {
                 &bound_core_node,
                 &as_instance_id,
                 to_target,
+                to_link_id.as_deref(),
                 &to_service_name,
-                to_core_node.as_deref(),
-                to_instance_id.as_deref(),
+                target_core_node.as_deref(),
+                target_instance_id.as_deref(),
                 Payload::from(request_payload),
                 response_timeout,
             )

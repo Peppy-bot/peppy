@@ -95,6 +95,7 @@ async def spawn_stub_listener(server_handle, service_name: str, response_bytes: 
         CORE_NODE,
         SERVER_INSTANCE,
         SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
+        [],
         service_name,)
     return asyncio.ensure_future(
         endpoint.handle_next_request(lambda _request: response_bytes)

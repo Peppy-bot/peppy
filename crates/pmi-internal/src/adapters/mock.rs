@@ -1,11 +1,12 @@
 use super::super::error::{Error, Result};
 use super::super::types::{
-    Message, Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS, SubscriberQoS,
-    Subscription, TopicMessage,
+    IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend, MockResponseToken,
+    NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable,
+    ServiceReply, SubscriberQoS, Subscription, TopicMessage,
 };
 use super::super::wire::zenoh_format::ZenohWireFormat;
 use super::super::wire::{
-    ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
+    ActionWireReceiver, ActionWireSender, ServiceQueryKind, ServiceWireReceiver, ServiceWireSender,
     TopicWireReceiver, TopicWireSender,
 };
 use std::collections::HashMap;
@@ -52,16 +53,45 @@ impl Drop for MockInstance {
 /// publish for later assertions.
 type MessageLog = Arc<Mutex<HashMap<String, Vec<Message>>>>;
 
+/// One active subscription entry. `drop_secondary` is set when the
+/// subscriber wildcards the link_id slot at the keyexpr level (the topic
+/// `from_link_id: None` case) — `route_publish` drops non-primary fan-out
+/// for those entries so a multi-link `emit` yields one delivery.
+pub struct MockSubscription {
+    tx: mpsc::Sender<TopicMessage>,
+    drop_secondary: bool,
+}
+
 /// Shared map of active subscriptions, keyed by pattern. Each pattern maps to
 /// the senders that should receive a fanout when an intersecting topic is
 /// published.
-type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<TopicMessage>>>>>;
+pub type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<MockSubscription>>>>;
+
+/// One in-flight query routed from a `get_keyexpr` caller to a queryable
+/// whose declared keyexpr intersects the caller's selector. `attachment`
+/// mirrors the Zenoh query attachment (carrying the request kind plus the
+/// sibling-pinned exclusion set) so the in-process matcher honors the
+/// same protocol semantics as the live transport.
+pub(crate) struct MockQuery {
+    selector_keyexpr: String,
+    payload: Payload,
+    attachment: bytes::Bytes,
+    reply_tx: mpsc::Sender<ServiceReply>,
+}
+
+/// Shared map of declared queryables, keyed by the producer's declared
+/// keyexpr. Each entry holds the channels feeding the forwarder tasks
+/// behind a [`ServiceQueryable`] — `get_keyexpr` finds matching entries
+/// via [`MockAdapter::key_exprs_intersect`] and pushes a [`MockQuery`]
+/// onto each.
+type QueryableMap = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<MockQuery>>>>>;
 
 pub struct MockAdapter {
     pub is_session_connected: bool,
     pub is_router_started: bool,
     pub messages: MessageLog,
     pub subscriptions: SubscriptionMap,
+    pub(crate) queryables: QueryableMap,
 }
 
 impl Default for MockAdapter {
@@ -71,6 +101,7 @@ impl Default for MockAdapter {
             is_router_started: false,
             messages: Arc::new(Mutex::new(HashMap::new())),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            queryables: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -91,6 +122,7 @@ impl MessengerBackend for MockAdapter {
 
         self.messages.lock().unwrap().clear();
         self.subscriptions.lock().unwrap().clear();
+        self.queryables.lock().unwrap().clear();
 
         Ok(())
     }
@@ -100,7 +132,14 @@ impl MessengerBackend for MockAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        self.subscribe_keyexpr(&ZenohWireFormat::topic_subscribe(recv), qos)
+        // Mirrors the Zenoh adapter: wildcard-link_id subscribers drop the
+        // secondary publishes a multi-link `emit` produces; pinned
+        // subscribers don't, since their keyexpr already selects a single
+        // publish per emit. The sibling-exclusion path bypasses the
+        // secondary drop and defers to peppylib's `link_id()` filter; see
+        // the matching comment in [`super::zenoh::ZenohAdapter::subscribe_topic`].
+        let drop_secondary = recv.from_link_id.is_none() && !recv.defers_secondary_drop;
+        self.subscribe_keyexpr(&ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }
 
@@ -109,52 +148,100 @@ impl MessengerBackend for MockAdapter {
         sender: &TopicWireSender,
         payload: Payload,
         _qos: PublisherQoS,
+        is_primary: bool,
     ) -> Result<()> {
-        self.publish_keyexpr(ZenohWireFormat::topic_publish(sender), payload)
+        self.publish_keyexpr(ZenohWireFormat::topic_publish(sender), payload, is_primary)
             .await
     }
 
-    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<[Subscription; 4]> {
-        let [p0, p1, p2, p3] = ZenohWireFormat::service_listen_patterns(recv);
-        let s0 = self.subscribe_keyexpr(&p0, SubscriberQoS::Standard).await?;
-        let s1 = self.subscribe_keyexpr(&p1, SubscriberQoS::Standard).await?;
-        let s2 = self.subscribe_keyexpr(&p2, SubscriberQoS::Standard).await?;
-        let s3 = self.subscribe_keyexpr(&p3, SubscriberQoS::Standard).await?;
-        Ok([s0, s1, s2, s3])
+    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceQueryable> {
+        if !self.is_session_connected {
+            return Err(Error::SubscribeError {
+                topic: recv.as_service_name.as_str().to_string(),
+            });
+        }
+
+        let (tx, rx) = mpsc::channel::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
+        let mut tasks = tokio::task::JoinSet::new();
+
+        // One queryable per listen call (see `ZenohAdapter::listen_service`
+        // for the rationale — the same shape applies here so peppylib tests
+        // exercise the same dispatch logic against the mock).
+        let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
+        let query_rx = self.declare_queryable_keyexpr(declare_keyexpr);
+        let bound_link_ids: Vec<String> = recv
+            .link_ids
+            .iter()
+            .map(|s| s.as_str().to_string())
+            .collect();
+        let recv_clone = recv.clone();
+        tasks.spawn(async move {
+            handle_mock_queryable(query_rx, bound_link_ids, recv_clone, tx).await;
+        });
+
+        Ok(ServiceQueryable::new(rx, tasks))
     }
 
-    async fn open_service_call(
-        &mut self,
-        sender: &ServiceWireSender,
-        request_id: &str,
-        payload: Payload,
-    ) -> Result<Subscription> {
-        let response_keyexpr = ZenohWireFormat::service_response_subscribe(sender, request_id);
-        let response_sub = self
-            .subscribe_keyexpr(&response_keyexpr, SubscriberQoS::Standard)
-            .await?;
-        let request_keyexpr = ZenohWireFormat::service_request_publish(sender, request_id);
-        self.publish_keyexpr(request_keyexpr, payload).await?;
-        Ok(response_sub)
-    }
-
-    async fn publish_service_response(
-        &mut self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-        payload: Payload,
-    ) -> Result<()> {
-        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
-        self.publish_keyexpr(parsed.response_keyexpr, payload).await
-    }
-
-    fn parse_service_request_id(
+    async fn call_service(
         &self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-    ) -> Result<String> {
-        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
-        Ok(parsed.request_id)
+        sender: &ServiceWireSender,
+        payload: Payload,
+        kind: ServiceQueryKind,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<ReplyStream> {
+        if !self.is_session_connected {
+            return Err(Error::PublishError {
+                topic: sender.to_service_name().to_string(),
+            });
+        }
+
+        let selector = ZenohWireFormat::service_get_selector(sender);
+        let attachment = ZenohWireFormat::service_get_selector_attachment(sender, kind);
+        let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
+
+        let (reply_tx, mut reply_rx) =
+            mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
+
+        // Snapshot matching queryable channels under the map lock, then dispatch
+        // outside the lock so async send doesn't hold a sync mutex across await.
+        let matching: Vec<mpsc::Sender<MockQuery>> = {
+            let queryables = self.queryables.lock().unwrap();
+            queryables
+                .iter()
+                .filter(|(declared, _)| Self::key_exprs_intersect(declared, &selector))
+                .flat_map(|(_, senders)| senders.iter().cloned())
+                .collect()
+        };
+
+        for tx in matching {
+            let q = MockQuery {
+                selector_keyexpr: selector.clone(),
+                payload: payload.clone(),
+                attachment: attachment.clone(),
+                reply_tx: reply_tx.clone(),
+            };
+            let _ = tx.send(q).await;
+        }
+
+        // Drop the local clone so the reply channel closes once every queryable
+        // forwarder's `MockResponseToken` (each holding a `reply_tx` clone) is
+        // dropped — typically after the user handler's final `respond` call.
+        drop(reply_tx);
+
+        let (output_tx, output_rx) =
+            mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
+        let pump_task = tokio::spawn(async move {
+            let _ = tokio::time::timeout(timeout, async move {
+                while let Some(msg) = reply_rx.recv().await {
+                    if output_tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .await;
+        });
+
+        Ok(ReplyStream::new(output_rx, pump_task.abort_handle()))
     }
 
     async fn subscribe_action_feedback(
@@ -163,9 +250,14 @@ impl MessengerBackend for MockAdapter {
         goal_id: &str,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
+        // Action feedback publishes exactly once per goal (see the wire
+        // comment on `action_feedback_publish`), so there are no secondaries
+        // to drop even though the subscribe keyexpr wildcards the link_id
+        // slot. See the matching note in `ZenohAdapter::subscribe_action_feedback`.
         self.subscribe_keyexpr(
             &ZenohWireFormat::action_feedback_subscribe(sender, goal_id),
             qos,
+            false,
         )
         .await
     }
@@ -263,10 +355,13 @@ impl MockAdapter {
     pub fn declare_action_feedback_publisher(
         &self,
         recv: &ActionWireReceiver,
+        link_id: &str,
         goal_id: &str,
         _qos: PublisherQoS,
     ) -> MockPublisher {
-        self.declare_publisher_keyexpr(ZenohWireFormat::action_feedback_publish(recv, goal_id))
+        self.declare_publisher_keyexpr(ZenohWireFormat::action_feedback_publish(
+            recv, link_id, goal_id,
+        ))
     }
 
     fn declare_publisher_keyexpr(&self, topic: String) -> MockPublisher {
@@ -277,23 +372,38 @@ impl MockAdapter {
         }
     }
 
-    async fn publish_keyexpr(&self, topic: String, payload: Payload) -> Result<()> {
+    async fn publish_keyexpr(
+        &self,
+        topic: String,
+        payload: Payload,
+        is_primary: bool,
+    ) -> Result<()> {
         if !self.is_session_connected {
             return Err(Error::PublishError { topic });
         }
 
         let message = Message::new(&topic, payload.to_bytes());
-        Self::route_publish(&topic, &message, &self.messages, &self.subscriptions).await
+        Self::route_publish(
+            &topic,
+            &message,
+            is_primary,
+            &self.messages,
+            &self.subscriptions,
+        )
+        .await
     }
 
     /// Records `message` against `topic` in the mock's message log and fans
     /// it out to every subscription whose pattern intersects `topic`. Shared
     /// by [`MockAdapter::publish_keyexpr`] (which holds the adapter
     /// directly) and [`MockPublisher::publish`] (which clones the same
-    /// `Arc`s for lock-free per-topic publishing).
+    /// `Arc`s for lock-free per-topic publishing). `is_primary` is the
+    /// wire-attachment dedup marker — subscribers that wildcarded the
+    /// link_id slot drop non-primary fan-out.
     async fn route_publish(
         topic: &str,
         message: &Message,
+        is_primary: bool,
         messages: &MessageLog,
         subscriptions: &SubscriptionMap,
     ) -> Result<()> {
@@ -307,12 +417,18 @@ impl MockAdapter {
                 .push(message.clone());
         }
 
-        let senders = {
+        let senders: Vec<mpsc::Sender<TopicMessage>> = {
             let subscriptions = subscriptions.lock().unwrap();
             let mut matched = Vec::new();
-            for (pattern, senders) in subscriptions.iter() {
-                if Self::key_exprs_intersect(pattern, topic) {
-                    matched.extend(senders.iter().cloned());
+            for (pattern, subs) in subscriptions.iter() {
+                if !Self::key_exprs_intersect(pattern, topic) {
+                    continue;
+                }
+                for sub in subs.iter() {
+                    if sub.drop_secondary && !is_primary {
+                        continue;
+                    }
+                    matched.push(sub.tx.clone());
                 }
             }
             matched
@@ -324,7 +440,24 @@ impl MockAdapter {
         Ok(())
     }
 
-    async fn subscribe_keyexpr(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
+    /// Register a queryable under `declared_keyexpr` and return the channel
+    /// the per-queryable forwarder task reads inbound queries from. Senders
+    /// stored in the map outlive the forwarder task — `get_keyexpr` ignores
+    /// closed senders rather than garbage-collecting them, mirroring the
+    /// topic [`SubscriptionMap`] convention.
+    fn declare_queryable_keyexpr(&self, declared_keyexpr: String) -> mpsc::Receiver<MockQuery> {
+        let (tx, rx) = mpsc::channel(SubscriberQoS::Standard.channel_size());
+        let mut queryables = self.queryables.lock().unwrap();
+        queryables.entry(declared_keyexpr).or_default().push(tx);
+        rx
+    }
+
+    async fn subscribe_keyexpr(
+        &self,
+        topic: &str,
+        qos: SubscriberQoS,
+        drop_secondary: bool,
+    ) -> Result<Subscription> {
         if !self.is_session_connected {
             return Err(Error::SubscribeError {
                 topic: topic.to_string(),
@@ -338,7 +471,10 @@ impl MockAdapter {
             subscriptions
                 .entry(topic.to_string())
                 .or_default()
-                .push(tx.clone());
+                .push(MockSubscription {
+                    tx: tx.clone(),
+                    drop_secondary,
+                });
         }
 
         // No background task is needed — the mock writes directly into the
@@ -348,6 +484,73 @@ impl MockAdapter {
         let abort_handle = join_handle.abort_handle();
 
         Ok(Subscription::new(rx, abort_handle))
+    }
+}
+
+/// Per-queryable forwarder for the mock adapter. Mirrors
+/// [`super::zenoh::handle_queryable`]: drains inbound `MockQuery`s, parses
+/// the caller identity and link_id slot, dispatches to a concrete link_id
+/// from `bound_link_ids`, builds an [`IncomingRequest`] with a
+/// [`ResponseToken::Mock`] carrying the per-query reply channel, and
+/// pushes it to peppylib. Queries whose selector pins a link_id outside
+/// `bound_link_ids` are dropped (the `mock_query`'s reply_tx clone falls
+/// out of scope at end of iteration so the caller's reply stream finalizes
+/// once every reply_tx is dropped).
+async fn handle_mock_queryable(
+    mut query_rx: mpsc::Receiver<MockQuery>,
+    bound_link_ids: Vec<String>,
+    recv: ServiceWireReceiver,
+    tx: mpsc::Sender<IncomingRequest>,
+) {
+    while let Some(mock_query) = query_rx.recv().await {
+        let parsed = match ZenohWireFormat::parse_inbound_query(
+            &recv,
+            &mock_query.selector_keyexpr,
+            mock_query.attachment.as_ref(),
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::warn!(
+                    selector = %mock_query.selector_keyexpr,
+                    %err,
+                    "mock queryable: failed to parse selector",
+                );
+                continue;
+            }
+        };
+
+        let chosen_link_id = match parsed.choose_link_id(&bound_link_ids) {
+            Some(l) => l.to_string(),
+            None => {
+                tracing::trace!(
+                    selector = %mock_query.selector_keyexpr,
+                    parsed_link_id = %parsed.link_id,
+                    "mock queryable: dropping query with link_id not in bound set",
+                );
+                continue;
+            }
+        };
+
+        let reply_keyexpr = ZenohWireFormat::service_reply_keyexpr(
+            &recv,
+            &chosen_link_id,
+            &parsed.caller_core,
+            &parsed.caller_inst,
+        );
+
+        let token = ResponseToken::Mock(MockResponseToken::new(mock_query.reply_tx, reply_keyexpr));
+        let request = IncomingRequest {
+            payload: mock_query.payload,
+            kind: parsed.kind,
+            link_id: chosen_link_id,
+            caller_core: parsed.caller_core,
+            caller_inst: parsed.caller_inst,
+            token,
+        };
+
+        if tx.send(request).await.is_err() {
+            break;
+        }
     }
 }
 
@@ -362,8 +565,17 @@ pub struct MockPublisher {
 
 impl MockPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
+        // Pre-bound publishers are single-link, so each publish is its own
+        // emit's only sample — always primary, mirroring the Zenoh side.
         let message = Message::new(&self.topic, payload);
-        MockAdapter::route_publish(&self.topic, &message, &self.messages, &self.subscriptions).await
+        MockAdapter::route_publish(
+            &self.topic,
+            &message,
+            true,
+            &self.messages,
+            &self.subscriptions,
+        )
+        .await
     }
 }
 
@@ -424,7 +636,7 @@ mod tests {
     fn test_key_exprs_intersect_service_patterns() {
         // Real patterns from the service messenger
         // Subscription pattern: {bound_core_node}/*/{as_instance_id}/*/{service_root}/request/**
-        // Request topic: {to_core_node}/{caller_core_node}/{to_instance}/{caller_instance}/{service_root}/request/{request_id}
+        // Request topic: {target_core_node}/{caller_core_node}/{to_instance}/{caller_instance}/{service_root}/request/{request_id}
 
         // Pattern 1: Specific core node, specific instance
         // Service bound to core node "listener_core_node" with instance "listener_instance"
@@ -471,5 +683,189 @@ mod tests {
         let subscriber = "caller_core/core_node/caller_inst/responder_inst/topic/clock/clock";
         assert!(MockAdapter::key_exprs_intersect(subscriber, publisher));
         assert!(MockAdapter::key_exprs_intersect(publisher, subscriber));
+    }
+
+    #[tokio::test]
+    async fn mock_queryable_roundtrip_wildcard_selector() {
+        // Direct exercise of the mock's queryable plumbing: a producer declares
+        // a queryable on a concrete keyexpr; a `get` selector with a Zenoh
+        // wildcard at one slot must still match and deliver the query, and the
+        // responder must be able to push a reply that the caller observes.
+        // This is the in-process counterpart to the `from_any` regression
+        // test in peppylib — without going through a real zenohd.
+        use crate::wire::{
+            SenderTarget, ServiceKind, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
+            ServiceWireSender,
+        };
+
+        let mut adapter = MockAdapter::default();
+        adapter.start_session().await.expect("session should start");
+
+        let receiver = ServiceWireReceiver::new(
+            "server_core",
+            "server_inst",
+            SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+            &["wrist_left".to_string()],
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid receiver");
+
+        // `to_link_id: None` ⇒ `*` at the link_id slot — the regression case.
+        let sender = ServiceWireSender::new(
+            "caller_core",
+            "caller_inst",
+            Some("server_core"),
+            Some("server_inst"),
+            SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+            None,
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid sender");
+
+        let mut queryable = adapter
+            .listen_service(&receiver)
+            .await
+            .expect("queryable declare should succeed");
+
+        let mut reply_stream = adapter
+            .call_service(
+                &sender,
+                Payload::from_bytes(bytes::Bytes::from_static(b"ping?")),
+                ServiceQueryKind::UserRequest,
+                Some(std::time::Duration::from_millis(500)),
+            )
+            .await
+            .expect("call_service should succeed");
+
+        let incoming = queryable
+            .rx
+            .recv()
+            .await
+            .expect("producer should receive the query");
+        assert_eq!(incoming.payload.to_bytes().as_ref(), b"ping?");
+        assert_eq!(incoming.kind, ServiceQueryKind::UserRequest);
+        assert_eq!(incoming.link_id, "wrist_left");
+        assert_eq!(incoming.caller_core, "caller_core");
+        assert_eq!(incoming.caller_inst, "caller_inst");
+
+        incoming
+            .token
+            .respond_response(Payload::from_bytes(bytes::Bytes::from_static(b"pong")))
+            .await
+            .expect("respond should succeed");
+
+        let reply = reply_stream
+            .rx
+            .recv()
+            .await
+            .expect("caller should receive the reply");
+        assert_eq!(reply.kind(), ServiceReplyKind::Response);
+        assert_eq!(reply.message().payload().to_bytes().as_ref(), b"pong");
+    }
+
+    #[tokio::test]
+    async fn mock_topic_wildcard_subscriber_drops_secondary_publish() {
+        // Mirrors the peppylib integration test against zenohd, but in
+        // process. Two `publish_topic` calls with the same payload on
+        // different link_ids — the first marked primary, the second
+        // secondary — must deliver to a wildcard subscriber exactly once
+        // (primary only) and to each pinned subscriber exactly once
+        // (regardless of marker).
+        use crate::wire::{SenderTarget, TopicWireReceiver, TopicWireSender};
+
+        let mut adapter = MockAdapter::default();
+        adapter.start_session().await.expect("session should start");
+
+        let target = SenderTarget::interface("depth_camera", "v1").expect("iface target");
+
+        let sender_left = TopicWireSender::new(
+            "pub_core",
+            "pub_inst",
+            target.clone(),
+            Some("wrist_left"),
+            "frames",
+        )
+        .expect("sender left");
+        let sender_right = TopicWireSender::new(
+            "pub_core",
+            "pub_inst",
+            target.clone(),
+            Some("wrist_right"),
+            "frames",
+        )
+        .expect("sender right");
+
+        let recv_any = TopicWireReceiver::new(
+            "sub_core",
+            "sub_any",
+            None,
+            None,
+            Some(target.clone()),
+            None,
+            "frames",
+        )
+        .expect("recv any");
+        let recv_left = TopicWireReceiver::new(
+            "sub_core",
+            "sub_left",
+            None,
+            None,
+            Some(target.clone()),
+            Some("wrist_left"),
+            "frames",
+        )
+        .expect("recv left");
+        let recv_right = TopicWireReceiver::new(
+            "sub_core",
+            "sub_right",
+            None,
+            None,
+            Some(target.clone()),
+            Some("wrist_right"),
+            "frames",
+        )
+        .expect("recv right");
+
+        let mut sub_any = adapter
+            .subscribe_topic(&recv_any, SubscriberQoS::Standard)
+            .await
+            .expect("wildcard subscribe");
+        let mut sub_left = adapter
+            .subscribe_topic(&recv_left, SubscriberQoS::Standard)
+            .await
+            .expect("pinned left subscribe");
+        let mut sub_right = adapter
+            .subscribe_topic(&recv_right, SubscriberQoS::Standard)
+            .await
+            .expect("pinned right subscribe");
+
+        let payload = || Payload::from_bytes(bytes::Bytes::from_static(b"frame-0"));
+
+        adapter
+            .publish_topic(&sender_left, payload(), PublisherQoS::Standard, true)
+            .await
+            .expect("primary publish");
+        adapter
+            .publish_topic(&sender_right, payload(), PublisherQoS::Standard, false)
+            .await
+            .expect("secondary publish");
+
+        // Wildcard subscriber: receives the primary only.
+        let first = sub_any.rx.recv().await.expect("wildcard receives once");
+        assert_eq!(first.payload().to_bytes().as_ref(), b"frame-0");
+        // No second delivery in-process — the secondary was dropped.
+        assert!(
+            sub_any.rx.try_recv().is_err(),
+            "wildcard subscriber must not receive a duplicate"
+        );
+
+        // Pinned subscribers each receive their one publish, regardless of
+        // whether it was tagged primary or secondary.
+        let left = sub_left.rx.recv().await.expect("pinned left receives");
+        assert_eq!(left.payload().to_bytes().as_ref(), b"frame-0");
+        let right = sub_right.rx.recv().await.expect("pinned right receives");
+        assert_eq!(right.payload().to_bytes().as_ref(), b"frame-0");
     }
 }

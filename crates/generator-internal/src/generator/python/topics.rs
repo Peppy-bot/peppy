@@ -2,7 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
-use super::services::sender_target_python_expr;
+use super::services::{consumed_link_id_python_expr, sender_target_python_expr};
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
@@ -118,6 +118,7 @@ pub fn build_emitted_topic(
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
+    builder.line("node_runner.link_ids(),");
     builder.line("TOPIC_NAME,");
     builder.line("qos,");
     builder.line("payload,");
@@ -201,14 +202,16 @@ fn build_consumed_topic_inner(
         builder.line("node_runner.bound_instance_id(),");
         let from_target = sender_target_python_expr(
             dep.origin.as_ref(),
-            &format!("{:?}", dep.node_name),
-            &format!("{:?}", dep.node_tag),
+            &format!("{:?}", dep.producer_name),
+            &format!("{:?}", dep.producer_tag),
         );
         builder.line(&format!("{from_target},"));
         builder.line("topic_name,");
         builder.line("from_core_node,");
         builder.line("from_instance_id,");
         builder.line("peppylib.QoSProfile.Standard,");
+        let from_link_id = consumed_link_id_python_expr(dep);
+        builder.line(&format!("from_link_id={from_link_id},"));
         builder.dedent();
         builder.line(")");
     } else {

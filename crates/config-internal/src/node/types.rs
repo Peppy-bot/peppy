@@ -560,6 +560,20 @@ where
     deserialize_non_empty_identifier(deserializer, "ConsumedAction.link_id")
 }
 
+fn deserialize_node_dependency_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_empty_identifier(deserializer, "NodeDependency.link_id")
+}
+
+fn deserialize_interface_dependency_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_empty_identifier(deserializer, "InterfaceDependency.link_id")
+}
+
 fn deserialize_non_empty_identifier<'de, D>(
     deserializer: D,
     label: &'static str,
@@ -606,7 +620,10 @@ fn default_action_service_qos_profile() -> QoSProfile {
 pub struct NodeDependency {
     pub name: Name,
     pub tag: String,
+    #[serde(deserialize_with = "deserialize_node_dependency_link_id")]
     pub link_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_any: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -614,9 +631,12 @@ pub struct NodeDependency {
 pub struct InterfaceDependency {
     pub name: Name,
     pub tag: String,
+    #[serde(deserialize_with = "deserialize_interface_dependency_link_id")]
     pub link_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_any: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

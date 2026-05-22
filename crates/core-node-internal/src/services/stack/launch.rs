@@ -97,6 +97,7 @@ pub async fn listen_for_stack_launch(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        &[],
         names::STACK_LAUNCH_ACTION,
     )
     .await?;
@@ -1285,9 +1286,9 @@ async fn start_node_instances(
             .await;
 
             let node_instance = config::runtime::NodeInstanceConfig {
-                instance_id: instance.instance_id.clone(),
                 arguments: instance.arguments.clone(),
                 framework: resolve_framework(&instance.framework, ctx.daemon_use_sim_time),
+                ..config::runtime::NodeInstanceConfig::new(instance.instance_id.clone())
             };
             let runtime_config = match RuntimeConfig::new(
                 messaging_host.as_str(),

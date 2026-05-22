@@ -1,7 +1,7 @@
 use crate::helpers::{
-    STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output, init_python_project_venv,
-    init_python_user_node, init_test_env, send_shutdown, spawn_python_run, test_peppy_dirs,
-    wait_for_action_service_reachable_or_exit, wait_for_child,
+    DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output,
+    init_python_project_venv, init_python_user_node, init_test_env, send_shutdown,
+    spawn_python_run, test_peppy_dirs, wait_for_action_service_reachable_or_exit, wait_for_child,
     wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
@@ -205,11 +205,7 @@ async fn actions_communication() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -277,11 +273,7 @@ if __name__ == "__main__":
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         "v1",
         TEST_CORE_NODE,
@@ -369,7 +361,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -378,6 +370,7 @@ if __name__ == "__main__":
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -390,7 +383,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -398,6 +391,7 @@ if __name__ == "__main__":
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -406,6 +400,7 @@ if __name__ == "__main__":
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_service_reachable_or_exit(
@@ -415,6 +410,7 @@ if __name__ == "__main__":
         Some(consumer_instance_id),
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -542,11 +538,7 @@ async fn actions_communication_cancel_goal() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -611,11 +603,7 @@ if __name__ == "__main__":
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         "v1",
         TEST_CORE_NODE,
@@ -689,7 +677,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -698,6 +686,7 @@ if __name__ == "__main__":
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -710,7 +699,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -718,6 +707,7 @@ if __name__ == "__main__":
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -726,6 +716,7 @@ if __name__ == "__main__":
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_service_reachable_or_exit(
@@ -735,6 +726,7 @@ if __name__ == "__main__":
         Some(consumer_instance_id),
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -882,11 +874,7 @@ async fn actions_communication_emit_feedback_from_within_goal_handler() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -957,11 +945,7 @@ if __name__ == "__main__":
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1041,7 +1025,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1050,6 +1034,7 @@ if __name__ == "__main__":
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1062,7 +1047,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -1070,6 +1055,7 @@ if __name__ == "__main__":
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -1078,6 +1064,7 @@ if __name__ == "__main__":
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_service_reachable_or_exit(
@@ -1087,6 +1074,7 @@ if __name__ == "__main__":
         Some(consumer_instance_id),
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1232,11 +1220,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1308,11 +1292,7 @@ if __name__ == "__main__":
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1378,7 +1358,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1387,6 +1367,7 @@ if __name__ == "__main__":
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1399,7 +1380,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -1407,6 +1388,7 @@ if __name__ == "__main__":
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -1415,6 +1397,7 @@ if __name__ == "__main__":
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_service_reachable_or_exit(
@@ -1424,6 +1407,7 @@ if __name__ == "__main__":
         Some(consumer_instance_id),
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1585,11 +1569,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1671,11 +1651,7 @@ if __name__ == "__main__":
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1751,7 +1727,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1760,6 +1736,7 @@ if __name__ == "__main__":
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1772,7 +1749,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -1780,6 +1757,7 @@ if __name__ == "__main__":
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -1788,6 +1766,7 @@ if __name__ == "__main__":
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_service_reachable_or_exit(
@@ -1797,6 +1776,7 @@ if __name__ == "__main__":
         Some(consumer_instance_id),
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1964,11 +1944,7 @@ async fn actions_communication_drain_loop_until_end_signal() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -2046,11 +2022,7 @@ if __name__ == "__main__":
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -2121,7 +2093,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -2130,6 +2102,7 @@ if __name__ == "__main__":
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -2142,7 +2115,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -2150,6 +2123,7 @@ if __name__ == "__main__":
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -2158,6 +2132,7 @@ if __name__ == "__main__":
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_service_reachable_or_exit(
@@ -2167,6 +2142,7 @@ if __name__ == "__main__":
         Some(consumer_instance_id),
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 

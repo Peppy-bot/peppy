@@ -8,8 +8,8 @@
 //! diverging this one.
 
 use crate::wire::{
-    ActionWireReceiver, ActionWireSender, BROADCAST_MARKER, SenderTarget, ServiceKind,
-    ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
+    ActionWireReceiver, ActionWireSender, SenderTarget, ServiceKind, ServiceWireReceiver,
+    ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use std::fmt;
 
@@ -41,32 +41,49 @@ impl ZenohWireFormat {
     /// addressing. Inverse of [`Self::topic_publish`].
     ///
     /// The publish shape is
-    /// `*/{caller_core}/*/{caller_inst}/topic/{discriminator}/{name}/{tag}/{topic}`
-    /// — caller_core is segment index 1, caller_inst is segment index 3.
+    /// `*/{caller_core}/*/{caller_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{topic}`:
+    /// caller_core is segment index 1, caller_inst is segment index 3,
+    /// link_id is segment index 8. The link_id segment is surfaced so
+    /// consumer-side filters can drop messages whose producer link_id is
+    /// already claimed by a sibling pinned subscription.
     pub(crate) fn parse_topic_keyexpr(
         keyexpr: &str,
     ) -> Result<ParsedTopicKey, ZenohWireParseError> {
-        let mut segments = keyexpr.splitn(5, '/');
-        let _target_core = segments.next();
-        let core_node = extract_caller_segment(segments.next(), "caller_core_node")?;
-        let _target_instance = segments.next();
-        let instance_id = extract_caller_segment(segments.next(), "caller_instance_id")?;
+        let segments: Vec<&str> = keyexpr.split('/').collect();
+        let core_node = extract_caller_segment(segments.get(1).copied(), "caller_core_node")?;
+        let instance_id = extract_caller_segment(segments.get(3).copied(), "caller_instance_id")?;
+        // link_id sits at index 8 in the topic publish shape and is the
+        // signal the consumer-side sibling-precedence filter consults when
+        // dropping wildcard topic messages whose producer link_id is
+        // already claimed by a pinned subscription. Service reply keyexprs
+        // also carry a literal at this index (it's the link_id the
+        // responder claimed via `choose_link_id`), so segment 8 is
+        // populated there too; an empty value would only appear for a
+        // truncated wire shape and is treated as "no link_id" since it can
+        // never match a pinned literal.
+        let link_id = segments
+            .get(8)
+            .copied()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+            .to_string();
         Ok(ParsedTopicKey {
             core_node,
             instance_id,
+            link_id,
         })
     }
 
-    /// `*/{as_core}/*/{as_inst}/topic/{discriminator}/{name}/{tag}/{as_topic}`
+    /// `*/{as_core}/*/{as_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{as_topic}`
     pub(crate) fn topic_publish(s: &TopicWireSender) -> String {
         let (discriminator, name, tag) = target_segments(Some(&s.as_target));
         format!(
-            "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/topic/{discriminator}/{name}/{tag}/{}",
-            s.as_core_node, s.as_instance_id, s.as_topic_name,
+            "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/topic/{discriminator}/{name}/{tag}/{}/{}",
+            s.as_core_node, s.as_instance_id, s.link_id, s.as_topic_name,
         )
     }
 
-    /// `{as_core}/{from_core|*}/{as_inst}/{from_inst|*}/topic/{discriminator|*}/{name|*}/{tag|*}/{to_topic}`
+    /// `{as_core}/{from_core|*}/{as_inst}/{from_inst|*}/topic/{discriminator|*}/{name|*}/{tag|*}/{link_id|*}/{to_topic}`
     pub(crate) fn topic_subscribe(r: &TopicWireReceiver) -> String {
         let from_core = r.from_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         let from_inst = r
@@ -74,94 +91,134 @@ impl ZenohWireFormat {
             .as_deref()
             .unwrap_or(SINGLE_CHUNK_WILDCARD);
         let (discriminator, name, tag) = target_segments(r.from_target.as_ref());
+        let link_id = r.from_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         format!(
-            "{}/{from_core}/{}/{from_inst}/topic/{discriminator}/{name}/{tag}/{}",
+            "{}/{from_core}/{}/{from_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{}",
             r.as_core_node, r.as_instance_id, r.to_topic,
         )
     }
 
+    // ─── Topic attachment ─────────────────────────────────────────────────
+    //
+    // A producer bound to N link_ids issues N `put`s per `emit` because Zenoh
+    // `put` keyexprs can't carry wildcards. A subscriber that wildcards the
+    // link_id slot intersects all N — without help, it receives the same
+    // payload N times per emit. The producer marks the publish for
+    // `effective[0]` (first-bound) as primary and the rest as secondary; the
+    // adapter drops secondaries for wildcard subscribers. Pinned subscribers
+    // ignore the marker because their keyexpr already filters to a single
+    // publish per emit. This is the topic-side analog of the service
+    // "first-bound dispatch" pattern in [`ParsedInboundQuery::choose_link_id`].
+
     // ─── Services ─────────────────────────────────────────────────────────
+    //
+    // Services and action sub-services (goal / cancel / result) ride on
+    // Zenoh queryables. The producer declares exactly one queryable per
+    // `listen_service` call with `*` at the link_id slot, regardless of how
+    // many link_ids the receiver binds. Producer-side dispatch (in the
+    // adapter's `handle_queryable`) picks the concrete link_id from the
+    // bound set when claiming each inbound query — `from_any` consumers
+    // claim `bound_link_ids[0]`, pinned consumers claim the literal they
+    // sent. This keeps the user handler firing exactly once per consumer
+    // call, even when a single producer process binds N link_ids.
 
-    /// All 4 broadcast-Cartesian listen patterns:
-    /// `{bound|_any_}/*/{inst|_any_}/*/{service_root}/request/**`.
-    ///
-    /// Order matches the original code's `patterns[0..4]` (bound-specific +
-    /// instance-specific first, then progressively broader).
-    pub(crate) fn service_listen_patterns(r: &ServiceWireReceiver) -> [String; 4] {
-        let root = service_root(&r.as_identity, &r.as_service_name, r.kind);
-        let bound = r.bound_core_node.as_str();
-        let inst = r.as_instance_id.as_str();
-        [
-            format!(
-                "{bound}/{SINGLE_CHUNK_WILDCARD}/{inst}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
-            ),
-            format!(
-                "{bound}/{SINGLE_CHUNK_WILDCARD}/{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
-            ),
-            format!(
-                "{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{inst}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
-            ),
-            format!(
-                "{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{BROADCAST_MARKER}/{SINGLE_CHUNK_WILDCARD}/{root}/request/**"
-            ),
-        ]
+    /// Producer-side queryable keyexpr, declared once per `listen_service`.
+    /// Layout `{bound_core}/*/{as_inst}/*/{service_root}` — the `*` slots
+    /// match any caller's `core_node` / `instance_id`, and the link_id slot
+    /// inside `service_root` is also `*` so a single queryable absorbs every
+    /// link_id literal the producer binds. The adapter resolves which
+    /// concrete link_id to bind each request to after parsing the selector.
+    pub(crate) fn service_queryable_declare(r: &ServiceWireReceiver) -> String {
+        let root = service_root(
+            &r.as_identity,
+            SINGLE_CHUNK_WILDCARD,
+            &r.as_service_name,
+            r.kind,
+        );
+        format!(
+            "{}/{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{root}",
+            r.bound_core_node, r.as_instance_id,
+        )
     }
 
-    /// Client → server request publish:
-    /// `{target_core|_any_}/{bound_core}/{target_inst|_any_}/{caller_inst}/{service_root}/request/{request_id}`.
-    pub(crate) fn service_request_publish(s: &ServiceWireSender, request_id: &str) -> String {
-        let root = service_root(&s.to_target, &s.to_service_name, s.kind);
-        let target_core = s.to_core_node.as_deref().unwrap_or(BROADCAST_MARKER);
-        let target_inst = s.to_instance_id.as_deref().unwrap_or(BROADCAST_MARKER);
+    /// Caller-side get selector. Layout
+    /// `{to_core|*}/{bound_core_caller}/{to_inst|*}/{caller_inst}/{service_root}`.
+    ///
+    /// The link_id slot inside `service_root` is `*` when the caller didn't
+    /// pin one (the `from_any: true` fix — `get` selectors may carry Zenoh
+    /// wildcards, unlike `put` keyexprs) and a concrete literal otherwise.
+    /// Likewise the `to_core` / `to_inst` slots use `*` when the caller
+    /// broadcasts, replacing the legacy `_any_` marker.
+    pub(crate) fn service_get_selector(s: &ServiceWireSender) -> String {
+        let link_id = s.to_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let root = service_root(&s.to_target, link_id, &s.to_service_name, s.kind);
+        let target_core = s
+            .target_core_node
+            .as_deref()
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_inst = s
+            .target_instance_id
+            .as_deref()
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
         format!(
-            "{target_core}/{}/{target_inst}/{}/{root}/request/{request_id}",
+            "{target_core}/{}/{target_inst}/{}/{root}",
             s.bound_core_node, s.as_instance_id,
         )
     }
 
-    /// Client-side response subscribe (wildcards on responder fields, keyed by `request_id`):
-    /// `{bound_core}/*/{caller_inst}/*/{service_root}/response/{request_id}`.
-    pub(crate) fn service_response_subscribe(s: &ServiceWireSender, request_id: &str) -> String {
-        let root = service_root(&s.to_target, &s.to_service_name, s.kind);
+    /// Concrete topic-shape reply keyexpr passed to `query.reply()`. Builds
+    /// `{caller_core}/{bound_core_producer}/{caller_inst}/{as_inst_producer}/{service_root_with_link_id_literal}`,
+    /// so the caller's [`ZenohWireFormat::parse_topic_keyexpr`] surfaces the
+    /// responder's `(core_node, instance_id)` to the user.
+    pub(crate) fn service_reply_keyexpr(
+        r: &ServiceWireReceiver,
+        link_id_literal: &str,
+        caller_core: &str,
+        caller_inst: &str,
+    ) -> String {
+        let root = service_root(&r.as_identity, link_id_literal, &r.as_service_name, r.kind);
         format!(
-            "{}/{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{root}/response/{request_id}",
-            s.bound_core_node, s.as_instance_id,
+            "{caller_core}/{}/{caller_inst}/{}/{root}",
+            r.bound_core_node, r.as_instance_id,
         )
     }
 
-    /// Parses a received request keyexpr against the receiver's expected service
-    /// shape and returns the request_id plus the server-side response publish key.
-    ///
-    /// Returns an error if the keyexpr doesn't match the expected request shape
-    /// (wrong segment count, mismatched service_root, missing `request` marker, etc.).
-    pub(crate) fn parse_received_request(
+    /// Parses a query selector keyexpr (the caller's get-side keyexpr, as
+    /// delivered to the producer via `query.key_expr()`) to extract the
+    /// caller's identity slots and the link_id slot. The producer's single
+    /// queryable declares `*` at the link_id position, so the selector's
+    /// literal-or-`*` at that slot is the only signal of which bound link_id
+    /// the consumer wanted — [`ParsedInboundQuery::choose_link_id`] resolves
+    /// that into a concrete claim from the producer's bound set.
+    pub(crate) fn parse_inbound_query(
         receiver: &ServiceWireReceiver,
-        request_keyexpr: &str,
-    ) -> Result<ParsedRequest, ZenohWireParseError> {
-        let mut parts = request_keyexpr.split('/').filter(|s| !s.is_empty());
+        query_keyexpr: &str,
+        attachment_bytes: &[u8],
+    ) -> Result<ParsedInboundQuery, ZenohWireParseError> {
+        let mut parts = query_keyexpr.split('/').filter(|s| !s.is_empty());
 
-        // to_core / to_inst are consumed but unused: the receiver's listen
-        // patterns already filter on these via Zenoh keyexpr matching, so any
-        // mismatch would have caused the message to land on a different listener.
+        // Segment 0 is the consumer's `to_core` slot (may be a literal or `*`);
+        // ignored here because the queryable's listen keyexpr already filtered
+        // on it via Zenoh's matcher.
         let _to_core = parts
             .next()
-            .ok_or(ZenohWireParseError::MissingSegment("to_core_node"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("target_core_node"))?;
         let caller_core = parts
             .next()
-            .ok_or(ZenohWireParseError::MissingSegment("caller_core_node"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("caller_core_node"))?
+            .to_string();
         let _to_inst = parts
             .next()
             .ok_or(ZenohWireParseError::MissingSegment("to_instance"))?;
         let caller_inst = parts
             .next()
-            .ok_or(ZenohWireParseError::MissingSegment("caller_instance"))?;
+            .ok_or(ZenohWireParseError::MissingSegment("caller_instance"))?
+            .to_string();
 
-        let expected_root = service_root(
-            &receiver.as_identity,
-            &receiver.as_service_name,
-            receiver.kind,
-        );
-        for expected in expected_root.split('/').filter(|s| !s.is_empty()) {
+        // Re-validate the service_root prefix segments so a stray
+        // matched-but-mismatched selector (e.g. mid-rollout schema skew)
+        // surfaces as a structured error rather than a routing surprise.
+        for expected in receiver.service_root_prefix_segments() {
             let got = parts
                 .next()
                 .ok_or(ZenohWireParseError::MissingSegment("service_root"))?;
@@ -173,42 +230,57 @@ impl ZenohWireFormat {
             }
         }
 
-        let marker = parts
+        let link_id = parts
             .next()
-            .ok_or(ZenohWireParseError::MissingSegment("request"))?;
-        if marker != "request" {
-            return Err(ZenohWireParseError::NotARequest);
-        }
-
-        let request_id = parts
-            .next()
-            .filter(|s| !s.is_empty())
-            .ok_or(ZenohWireParseError::MissingSegment("request_id"))?
+            .ok_or(ZenohWireParseError::MissingSegment("link_id"))?
             .to_string();
 
-        if parts.next().is_some() {
-            return Err(ZenohWireParseError::UnexpectedTrailing);
-        }
+        let attachment = ServiceQueryAttachment::decode(attachment_bytes)?;
 
-        // Server-side response publish:
-        // {caller_core}/{responder_core}/{caller_inst}/{responder_inst}/{service_root}/response/{request_id}
-        let response_keyexpr = format!(
-            "{caller_core}/{}/{caller_inst}/{}/{expected_root}/response/{request_id}",
-            receiver.bound_core_node, receiver.as_instance_id,
-        );
-
-        Ok(ParsedRequest {
-            request_id,
-            response_keyexpr,
+        Ok(ParsedInboundQuery {
+            caller_core,
+            caller_inst,
+            link_id,
+            kind: attachment.kind,
+            excluded_link_ids: attachment.excluded_link_ids,
         })
+    }
+
+    /// Caller-side attachment bytes for a service query. Carries both the
+    /// request kind (UserRequest vs Probe — discriminates probes from real
+    /// requests without smuggling sentinels through the payload) and the
+    /// consumer's "excluded link_ids" set (sibling-pinned dependencies the
+    /// `from_any` caller has already claimed).
+    pub(crate) fn service_get_selector_attachment(
+        s: &ServiceWireSender,
+        kind: ServiceQueryKind,
+    ) -> bytes::Bytes {
+        let excluded: Vec<String> = s
+            .excluded_link_ids
+            .iter()
+            .map(|seg| seg.as_str().to_string())
+            .collect();
+        ServiceQueryAttachment {
+            kind,
+            excluded_link_ids: excluded,
+        }
+        .encode()
     }
 
     // ─── Actions ──────────────────────────────────────────────────────────
 
     /// Server-side per-goal feedback publish:
-    /// `*/{bound_core}/*/{as_inst}/action/{discriminator}/{name}/{tag}/{as_action}/feedback/{as_inst}/{goal_id}`.
-    pub(crate) fn action_feedback_publish(r: &ActionWireReceiver, goal_id: &str) -> String {
-        let action_root = action_root(&r.as_identity, &r.as_action_name);
+    /// `*/{bound_core}/*/{as_inst}/action/{discriminator}/{name}/{tag}/{link_id}/{as_action}/feedback/{as_inst}/{goal_id}`.
+    ///
+    /// `link_id` is the link_id parsed from the goal's request keyexpr, not
+    /// the receiver's bound set, since a producer bound to multiple link_ids
+    /// publishes feedback addressed to whichever link_id the goal targeted.
+    pub(crate) fn action_feedback_publish(
+        r: &ActionWireReceiver,
+        link_id: &str,
+        goal_id: &str,
+    ) -> String {
+        let action_root = action_root(&r.as_identity, link_id, &r.as_action_name);
         format!(
             "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/{action_root}/feedback/{}/{goal_id}",
             r.bound_core_node, r.as_instance_id, r.as_instance_id,
@@ -216,11 +288,20 @@ impl ZenohWireFormat {
     }
 
     /// Client-side per-goal feedback subscribe. Wildcards on server-side fields
-    /// when the target is not pinned.
+    /// when the target is not pinned. `to_link_id: None` → match the
+    /// producer's link_id slot via the transport wildcard `*`, since
+    /// subscribes (unlike publishes) accept wildcards.
     pub(crate) fn action_feedback_subscribe(s: &ActionWireSender, goal_id: &str) -> String {
-        let action_root = action_root(&s.to_target, &s.to_action_name);
-        let target_core = s.to_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let target_inst_segment = s.to_instance_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let link_id = s.to_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let action_root = action_root(&s.to_target, link_id, &s.to_action_name);
+        let target_core = s
+            .target_core_node
+            .as_deref()
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_inst_segment = s
+            .target_instance_id
+            .as_deref()
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
         format!(
             "{}/{target_core}/{}/{target_inst_segment}/{action_root}/feedback/{target_inst_segment}/{goal_id}",
             s.as_core_node, s.as_instance_id,
@@ -248,11 +329,12 @@ fn extract_caller_segment(
 }
 
 /// Builds the service_root segment. For action sub-services, appends the
-/// `goal` / `cancel` / `result` suffix.
-fn service_root(target: &SenderTarget, name: &str, kind: ServiceKind) -> String {
+/// `goal` / `cancel` / `result` suffix. The `link_id` segment slots between
+/// the producer `(name, tag)` pair and the service / action `name`.
+fn service_root(target: &SenderTarget, link_id: &str, name: &str, kind: ServiceKind) -> String {
     let suffix = kind.suffix().map(|s| format!("/{s}")).unwrap_or_default();
     format!(
-        "{}/{}/{}/{}/{name}{suffix}",
+        "{}/{}/{}/{}/{link_id}/{name}{suffix}",
         kind.root_segment(),
         target.discriminator(),
         target.name(),
@@ -260,10 +342,11 @@ fn service_root(target: &SenderTarget, name: &str, kind: ServiceKind) -> String 
     )
 }
 
-/// Builds the action_root segment (`action/{discriminator}/{name}/{tag}/{action}`).
-fn action_root(target: &SenderTarget, action: &str) -> String {
+/// Builds the action_root segment
+/// (`action/{discriminator}/{name}/{tag}/{link_id}/{action}`).
+fn action_root(target: &SenderTarget, link_id: &str, action: &str) -> String {
     format!(
-        "action/{}/{}/{}/{action}",
+        "action/{}/{}/{}/{link_id}/{action}",
         target.discriminator(),
         target.name(),
         target.tag(),
@@ -275,30 +358,337 @@ fn action_root(target: &SenderTarget, action: &str) -> String {
 /// Result of parsing the publisher half of a topic keyexpr — extracts the
 /// caller's `core_node` and `instance_id` so the adapter can build a
 /// [`crate::types::TopicMessage`] without re-parsing the wire string.
+/// `link_id` is the producer's bound link_id (segment 8 of the publish
+/// shape), surfaced so the consumer-side sibling-precedence filter can
+/// drop wildcard topic messages whose link_id is claimed by a sibling
+/// pinned subscription on the same `(name, tag)`. Service reply keyexprs
+/// also populate this slot (with the responder's claimed link_id inside
+/// `service_root`); only truncated or malformed wire shapes leave it
+/// empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedTopicKey {
     pub(crate) core_node: String,
     pub(crate) instance_id: String,
+    pub(crate) link_id: String,
 }
 
-/// Result of parsing a received service request keyexpr. Fields are
-/// `pub(crate)` so the adapter can use the response keyexpr without exposing
-/// raw wire strings to peppylib.
+/// Topic-publish attachment marker. See the comment block in the topic
+/// section of [`ZenohWireFormat`] for the rationale. One byte on the wire:
+/// `0x01` = primary, `0x00` = secondary. A missing or empty attachment
+/// decodes as primary so producers that don't set it (no path today,
+/// defensive) behave as if every publish is the only one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TopicAttachment {
+    pub(crate) is_primary: bool,
+}
+
+impl TopicAttachment {
+    pub(crate) fn encode(&self) -> bytes::Bytes {
+        bytes::Bytes::from_static(if self.is_primary {
+            &[0x01u8]
+        } else {
+            &[0x00u8]
+        })
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Self {
+        let is_primary = bytes.first().is_none_or(|b| *b != 0x00);
+        Self { is_primary }
+    }
+}
+
+/// Whether a service query carries a user request (handler should run) or
+/// a discovery probe (auto-replied by the producer's request loop before
+/// the handler is invoked). The producer reads this from the query
+/// attachment to discriminate the two without inspecting payload bytes,
+/// closing the silent-data-loss class that occurred when a user payload
+/// happened to start with the legacy `\0peppy_service_probe\0` sentinel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceQueryKind {
+    UserRequest,
+    Probe,
+}
+
+impl ServiceQueryKind {
+    fn as_byte(self) -> u8 {
+        match self {
+            Self::UserRequest => 0x00,
+            Self::Probe => 0x01,
+        }
+    }
+
+    fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0x00 => Some(Self::UserRequest),
+            0x01 => Some(Self::Probe),
+            _ => None,
+        }
+    }
+}
+
+/// Service / action query attachment carrying the request kind plus the
+/// consumer's "excluded link_ids" set (the producer link_ids a sibling
+/// pinned dependency on the same `(name, tag)` has already claimed —
+/// consulted by [`ParsedInboundQuery::choose_link_id`] so a `from_any: true`
+/// consumer doesn't silently alias a pinned sibling's request).
+///
+/// Wire layout (mandatory on every service query):
+/// - byte 0: magic + version, `0x02`. Earlier `0x01` had no kind byte —
+///   any peer that produces V1 is mid-rollout and must redeploy.
+/// - byte 1: kind discriminator (see [`ServiceQueryKind::as_byte`]).
+/// - byte 2: count `N` of excluded link_ids (max 255).
+/// - then `N` entries, each `(u8 len)(len bytes utf-8)`.
+///
+/// Decode is strict: a missing attachment, wrong magic, unknown kind byte,
+/// or a truncated entry is reported as a [`ZenohWireParseError`] so
+/// mid-rollout schema skew surfaces loudly instead of as silent
+/// misclassification.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ParsedRequest {
-    pub(crate) request_id: String,
-    /// Server-side response publish keyexpr.
-    pub(crate) response_keyexpr: String,
+pub(crate) struct ServiceQueryAttachment {
+    pub(crate) kind: ServiceQueryKind,
+    pub(crate) excluded_link_ids: Vec<String>,
 }
 
-/// Reasons a request keyexpr can fail to match the expected request shape.
+impl ServiceQueryAttachment {
+    pub(crate) const MAGIC_V2: u8 = 0x02;
+
+    pub(crate) fn encode(&self) -> bytes::Bytes {
+        let count = self.excluded_link_ids.len().min(u8::MAX as usize);
+        let mut buf = Vec::with_capacity(
+            3 + self
+                .excluded_link_ids
+                .iter()
+                .map(|s| 1 + s.len())
+                .sum::<usize>(),
+        );
+        buf.push(Self::MAGIC_V2);
+        buf.push(self.kind.as_byte());
+        buf.push(count as u8);
+        for s in self.excluded_link_ids.iter().take(count) {
+            let len = s.len().min(u8::MAX as usize) as u8;
+            buf.push(len);
+            buf.extend_from_slice(&s.as_bytes()[..len as usize]);
+        }
+        bytes::Bytes::from(buf)
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, ZenohWireParseError> {
+        if bytes.is_empty() {
+            return Err(ZenohWireParseError::MissingServiceQueryAttachment);
+        }
+        if bytes[0] != Self::MAGIC_V2 {
+            return Err(ZenohWireParseError::ServiceQueryAttachmentMagicMismatch {
+                expected: Self::MAGIC_V2,
+                got: bytes[0],
+            });
+        }
+        let kind_byte = *bytes
+            .get(1)
+            .ok_or(ZenohWireParseError::TruncatedServiceQueryAttachment)?;
+        let kind = ServiceQueryKind::from_byte(kind_byte)
+            .ok_or(ZenohWireParseError::UnknownServiceQueryKind(kind_byte))?;
+        let count = *bytes
+            .get(2)
+            .ok_or(ZenohWireParseError::TruncatedServiceQueryAttachment)?;
+        let mut excluded = Vec::with_capacity(count as usize);
+        let mut cursor = 3usize;
+        for _ in 0..count {
+            let len_byte = *bytes
+                .get(cursor)
+                .ok_or(ZenohWireParseError::TruncatedServiceQueryAttachment)?;
+            cursor += 1;
+            let len = len_byte as usize;
+            if cursor + len > bytes.len() {
+                return Err(ZenohWireParseError::TruncatedServiceQueryAttachment);
+            }
+            let s = std::str::from_utf8(&bytes[cursor..cursor + len])
+                .map_err(|_| ZenohWireParseError::InvalidUtf8InServiceQueryAttachment)?;
+            excluded.push(s.to_string());
+            cursor += len;
+        }
+        Ok(Self {
+            kind,
+            excluded_link_ids: excluded,
+        })
+    }
+}
+
+/// Service reply kind, encoded in the [`ServiceReplyAttachment`] that
+/// rides on every `query.reply()`. The consumer's poll loop matches on
+/// this to skip ACKs, return regular responses, and surface handler
+/// errors — without inspecting payload bytes for legacy sentinels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceReplyKind {
+    /// Sent immediately by the producer when a real user request arrives,
+    /// before the user handler is invoked. Lets the consumer distinguish
+    /// `ServiceUnreachable` (no ACK at all) from `ServiceTimeout`
+    /// (ACK arrived, handler didn't reply in time). Payload is empty.
+    Ack,
+    /// The user handler returned `Ok(payload)` — payload bytes are the
+    /// handler's response, opaque to the framework. Also used for the
+    /// producer's transparent reply to a `Probe` request (empty payload).
+    Response,
+    /// The user handler returned `Err(reason)` (or a Python handler raised
+    /// an exception). Payload bytes are the UTF-8 reason; the consumer
+    /// surfaces this as [`crate::error::Error::ServiceError`] (in peppylib).
+    HandlerError,
+}
+
+impl ServiceReplyKind {
+    fn as_byte(self) -> u8 {
+        match self {
+            Self::Ack => 0x00,
+            Self::Response => 0x01,
+            Self::HandlerError => 0x02,
+        }
+    }
+
+    fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0x00 => Some(Self::Ack),
+            0x01 => Some(Self::Response),
+            0x02 => Some(Self::HandlerError),
+            _ => None,
+        }
+    }
+}
+
+/// Reply attachment carrying the [`ServiceReplyKind`]. Mandatory on every
+/// service reply.
+///
+/// Wire layout: `[0x01 magic][kind u8]` — 2 bytes total. Reasons for
+/// [`ServiceReplyKind::HandlerError`] ride in the reply payload as UTF-8
+/// (variable length stays out of the attachment lane), keeping this
+/// attachment compact and fixed-size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ServiceReplyAttachment {
+    pub(crate) kind: ServiceReplyKind,
+}
+
+impl ServiceReplyAttachment {
+    pub(crate) const MAGIC_V1: u8 = 0x01;
+
+    pub(crate) fn encode(self) -> bytes::Bytes {
+        bytes::Bytes::from(vec![Self::MAGIC_V1, self.kind.as_byte()])
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, ZenohWireParseError> {
+        if bytes.is_empty() {
+            return Err(ZenohWireParseError::MissingServiceReplyAttachment);
+        }
+        if bytes[0] != Self::MAGIC_V1 {
+            return Err(ZenohWireParseError::ServiceReplyAttachmentMagicMismatch {
+                expected: Self::MAGIC_V1,
+                got: bytes[0],
+            });
+        }
+        let kind_byte = *bytes
+            .get(1)
+            .ok_or(ZenohWireParseError::TruncatedServiceReplyAttachment)?;
+        let kind = ServiceReplyKind::from_byte(kind_byte)
+            .ok_or(ZenohWireParseError::UnknownServiceReplyKind(kind_byte))?;
+        Ok(Self { kind })
+    }
+}
+
+/// Result of parsing an inbound queryable selector. Carries the
+/// caller-identity slots plus the link_id slot from the selector — the
+/// producer's single queryable declares `*` at the link_id slot, so the
+/// adapter inspects this field to decide which of its bound link_ids to
+/// claim for the inbound request via [`Self::choose_link_id`].
+///
+/// `kind` is decoded from the query attachment and distinguishes user
+/// requests (handler runs) from probes (auto-replied without invoking the
+/// handler). `excluded_link_ids` is the consumer's "claimed by a sibling
+/// pinned dependency" set — `choose_link_id` skips first-bound entries in
+/// it so a from_any consumer doesn't silently alias a pinned sibling's
+/// request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedInboundQuery {
+    pub(crate) caller_core: String,
+    pub(crate) caller_inst: String,
+    /// Raw value of the link_id slot in the selector. Either the
+    /// single-chunk wildcard `*` (a `from_any` consumer) or a concrete
+    /// literal (a pinned consumer).
+    pub(crate) link_id: String,
+    /// Whether this query is a real user request or a discovery probe.
+    /// Decoded from the mandatory query attachment.
+    pub(crate) kind: ServiceQueryKind,
+    /// Link_ids the consumer's sibling pinned dependencies already claim.
+    /// Empty when the consumer hasn't registered manifest siblings for
+    /// this `(name, tag)`.
+    pub(crate) excluded_link_ids: Vec<String>,
+}
+
+impl ParsedInboundQuery {
+    /// Resolves the link_id the producer should bind this request to.
+    ///
+    /// - Wildcard selector (`from_any` consumer): claims the first bound
+    ///   link_id NOT in `excluded_link_ids`. If every bound link_id is
+    ///   excluded, falls back to `bound_link_ids[0]` so the call doesn't
+    ///   fail purely because of the consumer's sibling claims; first-bound
+    ///   is the historical contract that keeps the call reachable. The
+    ///   non-excluded preference keeps `ctx.link_id()` stable across an
+    ///   action's goal / cancel / result sub-services, which dispatch
+    ///   independently but must agree on the link_id for a given goal_id.
+    /// - Literal selector matching a bound link_id: claims that literal
+    ///   (the exclusion set is ignored; a pinned caller asked specifically
+    ///   for this link_id).
+    /// - Literal selector NOT in the bound set: returns `None`, signaling
+    ///   the adapter to drop the query without replying. Unreachable in
+    ///   practice because Zenoh's keyexpr matcher already filtered the
+    ///   selector against the producer's queryable, but kept as a defensive
+    ///   guard against mid-rollout schema skew.
+    pub(crate) fn choose_link_id<'a>(&self, bound_link_ids: &'a [String]) -> Option<&'a str> {
+        if self.link_id == SINGLE_CHUNK_WILDCARD {
+            if let Some(found) = bound_link_ids
+                .iter()
+                .find(|b| !self.excluded_link_ids.iter().any(|e| e == b.as_str()))
+            {
+                return Some(found.as_str());
+            }
+            return bound_link_ids.first().map(String::as_str);
+        }
+        bound_link_ids
+            .iter()
+            .find(|b| b.as_str() == self.link_id)
+            .map(String::as_str)
+    }
+}
+
+/// Reasons a request keyexpr or attachment can fail to match the expected
+/// wire shape. Mid-rollout schema skew surfaces as a structured error
+/// (one of these) rather than silently falling back to a default — the
+/// load-bearing safety property for the sentinel removal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ZenohWireParseError {
     MissingSegment(&'static str),
     WildcardInCallerSegment(&'static str),
-    UnexpectedTrailing,
-    NotARequest,
-    ServiceRootMismatch { expected: String, got: String },
+    ServiceRootMismatch {
+        expected: String,
+        got: String,
+    },
+    /// Inbound service query arrived with no attachment. Either an
+    /// old-protocol peer or a non-peppy client. The producer must drop
+    /// the query (no reply) so the consumer sees `ServiceUnreachable`.
+    MissingServiceQueryAttachment,
+    ServiceQueryAttachmentMagicMismatch {
+        expected: u8,
+        got: u8,
+    },
+    TruncatedServiceQueryAttachment,
+    UnknownServiceQueryKind(u8),
+    InvalidUtf8InServiceQueryAttachment,
+    /// Service reply arrived with no attachment. Treated as a malformed
+    /// reply and dropped — the consumer's poll loop ignores it and the
+    /// usual timeout / unreachable path applies.
+    MissingServiceReplyAttachment,
+    ServiceReplyAttachmentMagicMismatch {
+        expected: u8,
+        got: u8,
+    },
+    TruncatedServiceReplyAttachment,
+    UnknownServiceReplyKind(u8),
 }
 
 impl fmt::Display for ZenohWireParseError {
@@ -309,14 +699,40 @@ impl fmt::Display for ZenohWireParseError {
                 f,
                 "caller segment `{segment}` must not be the single-chunk wildcard `*`"
             ),
-            Self::UnexpectedTrailing => {
-                f.write_str("request contains unexpected trailing segments")
-            }
-            Self::NotARequest => f.write_str("expected `request` marker segment"),
             Self::ServiceRootMismatch { expected, got } => write!(
                 f,
                 "service root segment mismatch: expected `{expected}`, got `{got}`"
             ),
+            Self::MissingServiceQueryAttachment => write!(
+                f,
+                "service query arrived with no attachment (peer is on an older protocol)"
+            ),
+            Self::ServiceQueryAttachmentMagicMismatch { expected, got } => write!(
+                f,
+                "service query attachment magic mismatch: expected {expected:#04x}, got {got:#04x}"
+            ),
+            Self::TruncatedServiceQueryAttachment => {
+                write!(f, "service query attachment truncated")
+            }
+            Self::UnknownServiceQueryKind(byte) => {
+                write!(f, "unknown service query kind discriminator: {byte:#04x}")
+            }
+            Self::InvalidUtf8InServiceQueryAttachment => {
+                write!(f, "service query attachment contained invalid UTF-8")
+            }
+            Self::MissingServiceReplyAttachment => {
+                write!(f, "service reply arrived with no attachment")
+            }
+            Self::ServiceReplyAttachmentMagicMismatch { expected, got } => write!(
+                f,
+                "service reply attachment magic mismatch: expected {expected:#04x}, got {got:#04x}"
+            ),
+            Self::TruncatedServiceReplyAttachment => {
+                write!(f, "service reply attachment truncated")
+            }
+            Self::UnknownServiceReplyKind(byte) => {
+                write!(f, "unknown service reply kind discriminator: {byte:#04x}")
+            }
         }
     }
 }

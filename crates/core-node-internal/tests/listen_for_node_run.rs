@@ -176,6 +176,7 @@ async fn listen_for_node_run_timeout() {
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("failed to start ready service"),
@@ -348,6 +349,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("node ready service should start"),
@@ -358,6 +360,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("node health service should start"),
@@ -467,6 +470,7 @@ async fn listen_for_node_run_writes_log_file() {
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("node ready service should start"),
@@ -477,6 +481,7 @@ async fn listen_for_node_run_writes_log_file() {
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("node health service should start"),
@@ -914,6 +919,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &started.core_node_name,
             FIRST_INSTANCE_ID,
             common::test_node_target(FIRST_NODE_NAME),
+            &[],
         )
         .await
         .expect("first ready service should start"),
@@ -924,6 +930,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &started.core_node_name,
             FIRST_INSTANCE_ID,
             common::test_node_target(FIRST_NODE_NAME),
+            &[],
         )
         .await
         .expect("first health service should start"),
@@ -935,6 +942,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &started.core_node_name,
             SECOND_INSTANCE_ID,
             common::test_node_target(SECOND_NODE_NAME),
+            &[],
         )
         .await
         .expect("second ready service should start"),
@@ -945,6 +953,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &started.core_node_name,
             SECOND_INSTANCE_ID,
             common::test_node_target(SECOND_NODE_NAME),
+            &[],
         )
         .await
         .expect("second health service should start"),
@@ -975,6 +984,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         &started.core_node_name,
         common::CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
+        None,
         core_node::names::NODE_RUN_ACTION,
         Some(&started.core_node_name),
         None,
@@ -1091,6 +1101,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("failed to start ready service"),
@@ -1101,6 +1112,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("failed to start health service"),
@@ -1244,6 +1256,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("failed to start ready service"),
@@ -1254,6 +1267,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("failed to start health service"),
@@ -1374,6 +1388,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("node ready service should start"),
@@ -1384,6 +1399,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("node health service should start"),
@@ -1587,6 +1603,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("node ready service should start"),
@@ -1597,6 +1614,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("node health service should start"),
@@ -1967,6 +1985,7 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("node ready service should start"),
@@ -1977,6 +1996,7 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
             &started.core_node_name,
             TARGET_INSTANCE_ID,
             common::test_node_target(TARGET_NODE_NAME),
+            &[],
         )
         .await
         .expect("node health service should start"),

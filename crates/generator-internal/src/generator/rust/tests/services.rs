@@ -270,15 +270,20 @@ fn consumed_service() {
     // Request struct
     assert_contains_all(&rendered, &["pub struct Request", "pub enable: bool"]);
 
-    // Poll function signature
+    // Poll function signature. The fixture's `DependencyContext::native`
+    // defaults to `WireLinkId::Wildcard` so `target_instance_id` is exposed.
+    // `target_core_node` is never exposed in the generated API.
     assert_contains_all(
         &rendered,
         &[
             "pub async fn poll(",
-            "to_core_node: Option<&str>",
-            "to_instance_id: Option<&str>",
+            "target_instance_id: Option<&str>",
             "-> crate::Result<Response>",
         ],
+    );
+    assert!(
+        !rendered.contains("target_core_node"),
+        "target_core_node should not appear in the generated API; got: {rendered}"
     );
 
     // Request serialization and messenger integration

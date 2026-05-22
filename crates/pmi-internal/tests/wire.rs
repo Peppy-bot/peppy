@@ -10,8 +10,9 @@
 
 use bytes::Bytes;
 use pmi::{
-    ActionWireReceiver, ActionWireSender, MessengerBackend, Payload, PublisherQoS, SenderTarget,
-    ServiceKind, ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription, TopicMessage,
+    ActionWireReceiver, ActionWireSender, IncomingRequest, MessengerBackend, Payload, PublisherQoS,
+    ReplyStream, SenderTarget, ServiceKind, ServiceQueryKind, ServiceQueryable,
+    ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription, TopicMessage,
     TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
 use std::time::Duration;
@@ -39,23 +40,25 @@ async fn recv_or_timeout(sub: &mut Subscription, label: &str) -> TopicMessage {
         .unwrap_or_else(|| panic!("channel closed before message on {label}"))
 }
 
-/// Waits for the next message from any of the four service listen patterns.
-/// Panics with the offending arm name on timeout.
-async fn select_listen(subs: &mut [Subscription; 4]) -> TopicMessage {
-    let [s0, s1, s2, s3] = subs;
-    let result = tokio::time::timeout(RECV_TIMEOUT, async {
-        tokio::select! {
-            Some(msg) = s0.rx.recv() => ("s0", msg),
-            Some(msg) = s1.rx.recv() => ("s1", msg),
-            Some(msg) = s2.rx.recv() => ("s2", msg),
-            Some(msg) = s3.rx.recv() => ("s3", msg),
-        }
-    })
-    .await;
-    match result {
-        Ok((_label, msg)) => msg,
-        Err(_) => panic!("timed out waiting for message on any of s0/s1/s2/s3"),
-    }
+/// Waits for the next inbound request on a service queryable's fan-in
+/// channel. Panics on timeout.
+async fn recv_request(queryable: &mut ServiceQueryable) -> IncomingRequest {
+    tokio::time::timeout(RECV_TIMEOUT, queryable.rx.recv())
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for inbound service request"))
+        .unwrap_or_else(|| panic!("service queryable channel closed before request arrived"))
+}
+
+/// Waits for the next reply on a service `ReplyStream` and returns its
+/// underlying [`TopicMessage`] (caller-visible payload + responder identity).
+/// Panics on timeout. Tests in this file send a single `Response`-kind
+/// reply per request, so callers don't need to inspect the reply kind.
+async fn recv_reply(stream: &mut ReplyStream, label: &str) -> TopicMessage {
+    tokio::time::timeout(RECV_TIMEOUT, stream.rx.recv())
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for reply on {label}"))
+        .unwrap_or_else(|| panic!("reply stream closed before message on {label}"))
+        .into_message()
 }
 
 // ─── Topics ───────────────────────────────────────────────────────────────
@@ -72,6 +75,7 @@ async fn topic_native_roundtrip() {
         "core_pub",
         "publisher_inst",
         test_node_target("uvc_camera"),
+        None,
         "video_stream",
     )
     .expect("valid wire fields");
@@ -81,6 +85,7 @@ async fn topic_native_roundtrip() {
         Some("core_pub"),
         Some("publisher_inst"),
         Some(test_node_target("uvc_camera")),
+        None,
         "video_stream",
     )
     .expect("valid wire fields");
@@ -99,6 +104,7 @@ async fn topic_native_roundtrip() {
             &sender,
             Payload::from_bytes(body.clone()),
             PublisherQoS::Standard,
+            true,
         )
         .await
         .unwrap();
@@ -118,7 +124,7 @@ async fn topic_iface_roundtrip() {
     instance.messenger().start_session().await.unwrap();
 
     let target = SenderTarget::interface("manipulator", "v1-rc2").expect("valid target");
-    let sender = TopicWireSender::new("core_pub", "pub_inst", target.clone(), "joint_states")
+    let sender = TopicWireSender::new("core_pub", "pub_inst", target.clone(), None, "joint_states")
         .expect("valid wire fields");
     let receiver = TopicWireReceiver::new(
         "core_sub",
@@ -126,6 +132,7 @@ async fn topic_iface_roundtrip() {
         Some("core_pub"),
         Some("pub_inst"),
         Some(target),
+        None,
         "joint_states",
     )
     .expect("valid wire fields");
@@ -144,6 +151,7 @@ async fn topic_iface_roundtrip() {
             &sender,
             Payload::from_bytes(body.clone()),
             PublisherQoS::Standard,
+            true,
         )
         .await
         .unwrap();
@@ -164,6 +172,7 @@ async fn topic_wildcard_subscriber() {
         "any_publisher_core",
         "any_publisher_inst",
         test_node_target("uvc_camera"),
+        None,
         "frames",
     )
     .expect("valid wire fields");
@@ -174,6 +183,7 @@ async fn topic_wildcard_subscriber() {
         None,
         None,
         Some(test_node_target("uvc_camera")),
+        None,
         "frames",
     )
     .expect("valid wire fields");
@@ -192,6 +202,7 @@ async fn topic_wildcard_subscriber() {
             &sender,
             Payload::from_bytes(body.clone()),
             PublisherQoS::Standard,
+            true,
         )
         .await
         .unwrap();
@@ -207,19 +218,24 @@ fn service_receiver() -> ServiceWireReceiver {
         "server_core",
         "server_inst",
         test_node_target("robot_arm"),
+        &[],
         "ping",
         ServiceKind::Service,
     )
     .expect("valid wire fields")
 }
 
-fn service_sender(to_core_node: Option<&str>, to_instance_id: Option<&str>) -> ServiceWireSender {
+fn service_sender(
+    target_core_node: Option<&str>,
+    target_instance_id: Option<&str>,
+) -> ServiceWireSender {
     ServiceWireSender::new(
         "client_core",
         "client_inst",
-        to_core_node,
-        to_instance_id,
+        target_core_node,
+        target_instance_id,
         test_node_target("robot_arm"),
+        None,
         "ping",
         ServiceKind::Service,
     )
@@ -233,43 +249,42 @@ async fn run_service_roundtrip(sender: ServiceWireSender) {
     instance.messenger().start_session().await.unwrap();
 
     let receiver = service_receiver();
-    let mut subs = instance
+    let mut queryable = instance
         .messenger()
         .listen_service(&receiver)
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;
 
-    let request_id = "req_1";
     let request_payload = Payload::from_bytes(Bytes::from_static(b"ping?"));
-    let mut response_sub = instance
+    let mut reply_stream = instance
         .messenger()
-        .open_service_call(&sender, request_id, request_payload)
-        .await
-        .unwrap();
-
-    // Server: wait for the request on whichever pattern fired.
-    let received_request = select_listen(&mut subs).await;
-    let parsed_id = instance
-        .messenger()
-        .parse_service_request_id(&receiver, received_request.key_expr())
-        .unwrap();
-    assert_eq!(parsed_id, request_id);
-
-    // Server: respond with the parsed key as the address descriptor.
-    let response_body = Bytes::from_static(b"pong");
-    instance
-        .messenger()
-        .publish_service_response(
-            &receiver,
-            received_request.key_expr(),
-            Payload::from_bytes(response_body.clone()),
+        .call_service(
+            &sender,
+            request_payload,
+            ServiceQueryKind::UserRequest,
+            Some(RECV_TIMEOUT),
         )
         .await
         .unwrap();
 
-    // Client: receive response.
-    let response = recv_or_timeout(&mut response_sub, "service response_sub").await;
+    // Server: wait for the request and verify the producer-bound link_id.
+    let incoming = recv_request(&mut queryable).await;
+    assert_eq!(incoming.link_id, pmi::DEFAULT_LINK_ID);
+    assert_eq!(incoming.kind, ServiceQueryKind::UserRequest);
+
+    // Server: respond via the token.
+    let response_body = Bytes::from_static(b"pong");
+    incoming
+        .token
+        .respond_response(Payload::from_bytes(response_body.clone()))
+        .await
+        .unwrap();
+
+    // Client: drain replies until the user payload arrives (Zenoh delivers
+    // every reply with `ConsolidationMode::None`, but in this test only one
+    // reply is sent — no ACK because the adapter no longer auto-ACKs.)
+    let response = recv_reply(&mut reply_stream, "service reply_stream").await;
     assert_eq!(response.payload(), &response_body);
 }
 
@@ -304,6 +319,7 @@ fn action_receiver() -> ActionWireReceiver {
         "server_core",
         "server_inst",
         test_node_target("robot_arm"),
+        &[],
         "pick_place",
     )
     .expect("valid wire fields")
@@ -316,6 +332,7 @@ fn action_sender() -> ActionWireSender {
         Some("server_core"),
         Some("server_inst"),
         test_node_target("robot_arm"),
+        None,
         "pick_place",
     )
     .expect("valid wire fields")
@@ -333,12 +350,12 @@ async fn action_goal_feedback_result() {
     let client = action_sender();
     let goal_id = "goal_xyz";
 
-    let mut goal_subs = instance
+    let mut goal_queryable = instance
         .messenger()
         .listen_service(&server.goal_service())
         .await
         .unwrap();
-    let mut result_subs = instance
+    let mut result_queryable = instance
         .messenger()
         .listen_service(&server.result_service())
         .await
@@ -354,33 +371,31 @@ async fn action_goal_feedback_result() {
         .unwrap();
     wait_for_subscriber_discovery().await;
 
-    // Client sends the goal.
+    // Client sends the goal — the reply stream stays alive until we've
+    // received the goal response.
     let goal_payload = Payload::from_bytes(Bytes::from_static(b"goal_data"));
-    let mut goal_response_sub = instance
+    let mut goal_replies = instance
         .messenger()
-        .open_service_call(&client.goal_service(), "rid_goal", goal_payload)
-        .await
-        .unwrap();
-
-    // Server: receive goal, ack with response.
-    let goal_request = select_listen(&mut goal_subs).await;
-    let goal_request_id = instance
-        .messenger()
-        .parse_service_request_id(&server.goal_service(), goal_request.key_expr())
-        .unwrap();
-    assert_eq!(goal_request_id, "rid_goal");
-    instance
-        .messenger()
-        .publish_service_response(
-            &server.goal_service(),
-            goal_request.key_expr(),
-            Payload::from_bytes(Bytes::from_static(b"goal_accepted")),
+        .call_service(
+            &client.goal_service(),
+            goal_payload,
+            ServiceQueryKind::UserRequest,
+            Some(RECV_TIMEOUT),
         )
         .await
         .unwrap();
 
+    // Server: receive goal request, respond.
+    let goal_request = recv_request(&mut goal_queryable).await;
+    assert_eq!(goal_request.link_id, pmi::DEFAULT_LINK_ID);
+    goal_request
+        .token
+        .respond_response(Payload::from_bytes(Bytes::from_static(b"goal_accepted")))
+        .await
+        .unwrap();
+
     // Client receives goal response.
-    let goal_response = recv_or_timeout(&mut goal_response_sub, "goal_response_sub").await;
+    let goal_response = recv_reply(&mut goal_replies, "goal_replies").await;
     assert_eq!(
         goal_response.payload(),
         &Bytes::from_static(b"goal_accepted")
@@ -389,7 +404,12 @@ async fn action_goal_feedback_result() {
     // Server publishes feedback for the goal.
     let feedback_pub = instance
         .messenger()
-        .declare_action_feedback_publisher(&server, goal_id, PublisherQoS::Important)
+        .declare_action_feedback_publisher(
+            &server,
+            pmi::DEFAULT_LINK_ID,
+            goal_id,
+            PublisherQoS::Important,
+        )
         .unwrap();
     feedback_pub
         .publish(Bytes::from_static(b"progress=0.5"))
@@ -402,22 +422,23 @@ async fn action_goal_feedback_result() {
 
     // Client polls result service.
     let result_payload = Payload::from_bytes(Bytes::from_static(b"result_query"));
-    let mut result_response_sub = instance
+    let mut result_replies = instance
         .messenger()
-        .open_service_call(&client.result_service(), "rid_result", result_payload)
-        .await
-        .unwrap();
-    let result_request = select_listen(&mut result_subs).await;
-    instance
-        .messenger()
-        .publish_service_response(
-            &server.result_service(),
-            result_request.key_expr(),
-            Payload::from_bytes(Bytes::from_static(b"result=done")),
+        .call_service(
+            &client.result_service(),
+            result_payload,
+            ServiceQueryKind::UserRequest,
+            Some(RECV_TIMEOUT),
         )
         .await
         .unwrap();
-    let result_response = recv_or_timeout(&mut result_response_sub, "result_response_sub").await;
+    let result_request = recv_request(&mut result_queryable).await;
+    result_request
+        .token
+        .respond_response(Payload::from_bytes(Bytes::from_static(b"result=done")))
+        .await
+        .unwrap();
+    let result_response = recv_reply(&mut result_replies, "result_replies").await;
     assert_eq!(
         result_response.payload(),
         &Bytes::from_static(b"result=done")
@@ -435,7 +456,7 @@ async fn action_cancel_roundtrip() {
     let server = action_receiver();
     let client = action_sender();
 
-    let mut cancel_subs = instance
+    let mut cancel_queryable = instance
         .messenger()
         .listen_service(&server.cancel_service())
         .await
@@ -443,23 +464,24 @@ async fn action_cancel_roundtrip() {
     wait_for_subscriber_discovery().await;
 
     let cancel_payload = Payload::from_bytes(Bytes::from_static(b"cancel_goal_xyz"));
-    let mut cancel_response_sub = instance
+    let mut cancel_replies = instance
         .messenger()
-        .open_service_call(&client.cancel_service(), "rid_cancel", cancel_payload)
-        .await
-        .unwrap();
-
-    let cancel_request = select_listen(&mut cancel_subs).await;
-    instance
-        .messenger()
-        .publish_service_response(
-            &server.cancel_service(),
-            cancel_request.key_expr(),
-            Payload::from_bytes(Bytes::from_static(b"cancel_accepted")),
+        .call_service(
+            &client.cancel_service(),
+            cancel_payload,
+            ServiceQueryKind::UserRequest,
+            Some(RECV_TIMEOUT),
         )
         .await
         .unwrap();
 
-    let response = recv_or_timeout(&mut cancel_response_sub, "cancel_response_sub").await;
+    let cancel_request = recv_request(&mut cancel_queryable).await;
+    cancel_request
+        .token
+        .respond_response(Payload::from_bytes(Bytes::from_static(b"cancel_accepted")))
+        .await
+        .unwrap();
+
+    let response = recv_reply(&mut cancel_replies, "cancel_replies").await;
     assert_eq!(response.payload(), &Bytes::from_static(b"cancel_accepted"));
 }

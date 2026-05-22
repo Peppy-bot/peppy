@@ -1,6 +1,6 @@
 use crate::helpers::{
-    STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
-    init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
+    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output,
+    init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
     wait_for_action_service_reachable_or_exit, wait_for_child,
     wait_for_health_service_reachable_or_exit,
 };
@@ -164,11 +164,7 @@ async fn actions_communication() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -194,7 +190,6 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         Duration::from_secs(5),
-        None,
         None,
         request,
         peppygen::QoSProfile::SensorData,
@@ -245,11 +240,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         "v1",
         TEST_CORE_NODE,
@@ -329,7 +320,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -338,6 +329,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -350,7 +342,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -358,6 +350,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -366,6 +359,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -489,11 +483,7 @@ async fn actions_communication_cancel_goal() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -519,7 +509,6 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         Duration::from_secs(5),
-        None,
         None,
         request,
         peppygen::QoSProfile::SensorData,
@@ -566,11 +555,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         "v1",
         TEST_CORE_NODE,
@@ -646,7 +631,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -655,6 +640,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -667,7 +653,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -675,6 +661,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -683,6 +670,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -836,11 +824,7 @@ async fn actions_communication_drain_loop_until_end_signal() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -866,7 +850,6 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         Duration::from_secs(5),
-        None,
         None,
         request,
         peppygen::QoSProfile::SensorData,
@@ -930,11 +913,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1011,7 +990,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1020,6 +999,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1032,7 +1012,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -1040,6 +1020,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -1048,6 +1029,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1210,11 +1192,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1240,7 +1218,6 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         Duration::from_secs(5),
-        None,
         None,
         request,
         peppygen::QoSProfile::SensorData,
@@ -1298,11 +1275,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1368,7 +1341,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1377,6 +1350,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1389,7 +1363,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -1397,6 +1371,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -1405,6 +1380,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1566,11 +1542,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1596,7 +1568,6 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         Duration::from_secs(5),
-        None,
         None,
         request,
         peppygen::QoSProfile::SensorData,
@@ -1665,11 +1636,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -1746,7 +1713,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1755,6 +1722,7 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -1767,7 +1735,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -1775,6 +1743,7 @@ fn main() -> Result<()> {
         consumer_instance_id,
         &mut consumer_child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -1783,6 +1752,7 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 

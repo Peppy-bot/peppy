@@ -17,7 +17,65 @@ impl Segment {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Reserved single-character segment placed at the `link_id` wire slot when
+    /// a producer is run without `--link-id`. User-supplied input cannot
+    /// construct this segment via `try_from` (the reserved-sentinel rule
+    /// rejects `_`); the runtime uses this constructor to materialize the
+    /// default sentinel at producer-side fan-out sites.
+    pub fn default_link_id() -> Self {
+        Self(DEFAULT_LINK_ID.to_string())
+    }
+
+    /// Lenient parser used by runtime paths that need to accept the reserved
+    /// link_id default `_` alongside user-supplied link_ids (for example, when
+    /// parsing the `PEPPY_LINK_IDS` env var inside the runner). Continues to
+    /// reject `*` / `**` so a publisher can never advertise itself on a
+    /// wildcard.
+    pub fn try_link_id(s: &str) -> Result<Self, SegmentError> {
+        if s.is_empty() {
+            return Err(SegmentError::Empty);
+        }
+        if s.contains('/') {
+            return Err(SegmentError::ContainsSlash(s.to_string()));
+        }
+        if matches!(s, "*" | "**") {
+            return Err(SegmentError::ReservedSentinel(s.to_string()));
+        }
+        Ok(Self(s.to_string()))
+    }
+
+    /// `Some(value)` → [`Self::try_link_id`]; `None` →
+    /// [`Self::default_link_id`]. Used by wire constructors to map the
+    /// optional consumer/producer `link_id` argument.
+    pub fn link_id_or_default(value: Option<&str>) -> Result<Self, SegmentError> {
+        match value {
+            Some(s) => Self::try_link_id(s),
+            None => Ok(Self::default_link_id()),
+        }
+    }
+
+    /// Producer-side bulk constructor. An empty slice yields a single-element
+    /// vec carrying the reserved default `_` segment (matching the wire
+    /// fallback); a non-empty slice is validated entry by entry via
+    /// [`Self::link_id_or_default`]. Used by [`ServiceWireReceiver::new`] /
+    /// [`ActionWireReceiver::new`] when materializing the set of link_ids a
+    /// single producer process binds.
+    pub fn link_ids_or_default(values: &[String]) -> Result<Vec<Self>, SegmentError> {
+        if values.is_empty() {
+            return Ok(vec![Self::link_id_or_default(None)?]);
+        }
+        values
+            .iter()
+            .map(|s| Self::link_id_or_default(Some(s)))
+            .collect()
+    }
 }
+
+/// Wire literal used at the `link_id` slot when a producer is run without
+/// `--link-id`. Kept in sync with [`Segment::default_link_id`] / the CLI
+/// validator in `peppy::commands::node::run`.
+pub const DEFAULT_LINK_ID: &str = "_";
 
 impl std::ops::Deref for Segment {
     type Target = str;
@@ -102,11 +160,6 @@ pub(crate) const INTERFACE_DISCRIMINATOR: &str = "interface";
 /// Wire discriminator placed before the name/tag pair on senders whose target
 /// is a node (no `conforms_to`).
 pub(crate) const NODE_DISCRIMINATOR: &str = "node";
-
-/// Wire marker used to indicate "any" target in broadcast routing. Distinct
-/// from a transport-level wildcard: broadcasts are explicit at the protocol
-/// level so the responder can decide whether to answer.
-pub(crate) const BROADCAST_MARKER: &str = "_any_";
 
 /// Hyphen-to-underscore normalization applied at construction time to any tag
 /// segment. The generator emits tags with hyphens (config-side identifier rule);
@@ -319,6 +372,7 @@ pub struct TopicWireSender {
     pub(crate) as_core_node: Segment,
     pub(crate) as_instance_id: Segment,
     pub(crate) as_target: SenderTarget,
+    pub(crate) link_id: Segment,
     pub(crate) as_topic_name: Segment,
 }
 
@@ -327,12 +381,14 @@ impl TopicWireSender {
         as_core_node: &str,
         as_instance_id: &str,
         as_target: SenderTarget,
+        link_id: Option<&str>,
         as_topic_name: &str,
     ) -> crate::error::Result<Self> {
         Ok(Self {
             as_core_node: Segment::try_from(as_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
             as_target,
+            link_id: Segment::link_id_or_default(link_id)?,
             as_topic_name: Segment::try_from(as_topic_name)?,
         })
     }
@@ -341,6 +397,16 @@ impl TopicWireSender {
 /// Subscriber-side addressing for a topic. `from_core_node` / `from_instance_id` /
 /// `from_target` identify the publisher whose messages we want to receive;
 /// `None` means "any" (translated to the transport's single-chunk wildcard).
+/// `from_link_id` follows the same rule: `Some` pins to a producer's specific
+/// link_id, `None` matches any (used for `from_any: true` consumers).
+///
+/// `defers_secondary_drop` tells the adapter that peppylib's `Subscription`
+/// wrapper applies its own per-link_id filter above the adapter, so the
+/// adapter must stop dropping the secondary publishes of a multi-link
+/// `emit` (which is its default behavior for wildcard subscribers). Set by
+/// peppylib whenever the consumer has registered sibling-pinned link_ids
+/// for this `(name, tag)`; the actual filter values live on
+/// [`crate::Subscription`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopicWireReceiver {
     pub(crate) as_core_node: Segment,
@@ -348,16 +414,20 @@ pub struct TopicWireReceiver {
     pub(crate) from_core_node: Option<Segment>,
     pub(crate) from_instance_id: Option<Segment>,
     pub(crate) from_target: Option<SenderTarget>,
+    pub(crate) from_link_id: Option<Segment>,
     pub(crate) to_topic: Segment,
+    pub(crate) defers_secondary_drop: bool,
 }
 
 impl TopicWireReceiver {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         as_core_node: &str,
         as_instance_id: &str,
         from_core_node: Option<&str>,
         from_instance_id: Option<&str>,
         from_target: Option<SenderTarget>,
+        from_link_id: Option<&str>,
         to_topic: &str,
     ) -> crate::error::Result<Self> {
         Ok(Self {
@@ -366,65 +436,121 @@ impl TopicWireReceiver {
             from_core_node: from_core_node.map(Segment::try_from).transpose()?,
             from_instance_id: from_instance_id.map(Segment::try_from).transpose()?,
             from_target,
+            from_link_id: from_link_id.map(Segment::try_link_id).transpose()?,
             to_topic: Segment::try_from(to_topic)?,
+            defers_secondary_drop: false,
         })
+    }
+
+    /// Tells the adapter to skip its built-in secondary-publish drop because
+    /// peppylib will apply a sibling-pinned link_id filter above it. Set to
+    /// `true` only when the consumer's manifest registers sibling-pinned
+    /// link_ids for this `(name, tag)`.
+    pub fn with_defers_secondary_drop(mut self, defers: bool) -> Self {
+        self.defers_secondary_drop = defers;
+        self
     }
 }
 
 // ─── Services ────────────────────────────────────────────────────────────────
 
-/// Caller-side addressing for a service. `to_core_node` / `to_instance_id`
+/// Validates each entry as a link_id `Segment` (rejects empty / `/` / `*` /
+/// `**`) so degenerate exclusions can't reach the wire. Used by every
+/// `with_excluded_link_ids` setter that converts a peppylib-supplied
+/// `&[String]` into a `Vec<Segment>` on a wire sender.
+fn validate_excluded_link_ids(excluded: &[String]) -> crate::error::Result<Vec<Segment>> {
+    Ok(excluded
+        .iter()
+        .map(|s| Segment::try_link_id(s))
+        .collect::<Result<_, _>>()?)
+}
+
+/// Caller-side addressing for a service. `target_core_node` / `target_instance_id`
 /// are `None` for broadcast (translated to the protocol's `_any_` marker).
+/// `to_link_id` `None` means "any link_id" (wildcard at the wire slot), used
+/// by consumers with `from_any: true` on the dependency.
+///
+/// `excluded_link_ids` is the set of producer link_ids the consumer's
+/// sibling pinned `depends_on` entries already claim. It is serialized as
+/// the query attachment so the producer's `choose_link_id` can skip
+/// first-bound entries in this set, ensuring a from_any caller doesn't
+/// silently alias a pinned sibling's request. Falls back to first-bound if
+/// every bound link_id is excluded (keeps the call reachable). Empty when
+/// no siblings are registered for this `(name, tag)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireSender {
     pub(crate) bound_core_node: Segment,
     pub(crate) as_instance_id: Segment,
-    pub(crate) to_core_node: Option<Segment>,
-    pub(crate) to_instance_id: Option<Segment>,
+    pub(crate) target_core_node: Option<Segment>,
+    pub(crate) target_instance_id: Option<Segment>,
     pub(crate) to_target: SenderTarget,
+    pub(crate) to_link_id: Option<Segment>,
     pub(crate) to_service_name: Segment,
     pub(crate) kind: ServiceKind,
+    pub(crate) excluded_link_ids: Vec<Segment>,
 }
 
 impl ServiceWireSender {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bound_core_node: &str,
         as_instance_id: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
         to_target: SenderTarget,
+        to_link_id: Option<&str>,
         to_service_name: &str,
         kind: ServiceKind,
     ) -> crate::error::Result<Self> {
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
-            to_core_node: to_core_node.map(Segment::try_from).transpose()?,
-            to_instance_id: to_instance_id.map(Segment::try_from).transpose()?,
+            target_core_node: target_core_node.map(Segment::try_from).transpose()?,
+            target_instance_id: target_instance_id.map(Segment::try_from).transpose()?,
             to_target,
+            to_link_id: to_link_id.map(Segment::try_link_id).transpose()?,
             to_service_name: Segment::try_from(to_service_name)?,
             kind,
+            excluded_link_ids: Vec::new(),
         })
+    }
+
+    /// Replaces the sibling-pinned exclusion set. Peppylib's `poll` looks up
+    /// the set on `MessengerHandle` when `to_link_id` is `None` and a sibling
+    /// pinned dependency is registered for the same `(name, tag)`; pinned
+    /// callers leave it empty. Each entry is validated as a link_id segment
+    /// (rejects empty / `/` / `*` / `**`) so degenerate exclusions can't
+    /// reach the wire.
+    pub fn with_excluded_link_ids(mut self, excluded: &[String]) -> crate::error::Result<Self> {
+        self.excluded_link_ids = validate_excluded_link_ids(excluded)?;
+        Ok(self)
     }
 
     pub fn to_service_name(&self) -> &str {
         &self.to_service_name
     }
 
-    pub fn to_instance_id(&self) -> Option<&str> {
-        self.to_instance_id.as_deref()
+    pub fn target_instance_id(&self) -> Option<&str> {
+        self.target_instance_id.as_deref()
     }
 }
 
-/// Server-side addressing for a service. The four broadcast-Cartesian listen
-/// patterns are derived from this single context by the transport adapter.
+/// Server-side addressing for a service. `link_ids` is the set of producer
+/// link_ids this process binds; the transport adapter declares one queryable
+/// per entry so Zenoh keyexpr matching dispatches requests to the right
+/// process without a runtime filter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireReceiver {
     pub(crate) bound_core_node: Segment,
     pub(crate) as_instance_id: Segment,
     pub(crate) as_identity: SenderTarget,
+    pub(crate) link_ids: Vec<Segment>,
     pub(crate) as_service_name: Segment,
     pub(crate) kind: ServiceKind,
+    /// Precomputed `[root, discriminator, name, tag]` segments of the
+    /// service_root prefix. Derived from `(as_identity, kind)` at construction
+    /// so the inbound query parser can match without rebuilding strings.
+    service_root_prefix: [String; 4],
 }
 
 impl ServiceWireReceiver {
@@ -432,16 +558,29 @@ impl ServiceWireReceiver {
         bound_core_node: &str,
         as_instance_id: &str,
         as_identity: SenderTarget,
+        link_ids: &[String],
         as_service_name: &str,
         kind: ServiceKind,
     ) -> crate::error::Result<Self> {
+        let service_root_prefix = [
+            kind.root_segment().to_string(),
+            as_identity.discriminator().to_string(),
+            as_identity.name().to_string(),
+            as_identity.tag().to_string(),
+        ];
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
             as_identity,
+            link_ids: Segment::link_ids_or_default(link_ids)?,
             as_service_name: Segment::try_from(as_service_name)?,
             kind,
+            service_root_prefix,
         })
+    }
+
+    pub(crate) fn service_root_prefix_segments(&self) -> &[String; 4] {
+        &self.service_root_prefix
     }
 }
 
@@ -450,33 +589,55 @@ impl ServiceWireReceiver {
 /// Caller-side addressing for an action. Goal / cancel / result are exposed
 /// as derived [`ServiceWireSender`]s with the appropriate [`ServiceKind`].
 /// Feedback subscription is built per `goal_id` by the transport adapter.
+/// `to_link_id` `None` means "any link_id" (wildcard).
+///
+/// `excluded_link_ids` is propagated into every derived
+/// [`ServiceWireSender`] (goal / cancel / result) so each sub-service's
+/// query attachment carries the same exclusion set, keeping the producer's
+/// link_id claim consistent across the three sub-services for a single
+/// goal_id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionWireSender {
     pub(crate) as_core_node: Segment,
     pub(crate) as_instance_id: Segment,
-    pub(crate) to_core_node: Option<Segment>,
-    pub(crate) to_instance_id: Option<Segment>,
+    pub(crate) target_core_node: Option<Segment>,
+    pub(crate) target_instance_id: Option<Segment>,
     pub(crate) to_target: SenderTarget,
+    pub(crate) to_link_id: Option<Segment>,
     pub(crate) to_action_name: Segment,
+    pub(crate) excluded_link_ids: Vec<Segment>,
 }
 
 impl ActionWireSender {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         as_core_node: &str,
         as_instance_id: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
         to_target: SenderTarget,
+        to_link_id: Option<&str>,
         to_action_name: &str,
     ) -> crate::error::Result<Self> {
         Ok(Self {
             as_core_node: Segment::try_from(as_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
-            to_core_node: to_core_node.map(Segment::try_from).transpose()?,
-            to_instance_id: to_instance_id.map(Segment::try_from).transpose()?,
+            target_core_node: target_core_node.map(Segment::try_from).transpose()?,
+            target_instance_id: target_instance_id.map(Segment::try_from).transpose()?,
             to_target,
+            to_link_id: to_link_id.map(Segment::try_link_id).transpose()?,
             to_action_name: Segment::try_from(to_action_name)?,
+            excluded_link_ids: Vec::new(),
         })
+    }
+
+    /// Replaces the sibling-pinned exclusion set. See
+    /// [`ServiceWireSender::with_excluded_link_ids`]; the set propagates
+    /// into each derived sub-service so goal / cancel / result agree on the
+    /// producer link_id claim.
+    pub fn with_excluded_link_ids(mut self, excluded: &[String]) -> crate::error::Result<Self> {
+        self.excluded_link_ids = validate_excluded_link_ids(excluded)?;
+        Ok(self)
     }
 
     pub fn goal_service(&self) -> ServiceWireSender {
@@ -495,25 +656,54 @@ impl ActionWireSender {
         &self.to_action_name
     }
 
+    pub fn target_core_node(&self) -> Option<&str> {
+        self.target_core_node.as_deref()
+    }
+
+    pub fn target_instance_id(&self) -> Option<&str> {
+        self.target_instance_id.as_deref()
+    }
+
+    /// Returns a clone with `target_core_node` and `target_instance_id`
+    /// overwritten by the given values. Used by `ActionMessenger::send_goal`
+    /// to latch the stored sender to the responding producer after the first
+    /// `goal_response` arrives, so cancel / result / feedback all target the
+    /// winner instead of fanning out to every producer that received the
+    /// wildcard goal.
+    pub fn pinned_to(&self, core_node: &str, instance_id: &str) -> crate::error::Result<Self> {
+        let mut out = self.clone();
+        out.target_core_node = Some(Segment::try_from(core_node)?);
+        out.target_instance_id = Some(Segment::try_from(instance_id)?);
+        Ok(out)
+    }
+
     fn action_service(&self, kind: ServiceKind) -> ServiceWireSender {
         ServiceWireSender {
             bound_core_node: self.as_core_node.clone(),
             as_instance_id: self.as_instance_id.clone(),
-            to_core_node: self.to_core_node.clone(),
-            to_instance_id: self.to_instance_id.clone(),
+            target_core_node: self.target_core_node.clone(),
+            target_instance_id: self.target_instance_id.clone(),
             to_target: self.to_target.clone(),
+            to_link_id: self.to_link_id.clone(),
             to_service_name: self.to_action_name.clone(),
             kind,
+            excluded_link_ids: self.excluded_link_ids.clone(),
         }
     }
 }
 
-/// Server-side addressing for an action.
+/// Server-side addressing for an action. `link_ids` is the set of producer
+/// link_ids this listener binds. The runtime listens with a wildcard at the
+/// link_id wire slot and filters incoming goal / cancel / result requests
+/// against this set at dispatch time. Per-goal feedback publishes use the
+/// goal's own link_id (extracted from the goal request) rather than picking
+/// among the set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionWireReceiver {
     pub(crate) bound_core_node: Segment,
     pub(crate) as_instance_id: Segment,
     pub(crate) as_identity: SenderTarget,
+    pub(crate) link_ids: Vec<Segment>,
     pub(crate) as_action_name: Segment,
 }
 
@@ -522,12 +712,14 @@ impl ActionWireReceiver {
         bound_core_node: &str,
         as_instance_id: &str,
         as_identity: SenderTarget,
+        link_ids: &[String],
         as_action_name: &str,
     ) -> crate::error::Result<Self> {
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
             as_identity,
+            link_ids: Segment::link_ids_or_default(link_ids)?,
             as_action_name: Segment::try_from(as_action_name)?,
         })
     }
@@ -545,17 +737,27 @@ impl ActionWireReceiver {
     }
 
     fn action_service(&self, kind: ServiceKind) -> ServiceWireReceiver {
+        let service_root_prefix = [
+            kind.root_segment().to_string(),
+            self.as_identity.discriminator().to_string(),
+            self.as_identity.name().to_string(),
+            self.as_identity.tag().to_string(),
+        ];
         ServiceWireReceiver {
             bound_core_node: self.bound_core_node.clone(),
             as_instance_id: self.as_instance_id.clone(),
             as_identity: self.as_identity.clone(),
+            link_ids: self.link_ids.clone(),
             as_service_name: self.as_action_name.clone(),
             kind,
+            service_root_prefix,
         }
     }
 }
 
 pub(crate) mod zenoh_format;
+
+pub use zenoh_format::{ServiceQueryKind, ServiceReplyKind};
 
 #[cfg(test)]
 mod tests;

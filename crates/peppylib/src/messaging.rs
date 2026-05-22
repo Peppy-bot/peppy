@@ -2,6 +2,7 @@
 mod tests;
 
 mod actions;
+mod discovery;
 mod services;
 mod topics;
 
@@ -18,8 +19,8 @@ pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 // and surface in user-facing peppylib APIs. `ActionWireSender` is exposed
 // because peppylib-py caches one to drive subsequent cancel / result calls
 // without locking. The other wire structs (TopicWire*, ServiceWire*,
-// ActionWireReceiver) are internal to peppylib's own messaging implementation
-// — each submodule imports them directly from `pmi::`.
+// ActionWireReceiver) are internal to peppylib's own messaging
+// implementation; each submodule imports them directly from `pmi::`.
 pub use pmi::{
     ActionWireSender, InterfaceIdentifier, NodeIdentifier, SenderTarget, SenderTargetError,
     ServiceKind,
@@ -30,13 +31,14 @@ use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{
     ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    PeppyMessagingInterfaceError, PublisherQoS, ServiceWireReceiver, ServiceWireSender,
+    PublisherQoS, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver, ServiceWireSender,
     SubscriberQoS, Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender,
     ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::sync::{
-    Arc,
+    Arc, Mutex as StdMutex, OnceLock, RwLock,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -50,59 +52,56 @@ pub const NODE_HEALTH_SERVICE: &str = "node_health";
 pub const NODE_READY_SERVICE: &str = "node_ready";
 pub const SHUTDOWN_SERVICE: &str = "shutdown";
 
-/// Prefix used for encoding service-side handler errors into response payloads.
-///
-/// This allows callers to get a useful error response instead of timing out, and prevents a
-/// single bad request from killing the entire service listener loop.
-const SERVICE_ERROR_PREFIX: &[u8] = b"\0peppy_service_error\0";
-
-/// Sentinel payload sent by the service immediately upon receiving a request, before the handler
-/// runs. The caller uses this to distinguish `ServiceTimeout` (ack received but no response)
-/// from `ServiceUnreachable` (no ack at all within the timeout).
-const SERVICE_ACK_PAYLOAD: &[u8] = b"\0peppy_service_ack\0";
-
-/// Sentinel payload used by `is_reachable` to probe whether a service is listening without
-/// invoking the user handler. The service auto-responds to probes inside `next_request()`.
-const SERVICE_PROBE_PAYLOAD: &[u8] = b"\0peppy_service_probe\0";
-
 /// Timeout for reachability probes sent by `is_reachable`.
-const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
-fn is_service_ack_payload(payload: &[u8]) -> bool {
-    payload == SERVICE_ACK_PAYLOAD
-}
+/// Per-`(producer_name, producer_tag)` set of link_ids that this consumer
+/// process has pinned via `depends_on`. Populated once at node bootstrap by
+/// codegen via [`MessengerHandle::register_consumer_dependencies_once`]; consulted
+/// at subscribe / poll / send_goal time when the caller's `from_link_id` is
+/// `None` (a `from_any: true` consumer) to derive the producer link_ids the
+/// from_any path must skip. Empty / absent groups apply no exclusion.
+type PinnedSiblingMap = HashMap<(String, String), Vec<String>>;
 
-fn is_service_probe_payload(payload: &[u8]) -> bool {
-    payload == SERVICE_PROBE_PAYLOAD
-}
-
-/// Encodes a service handler failure as a protocol-level error payload.
-///
-/// External wrappers (for example Python bindings) can use this to ensure
-/// handler exceptions are reported to callers as `ServiceError` instead of
-/// surfacing as request timeouts.
-pub fn encode_service_handler_error(reason: &str) -> Payload {
-    let mut payload = Vec::with_capacity(SERVICE_ERROR_PREFIX.len() + reason.len());
-    payload.extend_from_slice(SERVICE_ERROR_PREFIX);
-    payload.extend_from_slice(reason.as_bytes());
-    Payload::from(payload)
-}
-
-fn decode_service_error_payload(payload: &[u8]) -> Option<String> {
-    if !payload.starts_with(SERVICE_ERROR_PREFIX) {
-        return None;
-    }
-
-    let reason_bytes = &payload[SERVICE_ERROR_PREFIX.len()..];
-    match std::str::from_utf8(reason_bytes) {
-        Ok(reason) => Some(reason.to_owned()),
-        Err(_) => Some("service returned a non-UTF8 error payload".to_string()),
-    }
-}
+/// Key in [`MessengerHandle::active_from_any_topics`]. Two from_any topic
+/// subscriptions conflict only when they would observe the same producer
+/// publishes — i.e. they share the producer-side filter
+/// `(from_core_node, from_instance_id, producer_name, producer_tag)`. Two
+/// subscriptions on the same `(name, tag)` but filtered to different
+/// producer instances target disjoint producers, do not share dedupe
+/// scope, and must be allowed to coexist.
+type ActiveFromAnyKey = (Option<String>, Option<String>, String, String);
 
 #[derive(Clone)]
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
+    pinned_siblings: Arc<RwLock<PinnedSiblingMap>>,
+    /// Live from_any topic subscriptions per `(producer_name, producer_tag)`.
+    /// The sibling-exclusion filter in [`topics::Subscription`] can only
+    /// dedupe correctly when at most one from_any subscription exists per
+    /// `(name, tag)` on this messenger; the manifest validator enforces this
+    /// at config time, but [`Self::register_consumer_dependencies`] and
+    /// direct calls to [`topics::TopicMessenger::subscribe`] can bypass it.
+    /// [`topics::TopicMessenger::subscribe`] reserves a key here on the
+    /// from_any path; [`FromAnyTopicGuard`] releases it on drop.
+    active_from_any_topics: Arc<StdMutex<HashSet<ActiveFromAnyKey>>>,
+}
+
+/// RAII reservation in [`MessengerHandle::active_from_any_topics`]. Held by
+/// a [`topics::Subscription`] for its full lifetime; the slot is released
+/// when the subscription is dropped, freeing the `(name, tag)` for a future
+/// from_any subscription.
+pub(crate) struct FromAnyTopicGuard {
+    key: ActiveFromAnyKey,
+    set: Arc<StdMutex<HashSet<ActiveFromAnyKey>>>,
+}
+
+impl Drop for FromAnyTopicGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.set.lock() {
+            guard.remove(&self.key);
+        }
+    }
 }
 
 /// 16 hex chars (64 bits) of correlation entropy, salted with `domain` so
@@ -135,13 +134,121 @@ pub(crate) fn generate_short_id(domain: &str) -> String {
     hex
 }
 
-fn generate_request_id() -> String {
-    generate_short_id("request")
-}
-
 impl MessengerHandle {
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
-        Self { messenger }
+        Self {
+            messenger,
+            pinned_siblings: Arc::new(RwLock::new(HashMap::new())),
+            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
+        }
+    }
+
+    /// Seed the per-`(producer_name, producer_tag)` map of pinned sibling
+    /// link_ids. Codegen calls this once at node bootstrap with the entries
+    /// it discovered in `depends_on.{nodes,interfaces}`: for each `(name,
+    /// tag)` group that contains at least one pinned dependency, the value
+    /// is the list of pinned link_ids on that group. Groups with only one
+    /// entry (whether pinned or from_any) can be omitted; the exclusion
+    /// only matters when a from_any sibling needs to skip pinned link_ids.
+    ///
+    /// Replaces any previous registration in full; multiple calls are
+    /// supported but only the latest map is observed.
+    pub fn register_consumer_dependencies(&self, pinned_per_group: PinnedSiblingMap) {
+        if let Ok(mut guard) = self.pinned_siblings.write() {
+            *guard = pinned_per_group;
+        }
+    }
+
+    /// Process-scoped idempotent variant of
+    /// [`Self::register_consumer_dependencies`] intended for the consumer
+    /// scaffold the code generator emits. The `build` closure produces the
+    /// map and is invoked at most once per process, even when many
+    /// `MessengerHandle`s are constructed or many consumed-interface
+    /// functions race to initialize it. Only the first call wins; later
+    /// calls are no-ops, mirroring the `OnceLock` shape the generator used
+    /// to inline into every node's `consumer_dependencies.rs`.
+    pub fn register_consumer_dependencies_once<F>(&self, build: F)
+    where
+        F: FnOnce() -> PinnedSiblingMap,
+    {
+        static REGISTERED: OnceLock<()> = OnceLock::new();
+        REGISTERED.get_or_init(|| {
+            self.register_consumer_dependencies(build());
+        });
+    }
+
+    /// Look up the pinned-sibling link_ids registered for a given
+    /// `(producer_name, producer_tag)`. Returns an empty vec when nothing
+    /// is registered or the (name, tag) pair isn't present. Callers
+    /// (TopicMessenger::subscribe, ServiceMessenger::poll,
+    /// ActionMessenger::send_goal) consult this when their `from_link_id`
+    /// argument is `None` to derive the excluded set for the wire receiver
+    /// / sender.
+    pub(crate) fn excluded_link_ids_for(&self, name: &str, tag: &str) -> Vec<String> {
+        let Ok(guard) = self.pinned_siblings.read() else {
+            return Vec::new();
+        };
+        guard
+            .get(&(name.to_string(), tag.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Returns the sibling-pinned exclusion set when this caller is a
+    /// wildcard consumer of `target` (i.e. `link_id` is `None`). Returns
+    /// an empty vec for pinned callers and for topic subscriptions with no
+    /// addressable target. Centralizes the "only consult the map when
+    /// wildcard" gate so the three messaging entry points stay one-line.
+    pub(crate) fn excluded_link_ids_for_wildcard(
+        &self,
+        target: Option<&SenderTarget>,
+        link_id: Option<&str>,
+    ) -> Vec<String> {
+        let (Some(target), None) = (target, link_id) else {
+            return Vec::new();
+        };
+        self.excluded_link_ids_for(target.name(), target.tag())
+    }
+
+    /// Reserve a `(from_core_node, from_instance_id, producer_name,
+    /// producer_tag)` slot in the active from_any topic set. Returns a
+    /// guard that releases the slot on drop, or
+    /// [`Error::DuplicateFromAnyConsumer`] if a from_any topic subscription
+    /// matching the same producer-side filter is already live on this
+    /// messenger. The producer-side filter is part of the key because two
+    /// from_any subs scoped to different producer instances do not share
+    /// dedupe scope and must coexist; the failure mode the guard prevents
+    /// is two from_any subs observing the *same* producer's emits, which
+    /// is exactly when their `(name, tag)` exclusion sets and
+    /// primary/secondary filtering need to give one (and only one)
+    /// delivery per emit.
+    pub(crate) fn reserve_from_any_topic(
+        &self,
+        from_core_node: Option<&str>,
+        from_instance_id: Option<&str>,
+        name: &str,
+        tag: &str,
+    ) -> Result<FromAnyTopicGuard> {
+        let key: ActiveFromAnyKey = (
+            from_core_node.map(str::to_string),
+            from_instance_id.map(str::to_string),
+            name.to_string(),
+            tag.to_string(),
+        );
+        let mut guard = self
+            .active_from_any_topics
+            .lock()
+            .expect("active_from_any_topics mutex poisoned");
+        if !guard.insert(key.clone()) {
+            return Err(Error::DuplicateFromAnyConsumer {
+                name: name.to_string(),
+                tag: tag.to_string(),
+            });
+        }
+        Ok(FromAnyTopicGuard {
+            key,
+            set: Arc::clone(&self.active_from_any_topics),
+        })
     }
 
     /// Pre-bind a per-topic publisher. Locks the messenger once at
@@ -160,16 +267,18 @@ impl MessengerHandle {
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    /// Pre-bind a per-goal action-feedback publisher.
+    /// Pre-bind a per-goal action-feedback publisher under the link_id the
+    /// consumer targeted in the goal request.
     pub(crate) async fn declare_action_feedback_publisher(
         &self,
         recv: &ActionWireReceiver,
+        link_id: &str,
         goal_id: &str,
         qos: PublisherQoS,
     ) -> Result<MessengerPublisher> {
         let messenger = self.messenger.lock().await;
         messenger
-            .declare_action_feedback_publisher(recv, goal_id, qos)
+            .declare_action_feedback_publisher(recv, link_id, goal_id, qos)
             .map_err(Error::PeppyMessagingInterface)
     }
 
@@ -195,6 +304,8 @@ impl MessengerHandle {
         let messenger = Self::new_session(adapter).await?;
         Ok(Self {
             messenger: Arc::new(Mutex::new(messenger)),
+            pinned_siblings: Arc::new(RwLock::new(HashMap::new())),
+            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
         })
     }
 
@@ -225,10 +336,11 @@ impl MessengerHandle {
         sender: &TopicWireSender,
         qos: QoSProfile,
         payload: Payload,
+        is_primary: bool,
     ) -> Result<()> {
         let mut messenger = self.messenger.lock().await;
         messenger
-            .publish_topic(sender, payload.into_inner().into(), qos.into())
+            .publish_topic(sender, payload.into_inner().into(), qos.into(), is_primary)
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
@@ -237,51 +349,58 @@ impl MessengerHandle {
         &self,
         recv: &ServiceWireReceiver,
     ) -> Result<ServiceEndpoint> {
-        let subscriptions = {
+        let queryable = {
             let messenger = self.messenger.lock().await;
             messenger
                 .listen_service(recv)
                 .await
                 .map_err(Error::PeppyMessagingInterface)?
         };
-        Ok(ServiceEndpoint::new(
-            Arc::clone(&self.messenger),
-            subscriptions,
-            recv.clone(),
-        ))
+        Ok(ServiceEndpoint::new(Arc::clone(&self.messenger), queryable))
     }
 
     pub(crate) async fn poll_service(
         &self,
         sender: &ServiceWireSender,
         request_payload: Payload,
+        kind: ServiceQueryKind,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
         let response_timeout: Option<Duration> = response_timeout.into();
-        let request_id = generate_request_id();
 
         let mut response_subscription = {
-            let mut messenger = self.messenger.lock().await;
+            let messenger = self.messenger.lock().await;
             messenger
-                .open_service_call(sender, &request_id, request_payload.into_inner().into())
+                .call_service(
+                    sender,
+                    request_payload.into_inner().into(),
+                    kind,
+                    response_timeout,
+                )
                 .await
                 .map_err(Error::PeppyMessagingInterface)?
         };
 
-        // Wait for the response, filtering out service acks. The service sends an
-        // ack immediately upon receiving the request (before the handler runs).
-        // With a timeout, ack-without-response → ServiceTimeout, no ack at all →
-        // ServiceUnreachable. With no timeout (None), we wait indefinitely — used
-        // in tests to avoid wall-clock dependencies.
-        let channel_closed_err = || {
-            Error::PeppyMessagingInterface(PeppyMessagingInterfaceError::BackendError(
-                "service response channel closed".to_string(),
-            ))
-        };
+        // Wait for the response, filtering replies by their attachment-side
+        // `ServiceReplyKind`. The producer sends `Ack` immediately on receiving
+        // a real user request (before the handler runs) and a terminal
+        // `Response` or `HandlerError` once the handler returns. With a
+        // timeout, ack-without-response → ServiceTimeout, no ack at all →
+        // ServiceUnreachable. Probes get a single `Response` reply with an
+        // empty payload (no ACK), so a probe consumer is guaranteed to break
+        // the loop on the first reply.
         let to_service_name = sender.to_service_name().to_string();
-        let to_instance_id = sender.to_instance_id().map(str::to_string);
+        let target_instance_id = sender.target_instance_id().map(str::to_string);
+        let unreachable = || Error::ServiceUnreachable {
+            instance_id: target_instance_id.clone(),
+            service_name: to_service_name.clone(),
+        };
+        let timed_out = || Error::ServiceTimeout {
+            instance_id: target_instance_id.clone(),
+            service_name: to_service_name.clone(),
+        };
 
-        let response = match response_timeout {
+        let reply = match response_timeout {
             Some(response_timeout) => {
                 let deadline = Instant::now() + response_timeout;
                 let mut received_ack = false;
@@ -289,68 +408,63 @@ impl MessengerHandle {
                 loop {
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     if remaining.is_zero() {
-                        if received_ack {
-                            return Err(Error::ServiceTimeout {
-                                instance_id: to_instance_id,
-                                service_name: to_service_name,
-                            });
+                        return Err(if received_ack {
+                            timed_out()
                         } else {
-                            return Err(Error::ServiceUnreachable {
-                                instance_id: to_instance_id,
-                                service_name: to_service_name,
-                            });
-                        }
+                            unreachable()
+                        });
                     }
 
                     match timeout(remaining, response_subscription.rx.recv()).await {
-                        Ok(Some(message)) => {
-                            if is_service_ack_payload(&message.payload().as_bytes()) {
+                        Ok(Some(reply)) => match reply.kind() {
+                            ServiceReplyKind::Ack => {
                                 received_ack = true;
                                 continue;
                             }
-                            break message;
-                        }
-                        Ok(None) => return Err(channel_closed_err()),
-                        Err(_) => {
-                            if received_ack {
-                                return Err(Error::ServiceTimeout {
-                                    instance_id: to_instance_id,
-                                    service_name: to_service_name,
-                                });
-                            } else {
-                                return Err(Error::ServiceUnreachable {
-                                    instance_id: to_instance_id,
-                                    service_name: to_service_name,
-                                });
+                            ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
+                                break reply;
                             }
+                        },
+                        Ok(None) | Err(_) => {
+                            return Err(if received_ack {
+                                timed_out()
+                            } else {
+                                unreachable()
+                            });
                         }
                     }
                 }
             }
             None => loop {
                 match response_subscription.rx.recv().await {
-                    Some(message) => {
-                        if is_service_ack_payload(&message.payload().as_bytes()) {
-                            continue;
+                    Some(reply) => match reply.kind() {
+                        ServiceReplyKind::Ack => continue,
+                        ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
+                            break reply;
                         }
-                        break message;
-                    }
-                    None => return Err(channel_closed_err()),
+                    },
+                    None => return Err(unreachable()),
                 }
             },
         };
 
-        let response = Message::from(response);
-        let response_payload = response.payload();
-        if let Some(reason) = decode_service_error_payload(response_payload.as_ref()) {
-            return Err(Error::ServiceError {
-                instance_id: to_instance_id,
-                service_name: to_service_name,
-                reason,
-            });
+        let kind = reply.kind();
+        let message = Message::from(reply.into_message());
+        match kind {
+            ServiceReplyKind::HandlerError => {
+                let reason = match std::str::from_utf8(message.payload().as_ref()) {
+                    Ok(s) => s.to_string(),
+                    Err(_) => "service returned a non-UTF8 error payload".to_string(),
+                };
+                Err(Error::ServiceError {
+                    instance_id: target_instance_id,
+                    service_name: to_service_name,
+                    reason,
+                })
+            }
+            ServiceReplyKind::Response => Ok(message),
+            ServiceReplyKind::Ack => unreachable!("ACK replies are skipped above"),
         }
-
-        Ok(response)
     }
 
     pub(crate) async fn expose_action(&self, recv: &ActionWireReceiver) -> Result<ActionCreation> {

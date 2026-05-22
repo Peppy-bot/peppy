@@ -1,13 +1,12 @@
+use super::discovery::discover_producer;
 use super::generate_short_id;
 use super::topics::Subscription;
-use super::{
-    MessengerHandle, PROBE_TIMEOUT, SERVICE_PROBE_PAYLOAD, ServiceEndpoint, TopicPublisher,
-};
+use super::{MessengerHandle, PROBE_TIMEOUT, ServiceEndpoint, TopicPublisher};
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
-use pmi::{ActionWireReceiver, ActionWireSender, PublisherQoS, SenderTarget};
+use pmi::{ActionWireReceiver, ActionWireSender, PublisherQoS, SenderTarget, ServiceQueryKind};
 use std::sync::Arc;
 use tokio::time::Duration;
 
@@ -158,9 +157,16 @@ impl ActionFeedbackPublisherFactory {
     }
 
     /// Standard server-side entry point: unwrap the goal envelope, declare
-    /// a feedback publisher on the per-goal topic, and return both alongside
-    /// the user payload so the caller can dispatch it to the goal handler.
-    pub async fn declare_from_wire(&self, wire: Bytes) -> Result<DeclaredFeedback> {
+    /// a feedback publisher on the per-goal topic scoped to the link_id the
+    /// consumer targeted, and return both alongside the user payload so the
+    /// caller can dispatch it to the goal handler.
+    ///
+    /// `link_id` comes from the goal request's parsed keyexpr (surfaced via
+    /// [`crate::messaging::ServiceRequestContext::link_id`]). A producer
+    /// bound to multiple link_ids will see different link_ids for different
+    /// goal requests, and each goal's feedback must be addressed back under
+    /// the link_id its consumer subscribed for.
+    pub async fn declare_from_wire(&self, link_id: &str, wire: Bytes) -> Result<DeclaredFeedback> {
         let (goal_id, user_payload_offset) = {
             let (goal_id, user_payload) = unwrap_goal_payload(wire.as_ref())?;
             // The goal_id is appended to the feedback topic to scope the
@@ -178,7 +184,7 @@ impl ActionFeedbackPublisherFactory {
             let offset = wire.len() - user_payload.len();
             (goal_id.to_string(), offset)
         };
-        let publisher = self.declare(&goal_id).await?;
+        let publisher = self.declare(link_id, &goal_id).await?;
         let user_payload = wire.slice(user_payload_offset..);
         Ok(DeclaredFeedback {
             publisher,
@@ -187,10 +193,10 @@ impl ActionFeedbackPublisherFactory {
         })
     }
 
-    async fn declare(&self, goal_id: &str) -> Result<ActionFeedbackPublisher> {
+    async fn declare(&self, link_id: &str, goal_id: &str) -> Result<ActionFeedbackPublisher> {
         let inner = self
             .messenger
-            .declare_action_feedback_publisher(&self.receiver, goal_id, self.qos)
+            .declare_action_feedback_publisher(&self.receiver, link_id, goal_id, self.qos)
             .await?;
         Ok(ActionFeedbackPublisher::new(TopicPublisher::new(Arc::new(
             inner,
@@ -272,42 +278,57 @@ pub struct ActionCreation {
 }
 
 impl ActionMessenger {
-    /// Expose an action server. `as_identity` must match what callers pass to
-    /// [`Self::send_goal`].
+    /// Expose an action server. `link_ids` is the set of producer link_ids
+    /// this process binds; the underlying service queryables are declared
+    /// one per bound link_id so Zenoh's keyexpr matcher routes inbound
+    /// goal / cancel / result requests to the right queryable. An empty
+    /// slice is normalized to the reserved default `_` segment.
+    /// `as_identity` must match what callers pass to [`Self::send_goal`].
     pub async fn expose(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
         as_identity: SenderTarget,
+        link_ids: &[String],
         as_action_name: &str,
     ) -> Result<ActionCreation> {
-        let recv =
-            ActionWireReceiver::new(bound_core_node, as_instance_id, as_identity, as_action_name)?;
+        let recv = ActionWireReceiver::new(
+            bound_core_node,
+            as_instance_id,
+            as_identity,
+            link_ids,
+            as_action_name,
+        )?;
         messenger.expose_action(&recv).await
     }
 
-    /// Sends a lightweight probe to check whether an action service is listening.
+    /// Probe an action service. `to_link_id` `None` targets the default
+    /// link_id; `Some(value)` targets a specific producer link_id.
+    #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
         to_target: SenderTarget,
+        to_link_id: Option<&str>,
         to_action_name: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
     ) -> Result<bool> {
         let sender = ActionWireSender::new(
             bound_core_node,
             as_instance_id,
-            to_core_node,
-            to_instance_id,
+            target_core_node,
+            target_instance_id,
             to_target,
+            to_link_id,
             to_action_name,
         )?;
         match messenger
             .poll_service(
                 &sender.goal_service(),
-                Payload::from_static(SERVICE_PROBE_PAYLOAD),
+                Payload::new(),
+                ServiceQueryKind::Probe,
                 PROBE_TIMEOUT,
             )
             .await
@@ -323,17 +344,31 @@ impl ActionMessenger {
     /// wraps `user_payload` in the per-goal envelope, subscribes to the
     /// matching feedback topic, and polls the goal service.
     ///
-    /// `to_target` must match the [`SenderTarget`] the action server used in
-    /// [`Self::expose`].
+    /// `to_target` must match the [`SenderTarget`] the action server used
+    /// in [`Self::expose`]. `to_link_id` `None` targets the default
+    /// link_id; `Some(value)` targets a specific producer link_id.
+    ///
+    /// When either `target_core_node` or `target_instance_id` is `None`
+    /// (wildcard / from_any), this performs a discover-then-pin sequence:
+    /// a lightweight probe to the goal sub-service identifies a single
+    /// responding producer, then the real goal is delivered pinned to that
+    /// producer. The probe is filtered server-side before the user handler
+    /// runs (see [`crate::messaging::services::ServiceEndpoint`]), so
+    /// non-winning producers never execute the goal handler. Without this,
+    /// every matching producer would run the handler concurrently; for
+    /// actions with side effects (motor commands, file writes) that is a
+    /// real-world safety hazard. Fully pinned callers (both `target_*`
+    /// `Some`) skip discovery and pay no overhead.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         to_target: SenderTarget,
+        to_link_id: Option<&str>,
         to_action_name: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
         user_payload: Payload,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
@@ -341,21 +376,64 @@ impl ActionMessenger {
         let goal_id = generate_goal_id();
         let goal_payload = wrap_goal_payload(&goal_id, user_payload.as_ref())?;
 
+        let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
+
+        // Discover a single producer when the caller did not pin either
+        // addressing slot. The probe runs server-side without invoking the
+        // goal handler; only the discovered producer will receive the real
+        // goal request.
+        let (resolved_core, resolved_inst) =
+            if target_instance_id.is_none() || target_core_node.is_none() {
+                let probe_sender = ActionWireSender::new(
+                    as_core_node,
+                    as_instance_id,
+                    target_core_node,
+                    target_instance_id,
+                    to_target.clone(),
+                    to_link_id,
+                    to_action_name,
+                )?
+                .with_excluded_link_ids(&excluded)?;
+                // Cap discovery at PROBE_TIMEOUT or the caller's goal budget,
+                // whichever is shorter, so a tight `goal_timeout` still fails
+                // fast against unreachable producers.
+                let discovery_timeout = goal_timeout.min(PROBE_TIMEOUT);
+                let (core, inst) =
+                    discover_producer(messenger, &probe_sender.goal_service(), discovery_timeout)
+                        .await?;
+                (Some(core), Some(inst))
+            } else {
+                (
+                    target_core_node.map(str::to_string),
+                    target_instance_id.map(str::to_string),
+                )
+            };
+
         let sender = ActionWireSender::new(
             as_core_node,
             as_instance_id,
-            to_core_node,
-            to_instance_id,
+            resolved_core.as_deref(),
+            resolved_inst.as_deref(),
             to_target,
+            to_link_id,
             to_action_name,
-        )?;
+        )?
+        .with_excluded_link_ids(&excluded)?;
 
+        // Feedback subscription is built from the pinned sender, so its
+        // wire keyexpr targets only the discovered producer. Losers cannot
+        // publish feedback under this goal_id to a slot we are listening on.
         let feedback_subscription = messenger
             .subscribe_action_feedback(&sender, &goal_id, feedback_qos.into())
             .await?;
 
         let goal_response = messenger
-            .poll_service(&sender.goal_service(), goal_payload, goal_timeout)
+            .poll_service(
+                &sender.goal_service(),
+                goal_payload,
+                ServiceQueryKind::UserRequest,
+                goal_timeout,
+            )
             .await?;
 
         Ok(ActionGoalHandle {
@@ -384,7 +462,12 @@ impl ActionMessenger {
         cancel_timeout: Duration,
     ) -> Result<Message> {
         messenger_handle
-            .poll_service(&sender.cancel_service(), Payload::new(), cancel_timeout)
+            .poll_service(
+                &sender.cancel_service(),
+                Payload::new(),
+                ServiceQueryKind::UserRequest,
+                cancel_timeout,
+            )
             .await
     }
 
@@ -406,7 +489,12 @@ impl ActionMessenger {
     ) -> Result<Message> {
         let action_name = sender.to_action_name().to_string();
         messenger_handle
-            .poll_service(&sender.result_service(), Payload::new(), result_timeout)
+            .poll_service(
+                &sender.result_service(),
+                Payload::new(),
+                ServiceQueryKind::UserRequest,
+                result_timeout,
+            )
             .await
             .map_err(|err| Self::map_result_error(err, &action_name))
     }

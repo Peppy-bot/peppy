@@ -1,9 +1,56 @@
-use super::types::{Execution, NodeConfig};
+use super::types::{Execution, Manifest, NodeConfig};
 use crate::{
     error::{ParsingError, Result},
     parsing::read_non_empty_file,
 };
+use std::collections::HashSet;
 use std::path::Path;
+
+/// Validates `manifest.depends_on`:
+///
+/// - Rejects duplicate `link_id`s across the combined nodes/interfaces set.
+///   `link_id` is the shared identity for both: consumed topics/services/actions
+///   resolve their producer by `link_id` alone, so a collision either silently
+///   overwrites a resolution or binds to the wrong producer.
+/// - Rejects more than one entry with `from_any: true` for the same
+///   `(name, tag)` pair. `from_any` marks a dependency as a wildcard producer;
+///   two wildcards for the same `(name, tag)` would be ambiguous at resolution.
+fn validate_depends_on(manifest: &Manifest) -> Result<()> {
+    let Some(depends_on) = &manifest.depends_on else {
+        return Ok(());
+    };
+    let mut seen_link_ids: HashSet<&str> = HashSet::new();
+    let mut seen_from_any: HashSet<(&str, &str)> = HashSet::new();
+    let nodes = depends_on.nodes.iter().map(|n| {
+        (
+            n.link_id.as_str(),
+            n.name.as_str(),
+            n.tag.as_str(),
+            n.from_any,
+        )
+    });
+    let interfaces = depends_on.interfaces.iter().map(|i| {
+        (
+            i.link_id.as_str(),
+            i.name.as_str(),
+            i.tag.as_str(),
+            i.from_any,
+        )
+    });
+    for (link_id, name, tag, from_any) in nodes.chain(interfaces) {
+        if !seen_link_ids.insert(link_id) {
+            return Err(ParsingError::DuplicateLinkId(link_id.to_owned()).into());
+        }
+        if from_any && !seen_from_any.insert((name, tag)) {
+            return Err(ParsingError::ConflictingFromAny {
+                name: name.to_owned(),
+                tag: tag.to_owned(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
 
 /// Validates execution constraints.
 fn validate_execution(execution: &Execution) -> Result<()> {
@@ -52,6 +99,7 @@ impl NodeConfigParser {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
         let config: NodeConfig = crate::error::deserialize_json5_with_path(content)?;
         validate_execution(&config.execution)?;
+        validate_depends_on(&config.manifest)?;
         Ok(config)
     }
 }
@@ -230,6 +278,322 @@ mod tests {
             result.unwrap_err(),
             Error::Parsing(ParsingError::NoProcessOrContainer)
         ));
+    }
+
+    #[test]
+    fn test_duplicate_link_id_within_nodes_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_node",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "alpha", tag: "v1", link_id: "shared" },
+                        { name: "beta",  tag: "v1", link_id: "shared" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+            ),
+            "expected DuplicateLinkId(\"shared\"), got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_duplicate_link_id_across_nodes_and_interfaces_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_node",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "alpha", tag: "v1", link_id: "shared" },
+                    ],
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "shared" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+            ),
+            "expected DuplicateLinkId(\"shared\") across nodes+interfaces, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_unique_link_ids_parse_ok() {
+        // Same (name, tag) repeated under distinct link_ids must parse.
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "openarm01_backbone",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "torso_camera" },
+                    ],
+                },
+            },
+            interfaces: {
+                topics: {
+                    consumes: [
+                        { link_id: "wrist_left_camera",  name: "video_stream" },
+                        { link_id: "wrist_right_camera", name: "video_stream" },
+                        { link_id: "torso_camera",       name: "video_stream" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                build_cmd: ["cargo", "build", "--release"],
+                run_cmd: ["./target/release/backbone"],
+            },
+        }"#;
+        let config =
+            NodeConfigParser::from_content(json5).expect("distinct link_ids should parse cleanly");
+        let deps = config
+            .manifest
+            .depends_on
+            .expect("depends_on should be set");
+        assert_eq!(deps.nodes.len(), 3);
+    }
+
+    #[test]
+    fn test_from_any_defaults_to_false() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "default_node",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "alpha", tag: "v1", link_id: "a" },
+                    ],
+                    interfaces: [
+                        { name: "beta", tag: "v1", link_id: "b" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        let deps = config.manifest.depends_on.unwrap();
+        assert!(!deps.nodes[0].from_any);
+        assert!(!deps.interfaces[0].from_any);
+    }
+
+    #[test]
+    fn test_from_any_explicit_true_parses() {
+        // A single `from_any: true` node entry alongside three plain
+        // interface entries with the same (name, tag).
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "openarm01_backbone",
+                tag: "v1",
+                depends_on: {
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "torso_camera" },
+                    ],
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "extra_camera", from_any: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        let deps = config.manifest.depends_on.unwrap();
+        assert_eq!(deps.nodes.len(), 1);
+        assert!(deps.nodes[0].from_any);
+        assert_eq!(deps.interfaces.len(), 3);
+        assert!(deps.interfaces.iter().all(|i| !i.from_any));
+    }
+
+    #[test]
+    fn test_from_any_explicit_true_on_interface_with_node_duplicate() {
+        // The wildcard is on an interface entry; a plain node entry shares
+        // (name, tag).
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "openarm01_backbone",
+                tag: "v1",
+                depends_on: {
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "torso_camera", from_any: true },
+                    ],
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "extra_camera" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        let deps = config.manifest.depends_on.unwrap();
+        assert!(!deps.nodes[0].from_any);
+        let from_any_count = deps.interfaces.iter().filter(|i| i.from_any).count();
+        assert_eq!(from_any_count, 1);
+    }
+
+    #[test]
+    fn test_conflicting_from_any_two_nodes_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_from_any_node",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
+                        { name: "depth_camera", tag: "v1", link_id: "b", from_any: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::ConflictingFromAny { name, tag })
+                    if name == "depth_camera" && tag == "v1"
+            ),
+            "expected ConflictingFromAny for (depth_camera, v1), got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_conflicting_from_any_two_interfaces_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_from_any_iface",
+                tag: "v1",
+                depends_on: {
+                    nodes: [],
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
+                        { name: "depth_camera", tag: "v1", link_id: "b", from_any: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::ConflictingFromAny { name, tag })
+                    if name == "depth_camera" && tag == "v1"
+            ),
+            "expected ConflictingFromAny for (depth_camera, v1), got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_conflicting_from_any_across_node_and_interface_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_from_any_mixed",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
+                    ],
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "b", from_any: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::ConflictingFromAny { name, tag })
+                    if name == "depth_camera" && tag == "v1"
+            ),
+            "expected ConflictingFromAny across nodes+interfaces, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_from_any_true_allowed_for_distinct_name_tag_pairs() {
+        // Different (name, tag) pairs may each carry their own from_any=true.
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "distinct_from_any",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
+                        { name: "imu_sensor",   tag: "v1", link_id: "b", from_any: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5)
+            .expect("distinct (name, tag) pairs each with from_any=true should parse");
+        let deps = config.manifest.depends_on.unwrap();
+        assert!(deps.nodes.iter().all(|n| n.from_any));
     }
 
     #[test]

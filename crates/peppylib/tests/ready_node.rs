@@ -23,6 +23,7 @@ async fn ready_node() {
         TEST_CORE_NODE_NAME,
         TEST_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
+        &[],
     )
     .await
     .expect("failed to start ready service");
@@ -47,15 +48,16 @@ async fn ready_node() {
         (None, None),
     ];
 
-    for (to_core_node, to_instance_id) in to_combinations {
+    for (target_core_node, target_instance_id) in to_combinations {
         let response = ServiceMessenger::poll(
             &client.caller_handle,
             &client.core_node_name,
             CALLER_INSTANCE_ID,
             test_node_target(TEST_NODE_NAME),
+            None,
             peppylib::messaging::NODE_READY_SERVICE,
-            to_core_node,
-            to_instance_id,
+            target_core_node,
+            target_instance_id,
             request_payload.clone(),
             Duration::from_secs(2),
         )

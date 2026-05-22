@@ -1,31 +1,84 @@
-use super::MessengerHandle;
+use super::{FromAnyTopicGuard, MessengerHandle};
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 pub struct Subscription {
     inner: pmi::Subscription,
+    /// Producer link_ids a sibling pinned `depends_on` entry on the same
+    /// `(name, tag)` already claims. Set by [`TopicMessenger::subscribe`]
+    /// when the receiver wildcards the link_id slot and the messenger has
+    /// a registered sibling set; empty otherwise. The receive paths skip
+    /// messages whose producer `link_id()` is in this set.
+    excluded_link_ids: Vec<String>,
+    /// Live for the subscription's full lifetime when this is a from_any
+    /// topic sub; releases the messenger's per-`(name, tag)` reservation
+    /// on drop. `None` for pinned subs and target-less subscriptions.
+    _from_any_guard: Option<FromAnyTopicGuard>,
 }
 
 impl Subscription {
     pub(crate) fn new(inner: pmi::Subscription) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            excluded_link_ids: Vec::new(),
+            _from_any_guard: None,
+        }
+    }
+
+    pub(crate) fn with_excluded_link_ids(mut self, excluded: Vec<String>) -> Self {
+        self.excluded_link_ids = excluded;
+        self
+    }
+
+    pub(crate) fn with_from_any_guard(mut self, guard: FromAnyTopicGuard) -> Self {
+        self._from_any_guard = Some(guard);
+        self
     }
 
     pub async fn on_next_message(&mut self) -> Option<Message> {
-        self.inner.rx.recv().await.map(Message::from)
+        // Drop sibling-claimed publishes before they cross into user code.
+        // The adapter's primary/secondary filter (for wildcard subscribers
+        // on a multi-link `emit`) already ran upstream; this is a separate
+        // policy layer that translates the consumer's manifest knowledge
+        // into a runtime drop.
+        loop {
+            let raw = self.inner.rx.recv().await?;
+            if self.should_drop(&raw) {
+                continue;
+            }
+            return Some(Message::from(raw));
+        }
     }
 
     pub(crate) fn try_on_next_message(
         &mut self,
     ) -> std::result::Result<Message, crate::types::TryRecvError> {
-        self.inner
-            .rx
-            .try_recv()
-            .map(Message::from)
-            .map_err(crate::types::TryRecvError::from)
+        loop {
+            let raw = self
+                .inner
+                .rx
+                .try_recv()
+                .map_err(crate::types::TryRecvError::from)?;
+            if self.should_drop(&raw) {
+                continue;
+            }
+            return Ok(Message::from(raw));
+        }
+    }
+
+    fn should_drop(&self, msg: &pmi::TopicMessage) -> bool {
+        if self.excluded_link_ids.is_empty() {
+            return false;
+        }
+        let link_id = msg.link_id();
+        if link_id.is_empty() {
+            return false;
+        }
+        self.excluded_link_ids.iter().any(|e| e == link_id)
     }
 }
 
@@ -35,27 +88,53 @@ impl TopicMessenger {
     /// Subscribe to a topic published by a specific target. `from_target`
     /// `Some(SenderTarget)` filters on the publisher's identity; `None`
     /// wildcards the target segment (any node or interface emits a match).
+    /// `from_link_id` `Some(value)` filters to a producer's specific bound
+    /// link_id; `None` matches any link_id (used for `from_any: true`
+    /// consumers and for unscoped subscribes).
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         from_target: Option<SenderTarget>,
+        from_link_id: Option<&str>,
         to_topic: &str,
         from_core_node: Option<&str>,
         from_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
+        // Reserve the from_any `(name, tag)` slot before any wire work. The
+        // sibling-exclusion filter below assumes "at most one from_any topic
+        // sub per (name, tag) per messenger"; the manifest validator
+        // enforces it at config time but this is the runtime guard at the
+        // wire's trust boundary. If wire setup fails afterwards the guard
+        // is dropped as a local and the slot is released.
+        let from_any_guard = match (&from_target, from_link_id) {
+            (Some(target), None) => Some(messenger.reserve_from_any_topic(
+                from_core_node,
+                from_instance_id,
+                target.name(),
+                target.tag(),
+            )?),
+            _ => None,
+        };
+        let excluded = messenger.excluded_link_ids_for_wildcard(from_target.as_ref(), from_link_id);
         let recv = TopicWireReceiver::new(
             as_core_node,
             as_instance_id,
             from_core_node,
             from_instance_id,
             from_target,
+            from_link_id,
             to_topic,
-        )?;
+        )?
+        .with_defers_secondary_drop(!excluded.is_empty());
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
-        Ok(Subscription::new(subscription))
+        let mut subscription = Subscription::new(subscription).with_excluded_link_ids(excluded);
+        if let Some(guard) = from_any_guard {
+            subscription = subscription.with_from_any_guard(guard);
+        }
+        Ok(subscription)
     }
 
     /// Consumes a topic from any publisher (external/unlinked topics).
@@ -78,38 +157,92 @@ impl TopicMessenger {
             from_core_node,
             from_instance_id,
             None,
+            None,
             to_topic,
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription))
     }
 
-    /// Publishes a payload to a topic on the specified core node.
+    /// Publishes a payload to a topic. `link_ids` is the set of producer
+    /// link_ids this emission should appear under on the wire. Zenoh `put`
+    /// keyexprs can't carry wildcards, so a producer bound to N link_ids
+    /// performs N publishes per emit. Duplicate entries are collapsed so
+    /// each scoped subscriber receives one message per unique link_id; the
+    /// first occurrence wins for ordering. An empty slice is normalized to
+    /// the reserved default `_` segment. On the first publish error the
+    /// loop aborts and the error is returned.
+    ///
+    /// The first publish (for `effective[0]`) is marked primary on the
+    /// wire; the rest are marked secondary. Wildcard subscribers
+    /// (`from_link_id: None`) drop secondaries so one `emit` yields one
+    /// delivery on the wildcard axis, even though the wire still carries N
+    /// publishes for pinned-subscriber reachability. See the topic-
+    /// attachment block in `pmi::wire::zenoh_format`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn emit(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         as_target: SenderTarget,
+        link_ids: &[String],
         as_topic_name: &str,
         qos: QoSProfile,
         payload: Payload,
     ) -> Result<()> {
-        let sender = TopicWireSender::new(as_core_node, as_instance_id, as_target, as_topic_name)?;
-        messenger.emit_topic_message(&sender, qos, payload).await
+        let effective: Vec<String> = if link_ids.is_empty() {
+            vec![pmi::DEFAULT_LINK_ID.to_string()]
+        } else {
+            let mut seen = HashSet::with_capacity(link_ids.len());
+            link_ids
+                .iter()
+                .filter(|id| seen.insert((*id).clone()))
+                .cloned()
+                .collect()
+        };
+        for (idx, link_id) in effective.iter().enumerate() {
+            let sender = TopicWireSender::new(
+                as_core_node,
+                as_instance_id,
+                as_target.clone(),
+                Some(link_id.as_str()),
+                as_topic_name,
+            )?;
+            messenger
+                .emit_topic_message(&sender, qos.clone(), payload.clone(), idx == 0)
+                .await?;
+        }
+        Ok(())
     }
 
-    /// Pre-binds a topic publisher, bypassing the central `Messenger` mutex
-    /// on every subsequent publish. Use this in publish loops; use [`emit`]
-    /// for one-shot publishes.
+    /// Pre-binds a topic publisher under a single producer-side link_id,
+    /// bypassing the central `Messenger` mutex on every subsequent publish.
+    /// Use this in publish loops; use [`emit`] for one-shot publishes.
+    /// `link_id` `None` falls back to the reserved default `_` segment.
+    ///
+    /// A pre-bound publisher always tags its publishes as primary on the
+    /// wire (it can't know about a parallel multi-link `emit` loop), so
+    /// mixing this with [`emit`] on the *same* topic isn't supported — a
+    /// wildcard subscriber would observe the pre-bound publish and the
+    /// `emit`'s primary publish as two separate deliveries. Pick one
+    /// publication path per topic.
+    #[allow(clippy::too_many_arguments)]
     pub async fn declare_publisher(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         as_target: SenderTarget,
+        link_id: Option<&str>,
         as_topic_name: &str,
         qos: QoSProfile,
     ) -> Result<TopicPublisher> {
-        let sender = TopicWireSender::new(as_core_node, as_instance_id, as_target, as_topic_name)?;
+        let sender = TopicWireSender::new(
+            as_core_node,
+            as_instance_id,
+            as_target,
+            link_id,
+            as_topic_name,
+        )?;
         let inner = messenger
             .declare_topic_publisher(&sender, qos.into())
             .await?;

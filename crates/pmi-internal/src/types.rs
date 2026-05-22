@@ -1,9 +1,9 @@
 use super::adapters::mock::{MockAdapter, MockPublisher};
 use super::error::Result;
-use super::wire::zenoh_format::ZenohWireFormat;
+use super::wire::zenoh_format::{ServiceReplyAttachment, ZenohWireFormat};
 use super::wire::{
-    ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
-    TopicWireReceiver, TopicWireSender,
+    ActionWireReceiver, ActionWireSender, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
+    ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use config::node::QoSProfile;
 use std::borrow::Cow;
@@ -85,6 +85,13 @@ impl From<QoSProfile> for SubscriberQoS {
     }
 }
 
+/// Sentinel used by adapters when [`MessengerBackend::call_service`] is
+/// invoked with `timeout: None`. Zenoh's `get` builder demands a finite
+/// `Duration`; one day is far longer than any in-process or interactive
+/// test wait, so it stands in for "wait indefinitely" without forcing
+/// each adapter to track its own value.
+pub(crate) const NO_TIMEOUT_SENTINEL: std::time::Duration = std::time::Duration::from_secs(86_400);
+
 /// Defines the messaging interface.
 ///
 /// All methods take addressing structs from [`crate::wire`] rather than raw
@@ -107,49 +114,44 @@ pub trait MessengerBackend {
         qos: SubscriberQoS,
     ) -> impl Future<Output = Result<Subscription>> + Send;
 
-    /// Publish a one-shot topic message.
+    /// Publish a one-shot topic message. `is_primary` rides on a wire
+    /// attachment so subscribers can disambiguate the N publishes a
+    /// multi-link_id `emit` produces — see the topic-attachment section
+    /// in [`crate::wire::zenoh_format`] for the dedup contract.
     fn publish_topic(
         &mut self,
         sender: &TopicWireSender,
         payload: Payload,
         qos: PublisherQoS,
+        is_primary: bool,
     ) -> impl Future<Output = Result<()>> + Send;
 
     // ─── Services ─────────────────────────────────────────────────────────
 
-    /// Subscribe to all four broadcast-Cartesian listen patterns for a service.
+    /// Declare a service queryable (one per producer-bound link_id) and return
+    /// a fan-in handle for received [`IncomingRequest`]s. Producers with
+    /// multiple bound link_ids get one queryable each so Zenoh keyexpr
+    /// matching can replace the previous dispatch-time filter.
     fn listen_service(
         &self,
         recv: &ServiceWireReceiver,
-    ) -> impl Future<Output = Result<[Subscription; 4]>> + Send;
+    ) -> impl Future<Output = Result<ServiceQueryable>> + Send;
 
-    /// Send a service request and subscribe to the response correlated by
-    /// `request_id`. Returns the response subscription.
-    fn open_service_call(
-        &mut self,
-        sender: &ServiceWireSender,
-        request_id: &str,
-        payload: Payload,
-    ) -> impl Future<Output = Result<Subscription>> + Send;
-
-    /// Server-side response publish. The adapter parses `received_request` to
-    /// extract the caller's addressing and request_id, then publishes the
-    /// payload back to the caller.
-    fn publish_service_response(
-        &mut self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-        payload: Payload,
-    ) -> impl Future<Output = Result<()>> + Send;
-
-    /// Parses a received request keyexpr against the receiver's expected
-    /// shape and returns the request_id. Server-side handlers use this to
-    /// correlate requests with responses without seeing raw keyexpressions.
-    fn parse_service_request_id(
+    /// Issue a service `get` and return a stream of replies (ACK + final
+    /// response, possibly fanned out across multiple matching producers).
+    /// `kind` rides on the query attachment so the producer can
+    /// discriminate user requests from discovery probes without inspecting
+    /// payload bytes. Query/reply correlation is internal to Zenoh — no
+    /// `request_id` threaded through the wire format. Pass `timeout: None`
+    /// to wait indefinitely (adapters substitute [`NO_TIMEOUT_SENTINEL`]
+    /// since the underlying Zenoh `get` requires a finite value).
+    fn call_service(
         &self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-    ) -> Result<String>;
+        sender: &ServiceWireSender,
+        payload: Payload,
+        kind: ServiceQueryKind,
+        timeout: Option<std::time::Duration>,
+    ) -> impl Future<Output = Result<ReplyStream>> + Send;
 
     // ─── Actions ──────────────────────────────────────────────────────────
 
@@ -200,6 +202,235 @@ impl Drop for Subscription {
     fn drop(&mut self) {
         // Abort the background task to prevent resource leaks
         self.abort_handle.abort();
+    }
+}
+
+/// Server-side handle yielded by [`MessengerBackend::listen_service`] for a
+/// service or action sub-service. Internally holds one Zenoh `Queryable` (or
+/// mock equivalent) per producer-bound link_id, fanned into a single
+/// [`IncomingRequest`] channel.
+///
+/// Dropping the handle aborts the background forwarder tasks; each task owns
+/// its `zenoh::query::Queryable`, which is undeclared automatically when the
+/// task is dropped.
+pub struct ServiceQueryable {
+    pub rx: tokio::sync::mpsc::Receiver<IncomingRequest>,
+    /// JoinSet aborts every spawned task on drop, which in turn drops the
+    /// `Queryable` each task owns.
+    _tasks: tokio::task::JoinSet<()>,
+}
+
+impl ServiceQueryable {
+    pub fn new(
+        rx: tokio::sync::mpsc::Receiver<IncomingRequest>,
+        tasks: tokio::task::JoinSet<()>,
+    ) -> Self {
+        Self { rx, _tasks: tasks }
+    }
+}
+
+/// One reply delivered by [`MessengerBackend::call_service`]. Pairs the
+/// topic-shape reply [`TopicMessage`] (caller-visible payload + responder
+/// identity, parsed from the reply keyexpr) with the [`ServiceReplyKind`]
+/// the producer set on the reply attachment. The consumer's poll loop
+/// matches on `kind` to skip ACKs, return regular responses, and surface
+/// handler errors — without inspecting payload bytes for legacy sentinels.
+pub struct ServiceReply {
+    message: TopicMessage,
+    kind: ServiceReplyKind,
+}
+
+impl ServiceReply {
+    pub fn new(message: TopicMessage, kind: ServiceReplyKind) -> Self {
+        Self { message, kind }
+    }
+
+    pub fn message(&self) -> &TopicMessage {
+        &self.message
+    }
+
+    pub fn into_message(self) -> TopicMessage {
+        self.message
+    }
+
+    pub fn kind(&self) -> ServiceReplyKind {
+        self.kind
+    }
+}
+
+/// Caller-side reply stream returned by [`MessengerBackend::call_service`]. A
+/// single in-flight service call may receive multiple replies — at minimum an
+/// ACK followed by the real response, plus additional replies from sibling
+/// producers in `from_any` / broadcast scenarios. Each [`ServiceReply`]
+/// carries the producer-set kind on its attachment so peppylib can
+/// discriminate without inspecting payload bytes.
+pub struct ReplyStream {
+    pub rx: tokio::sync::mpsc::Receiver<ServiceReply>,
+    abort_handle: tokio::task::AbortHandle,
+}
+
+impl ReplyStream {
+    pub fn new(
+        rx: tokio::sync::mpsc::Receiver<ServiceReply>,
+        abort_handle: tokio::task::AbortHandle,
+    ) -> Self {
+        Self { rx, abort_handle }
+    }
+}
+
+impl Drop for ReplyStream {
+    fn drop(&mut self) {
+        self.abort_handle.abort();
+    }
+}
+
+/// A single service request delivered to the responder. `token` is the
+/// only legal way to send replies — peppylib calls `respond_ack` first
+/// (lets the consumer distinguish ServiceUnreachable from ServiceTimeout),
+/// then exactly one terminal `respond_response` / `respond_handler_error`.
+pub struct IncomingRequest {
+    pub payload: Payload,
+    /// Whether this is a user request (handler should run) or a discovery
+    /// probe (the framework auto-replies with [`ServiceReplyKind::Response`]
+    /// and an empty payload, never invoking the user handler). Decoded
+    /// from the mandatory query attachment.
+    pub kind: ServiceQueryKind,
+    /// The producer-side link_id that received this request — set by the
+    /// adapter to whichever bound link_id's queryable yielded the query.
+    /// Surfaced to action goal handlers so per-goal feedback addresses the
+    /// link_id the consumer targeted.
+    pub link_id: String,
+    /// Caller's `core_node` segment, parsed from the inbound query selector.
+    pub caller_core: String,
+    /// Caller's `instance_id` segment, parsed from the inbound query selector.
+    pub caller_inst: String,
+    pub token: ResponseToken,
+}
+
+/// Opaque handle that lets the responder send replies back to a specific
+/// in-flight caller. One token per [`IncomingRequest`]. Constructed inside
+/// the adapter; peppylib stores it on a `ServiceResponder`.
+///
+/// The reply protocol is two-step: `respond_ack` is non-consuming and runs
+/// first, then exactly one terminal `respond_response` or
+/// `respond_handler_error` consumes the token. Consuming the token drops
+/// the underlying Zenoh `Query` (or mock reply channel), closing the
+/// consumer's reply stream after the final reply is observed.
+pub enum ResponseToken {
+    #[cfg(feature = "zenoh")]
+    Zenoh(ZenohResponseToken),
+    Mock(MockResponseToken),
+}
+
+impl ResponseToken {
+    /// Sends the ACK reply (empty payload, `ServiceReplyKind::Ack` on the
+    /// reply attachment). Non-consuming so the same token can deliver the
+    /// terminal response afterward. The consumer's poll loop uses the ACK
+    /// to distinguish `ServiceUnreachable` (no ACK at all) from
+    /// `ServiceTimeout` (ACK received but handler didn't reply in time).
+    pub async fn respond_ack(&self) -> Result<()> {
+        let empty = Payload::from_bytes(bytes::Bytes::new());
+        match self {
+            #[cfg(feature = "zenoh")]
+            ResponseToken::Zenoh(t) => t.respond_with_kind(empty, ServiceReplyKind::Ack).await,
+            ResponseToken::Mock(t) => t.respond_with_kind(empty, ServiceReplyKind::Ack).await,
+        }
+    }
+
+    /// Sends the terminal user response (`ServiceReplyKind::Response`).
+    /// Consumes the token so no further replies can be sent for this
+    /// request. Also used for the producer's transparent reply to a
+    /// `ServiceQueryKind::Probe` query, with an empty payload — probes
+    /// must NOT use [`Self::respond_ack`] because the consumer's poll
+    /// loop would otherwise skip the only reply the probe path produces.
+    pub async fn respond_response(self, payload: Payload) -> Result<()> {
+        match self {
+            #[cfg(feature = "zenoh")]
+            ResponseToken::Zenoh(t) => {
+                t.respond_with_kind(payload, ServiceReplyKind::Response)
+                    .await
+            }
+            ResponseToken::Mock(t) => {
+                t.respond_with_kind(payload, ServiceReplyKind::Response)
+                    .await
+            }
+        }
+    }
+
+    /// Sends a handler-error reply: the reason rides in the payload as
+    /// UTF-8, with `ServiceReplyKind::HandlerError` on the attachment so
+    /// the consumer's poll loop surfaces `Error::ServiceError { reason }`
+    /// instead of returning the bytes as a normal response. Consumes the
+    /// token.
+    pub async fn respond_handler_error(self, reason: String) -> Result<()> {
+        let payload = Payload::from_bytes(bytes::Bytes::from(reason.into_bytes()));
+        match self {
+            #[cfg(feature = "zenoh")]
+            ResponseToken::Zenoh(t) => {
+                t.respond_with_kind(payload, ServiceReplyKind::HandlerError)
+                    .await
+            }
+            ResponseToken::Mock(t) => {
+                t.respond_with_kind(payload, ServiceReplyKind::HandlerError)
+                    .await
+            }
+        }
+    }
+}
+
+/// Zenoh-backed variant of [`ResponseToken`]. Carries the inbound `Query`
+/// plus a precomputed concrete reply keyexpr (topic-shape, with caller and
+/// responder identities filled in) so `parse_topic_keyexpr` on the caller
+/// side surfaces the responder's `(core_node, instance_id)` to the user.
+#[cfg(feature = "zenoh")]
+pub struct ZenohResponseToken {
+    query: zenoh::query::Query,
+    reply_keyexpr: String,
+}
+
+#[cfg(feature = "zenoh")]
+impl ZenohResponseToken {
+    pub fn new(query: zenoh::query::Query, reply_keyexpr: String) -> Self {
+        Self {
+            query,
+            reply_keyexpr,
+        }
+    }
+
+    async fn respond_with_kind(&self, payload: Payload, kind: ServiceReplyKind) -> Result<()> {
+        let attachment = ServiceReplyAttachment { kind }.encode();
+        self.query
+            .reply(self.reply_keyexpr.as_str(), payload.into_zbytes())
+            .attachment(attachment.to_vec())
+            .await
+            .map_err(|e| crate::error::Error::BackendError(e.to_string()))?;
+        Ok(())
+    }
+}
+
+/// In-process variant of [`ResponseToken`]. Holds the reply channel half
+/// the mock's `get_keyexpr` is reading from, so each reply pushes one
+/// [`ServiceReply`] back to the caller.
+pub struct MockResponseToken {
+    reply_tx: tokio::sync::mpsc::Sender<ServiceReply>,
+    reply_keyexpr: String,
+}
+
+impl MockResponseToken {
+    pub fn new(reply_tx: tokio::sync::mpsc::Sender<ServiceReply>, reply_keyexpr: String) -> Self {
+        Self {
+            reply_tx,
+            reply_keyexpr,
+        }
+    }
+
+    async fn respond_with_kind(&self, payload: Payload, kind: ServiceReplyKind) -> Result<()> {
+        let message = TopicMessage::new(&self.reply_keyexpr, payload)?;
+        self.reply_tx
+            .send(ServiceReply::new(message, kind))
+            .await
+            .map_err(|_| crate::error::Error::BackendError("mock reply channel closed".into()))?;
+        Ok(())
     }
 }
 
@@ -365,6 +596,7 @@ pub struct TopicMessage {
     key_expr: String,
     instance_id: String,
     core_node: String,
+    link_id: String,
     payload: Payload,
 }
 
@@ -375,8 +607,26 @@ impl TopicMessage {
             key_expr: key_expr.to_string(),
             instance_id: parsed.instance_id,
             core_node: parsed.core_node,
+            link_id: parsed.link_id,
             payload: payload.into(),
         })
+    }
+
+    /// Build a `TopicMessage` from already-parsed sender identity. Used for
+    /// messages whose source isn't a topic keyexpr — currently the service
+    /// request path, where the caller's `core_node` and `instance_id` come
+    /// out of the Zenoh queryable selector and round-tripping them through
+    /// a synthetic keyexpr only to re-parse would be wasted work. The
+    /// internal `key_expr` and `link_id` fields are left empty since no
+    /// consumer reads them for this path.
+    pub fn from_parts(core_node: String, instance_id: String, payload: impl Into<Payload>) -> Self {
+        Self {
+            key_expr: String::new(),
+            instance_id,
+            core_node,
+            link_id: String::new(),
+            payload: payload.into(),
+        }
     }
 
     #[cfg(feature = "zenoh")]
@@ -390,6 +640,16 @@ impl TopicMessage {
 
     pub fn core_node(&self) -> &str {
         &self.core_node
+    }
+
+    /// Producer's bound link_id, parsed out of the inbound keyexpr at
+    /// segment 8 of the topic publish format. Used by the consumer-side
+    /// filter that drops messages whose producer link_id is already claimed
+    /// by a sibling pinned subscription on the same `(name, tag)`. Empty
+    /// when the message arrived via a non-topic path (e.g. service replies
+    /// constructed via [`Self::from_parts`]).
+    pub fn link_id(&self) -> &str {
+        &self.link_id
     }
 
     pub fn payload(&self) -> &Payload {
@@ -456,20 +716,24 @@ impl Messenger {
 
     /// Pre-bind a per-goal action-feedback publisher. Mirrors
     /// [`declare_topic_publisher`](Self::declare_topic_publisher) for action
-    /// feedback streams keyed by `goal_id`.
+    /// feedback streams keyed by `goal_id`. `link_id` is the link_id parsed
+    /// from the goal's request keyexpr; feedback for a goal must publish
+    /// under the same wire identity the consumer subscribed for, even when
+    /// the producer is bound to multiple link_ids.
     pub fn declare_action_feedback_publisher(
         &self,
         recv: &ActionWireReceiver,
+        link_id: &str,
         goal_id: &str,
         qos: PublisherQoS,
     ) -> Result<MessengerPublisher> {
         match &self.adapter {
             #[cfg(feature = "zenoh")]
             MessengerAdapter::Zenoh(adapter) => Ok(MessengerPublisher::Zenoh(
-                adapter.declare_action_feedback_publisher(recv, goal_id, qos)?,
+                adapter.declare_action_feedback_publisher(recv, link_id, goal_id, qos)?,
             )),
             MessengerAdapter::Mock(adapter) => Ok(MessengerPublisher::Mock(
-                adapter.declare_action_feedback_publisher(recv, goal_id, qos),
+                adapter.declare_action_feedback_publisher(recv, link_id, goal_id, qos),
             )),
         }
     }
@@ -536,55 +800,30 @@ impl MessengerBackend for Messenger {
         sender: &TopicWireSender,
         payload: Payload,
         qos: PublisherQoS,
+        is_primary: bool,
     ) -> Result<()> {
-        dispatch!(&mut self.adapter, publish_topic, sender, payload, qos)
+        dispatch!(
+            &mut self.adapter,
+            publish_topic,
+            sender,
+            payload,
+            qos,
+            is_primary
+        )
     }
 
-    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<[Subscription; 4]> {
+    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceQueryable> {
         dispatch!(&self.adapter, listen_service, recv)
     }
 
-    async fn open_service_call(
-        &mut self,
-        sender: &ServiceWireSender,
-        request_id: &str,
-        payload: Payload,
-    ) -> Result<Subscription> {
-        dispatch!(
-            &mut self.adapter,
-            open_service_call,
-            sender,
-            request_id,
-            payload
-        )
-    }
-
-    async fn publish_service_response(
-        &mut self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-        payload: Payload,
-    ) -> Result<()> {
-        dispatch!(
-            &mut self.adapter,
-            publish_service_response,
-            recv,
-            received_request,
-            payload
-        )
-    }
-
-    fn parse_service_request_id(
+    async fn call_service(
         &self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-    ) -> Result<String> {
-        dispatch_sync!(
-            &self.adapter,
-            parse_service_request_id,
-            recv,
-            received_request
-        )
+        sender: &ServiceWireSender,
+        payload: Payload,
+        kind: ServiceQueryKind,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<ReplyStream> {
+        dispatch!(&self.adapter, call_service, sender, payload, kind, timeout)
     }
 
     async fn subscribe_action_feedback(

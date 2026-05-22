@@ -128,12 +128,14 @@ pub fn build_topic_emit(
             let as_topic = #topic_literal;
             let as_instance_id = node_runner.processor().bound_instance_id();
             let with_core_node = node_runner.processor().bound_core_node();
+            let as_target = #target_expr;
 
             peppylib::TopicMessenger::emit(
                 node_runner.messenger(),
                 with_core_node,
                 as_instance_id,
-                #target_expr,
+                as_target,
+                node_runner.processor().link_ids(),
                 as_topic,
                 qos,
                 payload,
@@ -180,7 +182,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
         dependency,
     } = spec;
     let topic_literal = Literal::string(topic.name());
-    let node_name_literal = Literal::string(&dependency.node_name);
+    let node_name_literal = Literal::string(&dependency.producer_name);
     let helper_fn_tokens = build_topic_deserialize_helper(
         helper_fn_ident,
         args_struct_ident,
@@ -191,6 +193,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
     )?;
 
     let from_target_expr = consumed_from_target_expression(dependency);
+    let from_link_id_expr = consumed_from_link_id_expression(dependency);
 
     Ok(quote! {
         pub async fn #fn_name(
@@ -202,12 +205,15 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
             let node_name = #node_name_literal;
             let qos = peppylib::config::QoSProfile::Standard;
 
+            crate::consumer_dependencies::ensure_registered(node_runner.messenger());
+
             let message = {
                 let subscription_future = peppylib::TopicMessenger::subscribe(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     #from_target_expr,
+                    #from_link_id_expr,
                     topic_name,
                     from_core_node,
                     from_instance_id,
@@ -249,6 +255,22 @@ pub fn consumed_from_target_expression(
     quote!(Some(#target))
 }
 
+/// Returns the `Option<&str>` expression spliced into a generated subscribe /
+/// poll / send_goal call at the `link_id` slot. `Some(literal)` when the
+/// dependency pins a concrete link_id; `None` when `from_any: true` or when
+/// no link_id is declared on the dependency.
+pub fn consumed_from_link_id_expression(
+    dependency: &crate::generator::types::DependencyContext,
+) -> TokenStream {
+    match dependency.wire_link_id() {
+        Some(link_id) => {
+            let literal = Literal::string(link_id);
+            quote!(Some(#literal))
+        }
+        None => quote!(None),
+    }
+}
+
 /// Returns the `SenderTarget` expression spliced into a generated
 /// `ServiceMessenger::poll` / `ActionMessenger::send_goal` call. Same producer
 /// matching rules as [`consumed_from_target_expression`] but without the
@@ -263,8 +285,8 @@ pub fn consumed_to_target_expression(
             quote!(peppylib::messaging::SenderTarget::interface(#name, #tag)?)
         }
         None => {
-            let node_name = Literal::string(&dependency.node_name);
-            let node_tag = Literal::string(&dependency.node_tag);
+            let node_name = Literal::string(&dependency.producer_name);
+            let node_tag = Literal::string(&dependency.producer_tag);
             quote!(peppylib::messaging::SenderTarget::node(#node_name, #node_tag)?)
         }
     }

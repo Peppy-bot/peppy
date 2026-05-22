@@ -259,8 +259,6 @@ fn main() -> Result<()> {
         let mut goal = brain_move_arm::fire_goal(
             &node_runner,
             Duration::from_secs(5),       // timeout
-            None,                          // target_core_node (None = any)
-            None,                          // target_instance_id (None = any)
             request,
             QoSProfile::SensorData,        // QoS for the feedback topic
         )
@@ -273,9 +271,47 @@ fn main() -> Result<()> {
 }
 ```
 
+The example above is for a **pinned** dependency. When the dependency
+declares `from_any: true`, `fire_goal` gains an extra
+`target_instance_id: Option<&str>` parameter; see
+[Instance targeting](#instance-targeting) below.
+
 The `fire_goal` function returns a `GoalResponse` containing:
 - `data.accepted` — whether the goal was accepted.
 - `action_handle` — a handle used for subsequent feedback, result, and cancel calls.
+
+#### Discover-then-pin
+
+When `fire_goal` is called against a `from_any: true` dependency with
+`target_instance_id = None`, the framework runs a **discover-then-pin**
+sequence before sending the real goal:
+
+1. A lightweight probe is broadcast to every matching producer. The
+   probe is auto-handled by the framework before any user goal handler
+   runs.
+2. The first producer to respond is captured and the wire sender is
+   pinned to its `(core_node, instance_id)`.
+3. The real goal request is delivered only to that pinned producer.
+   All subsequent `cancel_goal`, `get_result`, and feedback calls also
+   target the same producer.
+
+The non-winning producers see only the probe — their goal handler
+**never runs**. Without this step every matching producer would execute
+the goal concurrently, which for state-changing actions (motor commands,
+file writes, payment dispatches) is a real-world hazard.
+
+For pinned dependencies and for `from_any` calls with an explicit
+`target_instance_id`, the goal already addresses exactly one producer
+and discovery is skipped.
+
+The cost is one additional round-trip on wildcard `fire_goal` calls
+(typically a few milliseconds). If the discovered producer dies between
+the probe and the real goal, `fire_goal` surfaces `ServiceUnreachable`
+and the caller can retry — the next attempt re-discovers a different
+producer if one is available. Discovery is capped at the caller's
+`goal_timeout` if that is tighter than the framework's default probe
+timeout, so a fast-fail budget still surfaces unreachable producers
+quickly.
 
 ### Receiving feedback
 
@@ -332,6 +368,72 @@ println!(
 ```
 
 After a goal is cancelled, requesting the result will fail with a timeout since the server stops processing that goal.
+
+### Pinned `link_id` takes precedence over `from_any`
+
+When the same `(name, tag)` appears in `depends_on` with both a pinned
+entry and a `from_any: true` entry, a `from_any` `fire_goal` is routed
+to a producer link_id that **no pinned sibling claims**. The producer's
+goal / cancel / result sub-services agree on the same link_id for a
+given `goal_id`, so the feedback channel for that goal arrives under
+the chosen link_id; the consumer doesn't need to think about which
+sub-service it's talking to.
+
+For example, with a producer bound to `wrist_left_camera` and
+`wrist_right_camera`:
+
+```json5
+{
+  depends_on: {
+    interfaces: [
+      { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+      { name: "depth_camera", tag: "v1", link_id: "extra_camera", from_any: true },
+    ],
+  },
+}
+```
+
+| User calls | Producer routes goal / cancel / result to |
+| --- | --- |
+| `wrist_left_camera_capture::fire_goal(...)` | `wrist_left_camera` handler |
+| `extra_camera_capture::fire_goal(...)` | `wrist_right_camera` handler |
+
+If every bound link_id is claimed by a pinned sibling, the `from_any`
+goal falls back to the first-bound link_id so the call doesn't fail
+purely because of the exclusion. Pinned callers always reach the
+literal link_id they request; the exclusion only applies to wildcard
+(`from_any: true`) callers.
+
+## Instance targeting
+
+When the consumer's dependency has `from_any: true` and several producer
+instances expose the same action, the generator emits an extra
+`target_instance_id: Option<&str>` parameter on `fire_goal` so the
+caller can pin the goal to a specific producer:
+
+- **`None`** (default): the framework discovers a single producer via a
+  probe and pins the goal to that one. Only the discovered producer
+  receives the real goal request; non-winning producers stay idle. See
+  [Discover-then-pin](#discover-then-pin) above.
+- **`Some("instance_id")`**: the goal request is pinned directly to the
+  producer whose `as_instance_id` matches. Only that producer ever sees
+  the goal, cancel, result, or feedback for this goal cycle, and no
+  discovery is performed.
+
+```rust
+// Target a specific producer instance for the goal.
+let goal = brain_move_arm::fire_goal(
+    &node_runner,
+    Duration::from_secs(5),
+    Some("left-arm-1"),
+    request,
+    QoSProfile::SensorData,
+)
+.await?;
+```
+
+`target_instance_id` is **not** emitted on pinned dependencies; those
+already address one producer via the pinned `link_id` literal.
 
 ## Serial processing
 

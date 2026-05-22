@@ -68,11 +68,15 @@ pub fn build_action_expose_method(
 
     quote! {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
+            // The action listener wildcards the link_id wire slot. Peppylib
+            // drops requests addressed to link_ids outside this producer's
+            // bound set at dispatch time, so one expose binds all link_ids.
             let action = peppylib::ActionMessenger::expose(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 #target_expr,
+                node_runner.processor().link_ids(),
                 ACTION_NAME,
             )
             .await?;
@@ -151,8 +155,9 @@ pub fn build_action_handle_method(
     let payload_setup = match role {
         ActionHandleRole::Goal => quote! {
             let message = request_context.message();
+            let goal_link_id = request_context.link_id().to_string();
             let wire = message.payload().into_inner();
-            let declared = factory.declare_from_wire(wire).await?;
+            let declared = factory.declare_from_wire(&goal_link_id, wire).await?;
             let core_node = message.core_node().to_string();
             let instance_id = message.instance_id().to_string();
         },

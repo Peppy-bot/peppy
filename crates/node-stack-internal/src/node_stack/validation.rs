@@ -50,7 +50,10 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
 /// Validation is two-phase:
 /// 1. **Node existence**: Each entry in `manifest.depends_on.nodes` must resolve to an existing node.
 /// 2. **Interface exposure**: Each consumed/expected interface must reference a valid `link_id`
-///    that maps to a dependency which exposes the required interface.
+///    declared in either `depends_on.nodes` or `depends_on.interfaces`. For node-backed
+///    link_ids the producer must expose the required interface; interface-backed link_ids
+///    are validated against their parsed interface contract at parse time and only need
+///    the link_id declaration check here.
 pub fn validate_dependency_specs(
     manifest: &Manifest,
     interfaces: &Interfaces,
@@ -82,11 +85,18 @@ pub fn validate_dependency_specs(
     }
 
     // Collect all declared link_ids so we can distinguish "declared but unresolved"
-    // (already has a MissingDependency error) from "never declared" (typo).
+    // (already has a MissingDependency error or is an interface-backed dep validated
+    // at parse time) from "never declared" (typo).
     let declared_link_ids: HashSet<&str> = manifest
         .depends_on
         .as_ref()
-        .map(|d| d.nodes.iter().map(|n| n.link_id.as_str()).collect())
+        .map(|d| {
+            d.nodes
+                .iter()
+                .map(|n| n.link_id.as_str())
+                .chain(d.interfaces.iter().map(|i| i.link_id.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
 
     // Phase 2: Validate consumed interfaces reference valid link_ids

@@ -356,6 +356,7 @@ async fn main() {
         &core_node_name,
         &as_instance_id,
         SenderTarget::node(NODE_NAME, "v1").expect("test target"),
+        &[],
         ACTION_NAME,
     )
 

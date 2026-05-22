@@ -74,9 +74,11 @@ pub struct PyTopicMessenger;
 impl PyTopicMessenger {
     /// Subscribe to a topic. Pass `SenderTarget.node(name, tag)` or
     /// `SenderTarget.interface(name, tag)` to match the publisher's target,
-    /// or `None` to match any publisher.
+    /// or `None` to match any publisher. The producer's link_id slot is
+    /// wildcarded; pass `from_link_id` to pin a specific link_id (consumers
+    /// generated against `depends_on.interfaces`).
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_core_node, from_instance_id, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_core_node, from_instance_id, qos, from_link_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -88,6 +90,7 @@ impl PyTopicMessenger {
         from_core_node: Option<String>,
         from_instance_id: Option<String>,
         qos: PyQoSProfile,
+        from_link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let from_target = from_target.map(|t| t.into_inner());
@@ -97,6 +100,7 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 from_target,
+                from_link_id.as_deref(),
                 &to_topic,
                 from_core_node.as_deref(),
                 from_instance_id.as_deref(),
@@ -145,10 +149,13 @@ impl PyTopicMessenger {
         })
     }
 
-    /// Emit (publish) a message to a topic. Pass `SenderTarget.node(name, tag)`
-    /// or `SenderTarget.interface(name, tag)`.
+    /// Emit (publish) a message to a topic across the given bound link_ids.
+    /// One wire publish per link_id (Zenoh `put` keyexprs can't carry
+    /// wildcards). Pass `SenderTarget.node(name, tag)` or
+    /// `SenderTarget.interface(name, tag)`. An empty `link_ids` list is
+    /// normalized to the reserved default `_` segment.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, payload))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, link_ids, as_topic_name, qos, payload))]
     #[allow(clippy::too_many_arguments)]
     fn emit<'py>(
         py: Python<'py>,
@@ -156,6 +163,7 @@ impl PyTopicMessenger {
         as_core_node: String,
         as_instance_id: String,
         as_target: PySenderTarget,
+        link_ids: Vec<String>,
         as_topic_name: String,
         qos: PyQoSProfile,
         payload: Vec<u8>,
@@ -168,6 +176,7 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 as_target,
+                &link_ids,
                 &as_topic_name,
                 qos.into(),
                 Payload::from(payload),

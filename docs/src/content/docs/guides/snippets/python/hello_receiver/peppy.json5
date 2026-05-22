@@ -8,7 +8,8 @@
         {
           name: "hello_world_param",
           tag: "v1",
-          link_id: "hello_world_param"
+          link_id: "hello_world_param",
+          from_any: true
         },
       ]
     },

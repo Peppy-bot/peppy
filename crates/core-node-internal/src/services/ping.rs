@@ -19,6 +19,7 @@ pub async fn listen_for_ping(
         core_node_node,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        &[],
         names::PING,
     )
     .await?;

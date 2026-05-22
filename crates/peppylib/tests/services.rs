@@ -34,6 +34,7 @@ async fn service_messenger_communication() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        &[],
         service_name,
     )
     .await
@@ -57,6 +58,7 @@ async fn service_messenger_communication() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        None,
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -110,6 +112,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        &[],
         service_name,
     )
     .await
@@ -131,6 +134,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
+        &[],
         service_name,
     )
     .await
@@ -155,6 +159,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        None,
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -175,6 +180,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
+        None,
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -223,6 +229,7 @@ async fn service_iface_tag_hyphen_normalized() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, "v2-stable").expect("test target"),
+        &[],
         service_name,
     )
     .await
@@ -244,6 +251,7 @@ async fn service_iface_tag_hyphen_normalized() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, "v2_stable").expect("test target"),
+        None,
         service_name,
         Some(core_node),
         Some(instance_id),
@@ -255,4 +263,162 @@ async fn service_iface_tag_hyphen_normalized() {
 
     handler.await.expect("handler task panicked");
     assert_eq!(response.payload(), &response_payload);
+}
+
+/// Discover-then-pin safety: when a consumer issues a wildcard
+/// `ServiceMessenger::poll` (target_instance_id = None) against two producers
+/// exposing the same `(name, tag)`, only the discovered producer must run its
+/// user handler. The other receives only the discovery probe (filtered
+/// server-side before the handler runs) and stays idle.
+///
+/// Without this property a state-changing service would execute on every
+/// matching producer; for actions this would be a real-world safety hazard
+/// (multiple robots executing the same goal). The wire layer alone cannot
+/// give this guarantee — `QueryTarget::All` broadcasts the request — so it
+/// is enforced by `ServiceMessenger::poll`'s discover-then-pin sequence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn service_from_any_poll_runs_handler_on_winner_only() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let producer_node_name = "manipulator";
+    let service_name = "abort_safe";
+    let producer_a_core = "producer_a_core";
+    let producer_a_inst = "producer_a";
+    let producer_b_core = "producer_b_core";
+    let producer_b_inst = "producer_b";
+
+    struct ProducerSpec {
+        core: &'static str,
+        inst: &'static str,
+        node_name: &'static str,
+        service_name: &'static str,
+    }
+
+    async fn spawn_producer(
+        host: String,
+        port: u16,
+        spec: ProducerSpec,
+        handler_count: Arc<AtomicUsize>,
+        ready: oneshot::Sender<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        let handle = MessengerHandle::from_host_port(&host, port)
+            .await
+            .expect("connect");
+        tokio::spawn(async move {
+            let mut endpoint = ServiceMessenger::listen(
+                &handle,
+                spec.core,
+                spec.inst,
+                test_node_target(spec.node_name),
+                &[],
+                spec.service_name,
+            )
+            .await
+            .expect("listen should succeed");
+            ready.send(()).expect("ready signal");
+
+            let _ = tokio::time::timeout(Duration::from_millis(1500), async {
+                endpoint
+                    .handle_next_request(|_req| {
+                        let counter = Arc::clone(&handler_count);
+                        async move {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                            Ok(Payload::from(spec.inst.as_bytes().to_vec()))
+                        }
+                    })
+                    .await
+            })
+            .await;
+        })
+    }
+
+    let handler_a = Arc::new(AtomicUsize::new(0));
+    let handler_b = Arc::new(AtomicUsize::new(0));
+    let (ready_a_tx, ready_a_rx) = oneshot::channel();
+    let (ready_b_tx, ready_b_rx) = oneshot::channel();
+
+    let task_a = spawn_producer(
+        host.clone(),
+        port,
+        ProducerSpec {
+            core: producer_a_core,
+            inst: producer_a_inst,
+            node_name: producer_node_name,
+            service_name,
+        },
+        Arc::clone(&handler_a),
+        ready_a_tx,
+    )
+    .await;
+    let task_b = spawn_producer(
+        host.clone(),
+        port,
+        ProducerSpec {
+            core: producer_b_core,
+            inst: producer_b_inst,
+            node_name: producer_node_name,
+            service_name,
+        },
+        Arc::clone(&handler_b),
+        ready_b_tx,
+    )
+    .await;
+
+    ready_a_rx.await.expect("producer A ready");
+    ready_b_rx.await.expect("producer B ready");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("caller connect");
+
+    let response = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core",
+        "caller_inst",
+        test_node_target(producer_node_name),
+        None,
+        service_name,
+        None, // wildcard target_core_node
+        None, // wildcard target_instance_id
+        Payload::from_static(b"go"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("wildcard poll should succeed");
+
+    let winner_inst = response.instance_id().to_string();
+    assert!(
+        winner_inst == producer_a_inst || winner_inst == producer_b_inst,
+        "response identity must come from one of the producers, got {winner_inst:?}",
+    );
+
+    task_a.await.expect("producer A task panicked");
+    task_b.await.expect("producer B task panicked");
+
+    let (winner_count, loser_count) = if winner_inst == producer_a_inst {
+        (
+            handler_a.load(Ordering::SeqCst),
+            handler_b.load(Ordering::SeqCst),
+        )
+    } else {
+        (
+            handler_b.load(Ordering::SeqCst),
+            handler_a.load(Ordering::SeqCst),
+        )
+    };
+    assert_eq!(
+        winner_count, 1,
+        "winning producer ({winner_inst}) should run its user handler exactly once",
+    );
+    assert_eq!(
+        loser_count, 0,
+        "losing producer must NOT run its user handler — discovery pins to the winner first",
+    );
 }

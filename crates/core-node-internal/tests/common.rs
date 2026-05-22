@@ -75,8 +75,8 @@ pub async fn wait_until_service_reachable(
     bound_core_node: &str,
     to_node_name: &str,
     to_service_name: &str,
-    to_core_node: &str,
-    to_instance_id: &str,
+    target_core_node: &str,
+    target_instance_id: &str,
     timeout: Duration,
 ) {
     use peppylib::messaging::ServiceMessenger;
@@ -87,9 +87,10 @@ pub async fn wait_until_service_reachable(
             bound_core_node,
             "ready_probe",
             test_node_target(to_node_name),
+            None,
             to_service_name,
-            Some(to_core_node),
-            Some(to_instance_id),
+            Some(target_core_node),
+            Some(target_instance_id),
         )
         .await
         {
@@ -98,7 +99,7 @@ pub async fn wait_until_service_reachable(
         if std::time::Instant::now() >= deadline {
             panic!(
                 "service {to_node_name}/{to_service_name} on \
-                 {to_core_node}/{to_instance_id} did not become \
+                 {target_core_node}/{target_instance_id} did not become \
                  reachable within {timeout:?}"
             );
         }
@@ -121,6 +122,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
+        None,
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -165,6 +167,7 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         caller_core_node,
         caller_instance_id,
         Some(core_node_target(&started.core_node_name)),
+        None,
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -267,9 +270,10 @@ pub fn build_runtime_config_json5(
         host,
         port,
         config::runtime::NodeInstanceConfig {
-            instance_id: config::launcher::Name::new(instance_id).expect("valid instance id"),
             arguments,
-            framework: Default::default(),
+            ..config::runtime::NodeInstanceConfig::new(
+                config::launcher::Name::new(instance_id).expect("valid instance id"),
+            )
         },
         node_name,
         node_tag,
@@ -347,6 +351,7 @@ async fn send_node_run_and_wait_internal(
         core_node_name,
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
+        None,
         names::NODE_RUN_ACTION,
         Some(core_node_name),
         None,
@@ -511,6 +516,7 @@ async fn send_node_add_and_wait_internal<'a>(
         core_node_name,
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
+        None,
         names::NODE_ADD_ACTION,
         Some(core_node_name),
         None,
@@ -631,6 +637,7 @@ pub async fn send_node_build_and_wait(
         core_node_name,
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
+        None,
         names::NODE_BUILD_ACTION,
         Some(core_node_name),
         None,
@@ -1441,6 +1448,7 @@ async fn spawn_real_running_instance_inner(
             &started.core_node_name,
             instance_id.as_str(),
             test_node_target(name),
+            &[],
         )
         .await
         .expect("failed to start shutdown listener for test instance");

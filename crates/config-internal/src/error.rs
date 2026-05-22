@@ -57,6 +57,14 @@ pub enum ParsingError {
     EmptyName,
     #[error("Duplicate name: {0}")]
     DuplicateName(String),
+    #[error(
+        "Duplicate link_id `{0}` in manifest.depends_on (link_ids must be unique across nodes and interfaces)"
+    )]
+    DuplicateLinkId(String),
+    #[error(
+        "Conflicting `from_any: true` for dependency `{name}` (tag `{tag}`) in manifest.depends_on: only one entry per (name, tag) may set from_any=true"
+    )]
+    ConflictingFromAny { name: String, tag: String },
 
     // -- deployments
     #[error("Invalid deployment source: {0}")]

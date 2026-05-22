@@ -388,7 +388,10 @@ fn consumed_service() {
         ],
     );
 
-    // Poll function signature with typed params and return type
+    // Poll function signature with typed params and return type. The
+    // fixture's `DependencyContext::native` defaults to `WireLinkId::Wildcard`
+    // so `target_instance_id` is exposed; `target_core_node` is never exposed
+    // in the user-facing generated API.
     assert_contains_all(
         &rendered,
         &[
@@ -396,10 +399,13 @@ fn consumed_service() {
             "node_runner: peppylib.NodeRunner",
             "request: Request",
             "timeout: float",
-            "to_core_node: Optional[str] = None",
-            "to_instance_id: Optional[str] = None",
+            "target_instance_id: Optional[str] = None",
             ") -> Response:",
         ],
+    );
+    assert!(
+        !rendered.contains("target_core_node"),
+        "target_core_node should not appear in the generated API; got:\n{rendered}"
     );
 
     // Request serialization

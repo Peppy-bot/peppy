@@ -1,8 +1,11 @@
 use crate::error::{Error, Result};
-use crate::types::{Payload, PublisherQoS, SubscriberQoS, TopicMessage};
-use crate::wire::zenoh_format::ZenohWireFormat;
+use crate::types::{
+    IncomingRequest, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
+    ServiceQueryable, ServiceReply, SubscriberQoS, TopicMessage, ZenohResponseToken,
+};
+use crate::wire::zenoh_format::{ServiceReplyAttachment, TopicAttachment, ZenohWireFormat};
 use crate::wire::{
-    ActionWireReceiver, ActionWireSender, ServiceWireReceiver, ServiceWireSender,
+    ActionWireReceiver, ActionWireSender, ServiceQueryKind, ServiceWireReceiver, ServiceWireSender,
     TopicWireReceiver, TopicWireSender,
 };
 use crate::zenohd::{self, ZenohNetProtocol};
@@ -191,6 +194,7 @@ impl ZenohAdapter {
             };
 
             let adapter = Self::with_router(ZenohNetProtocol::Tcp, host, port)?;
+            let probe_config = adapter.client_config.zenoh_config.clone();
             let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
 
             // Drop the port reservation before starting the router so zenohd can bind to it
@@ -198,11 +202,31 @@ impl ZenohAdapter {
 
             match messenger.start_router().await {
                 Ok(()) => {
-                    return Ok(ZenohdInstance {
-                        messenger: Some(messenger),
-                        host: host.to_string(),
-                        port,
-                    });
+                    // Readiness signal: zenohd's TCP listener can accept before the
+                    // protocol handshake is settled, so a real zenoh::open is the only
+                    // reliable signal that subsequent sessions will succeed. The probe
+                    // session is dropped immediately; the caller opens their own.
+                    match zenoh::open(probe_config).await {
+                        Ok(probe) => {
+                            drop(probe);
+                            return Ok(ZenohdInstance {
+                                messenger: Some(messenger),
+                                host: host.to_string(),
+                                port,
+                            });
+                        }
+                        Err(_) if attempt + 1 < max_attempts => {
+                            // Drop messenger to stop the router, then retry on a fresh port.
+                            drop(messenger);
+                            continue;
+                        }
+                        Err(e) => {
+                            return Err(Error::BackendError(format!(
+                                "Zenoh readiness probe failed: {}",
+                                e
+                            )));
+                        }
+                    }
                 }
                 Err(Error::BackendError(_)) if attempt + 1 < max_attempts => {
                     continue;
@@ -316,7 +340,25 @@ impl MessengerBackend for ZenohAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos)
+        // Wildcard subscribers (from_link_id: None) match every per-link_id
+        // publish a multi-link `emit` produces and must drop secondaries —
+        // see the topic-attachment block in `wire::zenoh_format`. Pinned
+        // subscribers ignore the attachment because their keyexpr already
+        // selects a single publish per emit.
+        //
+        // The exclusion bypass: when the consumer has registered a
+        // sibling-pinned set, peppylib filters by `link_id()` above the
+        // adapter (the primary may be excluded and the secondary may be
+        // the one to keep). Dropping secondaries here would silence the
+        // only acceptable publish in that case. The peppylib filter then
+        // dedupes alone — relying on "at most one bound link_id is not in
+        // the excluded set" — which holds because peppylib's
+        // `MessengerHandle::reserve_from_any_topic` rejects a second
+        // from_any subscription on the same `(name, tag)` at subscribe
+        // time, making it the runtime enforcer of the manifest validator's
+        // invariant.
+        let drop_secondary = recv.from_link_id.is_none() && !recv.defers_secondary_drop;
+        self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }
 
@@ -325,57 +367,125 @@ impl MessengerBackend for ZenohAdapter {
         sender: &TopicWireSender,
         payload: Payload,
         qos: PublisherQoS,
+        is_primary: bool,
     ) -> Result<()> {
-        self.publish_keyexpr(&ZenohWireFormat::topic_publish(sender), payload, qos)
+        self.publish_keyexpr(
+            &ZenohWireFormat::topic_publish(sender),
+            payload,
+            qos,
+            is_primary,
+        )
+        .await
+    }
+
+    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceQueryable> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
+        let mut tasks = tokio::task::JoinSet::new();
+
+        // One queryable per listen call. The declared keyexpr has `*` at the
+        // link_id slot so a single queryable absorbs every bound link_id —
+        // `handle_queryable` does the dispatch by parsing the selector. Two
+        // queryables for one process would let a `from_any` consumer's `*`
+        // selector double-deliver via `QueryTarget::All`.
+        let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
+        let queryable = session
+            .declare_queryable(&declare_keyexpr)
+            .complete(true)
             .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+        let bound_link_ids: Vec<String> = recv
+            .link_ids
+            .iter()
+            .map(|s| s.as_str().to_string())
+            .collect();
+        let recv_clone = recv.clone();
+        tasks.spawn(async move {
+            handle_queryable(queryable, bound_link_ids, recv_clone, tx).await;
+        });
+
+        Ok(ServiceQueryable::new(rx, tasks))
     }
 
-    async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<[Subscription; 4]> {
-        let patterns = ZenohWireFormat::service_listen_patterns(recv);
-        let [p0, p1, p2, p3] = patterns;
-        let s0 = self.subscribe_keyexpr(p0, SubscriberQoS::Standard).await?;
-        let s1 = self.subscribe_keyexpr(p1, SubscriberQoS::Standard).await?;
-        let s2 = self.subscribe_keyexpr(p2, SubscriberQoS::Standard).await?;
-        let s3 = self.subscribe_keyexpr(p3, SubscriberQoS::Standard).await?;
-        Ok([s0, s1, s2, s3])
-    }
-
-    async fn open_service_call(
-        &mut self,
-        sender: &ServiceWireSender,
-        request_id: &str,
-        payload: Payload,
-    ) -> Result<Subscription> {
-        let response_keyexpr = ZenohWireFormat::service_response_subscribe(sender, request_id);
-        let response_sub = self
-            .subscribe_keyexpr(response_keyexpr, SubscriberQoS::Standard)
-            .await?;
-
-        let request_keyexpr = ZenohWireFormat::service_request_publish(sender, request_id);
-        self.publish_keyexpr(&request_keyexpr, payload, PublisherQoS::Standard)
-            .await?;
-
-        Ok(response_sub)
-    }
-
-    async fn publish_service_response(
-        &mut self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-        payload: Payload,
-    ) -> Result<()> {
-        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
-        self.publish_keyexpr(&parsed.response_keyexpr, payload, PublisherQoS::Standard)
-            .await
-    }
-
-    fn parse_service_request_id(
+    async fn call_service(
         &self,
-        recv: &ServiceWireReceiver,
-        received_request: &str,
-    ) -> Result<String> {
-        let parsed = ZenohWireFormat::parse_received_request(recv, received_request)?;
-        Ok(parsed.request_id)
+        sender: &ServiceWireSender,
+        payload: Payload,
+        kind: ServiceQueryKind,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<ReplyStream> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let selector = ZenohWireFormat::service_get_selector(sender);
+        // Mandatory query attachment: carries the request kind (UserRequest
+        // vs Probe) plus the consumer's sibling-exclusion set. The producer
+        // refuses queries with no attachment, which is what makes the
+        // mid-rollout failure mode loud (consumer sees ServiceUnreachable
+        // instead of misclassifying the request as a default).
+        let attachment = ZenohWireFormat::service_get_selector_attachment(sender, kind);
+
+        let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
+
+        let replies = session
+            .get(&selector)
+            .payload(payload.into_zbytes())
+            .attachment(attachment.to_vec())
+            .target(zenoh::query::QueryTarget::All)
+            .consolidation(zenoh::query::ConsolidationMode::None)
+            .accept_replies(zenoh::query::ReplyKeyExpr::Any)
+            .timeout(timeout)
+            .await
+            .map_err(|e| Error::BackendError(e.to_string()))?;
+
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
+        let join_handle = tokio::spawn(async move {
+            while let Ok(reply) = replies.recv_async().await {
+                let sample = match reply.result() {
+                    Ok(sample) => sample,
+                    Err(err) => {
+                        tracing::warn!(?err, "service reply contained an error");
+                        continue;
+                    }
+                };
+                let key_expr = sample.key_expr().as_str();
+                let zbytes = sample.payload().clone();
+                let attachment_bytes = sample
+                    .attachment()
+                    .map(|z| z.to_bytes())
+                    .unwrap_or_default();
+                let reply_kind = match ServiceReplyAttachment::decode(attachment_bytes.as_ref()) {
+                    Ok(a) => a.kind,
+                    Err(err) => {
+                        tracing::error!(%key_expr, %err, "dropping service reply with malformed attachment");
+                        continue;
+                    }
+                };
+                match TopicMessage::from_zbytes(key_expr, zbytes) {
+                    Ok(message) => {
+                        if tx
+                            .send(ServiceReply::new(message, reply_kind))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!(%key_expr, %err, "failed to parse service reply keyexpr");
+                    }
+                }
+            }
+        });
+
+        Ok(ReplyStream::new(rx, join_handle.abort_handle()))
     }
 
     async fn subscribe_action_feedback(
@@ -384,9 +494,15 @@ impl MessengerBackend for ZenohAdapter {
         goal_id: &str,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
+        // Action feedback shares the wildcard-link_id keyexpr shape with
+        // topic subscribe but doesn't multi-publish per goal — feedback is
+        // emitted under the single link_id chosen at goal time (see the
+        // `action_feedback_publish` comment in `wire::zenoh_format`). So
+        // there are no secondaries to drop; pass `false`.
         self.subscribe_keyexpr(
             ZenohWireFormat::action_feedback_subscribe(sender, goal_id),
             qos,
+            false,
         )
         .await
     }
@@ -435,10 +551,14 @@ impl ZenohAdapter {
     pub fn declare_action_feedback_publisher(
         &self,
         recv: &ActionWireReceiver,
+        link_id: &str,
         goal_id: &str,
         qos: PublisherQoS,
     ) -> Result<ZenohPublisher> {
-        self.declare_publisher_keyexpr(ZenohWireFormat::action_feedback_publish(recv, goal_id), qos)
+        self.declare_publisher_keyexpr(
+            ZenohWireFormat::action_feedback_publish(recv, link_id, goal_id),
+            qos,
+        )
     }
 
     fn declare_publisher_keyexpr(
@@ -462,6 +582,7 @@ impl ZenohAdapter {
         keyexpr: &str,
         payload: Payload,
         qos: PublisherQoS,
+        is_primary: bool,
     ) -> Result<()> {
         let session = self
             .session
@@ -475,6 +596,7 @@ impl ZenohAdapter {
         // targeting.
         session
             .put(keyexpr, payload.as_bytes().as_ref())
+            .attachment(TopicAttachment { is_primary }.encode().to_vec())
             .congestion_control(zenoh_qos.congestion_control)
             .priority(zenoh_qos.priority)
             .express(zenoh_qos.express)
@@ -485,7 +607,12 @@ impl ZenohAdapter {
         Ok(())
     }
 
-    async fn subscribe_keyexpr(&self, keyexpr: String, qos: SubscriberQoS) -> Result<Subscription> {
+    async fn subscribe_keyexpr(
+        &self,
+        keyexpr: String,
+        qos: SubscriberQoS,
+        drop_secondary: bool,
+    ) -> Result<Subscription> {
         let (tx, rx) = tokio::sync::mpsc::channel(qos.channel_size());
 
         let session = self
@@ -503,8 +630,20 @@ impl ZenohAdapter {
                 match subscriber.recv_async().await {
                     Ok(sample) => {
                         let SampleFields {
-                            key_expr, payload, ..
+                            key_expr,
+                            payload,
+                            attachment,
+                            ..
                         } = sample.into();
+                        if drop_secondary {
+                            let raw = attachment
+                                .as_ref()
+                                .map(|z| z.to_bytes())
+                                .unwrap_or_default();
+                            if !TopicAttachment::decode(raw.as_ref()).is_primary {
+                                continue;
+                            }
+                        }
                         let key_expr = key_expr.as_str();
                         match TopicMessage::from_zbytes(key_expr, payload) {
                             Ok(message) => {
@@ -534,6 +673,92 @@ impl ZenohAdapter {
     }
 }
 
+/// Per-queryable forwarder loop. Pulls inbound queries off `queryable`,
+/// parses the selector, resolves the caller's link_id intent against
+/// `bound_link_ids` via [`ParsedInboundQuery::choose_link_id`], builds an
+/// [`IncomingRequest`] with a [`ResponseToken::Zenoh`] (carrying the
+/// concrete reply keyexpr) and pushes it onto `tx`.
+///
+/// Probe / ACK semantics are handled by peppylib's request loop, not here —
+/// every claimed query (including probes) is delivered to peppylib via
+/// `tx`, and peppylib decides whether to reply inline or hand the request
+/// to the user handler. Queries whose selector pins a link_id outside
+/// `bound_link_ids` are dropped silently (defensive — Zenoh's matcher
+/// should already have filtered them out).
+async fn handle_queryable(
+    queryable: zenoh::query::Queryable<zenoh::handlers::FifoChannelHandler<zenoh::query::Query>>,
+    bound_link_ids: Vec<String>,
+    recv: ServiceWireReceiver,
+    tx: tokio::sync::mpsc::Sender<IncomingRequest>,
+) {
+    loop {
+        let query = match queryable.recv_async().await {
+            Ok(q) => q,
+            Err(e) => {
+                tracing::warn!(error = %e, "service queryable stopped");
+                break;
+            }
+        };
+
+        let attachment_bytes = query.attachment().map(|z| z.to_bytes()).unwrap_or_default();
+        let parsed = match ZenohWireFormat::parse_inbound_query(
+            &recv,
+            query.key_expr().as_str(),
+            attachment_bytes.as_ref(),
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::warn!(
+                    query_keyexpr = %query.key_expr().as_str(),
+                    %err,
+                    "failed to parse inbound service query selector",
+                );
+                continue;
+            }
+        };
+
+        let chosen_link_id = match parsed.choose_link_id(&bound_link_ids) {
+            Some(l) => l.to_string(),
+            None => {
+                tracing::trace!(
+                    query_keyexpr = %query.key_expr().as_str(),
+                    parsed_link_id = %parsed.link_id,
+                    "dropping inbound query: parsed link_id not in bound set",
+                );
+                continue;
+            }
+        };
+
+        let reply_keyexpr = ZenohWireFormat::service_reply_keyexpr(
+            &recv,
+            &chosen_link_id,
+            &parsed.caller_core,
+            &parsed.caller_inst,
+        );
+
+        let payload = match query.payload() {
+            Some(zb) => Payload::from_zbytes(zb.clone()),
+            None => Payload::from_bytes(bytes::Bytes::new()),
+        };
+
+        let token = ResponseToken::Zenoh(ZenohResponseToken::new(query, reply_keyexpr));
+        let request = IncomingRequest {
+            payload,
+            kind: parsed.kind,
+            link_id: chosen_link_id,
+            caller_core: parsed.caller_core,
+            caller_inst: parsed.caller_inst,
+            token,
+        };
+
+        if tx.send(request).await.is_err() {
+            // Peppylib dropped the receiver; the ServiceQueryable is being
+            // torn down. Exit the loop and let the queryable drop.
+            break;
+        }
+    }
+}
+
 /// Zenoh-side per-topic publisher returned by [`ZenohAdapter::declare_publisher`].
 ///
 /// Mirrors [`ZenohAdapter::publish`]'s `session.put()` path (NOT a long-lived
@@ -549,8 +774,15 @@ pub struct ZenohPublisher {
 
 impl ZenohPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
+        // Pre-bound publishers are single-link (one keyexpr per declare),
+        // so from a wildcard subscriber's view this publish is the only
+        // one for its emit and must be marked primary. Topic publishers
+        // that need multi-link fan-out should go through `emit`, not
+        // `declare_publisher` — see the rustdoc on
+        // `TopicMessenger::declare_publisher`.
         self.session
             .put(&self.topic, payload.as_ref())
+            .attachment(TopicAttachment { is_primary: true }.encode().to_vec())
             .congestion_control(self.qos.congestion_control)
             .priority(self.qos.priority)
             .express(self.qos.express)

@@ -42,6 +42,7 @@ mod zenoh_tests {
             "test_core_node",
             "test_instance",
             test_node_target("test_node"),
+            None,
             as_topic_name,
         )
         .expect("valid wire fields")
@@ -54,6 +55,7 @@ mod zenoh_tests {
             None,
             None,
             Some(test_node_target("test_node")),
+            None,
             to_topic,
         )
         .expect("valid wire fields")
@@ -70,7 +72,12 @@ mod zenoh_tests {
         let payload = Payload::from_bytes(Bytes::from_static(b"This should fail"));
         let result = instance
             .messenger()
-            .publish_topic(&sender("should_fail"), payload, PublisherQoS::Standard)
+            .publish_topic(
+                &sender("should_fail"),
+                payload,
+                PublisherQoS::Standard,
+                true,
+            )
             .await;
         assert!(
             result.is_err(),
@@ -106,6 +113,7 @@ mod zenoh_tests {
                 &sender("basic_topic"),
                 Payload::from_bytes(body.clone()),
                 PublisherQoS::Standard,
+                true,
             )
             .await
             .expect("Failed to publish");
@@ -151,6 +159,7 @@ mod zenoh_tests {
                 &sender("topic1"),
                 Payload::from_bytes(body1.clone()),
                 PublisherQoS::Standard,
+                true,
             )
             .await
             .expect("Failed to publish to topic1");
@@ -160,6 +169,7 @@ mod zenoh_tests {
                 &sender("topic2"),
                 Payload::from_bytes(body2.clone()),
                 PublisherQoS::Standard,
+                true,
             )
             .await
             .expect("Failed to publish to topic2");
@@ -205,6 +215,7 @@ mod zenoh_tests {
                     &sender("multi_topic"),
                     Payload::from_bytes(body.clone()),
                     PublisherQoS::Standard,
+                    true,
                 )
                 .await
                 .expect("Failed to publish");
@@ -237,6 +248,7 @@ mod zenoh_tests {
                 &sender("late_topic"),
                 Payload::from_bytes(early_body),
                 PublisherQoS::Standard,
+                true,
             )
             .await
             .expect("Failed to publish early message");
@@ -256,6 +268,7 @@ mod zenoh_tests {
                 &sender("late_topic"),
                 Payload::from_bytes(new_body.clone()),
                 PublisherQoS::Standard,
+                true,
             )
             .await
             .expect("Failed to publish new message");
@@ -334,6 +347,7 @@ mod zenoh_tests {
                 &sender("connect_test"),
                 Payload::from_bytes(body.clone()),
                 PublisherQoS::Standard,
+                true,
             )
             .await
             .expect("Failed to publish from client");
@@ -377,6 +391,7 @@ mod zenoh_tests {
                 &sender("port_test"),
                 Payload::from_bytes(body.clone()),
                 PublisherQoS::Standard,
+                true,
             )
             .await
             .expect("Failed to publish");

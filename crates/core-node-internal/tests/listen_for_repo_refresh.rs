@@ -91,6 +91,7 @@ async fn send_refresh_inner(
         caller_core_node,
         caller_instance_id,
         common::core_node_target(&started.core_node_name),
+        None,
         names::REPO_REFRESH_ACTION,
         Some(&started.core_node_name),
         None,

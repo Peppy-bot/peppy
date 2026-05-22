@@ -24,6 +24,7 @@ async fn node_health_request_response_roundtrip() {
         TEST_CORE_NODE_NAME,
         TEST_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
+        &[],
     )
     .await
     .expect("failed to start health service");
@@ -41,6 +42,7 @@ async fn node_health_request_response_roundtrip() {
         &client.core_node_name,
         CALLER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
+        None,
         peppylib::messaging::NODE_HEALTH_SERVICE,
         Some(&client.core_node_name),
         Some(&client.instance_id),

@@ -61,6 +61,13 @@ pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
     parameters: config::ParameterSchema,
+    /// Per-`(producer_name, producer_tag)` set of pinned sibling link_ids
+    /// declared by the node's `depends_on`. Populated by [`Self::set_pinned_siblings_map`]
+    /// before codegen runs; the [`build`] step emits a single
+    /// `register_consumer_dependencies_once` scaffold file that consumer
+    /// functions call to seed the messenger's sibling-precedence table on
+    /// first use.
+    pinned_siblings_map: HashMap<(String, String), Vec<String>>,
 }
 
 impl RustGenerator {
@@ -81,6 +88,14 @@ impl RustGenerator {
     /// Sets the node parameters for code generation.
     pub fn set_parameters(&mut self, parameters: config::ParameterSchema) {
         self.parameters = parameters;
+    }
+
+    /// Seeds the per-`(name, tag)` pinned-sibling map. Consumed-interface
+    /// codegen emits an `ensure_dependencies_registered` scaffold that
+    /// installs this map onto the runtime `MessengerHandle` so from_any
+    /// consumers learn which producer link_ids their pinned siblings claim.
+    pub fn set_pinned_siblings_map(&mut self, map: HashMap<(String, String), Vec<String>>) {
+        self.pinned_siblings_map = map;
     }
 
     fn push_section(&mut self, section: InterfaceArtifact) {
@@ -270,15 +285,32 @@ impl RustGenerator {
         // dependency as an Interface if it exposes the action via
         // `conforms_to`, otherwise as its native Node identity.
         let to_target_expr = consumed_to_target_expression(dependency);
+        let to_link_id_expr =
+            crate::generator::rust::topics::consumed_from_link_id_expression(dependency);
+        // Same gating as consumed services: expose `target_instance_id` only
+        // for wildcard (`from_any: true`) deps. Pinned deps already route to
+        // exactly one producer.
+        let expose_target_instance_id = dependency.link_id.is_wildcard();
+        let target_instance_id_param = if expose_target_instance_id {
+            quote!(target_instance_id: Option<&str>,)
+        } else {
+            quote!()
+        };
+        let target_instance_id_arg = if expose_target_instance_id {
+            quote!(target_instance_id)
+        } else {
+            quote!(None)
+        };
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
                 timeout: std::time::Duration,
-                to_core_node: Option<&str>,
-                to_instance_id: Option<&str>,
+                #target_instance_id_param
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
             ) -> crate::Result<Self> {
+                crate::consumer_dependencies::ensure_registered(node_runner.messenger());
+
                 #goal_payload_tokens
 
                 let action_handle = peppylib::ActionMessenger::send_goal(
@@ -286,9 +318,10 @@ impl RustGenerator {
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     #to_target_expr,
+                    #to_link_id_expr,
                     TARGET_ACTION_NAME,
-                    to_core_node,
-                    to_instance_id,
+                    None,
+                    #target_instance_id_arg,
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -1184,7 +1217,7 @@ impl LanguageGenerator for RustGenerator {
         response_arguments: &MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
-        let dependency_node_name = dependency.node_name.as_str();
+        let dependency_node_name = dependency.producer_name.as_str();
         let request_arguments = non_empty_message_format(Some(request_arguments));
         let response_arguments = non_empty_message_format(Some(response_arguments));
 
@@ -1306,15 +1339,29 @@ impl LanguageGenerator for RustGenerator {
         // dependency exposes the service via `conforms_to`, address it as the
         // interface; otherwise as the dependency's node identity.
         let to_target_expr = consumed_to_target_expression(dependency);
+        let to_link_id_expr =
+            crate::generator::rust::topics::consumed_from_link_id_expression(dependency);
+        // `target_instance_id` is exposed to the caller only when the
+        // dependency is wildcard (`from_any: true`): pinned deps already
+        // route to exactly one producer via the link_id literal and have
+        // nothing more for the caller to address. `target_core_node` is
+        // never exposed in the generated API.
+        let expose_target_instance_id = dependency.link_id.is_wildcard();
+        let target_instance_id_arg = if expose_target_instance_id {
+            quote!(target_instance_id)
+        } else {
+            quote!(None)
+        };
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 #to_target_expr,
+                #to_link_id_expr,
                 SERVICE_NAME,
-                to_core_node,
-                to_instance_id,
+                None,
+                #target_instance_id_arg,
                 request_payload,
                 timeout,
             )
@@ -1394,15 +1441,18 @@ impl LanguageGenerator for RustGenerator {
         let mut fn_param_tokens = vec![
             quote!(node_runner: &crate::NodeRunner),
             quote!(timeout: std::time::Duration),
-            quote!(to_core_node: Option<&str>),
-            quote!(to_instance_id: Option<&str>),
         ];
+        if expose_target_instance_id {
+            fn_param_tokens.push(quote!(target_instance_id: Option<&str>));
+        }
         if !request_struct_params.is_empty() {
             fn_param_tokens.push(quote!(request: #request_struct_ident));
         }
 
         let function_token = quote! {
             pub async fn #method_ident(#(#fn_param_tokens),*) -> crate::Result<#return_ty> {
+                crate::consumer_dependencies::ensure_registered(node_runner.messenger());
+
                 #request_payload_tokens
 
                 #poll_tokens
@@ -1447,7 +1497,7 @@ impl LanguageGenerator for RustGenerator {
         messages: &ConsumedActionMessage,
         dependency: &DependencyContext,
     ) -> Result<()> {
-        let dependency_node_name = dependency.node_name.as_str();
+        let dependency_node_name = dependency.producer_name.as_str();
         let node_component = sanitize_component(dependency_node_name);
         let action_component = sanitize_component(action.name.as_str());
         let base_component = match (node_component.is_empty(), action_component.is_empty()) {
@@ -1607,6 +1657,7 @@ impl LanguageGenerator for RustGenerator {
         scaffold::add_capnp_schemas(&self.schemas, to_path.as_ref())?;
         scaffold::add_artifacts_to_lib(&to_path, self.sections)?;
         scaffold::add_parameters_to_lib(&to_path, &self.parameters)?;
+        scaffold::add_consumer_dependencies_to_lib(&to_path, &self.pinned_siblings_map)?;
         Ok(())
     }
 }

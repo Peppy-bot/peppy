@@ -19,6 +19,7 @@ async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
+        &[],
         names::INFO,
     )
     .await

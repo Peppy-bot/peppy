@@ -137,6 +137,7 @@ async fn node_run_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -145,6 +146,7 @@ async fn node_run_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node health service should start");
@@ -157,6 +159,7 @@ async fn node_run_command_succeeds() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            link_ids: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -365,6 +368,7 @@ async fn node_run_command_with_args_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -373,6 +377,7 @@ async fn node_run_command_with_args_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node health service should start");
@@ -391,6 +396,7 @@ async fn node_run_command_with_args_succeeds() {
             tag: Some("v1".to_string()),
             args,
             instance_id: Some(instance_id.to_string()),
+            link_ids: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -568,6 +574,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         &core_node_name,
         custom_instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -576,6 +583,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         &core_node_name,
         custom_instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node health service should start");
@@ -588,6 +596,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(custom_instance_id.to_string()),
+            link_ids: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -748,6 +757,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -756,6 +766,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node health service should start");
@@ -768,6 +779,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            link_ids: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: true,
@@ -916,6 +928,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node ready service should start");
@@ -924,6 +937,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
+        &[],
     )
     .await
     .expect("node health service should start");
@@ -937,6 +951,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            link_ids: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: true,

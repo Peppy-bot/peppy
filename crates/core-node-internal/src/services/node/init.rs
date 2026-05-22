@@ -25,6 +25,7 @@ pub async fn listen_for_node_init(
         core_node_node,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        &[],
         names::NODE_INIT,
     )
     .await?;

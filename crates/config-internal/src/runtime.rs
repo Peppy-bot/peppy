@@ -18,6 +18,29 @@ pub struct NodeInstanceConfig {
     pub arguments: BTreeMap<String, AnyType>,
     #[serde(default)]
     pub framework: ResolvedFramework,
+    /// Link_ids the producer is bound to. Each emit on a topic with an
+    /// `(interface | node)` producer target fans out into one wire
+    /// emission per bound link_id; service / action exposes register a
+    /// listener per bound link_id. Empty vec → the runtime substitutes
+    /// the reserved default `_` segment so the wire format stays
+    /// uniform.
+    #[serde(default)]
+    pub link_ids: Vec<String>,
+}
+
+impl NodeInstanceConfig {
+    /// Builds a config with everything except `instance_id` defaulted:
+    /// empty arguments, default framework, empty link_ids. Use with
+    /// struct-update syntax to override a field:
+    /// `NodeInstanceConfig { arguments, ..NodeInstanceConfig::new(id) }`.
+    pub fn new(instance_id: Name) -> Self {
+        Self {
+            instance_id,
+            arguments: BTreeMap::new(),
+            framework: ResolvedFramework::default(),
+            link_ids: Vec::new(),
+        }
+    }
 }
 
 /// Framework knobs already resolved by the daemon. Distinct from

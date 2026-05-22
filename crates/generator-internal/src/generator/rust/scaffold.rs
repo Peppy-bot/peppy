@@ -87,6 +87,69 @@ pub fn add_parameters_to_lib(
     Ok(())
 }
 
+/// Writes `src/consumer_dependencies.rs` carrying the precomputed
+/// `(producer_name, producer_tag) -> pinned_link_ids` map as a closure
+/// handed to `MessengerHandle::register_consumer_dependencies_once`. Each
+/// generated consumed-interface function invokes `ensure_registered`
+/// before its `subscribe` / `poll` / `send_goal`; the once-per-process
+/// guard lives inside peppylib so this file only carries the node-specific
+/// data.
+pub fn add_consumer_dependencies_to_lib(
+    lib_path: impl AsRef<Path>,
+    pinned_siblings_map: &std::collections::HashMap<(String, String), Vec<String>>,
+) -> Result<()> {
+    let lib_path = lib_path.as_ref();
+    let src_dir = lib_path.join("src");
+    fs::create_dir_all(&src_dir)?;
+
+    let mut entries: Vec<(&(String, String), &Vec<String>)> = pinned_siblings_map.iter().collect();
+    // Sort for deterministic output; fingerprint stability depends on it.
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+
+    let body = if entries.is_empty() {
+        "pub fn ensure_registered(_messenger: &MessengerHandle) {\n    \
+            // No pinned-sibling dependencies declared in this node's manifest.\n\
+        }\n"
+        .to_string()
+    } else {
+        let inserts: Vec<String> = entries
+            .iter()
+            .map(|((name, tag), link_ids)| {
+                let lits: Vec<String> = link_ids
+                    .iter()
+                    .map(|s| format!("{s:?}.to_string()"))
+                    .collect();
+                format!(
+                    "        map.insert(\n            ({name:?}.to_string(), {tag:?}.to_string()),\n            vec![{}],\n        );",
+                    lits.join(", ")
+                )
+            })
+            .collect();
+        format!(
+            "pub fn ensure_registered(messenger: &MessengerHandle) {{\n    \
+                messenger.register_consumer_dependencies_once(|| {{\n        \
+                    let mut map: std::collections::HashMap<(String, String), Vec<String>> =\n            std::collections::HashMap::new();\n{}\n        map\n    \
+                }});\n\
+            }}\n",
+            inserts.join("\n")
+        )
+    };
+
+    let code = format!(
+        "//! Auto-generated. Hands the node's `depends_on` pinned-sibling map to\n\
+         //! `MessengerHandle::register_consumer_dependencies_once` so `from_any:\n\
+         //! true` dependencies skip producer link_ids already claimed by a\n\
+         //! sibling pinned entry on the same `(producer_name, producer_tag)`.\n\
+         \n\
+         use peppylib::MessengerHandle;\n\
+         \n\
+         {body}",
+    );
+
+    fs::write(src_dir.join("consumer_dependencies.rs"), code)?;
+    Ok(())
+}
+
 pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Path) -> Result<()> {
     let src_dir = crate_root.join("src");
     if schemas.is_empty() {

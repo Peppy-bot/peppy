@@ -41,6 +41,7 @@ async fn action_messenger_communication() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        &[],
         action_name,
     )
     .await
@@ -70,7 +71,7 @@ async fn action_messenger_communication() {
                 async move {
                     let wire = req_ctx.message().payload().into_inner();
                     let declared = factory
-                        .declare_from_wire(wire)
+                        .declare_from_wire("_", wire)
                         .await
                         .expect("declare from wire");
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
@@ -106,6 +107,7 @@ async fn action_messenger_communication() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        None,
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -176,6 +178,7 @@ async fn setup_goal_handshake(
         core_node,
         instance_id,
         test_node_target(node_name),
+        &[],
         action_name,
     )
     .await
@@ -196,7 +199,7 @@ async fn setup_goal_handshake(
                 async move {
                     let wire = req_ctx.message().payload().into_inner();
                     let declared = factory
-                        .declare_from_wire(wire)
+                        .declare_from_wire("_", wire)
                         .await
                         .expect("declare from wire");
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
@@ -218,6 +221,7 @@ async fn setup_goal_handshake(
         core_node,
         instance_id,
         test_node_target(node_name),
+        None,
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -397,6 +401,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        &[],
         action_name,
     )
     .await
@@ -406,6 +411,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
+        &[],
         action_name,
     )
     .await
@@ -430,7 +436,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
                     let kept = Arc::clone(&kept);
                     async move {
                         let declared = factory
-                            .declare_from_wire(req.message().payload().into_inner())
+                            .declare_from_wire("_", req.message().payload().into_inner())
                             .await
                             .expect("declare_from_wire");
                         kept.lock().unwrap().replace(declared.publisher);
@@ -457,6 +463,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         test_node_target(node_name),
+        None,
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -477,6 +484,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
+        None,
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -496,4 +504,165 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
     iface_done.await.expect("iface handler signaled ready");
     native_task.await.expect("native task");
     iface_task.await.expect("iface task");
+}
+
+/// Discover-then-pin safety: when a consumer issues a wildcard
+/// `ActionMessenger::send_goal` against two producers exposing the same
+/// `(name, tag)`, only the discovered producer must run its goal handler.
+/// The other receives only the discovery probe (filtered server-side) and
+/// never executes the user goal handler.
+///
+/// This is the action analog of `service_from_any_poll_runs_handler_on_winner_only`
+/// in `tests/services.rs`. It exists because actions are state-changing and
+/// long-running: without discovery, every matching producer would run its
+/// handler concurrently (e.g. two manipulators both moving to pick up the
+/// same object).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn action_from_any_send_goal_runs_handler_on_winner_only() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::oneshot;
+
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let action_target = SenderTarget::interface("manipulator", "v1").expect("iface target");
+    let action_name = "pick_up";
+    let producer_a_core = "producer_a_core";
+    let producer_a_inst = "producer_a";
+    let producer_b_core = "producer_b_core";
+    let producer_b_inst = "producer_b";
+
+    struct ProducerSpec {
+        core: &'static str,
+        inst: &'static str,
+        target: SenderTarget,
+        action_name: &'static str,
+    }
+
+    async fn spawn_producer(
+        host: String,
+        port: u16,
+        spec: ProducerSpec,
+        goal_count: Arc<AtomicUsize>,
+        ready: oneshot::Sender<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        let handle = MessengerHandle::from_host_port(&host, port)
+            .await
+            .expect("connect");
+        tokio::spawn(async move {
+            let action = ActionMessenger::expose(
+                &handle,
+                spec.core,
+                spec.inst,
+                spec.target,
+                &[],
+                spec.action_name,
+            )
+            .await
+            .expect("expose should succeed");
+            let mut goal_service = action.goal_service;
+            ready.send(()).expect("ready signal");
+
+            // The loser must time out here; the winner returns immediately.
+            match tokio::time::timeout(
+                Duration::from_millis(1000),
+                goal_service.recv_next_request(),
+            )
+            .await
+            {
+                Ok(Ok(Some((_ctx, responder)))) => {
+                    goal_count.fetch_add(1, Ordering::SeqCst);
+                    responder
+                        .respond(Payload::from(spec.inst.as_bytes().to_vec()))
+                        .await
+                        .expect("goal respond");
+                }
+                _ => {
+                    // Loser of the discovery race — expected outcome.
+                }
+            }
+        })
+    }
+
+    let goal_a = Arc::new(AtomicUsize::new(0));
+    let goal_b = Arc::new(AtomicUsize::new(0));
+    let (ready_a_tx, ready_a_rx) = oneshot::channel();
+    let (ready_b_tx, ready_b_rx) = oneshot::channel();
+
+    let task_a = spawn_producer(
+        host.clone(),
+        port,
+        ProducerSpec {
+            core: producer_a_core,
+            inst: producer_a_inst,
+            target: action_target.clone(),
+            action_name,
+        },
+        Arc::clone(&goal_a),
+        ready_a_tx,
+    )
+    .await;
+    let task_b = spawn_producer(
+        host.clone(),
+        port,
+        ProducerSpec {
+            core: producer_b_core,
+            inst: producer_b_inst,
+            target: action_target.clone(),
+            action_name,
+        },
+        Arc::clone(&goal_b),
+        ready_b_tx,
+    )
+    .await;
+
+    ready_a_rx.await.expect("producer A ready");
+    ready_b_rx.await.expect("producer B ready");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("caller connect");
+
+    let goal_handle = ActionMessenger::send_goal(
+        &caller_handle,
+        "caller_core",
+        "caller_inst",
+        action_target,
+        None,
+        action_name,
+        None,
+        None,
+        Payload::from_static(b"go"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("send_goal should succeed");
+
+    let winner_inst = goal_handle.goal_response().instance_id().to_string();
+    assert!(
+        winner_inst == producer_a_inst || winner_inst == producer_b_inst,
+        "goal response identity must come from one of the producers, got {winner_inst:?}",
+    );
+
+    task_a.await.expect("producer A task panicked");
+    task_b.await.expect("producer B task panicked");
+
+    let (winner_goal, loser_goal) = if winner_inst == producer_a_inst {
+        (goal_a.load(Ordering::SeqCst), goal_b.load(Ordering::SeqCst))
+    } else {
+        (goal_b.load(Ordering::SeqCst), goal_a.load(Ordering::SeqCst))
+    };
+    assert_eq!(
+        winner_goal, 1,
+        "winning producer ({winner_inst}) should run its goal handler exactly once",
+    );
+    assert_eq!(
+        loser_goal, 0,
+        "losing producer must NOT run its goal handler — discovery pins to the winner first",
+    );
 }

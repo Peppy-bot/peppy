@@ -1,7 +1,7 @@
 use crate::helpers::{
-    STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
-    init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs, wait_for_child,
-    wait_for_health_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output,
+    init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
+    wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -105,11 +105,7 @@ async fn topics_communication() {
     let receiver_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(receiver_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(receiver_instance_id).unwrap()),
         RECEIVER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
@@ -175,9 +171,8 @@ fn main() -> Result<()> {
         &router_host,
         router_port,
         NodeInstanceConfig {
-            instance_id: Name::new(emitter_instance_id).unwrap(),
             arguments: serde_json5::from_str(r#"{ frequency: 10.0 }"#).unwrap(),
-            framework: Default::default(),
+            ..NodeInstanceConfig::new(Name::new(emitter_instance_id).unwrap())
         },
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the receiver
         "v1",
@@ -261,7 +256,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        to_core_node: Some(TEST_CORE_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -269,6 +264,7 @@ fn main() -> Result<()> {
         receiver_instance_id,
         &mut receiver_child,
         &user_node_receiver,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -277,6 +273,7 @@ fn main() -> Result<()> {
         emitter_instance_id,
         &mut emitter_child,
         &user_node_emitter,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
