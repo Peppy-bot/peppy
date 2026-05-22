@@ -1002,7 +1002,7 @@ async fn validate_and_order_dependencies(
     let dependency_errors: Vec<String> = planned
         .iter()
         .flat_map(|item| {
-            node_stack::validate_dependency_specs(
+            config::node::validate_dependency_specs(
                 &item.config.manifest,
                 &item.config.interfaces,
                 &item.node_name,
@@ -1019,12 +1019,31 @@ async fn validate_and_order_dependencies(
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
 
+    let binding_items: Vec<config::launcher::BindingValidationItem<'_>> = planned
+        .iter()
+        .map(|p| config::launcher::BindingValidationItem {
+            node_name: &p.node_name,
+            node_tag: &p.node_tag,
+            instances: &p.deployment.instances,
+            depends_on: p.config.manifest.depends_on.as_ref(),
+        })
+        .collect();
+    let binding_errors: Vec<String> = config::launcher::validate_bindings(&binding_items)
+        .into_iter()
+        .map(|e| e.to_string())
+        .collect();
+    if !binding_errors.is_empty() {
+        let msg = binding_errors.join("\n");
+        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return Err(LaunchResult::failure(&ctx.log_path, msg));
+    }
+
     // Build the dependency graph for topological ordering.
     let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
     for item in planned {
         let dependant_key = NodeKey::new(&item.node_name, &item.node_tag);
         let mut deps = HashSet::new();
-        for spec in node_stack::collect_dependency_specs(&item.config) {
+        for spec in config::node::collect_dependency_specs(&item.config) {
             let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag);
             if dep_key != root_key && planned_keys.contains(&dep_key) {
                 deps.insert(dep_key);
@@ -1271,6 +1290,16 @@ async fn start_node_instances(
         .await
         .unwrap_or((DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
 
+    let all_deployments: Vec<Deployment> = planned_by_key
+        .values()
+        .map(|p| p.deployment.clone())
+        .collect();
+    let link_ids_by_instance = config::launcher::link_ids_by_instance_id(&all_deployments);
+    debug!(
+        ?link_ids_by_instance,
+        "resolved producer link_ids from launcher bindings"
+    );
+
     for key in ordered {
         let Some(item) = planned_by_key.get(key) else {
             continue;
@@ -1285,9 +1314,14 @@ async fn start_node_instances(
             )
             .await;
 
+            let link_ids = link_ids_by_instance
+                .get(instance_id)
+                .cloned()
+                .unwrap_or_default();
             let node_instance = config::runtime::NodeInstanceConfig {
                 arguments: instance.arguments.clone(),
                 framework: resolve_framework(&instance.framework, ctx.daemon_use_sim_time),
+                link_ids,
                 ..config::runtime::NodeInstanceConfig::new(instance.instance_id.clone())
             };
             let runtime_config = match RuntimeConfig::new(

@@ -2,8 +2,9 @@ use crate::Result;
 use crate::names;
 use crate::services::node::cache as node_cache;
 use crate::services::repo::cache as repo_cache;
+use config::ParsingError;
 use config::consts::PeppyDirs;
-use config::node::NodeConfigParser;
+use config::node::{NodeConfigParser, validate_dependency_specs};
 use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse, RepoResolvedEntry};
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceOrigin, InterfaceVariant};
 use node_stack::NodeStack;
@@ -273,7 +274,7 @@ async fn handle_node_sync_request_inner(
     } else {
         match NodeConfigParser::from_path(&node_config_path) {
             Ok(node_config) => {
-                let dep_errors = node_stack::validate_dependency_specs(
+                let dep_errors = validate_dependency_specs(
                     &node_config.manifest,
                     &node_config.interfaces,
                     node_config.manifest.name.as_str(),
@@ -286,7 +287,7 @@ async fn handle_node_sync_request_inner(
 
                 for err in &dep_errors {
                     match err {
-                        node_stack::NodeStackError::MissingDependency {
+                        ParsingError::MissingDependency {
                             dependency,
                             dependency_tag,
                             ..
@@ -294,22 +295,16 @@ async fn handle_node_sync_request_inner(
                             missing_dependencies
                                 .insert(format!("{}:{}", dependency, dependency_tag));
                         }
-                        node_stack::NodeStackError::MissingInterface {
-                            dependency,
-                            dependency_tag,
-                            interface_kind,
-                            interface_name,
-                            ..
-                        } => {
+                        ParsingError::MissingInterface(info) => {
                             missing_interfaces.push(format!(
                                 "expects {} `{}` from `{}:{}`, but it is not exposed",
-                                interface_kind.to_lowercase(),
-                                interface_name,
-                                dependency,
-                                dependency_tag
+                                info.interface_kind.to_lowercase(),
+                                info.interface_name,
+                                info.dependency,
+                                info.dependency_tag
                             ));
                         }
-                        node_stack::NodeStackError::UndeclaredLinkId { link_id, .. } => {
+                        ParsingError::UndeclaredLinkId { link_id, .. } => {
                             missing_interfaces
                                 .push(format!("references undeclared link_id `{}`", link_id));
                         }

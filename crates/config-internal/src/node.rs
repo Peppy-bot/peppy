@@ -1,6 +1,7 @@
 mod create;
 mod parse;
 mod types;
+mod validation;
 
 // Re-export functions
 pub use create::NodeConfigCreator;
@@ -14,3 +15,4 @@ pub use types::{
     QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken,
     extract_parameter_refs, is_blocked_mount_source,
 };
+pub use validation::{DependencySpec, collect_dependency_specs, validate_dependency_specs};

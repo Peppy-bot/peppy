@@ -1,12 +1,13 @@
 use crate::{
     common::AnyType,
+    consts::DEFAULT_LINK_ID_SENTINEL,
     error::{ParsingError, StructuredError},
     internal::interface::validate_named_items,
     schema::PeppySchema,
 };
 use serde::{
     Deserialize, Serialize,
-    de::{self, Deserializer},
+    de::{self, Deserializer, MapAccess, Visitor},
 };
 use std::{
     collections::{BTreeMap, HashSet},
@@ -57,6 +58,13 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
         for deployment in &raw.deployments {
             for instance in &deployment.instances {
                 for (binding, target) in &instance.bindings {
+                    if binding == DEFAULT_LINK_ID_SENTINEL {
+                        let err = StructuredError::BindingSentinelKey {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            binding: binding.clone(),
+                        };
+                        return Err(de::Error::custom(err.json5_message()));
+                    }
                     if !known_ids.contains(target.as_str()) {
                         let err = StructuredError::UnknownInstanceId {
                             owner_instance_id: instance.instance_id.to_string(),
@@ -112,21 +120,88 @@ pub struct DeploymentInstance {
     pub bindings: BTreeMap<String, String>,
 }
 
-/// Each key names a binding slot declared by the deployed node and each
-/// value points at an `instance_id` defined elsewhere in the launcher.
-/// Both sides are validated for non-emptiness and intra-collection
-/// duplicates via [`validate_named_items`]; the value's existence as an
-/// `instance_id` is checked later at the [`PeppyLauncher`] level once all
-/// deployments have been parsed.
+/// Each key is a `link_id` literal declared by the deployed node's
+/// `depends_on.{nodes,interfaces}` and each value points at the producer
+/// `instance_id` defined elsewhere in the launcher. Keys and values are
+/// validated for non-emptiness and intra-collection duplicates via
+/// [`validate_named_items`]; the reserved producer-default sentinel
+/// ([`DEFAULT_LINK_ID_SENTINEL`]) is rejected as a key here so the
+/// launcher cannot redundantly "bind" to the default. The value's
+/// existence as an `instance_id` is checked later at the
+/// [`PeppyLauncher`] level once all deployments have been parsed; the
+/// key's existence in the deployed node's `depends_on` and the producer
+/// identity are checked at launch time, when both the launcher and the
+/// node manifests are loaded.
 fn deserialize_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let map = BTreeMap::<String, String>::deserialize(deserializer)?;
-    validate_named_items(map.keys().map(String::as_str), "binding").map_err(de::Error::custom)?;
-    validate_named_items(map.values().map(String::as_str), "binding target")
+    // Capture entries as a Vec to preserve duplicate keys: a direct
+    // BTreeMap::deserialize would silently overwrite, hiding the
+    // duplicate from `validate_named_items`. The sentinel-key check
+    // lives in `PeppyLauncher::deserialize` where the owning
+    // `instance_id` is in scope and can be attached to the structured
+    // error.
+    let entries = deserializer.deserialize_map(BindingEntriesVisitor)?;
+    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), "binding")
         .map_err(de::Error::custom)?;
-    Ok(map)
+    // Duplicate binding values are intentionally permitted: a single
+    // producer may serve multiple `link_id` slots on the same consumer
+    // (or across consumers), which the launch-time wiring materializes
+    // as a producer with multiple `link_ids` advertised in parallel.
+    // Only non-emptiness is enforced here.
+    for (key, value) in &entries {
+        if value.trim().is_empty() {
+            return Err(de::Error::custom(format!(
+                "binding target for key `{key}` cannot be empty"
+            )));
+        }
+    }
+    Ok(entries.into_iter().collect())
+}
+
+struct BindingEntriesVisitor;
+
+impl<'de> Visitor<'de> for BindingEntriesVisitor {
+    type Value = Vec<(String, String)>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a map of binding link_id -> instance_id strings")
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries = Vec::with_capacity(access.size_hint().unwrap_or(0));
+        while let Some((key, value)) = access.next_entry::<String, String>()? {
+            entries.push((key, value));
+        }
+        Ok(entries)
+    }
+}
+
+/// Walks every consumer instance's `bindings` map and inverts it to
+/// `producer_instance_id -> ordered, deduped Vec<link_id>`.
+///
+/// Ordering rule: deployments in slice order, instances in declared
+/// order, binding keys in `BTreeMap` lexicographic order. The first
+/// `link_id` encountered for a given producer is the primary entry on
+/// the wire (see `peppylib::messaging::topics::emit` for why ordering
+/// matters), so the order must be deterministic across reads.
+pub fn link_ids_by_instance_id(deployments: &[Deployment]) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for deployment in deployments {
+        for instance in &deployment.instances {
+            for (link_id, target_instance_id) in &instance.bindings {
+                let entry = out.entry(target_instance_id.clone()).or_default();
+                if !entry.iter().any(|existing| existing == link_id) {
+                    entry.push(link_id.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Per-instance framework knobs. Distinct from `arguments`: those are
@@ -455,8 +530,13 @@ mod tests {
         assert!(err.to_string().contains("empty"), "unexpected error: {err}");
     }
 
+    /// Two binding keys may point at the same producer `instance_id`:
+    /// that is the "one producer serves multiple `link_id` slots" case
+    /// the wiring step materializes as a producer with multiple
+    /// concurrent `link_ids` on the wire. Duplicates on the value side
+    /// are therefore intentionally permitted.
     #[test]
-    fn bindings_reject_duplicate_values() {
+    fn bindings_accept_duplicate_values() {
         let json5 = r#"{
             instance_id: "backbone",
             bindings: {
@@ -464,11 +544,15 @@ mod tests {
                 b: "cam_torso"
             }
         }"#;
-        let err = serde_json5::from_str::<DeploymentInstance>(json5)
-            .expect_err("duplicate binding target must be rejected");
-        assert!(
-            err.to_string().contains("duplicate"),
-            "unexpected error: {err}"
+        let instance: DeploymentInstance =
+            serde_json5::from_str(json5).expect("duplicate binding targets should now be accepted");
+        assert_eq!(
+            instance.bindings.get("a").map(String::as_str),
+            Some("cam_torso")
+        );
+        assert_eq!(
+            instance.bindings.get("b").map(String::as_str),
+            Some("cam_torso")
         );
     }
 
@@ -481,5 +565,191 @@ mod tests {
         )
         .expect_err("unknown framework key should be rejected");
         assert!(err.to_string().contains("unknown_knob"));
+    }
+
+    /// The reserved producer-default segment cannot appear as a binding
+    /// key. Using it would be a redundant no-op (the producer already
+    /// publishes under that segment when no binding is declared) and
+    /// likely indicates a misuse. The check runs at the launcher level
+    /// (rather than per-instance) so the structured error can carry the
+    /// owning `instance_id`.
+    #[test]
+    fn bindings_reject_underscore_key() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {
+                    source: { local: "./backbone" },
+                    instances: [{
+                        instance_id: "backbone",
+                        bindings: { "_": "backbone" }
+                    }]
+                }
+            ]
+        }"#;
+        let err = serde_json5::from_str::<PeppyLauncher>(json5)
+            .expect_err("`_` binding key must be rejected");
+        let parsing_err = ParsingError::from(err);
+        let ParsingError::BindingSentinelKey {
+            owner_instance_id,
+            binding,
+        } = &parsing_err
+        else {
+            panic!("expected BindingSentinelKey, got {parsing_err:?}");
+        };
+        assert_eq!(owner_instance_id, "backbone");
+        assert_eq!(binding, "_");
+    }
+
+    /// Duplicate binding keys must be rejected. The raw map deserializer
+    /// must surface them before the BTreeMap collapses duplicates.
+    #[test]
+    fn bindings_reject_duplicate_keys() {
+        let json5 = r#"{
+            instance_id: "backbone",
+            bindings: { "main": "prod_a", "main": "prod_b" }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("duplicate binding key must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate") && msg.contains("main"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    fn make_deployments(json5: &str) -> Vec<Deployment> {
+        let launcher: PeppyLauncher =
+            serde_json5::from_str(json5).expect("launcher fixture should parse");
+        launcher.deployments
+    }
+
+    #[test]
+    fn link_ids_by_instance_id_empty_returns_empty() {
+        let deployments = make_deployments(
+            r#"{
+                peppy_schema: "launcher_v1",
+                deployments: [
+                    { source: { local: "./a" }, instances: [{ instance_id: "a1" }] }
+                ]
+            }"#,
+        );
+        assert!(link_ids_by_instance_id(&deployments).is_empty());
+    }
+
+    #[test]
+    fn link_ids_by_instance_id_single_consumer_collects_one_link_id() {
+        let deployments = make_deployments(
+            r#"{
+                peppy_schema: "launcher_v1",
+                deployments: [
+                    { source: { local: "./prod" }, instances: [{ instance_id: "prod1" }] },
+                    {
+                        source: { local: "./cons" },
+                        instances: [{
+                            instance_id: "cons1",
+                            bindings: { camera: "prod1" }
+                        }]
+                    }
+                ]
+            }"#,
+        );
+        let map = link_ids_by_instance_id(&deployments);
+        assert_eq!(map.get("prod1"), Some(&vec!["camera".to_string()]));
+        assert!(!map.contains_key("cons1"));
+    }
+
+    /// Two consumers pinning the same producer under DIFFERENT `link_id`s
+    /// produce a Vec with both entries, in the deterministic walk order
+    /// (deployments → instances → `BTreeMap` keys).
+    #[test]
+    fn link_ids_by_instance_id_two_consumers_distinct_link_ids_preserved_order() {
+        let deployments = make_deployments(
+            r#"{
+                peppy_schema: "launcher_v1",
+                deployments: [
+                    { source: { local: "./prod" }, instances: [{ instance_id: "prod1" }] },
+                    {
+                        source: { local: "./cons_a" },
+                        instances: [{
+                            instance_id: "cons_a1",
+                            bindings: { aaa: "prod1" }
+                        }]
+                    },
+                    {
+                        source: { local: "./cons_b" },
+                        instances: [{
+                            instance_id: "cons_b1",
+                            bindings: { zzz: "prod1" }
+                        }]
+                    }
+                ]
+            }"#,
+        );
+        let map = link_ids_by_instance_id(&deployments);
+        assert_eq!(
+            map.get("prod1"),
+            Some(&vec!["aaa".to_string(), "zzz".to_string()])
+        );
+    }
+
+    /// Two consumers using the SAME `link_id` for the same producer
+    /// collapse to a single entry. This is the load-shared subscriber
+    /// case.
+    #[test]
+    fn link_ids_by_instance_id_two_consumers_same_link_id_dedups() {
+        let deployments = make_deployments(
+            r#"{
+                peppy_schema: "launcher_v1",
+                deployments: [
+                    { source: { local: "./prod" }, instances: [{ instance_id: "prod1" }] },
+                    {
+                        source: { local: "./cons_a" },
+                        instances: [{
+                            instance_id: "cons_a1",
+                            bindings: { main: "prod1" }
+                        }]
+                    },
+                    {
+                        source: { local: "./cons_b" },
+                        instances: [{
+                            instance_id: "cons_b1",
+                            bindings: { main: "prod1" }
+                        }]
+                    }
+                ]
+            }"#,
+        );
+        let map = link_ids_by_instance_id(&deployments);
+        assert_eq!(map.get("prod1"), Some(&vec!["main".to_string()]));
+    }
+
+    /// A producer not pointed at by any consumer is absent from the map
+    /// entirely, so the caller can fall back to the empty-vec / default
+    /// path with a plain `unwrap_or_default()`.
+    #[test]
+    fn link_ids_by_instance_id_omits_unbound_producers() {
+        let deployments = make_deployments(
+            r#"{
+                peppy_schema: "launcher_v1",
+                deployments: [
+                    { source: { local: "./prod_a" }, instances: [{ instance_id: "prod_a1" }] },
+                    { source: { local: "./prod_b" }, instances: [{ instance_id: "prod_b1" }] },
+                    {
+                        source: { local: "./cons" },
+                        instances: [{
+                            instance_id: "cons1",
+                            bindings: { only: "prod_a1" }
+                        }]
+                    }
+                ]
+            }"#,
+        );
+        let map = link_ids_by_instance_id(&deployments);
+        assert_eq!(map.get("prod_a1"), Some(&vec!["only".to_string()]));
+        assert!(
+            !map.contains_key("prod_b1"),
+            "unbound producer should not appear in the lookup"
+        );
     }
 }

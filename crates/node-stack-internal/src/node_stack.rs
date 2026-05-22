@@ -2,16 +2,14 @@ pub mod add_steps;
 mod build_steps;
 mod entity;
 mod run_steps;
-mod validation;
 
 pub use entity::{
-    BuildContext, DependencySpec, NodeEntity, NodeStage, OutputSinks, StartContext,
-    StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
+    BuildContext, NodeEntity, NodeStage, OutputSinks, StartContext, StartedInstanceCtx,
+    TrackedNodeInstance, WorkingDirGuard,
 };
-pub use validation::{collect_dependency_specs, validate_dependency_specs};
 
 use crate::error::{Error, Result};
-use config::node::{Name, NodeConfig};
+use config::node::{Name, NodeConfig, collect_dependency_specs, validate_dependency_specs};
 use core_node_api::{InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph};
 use names_generator2::get_random;
 use parking_lot::RwLock;
@@ -146,7 +144,7 @@ impl NodeStackInner {
         );
 
         if let Some(err) = errors.into_iter().next() {
-            return Err(err);
+            return Err(err.into());
         }
 
         Ok(())

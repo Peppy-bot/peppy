@@ -12,12 +12,12 @@
         {
           name: "fake_uvc_camera",
           tag: "v1",
-          link_id: "fake_uvc_camera"
+          link_id: "front_camera"
         },
         {
           name: "fake_openarm01_controller",
           tag: "v1",
-          link_id: "fake_openarm01_controller"
+          link_id: "robot_controller"
         },
       ]
     },
@@ -28,7 +28,7 @@
       emits: [],
       consumes: [
         {
-          link_id: "fake_uvc_camera",
+          link_id: "front_camera",
           name: "video_stream",
         }
       ],
@@ -37,7 +37,7 @@
       exposes: [],
       consumes: [
         {
-          link_id: "fake_uvc_camera",
+          link_id: "front_camera",
           name: "video_stream_info",
         }
       ],
@@ -47,11 +47,11 @@
       exposes: [],
       consumes: [
         {
-          link_id: "fake_openarm01_controller",
+          link_id: "robot_controller",
           name: "move_right_arm",
         },
         {
-          link_id: "fake_openarm01_controller",
+          link_id: "robot_controller",
           name: "move_left_arm",
         }
       ],

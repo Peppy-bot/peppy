@@ -92,7 +92,10 @@ const LAUNCHER_EXAMPLE1: &str = r#"
       instances: [
         {
           instance_id: "main_robot_brain",
-          arguments: {}
+          arguments: {},
+          bindings: {
+            front_camera: "camera_front",
+          },
         }
       ]
     },
@@ -164,7 +167,7 @@ fn write_node_config_with_options(
 
     let expects_topics = if expects_uvc_camera {
         r#"consumes: [
-                  { link_id: "uvc_camera", name: "camera_stream" }
+                  { link_id: "front_camera", name: "camera_stream" }
                 ],"#
     } else {
         ""
@@ -186,7 +189,7 @@ fn write_node_config_with_options(
     let depends_on = if expects_uvc_camera {
         r#"depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", link_id: "front_camera" }
                     ]
                 },"#
     } else {
