@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use config::ConfigError;
+use config::{ConfigError, ParsingError};
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -14,34 +14,6 @@ pub enum Error {
     // -- nodes errors
     #[error("The node name `{0}` or tag `{1}` could not be found")]
     NoMatchingNode(String, String),
-    #[error(
-        "`{dependant}`:{dependant_tag} expects {interface_kind} `{interface_name}` from `{dependency}`:{dependency_tag}, but it is not exposed"
-    )]
-    MissingInterface {
-        dependant: String,
-        dependant_tag: String,
-        dependency: String,
-        dependency_tag: String,
-        interface_kind: String,
-        interface_name: String,
-    },
-    #[error(
-        "`{dependant}:{dependant_tag}` depends on `{dependency}:{dependency_tag}`, but it does not exist in the stack"
-    )]
-    MissingDependency {
-        dependant: String,
-        dependant_tag: String,
-        dependency: String,
-        dependency_tag: String,
-    },
-    #[error(
-        "`{dependant}:{dependant_tag}` references undeclared link_id `{link_id}` in consumed interfaces"
-    )]
-    UndeclaredLinkId {
-        dependant: String,
-        dependant_tag: String,
-        link_id: String,
-    },
 
     // -- node stack errors
     #[error("Cannot modify the root node (it always has exactly one instance)")]
@@ -90,4 +62,10 @@ pub enum Error {
         first: PathBuf,
         second: PathBuf,
     },
+}
+
+impl From<ParsingError> for Error {
+    fn from(err: ParsingError) -> Self {
+        Self::Config(ConfigError::Parsing(err))
+    }
 }

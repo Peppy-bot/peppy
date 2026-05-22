@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use config::{ConfigError, ParsingError};
 use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::core_node_config;
@@ -151,11 +152,11 @@ fn topic_dependency_fails_when_dependency_is_missing() {
 
     // Adding a node that depends on a non-existent node should fail
     let result = stack.push_config(brain_dependent, false, PathBuf::from("/tmp"));
-    let Err(NodeStackError::MissingDependency {
+    let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingDependency {
         dependency,
         dependency_tag,
         ..
-    }) = result
+    }))) = result
     else {
         panic!("expected MissingDependency error, got {:?}", result);
     };
@@ -238,20 +239,15 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
 
     // Adding brain should fail because lidar doesn't emit "push_lidar_object"
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
-    let Err(NodeStackError::MissingInterface {
-        dependency,
-        dependency_tag,
-        interface_kind,
-        interface_name,
-        ..
-    }) = result
+    let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingInterface(info)))) =
+        result
     else {
         panic!("expected MissingInterface error, got {:?}", result);
     };
-    assert_eq!(dependency, "lidar");
-    assert_eq!(dependency_tag, "v1");
-    assert_eq!(interface_kind, "Topic");
-    assert_eq!(interface_name, "push_lidar_object");
+    assert_eq!(info.dependency, "lidar");
+    assert_eq!(info.dependency_tag, "v1");
+    assert_eq!(info.interface_kind, "Topic");
+    assert_eq!(info.interface_name, "push_lidar_object");
     assert_eq!(
         stack.len(),
         2,
@@ -292,7 +288,11 @@ fn topic_dependency_fails_when_link_id_is_undeclared() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
-    let Err(NodeStackError::UndeclaredLinkId { link_id, .. }) = result else {
+    let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::UndeclaredLinkId {
+        link_id,
+        ..
+    }))) = result
+    else {
         panic!("expected UndeclaredLinkId error, got {:?}", result);
     };
     assert_eq!(link_id, "nonexistent");

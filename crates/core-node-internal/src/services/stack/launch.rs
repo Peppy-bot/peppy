@@ -1002,7 +1002,7 @@ async fn validate_and_order_dependencies(
     let dependency_errors: Vec<String> = planned
         .iter()
         .flat_map(|item| {
-            node_stack::validate_dependency_specs(
+            config::node::validate_dependency_specs(
                 &item.config.manifest,
                 &item.config.interfaces,
                 &item.node_name,
@@ -1019,16 +1019,16 @@ async fn validate_and_order_dependencies(
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
 
-    let binding_items: Vec<super::bindings::BindingValidationItem<'_>> = planned
+    let binding_items: Vec<config::launcher::BindingValidationItem<'_>> = planned
         .iter()
-        .map(|p| super::bindings::BindingValidationItem {
+        .map(|p| config::launcher::BindingValidationItem {
             node_name: &p.node_name,
             node_tag: &p.node_tag,
             instances: &p.deployment.instances,
             depends_on: p.config.manifest.depends_on.as_ref(),
         })
         .collect();
-    let binding_errors: Vec<String> = super::bindings::validate_bindings(&binding_items)
+    let binding_errors: Vec<String> = config::launcher::validate_bindings(&binding_items)
         .into_iter()
         .map(|e| e.to_string())
         .collect();
@@ -1043,7 +1043,7 @@ async fn validate_and_order_dependencies(
     for item in planned {
         let dependant_key = NodeKey::new(&item.node_name, &item.node_tag);
         let mut deps = HashSet::new();
-        for spec in node_stack::collect_dependency_specs(&item.config) {
+        for spec in config::node::collect_dependency_specs(&item.config) {
             let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag);
             if dep_key != root_key && planned_keys.contains(&dep_key) {
                 deps.insert(dep_key);

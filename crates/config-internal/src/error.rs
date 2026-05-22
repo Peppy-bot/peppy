@@ -76,6 +76,23 @@ pub struct BindingTargetMismatch {
     pub actual_tag: String,
 }
 
+/// Payload for [`ParsingError::MissingInterface`]. Boxed in the variant so
+/// the six `String` fields do not inflate `ParsingError` past the
+/// `clippy::result_large_err` threshold.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "`{dependant}`:{dependant_tag} expects {interface_kind} `{interface_name}` from \
+     `{dependency}`:{dependency_tag}, but it is not exposed"
+)]
+pub struct MissingInterface {
+    pub dependant: String,
+    pub dependant_tag: String,
+    pub dependency: String,
+    pub dependency_tag: String,
+    pub interface_kind: String,
+    pub interface_name: String,
+}
+
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
     // -- General yaml syntax
@@ -167,6 +184,31 @@ pub enum ParsingError {
     InvalidMountPath(String, String),
     #[error("Invalid parameter reference `${{parameters:{0}}}` in mount path: {1}")]
     InvalidMountPathParameterRef(String, String),
+
+    // -- node dependency validation
+    #[error(
+        "`{dependant}:{dependant_tag}` depends on `{dependency}:{dependency_tag}`, but it does not exist in the stack"
+    )]
+    MissingDependency {
+        dependant: String,
+        dependant_tag: String,
+        dependency: String,
+        dependency_tag: String,
+    },
+    #[error(
+        "`{dependant}:{dependant_tag}` references undeclared link_id `{link_id}` in consumed interfaces"
+    )]
+    UndeclaredLinkId {
+        dependant: String,
+        dependant_tag: String,
+        link_id: String,
+    },
+    /// Boxed payload for the same reason as
+    /// [`ParsingError::BindingTargetMismatch`]: keeps the variant's
+    /// String-heavy struct from inflating `ParsingError`'s size past the
+    /// `clippy::result_large_err` threshold.
+    #[error(transparent)]
+    MissingInterface(Box<MissingInterface>),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

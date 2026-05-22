@@ -1109,8 +1109,3 @@ impl TrackedNodeInstance {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DependencySpec {
-    pub node_name: String,
-    pub node_tag: String,
-}

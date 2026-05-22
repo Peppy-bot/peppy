@@ -19,7 +19,8 @@ use core_node_api::encoding::{
 };
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
-use node_stack::{InstanceState, NodeStack, WorkingDirGuard, validate_dependency_specs};
+use config::node::validate_dependency_specs;
+use node_stack::{InstanceState, NodeStack, WorkingDirGuard};
 use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
 use peppylib::types::Payload;

@@ -30,8 +30,8 @@ pub use common::{
 
 // -- error --
 pub use error::{
-    BindingMissingForPinnedDep, BindingTargetMismatch, Error as ConfigError, ParsingError,
-    Result as ConfigResult,
+    BindingMissingForPinnedDep, BindingTargetMismatch, Error as ConfigError, MissingInterface,
+    ParsingError, Result as ConfigResult,
 };
 
 // -- atomic_write --
@@ -82,12 +82,13 @@ pub mod node {
     pub use crate::internal::node::{
         ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
         CallbackNameError, ConformsToItem, ConsumedAction, ConsumedService, ConsumedTopic,
-        ContainerConfig, DependsOn, EmittedTopic, Execution, ExposedAction, ExposedService,
-        ExternalConsumedTopic, InterfaceKind, Interfaces, LinkedConsumedTopic, Manifest,
-        MessageFormat, Name, NodeConfig, NodeConfigCreator, NodeConfigParser, NodeDependency,
-        ObjectKind, ObjectSchema, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType,
-        ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, extract_parameter_refs,
-        is_blocked_mount_source, load_standalone_node_config,
+        ContainerConfig, DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction,
+        ExposedService, ExternalConsumedTopic, InterfaceKind, Interfaces, LinkedConsumedTopic,
+        Manifest, MessageFormat, Name, NodeConfig, NodeConfigCreator, NodeConfigParser,
+        NodeDependency, ObjectKind, ObjectSchema, PeppygenLanguage, PrimitiveSchema, QoSProfile,
+        SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken,
+        collect_dependency_specs, extract_parameter_refs, is_blocked_mount_source,
+        load_standalone_node_config, validate_dependency_specs,
     };
 }
 
@@ -101,9 +102,10 @@ pub mod runtime {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
-        DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides, Name,
-        PeppyLauncher, PeppyLauncherParser, link_ids_by_instance_id,
+        BindingValidationItem, Deployment, DeploymentGitSource, DeploymentInstance,
+        DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
+        FrameworkOverrides, Name, PeppyLauncher, PeppyLauncherParser, link_ids_by_instance_id,
+        validate_bindings,
     };
 }
 

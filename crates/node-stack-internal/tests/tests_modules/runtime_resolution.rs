@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use config::node::Name;
+use config::{ConfigError, ParsingError};
 use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::core_node_config;
@@ -966,11 +967,11 @@ fn dependency_fails_when_node_name_mismatches() {
 
     // Adding brain should fail because it expects "uvc_camera", not "lidar"
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
-    let Err(NodeStackError::MissingDependency {
+    let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingDependency {
         dependency,
         dependency_tag,
         ..
-    }) = result
+    }))) = result
     else {
         panic!("expected MissingDependency error, got {:?}", result);
     };
@@ -1031,11 +1032,11 @@ fn dependency_fails_when_node_tag_mismatches() {
 
     // Adding brain should fail because it expects lidar with tag "v1", not "v2"
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
-    let Err(NodeStackError::MissingDependency {
+    let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingDependency {
         dependency,
         dependency_tag,
         ..
-    }) = result
+    }))) = result
     else {
         panic!("expected MissingDependency error, got {:?}", result);
     };

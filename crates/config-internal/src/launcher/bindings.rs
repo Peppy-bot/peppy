@@ -4,22 +4,22 @@
 //! `depends_on` declarations and each binding target's deploying node.
 //!
 //! The producer's runtime `link_ids` are derived from the launcher's
-//! bindings at launch time (see [`config::launcher::link_ids_by_instance_id`]
-//! and [`crate::services::stack::launch::start_node_instances`]); the
-//! checks here exist to turn the three classes of silent-failure
+//! bindings at launch time (see [`super::types::link_ids_by_instance_id`]);
+//! the checks here exist to turn the three classes of silent-failure
 //! configurations into loud parse-time errors.
 
-use config::consts::DEFAULT_LINK_ID_SENTINEL;
-use config::launcher::DeploymentInstance;
-use config::node::DependsOn;
-use config::{BindingMissingForPinnedDep, BindingTargetMismatch, ParsingError};
+use crate::consts::DEFAULT_LINK_ID_SENTINEL;
+use crate::error::{BindingMissingForPinnedDep, BindingTargetMismatch, ParsingError};
+use crate::node::DependsOn;
 use std::collections::BTreeMap;
+
+use super::types::DeploymentInstance;
 
 /// Minimal view of one planned deployment needed for binding
 /// validation. Built by the launcher with borrowed references to avoid
-/// cloning the full `PlannedDeployment` graph; consumed by
+/// cloning the full planned-deployment graph; consumed by
 /// [`validate_bindings`].
-pub(super) struct BindingValidationItem<'a> {
+pub struct BindingValidationItem<'a> {
     pub node_name: &'a str,
     pub node_tag: &'a str,
     pub instances: &'a [DeploymentInstance],
@@ -38,7 +38,7 @@ pub(super) struct BindingValidationItem<'a> {
 /// Interface-typed deps bypass check 3 because they do not pre-commit
 /// to a producer node identity; verifying that the bound target
 /// `exposes` the interface contract is left to a future hardening pass.
-pub(super) fn validate_bindings(items: &[BindingValidationItem<'_>]) -> Vec<ParsingError> {
+pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> Vec<ParsingError> {
     let instance_to_item = build_instance_lookup(items);
 
     let mut errors: Vec<ParsingError> = Vec::new();
@@ -313,7 +313,7 @@ mod tests {
     /// guard against future deserializer loosening.
     #[test]
     fn skips_missing_when_link_id_is_underscore() {
-        use config::node::{Name as NodeName, NodeDependency};
+        use crate::node::{Name as NodeName, NodeDependency};
 
         let instances = parse_instances(r#"[{ instance_id: "cons1" }]"#);
         let depends_on = DependsOn {

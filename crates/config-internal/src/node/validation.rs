@@ -1,30 +1,28 @@
+//! Plan-phase validation for a node's `depends_on` block and its
+//! consumed interfaces. Lives next to the types it validates so any
+//! consumer that parses a [`NodeConfig`] graph (launchers, the daemon's
+//! node stack, code-generation) can run the same checks without
+//! depending on a runtime crate.
+//!
+//! The validator is structural — it does not care which crate orchestrates
+//! the lookup. Callers supply a closure that resolves a `(name, tag)`
+//! pair to a [`NodeConfig`] from whatever store they own (an in-memory
+//! graph, a working stack snapshot, a parsed launcher batch, etc.).
+
 use std::collections::{HashMap, HashSet};
 
-use config::node::{InterfaceKind, Interfaces, Manifest, NodeConfig};
+use crate::error::{MissingInterface, ParsingError};
+use crate::node::{InterfaceKind, Interfaces, Manifest, NodeConfig};
 
-use super::entity::DependencySpec;
-
+/// Minimal `(name, tag)` view of a single `depends_on.nodes` entry,
+/// stripped of the link_id / from_any noise that callers don't need
+/// once dependency resolution has already happened. Used by
+/// [`collect_dependency_specs`] so callers can walk the dep set without
+/// re-deriving it from the manifest.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct InterfaceRequirement {
-    kind: InterfaceKind,
-    name: String,
-}
-
-impl InterfaceRequirement {
-    pub(super) fn new(kind: InterfaceKind, name: &str) -> Self {
-        Self {
-            kind,
-            name: name.trim().to_owned(),
-        }
-    }
-
-    pub(super) fn kind(&self) -> InterfaceKind {
-        self.kind
-    }
-
-    pub(super) fn name(&self) -> &str {
-        &self.name
-    }
+pub struct DependencySpec {
+    pub node_name: String,
+    pub node_tag: String,
 }
 
 pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
@@ -60,7 +58,7 @@ pub fn validate_dependency_specs(
     dependant_name: &str,
     dependant_tag: &str,
     resolve: impl Fn(&str, &str) -> Option<NodeConfig>,
-) -> Vec<crate::error::Error> {
+) -> Vec<ParsingError> {
     let mut errors = Vec::new();
 
     // Build link_id → (name, tag, resolved_config) lookup from depends_on.nodes
@@ -72,7 +70,7 @@ pub fn validate_dependency_specs(
             let dep_name = dep.name.as_str().to_owned();
             let dep_tag = dep.tag.clone();
             let Some(dependency_config) = resolve(&dep_name, &dep_tag) else {
-                errors.push(crate::error::Error::MissingDependency {
+                errors.push(ParsingError::MissingDependency {
                     dependant: dependant_name.to_owned(),
                     dependant_tag: dependant_tag.to_owned(),
                     dependency: dep_name,
@@ -105,7 +103,7 @@ pub fn validate_dependency_specs(
         && let Some(consumes) = &topics.consumes
     {
         let items = consumes.iter().filter_map(|t| match t {
-            config::node::ConsumedTopic::Linked(linked) => {
+            crate::node::ConsumedTopic::Linked(linked) => {
                 Some((linked.link_id.as_str(), linked.name.as_str()))
             }
             _ => None,
@@ -158,6 +156,29 @@ pub fn validate_dependency_specs(
     errors
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct InterfaceRequirement {
+    kind: InterfaceKind,
+    name: String,
+}
+
+impl InterfaceRequirement {
+    fn new(kind: InterfaceKind, name: &str) -> Self {
+        Self {
+            kind,
+            name: name.trim().to_owned(),
+        }
+    }
+
+    fn kind(&self) -> InterfaceKind {
+        self.kind
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// Validates a set of consumed interfaces, checking that each `link_id` is declared
 /// and that the referenced dependency exposes the required interface.
 fn validate_consumed_items<'a>(
@@ -167,12 +188,12 @@ fn validate_consumed_items<'a>(
     declared_link_ids: &HashSet<&str>,
     dependant_name: &str,
     dependant_tag: &str,
-    errors: &mut Vec<crate::error::Error>,
+    errors: &mut Vec<ParsingError>,
 ) {
     for (link_id, name) in items {
         if !resolved_deps.contains_key(link_id) {
             if !declared_link_ids.contains(link_id) {
-                errors.push(crate::error::Error::UndeclaredLinkId {
+                errors.push(ParsingError::UndeclaredLinkId {
                     dependant: dependant_name.to_owned(),
                     dependant_tag: dependant_tag.to_owned(),
                     link_id: link_id.to_owned(),
@@ -201,7 +222,7 @@ fn validate_consumed_interface(
     resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
     dependant_name: &str,
     dependant_tag: &str,
-    errors: &mut Vec<crate::error::Error>,
+    errors: &mut Vec<ParsingError>,
 ) {
     let Some((dep_name, dep_tag, dep_config)) = resolved_deps.get(link_id) else {
         // The link_id doesn't map to any resolved dependency.
@@ -213,18 +234,18 @@ fn validate_consumed_interface(
 
     let requirement = InterfaceRequirement::new(kind, interface_name);
     if !exposes_interface(dep_config, &requirement) {
-        errors.push(crate::error::Error::MissingInterface {
+        errors.push(ParsingError::MissingInterface(Box::new(MissingInterface {
             dependant: dependant_name.to_owned(),
             dependant_tag: dependant_tag.to_owned(),
             dependency: dep_name.clone(),
             dependency_tag: dep_tag.clone(),
             interface_kind: format!("{:?}", kind),
             interface_name: interface_name.to_owned(),
-        });
+        })));
     }
 }
 
-pub(crate) fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) -> bool {
+fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) -> bool {
     match requirement.kind() {
         InterfaceKind::Topic => node
             .interfaces
