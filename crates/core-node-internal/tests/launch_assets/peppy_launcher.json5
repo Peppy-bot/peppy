@@ -10,8 +10,8 @@
           instance_id: "the_brain",
           arguments: {},
           bindings: {
-            fake_uvc_camera: "camera_front",
-            fake_openarm01_controller: "the_nervous_system",
+            front_camera: "camera_front",
+            robot_controller: "the_nervous_system",
           },
         }
       ],
