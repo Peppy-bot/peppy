@@ -64,8 +64,9 @@ pub struct RustGenerator {
     /// Per-`(producer_name, producer_tag)` set of pinned sibling link_ids
     /// declared by the node's `depends_on`. Populated by [`Self::set_pinned_siblings_map`]
     /// before codegen runs; the [`build`] step emits a single
-    /// `register_consumer_dependencies` scaffold file that consumer functions
-    /// call to seed the messenger's sibling-precedence table on first use.
+    /// `register_consumer_dependencies_once` scaffold file that consumer
+    /// functions call to seed the messenger's sibling-precedence table on
+    /// first use.
     pinned_siblings_map: HashMap<(String, String), Vec<String>>,
 }
 

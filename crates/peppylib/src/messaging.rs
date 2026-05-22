@@ -38,7 +38,7 @@ use pmi::{
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::{
-    Arc, Mutex as StdMutex, RwLock,
+    Arc, Mutex as StdMutex, OnceLock, RwLock,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -57,7 +57,7 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Per-`(producer_name, producer_tag)` set of link_ids that this consumer
 /// process has pinned via `depends_on`. Populated once at node bootstrap by
-/// codegen via [`MessengerHandle::register_consumer_dependencies`]; consulted
+/// codegen via [`MessengerHandle::register_consumer_dependencies_once`]; consulted
 /// at subscribe / poll / send_goal time when the caller's `from_link_id` is
 /// `None` (a `from_any: true` consumer) to derive the producer link_ids the
 /// from_any path must skip. Empty / absent groups apply no exclusion.
@@ -157,6 +157,24 @@ impl MessengerHandle {
         if let Ok(mut guard) = self.pinned_siblings.write() {
             *guard = pinned_per_group;
         }
+    }
+
+    /// Process-scoped idempotent variant of
+    /// [`Self::register_consumer_dependencies`] intended for the consumer
+    /// scaffold the code generator emits. The `build` closure produces the
+    /// map and is invoked at most once per process, even when many
+    /// `MessengerHandle`s are constructed or many consumed-interface
+    /// functions race to initialize it. Only the first call wins; later
+    /// calls are no-ops, mirroring the `OnceLock` shape the generator used
+    /// to inline into every node's `consumer_dependencies.rs`.
+    pub fn register_consumer_dependencies_once<F>(&self, build: F)
+    where
+        F: FnOnce() -> PinnedSiblingMap,
+    {
+        static REGISTERED: OnceLock<()> = OnceLock::new();
+        REGISTERED.get_or_init(|| {
+            self.register_consumer_dependencies(build());
+        });
     }
 
     /// Look up the pinned-sibling link_ids registered for a given

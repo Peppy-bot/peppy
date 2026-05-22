@@ -12,9 +12,10 @@ use std::{
 /// link_ids declared in a node's `depends_on.{nodes, interfaces}`. The map
 /// is keyed by `(name, tag)`; the value is the list of link_ids declared
 /// with `from_any: false` (or unset) on that group. Used by codegen to
-/// emit a single `MessengerHandle::register_consumer_dependencies` call at
-/// node bootstrap so from_any consumers know which producer link_ids a
-/// sibling pinned dependency on the same `(name, tag)` already claims.
+/// emit a single `MessengerHandle::register_consumer_dependencies_once`
+/// call at node bootstrap so from_any consumers know which producer
+/// link_ids a sibling pinned dependency on the same `(name, tag)` already
+/// claims.
 ///
 /// Groups without any from_any sibling are still included; the registration
 /// is a no-op when nothing wildcards on this `(name, tag)`. Filtering at
