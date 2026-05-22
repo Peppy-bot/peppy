@@ -308,7 +308,7 @@ mod tests {
             nodes: vec![NodeDependency {
                 name: NodeName::new("camera").expect("name should be valid"),
                 tag: "v1".to_string(),
-                link_id: "_".to_string(),
+                link_id: DEFAULT_LINK_ID_SENTINEL.to_string(),
                 from_any: false,
             }],
             interfaces: vec![],

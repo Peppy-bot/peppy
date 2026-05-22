@@ -108,7 +108,7 @@ impl TryFrom<&str> for Segment {
         if s.contains('/') {
             return Err(SegmentError::ContainsSlash(s.to_string()));
         }
-        if matches!(s, "*" | "**" | "_") {
+        if matches!(s, "*" | "**") || s == DEFAULT_LINK_ID {
             return Err(SegmentError::ReservedSentinel(s.to_string()));
         }
         Ok(Self(s.to_string()))
