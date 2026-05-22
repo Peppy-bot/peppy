@@ -1,19 +1,20 @@
 use config::AnyType;
 use config::launcher::Name;
+use config::node::{DependsOn, NodeDependency};
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
-use core_node_api::NodeStage;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
-    NodeRunResult,
+    NodeRunResult, StackListRequest,
 };
+use core_node_api::{InstanceState, NodeStage, SerializedNodeGraph};
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
 use rand::rng;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
@@ -22,7 +23,7 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
-use peppylib::core_node::transport::{poll_node_info, send_node_run};
+use peppylib::core_node::transport::{poll_node_info, poll_stack_list, send_node_run};
 /// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
 /// Matches `node info`'s request timeout — this is a metadata lookup,
 /// not a long-running action, so it must fail fast if the daemon is down
@@ -285,6 +286,233 @@ pub fn validate_link_ids(input: &[String]) -> std::result::Result<Vec<String>, S
     Ok(out)
 }
 
+/// One consumer-pin that nobody is publishing yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingLinkId {
+    pub link_id: String,
+    /// Stack nodes that declared this `link_id` against the target —
+    /// `(consumer_name, consumer_tag)` pairs.
+    pub consumers: Vec<(String, String)>,
+}
+
+/// Pure helper that compares consumer-declared `link_id` pins against
+/// the set of `link_id`s about to exist (this launch's `--link-id`s
+/// plus any already-running instances of the same node). Returns one
+/// `MissingLinkId` per unsatisfied pin, with consumers listed in
+/// first-seen order and link_ids sorted alphabetically.
+///
+/// Inputs are intentionally plain so this function is trivially
+/// testable without a daemon or messenger.
+fn compute_missing_link_ids(
+    consumer_pins: &[(String, String, String)], // (link_id, consumer_name, consumer_tag)
+    available_link_ids: &BTreeSet<String>,
+) -> Vec<MissingLinkId> {
+    // Group pins by link_id (sorted) while preserving first-seen consumer order.
+    let mut grouped: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for (link_id, consumer_name, consumer_tag) in consumer_pins {
+        if available_link_ids.contains(link_id) {
+            continue;
+        }
+        let entry = grouped.entry(link_id.clone()).or_default();
+        let pair = (consumer_name.clone(), consumer_tag.clone());
+        if !entry.contains(&pair) {
+            entry.push(pair);
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|(link_id, consumers)| MissingLinkId { link_id, consumers })
+        .collect()
+}
+
+/// Bundle returned by [`gather_missing_consumer_link_ids`] — the pins
+/// the new instance can't cover plus the link_ids already advertised
+/// by Running instances of the same node, both needed to render the
+/// warning body.
+struct ConsumerLinkIdCheck {
+    missing: Vec<MissingLinkId>,
+    existing_link_ids: BTreeSet<String>,
+}
+
+/// Best-effort check that fires before the actual `node_run` goal. If
+/// any stack consumer pins the target node with a `link_id` that no
+/// instance (new or already-running) advertises, returns one
+/// `MissingLinkId` per pin. Returns an empty `missing` vec on success
+/// with no gaps. Returns an error only for unrecoverable transport
+/// failures — the call site logs and swallows it so the run still
+/// proceeds.
+async fn gather_missing_consumer_link_ids(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    target_name: &str,
+    target_tag: &str,
+    new_link_ids: &[String],
+) -> Result<ConsumerLinkIdCheck> {
+    let stack_response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_name,
+        NODE_INFO_PREFLIGHT_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("failed to list stack: {e}")))?;
+
+    let graph: SerializedNodeGraph = serde_json::from_str(&stack_response.graph_json)
+        .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))?;
+
+    // Available link_ids = those advertised by Running instances of the
+    // target node + the ones the operator just supplied for this launch.
+    let mut existing_link_ids: BTreeSet<String> = BTreeSet::new();
+    for node in &graph.nodes {
+        if node.name == target_name && node.tag == target_tag {
+            for inst in &node.instances {
+                if inst.state == InstanceState::Running {
+                    existing_link_ids.extend(inst.link_ids.iter().cloned());
+                }
+            }
+        }
+    }
+    let mut available: BTreeSet<String> = new_link_ids.iter().cloned().collect();
+    available.extend(existing_link_ids.iter().cloned());
+
+    // For every other node in the stack, fetch its full config and scan
+    // its `depends_on.nodes` for pins targeting (target_name, target_tag).
+    // Skip Root entities — those are the daemon's own internals.
+    let mut consumer_pins: Vec<(String, String, String)> = Vec::new();
+    for node in &graph.nodes {
+        if node.name == target_name && node.tag == target_tag {
+            continue;
+        }
+        if matches!(node.stage, Some(NodeStage::Root)) {
+            continue;
+        }
+        let info_response = poll_node_info(
+            &NodeInfoRequest::new(node.name.clone(), node.tag.clone()),
+            messenger,
+            core_node_name,
+            CALLER_INSTANCE_ID,
+            core_node_name,
+            NODE_INFO_PREFLIGHT_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            Error::ExecutionFailed(format!(
+                "failed to fetch info for stack node '{}:{}': {e}",
+                node.name, node.tag
+            ))
+        })?;
+
+        let info = match info_response {
+            NodeInfoResponse::Found(info) => info,
+            NodeInfoResponse::NotInStack => continue,
+        };
+        let Some(depends_on) = info.config.manifest.depends_on.as_ref() else {
+            continue;
+        };
+        collect_target_pins(
+            depends_on,
+            target_name,
+            target_tag,
+            &node.name,
+            &node.tag,
+            &mut consumer_pins,
+        );
+    }
+
+    Ok(ConsumerLinkIdCheck {
+        missing: compute_missing_link_ids(&consumer_pins, &available),
+        existing_link_ids,
+    })
+}
+
+/// Append `(link_id, consumer_name, consumer_tag)` tuples to `pins` for
+/// each entry in `depends_on.nodes` that pins `(target_name,
+/// target_tag)` with a non-wildcard, non-default `link_id`. Interface
+/// deps are intentionally not handled here; see plan §"Out of scope".
+fn collect_target_pins(
+    depends_on: &DependsOn,
+    target_name: &str,
+    target_tag: &str,
+    consumer_name: &str,
+    consumer_tag: &str,
+    pins: &mut Vec<(String, String, String)>,
+) {
+    for dep in &depends_on.nodes {
+        if pin_targets(dep, target_name, target_tag) {
+            pins.push((
+                dep.link_id.clone(),
+                consumer_name.to_owned(),
+                consumer_tag.to_owned(),
+            ));
+        }
+    }
+}
+
+/// Returns `true` when the dep is a concrete pin against `(name, tag)`
+/// — non-wildcard, non-default-sentinel.
+fn pin_targets(dep: &NodeDependency, target_name: &str, target_tag: &str) -> bool {
+    dep.name.as_str() == target_name
+        && dep.tag == target_tag
+        && !dep.from_any
+        && dep.link_id != pmi::DEFAULT_LINK_ID
+}
+
+/// Renders the warning body shown to the operator. Splits out so the
+/// content can be asserted on in unit tests without going through the
+/// tracing layer.
+fn format_missing_link_ids_warning(
+    target_name: &str,
+    target_tag: &str,
+    missing: &[MissingLinkId],
+    new_link_ids: &[String],
+    existing_link_ids: &BTreeSet<String>,
+) -> String {
+    use std::fmt::Write;
+    let mut out = format!(
+        "{}:{} has stack consumers that expect link_ids no instance is publishing:\n",
+        target_name, target_tag
+    );
+    for entry in missing {
+        let consumers = entry
+            .consumers
+            .iter()
+            .map(|(n, t)| format!("{n}:{t}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            out,
+            "  - link_id `{}` — required by {}",
+            entry.link_id, consumers
+        );
+    }
+    if !new_link_ids.is_empty() {
+        let _ = writeln!(
+            out,
+            "This instance will publish under: [{}]",
+            new_link_ids.join(", ")
+        );
+    }
+    if !existing_link_ids.is_empty() {
+        let _ = writeln!(
+            out,
+            "Existing running instances publish under: [{}]",
+            existing_link_ids
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    out.push_str("Launch additional ");
+    out.push_str(target_name);
+    out.push(':');
+    out.push_str(target_tag);
+    out.push_str(" instances with the missing --link-id values to satisfy these consumers.");
+    out
+}
+
 /// Shared logic for running a node instance.
 /// Used by both `run_node` and `add_node` (when --run is set).
 #[allow(clippy::too_many_arguments)]
@@ -481,6 +709,15 @@ async fn run_node_async(
         }
     }
 
+    emit_missing_consumer_link_ids_warning(
+        conn.messenger,
+        &conn.core_node_name,
+        &node_name,
+        &tag,
+        &link_ids,
+    )
+    .await;
+
     run_instance_async(
         conn.messenger,
         &conn.core_node_name,
@@ -494,6 +731,45 @@ async fn run_node_async(
     .await?;
 
     Ok(())
+}
+
+/// Runs the consumer-pin check and emits a single `warn!` if any pins
+/// are missing. Swallows errors — the warning is informational, not
+/// load-bearing.
+async fn emit_missing_consumer_link_ids_warning(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    target_name: &str,
+    target_tag: &str,
+    new_link_ids: &[String],
+) {
+    match gather_missing_consumer_link_ids(
+        messenger,
+        core_node_name,
+        target_name,
+        target_tag,
+        new_link_ids,
+    )
+    .await
+    {
+        Ok(check) if !check.missing.is_empty() => {
+            let body = format_missing_link_ids_warning(
+                target_name,
+                target_tag,
+                &check.missing,
+                new_link_ids,
+                &check.existing_link_ids,
+            );
+            warn!("{}", body);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            debug!(
+                "skipping consumer-link_id warning for {}:{}: {}",
+                target_name, target_tag, e
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -751,5 +1027,210 @@ mod tests {
 
         // Past budget — same error path.
         assert!(remaining_max_secs(30, 45, "run").is_err());
+    }
+
+    fn pin(link_id: &str, consumer_name: &str, consumer_tag: &str) -> (String, String, String) {
+        (
+            link_id.to_owned(),
+            consumer_name.to_owned(),
+            consumer_tag.to_owned(),
+        )
+    }
+
+    fn available(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn compute_missing_link_ids_returns_empty_when_no_consumer_pins() {
+        let missing = compute_missing_link_ids(&[], &available(&["main"]));
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn compute_missing_link_ids_returns_empty_when_pin_is_covered_by_new_link_id() {
+        let pins = vec![pin("front_left", "perception", "v3")];
+        let missing = compute_missing_link_ids(&pins, &available(&["front_left"]));
+        assert!(
+            missing.is_empty(),
+            "front_left should be satisfied: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn compute_missing_link_ids_reports_uncovered_pin() {
+        let pins = vec![pin("front_right", "perception", "v3")];
+        let missing = compute_missing_link_ids(&pins, &available(&["main"]));
+        assert_eq!(
+            missing,
+            vec![MissingLinkId {
+                link_id: "front_right".to_owned(),
+                consumers: vec![("perception".to_owned(), "v3".to_owned())],
+            }]
+        );
+    }
+
+    #[test]
+    fn compute_missing_link_ids_groups_consumers_under_same_link_id() {
+        let pins = vec![
+            pin("front_right", "perception", "v3"),
+            pin("front_right", "recorder", "v1"),
+        ];
+        let missing = compute_missing_link_ids(&pins, &available(&[]));
+        assert_eq!(
+            missing.len(),
+            1,
+            "duplicate link_id should group: {missing:?}"
+        );
+        assert_eq!(missing[0].link_id, "front_right");
+        assert_eq!(
+            missing[0].consumers,
+            vec![
+                ("perception".to_owned(), "v3".to_owned()),
+                ("recorder".to_owned(), "v1".to_owned()),
+            ],
+            "consumers should preserve first-seen order"
+        );
+    }
+
+    #[test]
+    fn compute_missing_link_ids_dedupes_identical_consumer_entries() {
+        let pins = vec![
+            pin("front_right", "perception", "v3"),
+            pin("front_right", "perception", "v3"),
+        ];
+        let missing = compute_missing_link_ids(&pins, &available(&[]));
+        assert_eq!(missing.len(), 1);
+        assert_eq!(
+            missing[0].consumers.len(),
+            1,
+            "identical consumer should dedupe"
+        );
+    }
+
+    #[test]
+    fn compute_missing_link_ids_orders_results_alphabetically_by_link_id() {
+        let pins = vec![
+            pin("zebra", "consumer_z", "v1"),
+            pin("apple", "consumer_a", "v1"),
+        ];
+        let missing = compute_missing_link_ids(&pins, &available(&[]));
+        let link_ids: Vec<&str> = missing.iter().map(|m| m.link_id.as_str()).collect();
+        assert_eq!(link_ids, vec!["apple", "zebra"]);
+    }
+
+    #[test]
+    fn pin_targets_accepts_concrete_pin_against_node() {
+        let dep = NodeDependency {
+            name: config::node::Name::new("my_node").unwrap(),
+            tag: "v1".to_string(),
+            link_id: "front_left".to_string(),
+            from_any: false,
+        };
+        assert!(pin_targets(&dep, "my_node", "v1"));
+    }
+
+    #[test]
+    fn pin_targets_rejects_from_any_dep() {
+        let dep = NodeDependency {
+            name: config::node::Name::new("my_node").unwrap(),
+            tag: "v1".to_string(),
+            link_id: "front_left".to_string(),
+            from_any: true,
+        };
+        assert!(!pin_targets(&dep, "my_node", "v1"));
+    }
+
+    #[test]
+    fn pin_targets_rejects_default_sentinel() {
+        let dep = NodeDependency {
+            name: config::node::Name::new("my_node").unwrap(),
+            tag: "v1".to_string(),
+            link_id: pmi::DEFAULT_LINK_ID.to_string(),
+            from_any: false,
+        };
+        assert!(!pin_targets(&dep, "my_node", "v1"));
+    }
+
+    #[test]
+    fn pin_targets_rejects_other_node() {
+        let dep = NodeDependency {
+            name: config::node::Name::new("other_node").unwrap(),
+            tag: "v1".to_string(),
+            link_id: "front_left".to_string(),
+            from_any: false,
+        };
+        assert!(!pin_targets(&dep, "my_node", "v1"));
+    }
+
+    #[test]
+    fn format_missing_link_ids_warning_renders_full_body() {
+        let missing = vec![
+            MissingLinkId {
+                link_id: "front_left".to_owned(),
+                consumers: vec![("perception".to_owned(), "v3".to_owned())],
+            },
+            MissingLinkId {
+                link_id: "front_right".to_owned(),
+                consumers: vec![
+                    ("perception".to_owned(), "v3".to_owned()),
+                    ("recorder".to_owned(), "v1".to_owned()),
+                ],
+            },
+        ];
+        let new_link_ids = vec!["main".to_owned()];
+        let existing: BTreeSet<String> = ["aux".to_owned()].into_iter().collect();
+        let body =
+            format_missing_link_ids_warning("my_node", "v1", &missing, &new_link_ids, &existing);
+        assert!(
+            body.contains("my_node:v1"),
+            "body should name target: {body}"
+        );
+        assert!(
+            body.contains("front_left"),
+            "body should list missing link_id: {body}"
+        );
+        assert!(
+            body.contains("front_right"),
+            "body should list missing link_id: {body}"
+        );
+        assert!(
+            body.contains("perception:v3"),
+            "body should name consumer: {body}"
+        );
+        assert!(
+            body.contains("recorder:v1"),
+            "body should name second consumer: {body}"
+        );
+        assert!(
+            body.contains("This instance will publish under: [main]"),
+            "body should report new link_ids: {body}"
+        );
+        assert!(
+            body.contains("Existing running instances publish under: [aux]"),
+            "body should report existing link_ids: {body}"
+        );
+        assert!(
+            body.contains("--link-id"),
+            "body should hint at the CLI flag: {body}"
+        );
+    }
+
+    #[test]
+    fn format_missing_link_ids_warning_omits_empty_published_lines() {
+        let missing = vec![MissingLinkId {
+            link_id: "front_left".to_owned(),
+            consumers: vec![("perception".to_owned(), "v3".to_owned())],
+        }];
+        let body =
+            format_missing_link_ids_warning("my_node", "v1", &missing, &[], &BTreeSet::new());
+        assert!(
+            !body.contains("This instance will publish under"),
+            "empty new_link_ids should omit the line: {body}"
+        );
+        assert!(
+            !body.contains("Existing running instances publish under"),
+            "empty existing_link_ids should omit the line: {body}"
+        );
     }
 }

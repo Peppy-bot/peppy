@@ -188,6 +188,7 @@ pub async fn spawn_running_instance(
             mount_paths_resolved: &[],
             peppy_dirs: &harness.peppy_dirs,
             output_sinks: harness.output_sinks(),
+            link_ids: &[],
         },
     )
     .await

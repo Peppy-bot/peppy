@@ -40,6 +40,7 @@ impl From<&NodeEntity> for SerializedNode {
                 .map(|i| SerializedInstance {
                     instance_id: i.instance_id().as_str().to_string(),
                     state: i.state(),
+                    link_ids: i.link_ids().to_vec(),
                 })
                 .collect(),
         }
@@ -170,6 +171,12 @@ pub struct StartContext<'a> {
     /// `validate_goal_env_vars`, `inject_rust_build_env`, and
     /// `inject_node_runtime_env` in core-node).
     pub env_vars: &'a [(String, String)],
+    /// Producer-side `link_ids` this instance will advertise, mirrored from
+    /// `RuntimeConfig.node_instance.link_ids`. Recorded on the
+    /// `TrackedNodeInstance` so the daemon can expose it via `node_info` /
+    /// `stack_list` for downstream consumers (e.g. the CLI warning for
+    /// unsatisfied stack-consumer link_ids).
+    pub link_ids: &'a [String],
     /// Mount paths with `${parameters:...}` already resolved by core-node
     /// (against runtime arguments and the blocked-source policy). Container
     /// nodes only.
@@ -650,6 +657,7 @@ impl NodeEntity {
                 ctx.instance_id.clone(),
                 None,
                 InstanceState::Starting,
+                ctx.link_ids.to_vec(),
             ));
 
             (
@@ -1052,6 +1060,10 @@ pub struct TrackedNodeInstance {
     /// Persisted so it can be removed when the instance stops or aborts. `None`
     /// for snapshot-restored or test-fixture instances.
     runtime_config_path: Option<PathBuf>,
+    /// Producer-side `link_ids` this instance advertises on the wire, mirroring
+    /// `RuntimeConfig.node_instance.link_ids` at start time. Empty for root
+    /// instances and for snapshot/test fixtures that don't track them.
+    link_ids: Vec<String>,
 }
 
 impl TrackedNodeInstance {
@@ -1060,13 +1072,19 @@ impl TrackedNodeInstance {
     /// child process and have not yet committed it pass `InstanceState::Starting`;
     /// callers that are reconstructing an entity from a snapshot or test
     /// fixture pass `InstanceState::Running`.
-    pub fn new(instance_id: Name, pid: Option<u32>, state: InstanceState) -> Self {
+    pub fn new(
+        instance_id: Name,
+        pid: Option<u32>,
+        state: InstanceState,
+        link_ids: Vec<String>,
+    ) -> Self {
         Self {
             instance_id,
             pid,
             state,
             instance_dir: None,
             runtime_config_path: None,
+            link_ids,
         }
     }
 
@@ -1080,6 +1098,11 @@ impl TrackedNodeInstance {
 
     pub fn state(&self) -> InstanceState {
         self.state
+    }
+
+    /// Returns the producer-side `link_ids` this instance advertises.
+    pub fn link_ids(&self) -> &[String] {
+        &self.link_ids
     }
 
     /// Returns the on-disk instance directory recorded during start, if any.
@@ -1108,4 +1131,3 @@ impl TrackedNodeInstance {
         self.runtime_config_path = Some(runtime_config_path);
     }
 }
-

@@ -197,6 +197,7 @@ async fn stop_instance_skips_starting_instances() {
             mount_paths_resolved: &[],
             peppy_dirs: &harness.peppy_dirs,
             output_sinks: harness.output_sinks(),
+            link_ids: &[],
         },
     )
     .await
@@ -708,6 +709,7 @@ async fn prepare_and_spawn_rejects_when_not_built() {
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
             output_sinks: h.output_sinks(),
+            link_ids: &[],
         },
     )
     .await
@@ -741,6 +743,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
             output_sinks: h.output_sinks(),
+            link_ids: &[],
         },
     )
     .await
@@ -811,6 +814,7 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
             output_sinks: h.output_sinks(),
+            link_ids: &[],
         },
     )
     .await
@@ -889,6 +893,7 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
             output_sinks: h.output_sinks(),
+            link_ids: &[],
         },
     )
     .await
@@ -973,6 +978,7 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
             output_sinks: h.output_sinks(),
+            link_ids: &[],
         },
     )
     .await
@@ -1037,6 +1043,7 @@ mod backwards_transitions_are_rejected {
                 Name::new("inst").unwrap(),
                 Some(1),
                 InstanceState::Running,
+                Vec::new(),
             )],
         }
     }

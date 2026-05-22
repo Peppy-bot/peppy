@@ -274,6 +274,10 @@ struct NodeInstanceInfo {
     instanceId @0 :Text;
     # Per-instance state: "starting" or "running"
     state @1 :Text;
+    # Producer-side link_ids this instance advertises on the wire. Mirrors
+    # `RuntimeConfig.node_instance.link_ids`. An empty list means the
+    # instance only publishes under the default link_id sentinel.
+    linkIds @2 :List(Text);
 }
 
 # Node info lookup result.
