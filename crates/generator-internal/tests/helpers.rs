@@ -159,6 +159,8 @@ pub struct CapturedChild {
     pub child: std::process::Child,
     stdout: Arc<Mutex<Vec<u8>>>,
     stderr: Arc<Mutex<Vec<u8>>>,
+    stdout_drainer: Option<thread::JoinHandle<()>>,
+    stderr_drainer: Option<thread::JoinHandle<()>>,
 }
 
 impl CapturedChild {
@@ -166,19 +168,37 @@ impl CapturedChild {
         let stdout = Arc::new(Mutex::new(Vec::new()));
         let stderr = Arc::new(Mutex::new(Vec::new()));
 
-        if let Some(pipe) = child.stdout.take() {
+        let stdout_drainer = child.stdout.take().map(|pipe| {
             let buf = Arc::clone(&stdout);
-            thread::spawn(move || drain_pipe(pipe, buf));
-        }
-        if let Some(pipe) = child.stderr.take() {
+            thread::spawn(move || drain_pipe(pipe, buf))
+        });
+        let stderr_drainer = child.stderr.take().map(|pipe| {
             let buf = Arc::clone(&stderr);
-            thread::spawn(move || drain_pipe(pipe, buf));
-        }
+            thread::spawn(move || drain_pipe(pipe, buf))
+        });
 
         Self {
             child,
             stdout,
             stderr,
+            stdout_drainer,
+            stderr_drainer,
+        }
+    }
+
+    /// Kills the child, reaps its exit status, and joins both drainer
+    /// threads so the captured buffers reflect every byte the child wrote
+    /// before its pipes closed. Idempotent against already-exited children
+    /// (`kill` on a dead pid is a no-op error we ignore) so callers can
+    /// invoke this from both the timeout and post-exit paths.
+    fn reap_and_join(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(handle) = self.stdout_drainer.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.stderr_drainer.take() {
+            let _ = handle.join();
         }
     }
 
@@ -202,6 +222,7 @@ impl CapturedChild {
                 .try_wait()
                 .expect("failed to poll process status for generated project")
             {
+                self.reap_and_join();
                 let stdout = lossy_snapshot(&self.stdout);
                 let stderr = lossy_snapshot(&self.stderr);
                 panic!(
@@ -215,6 +236,7 @@ impl CapturedChild {
             }
 
             if start.elapsed() > timeout {
+                self.reap_and_join();
                 let stdout = lossy_snapshot(&self.stdout);
                 let stderr = lossy_snapshot(&self.stderr);
                 panic!(
@@ -245,8 +267,7 @@ impl CapturedChild {
             if let Some(limit) = timeout
                 && start.elapsed() > limit
             {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
+                self.reap_and_join();
                 panic!(
                     "process timed out after {:?} for project at {}\nstdout:\n{}\nstderr:\n{}",
                     limit,
@@ -261,11 +282,16 @@ impl CapturedChild {
                 .try_wait()
                 .expect("failed to poll process status for generated project")
             {
-                // The drainer threads exit on EOF, which Linux delivers
-                // after the child closes its pipe ends. `wait()` above
-                // ensures the child is reaped before we read the buffers;
-                // a brief sleep lets any tail bytes land.
-                thread::sleep(Duration::from_millis(50));
+                // Joining the drainer handles guarantees the buffers
+                // contain every byte the child wrote before its pipes
+                // closed; a fixed sleep here would race against slow
+                // drainers under load.
+                if let Some(handle) = self.stdout_drainer.take() {
+                    let _ = handle.join();
+                }
+                if let Some(handle) = self.stderr_drainer.take() {
+                    let _ = handle.join();
+                }
                 let stdout = std::mem::take(&mut *self.stdout.lock().unwrap());
                 let stderr = std::mem::take(&mut *self.stderr.lock().unwrap());
                 return std::process::Output {

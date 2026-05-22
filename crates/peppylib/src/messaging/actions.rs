@@ -348,17 +348,17 @@ impl ActionMessenger {
     /// in [`Self::expose`]. `to_link_id` `None` targets the default
     /// link_id; `Some(value)` targets a specific producer link_id.
     ///
-    /// When `target_instance_id` is `None` (wildcard / from_any), this
-    /// performs a discover-then-pin sequence: a lightweight probe to the
-    /// goal sub-service identifies a single responding producer, then the
-    /// real goal is delivered pinned to that producer. The probe is
-    /// filtered server-side before the user handler runs (see
-    /// [`crate::messaging::services::ServiceEndpoint`]), so non-winning
-    /// producers never execute the goal handler. Without this, every
-    /// matching producer would run the handler concurrently; for actions
-    /// with side effects (motor commands, file writes) that is a real-world
-    /// safety hazard. Pinned callers (`target_instance_id: Some`) skip
-    /// discovery and pay no overhead.
+    /// When either `target_core_node` or `target_instance_id` is `None`
+    /// (wildcard / from_any), this performs a discover-then-pin sequence:
+    /// a lightweight probe to the goal sub-service identifies a single
+    /// responding producer, then the real goal is delivered pinned to that
+    /// producer. The probe is filtered server-side before the user handler
+    /// runs (see [`crate::messaging::services::ServiceEndpoint`]), so
+    /// non-winning producers never execute the goal handler. Without this,
+    /// every matching producer would run the handler concurrently; for
+    /// actions with side effects (motor commands, file writes) that is a
+    /// real-world safety hazard. Fully pinned callers (both `target_*`
+    /// `Some`) skip discovery and pay no overhead.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
@@ -378,34 +378,36 @@ impl ActionMessenger {
 
         let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
 
-        // Discover a single producer when the caller did not pin. The probe
-        // runs server-side without invoking the goal handler; only the
-        // discovered producer will receive the real goal request.
-        let (resolved_core, resolved_inst) = if target_instance_id.is_none() {
-            let probe_sender = ActionWireSender::new(
-                as_core_node,
-                as_instance_id,
-                target_core_node,
-                target_instance_id,
-                to_target.clone(),
-                to_link_id,
-                to_action_name,
-            )?
-            .with_excluded_link_ids(&excluded)?;
-            // Cap discovery at PROBE_TIMEOUT or the caller's goal budget,
-            // whichever is shorter, so a tight `goal_timeout` still fails
-            // fast against unreachable producers.
-            let discovery_timeout = goal_timeout.min(PROBE_TIMEOUT);
-            let (core, inst) =
-                discover_producer(messenger, &probe_sender.goal_service(), discovery_timeout)
-                    .await?;
-            (Some(core), Some(inst))
-        } else {
-            (
-                target_core_node.map(str::to_string),
-                target_instance_id.map(str::to_string),
-            )
-        };
+        // Discover a single producer when the caller did not pin either
+        // addressing slot. The probe runs server-side without invoking the
+        // goal handler; only the discovered producer will receive the real
+        // goal request.
+        let (resolved_core, resolved_inst) =
+            if target_instance_id.is_none() || target_core_node.is_none() {
+                let probe_sender = ActionWireSender::new(
+                    as_core_node,
+                    as_instance_id,
+                    target_core_node,
+                    target_instance_id,
+                    to_target.clone(),
+                    to_link_id,
+                    to_action_name,
+                )?
+                .with_excluded_link_ids(&excluded)?;
+                // Cap discovery at PROBE_TIMEOUT or the caller's goal budget,
+                // whichever is shorter, so a tight `goal_timeout` still fails
+                // fast against unreachable producers.
+                let discovery_timeout = goal_timeout.min(PROBE_TIMEOUT);
+                let (core, inst) =
+                    discover_producer(messenger, &probe_sender.goal_service(), discovery_timeout)
+                        .await?;
+                (Some(core), Some(inst))
+            } else {
+                (
+                    target_core_node.map(str::to_string),
+                    target_instance_id.map(str::to_string),
+                )
+            };
 
         let sender = ActionWireSender::new(
             as_core_node,

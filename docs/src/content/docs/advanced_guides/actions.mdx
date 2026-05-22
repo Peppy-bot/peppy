@@ -372,7 +372,7 @@ After a goal is cancelled, requesting the result will fail with a timeout since 
 ### Pinned `link_id` takes precedence over `from_any`
 
 When the same `(name, tag)` appears in `depends_on` with both a pinned
-entry and a `from_any: true` entry, a `from_any` `send_goal` is routed
+entry and a `from_any: true` entry, a `from_any` `fire_goal` is routed
 to a producer link_id that **no pinned sibling claims**. The producer's
 goal / cancel / result sub-services agree on the same link_id for a
 given `goal_id`, so the feedback channel for that goal arrives under

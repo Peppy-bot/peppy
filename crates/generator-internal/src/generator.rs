@@ -76,13 +76,12 @@ pub fn generate_peppygen_lib(
 
     let execution = node_config.execution;
 
-    let pinned_siblings_map = common::pinned_siblings_per_group(&node_config.manifest);
-
     let result = match language {
         PeppygenLanguage::Rust => {
             let mut rust_generator = RustGenerator::new();
             rust_generator.set_parameters(execution.parameters);
-            rust_generator.set_pinned_siblings_map(pinned_siblings_map);
+            rust_generator
+                .set_pinned_siblings_map(common::pinned_siblings_per_group(&node_config.manifest));
             generate_with_backend(
                 rust_generator,
                 &interfaces,
@@ -98,7 +97,6 @@ pub fn generate_peppygen_lib(
             let mut python_generator = PythonGenerator::new();
             python_generator.set_parameters(execution.parameters);
             python_generator.set_container(execution.container.is_some());
-            python_generator.set_pinned_siblings_map(pinned_siblings_map);
             generate_with_backend(
                 python_generator,
                 &interfaces,

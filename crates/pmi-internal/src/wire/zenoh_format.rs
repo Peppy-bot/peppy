@@ -52,11 +52,15 @@ impl ZenohWireFormat {
         let segments: Vec<&str> = keyexpr.split('/').collect();
         let core_node = extract_caller_segment(segments.get(1).copied(), "caller_core_node")?;
         let instance_id = extract_caller_segment(segments.get(3).copied(), "caller_instance_id")?;
-        // link_id is at index 8 in the topic publish format. It may be absent
-        // for non-topic keyexprs that share the caller-prefix shape (e.g.
-        // service reply keyexprs), in which case we leave it empty; the
-        // sibling-precedence filter only consults link_id for topic
-        // subscriptions, and an empty value never matches a pinned literal.
+        // link_id sits at index 8 in the topic publish shape and is the
+        // signal the consumer-side sibling-precedence filter consults when
+        // dropping wildcard topic messages whose producer link_id is
+        // already claimed by a pinned subscription. Service reply keyexprs
+        // also carry a literal at this index (it's the link_id the
+        // responder claimed via `choose_link_id`), so segment 8 is
+        // populated there too; an empty value would only appear for a
+        // truncated wire shape and is treated as "no link_id" since it can
+        // never match a pinned literal.
         let link_id = segments
             .get(8)
             .copied()
@@ -355,10 +359,12 @@ fn action_root(target: &SenderTarget, link_id: &str, action: &str) -> String {
 /// caller's `core_node` and `instance_id` so the adapter can build a
 /// [`crate::types::TopicMessage`] without re-parsing the wire string.
 /// `link_id` is the producer's bound link_id (segment 8 of the publish
-/// shape), surfaced so wildcard subscribers can drop messages whose link_id
-/// is claimed by a sibling pinned subscription on the same `(name, tag)`.
-/// Empty when the source keyexpr isn't a topic publish (e.g. service reply
-/// keyexprs that share the caller-prefix shape).
+/// shape), surfaced so the consumer-side sibling-precedence filter can
+/// drop wildcard topic messages whose link_id is claimed by a sibling
+/// pinned subscription on the same `(name, tag)`. Service reply keyexprs
+/// also populate this slot (with the responder's claimed link_id inside
+/// `service_root`); only truncated or malformed wire shapes leave it
+/// empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedTopicKey {
     pub(crate) core_node: String,

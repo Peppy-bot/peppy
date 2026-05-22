@@ -2595,11 +2595,12 @@ async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
     let handler_fired = Arc::new(AtomicUsize::new(0));
     let handler_fired_clone = Arc::clone(&handler_fired);
     let server_task = tokio::spawn(async move {
-        // Race a request loop against a shutdown signal: Zenoh's keyexpr
-        // matcher should refuse to route the unbound-link_id selector to any
-        // of this producer's queryables, so handle_next_request would block
-        // forever. We bail out after a wall-clock budget; if the handler
-        // ever runs the counter trips.
+        // The wildcard queryable matches the `torso` selector first, so the
+        // request reaches the producer's dispatcher; `choose_link_id` then
+        // returns `None` because `torso` isn't in the bound set and the
+        // request is dropped without being handed to `handle_next_request`.
+        // That leaves this call blocked indefinitely, so we race it against
+        // a wall-clock budget; the counter trips only if the handler runs.
         let _ = tokio::time::timeout(
             Duration::from_millis(500),
             endpoint.handle_next_request(move |_ctx| {

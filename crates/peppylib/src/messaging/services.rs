@@ -7,7 +7,7 @@ use pmi::{
     Messenger, ResponseToken, SenderTarget, ServiceKind, ServiceQueryKind, ServiceQueryable,
     ServiceWireReceiver, ServiceWireSender, TopicMessage,
 };
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::Arc, time::Instant};
 use tokio::{sync::Mutex, time::Duration};
 use tracing::{error, warn};
 
@@ -355,6 +355,7 @@ impl ServiceMessenger {
         let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
         let response_timeout: Option<Duration> = response_timeout.into();
 
+        let started_at = Instant::now();
         let (resolved_core, resolved_inst) = if target_instance_id.is_none() {
             let probe_sender = ServiceWireSender::new(
                 bound_core_node,
@@ -384,6 +385,24 @@ impl ServiceMessenger {
             )
         };
 
+        // Discovery counts against the caller's single end-to-end budget;
+        // pass only the remaining slice to `poll_service` so a tight
+        // `response_timeout` can't be silently doubled by a slow probe.
+        let elapsed = started_at.elapsed();
+        let remaining_budget = match response_timeout {
+            Some(total) => {
+                let remaining = total.saturating_sub(elapsed);
+                if remaining.is_zero() {
+                    return Err(Error::ServiceTimeout {
+                        instance_id: resolved_inst.clone(),
+                        service_name: to_service_name.to_string(),
+                    });
+                }
+                Some(remaining)
+            }
+            None => None,
+        };
+
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
@@ -400,7 +419,7 @@ impl ServiceMessenger {
                 &sender,
                 request_payload,
                 ServiceQueryKind::UserRequest,
-                response_timeout,
+                remaining_budget,
             )
             .await
     }

@@ -670,17 +670,19 @@ pub fn collect_consumed_interfaces(
     // still addresses native producers via `SenderTarget::Node` and conformed
     // ones via `SenderTarget::Interface`.
     let mut node_dep_offerings: HashMap<(String, String), DependencyOfferings> = HashMap::new();
-    // Memoized parsed interface contracts for `depends_on.interfaces` entries,
-    // keyed by `(name, tag)`. `resolve_interface_doc` handles SHA-pin
-    // matching and on-disk drift detection per load.
-    let mut iface_dep_contracts: HashMap<(String, String), config::interface::PeppyInterface> =
+    // Memoized parsed interface contracts for `depends_on.interfaces`
+    // entries, keyed by `link_id` so two entries with the same
+    // `(name, tag)` but different sha256 pin or `from_any` flag cache and
+    // resolve separately. `resolve_interface_doc` handles SHA-pin matching
+    // and on-disk drift detection per load.
+    let mut iface_dep_contracts: HashMap<String, config::interface::PeppyInterface> =
         HashMap::new();
 
-    for entry in dep_lookup.values() {
-        let key = (entry.name.clone(), entry.tag.clone());
+    for (link_id, entry) in dep_lookup.iter() {
         match entry.kind {
             DependencyKind::Node => {
-                if node_dep_offerings.contains_key(&key) {
+                let node_key = (entry.name.clone(), entry.tag.clone());
+                if node_dep_offerings.contains_key(&node_key) {
                     continue;
                 }
                 let Some(dep_config) = resolve(&entry.name, &entry.tag) else {
@@ -693,10 +695,13 @@ pub fn collect_consumed_interfaces(
                             entry.name, entry.tag
                         )
                     })?;
-                node_dep_offerings.insert(key, build_dependency_offerings(&dep_config, &conformed));
+                node_dep_offerings.insert(
+                    node_key,
+                    build_dependency_offerings(&dep_config, &conformed),
+                );
             }
             DependencyKind::Interface => {
-                if iface_dep_contracts.contains_key(&key) {
+                if iface_dep_contracts.contains_key(link_id) {
                     continue;
                 }
                 let parsed = resolve_interface_doc(
@@ -705,7 +710,7 @@ pub fn collect_consumed_interfaces(
                     &entry.tag,
                     entry.sha256.as_deref(),
                 )?;
-                iface_dep_contracts.insert(key, parsed);
+                iface_dep_contracts.insert(link_id.clone(), parsed);
             }
         }
     }
@@ -843,7 +848,7 @@ pub fn collect_consumed_interfaces(
 fn resolve_consumed_offering<T>(
     dep_lookup: &HashMap<String, DependencyLookupEntry>,
     node_dep_offerings: &HashMap<(String, String), DependencyOfferings>,
-    iface_dep_contracts: &HashMap<(String, String), config::interface::PeppyInterface>,
+    iface_dep_contracts: &HashMap<String, config::interface::PeppyInterface>,
     link_id: &str,
     lookup_name: &str,
     extract_from_node: impl FnOnce(
@@ -853,10 +858,9 @@ fn resolve_consumed_offering<T>(
     extract_from_interface: impl FnOnce(&config::interface::PeppyInterface, &str) -> Option<T>,
 ) -> Option<(T, generator::DependencyContext)> {
     let entry = dep_lookup.get(link_id)?;
-    let key = (entry.name.clone(), entry.tag.clone());
     match entry.kind {
         DependencyKind::Node => {
-            let offerings = node_dep_offerings.get(&key)?;
+            let offerings = node_dep_offerings.get(&(entry.name.clone(), entry.tag.clone()))?;
             let (extracted, origin) = extract_from_node(offerings, lookup_name)?;
             Some((
                 extracted,
@@ -870,7 +874,7 @@ fn resolve_consumed_offering<T>(
             ))
         }
         DependencyKind::Interface => {
-            let parsed = iface_dep_contracts.get(&key)?;
+            let parsed = iface_dep_contracts.get(link_id)?;
             let extracted = extract_from_interface(parsed, lookup_name)?;
             Some((
                 extracted,
