@@ -7,7 +7,7 @@ use crate::{
 };
 use serde::{
     Deserialize, Serialize,
-    de::{self, Deserializer},
+    de::{self, Deserializer, MapAccess, Visitor},
 };
 use std::{
     collections::{BTreeMap, HashSet},
@@ -58,6 +58,13 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
         for deployment in &raw.deployments {
             for instance in &deployment.instances {
                 for (binding, target) in &instance.bindings {
+                    if binding == DEFAULT_LINK_ID_SENTINEL {
+                        let err = StructuredError::BindingSentinelKey {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            binding: binding.clone(),
+                        };
+                        return Err(de::Error::custom(err.json5_message()));
+                    }
                     if !known_ids.contains(target.as_str()) {
                         let err = StructuredError::UnknownInstanceId {
                             owner_instance_id: instance.instance_id.to_string(),
@@ -129,28 +136,49 @@ fn deserialize_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, Stri
 where
     D: Deserializer<'de>,
 {
-    let map = BTreeMap::<String, String>::deserialize(deserializer)?;
-    validate_named_items(map.keys().map(String::as_str), "binding").map_err(de::Error::custom)?;
+    // Capture entries as a Vec to preserve duplicate keys: a direct
+    // BTreeMap::deserialize would silently overwrite, hiding the
+    // duplicate from `validate_named_items`. The sentinel-key check
+    // lives in `PeppyLauncher::deserialize` where the owning
+    // `instance_id` is in scope and can be attached to the structured
+    // error.
+    let entries = deserializer.deserialize_map(BindingEntriesVisitor)?;
+    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), "binding")
+        .map_err(de::Error::custom)?;
     // Duplicate binding values are intentionally permitted: a single
     // producer may serve multiple `link_id` slots on the same consumer
     // (or across consumers), which the launch-time wiring materializes
     // as a producer with multiple `link_ids` advertised in parallel.
     // Only non-emptiness is enforced here.
-    for (key, value) in &map {
+    for (key, value) in &entries {
         if value.trim().is_empty() {
             return Err(de::Error::custom(format!(
                 "binding target for key `{key}` cannot be empty"
             )));
         }
     }
-    if let Some(sentinel_key) = map.keys().find(|k| k.as_str() == DEFAULT_LINK_ID_SENTINEL) {
-        let err = StructuredError::BindingSentinelKey {
-            owner_instance_id: String::new(),
-            binding: sentinel_key.clone(),
-        };
-        return Err(de::Error::custom(err.json5_message()));
+    Ok(entries.into_iter().collect())
+}
+
+struct BindingEntriesVisitor;
+
+impl<'de> Visitor<'de> for BindingEntriesVisitor {
+    type Value = Vec<(String, String)>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a map of binding link_id -> instance_id strings")
     }
-    Ok(map)
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries = Vec::with_capacity(access.size_hint().unwrap_or(0));
+        while let Some((key, value)) = access.next_entry::<String, String>()? {
+            entries.push((key, value));
+        }
+        Ok(entries)
+    }
 }
 
 /// Walks every consumer instance's `bindings` map and inverts it to
@@ -542,20 +570,52 @@ mod tests {
     /// The reserved producer-default segment cannot appear as a binding
     /// key. Using it would be a redundant no-op (the producer already
     /// publishes under that segment when no binding is declared) and
-    /// likely indicates a misuse.
+    /// likely indicates a misuse. The check runs at the launcher level
+    /// (rather than per-instance) so the structured error can carry the
+    /// owning `instance_id`.
     #[test]
     fn bindings_reject_underscore_key() {
         let json5 = r#"{
-            instance_id: "backbone",
-            bindings: { "_": "cam_torso" }
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {
+                    source: { local: "./backbone" },
+                    instances: [{
+                        instance_id: "backbone",
+                        bindings: { "_": "backbone" }
+                    }]
+                }
+            ]
         }"#;
-        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+        let err = serde_json5::from_str::<PeppyLauncher>(json5)
             .expect_err("`_` binding key must be rejected");
         let parsing_err = ParsingError::from(err);
-        let ParsingError::BindingSentinelKey { binding, .. } = &parsing_err else {
+        let ParsingError::BindingSentinelKey {
+            owner_instance_id,
+            binding,
+        } = &parsing_err
+        else {
             panic!("expected BindingSentinelKey, got {parsing_err:?}");
         };
+        assert_eq!(owner_instance_id, "backbone");
         assert_eq!(binding, "_");
+    }
+
+    /// Duplicate binding keys must be rejected. The raw map deserializer
+    /// must surface them before the BTreeMap collapses duplicates.
+    #[test]
+    fn bindings_reject_duplicate_keys() {
+        let json5 = r#"{
+            instance_id: "backbone",
+            bindings: { "main": "prod_a", "main": "prod_b" }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("duplicate binding key must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate") && msg.contains("main"),
+            "unexpected error: {msg}"
+        );
     }
 
     fn make_deployments(json5: &str) -> Vec<Deployment> {

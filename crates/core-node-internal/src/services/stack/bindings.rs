@@ -123,6 +123,18 @@ fn check_dead_keys_and_target_mismatch(
             continue;
         };
         let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
+            // The launcher-level deserializer already rejects bindings
+            // whose target_instance_id is not declared elsewhere in the
+            // launcher. If a target nonetheless fails to resolve at the
+            // plan phase (e.g., the deployment that owned the target
+            // was dropped between parsing and planning), fail loudly
+            // here rather than silently passing the pinned dep through
+            // to runtime.
+            errors.push(ParsingError::UnknownInstanceId {
+                owner_instance_id: instance.instance_id.to_string(),
+                binding: binding_key.clone(),
+                instance_id: target_id.clone(),
+            });
             continue;
         };
         if target_item.node_name != expected_name || target_item.node_tag != expected_tag {
@@ -471,6 +483,39 @@ mod tests {
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     }
 
+    /// A binding pointing at an `instance_id` that the planner did not
+    /// produce (defensive case: launcher-level dedup should already
+    /// catch this) surfaces as an `UnknownInstanceId` error instead of
+    /// silently passing the pinned dep through to runtime.
+    #[test]
+    fn rejects_binding_whose_target_is_unknown_to_planner() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "cons1",
+                bindings: { main: "ghost_producer" }
+            }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{
+                nodes: [{ name: "camera", tag: "v1", link_id: "main" }]
+            }"#,
+        );
+        let items = vec![item("cons", "v1", &cons_instances, Some(&depends_on))];
+        let errors = validate_bindings(&items);
+        assert_eq!(errors.len(), 1, "expected one error, got {errors:?}");
+        let ParsingError::UnknownInstanceId {
+            owner_instance_id,
+            binding,
+            instance_id,
+        } = &errors[0]
+        else {
+            panic!("expected UnknownInstanceId, got {:?}", errors[0]);
+        };
+        assert_eq!(owner_instance_id, "cons1");
+        assert_eq!(binding, "main");
+        assert_eq!(instance_id, "ghost_producer");
+    }
+
     /// All three sub-checks are aggregated: a single consumer triggers
     /// dead-key + missing-pinned in one pass; the validator does not
     /// short-circuit on the first error.
@@ -497,7 +542,7 @@ mod tests {
         assert!(matches!(errors[0], ParsingError::BindingDeadKey { .. }));
         assert!(matches!(
             errors[1],
-            ParsingError::BindingMissingForPinnedDep { .. }
+            ParsingError::BindingMissingForPinnedDep(_)
         ));
     }
 }

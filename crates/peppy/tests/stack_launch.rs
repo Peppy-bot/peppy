@@ -882,23 +882,34 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     .execute(&ctx)
     .expect("launch command should succeed");
 
-    // The `sh` wrappers copy the runtime config before sleeping. Poll the
-    // producer dump until it parses (the consumer dump is read once for a
-    // negative-case assertion afterwards).
+    // The `sh` wrappers copy the runtime config before sleeping. Poll
+    // BOTH dumps before stopping anything: stopping the consumer before
+    // its dump has flushed would race with the negative-case assertion
+    // below.
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut producer_config: Option<config::runtime::RuntimeConfig> = None;
+    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
     while Instant::now() < deadline {
-        if let Ok(content) = fs::read_to_string(&producer_dump)
+        if producer_config.is_none()
+            && let Ok(content) = fs::read_to_string(&producer_dump)
             && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
         {
             producer_config = Some(cfg);
+        }
+        if consumer_config.is_none()
+            && let Ok(content) = fs::read_to_string(&consumer_dump)
+            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+        {
+            consumer_config = Some(cfg);
+        }
+        if producer_config.is_some() && consumer_config.is_some() {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    // Stop both instances before asserting so a failure doesn't leak
-    // `sleep 30` subprocesses past the test.
+    // Stop both instances after both dumps are captured so a failure
+    // doesn't leak `sleep 30` subprocesses past the test.
     for instance_id in [consumer_instance_id, producer_instance_id] {
         let _ = NodeCommand {
             command: NodeCommands::Stop {
@@ -926,10 +937,12 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
          silent-loss bug is back",
     );
 
-    let consumer_content =
-        fs::read_to_string(&consumer_dump).expect("consumer runtime config dump should exist");
-    let consumer_config: config::runtime::RuntimeConfig =
-        serde_json5::from_str(&consumer_content).expect("consumer dump should parse");
+    let consumer_config = consumer_config.unwrap_or_else(|| {
+        panic!(
+            "consumer runtime config dump never appeared / parsed at {}",
+            consumer_dump.display()
+        )
+    });
     assert!(
         consumer_config.node_instance.link_ids.is_empty(),
         "the consumer is not a binding target so its link_ids should stay empty (the runtime \
