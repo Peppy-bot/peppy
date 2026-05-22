@@ -261,6 +261,13 @@ pub enum Error {
 
     #[error("message format for `{context}` is not available in the generator")]
     MessageFormatUnavailable { context: String },
+
+    #[error(
+        "another from_any topic subscription for `{name}` (tag `{tag}`) is \
+         already active on this messenger; at most one from_any subscription \
+         per (name, tag) is allowed (the sibling-exclusion dedupe depends on it)"
+    )]
+    DuplicateFromAnyConsumer { name: String, tag: String },
 }
 
 struct InstanceSuffix<'a>(Option<&'a str>);

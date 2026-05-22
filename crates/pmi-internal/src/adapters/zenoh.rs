@@ -350,12 +350,13 @@ impl MessengerBackend for ZenohAdapter {
         // sibling-pinned set, peppylib filters by `link_id()` above the
         // adapter (the primary may be excluded and the secondary may be
         // the one to keep). Dropping secondaries here would silence the
-        // only acceptable publish in that case. The peppylib filter still
-        // dedupes: every publish in the emit either lands in the
-        // exclusion set (dropped) or doesn't, and at most one bound
-        // link_id can be "not in the excluded set" per consumer manifest
-        // by construction (the sibling pinned dependencies claim all the
-        // others).
+        // only acceptable publish in that case. The peppylib filter then
+        // dedupes alone — relying on "at most one bound link_id is not in
+        // the excluded set" — which holds because peppylib's
+        // `MessengerHandle::reserve_from_any_topic` rejects a second
+        // from_any subscription on the same `(name, tag)` at subscribe
+        // time, making it the runtime enforcer of the manifest validator's
+        // invariant.
         let drop_secondary = recv.from_link_id.is_none() && !recv.defers_secondary_drop;
         self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await

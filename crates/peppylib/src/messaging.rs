@@ -36,9 +36,9 @@ use pmi::{
     ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{
-    Arc, RwLock,
+    Arc, Mutex as StdMutex, RwLock,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -63,10 +63,45 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// from_any path must skip. Empty / absent groups apply no exclusion.
 type PinnedSiblingMap = HashMap<(String, String), Vec<String>>;
 
+/// Key in [`MessengerHandle::active_from_any_topics`]. Two from_any topic
+/// subscriptions conflict only when they would observe the same producer
+/// publishes — i.e. they share the producer-side filter
+/// `(from_core_node, from_instance_id, producer_name, producer_tag)`. Two
+/// subscriptions on the same `(name, tag)` but filtered to different
+/// producer instances target disjoint producers, do not share dedupe
+/// scope, and must be allowed to coexist.
+type ActiveFromAnyKey = (Option<String>, Option<String>, String, String);
+
 #[derive(Clone)]
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
     pinned_siblings: Arc<RwLock<PinnedSiblingMap>>,
+    /// Live from_any topic subscriptions per `(producer_name, producer_tag)`.
+    /// The sibling-exclusion filter in [`topics::Subscription`] can only
+    /// dedupe correctly when at most one from_any subscription exists per
+    /// `(name, tag)` on this messenger; the manifest validator enforces this
+    /// at config time, but [`Self::register_consumer_dependencies`] and
+    /// direct calls to [`topics::TopicMessenger::subscribe`] can bypass it.
+    /// [`topics::TopicMessenger::subscribe`] reserves a key here on the
+    /// from_any path; [`FromAnyTopicGuard`] releases it on drop.
+    active_from_any_topics: Arc<StdMutex<HashSet<ActiveFromAnyKey>>>,
+}
+
+/// RAII reservation in [`MessengerHandle::active_from_any_topics`]. Held by
+/// a [`topics::Subscription`] for its full lifetime; the slot is released
+/// when the subscription is dropped, freeing the `(name, tag)` for a future
+/// from_any subscription.
+pub(crate) struct FromAnyTopicGuard {
+    key: ActiveFromAnyKey,
+    set: Arc<StdMutex<HashSet<ActiveFromAnyKey>>>,
+}
+
+impl Drop for FromAnyTopicGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.set.lock() {
+            guard.remove(&self.key);
+        }
+    }
 }
 
 /// 16 hex chars (64 bits) of correlation entropy, salted with `domain` so
@@ -104,6 +139,7 @@ impl MessengerHandle {
         Self {
             messenger,
             pinned_siblings: Arc::new(RwLock::new(HashMap::new())),
+            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
         }
     }
 
@@ -154,6 +190,47 @@ impl MessengerHandle {
             return Vec::new();
         };
         self.excluded_link_ids_for(target.name(), target.tag())
+    }
+
+    /// Reserve a `(from_core_node, from_instance_id, producer_name,
+    /// producer_tag)` slot in the active from_any topic set. Returns a
+    /// guard that releases the slot on drop, or
+    /// [`Error::DuplicateFromAnyConsumer`] if a from_any topic subscription
+    /// matching the same producer-side filter is already live on this
+    /// messenger. The producer-side filter is part of the key because two
+    /// from_any subs scoped to different producer instances do not share
+    /// dedupe scope and must coexist; the failure mode the guard prevents
+    /// is two from_any subs observing the *same* producer's emits, which
+    /// is exactly when their `(name, tag)` exclusion sets and
+    /// primary/secondary filtering need to give one (and only one)
+    /// delivery per emit.
+    pub(crate) fn reserve_from_any_topic(
+        &self,
+        from_core_node: Option<&str>,
+        from_instance_id: Option<&str>,
+        name: &str,
+        tag: &str,
+    ) -> Result<FromAnyTopicGuard> {
+        let key: ActiveFromAnyKey = (
+            from_core_node.map(str::to_string),
+            from_instance_id.map(str::to_string),
+            name.to_string(),
+            tag.to_string(),
+        );
+        let mut guard = self
+            .active_from_any_topics
+            .lock()
+            .expect("active_from_any_topics mutex poisoned");
+        if !guard.insert(key.clone()) {
+            return Err(Error::DuplicateFromAnyConsumer {
+                name: name.to_string(),
+                tag: tag.to_string(),
+            });
+        }
+        Ok(FromAnyTopicGuard {
+            key,
+            set: Arc::clone(&self.active_from_any_topics),
+        })
     }
 
     /// Pre-bind a per-topic publisher. Locks the messenger once at
@@ -210,6 +287,7 @@ impl MessengerHandle {
         Ok(Self {
             messenger: Arc::new(Mutex::new(messenger)),
             pinned_siblings: Arc::new(RwLock::new(HashMap::new())),
+            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
         })
     }
 

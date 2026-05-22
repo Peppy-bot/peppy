@@ -3371,6 +3371,142 @@ async fn topic_pinned_subscriber_claims_link_id_from_wildcard_sibling() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn topic_duplicate_from_any_subscription_is_rejected() {
+    // The wire-level dedupe for wildcard topic subscribers (the
+    // primary/secondary attachment plus the sibling-exclusion filter)
+    // depends on the manifest validator's "at most one from_any consumer
+    // per (name, tag)" invariant. Anything that bypasses the validator
+    // (a test, a tooling integration, a future runtime-deps feature) can
+    // install state that violates it and corrupt aggregator state with
+    // silent duplicate deliveries.
+    //
+    // This asserts the runtime guard at `MessengerHandle::subscribe`
+    // catches the violation: two from_any topic subscriptions on the same
+    // `(name, tag)` cannot coexist. After dropping the first the slot is
+    // released so a later subscription succeeds, and the surviving
+    // from_any subscription still receives exactly one delivery per
+    // multi-link emit (proving the existing dedupe still works under the
+    // enforced invariant).
+    let router = TestRouterContext::start().await;
+    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
+    let subscriber_handle = router.messenger().await;
+
+    // Register a degenerate sibling map: empty pinned siblings under the
+    // target (name, tag). The point is that the guard fires even when the
+    // sibling-exclusion filter would have nothing to drop — the failure
+    // scenario the manifest validator would otherwise have prevented.
+    let mut pinned_map = HashMap::new();
+    pinned_map.insert(
+        ("depth_camera".to_string(), "v1".to_string()),
+        Vec::<String>::new(),
+    );
+    subscriber_handle.register_consumer_dependencies(pinned_map);
+
+    let target = || SenderTarget::interface("depth_camera", "v1").expect("iface target");
+
+    let sub_one = TopicMessenger::subscribe(
+        &subscriber_handle,
+        "sub_core",
+        "sub_inst_one",
+        Some(target()),
+        None,
+        "frames",
+        None,
+        None,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("first from_any subscribe should succeed");
+
+    let second = TopicMessenger::subscribe(
+        &subscriber_handle,
+        "sub_core",
+        "sub_inst_two",
+        Some(target()),
+        None,
+        "frames",
+        None,
+        None,
+        QoSProfile::Reliable,
+    )
+    .await;
+    match second {
+        Err(Error::DuplicateFromAnyConsumer { ref name, ref tag })
+            if name == "depth_camera" && tag == "v1" => {}
+        Err(other) => panic!("unexpected error rejecting second from_any: {other:?}"),
+        Ok(_) => panic!("second from_any subscribe must be rejected, got Ok"),
+    }
+
+    // A pinned subscription on the same (name, tag) is unaffected — only
+    // from_any subs take the slot.
+    let _sub_pinned = TopicMessenger::subscribe(
+        &subscriber_handle,
+        "sub_core",
+        "sub_inst_pinned",
+        Some(target()),
+        Some(LINK_LEFT),
+        "frames",
+        None,
+        None,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("pinned subscribe on same (name, tag) must coexist with from_any");
+
+    // Drop the first from_any sub; its guard releases the slot and the
+    // next from_any subscribe should succeed.
+    drop(sub_one);
+
+    let mut sub_three = TopicMessenger::subscribe(
+        &subscriber_handle,
+        "sub_core",
+        "sub_inst_three",
+        Some(target()),
+        None,
+        "frames",
+        None,
+        None,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("from_any subscribe should succeed after the first guard dropped");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let emitter_handle = router.messenger().await;
+    TopicMessenger::emit(
+        &emitter_handle,
+        "pub_core",
+        "pub_inst",
+        target(),
+        &bound,
+        "frames",
+        QoSProfile::Reliable,
+        Payload::from_static(b"frame-0"),
+    )
+    .await
+    .expect("emit should succeed");
+
+    // Exactly one delivery on the surviving from_any sub. The degenerate
+    // sibling map intentionally fails to claim either bound link_id, so
+    // the existing dedupe (primary/secondary attachment) must do the work
+    // alone — and the runtime guard ensures it isn't asked to do more.
+    let first = tokio::time::timeout(Duration::from_secs(2), sub_three.on_next_message())
+        .await
+        .expect("from_any subscriber should not time out")
+        .expect("from_any subscriber should receive a message");
+    assert_eq!(first.payload().as_ref(), b"frame-0");
+    let dup = tokio::time::timeout(Duration::from_millis(300), sub_three.on_next_message()).await;
+    assert!(
+        dup.is_err(),
+        "from_any subscriber must not receive a duplicate (got {:?})",
+        dup.ok().flatten().map(|m| m.payload().as_ref().to_vec())
+    );
+
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_pinned_consumer_claims_link_id_from_from_any_sibling() {
     // The consumer process has a pinned `depends_on` entry for LINK_LEFT and
     // a separate `from_any: true` entry on the same (name, tag). After

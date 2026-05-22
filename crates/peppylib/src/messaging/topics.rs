@@ -1,4 +1,4 @@
-use super::MessengerHandle;
+use super::{FromAnyTopicGuard, MessengerHandle};
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
@@ -14,6 +14,10 @@ pub struct Subscription {
     /// a registered sibling set; empty otherwise. The receive paths skip
     /// messages whose producer `link_id()` is in this set.
     excluded_link_ids: Vec<String>,
+    /// Live for the subscription's full lifetime when this is a from_any
+    /// topic sub; releases the messenger's per-`(name, tag)` reservation
+    /// on drop. `None` for pinned subs and target-less subscriptions.
+    _from_any_guard: Option<FromAnyTopicGuard>,
 }
 
 impl Subscription {
@@ -21,11 +25,17 @@ impl Subscription {
         Self {
             inner,
             excluded_link_ids: Vec::new(),
+            _from_any_guard: None,
         }
     }
 
     pub(crate) fn with_excluded_link_ids(mut self, excluded: Vec<String>) -> Self {
         self.excluded_link_ids = excluded;
+        self
+    }
+
+    pub(crate) fn with_from_any_guard(mut self, guard: FromAnyTopicGuard) -> Self {
+        self._from_any_guard = Some(guard);
         self
     }
 
@@ -93,6 +103,21 @@ impl TopicMessenger {
         from_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
+        // Reserve the from_any `(name, tag)` slot before any wire work. The
+        // sibling-exclusion filter below assumes "at most one from_any topic
+        // sub per (name, tag) per messenger"; the manifest validator
+        // enforces it at config time but this is the runtime guard at the
+        // wire's trust boundary. If wire setup fails afterwards the guard
+        // is dropped as a local and the slot is released.
+        let from_any_guard = match (&from_target, from_link_id) {
+            (Some(target), None) => Some(messenger.reserve_from_any_topic(
+                from_core_node,
+                from_instance_id,
+                target.name(),
+                target.tag(),
+            )?),
+            _ => None,
+        };
         let excluded = messenger.excluded_link_ids_for_wildcard(from_target.as_ref(), from_link_id);
         let recv = TopicWireReceiver::new(
             as_core_node,
@@ -105,7 +130,11 @@ impl TopicMessenger {
         )?
         .with_defers_secondary_drop(!excluded.is_empty());
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
-        Ok(Subscription::new(subscription).with_excluded_link_ids(excluded))
+        let mut subscription = Subscription::new(subscription).with_excluded_link_ids(excluded);
+        if let Some(guard) = from_any_guard {
+            subscription = subscription.with_from_any_guard(guard);
+        }
+        Ok(subscription)
     }
 
     /// Consumes a topic from any publisher (external/unlinked topics).
