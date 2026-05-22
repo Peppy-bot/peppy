@@ -503,25 +503,21 @@ async fn service_communication_poll_no_instance_id_target() {
             });
 
             service_ready_tx1.send(()).unwrap();
-            let handled = tokio::time::timeout(service_wait_timeout, handler)
-                .await
-                .expect("service handler timed out");
-            let handled = handled.expect("service should receive exactly one request");
-
-            assert!(
-                handled,
-                "service subscription closed before handling request"
-            );
+            // The handler may or may not be invoked depending on which
+            // listener wins the discovery probe race; both outcomes are
+            // valid. The `call_count == 1` assertion at the end verifies
+            // that exactly one of the two listener handlers ran.
+            let _ = tokio::time::timeout(service_wait_timeout, handler).await;
 
             Ok::<(), Error>(())
         })
     };
 
-    // Second listener, slower to respond. With discover-then-pin, the
-    // discovery probe goes to both listeners but only the fastest will
-    // receive the real request; this listener's user handler should
-    // therefore never run. We still spawn the listener so the discovery
-    // race has two contestants on the wire.
+    // Second listener with the same service shape. Discovery sends a probe
+    // to both listeners; the probe is auto-replied in the request loop
+    // before the user handler runs, so the winner is whichever probe reply
+    // reaches the caller first — a race with no inherent ordering.
+    // Whichever listener loses, its user handler simply never executes.
     let listener_core_node2 = "listener_core_node2";
     let listener_instance_id2 = "listener_instance2";
     let service_task2 = {
@@ -549,15 +545,12 @@ async fn service_communication_poll_no_instance_id_target() {
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &request_payload);
                     call_count.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(Duration::from_millis(500)).await;
                     Ok(response_payload)
                 }
             });
 
             service_ready_tx2.send(()).unwrap();
-            // The handler will time out because discovery picked the other
-            // listener; that is the expected outcome here.
-            let _ = tokio::time::timeout(Duration::from_millis(800), handler).await;
+            let _ = tokio::time::timeout(service_wait_timeout, handler).await;
 
             Ok::<(), Error>(())
         })
@@ -594,9 +587,22 @@ async fn service_communication_poll_no_instance_id_target() {
         .await
         .expect("caller should receive response");
 
-        // Listener instance 1 is supposed to have responded more quickly here
-        assert_eq!(response.instance_id(), listener_instance_id1);
-        assert_eq!(response.core_node(), listener_core_node1);
+        // Discovery picks whichever listener replies to the probe first;
+        // that is a wire-level race with no inherent ordering, so either
+        // listener is a valid winner. We assert the response matches the
+        // winning listener's identity and that exactly one user handler
+        // ran (see `call_count` check below).
+        let winning_core_node = if response.instance_id() == listener_instance_id1 {
+            listener_core_node1
+        } else if response.instance_id() == listener_instance_id2 {
+            listener_core_node2
+        } else {
+            panic!(
+                "response should come from one of the two listeners, got instance_id={}",
+                response.instance_id()
+            );
+        };
+        assert_eq!(response.core_node(), winning_core_node);
         assert_eq!(response.payload(), &response_payload);
     }
 
