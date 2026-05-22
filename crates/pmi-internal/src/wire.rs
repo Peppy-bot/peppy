@@ -74,8 +74,9 @@ impl Segment {
 
 /// Wire literal used at the `link_id` slot when a producer is run without
 /// `--link-id`. Kept in sync with [`Segment::default_link_id`] / the CLI
-/// validator in `peppy::commands::node::run`.
-pub const DEFAULT_LINK_ID: &str = "_";
+/// validator in `peppy::commands::node::run`. The single source of truth
+/// lives in `config::consts::DEFAULT_LINK_ID_SENTINEL`; this is a re-export.
+pub const DEFAULT_LINK_ID: &str = config::consts::DEFAULT_LINK_ID_SENTINEL;
 
 impl std::ops::Deref for Segment {
     type Target = str;

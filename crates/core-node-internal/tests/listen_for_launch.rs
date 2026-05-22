@@ -92,7 +92,10 @@ const LAUNCHER_EXAMPLE1: &str = r#"
       instances: [
         {
           instance_id: "main_robot_brain",
-          arguments: {}
+          arguments: {},
+          bindings: {
+            uvc_camera: "camera_front",
+          },
         }
       ]
     },

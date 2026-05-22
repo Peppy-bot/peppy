@@ -1,3 +1,4 @@
+mod bindings;
 mod launch;
 mod list;
 mod reset;

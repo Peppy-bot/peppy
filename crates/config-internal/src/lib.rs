@@ -29,7 +29,10 @@ pub use common::{
 };
 
 // -- error --
-pub use error::{Error as ConfigError, ParsingError, Result as ConfigResult};
+pub use error::{
+    BindingMissingForPinnedDep, BindingTargetMismatch, Error as ConfigError, ParsingError,
+    Result as ConfigResult,
+};
 
 // -- atomic_write --
 pub mod atomic_write {
@@ -40,9 +43,9 @@ pub mod atomic_write {
 pub mod consts {
     pub use crate::internal::consts::{
         ALLOWED_CONFIG_CHARS, AppEnv, CORE_NODE_TOPIC_NAME, DAEMON_STATE_FILE_ENV,
-        DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT,
-        DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, NODE_CONFIG_FILE,
-        PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
+        DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_LINK_ID_SENTINEL, DEFAULT_MESSAGING_HOST,
+        DEFAULT_MESSAGING_PORT, DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE,
+        NODE_CONFIG_FILE, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
         PEPPYLIB_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION, PeppyDirs,
         RUNTIME_CONFIG_VAR_NAME, app_env, set_app_env,
     };
@@ -100,7 +103,7 @@ pub mod launcher {
     pub use crate::internal::launcher::{
         Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
         DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides, Name,
-        PeppyLauncher, PeppyLauncherParser,
+        PeppyLauncher, PeppyLauncherParser, link_ids_by_instance_id,
     };
 }
 

@@ -660,3 +660,280 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
         "error message should mention 'timeout' and 'max' on max launch failure. Got: {err_msg}",
     );
 }
+
+/// Writes a minimal peppy.json5 with an explicit `run_cmd` (so the daemon's
+/// build phase is skipped) and an optional `depends_on` block. Mirrors
+/// `write_node_config` but accepts run_cmd as owned strings and a manifest
+/// extension for `depends_on`.
+fn write_node_config_for_helper(
+    nodes_directory: &Path,
+    node_name: &str,
+    node_tag: &str,
+    git_hash: &str,
+    run_cmd: &[String],
+    depends_on_json5: Option<&str>,
+) -> PathBuf {
+    let node_dir = nodes_directory.join(node_name);
+    fs::create_dir_all(&node_dir).expect("failed to create node directory");
+    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
+    let run_cmd_json5 = run_cmd
+        .iter()
+        .map(|arg| serde_json::to_string(arg).expect("run_cmd arg should serialize"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let manifest_extra = depends_on_json5
+        .map(|deps| format!(",\n            depends_on: {deps}"))
+        .unwrap_or_default();
+    let body = format!(
+        r#"{{
+            peppy_schema: "node_v1",
+            manifest: {{
+                name: "{node_name}",
+                tag: "{node_tag}"{manifest_extra}
+            }},
+            execution: {{
+                language: "rust",
+                run_cmd: [{run_cmd_json5}]
+            }}
+        }}"#
+    );
+    fs::write(&node_config_path, body).expect("failed to write node config");
+    config::fingerprint::create_codegen_fingerprint(
+        &node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let peppy_output_dir = node_dir.join(PEPPY_OUTPUT_DIR);
+    fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
+    fs::write(peppy_output_dir.join("git.hash"), git_hash).expect("failed to write node git hash");
+    node_dir
+}
+
+/// Regression for the launcher's `bindings` field actually wiring
+/// producer `link_ids` at launch time. The dummy `sh` run_cmd dumps the
+/// `RuntimeConfig` it received from the daemon (via the
+/// `PEPPY_RUNTIME_CONFIG` env var, which points at a JSON5 file) to a
+/// known location; the test then parses that dump and asserts the
+/// producer's `link_ids` vec was populated from the consumer's binding.
+/// Without the fix the vec stays empty (defaulted to `_` later by the
+/// runtime), so this is the boundary that surfaces the silent-loss bug.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_populates_link_ids_from_launcher_bindings() {
+    let serve = ServeCommandEmulation::with_zenoh()
+        .await
+        .expect("failed to create zenoh serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+    assert!(
+        !core_node_name.is_empty(),
+        "core_node_name should not be empty"
+    );
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
+    let producer_dump = dump_dir.path().join("producer.json5");
+    let consumer_dump = dump_dir.path().join("consumer.json5");
+
+    let producer_name = "binding_producer";
+    let consumer_name = "binding_consumer";
+    let node_tag = "v1";
+    let producer_instance_id = "binding_prod_inst";
+    let consumer_instance_id = "binding_cons_inst";
+    let link_id = "main";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    // Each instance's run_cmd snapshots its own `PEPPY_RUNTIME_CONFIG`
+    // file to the test-owned dump location, then sleeps long enough that
+    // the test process has time to read the snapshot before issuing Stop.
+    let producer_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
+            producer_dump.display()
+        ),
+    ];
+    let producer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        producer_name,
+        node_tag,
+        &git_hash,
+        &producer_run_cmd,
+        None,
+    );
+
+    let consumer_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
+            consumer_dump.display()
+        ),
+    ];
+    let consumer_depends_on = format!(
+        r#"{{ nodes: [{{ name: "{producer_name}", tag: "{node_tag}", link_id: "{link_id}" }}] }}"#
+    );
+    let consumer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        consumer_name,
+        node_tag,
+        &git_hash,
+        &consumer_run_cmd,
+        Some(&consumer_depends_on),
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    // The dummy `sh` subprocess does not expose `node_ready`/`node_health`/
+    // `shutdown`, so impersonate them from the test process for each
+    // instance the launcher will spawn. The daemon's `wait_for_ready_signal`
+    // queries via Zenoh with a wildcard `link_id`, so the queryables
+    // declared here (with default link_ids) still match.
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let _ready_producer = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        producer_instance_id,
+        test_node_target(producer_name),
+        &[],
+    )
+    .await
+    .expect("producer ready service should start");
+    let _health_producer = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        producer_instance_id,
+        test_node_target(producer_name),
+        &[],
+    )
+    .await
+    .expect("producer health service should start");
+    let (_shutdown_producer, _) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        producer_instance_id,
+        test_node_target(producer_name),
+        &[],
+    )
+    .await
+    .expect("producer shutdown service should start");
+    let _ready_consumer = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        consumer_instance_id,
+        test_node_target(consumer_name),
+        &[],
+    )
+    .await
+    .expect("consumer ready service should start");
+    let _health_consumer = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        consumer_instance_id,
+        test_node_target(consumer_name),
+        &[],
+    )
+    .await
+    .expect("consumer health service should start");
+    let (_shutdown_consumer, _) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        consumer_instance_id,
+        test_node_target(consumer_name),
+        &[],
+    )
+    .await
+    .expect("consumer shutdown service should start");
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {{
+                    source: {{ local: "{producer_path}" }},
+                    instances: [{{ instance_id: "{producer_instance_id}" }}]
+                }},
+                {{
+                    source: {{ local: "{consumer_path}" }},
+                    instances: [{{
+                        instance_id: "{consumer_instance_id}",
+                        bindings: {{ {link_id}: "{producer_instance_id}" }}
+                    }}]
+                }}
+            ]
+        }}"#,
+        producer_path = producer_path.display(),
+        consumer_path = consumer_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect("launch command should succeed");
+
+    // The `sh` wrappers copy the runtime config before sleeping. Poll the
+    // producer dump until it parses (the consumer dump is read once for a
+    // negative-case assertion afterwards).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut producer_config: Option<config::runtime::RuntimeConfig> = None;
+    while Instant::now() < deadline {
+        if let Ok(content) = fs::read_to_string(&producer_dump)
+            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+        {
+            producer_config = Some(cfg);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // Stop both instances before asserting so a failure doesn't leak
+    // `sleep 30` subprocesses past the test.
+    for instance_id in [consumer_instance_id, producer_instance_id] {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(&ctx);
+    }
+
+    let producer_config = producer_config.unwrap_or_else(|| {
+        panic!(
+            "producer runtime config dump never appeared / parsed at {}",
+            producer_dump.display()
+        )
+    });
+    assert_eq!(
+        producer_config.node_instance.instance_id.as_str(),
+        producer_instance_id,
+    );
+    assert_eq!(
+        producer_config.node_instance.link_ids,
+        vec![link_id.to_string()],
+        "the launcher's binding `{link_id} -> {producer_instance_id}` should have populated \
+         the producer's link_ids vec with [`{link_id}`]; getting an empty vec here means the \
+         silent-loss bug is back",
+    );
+
+    let consumer_content =
+        fs::read_to_string(&consumer_dump).expect("consumer runtime config dump should exist");
+    let consumer_config: config::runtime::RuntimeConfig =
+        serde_json5::from_str(&consumer_content).expect("consumer dump should parse");
+    assert!(
+        consumer_config.node_instance.link_ids.is_empty(),
+        "the consumer is not a binding target so its link_ids should stay empty (the runtime \
+         defaults to the producer-default sentinel `_`); got {:?}",
+        consumer_config.node_instance.link_ids,
+    );
+}

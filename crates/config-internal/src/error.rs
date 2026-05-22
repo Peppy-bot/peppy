@@ -40,6 +40,42 @@ where
     })
 }
 
+/// Payload for [`ParsingError::BindingMissingForPinnedDep`]. Boxed in the
+/// variant so the five `String` fields do not inflate `ParsingError` past
+/// the `clippy::result_large_err` threshold.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "instance `{owner_instance_id}` declares a pinned `depends_on.{kind}` \
+     entry for `{expected_name}:{expected_tag}` (link_id `{link_id}`) but the \
+     launcher has no matching binding; this would cause silent message loss"
+)]
+pub struct BindingMissingForPinnedDep {
+    pub owner_instance_id: String,
+    pub link_id: String,
+    pub kind: String,
+    pub expected_name: String,
+    pub expected_tag: String,
+}
+
+/// Payload for [`ParsingError::BindingTargetMismatch`]. Kept as a separate
+/// struct (and boxed in the variant) so the seven `String` fields do not
+/// inflate `ParsingError` past the `clippy::result_large_err` threshold.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "binding `{binding}` on instance `{owner_instance_id}` targets instance \
+     `{target_instance_id}` (deploys `{actual_name}:{actual_tag}`), but the \
+     consumer's `depends_on.nodes` entry expects `{expected_name}:{expected_tag}`"
+)]
+pub struct BindingTargetMismatch {
+    pub owner_instance_id: String,
+    pub binding: String,
+    pub target_instance_id: String,
+    pub expected_name: String,
+    pub expected_tag: String,
+    pub actual_name: String,
+    pub actual_tag: String,
+}
+
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
     // -- General yaml syntax
@@ -95,6 +131,34 @@ pub enum ParsingError {
         binding: String,
         instance_id: String,
     },
+    #[error(
+        "binding key `{binding}` on instance `{owner_instance_id}` is the reserved producer-default sentinel and cannot be used as a binding slot"
+    )]
+    BindingSentinelKey {
+        owner_instance_id: String,
+        binding: String,
+    },
+    #[error(
+        "binding `{binding}` on instance `{owner_instance_id}` does not match any `link_id` declared in the consumer's `depends_on` (declared link_ids: [{declared_link_ids}])"
+    )]
+    BindingDeadKey {
+        owner_instance_id: String,
+        binding: String,
+        declared_link_ids: String,
+    },
+    /// Boxed payload for the same reason as
+    /// [`ParsingError::BindingTargetMismatch`]: keeps the variant's
+    /// String-heavy struct from inflating `ParsingError`'s size past the
+    /// `clippy::result_large_err` threshold.
+    #[error(transparent)]
+    BindingMissingForPinnedDep(Box<BindingMissingForPinnedDep>),
+    /// Boxed payload so this variant does not grow `ParsingError` past the
+    /// `clippy::result_large_err` threshold; without the indirection, the
+    /// seven `String` fields would inflate every `Result<_, _>` that
+    /// transitively wraps a `ParsingError` (notably code generated against
+    /// `peppylib::PeppyError`).
+    #[error(transparent)]
+    BindingTargetMismatch(Box<BindingTargetMismatch>),
 
     // -- container config: mount paths
     #[error(
@@ -119,6 +183,10 @@ pub enum StructuredError {
         owner_instance_id: String,
         binding: String,
         instance_id: String,
+    },
+    BindingSentinelKey {
+        owner_instance_id: String,
+        binding: String,
     },
 }
 
@@ -148,6 +216,13 @@ impl From<StructuredError> for ParsingError {
                 owner_instance_id,
                 binding,
                 instance_id,
+            },
+            StructuredError::BindingSentinelKey {
+                owner_instance_id,
+                binding,
+            } => ParsingError::BindingSentinelKey {
+                owner_instance_id,
+                binding,
             },
         }
     }
