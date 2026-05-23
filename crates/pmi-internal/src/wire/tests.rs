@@ -45,6 +45,32 @@ fn interface_new_rejects_reserved_sentinel() {
     assert!(matches!(err, SenderTargetError::InvalidSegment(_)));
 }
 
+// ─── Segment validators ───────────────────────────────────────────────────
+
+#[test]
+fn segment_try_from_rejects_at_sign() {
+    let err = Segment::try_from("foo@bar").unwrap_err();
+    assert!(matches!(err, SegmentError::ContainsAt(s) if s == "foo@bar"));
+}
+
+#[test]
+fn segment_try_link_id_rejects_at_sign() {
+    let err = Segment::try_link_id("cam@a").unwrap_err();
+    assert!(matches!(err, SegmentError::ContainsAt(s) if s == "cam@a"));
+}
+
+#[test]
+fn segment_try_link_id_still_rejects_slash_and_wildcards() {
+    assert!(matches!(
+        Segment::try_link_id("a/b"),
+        Err(SegmentError::ContainsSlash(_))
+    ));
+    assert!(matches!(
+        Segment::try_link_id("*"),
+        Err(SegmentError::ReservedSentinel(_))
+    ));
+}
+
 // ─── NodeIdentifier ───────────────────────────────────────────────────────
 
 #[test]

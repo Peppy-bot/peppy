@@ -76,15 +76,24 @@ pub struct BindingTargetMismatch {
     pub actual_tag: String,
 }
 
-/// Payload for [`ParsingError::DuplicateProducerLinkId`]. Boxed in the
+/// Payload for [`ParsingError::DuplicateConsumerPin`]. Boxed in the
 /// variant so the five `String` fields do not inflate `ParsingError` past
 /// the `clippy::result_large_err` threshold.
+///
+/// In the harmonized wire model the producer always advertises under the
+/// `_` link_id sentinel; consumers pin a specific producer by
+/// `from_instance_id` derived from the binding map. Two consumer
+/// instances of `{node_name}:{node_tag}` pinning the same `link_id` to
+/// *different* producers would silently route to different wire
+/// destinations from the same manifest — this is the case that fires
+/// the error.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "two instances of `{node_name}:{node_tag}` would both publish link_id `{link_id}` \
-     (`{instance_a}` and `{instance_b}`); a producer link_id must be unique within a node"
+    "two instances of `{node_name}:{node_tag}` bind link_id `{link_id}` to different producers \
+     (`{instance_a}` and `{instance_b}`); each consumer (name, tag, link_id) triple must resolve \
+     to a single producer instance"
 )]
-pub struct DuplicateProducerLinkId {
+pub struct DuplicateConsumerPin {
     pub node_name: String,
     pub node_tag: String,
     pub link_id: String,
@@ -192,13 +201,15 @@ pub enum ParsingError {
     /// `peppylib::PeppyError`).
     #[error(transparent)]
     BindingTargetMismatch(Box<BindingTargetMismatch>),
-    /// Two producer instances of the same `(node_name, node_tag)` would
-    /// end up advertising the same `link_id` (because consumer bindings
-    /// point that `link_id` at distinct producer `instance_id`s). Boxed
-    /// for the same `result_large_err` reason as the other binding
-    /// variants.
+    /// Two consumer instances of the same `(node_name, node_tag)` pin the
+    /// same `link_id` to different producer `instance_id`s. In the
+    /// harmonized wire model the consumer's binding map is the single
+    /// source of pin truth; two sibling consumers can't pin the same
+    /// link_id to different producers without silently routing to
+    /// different wire destinations from one manifest. Boxed for the same
+    /// `result_large_err` reason as the other binding variants.
     #[error(transparent)]
-    DuplicateProducerLinkId(Box<DuplicateProducerLinkId>),
+    DuplicateConsumerPin(Box<DuplicateConsumerPin>),
 
     // -- container config: mount paths
     #[error(

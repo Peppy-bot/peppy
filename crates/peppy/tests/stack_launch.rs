@@ -184,7 +184,6 @@ async fn node_launch_command_succeed() {
         &core_node_name,
         instance_id,
         test_node_target(node_b_name),
-        &[],
     )
     .await
     .expect("node ready service should start");
@@ -193,7 +192,6 @@ async fn node_launch_command_succeed() {
         &core_node_name,
         instance_id,
         test_node_target(node_b_name),
-        &[],
     )
     .await
     .expect("node health service should start");
@@ -202,7 +200,6 @@ async fn node_launch_command_succeed() {
         &core_node_name,
         instance_id,
         test_node_target(node_b_name),
-        &[],
     )
     .await
     .expect("node shutdown service should start");
@@ -797,7 +794,6 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         &core_node_name,
         producer_instance_id,
         test_node_target(producer_name),
-        &[],
     )
     .await
     .expect("producer ready service should start");
@@ -806,7 +802,6 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         &core_node_name,
         producer_instance_id,
         test_node_target(producer_name),
-        &[],
     )
     .await
     .expect("producer health service should start");
@@ -815,7 +810,6 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         &core_node_name,
         producer_instance_id,
         test_node_target(producer_name),
-        &[],
     )
     .await
     .expect("producer shutdown service should start");
@@ -824,7 +818,6 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         &core_node_name,
         consumer_instance_id,
         test_node_target(consumer_name),
-        &[],
     )
     .await
     .expect("consumer ready service should start");
@@ -833,7 +826,6 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         &core_node_name,
         consumer_instance_id,
         test_node_target(consumer_name),
-        &[],
     )
     .await
     .expect("consumer health service should start");
@@ -842,7 +834,6 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         &core_node_name,
         consumer_instance_id,
         test_node_target(consumer_name),
-        &[],
     )
     .await
     .expect("consumer shutdown service should start");
@@ -929,12 +920,9 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         producer_config.node_instance.instance_id.as_str(),
         producer_instance_id,
     );
-    assert_eq!(
-        producer_config.node_instance.link_ids,
-        vec![link_id.to_string()],
-        "the launcher's binding `{link_id} -> {producer_instance_id}` should have populated \
-         the producer's link_ids vec with [`{link_id}`]; getting an empty vec here means the \
-         silent-loss bug is back",
+    assert!(
+        producer_config.node_instance.bindings.is_empty(),
+        "producers do not declare bindings; the binding lives on the consumer",
     );
 
     let consumer_config = consumer_config.unwrap_or_else(|| {
@@ -943,11 +931,15 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
             consumer_dump.display()
         )
     });
-    assert!(
-        consumer_config.node_instance.link_ids.is_empty(),
-        "the consumer is not a binding target so its link_ids should stay empty (the runtime \
-         defaults to the producer-default sentinel `_`); got {:?}",
-        consumer_config.node_instance.link_ids,
+    assert_eq!(
+        consumer_config
+            .node_instance
+            .bindings
+            .get(link_id)
+            .map(String::as_str),
+        Some(producer_instance_id),
+        "the launcher's binding `{link_id} -> {producer_instance_id}` should be present on the \
+         consumer's runtime config",
     );
 }
 

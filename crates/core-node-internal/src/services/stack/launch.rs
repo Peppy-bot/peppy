@@ -1290,16 +1290,6 @@ async fn start_node_instances(
         .await
         .unwrap_or((DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
 
-    let all_deployments: Vec<Deployment> = planned_by_key
-        .values()
-        .map(|p| p.deployment.clone())
-        .collect();
-    let link_ids_by_instance = config::launcher::link_ids_by_instance_id(&all_deployments);
-    debug!(
-        ?link_ids_by_instance,
-        "resolved producer link_ids from launcher bindings"
-    );
-
     for key in ordered {
         let Some(item) = planned_by_key.get(key) else {
             continue;
@@ -1314,14 +1304,10 @@ async fn start_node_instances(
             )
             .await;
 
-            let link_ids = link_ids_by_instance
-                .get(instance_id)
-                .cloned()
-                .unwrap_or_default();
             let node_instance = config::runtime::NodeInstanceConfig {
                 arguments: instance.arguments.clone(),
                 framework: resolve_framework(&instance.framework, ctx.daemon_use_sim_time),
-                link_ids,
+                bindings: instance.bindings.clone(),
                 ..config::runtime::NodeInstanceConfig::new(instance.instance_id.clone())
             };
             let runtime_config = match RuntimeConfig::new(

@@ -30,8 +30,8 @@ pub use common::{
 
 // -- error --
 pub use error::{
-    BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateProducerLinkId,
-    Error as ConfigError, MissingInterface, ParsingError, Result as ConfigResult,
+    BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateConsumerPin, Error as ConfigError,
+    MissingInterface, ParsingError, Result as ConfigResult,
 };
 
 // -- atomic_write --
@@ -104,8 +104,7 @@ pub mod launcher {
     pub use crate::internal::launcher::{
         BindingValidationItem, Deployment, DeploymentGitSource, DeploymentInstance,
         DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
-        FrameworkOverrides, Name, PeppyLauncher, PeppyLauncherParser, link_ids_by_instance_id,
-        validate_bindings,
+        FrameworkOverrides, Name, PeppyLauncher, PeppyLauncherParser, validate_bindings,
     };
 }
 

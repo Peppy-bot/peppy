@@ -9,7 +9,8 @@ use std::fmt;
 /// A validated keyexpr segment. The wire format builds keyexprs by joining
 /// segments with `/`, so a segment must be non-empty, contain no `/`, and not
 /// collide with the reserved sentinels (`*`, `**`, `_`) used by the wire format
-/// for wildcard positions.
+/// for wildcard positions. `@` is also forbidden so the CLI's `--bind KEY@VALUE`
+/// parser stays unambiguous.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Segment(String);
 
@@ -38,6 +39,9 @@ impl Segment {
         }
         if s.contains('/') {
             return Err(SegmentError::ContainsSlash(s.to_string()));
+        }
+        if s.contains('@') {
+            return Err(SegmentError::ContainsAt(s.to_string()));
         }
         if matches!(s, "*" | "**") {
             return Err(SegmentError::ReservedSentinel(s.to_string()));
@@ -108,6 +112,9 @@ impl TryFrom<&str> for Segment {
         if s.contains('/') {
             return Err(SegmentError::ContainsSlash(s.to_string()));
         }
+        if s.contains('@') {
+            return Err(SegmentError::ContainsAt(s.to_string()));
+        }
         if matches!(s, "*" | "**") || s == DEFAULT_LINK_ID {
             return Err(SegmentError::ReservedSentinel(s.to_string()));
         }
@@ -135,6 +142,7 @@ impl fmt::Display for Segment {
 pub enum SegmentError {
     Empty,
     ContainsSlash(String),
+    ContainsAt(String),
     ReservedSentinel(String),
 }
 
@@ -144,6 +152,9 @@ impl fmt::Display for SegmentError {
             Self::Empty => f.write_str("keyexpr segment must not be empty"),
             Self::ContainsSlash(s) => {
                 write!(f, "keyexpr segment '{s}' must not contain '/'")
+            }
+            Self::ContainsAt(s) => {
+                write!(f, "keyexpr segment '{s}' must not contain '@'")
             }
             Self::ReservedSentinel(s) => {
                 write!(f, "keyexpr segment '{s}' collides with a reserved sentinel")

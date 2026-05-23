@@ -28,15 +28,17 @@ pub(crate) fn sender_target_python_expr(
     }
 }
 
-/// Returns the Python expression for the `link_id` keyword argument to
-/// splice into a generated subscribe / poll / send_goal call. Yields a
-/// quoted string when the dependency pins a specific link_id, or `None`
-/// when `from_any: true` or no link_id is declared.
-pub(crate) fn consumed_link_id_python_expr(
+/// Returns the Python expression for the consumer's `from_instance_id`
+/// argument: a `node_runner.binding_for(<link_id>)` call when the dependency
+/// carries a manifest link_id (pinned or `from_any: true`); `None` for
+/// synthetic test fixtures that don't model a manifest dep. The harmonized
+/// wire model never pins the consumer's `from_link_id`, so the binding map
+/// is the single source of truth.
+pub(crate) fn consumed_from_instance_id_python_expr(
     dependency: &crate::generator::types::DependencyContext,
 ) -> String {
     match dependency.wire_link_id() {
-        Some(link_id) => format!("{link_id:?}"),
+        Some(link_id) => format!("node_runner.binding_for({link_id:?})"),
         None => "None".to_string(),
     }
 }
@@ -179,16 +181,16 @@ pub fn build_exposed_service(
     builder.indent();
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
-    // Listener wildcards the link_id wire slot; the dispatch filter in
-    // peppylib drops requests outside the bound set, so one listen call
-    // serves every bound link_id.
+    // Producer always declares its queryable under the reserved default
+    // `_` link_id segment; consumers pin by `target_instance_id` derived
+    // from the binding map.
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
-    builder.line("node_runner.link_ids(),");
+    builder.line("[],");
     builder.line("SERVICE_NAME,");
     builder.dedent();
     builder.line(")");
@@ -280,15 +282,6 @@ pub fn build_consumed_service(
 
     // poll async function
     builder.add_import("import peppylib");
-
-    // `target_instance_id` is exposed to callers only when the dependency is
-    // wildcard (`from_any: true`). Pinned deps already route to exactly one
-    // producer via the link_id literal. `target_core_node` is never exposed
-    // to the user-facing generated API.
-    let expose_target_instance_id = dependency.link_id.is_wildcard();
-    if expose_target_instance_id {
-        builder.add_import("from typing import Optional");
-    }
     builder.blank_line();
 
     let has_request = request_format.is_some();
@@ -299,19 +292,12 @@ pub fn build_consumed_service(
         " -> None"
     };
 
-    let target_instance_id_param = if expose_target_instance_id {
-        ", target_instance_id: Optional[str] = None"
-    } else {
-        ""
-    };
     let signature = if has_request {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float{target_instance_id_param}){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float){return_type}:"
         )
     } else {
-        format!(
-            "async def poll(node_runner: peppylib.NodeRunner, timeout: float{target_instance_id_param}){return_type}:"
-        )
+        format!("async def poll(node_runner: peppylib.NodeRunner, timeout: float){return_type}:")
     };
     builder.line(&signature);
     builder.indent();
@@ -346,7 +332,7 @@ pub fn build_consumed_service(
         "NODE_NAME",
         &format!("{:?}", dependency.producer_tag),
     );
-    let to_link_id_expr = consumed_link_id_python_expr(dependency);
+    let target_instance_id_expr = consumed_from_instance_id_python_expr(dependency);
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
@@ -354,14 +340,10 @@ pub fn build_consumed_service(
     builder.line(&format!("{target_expr},"));
     builder.line("SERVICE_NAME,");
     builder.line("None,");
-    if expose_target_instance_id {
-        builder.line("target_instance_id,");
-    } else {
-        builder.line("None,");
-    }
+    builder.line(&format!("{target_instance_id_expr},"));
     builder.line("request_payload,");
     builder.line("timeout,");
-    builder.line(&format!("to_link_id={to_link_id_expr},"));
+    builder.line("to_link_id=None,");
     builder.dedent();
     builder.line(")");
 

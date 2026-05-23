@@ -222,7 +222,6 @@ fn node_add_command_with_run_arg_succeeds() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
-            &[],
         ))
         .expect("node ready service should start");
     let _node_health_handle = rt
@@ -231,7 +230,6 @@ fn node_add_command_with_run_arg_succeeds() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
-            &[],
         ))
         .expect("node health service should start");
 
@@ -549,7 +547,6 @@ fn node_add_same_node_shutdown_existing_instances() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
-            &[],
         ))
         .expect("node ready service should start");
     let _node_health_handle = rt
@@ -558,7 +555,6 @@ fn node_add_same_node_shutdown_existing_instances() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
-            &[],
         ))
         .expect("node health service should start");
     let (_node_shutdown_handle, _shutdown_rx) = rt
@@ -567,7 +563,6 @@ fn node_add_same_node_shutdown_existing_instances() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
-            &[],
         ))
         .expect("node shutdown service should start");
 
@@ -741,7 +736,6 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
-            &[],
         ))
         .expect("node ready service should start");
     let _node_health_handle = rt
@@ -750,7 +744,6 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
-            &[],
         ))
         .expect("node health service should start");
     let (_node_shutdown_handle, _shutdown_rx) = rt
@@ -759,7 +752,6 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             &core_node_name,
             instance_id,
             test_node_target(node_name),
-            &[],
         ))
         .expect("node shutdown service should start");
 

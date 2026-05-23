@@ -18,19 +18,19 @@ pub struct NodeInstanceConfig {
     pub arguments: BTreeMap<String, AnyType>,
     #[serde(default)]
     pub framework: ResolvedFramework,
-    /// Link_ids the producer is bound to. Each emit on a topic with an
-    /// `(interface | node)` producer target fans out into one wire
-    /// emission per bound link_id; service / action exposes register a
-    /// listener per bound link_id. Empty vec → the runtime substitutes
-    /// the reserved default `_` segment so the wire format stays
-    /// uniform.
-    #[serde(default)]
-    pub link_ids: Vec<String>,
+    /// Consumer-side pins: `link_id -> producer_instance_id`. Read by the
+    /// generated subscribe / poll / send_goal call sites to set
+    /// `from_instance_id` on the wire so the consumer only matches the
+    /// pinned producer. Empty map → consumer wildcards `from_instance_id`
+    /// and accepts any producer of the right `(name, tag)`. Populated by
+    /// the launcher from `bindings: {}` and by the CLI from `--bind` flags.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<String, String>,
 }
 
 impl NodeInstanceConfig {
     /// Builds a config with everything except `instance_id` defaulted:
-    /// empty arguments, default framework, empty link_ids. Use with
+    /// empty arguments, default framework, empty bindings. Use with
     /// struct-update syntax to override a field:
     /// `NodeInstanceConfig { arguments, ..NodeInstanceConfig::new(id) }`.
     pub fn new(instance_id: Name) -> Self {
@@ -38,7 +38,7 @@ impl NodeInstanceConfig {
             instance_id,
             arguments: BTreeMap::new(),
             framework: ResolvedFramework::default(),
-            link_ids: Vec::new(),
+            bindings: BTreeMap::new(),
         }
     }
 }

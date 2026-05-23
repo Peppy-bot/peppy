@@ -278,12 +278,13 @@ pub struct ActionCreation {
 }
 
 impl ActionMessenger {
-    /// Expose an action server. `link_ids` is the set of producer link_ids
-    /// this process binds; the underlying service queryables are declared
-    /// one per bound link_id so Zenoh's keyexpr matcher routes inbound
-    /// goal / cancel / result requests to the right queryable. An empty
-    /// slice is normalized to the reserved default `_` segment.
-    /// `as_identity` must match what callers pass to [`Self::send_goal`].
+    /// Expose an action server. In the harmonized wire model the producer
+    /// always declares its queryables under the reserved default `_`
+    /// link_id segment; consumers pin a specific producer by
+    /// `target_instance_id` derived from the consumer's binding map, not
+    /// by a producer-side link_id. The `link_ids` parameter is retained
+    /// for source compatibility but is ignored. `as_identity` must match
+    /// what callers pass to [`Self::send_goal`].
     pub async fn expose(
         messenger: &MessengerHandle,
         bound_core_node: &str,
@@ -292,11 +293,12 @@ impl ActionMessenger {
         link_ids: &[String],
         as_action_name: &str,
     ) -> Result<ActionCreation> {
+        let _ = link_ids;
         let recv = ActionWireReceiver::new(
             bound_core_node,
             as_instance_id,
             as_identity,
-            link_ids,
+            &[],
             as_action_name,
         )?;
         messenger.expose_action(&recv).await

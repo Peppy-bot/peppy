@@ -308,14 +308,16 @@ impl PyNodeRunner {
         self.inner.processor().node_tag()
     }
 
-    /// Returns the link_ids this producer is bound to. Always returns at
-    /// least one entry (the reserved default `_` when no `--link-id` is
-    /// supplied). Generated producer code passes this directly to
-    /// `peppylib.ServiceMessenger.listen` / `ActionMessenger.expose` /
-    /// `TopicMessenger.emit` so the wildcard-listen + dispatch-filter
-    /// machinery sees the full bound set.
-    fn link_ids(&self) -> Vec<String> {
-        self.inner.processor().link_ids().to_vec()
+    /// Producer `instance_id` pinned for this consumer's `link_id`, if
+    /// any. Returned by the launcher's `bindings: {}` map or the CLI's
+    /// `--bind` flags. `None` means the consumer wildcards
+    /// `from_instance_id` on the wire and accepts any producer of the
+    /// right `(name, tag)`.
+    fn binding_for(&self, link_id: &str) -> Option<String> {
+        self.inner
+            .processor()
+            .binding_for(link_id)
+            .map(str::to_owned)
     }
 }
 

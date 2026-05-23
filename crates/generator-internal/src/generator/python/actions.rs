@@ -292,7 +292,7 @@ pub fn build_exposed_action(
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{expose_target_expr},"));
-    builder.line("node_runner.link_ids(),");
+    builder.line("[],");
     builder.line("ACTION_NAME,");
     builder.dedent();
     builder.line(")");
@@ -749,13 +749,6 @@ pub fn build_consumed_action(
 
     builder.add_import("import peppylib");
     builder.add_import("from typing import Self");
-    // `target_instance_id` is exposed to fire_goal callers only when the
-    // dependency is wildcard (`from_any: true`). Pinned deps route to
-    // exactly one producer via the link_id literal.
-    let expose_target_instance_id = dependency.link_id.is_wildcard();
-    if expose_target_instance_id {
-        builder.add_import("from typing import Optional");
-    }
     builder.blank_line();
 
     builder.line("class ActionHandle:");
@@ -763,15 +756,10 @@ pub fn build_consumed_action(
 
     // fire_goal @classmethod
     builder.line("@classmethod");
-    let target_instance_id_param = if expose_target_instance_id {
-        ", target_instance_id: Optional[str] = None"
-    } else {
-        ""
-    };
     if has_goal_request {
-        builder.line(&format!("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile{target_instance_id_param}) -> Self:"));
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:");
     } else {
-        builder.line(&format!("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile{target_instance_id_param}) -> Self:"));
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:");
     }
     builder.indent();
 
@@ -800,8 +788,8 @@ pub fn build_consumed_action(
         "TARGET_NODE_NAME",
         &format!("{:?}", dependency.producer_tag),
     );
-    let send_goal_link_id_expr =
-        crate::generator::python::services::consumed_link_id_python_expr(dependency);
+    let send_goal_target_instance_id_expr =
+        crate::generator::python::services::consumed_from_instance_id_python_expr(dependency);
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
@@ -810,15 +798,11 @@ pub fn build_consumed_action(
     builder.line(&format!("{send_goal_target_expr},"));
     builder.line("TARGET_ACTION_NAME,");
     builder.line("None,");
-    if expose_target_instance_id {
-        builder.line("target_instance_id,");
-    } else {
-        builder.line("None,");
-    }
+    builder.line(&format!("{send_goal_target_instance_id_expr},"));
     builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");
-    builder.line(&format!("to_link_id={send_goal_link_id_expr},"));
+    builder.line("to_link_id=None,");
     builder.dedent();
     builder.line(")");
 

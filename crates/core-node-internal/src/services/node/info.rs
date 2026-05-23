@@ -149,7 +149,7 @@ async fn handle_node_info_request_inner(
             instances.push(NodeInstanceInfo {
                 instance_id: id.to_owned(),
                 state: instance.state(),
-                link_ids: instance.link_ids().to_vec(),
+                link_ids: Vec::new(),
             });
             run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
         }

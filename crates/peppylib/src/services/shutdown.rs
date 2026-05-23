@@ -18,14 +18,13 @@ pub async fn listen_for_shutdown(
     core_node_node: &str,
     instance_id: &str,
     as_identity: SenderTarget,
-    link_ids: &[String],
 ) -> PeppyResult<(TaskHandle<PeppyResult<()>>, ShutdownReceiver)> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         core_node_node,
         instance_id,
         as_identity,
-        link_ids,
+        &[],
         super::super::messaging::SHUTDOWN_SERVICE,
     )
     .await?;

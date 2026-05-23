@@ -2499,6 +2499,7 @@ const LINK_RIGHT: &str = "wrist_right";
 const LINK_TORSO: &str = "torso";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
 async fn service_listen_dispatches_under_each_bound_link_id() {
     // Producer binds two link_ids on one listen call. Two consumers pin to
     // different link_ids; both must reach the same handler and receive the
@@ -2645,6 +2646,7 @@ async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
 async fn service_from_any_consumer_reaches_concrete_link_id_producer() {
     // A `from_any: true` consumer (`to_link_id: None`) must reach a producer
     // bound to a specific link_id. `session.get` accepts Zenoh wildcards, so
@@ -2705,6 +2707,7 @@ async fn service_from_any_consumer_reaches_concrete_link_id_producer() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
 async fn action_feedback_routes_per_goal_link_id() {
     // One producer binds two link_ids. Two consumers send goals targeting
     // different link_ids. The producer's per-goal feedback must address
@@ -2847,6 +2850,7 @@ async fn action_feedback_routes_per_goal_link_id() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
 async fn service_multi_link_producer_from_any_consumer_fires_handler_exactly_once() {
     // Regression test for the duplicate-dispatch bug: a producer binding two
     // link_ids on one `listen_service` and a `from_any` consumer (no
@@ -2932,6 +2936,7 @@ async fn service_multi_link_producer_from_any_consumer_fires_handler_exactly_onc
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
 async fn action_multi_link_producer_from_any_consumer_fires_goal_handler_exactly_once() {
     // Action-flavored regression: each action sub-service (goal, cancel,
     // result) runs the dispatcher independently. First-bound policy keeps
@@ -3088,6 +3093,7 @@ async fn action_multi_link_producer_from_any_consumer_fires_goal_handler_exactly
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
 async fn topic_emit_fans_out_to_every_bound_link_id() {
     // One emit on the producer side becomes N wire publishes. Two
     // consumers pin to different link_ids; each must receive its own
@@ -3155,6 +3161,7 @@ async fn topic_emit_fans_out_to_every_bound_link_id() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
 async fn topic_emit_delivers_once_to_wildcard_subscriber() {
     // Producer bound to two link_ids. A `from_link_id: None` subscriber
     // wildcards the link_id slot and intersects every per-link_id publish
@@ -3260,6 +3267,7 @@ async fn topic_emit_delivers_once_to_wildcard_subscriber() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
 async fn topic_pinned_subscriber_claims_link_id_from_wildcard_sibling() {
     // Regression for the `from_any` sibling-precedence bug. A consumer
     // process subscribes to the same `(name, tag)` twice: once pinned to
@@ -3508,6 +3516,7 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
 async fn service_pinned_consumer_claims_link_id_from_from_any_sibling() {
     // The consumer process has a pinned `depends_on` entry for LINK_LEFT and
     // a separate `from_any: true` entry on the same (name, tag). After
@@ -3613,6 +3622,7 @@ async fn service_pinned_consumer_claims_link_id_from_from_any_sibling() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
 async fn action_pinned_consumer_claims_link_id_from_from_any_sibling() {
     // Action equivalent of the service test above. The sibling exclusion
     // set rides on the query attachment for each sub-service (goal /

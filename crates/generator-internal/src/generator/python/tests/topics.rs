@@ -511,19 +511,24 @@ fn consumed_topic() {
         ],
     );
 
-    // Subscriber function signature with optional targeting parameters and return type
+    // Subscriber function signature — `from_instance_id` is no longer a
+    // parameter; the consumer pins via `node_runner.binding_for(<link_id>)`
+    // looked up at runtime from the bindings map.
     assert_contains_all(
         &rendered,
         &[
             "async def on_next_message_received(",
             "node_runner: peppylib.NodeRunner",
             "from_core_node: Optional[str] = None",
-            "from_instance_id: Optional[str] = None",
             ") -> Tuple[str, Message]:",
         ],
     );
+    assert!(
+        !rendered.contains("from_instance_id: Optional[str] = None"),
+        "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
+    );
 
-    // Topic metadata and subscribe call passes targeting parameters
+    // Topic metadata and subscribe call.
     assert_contains_all(
         &rendered,
         &[
@@ -531,7 +536,6 @@ fn consumed_topic() {
             "\"video_stream\"",
             "peppylib.TopicMessenger.subscribe(",
             "from_core_node,",
-            "from_instance_id,",
         ],
     );
 
@@ -809,7 +813,9 @@ fn consumer_filter_params_use_directional_prefix() {
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
 
-    // Topic subscriber: messages flow FROM the publisher → `from_*`.
+    // Topic subscriber: `from_core_node` stays exposed for cross-core-node
+    // pinning; `from_instance_id` is no longer a parameter — the consumer
+    // pins via `node_runner.binding_for(<link_id>)` at runtime.
     assert_eq!(
         rendered
             .matches("from_core_node: Optional[str] = None")
@@ -817,27 +823,21 @@ fn consumer_filter_params_use_directional_prefix() {
         1,
         "expected `from_core_node` once on the topic subscriber; rendered:\n{rendered}"
     );
-    assert_eq!(
-        rendered
-            .matches("from_instance_id: Optional[str] = None")
-            .count(),
-        1,
-        "expected `from_instance_id` once on the topic subscriber; rendered:\n{rendered}"
+    assert!(
+        !rendered.contains("from_instance_id: Optional[str] = None"),
+        "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 
-    // Service caller (poll) + action caller (fire_goal): the fixture's
-    // `DependencyContext::native` defaults to `WireLinkId::Wildcard`, so
-    // `target_instance_id` is exposed on both. `target_core_node` is never
-    // exposed in the user-facing generated API.
+    // The fixture's `DependencyContext::native` defaults to
+    // `WireLinkId::wildcard()` (no manifest link_id), so the binding lookup
+    // splices `None` and the user-facing `target_instance_id` parameter is
+    // gone. `target_core_node` is never exposed in the generated API.
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; rendered:\n{rendered}"
     );
-    assert_eq!(
-        rendered
-            .matches("target_instance_id: Optional[str] = None")
-            .count(),
-        2,
-        "expected `target_instance_id` twice (service + action callers); rendered:\n{rendered}"
+    assert!(
+        !rendered.contains("target_instance_id: Optional[str] = None"),
+        "target_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 }

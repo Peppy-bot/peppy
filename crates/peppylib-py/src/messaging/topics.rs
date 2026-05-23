@@ -149,11 +149,11 @@ impl PyTopicMessenger {
         })
     }
 
-    /// Emit (publish) a message to a topic across the given bound link_ids.
-    /// One wire publish per link_id (Zenoh `put` keyexprs can't carry
-    /// wildcards). Pass `SenderTarget.node(name, tag)` or
-    /// `SenderTarget.interface(name, tag)`. An empty `link_ids` list is
-    /// normalized to the reserved default `_` segment.
+    /// Emit (publish) a message to a topic. In the harmonized wire model
+    /// the producer always advertises under the `_` link_id segment; the
+    /// `link_ids` parameter is retained for source compatibility but is
+    /// ignored. Pass `SenderTarget.node(name, tag)` or
+    /// `SenderTarget.interface(name, tag)`.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, link_ids, as_topic_name, qos, payload))]
     #[allow(clippy::too_many_arguments)]

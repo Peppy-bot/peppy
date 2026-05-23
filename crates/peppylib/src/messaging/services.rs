@@ -294,15 +294,15 @@ impl fmt::Debug for ServiceRequestContext {
 }
 
 impl ServiceMessenger {
-    /// Listen as a service. `link_ids` is the set of producer link_ids this
-    /// process binds; the adapter declares one queryable per bound link_id
-    /// so Zenoh's keyexpr matcher routes each request to the right
-    /// queryable. An empty slice is normalized to the reserved default `_`
-    /// segment, matching producers launched without `--link-id`.
+    /// Listen as a service. In the harmonized wire model the producer always
+    /// declares its queryable under the reserved default `_` link_id segment;
+    /// consumers pin a specific producer by `target_instance_id` derived from
+    /// the consumer's binding map, not by a producer-side link_id. The
+    /// `link_ids` parameter is retained for source compatibility but is
+    /// ignored — only one queryable is declared under the `_` segment.
     ///
     /// `as_identity` must match the [`SenderTarget`] callers will use in
     /// [`Self::poll`].
-    #[allow(clippy::too_many_arguments)]
     pub async fn listen(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -311,11 +311,12 @@ impl ServiceMessenger {
         link_ids: &[String],
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
+        let _ = link_ids;
         let recv = ServiceWireReceiver::new(
             as_core_node,
             as_instance_id,
             as_identity,
-            link_ids,
+            &[],
             as_service_name,
             ServiceKind::Service,
         )?;

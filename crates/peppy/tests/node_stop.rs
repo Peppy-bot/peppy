@@ -105,7 +105,6 @@ async fn node_stop_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node ready service should start");
@@ -114,7 +113,6 @@ async fn node_stop_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node health service should start");
@@ -124,7 +122,6 @@ async fn node_stop_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node shutdown service should start");
@@ -172,7 +169,9 @@ async fn node_stop_command_succeeds() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            link_ids: Vec::new(),
+            binds: Vec::new(),
+
+            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,

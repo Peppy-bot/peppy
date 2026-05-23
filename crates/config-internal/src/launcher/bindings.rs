@@ -3,14 +3,15 @@
 //! cross-reference the launcher's bindings against each consumer's
 //! `depends_on` declarations and each binding target's deploying node.
 //!
-//! The producer's runtime `link_ids` are derived from the launcher's
-//! bindings at launch time (see [`super::types::link_ids_by_instance_id`]);
-//! the checks here exist to turn the three classes of silent-failure
-//! configurations into loud parse-time errors.
+//! In the harmonized wire model, producers always advertise the `_`
+//! link_id sentinel; consumers pin a specific producer by
+//! `from_instance_id` derived from this `bindings` map. The checks here
+//! exist to turn three classes of silent-failure configurations into
+//! loud parse-time errors.
 
 use crate::consts::DEFAULT_LINK_ID_SENTINEL;
 use crate::error::{
-    BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateProducerLinkId, ParsingError,
+    BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateConsumerPin, ParsingError,
 };
 use crate::node::DependsOn;
 use std::collections::BTreeMap;
@@ -72,7 +73,7 @@ pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> Vec<ParsingErro
 
 /// Group all planned instances by `(node_name, node_tag)`, derive each
 /// instance's producer-side link_ids by inverting every consumer's
-/// `bindings` map, and emit a `DuplicateProducerLinkId` for every pair
+/// `bindings` map, and emit a `DuplicateConsumerPin` for every pair
 /// of sibling instances that end up claiming the same `link_id`.
 ///
 /// Why this matters: at runtime `prepare_and_spawn` enforces the same
@@ -106,8 +107,7 @@ fn check_duplicate_producer_link_ids(
                     // Already reported as UnknownInstanceId.
                     continue;
                 };
-                if let Some(group) =
-                    derived.get_mut(&(target_item.node_name, target_item.node_tag))
+                if let Some(group) = derived.get_mut(&(target_item.node_name, target_item.node_tag))
                     && let Some(link_ids) = group.get_mut(target_id.as_str())
                     && !link_ids.contains(&link_id.as_str())
                 {
@@ -134,8 +134,8 @@ fn check_duplicate_producer_link_ids(
             producer_ids.sort();
             for (i, a) in producer_ids.iter().enumerate() {
                 for b in &producer_ids[i + 1..] {
-                    errors.push(ParsingError::DuplicateProducerLinkId(Box::new(
-                        DuplicateProducerLinkId {
+                    errors.push(ParsingError::DuplicateConsumerPin(Box::new(
+                        DuplicateConsumerPin {
                             node_name: (*node_name).to_string(),
                             node_tag: (*node_tag).to_string(),
                             link_id: link_id.to_string(),
@@ -606,7 +606,7 @@ mod tests {
     /// Two consumers each bind `main` to a different instance of the
     /// same `camera:v1` producer node — both producer instances would
     /// advertise `main` on the wire, which violates the 1:1 link_id
-    /// contract. Surfaces as a single `DuplicateProducerLinkId` naming
+    /// contract. Surfaces as a single `DuplicateConsumerPin` naming
     /// both colliding producer instances.
     #[test]
     fn rejects_two_producer_instances_claiming_same_link_id() {
@@ -633,8 +633,8 @@ mod tests {
         ];
         let errors = validate_bindings(&items);
         assert_eq!(errors.len(), 1, "expected one error, got {errors:?}");
-        let ParsingError::DuplicateProducerLinkId(info) = &errors[0] else {
-            panic!("expected DuplicateProducerLinkId, got {:?}", errors[0]);
+        let ParsingError::DuplicateConsumerPin(info) = &errors[0] else {
+            panic!("expected DuplicateConsumerPin, got {:?}", errors[0]);
         };
         assert_eq!(info.node_name, "camera");
         assert_eq!(info.node_tag, "v1");
@@ -729,10 +729,10 @@ mod tests {
         let pairs: Vec<(String, String)> = errors
             .iter()
             .map(|e| match e {
-                ParsingError::DuplicateProducerLinkId(info) => {
+                ParsingError::DuplicateConsumerPin(info) => {
                     (info.instance_a.clone(), info.instance_b.clone())
                 }
-                other => panic!("expected DuplicateProducerLinkId, got {other:?}"),
+                other => panic!("expected DuplicateConsumerPin, got {other:?}"),
             })
             .collect();
         assert_eq!(

@@ -24,7 +24,6 @@ async fn node_health_request_response_roundtrip() {
         TEST_CORE_NODE_NAME,
         TEST_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
-        &[],
     )
     .await
     .expect("failed to start health service");

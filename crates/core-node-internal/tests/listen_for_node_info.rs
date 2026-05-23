@@ -203,7 +203,6 @@ async fn node_info_has_instance_ids() {
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_1,
             common::test_node_target(TARGET_NODE_NAME),
-            &[],
         )
         .await
         .expect("failed to start node_ready service (instance 1)"),
@@ -214,7 +213,6 @@ async fn node_info_has_instance_ids() {
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_1,
             common::test_node_target(TARGET_NODE_NAME),
-            &[],
         )
         .await
         .expect("failed to start node_health service (instance 1)"),
@@ -225,7 +223,6 @@ async fn node_info_has_instance_ids() {
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_2,
             common::test_node_target(TARGET_NODE_NAME),
-            &[],
         )
         .await
         .expect("failed to start node_ready service (instance 2)"),
@@ -236,7 +233,6 @@ async fn node_info_has_instance_ids() {
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_2,
             common::test_node_target(TARGET_NODE_NAME),
-            &[],
         )
         .await
         .expect("failed to start node_health service (instance 2)"),

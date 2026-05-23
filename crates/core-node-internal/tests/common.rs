@@ -1426,7 +1426,6 @@ async fn spawn_real_running_instance_inner(
             mount_paths_resolved: &[],
             peppy_dirs: &started.peppy_dirs,
             output_sinks,
-            link_ids: &[],
         },
     )
     .await
@@ -1449,7 +1448,6 @@ async fn spawn_real_running_instance_inner(
             &started.core_node_name,
             instance_id.as_str(),
             test_node_target(name),
-            &[],
         )
         .await
         .expect("failed to start shutdown listener for test instance");

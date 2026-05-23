@@ -556,7 +556,6 @@ impl NodeStack {
             instance_id,
             Some(std::process::id()),
             InstanceState::Running,
-            Vec::new(),
         );
         let root_entity = NodeEntity::root(root_config, root_path, instance);
         Self {

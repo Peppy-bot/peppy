@@ -114,12 +114,6 @@ impl std::error::Error for UnknownNodeStage {}
 pub struct SerializedInstance {
     pub instance_id: String,
     pub state: InstanceState,
-    /// Producer-side `link_ids` this instance advertises on the wire.
-    /// Defaults to an empty list for payloads produced by versions that
-    /// predate the field (and for snapshot-restored or test-fixture
-    /// instances that don't track link_ids).
-    #[serde(default)]
-    pub link_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,34 +175,4 @@ pub struct SerializedEdge {
 pub struct SerializedNodeGraph {
     pub nodes: Vec<SerializedNode>,
     pub edges: Vec<SerializedEdge>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serialized_instance_link_ids_roundtrip() {
-        let original = SerializedInstance {
-            instance_id: "i1".to_string(),
-            state: InstanceState::Running,
-            link_ids: vec!["front_left".to_string(), "front_right".to_string()],
-        };
-        let json = serde_json5::to_string::<SerializedInstance>(&original).expect("serialize");
-        let parsed: SerializedInstance = serde_json5::from_str(&json).expect("deserialize");
-        assert_eq!(parsed, original);
-    }
-
-    #[test]
-    fn serialized_instance_legacy_payload_decodes_with_empty_link_ids() {
-        // Payload from a peer that predates the `link_ids` field.
-        let legacy = r#"{ "instance_id": "i1", "state": "running" }"#;
-        let parsed: SerializedInstance = serde_json5::from_str(legacy).expect("legacy decode");
-        assert_eq!(parsed.instance_id, "i1");
-        assert_eq!(parsed.state, InstanceState::Running);
-        assert!(
-            parsed.link_ids.is_empty(),
-            "missing field should default to empty Vec"
-        );
-    }
 }

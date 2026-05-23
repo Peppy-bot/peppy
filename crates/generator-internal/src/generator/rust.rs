@@ -283,29 +283,18 @@ impl RustGenerator {
 
         // The `to_target` matches the producer's emission shape: address the
         // dependency as an Interface if it exposes the action via
-        // `conforms_to`, otherwise as its native Node identity.
+        // `conforms_to`, otherwise as its native Node identity. The
+        // consumer never pins on `to_link_id` (producers always advertise
+        // the `_` sentinel); `target_instance_id` is resolved at runtime
+        // from the consumer's binding map, so the user-facing
+        // `target_instance_id` parameter no longer exists.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let to_link_id_expr =
-            crate::generator::rust::topics::consumed_from_link_id_expression(dependency);
-        // Same gating as consumed services: expose `target_instance_id` only
-        // for wildcard (`from_any: true`) deps. Pinned deps already route to
-        // exactly one producer.
-        let expose_target_instance_id = dependency.link_id.is_wildcard();
-        let target_instance_id_param = if expose_target_instance_id {
-            quote!(target_instance_id: Option<&str>,)
-        } else {
-            quote!()
-        };
-        let target_instance_id_arg = if expose_target_instance_id {
-            quote!(target_instance_id)
-        } else {
-            quote!(None)
-        };
+        let target_instance_id_arg =
+            crate::generator::rust::topics::consumed_from_instance_id_expression(dependency);
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
                 timeout: std::time::Duration,
-                #target_instance_id_param
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
             ) -> crate::Result<Self> {
@@ -318,7 +307,7 @@ impl RustGenerator {
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     #to_target_expr,
-                    #to_link_id_expr,
+                    None,
                     TARGET_ACTION_NAME,
                     None,
                     #target_instance_id_arg,
@@ -1337,28 +1326,20 @@ impl LanguageGenerator for RustGenerator {
 
         // The `to_target` matches the producer's emission shape: if the
         // dependency exposes the service via `conforms_to`, address it as the
-        // interface; otherwise as the dependency's node identity.
+        // interface; otherwise as the dependency's node identity. The
+        // consumer never pins on `to_link_id` (producers always advertise
+        // the `_` sentinel); `target_instance_id` is resolved at runtime
+        // from the consumer's binding map.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let to_link_id_expr =
-            crate::generator::rust::topics::consumed_from_link_id_expression(dependency);
-        // `target_instance_id` is exposed to the caller only when the
-        // dependency is wildcard (`from_any: true`): pinned deps already
-        // route to exactly one producer via the link_id literal and have
-        // nothing more for the caller to address. `target_core_node` is
-        // never exposed in the generated API.
-        let expose_target_instance_id = dependency.link_id.is_wildcard();
-        let target_instance_id_arg = if expose_target_instance_id {
-            quote!(target_instance_id)
-        } else {
-            quote!(None)
-        };
+        let target_instance_id_arg =
+            crate::generator::rust::topics::consumed_from_instance_id_expression(dependency);
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 #to_target_expr,
-                #to_link_id_expr,
+                None,
                 SERVICE_NAME,
                 None,
                 #target_instance_id_arg,
@@ -1442,9 +1423,6 @@ impl LanguageGenerator for RustGenerator {
             quote!(node_runner: &crate::NodeRunner),
             quote!(timeout: std::time::Duration),
         ];
-        if expose_target_instance_id {
-            fn_param_tokens.push(quote!(target_instance_id: Option<&str>));
-        }
         if !request_struct_params.is_empty() {
             fn_param_tokens.push(quote!(request: #request_struct_ident));
         }

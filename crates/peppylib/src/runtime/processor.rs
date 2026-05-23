@@ -33,8 +33,7 @@ impl Processor {
             }
         })?;
 
-        let mut runtime_config = Self::load_runtime_config(&launch_config_path)?;
-        normalize_link_ids(&mut runtime_config.node_instance.link_ids);
+        let runtime_config = Self::load_runtime_config(&launch_config_path)?;
 
         let codegen_fingerprint = config::fingerprint::read_codegen_fingerprint(
             peppy_config.as_ref(),
@@ -103,7 +102,7 @@ impl Processor {
                 reason: e.to_string(),
             })?;
 
-        let mut runtime_config = RuntimeConfig::new(
+        let runtime_config = RuntimeConfig::new(
             &messaging_host,
             messaging_port,
             NodeInstanceConfig::new(instance_id_name),
@@ -111,7 +110,6 @@ impl Processor {
             node_config.manifest.tag.as_str(),
             "standalone-core",
         )?;
-        normalize_link_ids(&mut runtime_config.node_instance.link_ids);
 
         Ok(Self {
             runtime_config,
@@ -178,23 +176,16 @@ impl Processor {
         self.runtime_config.node_instance.framework.use_sim_time
     }
 
-    /// Returns the link_ids this producer is bound to. Always non-empty:
-    /// instances launched without `--link-id` are normalized at processor
-    /// construction to a single-element slice carrying the reserved default
-    /// `_` segment, matching the wire layer's fallback so consumers using
-    /// `from_any: true` (or the wildcard receive path) still match this
-    /// producer's emissions.
-    pub fn link_ids(&self) -> &[String] {
-        &self.runtime_config.node_instance.link_ids
-    }
-}
-
-/// Mutates `link_ids` in place so it always contains at least one entry. An
-/// empty input becomes `vec![DEFAULT_LINK_ID]`; non-empty inputs are kept
-/// verbatim.
-fn normalize_link_ids(link_ids: &mut Vec<String>) {
-    if link_ids.is_empty() {
-        link_ids.push(pmi::DEFAULT_LINK_ID.to_string());
+    /// Producer `instance_id` pinned for this consumer's `link_id`, if any.
+    /// Returned by the launcher's `bindings: {}` map or the CLI's `--bind`
+    /// flags. `None` means the consumer wildcards `from_instance_id` on the
+    /// wire and accepts any producer of the right `(name, tag)`.
+    pub fn binding_for(&self, link_id: &str) -> Option<&str> {
+        self.runtime_config
+            .node_instance
+            .bindings
+            .get(link_id)
+            .map(String::as_str)
     }
 }
 

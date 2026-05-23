@@ -197,7 +197,6 @@ async fn stop_instance_skips_starting_instances() {
             mount_paths_resolved: &[],
             peppy_dirs: &harness.peppy_dirs,
             output_sinks: harness.output_sinks(),
-            link_ids: &[],
         },
     )
     .await
@@ -709,7 +708,6 @@ async fn prepare_and_spawn_rejects_when_not_built() {
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
             output_sinks: h.output_sinks(),
-            link_ids: &[],
         },
     )
     .await
@@ -743,7 +741,6 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
             output_sinks: h.output_sinks(),
-            link_ids: &[],
         },
     )
     .await
@@ -814,7 +811,6 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
             output_sinks: h.output_sinks(),
-            link_ids: &[],
         },
     )
     .await
@@ -893,7 +889,6 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
             output_sinks: h.output_sinks(),
-            link_ids: &[],
         },
     )
     .await
@@ -978,7 +973,6 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
             output_sinks: h.output_sinks(),
-            link_ids: &[],
         },
     )
     .await
@@ -1006,224 +1000,12 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
     }
 }
 
-#[tokio::test]
-async fn prepare_and_spawn_rejects_duplicate_link_id_across_instances() {
-    // Two instances of the same node may not both advertise the same
-    // producer link_id — that would silently multiplex the wire from the
-    // consumer's perspective. The guard runs under the same write lock
-    // as the duplicate-instance_id check, before any I/O.
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let (id_a, h) = start_harness("cam-a");
-    let id_b = Name::new("cam-b").expect("valid instance id");
-    let handle = push_built_long_running_sensor(&stack, &h).await;
-
-    let _existing = real_lifecycle::spawn_running_instance_with_link_ids(
-        Arc::clone(&handle),
-        &h,
-        id_a.clone(),
-        &["wrist_left_camera".to_string()],
-    )
-    .await;
-
-    let err = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &id_b,
-            runtime_config_json5: "{}",
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-            link_ids: &["wrist_left_camera".to_string()],
-        },
-    )
-    .await
-    .expect_err("prepare_and_spawn should reject duplicate link_id");
-
-    match err {
-        NodeStackError::DuplicateLinkId {
-            link_id, held_by, ..
-        } => {
-            assert_eq!(link_id, "wrist_left_camera");
-            assert_eq!(held_by, id_a.as_str());
-        }
-        other => panic!("expected DuplicateLinkId, got {:?}", other),
-    }
-
-    let guard = handle.read();
-    match guard.stage() {
-        NodeStage::Ready { instances, .. } => {
-            assert_eq!(
-                instances.len(),
-                1,
-                "rejected instance must not be partially registered"
-            );
-            assert_eq!(instances[0].instance_id(), &id_a);
-        }
-        other => panic!("expected Ready, got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn prepare_and_spawn_rejects_partial_link_id_overlap() {
-    // If only one of the new instance's link_ids collides, the whole
-    // launch is rejected — we don't partially register link_ids.
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let (id_a, h) = start_harness("cam-a");
-    let id_b = Name::new("cam-b").expect("valid instance id");
-    let handle = push_built_long_running_sensor(&stack, &h).await;
-
-    let _existing = real_lifecycle::spawn_running_instance_with_link_ids(
-        Arc::clone(&handle),
-        &h,
-        id_a.clone(),
-        &["wrist_left_camera".to_string()],
-    )
-    .await;
-
-    let err = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &id_b,
-            runtime_config_json5: "{}",
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-            link_ids: &[
-                "wrist_left_camera".to_string(),
-                "torso_camera".to_string(),
-            ],
-        },
-    )
-    .await
-    .expect_err("prepare_and_spawn should reject partial overlap");
-
-    match err {
-        NodeStackError::DuplicateLinkId { link_id, .. } => {
-            assert_eq!(link_id, "wrist_left_camera");
-        }
-        other => panic!("expected DuplicateLinkId, got {:?}", other),
-    }
-
-    let guard = handle.read();
-    match guard.stage() {
-        NodeStage::Ready { instances, .. } => {
-            assert_eq!(instances.len(), 1, "no partial registration");
-        }
-        other => panic!("expected Ready, got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn prepare_and_spawn_accepts_disjoint_link_ids_on_same_node() {
-    // Sibling instances of the same node may freely claim non-overlapping
-    // link_ids — this is the intended multi-instance pattern.
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let (id_a, h) = start_harness("cam-a");
-    let id_b = Name::new("cam-b").expect("valid instance id");
-    let handle = push_built_long_running_sensor(&stack, &h).await;
-
-    let _a = real_lifecycle::spawn_running_instance_with_link_ids(
-        Arc::clone(&handle),
-        &h,
-        id_a.clone(),
-        &["wrist_left_camera".to_string()],
-    )
-    .await;
-    let _b = real_lifecycle::spawn_running_instance_with_link_ids(
-        Arc::clone(&handle),
-        &h,
-        id_b.clone(),
-        &["wrist_right_camera".to_string()],
-    )
-    .await;
-
-    let guard = handle.read();
-    match guard.stage() {
-        NodeStage::Ready { instances, .. } => {
-            assert_eq!(instances.len(), 2);
-            let ids: Vec<&str> = instances.iter().map(|i| i.instance_id().as_str()).collect();
-            assert!(ids.contains(&"cam-a"));
-            assert!(ids.contains(&"cam-b"));
-        }
-        other => panic!("expected Ready, got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn prepare_and_spawn_accepts_multiple_empty_link_ids_on_same_node() {
-    // Default-launch path: empty ctx.link_ids claims nothing, so two
-    // instances with no --link-id can coexist. The `_` sentinel is
-    // materialized downstream by the runtime processor and permits
-    // multi-producer fan-in for `from_any: true` consumers.
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let (id_a, h) = start_harness("cam-a");
-    let id_b = Name::new("cam-b").expect("valid instance id");
-    let handle = push_built_long_running_sensor(&stack, &h).await;
-
-    let _a = real_lifecycle::spawn_running_instance_with_link_ids(
-        Arc::clone(&handle),
-        &h,
-        id_a,
-        &[],
-    )
-    .await;
-    let _b = real_lifecycle::spawn_running_instance_with_link_ids(
-        Arc::clone(&handle),
-        &h,
-        id_b,
-        &[],
-    )
-    .await;
-
-    let guard = handle.read();
-    match guard.stage() {
-        NodeStage::Ready { instances, .. } => assert_eq!(instances.len(), 2),
-        other => panic!("expected Ready, got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn prepare_and_spawn_reclaims_link_id_after_instance_stops() {
-    // Once an instance is removed from the Vec via stop_instance, its
-    // link_ids are free for the taking — the duplicate check looks at
-    // currently-tracked instances only.
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let (id_a, h) = start_harness("cam-a");
-    let id_b = Name::new("cam-b").expect("valid instance id");
-    let handle = push_built_long_running_sensor(&stack, &h).await;
-
-    // Spawn instance A holding wrist_left_camera, then explicitly drop the
-    // RAII guard to trigger stop_instance and free the link_id.
-    {
-        let _a = real_lifecycle::spawn_running_instance_with_link_ids(
-            Arc::clone(&handle),
-            &h,
-            id_a,
-            &["wrist_left_camera".to_string()],
-        )
-        .await;
-    }
-
-    let _b = real_lifecycle::spawn_running_instance_with_link_ids(
-        Arc::clone(&handle),
-        &h,
-        id_b.clone(),
-        &["wrist_left_camera".to_string()],
-    )
-    .await;
-
-    let guard = handle.read();
-    match guard.stage() {
-        NodeStage::Ready { instances, .. } => {
-            assert_eq!(instances.len(), 1);
-            assert_eq!(instances[0].instance_id(), &id_b);
-            assert_eq!(instances[0].link_ids(), &["wrist_left_camera".to_string()]);
-        }
-        other => panic!("expected Ready, got {:?}", other),
-    }
-}
+// Producer-side link_id collision tests were removed: in the harmonized
+// wire model the producer always advertises under the `_` link_id sentinel
+// and consumers pin by `from_instance_id` derived from the binding map, so
+// there is no producer-side link_id to collide on. Duplicate-instance_id
+// detection is still covered by
+// `prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_present`.
 
 // ===========================================================================
 // Backwards / sideways transition rejection (exhaustive)
@@ -1262,7 +1044,6 @@ mod backwards_transitions_are_rejected {
                 Name::new("inst").unwrap(),
                 Some(1),
                 InstanceState::Running,
-                Vec::new(),
             )],
         }
     }

@@ -3,7 +3,7 @@ use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
-use std::collections::HashSet;
+
 use std::sync::Arc;
 
 pub struct Subscription {
@@ -164,21 +164,12 @@ impl TopicMessenger {
         Ok(Subscription::new(subscription))
     }
 
-    /// Publishes a payload to a topic. `link_ids` is the set of producer
-    /// link_ids this emission should appear under on the wire. Zenoh `put`
-    /// keyexprs can't carry wildcards, so a producer bound to N link_ids
-    /// performs N publishes per emit. Duplicate entries are collapsed so
-    /// each scoped subscriber receives one message per unique link_id; the
-    /// first occurrence wins for ordering. An empty slice is normalized to
-    /// the reserved default `_` segment. On the first publish error the
-    /// loop aborts and the error is returned.
-    ///
-    /// The first publish (for `effective[0]`) is marked primary on the
-    /// wire; the rest are marked secondary. Wildcard subscribers
-    /// (`from_link_id: None`) drop secondaries so one `emit` yields one
-    /// delivery on the wildcard axis, even though the wire still carries N
-    /// publishes for pinned-subscriber reachability. See the topic-
-    /// attachment block in `pmi::wire::zenoh_format`.
+    /// Publishes a payload to a topic. In the harmonized wire model the
+    /// producer always advertises under the reserved default `_` segment;
+    /// consumers pin a specific producer by `from_instance_id` derived
+    /// from the consumer's binding map, not by a producer-side link_id.
+    /// The `link_ids` parameter is retained for source compatibility but
+    /// is ignored — producers no longer fan out per link_id.
     #[allow(clippy::too_many_arguments)]
     pub async fn emit(
         messenger: &MessengerHandle,
@@ -190,28 +181,12 @@ impl TopicMessenger {
         qos: QoSProfile,
         payload: Payload,
     ) -> Result<()> {
-        let effective: Vec<String> = if link_ids.is_empty() {
-            vec![pmi::DEFAULT_LINK_ID.to_string()]
-        } else {
-            let mut seen = HashSet::with_capacity(link_ids.len());
-            link_ids
-                .iter()
-                .filter(|id| seen.insert((*id).clone()))
-                .cloned()
-                .collect()
-        };
-        for (idx, link_id) in effective.iter().enumerate() {
-            let sender = TopicWireSender::new(
-                as_core_node,
-                as_instance_id,
-                as_target.clone(),
-                Some(link_id.as_str()),
-                as_topic_name,
-            )?;
-            messenger
-                .emit_topic_message(&sender, qos.clone(), payload.clone(), idx == 0)
-                .await?;
-        }
+        let _ = link_ids;
+        let sender =
+            TopicWireSender::new(as_core_node, as_instance_id, as_target, None, as_topic_name)?;
+        messenger
+            .emit_topic_message(&sender, qos, payload, true)
+            .await?;
         Ok(())
     }
 

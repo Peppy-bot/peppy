@@ -616,7 +616,6 @@ async fn process_node_run(
             publish_enabled: Arc::clone(&publish_enabled),
             hooks: Arc::new(feedback_sync.clone()),
         },
-        link_ids: &runtime_config.node_instance.link_ids,
     };
     // Reject early if an outer orchestrator already cancelled us — avoids
     // spawning a child process we're only going to tear down on the next line.

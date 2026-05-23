@@ -11,5 +11,5 @@ pub use parse::PeppyLauncherParser;
 pub use types::{
     Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
     DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides, Name,
-    PeppyLauncher, link_ids_by_instance_id,
+    PeppyLauncher,
 };

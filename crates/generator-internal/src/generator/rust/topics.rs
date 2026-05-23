@@ -135,7 +135,7 @@ pub fn build_topic_emit(
                 with_core_node,
                 as_instance_id,
                 as_target,
-                node_runner.processor().link_ids(),
+                &[],
                 as_topic,
                 qos,
                 payload,
@@ -193,13 +193,12 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
     )?;
 
     let from_target_expr = consumed_from_target_expression(dependency);
-    let from_link_id_expr = consumed_from_link_id_expression(dependency);
+    let from_instance_id_expr = consumed_from_instance_id_expression(dependency);
 
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
             from_core_node: Option<&str>,
-            from_instance_id: Option<&str>,
         ) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let node_name = #node_name_literal;
@@ -213,10 +212,10 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     #from_target_expr,
-                    #from_link_id_expr,
+                    None,
                     topic_name,
                     from_core_node,
-                    from_instance_id,
+                    #from_instance_id_expr,
                     qos,
                 );
                 let mut subscription = subscription_future.await.map_err(|source| {
@@ -256,16 +255,19 @@ pub fn consumed_from_target_expression(
 }
 
 /// Returns the `Option<&str>` expression spliced into a generated subscribe /
-/// poll / send_goal call at the `link_id` slot. `Some(literal)` when the
-/// dependency pins a concrete link_id; `None` when `from_any: true` or when
-/// no link_id is declared on the dependency.
-pub fn consumed_from_link_id_expression(
+/// poll / send_goal call at the `from_instance_id` slot. Calls
+/// `Processor::binding_for(<manifest link_id>)` when the dependency carries a
+/// link_id (pinned or `from_any: true`); `None` for synthetic test fixtures
+/// that don't model a manifest dep. In the harmonized wire model the producer
+/// always advertises the `_` link_id sentinel, so the consumer pins by
+/// `from_instance_id` only — the binding map is the single source of truth.
+pub fn consumed_from_instance_id_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     match dependency.wire_link_id() {
         Some(link_id) => {
             let literal = Literal::string(link_id);
-            quote!(Some(#literal))
+            quote!(node_runner.processor().binding_for(#literal))
         }
         None => quote!(None),
     }

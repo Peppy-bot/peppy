@@ -78,7 +78,6 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
         instances: vec![SerializedInstance {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
-            link_ids: Vec::new(),
         }],
     };
     let sensor = SerializedNode {
@@ -128,7 +127,6 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
         instances: vec![SerializedInstance {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
-            link_ids: Vec::new(),
         }],
     };
     let sensor = SerializedNode {

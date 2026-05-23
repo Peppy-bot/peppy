@@ -68,15 +68,15 @@ pub fn build_action_expose_method(
 
     quote! {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
-            // The action listener wildcards the link_id wire slot. Peppylib
-            // drops requests addressed to link_ids outside this producer's
-            // bound set at dispatch time, so one expose binds all link_ids.
+            // The producer always declares its queryables under the reserved
+            // default `_` link_id segment; consumers pin by
+            // `target_instance_id` derived from the binding map.
             let action = peppylib::ActionMessenger::expose(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 #target_expr,
-                node_runner.processor().link_ids(),
+                &[],
                 ACTION_NAME,
             )
             .await?;
