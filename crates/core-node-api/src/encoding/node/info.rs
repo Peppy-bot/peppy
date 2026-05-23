@@ -55,6 +55,10 @@ impl NodeInfoRequest {
 pub struct NodeInstanceInfo {
     pub instance_id: String,
     pub state: InstanceState,
+    /// Producer-side `link_ids` this instance advertises on the wire,
+    /// mirroring `RuntimeConfig.node_instance.link_ids`. An empty list
+    /// means the instance only publishes under the default link_id sentinel.
+    pub link_ids: Vec<String>,
 }
 
 /// Body of a successful `node_info` lookup — carries all metadata about a
@@ -117,6 +121,13 @@ impl NodeInfoResponse {
                             let mut entry = instances_builder.reborrow().get(i as u32);
                             entry.set_instance_id(&inst.instance_id);
                             entry.set_state(inst.state.as_str());
+                            let link_id_count =
+                                capnp_list_len(inst.link_ids.len(), "NodeInstanceInfo.link_ids")?;
+                            let mut link_ids_builder =
+                                entry.reborrow().init_link_ids(link_id_count);
+                            for (j, link_id) in inst.link_ids.iter().enumerate() {
+                                link_ids_builder.set(j as u32, link_id.as_str());
+                            }
                         }
                     }
                     found.set_add_log_path(
@@ -164,9 +175,15 @@ impl NodeInfoResponse {
                     let state_str = entry.get_state()?.to_str()?;
                     let state = InstanceState::from_str(state_str)
                         .map_err(|e| crate::Error::Decoding(e.to_string()))?;
+                    let link_ids_reader = entry.get_link_ids()?;
+                    let mut link_ids = Vec::with_capacity(link_ids_reader.len() as usize);
+                    for j in 0..link_ids_reader.len() {
+                        link_ids.push(link_ids_reader.get(j)?.to_str()?.to_owned());
+                    }
                     instances.push(NodeInstanceInfo {
                         instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
                         state,
+                        link_ids,
                     });
                 }
                 let add_log_path =
@@ -236,6 +253,49 @@ mod tests {
             NodeInfoResponse::Found(info) => {
                 assert_eq!(info.config.manifest.name.as_str(), "sensor_node");
                 assert_eq!(info.stage, NodeStage::Added);
+            }
+            NodeInfoResponse::NotInStack => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn node_info_response_roundtrips_instance_link_ids() {
+        let info = NodeInfo {
+            config: sample_config_for_roundtrip(),
+            config_integrity: "0".repeat(64),
+            stage: NodeStage::Ready,
+            instances: vec![
+                NodeInstanceInfo {
+                    instance_id: "inst-with-links".to_string(),
+                    state: InstanceState::Running,
+                    link_ids: vec!["front_left".to_string(), "front_right".to_string()],
+                },
+                NodeInstanceInfo {
+                    instance_id: "inst-no-links".to_string(),
+                    state: InstanceState::Starting,
+                    link_ids: vec![],
+                },
+            ],
+            add_log_path: None,
+            run_log_paths: vec![],
+        };
+        let encoded = NodeInfoResponse::Found(Box::new(info))
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeInfoResponse::decode(&encoded).expect("decoding should succeed");
+
+        match decoded {
+            NodeInfoResponse::Found(info) => {
+                assert_eq!(info.instances.len(), 2);
+                assert_eq!(
+                    info.instances[0].link_ids,
+                    vec!["front_left".to_string(), "front_right".to_string()],
+                    "link_ids should round-trip for the first instance"
+                );
+                assert!(
+                    info.instances[1].link_ids.is_empty(),
+                    "empty link_ids should round-trip as empty"
+                );
             }
             NodeInfoResponse::NotInStack => panic!("expected Found"),
         }

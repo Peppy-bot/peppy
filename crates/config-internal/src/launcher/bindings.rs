@@ -9,7 +9,9 @@
 //! configurations into loud parse-time errors.
 
 use crate::consts::DEFAULT_LINK_ID_SENTINEL;
-use crate::error::{BindingMissingForPinnedDep, BindingTargetMismatch, ParsingError};
+use crate::error::{
+    BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateProducerLinkId, ParsingError,
+};
 use crate::node::DependsOn;
 use std::collections::BTreeMap;
 
@@ -26,7 +28,7 @@ pub struct BindingValidationItem<'a> {
     pub depends_on: Option<&'a DependsOn>,
 }
 
-/// Three sub-checks per consumer instance:
+/// Four sub-checks per consumer instance (1–3) or producer group (4):
 ///   1. Each `binding` key matches a `link_id` declared in the
 ///      consumer's `depends_on.{nodes,interfaces}` (dead-binding check).
 ///   2. Each pinned `depends_on` entry (`from_any: false` and a
@@ -34,6 +36,10 @@ pub struct BindingValidationItem<'a> {
 ///      consumer instance (no silent-loss check).
 ///   3. For node-typed pinned deps, the binding's target instance
 ///      deploys a node whose `(name, tag)` matches the dep declaration.
+///   4. No two instances of the same `(node_name, node_tag)` end up
+///      advertising the same producer `link_id`. A producer `link_id`
+///      is a 1:1 contract from the consumer's perspective, so two
+///      sibling instances claiming it would silently multiplex the wire.
 ///
 /// Interface-typed deps bypass check 3 because they do not pre-commit
 /// to a producer node identity; verifying that the bound target
@@ -59,7 +65,88 @@ pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> Vec<ParsingErro
         }
     }
 
+    check_duplicate_producer_link_ids(items, &instance_to_item, &mut errors);
+
     errors
+}
+
+/// Group all planned instances by `(node_name, node_tag)`, derive each
+/// instance's producer-side link_ids by inverting every consumer's
+/// `bindings` map, and emit a `DuplicateProducerLinkId` for every pair
+/// of sibling instances that end up claiming the same `link_id`.
+///
+/// Why this matters: at runtime `prepare_and_spawn` enforces the same
+/// invariant (see `NodeEntity::prepare_and_spawn` in node-stack), but
+/// the launcher spawns instances sequentially. Without a parse-time
+/// check, a colliding launcher manifest would partially deploy — first
+/// instance wins, second one fails mid-flight — and leave the operator
+/// to clean up. We catch it before any spawn side-effect.
+fn check_duplicate_producer_link_ids(
+    items: &[BindingValidationItem<'_>],
+    instance_to_item: &BTreeMap<&str, &BindingValidationItem<'_>>,
+    errors: &mut Vec<ParsingError>,
+) {
+    // Per (node_name, node_tag) group: producer_instance_id -> link_ids
+    // the consumers have asked that producer to advertise.
+    let mut derived: BTreeMap<(&str, &str), BTreeMap<&str, Vec<&str>>> = BTreeMap::new();
+    // Register every declared instance up front so unbound producers
+    // still appear and trivially pass the duplicate check.
+    for item in items {
+        let group = derived.entry((item.node_name, item.node_tag)).or_default();
+        for inst in item.instances {
+            group.entry(inst.instance_id.as_str()).or_default();
+        }
+    }
+    // Walk every consumer binding and attribute each link_id to its
+    // target producer (scoped to that producer's node group).
+    for item in items {
+        for inst in item.instances {
+            for (link_id, target_id) in &inst.bindings {
+                let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
+                    // Already reported as UnknownInstanceId.
+                    continue;
+                };
+                if let Some(group) =
+                    derived.get_mut(&(target_item.node_name, target_item.node_tag))
+                    && let Some(link_ids) = group.get_mut(target_id.as_str())
+                    && !link_ids.contains(&link_id.as_str())
+                {
+                    link_ids.push(link_id.as_str());
+                }
+            }
+        }
+    }
+    // For each group, invert producer -> link_ids into link_id ->
+    // producers; emit one error per (group, link_id) pair with more
+    // than one producer. Pairs are sorted so error ordering is
+    // deterministic across runs.
+    for ((node_name, node_tag), producers) in &derived {
+        let mut owners: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for (producer_id, link_ids) in producers {
+            for link_id in link_ids {
+                owners.entry(*link_id).or_default().push(*producer_id);
+            }
+        }
+        for (link_id, mut producer_ids) in owners {
+            if producer_ids.len() < 2 {
+                continue;
+            }
+            producer_ids.sort();
+            for (i, a) in producer_ids.iter().enumerate() {
+                for b in &producer_ids[i + 1..] {
+                    errors.push(ParsingError::DuplicateProducerLinkId(Box::new(
+                        DuplicateProducerLinkId {
+                            node_name: (*node_name).to_string(),
+                            node_tag: (*node_tag).to_string(),
+                            link_id: link_id.to_string(),
+                            instance_a: (*a).to_string(),
+                            instance_b: (*b).to_string(),
+                        },
+                    )));
+                }
+            }
+        }
+    }
 }
 
 fn build_instance_lookup<'a>(
@@ -514,6 +601,148 @@ mod tests {
         assert_eq!(owner_instance_id, "cons1");
         assert_eq!(binding, "main");
         assert_eq!(instance_id, "ghost_producer");
+    }
+
+    /// Two consumers each bind `main` to a different instance of the
+    /// same `camera:v1` producer node — both producer instances would
+    /// advertise `main` on the wire, which violates the 1:1 link_id
+    /// contract. Surfaces as a single `DuplicateProducerLinkId` naming
+    /// both colliding producer instances.
+    #[test]
+    fn rejects_two_producer_instances_claiming_same_link_id() {
+        let cons_instances = parse_instances(
+            r#"[
+                { instance_id: "cons_a", bindings: { main: "prod_a" } },
+                { instance_id: "cons_b", bindings: { main: "prod_b" } }
+            ]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{
+                nodes: [{ name: "camera", tag: "v1", link_id: "main" }]
+            }"#,
+        );
+        let prod_instances = parse_instances(
+            r#"[
+                { instance_id: "prod_a" },
+                { instance_id: "prod_b" }
+            ]"#,
+        );
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let errors = validate_bindings(&items);
+        assert_eq!(errors.len(), 1, "expected one error, got {errors:?}");
+        let ParsingError::DuplicateProducerLinkId(info) = &errors[0] else {
+            panic!("expected DuplicateProducerLinkId, got {:?}", errors[0]);
+        };
+        assert_eq!(info.node_name, "camera");
+        assert_eq!(info.node_tag, "v1");
+        assert_eq!(info.link_id, "main");
+        assert_eq!(info.instance_a, "prod_a");
+        assert_eq!(info.instance_b, "prod_b");
+    }
+
+    /// Producers of *different* nodes may share a `link_id` — the
+    /// uniqueness contract is scoped to `(node_name, node_tag)`.
+    #[test]
+    fn allows_same_link_id_across_different_node_types() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "cons1",
+                bindings: { camera_main: "cam_prod", lidar_main: "lidar_prod" }
+            }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{
+                nodes: [
+                    { name: "camera", tag: "v1", link_id: "camera_main" },
+                    { name: "lidar",  tag: "v1", link_id: "lidar_main" }
+                ]
+            }"#,
+        );
+        let cam_instances = parse_instances(r#"[{ instance_id: "cam_prod" }]"#);
+        let lidar_instances = parse_instances(r#"[{ instance_id: "lidar_prod" }]"#);
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("camera", "v1", &cam_instances, None),
+            item("lidar", "v1", &lidar_instances, None),
+        ];
+        let errors = validate_bindings(&items);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    /// Fan-in is fine: multiple consumers binding the same `link_id`
+    /// to a *single* producer instance is the normal pattern.
+    #[test]
+    fn allows_multiple_consumers_binding_same_link_id_to_one_producer() {
+        let cons_instances = parse_instances(
+            r#"[
+                { instance_id: "cons_a", bindings: { main: "prod1" } },
+                { instance_id: "cons_b", bindings: { main: "prod1" } }
+            ]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{
+                nodes: [{ name: "camera", tag: "v1", link_id: "main" }]
+            }"#,
+        );
+        let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let errors = validate_bindings(&items);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    /// Three sibling producer instances all claiming the same link_id
+    /// surface as 3 pairwise errors (C(3,2)) in alphabetical instance
+    /// order — proves the pairing is deterministic.
+    #[test]
+    fn three_way_collision_emits_pairwise_errors() {
+        let cons_instances = parse_instances(
+            r#"[
+                { instance_id: "cons_a", bindings: { main: "prod_a" } },
+                { instance_id: "cons_b", bindings: { main: "prod_b" } },
+                { instance_id: "cons_c", bindings: { main: "prod_c" } }
+            ]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{
+                nodes: [{ name: "camera", tag: "v1", link_id: "main" }]
+            }"#,
+        );
+        let prod_instances = parse_instances(
+            r#"[
+                { instance_id: "prod_a" },
+                { instance_id: "prod_b" },
+                { instance_id: "prod_c" }
+            ]"#,
+        );
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let errors = validate_bindings(&items);
+        assert_eq!(errors.len(), 3, "expected 3 pairwise errors: {errors:?}");
+        let pairs: Vec<(String, String)> = errors
+            .iter()
+            .map(|e| match e {
+                ParsingError::DuplicateProducerLinkId(info) => {
+                    (info.instance_a.clone(), info.instance_b.clone())
+                }
+                other => panic!("expected DuplicateProducerLinkId, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("prod_a".to_string(), "prod_b".to_string()),
+                ("prod_a".to_string(), "prod_c".to_string()),
+                ("prod_b".to_string(), "prod_c".to_string()),
+            ]
+        );
     }
 
     /// All three sub-checks are aggregated: a single consumer triggers

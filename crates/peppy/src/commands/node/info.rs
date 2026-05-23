@@ -466,10 +466,12 @@ mod tests {
                 NodeInstanceInfo {
                     instance_id: "inst-abc".to_string(),
                     state: InstanceState::Running,
+                    link_ids: Vec::new(),
                 },
                 NodeInstanceInfo {
                     instance_id: "inst-def".to_string(),
                     state: InstanceState::Starting,
+                    link_ids: Vec::new(),
                 },
             ],
             add_log_path: Some(PathBuf::from("/tmp/peppy/logs/add/sensor_node.log")),

@@ -1426,6 +1426,7 @@ async fn spawn_real_running_instance_inner(
             mount_paths_resolved: &[],
             peppy_dirs: &started.peppy_dirs,
             output_sinks,
+            link_ids: &[],
         },
     )
     .await

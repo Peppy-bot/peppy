@@ -13,13 +13,13 @@ use crate::Result;
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
+use config::node::validate_dependency_specs;
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
-use config::node::validate_dependency_specs;
 use node_stack::{InstanceState, NodeStack, WorkingDirGuard};
 use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};

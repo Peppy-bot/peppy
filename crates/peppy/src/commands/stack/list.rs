@@ -219,6 +219,7 @@ mod tests {
                 .map(|(id, state)| SerializedInstance {
                     instance_id: id.to_string(),
                     state,
+                    link_ids: Vec::new(),
                 })
                 .collect(),
         }
