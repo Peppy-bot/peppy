@@ -690,7 +690,7 @@ from peppygen.consumed_services import producer_report_status
 
 async def poll_service(node_runner, done):
     request = producer_report_status.Request(detail=True)
-    response = await producer_report_status.poll(node_runner, request, 5.0, None)
+    response = await producer_report_status.poll(node_runner, request, 5.0)
     print(
         f"response ok={response.data.ok} status={response.data.status} "
         f"measurements={response.data.measurements} elapsed={response.data.elapsed}",
