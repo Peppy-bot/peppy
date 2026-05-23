@@ -76,6 +76,22 @@ pub struct BindingTargetMismatch {
     pub actual_tag: String,
 }
 
+/// Payload for [`ParsingError::DuplicateProducerLinkId`]. Boxed in the
+/// variant so the five `String` fields do not inflate `ParsingError` past
+/// the `clippy::result_large_err` threshold.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "two instances of `{node_name}:{node_tag}` would both publish link_id `{link_id}` \
+     (`{instance_a}` and `{instance_b}`); a producer link_id must be unique within a node"
+)]
+pub struct DuplicateProducerLinkId {
+    pub node_name: String,
+    pub node_tag: String,
+    pub link_id: String,
+    pub instance_a: String,
+    pub instance_b: String,
+}
+
 /// Payload for [`ParsingError::MissingInterface`]. Boxed in the variant so
 /// the six `String` fields do not inflate `ParsingError` past the
 /// `clippy::result_large_err` threshold.
@@ -176,6 +192,13 @@ pub enum ParsingError {
     /// `peppylib::PeppyError`).
     #[error(transparent)]
     BindingTargetMismatch(Box<BindingTargetMismatch>),
+    /// Two producer instances of the same `(node_name, node_tag)` would
+    /// end up advertising the same `link_id` (because consumer bindings
+    /// point that `link_id` at distinct producer `instance_id`s). Boxed
+    /// for the same `result_large_err` reason as the other binding
+    /// variants.
+    #[error(transparent)]
+    DuplicateProducerLinkId(Box<DuplicateProducerLinkId>),
 
     // -- container config: mount paths
     #[error(

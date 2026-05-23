@@ -652,6 +652,27 @@ impl NodeEntity {
                 });
             }
 
+            // Reject collisions against link_ids already claimed by another
+            // live instance of the same node. A producer link_id is a 1:1
+            // binding contract from the consumer's perspective, so two
+            // instances advertising the same link_id would silently
+            // multiplex the wire. Empty ctx.link_ids (the default-launch
+            // path) claims nothing and trivially passes — the `_` sentinel
+            // is materialized downstream by the runtime processor and
+            // permits multiple `from_any` fan-in producers.
+            for new_link_id in ctx.link_ids {
+                if let Some(holder) = instances.iter().find(|inst| {
+                    inst.link_ids().iter().any(|existing| existing == new_link_id)
+                }) {
+                    return Err(Error::DuplicateLinkId {
+                        link_id: new_link_id.clone(),
+                        held_by: holder.instance_id().as_str().to_owned(),
+                        node_name: guard.config.manifest.name.as_str().to_owned(),
+                        node_tag: guard.config.manifest.tag.clone(),
+                    });
+                }
+            }
+
             let snapshot_artifact = artifact_path.clone();
             instances.push(TrackedNodeInstance::new(
                 ctx.instance_id.clone(),

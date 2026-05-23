@@ -1418,6 +1418,262 @@ async fn node_run_emits_no_warning_when_all_link_ids_are_covered() {
     );
 }
 
+/// Running two instances of the same node that both advertise the
+/// same `--link-id` is rejected by the daemon at goal-acceptance time.
+/// After the first instance is stopped, the second can reclaim the
+/// link_id. Sibling instances with disjoint link_ids both succeed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_rejects_duplicate_link_id_across_instances_of_same_node() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let producer_name = "test_duplinkid_producer";
+    let id_a = "cam_a";
+    let id_b = "cam_b";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _services_a =
+        install_node_services(&node_messenger, &core_node_name, producer_name, id_a).await;
+    let (_a_shutdown_handle, _a_shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        id_a,
+        super::common::test_node_target(producer_name),
+        &[],
+    )
+    .await
+    .expect("cam_a shutdown service should start");
+    let _services_b =
+        install_node_services(&node_messenger, &core_node_name, producer_name, id_b).await;
+
+    // First instance claims wrist_left_camera — succeeds.
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(producer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(id_a.to_string()),
+            link_ids: vec!["wrist_left_camera".to_string()],
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("first node run should succeed");
+
+    // Second instance tries to claim the same link_id — the daemon
+    // rejects it via `DuplicateLinkId`, and the CLI surfaces the error.
+    let err = NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(producer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(id_b.to_string()),
+            link_ids: vec!["wrist_left_camera".to_string()],
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect_err("second node run should fail on link_id collision");
+
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("wrist_left_camera"),
+        "error should name the colliding link_id. Error:\n{msg}"
+    );
+    assert!(
+        msg.contains(id_a),
+        "error should name the holding instance. Error:\n{msg}"
+    );
+    assert!(
+        msg.contains("already claimed"),
+        "error should use the 'already claimed' phrasing. Error:\n{msg}"
+    );
+
+    // Stop the first instance to free the link_id.
+    NodeCommand {
+        command: NodeCommands::Stop {
+            instance_id: id_a.to_string(),
+        },
+    }
+    .execute(&node_ctx)
+    .expect("stopping cam_a should succeed");
+
+    // Second instance retries and now succeeds.
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(producer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(id_b.to_string()),
+            link_ids: vec!["wrist_left_camera".to_string()],
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("cam_b should succeed after cam_a has stopped");
+
+    // Stack should now show exactly one running cam_b on the producer.
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+    let response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger_handle,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack_list request should complete");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == producer_name && n.tag == "v1")
+        .expect("producer should still be in the stack");
+    assert_eq!(
+        node.instance_count(),
+        1,
+        "after stop+rerun, exactly one instance should remain. Graph: {:?}",
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Sibling instances of the same producer with *different* `--link-id`
+/// values must both run — this is the intended multi-camera workflow.
+/// The duplicate-link_id guard must not over-reach into this case.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_allows_distinct_link_ids_on_same_node() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let producer_name = "test_distinct_linkid_producer";
+    let id_a = "cam_left";
+    let id_b = "cam_right";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _services_a =
+        install_node_services(&node_messenger, &core_node_name, producer_name, id_a).await;
+    let _services_b =
+        install_node_services(&node_messenger, &core_node_name, producer_name, id_b).await;
+
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(producer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(id_a.to_string()),
+            link_ids: vec!["wrist_left_camera".to_string()],
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("cam_left should start");
+
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(producer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(id_b.to_string()),
+            link_ids: vec!["wrist_right_camera".to_string()],
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("cam_right should start alongside cam_left");
+
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+    let response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger_handle,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack_list request should complete");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == producer_name && n.tag == "v1")
+        .expect("producer should be in stack");
+    assert_eq!(
+        node.instance_count(),
+        2,
+        "both sibling instances should be running. Graph: {:?}",
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Test D — when no consumer in the stack pins the target node, no
 /// warning fires.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

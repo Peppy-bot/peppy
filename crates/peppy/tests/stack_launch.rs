@@ -950,3 +950,157 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         consumer_config.node_instance.link_ids,
     );
 }
+
+/// A launcher whose bindings would cause two producer instances of the
+/// same node to advertise the same `link_id` must fail at the parse
+/// stage — *before* any node is added, built, or spawned. The error
+/// must name both colliding producer instances so the operator can fix
+/// the manifest without guessing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_rejects_launcher_with_duplicate_producer_link_id() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let producer_name = "duplinkid_camera";
+    let consumer_name = "duplinkid_backbone";
+    let node_tag = "v1";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    let producer_path = write_node_config(
+        nodes_dir.path(),
+        producer_name,
+        node_tag,
+        &git_hash,
+        &["sh", "-c", "sleep 30"],
+    );
+    let consumer_path = nodes_dir.path().join(consumer_name);
+    fs::create_dir_all(&consumer_path).expect("create consumer dir");
+    fs::write(
+        consumer_path.join(NODE_CONFIG_FILE),
+        format!(
+            r#"{{
+                peppy_schema: "node_v1",
+                manifest: {{
+                    name: "{consumer_name}",
+                    tag: "{node_tag}",
+                    depends_on: {{
+                        nodes: [
+                            {{ name: "{producer_name}", tag: "{node_tag}", link_id: "wrist_left_camera" }}
+                        ]
+                    }}
+                }},
+                execution: {{
+                    language: "rust",
+                    run_cmd: ["sh", "-c", "sleep 30"]
+                }}
+            }}"#
+        ),
+    )
+    .expect("write consumer peppy.json5");
+    config::fingerprint::create_codegen_fingerprint(
+        &consumer_path.join(NODE_CONFIG_FILE),
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+    let consumer_output_dir = consumer_path.join(PEPPY_OUTPUT_DIR);
+    fs::create_dir_all(&consumer_output_dir).expect("create consumer output dir");
+    fs::write(consumer_output_dir.join("git.hash"), &git_hash).expect("write consumer git.hash");
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // Two camera instances + two backbone instances each binding the
+    // SAME link_id `wrist_left_camera` to a DIFFERENT camera. That's
+    // two cameras both claiming the same producer link_id.
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {{
+                    source: {{ local: "{producer}" }},
+                    instances: [
+                        {{ instance_id: "cam_a" }},
+                        {{ instance_id: "cam_b" }}
+                    ]
+                }},
+                {{
+                    source: {{ local: "{consumer}" }},
+                    instances: [
+                        {{ instance_id: "back_a", bindings: {{ wrist_left_camera: "cam_a" }} }},
+                        {{ instance_id: "back_b", bindings: {{ wrist_left_camera: "cam_b" }} }}
+                    ]
+                }}
+            ]
+        }}"#,
+        producer = producer_path.display(),
+        consumer = consumer_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    let result = StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(3600),
+        },
+    }
+    .execute(&ctx);
+
+    let err_msg = result
+        .expect_err("launch must fail on duplicate producer link_id")
+        .to_string();
+    assert!(
+        err_msg.contains("wrist_left_camera"),
+        "error should name the colliding link_id. Got:\n{err_msg}"
+    );
+    assert!(
+        err_msg.contains("cam_a") && err_msg.contains("cam_b"),
+        "error should name both colliding producer instances. Got:\n{err_msg}"
+    );
+    assert!(
+        err_msg.contains(producer_name),
+        "error should name the producer node. Got:\n{err_msg}"
+    );
+
+    // No spawn side-effect: neither camera nor backbone should appear
+    // in the stack.
+    let messenger_handle = ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+    let response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger_handle,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack_list request should complete");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    assert!(
+        !graph
+            .nodes
+            .iter()
+            .any(|n| n.name == producer_name || n.name == consumer_name),
+        "rejected launcher must not have added or spawned anything. Graph: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+    );
+}

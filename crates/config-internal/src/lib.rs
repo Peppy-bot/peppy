@@ -30,8 +30,8 @@ pub use common::{
 
 // -- error --
 pub use error::{
-    BindingMissingForPinnedDep, BindingTargetMismatch, Error as ConfigError, MissingInterface,
-    ParsingError, Result as ConfigResult,
+    BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateProducerLinkId,
+    Error as ConfigError, MissingInterface, ParsingError, Result as ConfigResult,
 };
 
 // -- atomic_write --

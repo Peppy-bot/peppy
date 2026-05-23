@@ -179,6 +179,18 @@ pub async fn spawn_running_instance(
     harness: &LifecycleHarness,
     instance_id: Name,
 ) -> RunningInstanceGuard {
+    spawn_running_instance_with_link_ids(handle, harness, instance_id, &[]).await
+}
+
+/// Same as [`spawn_running_instance`] but advertises the supplied
+/// `link_ids` on the producer side. Used by tests that need to assert
+/// link_id-aware behavior in `prepare_and_spawn`.
+pub async fn spawn_running_instance_with_link_ids(
+    handle: EntityHandle,
+    harness: &LifecycleHarness,
+    instance_id: Name,
+    link_ids: &[String],
+) -> RunningInstanceGuard {
     let (child, started_ctx) = NodeEntity::prepare_and_spawn(
         &handle,
         StartContext {
@@ -188,7 +200,7 @@ pub async fn spawn_running_instance(
             mount_paths_resolved: &[],
             peppy_dirs: &harness.peppy_dirs,
             output_sinks: harness.output_sinks(),
-            link_ids: &[],
+            link_ids,
         },
     )
     .await
