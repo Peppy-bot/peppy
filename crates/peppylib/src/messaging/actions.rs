@@ -374,8 +374,6 @@ impl ActionMessenger {
         let goal_id = generate_goal_id();
         let goal_payload = wrap_goal_payload(&goal_id, user_payload.as_ref())?;
 
-        let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
-
         // Discover a single producer when the caller did not pin either
         // addressing slot. The probe runs server-side without invoking the
         // goal handler; only the discovered producer will receive the real
@@ -390,8 +388,7 @@ impl ActionMessenger {
                     to_target.clone(),
                     to_link_id,
                     to_action_name,
-                )?
-                .with_excluded_link_ids(&excluded)?;
+                )?;
                 // Cap discovery at PROBE_TIMEOUT or the caller's goal budget,
                 // whichever is shorter, so a tight `goal_timeout` still fails
                 // fast against unreachable producers.
@@ -415,8 +412,7 @@ impl ActionMessenger {
             to_target,
             to_link_id,
             to_action_name,
-        )?
-        .with_excluded_link_ids(&excluded)?;
+        )?;
 
         // Feedback subscription is built from the pinned sender, so its
         // wire keyexpr targets only the discovered producer. Losers cannot

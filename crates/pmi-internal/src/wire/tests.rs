@@ -158,7 +158,6 @@ fn sample_action_sender() -> ActionWireSender {
         to_target: test_node_target("robot_arm"),
         to_link_id: Some(seg("link_a")),
         to_action_name: seg("pick_place"),
-        excluded_link_ids: Vec::new(),
     }
 }
 
@@ -202,7 +201,6 @@ fn action_sender_pinned_to_overwrites_identity_and_preserves_rest() {
     let mut wildcard = sample_action_sender();
     wildcard.target_core_node = None;
     wildcard.target_instance_id = None;
-    wildcard.excluded_link_ids = vec![seg("sibling_pinned")];
 
     let pinned = wildcard
         .pinned_to("responder_core", "responder_inst")
@@ -216,7 +214,6 @@ fn action_sender_pinned_to_overwrites_identity_and_preserves_rest() {
     assert_eq!(pinned.to_target, wildcard.to_target);
     assert_eq!(pinned.to_link_id, wildcard.to_link_id);
     assert_eq!(pinned.to_action_name, wildcard.to_action_name);
-    assert_eq!(pinned.excluded_link_ids, wildcard.excluded_link_ids);
 }
 
 #[test]

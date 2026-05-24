@@ -203,8 +203,6 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
             let node_name = #node_name_literal;
             let qos = peppylib::config::QoSProfile::Standard;
 
-            crate::consumer_dependencies::ensure_registered(node_runner.messenger());
-
             let message = {
                 let subscription_future = peppylib::TopicMessenger::subscribe(
                     node_runner.messenger(),

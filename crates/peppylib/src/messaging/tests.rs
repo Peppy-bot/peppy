@@ -2572,17 +2572,6 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
     let router = TestRouterContext::start().await;
     let subscriber_handle = router.messenger().await;
 
-    // Register a degenerate sibling map: empty pinned siblings under the
-    // target (name, tag). The point is that the guard fires even when the
-    // sibling-exclusion filter would have nothing to drop — the failure
-    // scenario the manifest validator would otherwise have prevented.
-    let mut pinned_map = HashMap::new();
-    pinned_map.insert(
-        ("depth_camera".to_string(), "v1".to_string()),
-        Vec::<String>::new(),
-    );
-    subscriber_handle.register_consumer_dependencies(pinned_map);
-
     let target = || SenderTarget::interface("depth_camera", "v1").expect("iface target");
 
     let sub_one = TopicMessenger::subscribe(

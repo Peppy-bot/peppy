@@ -467,29 +467,10 @@ impl TopicWireReceiver {
 
 // ─── Services ────────────────────────────────────────────────────────────────
 
-/// Validates each entry as a link_id `Segment` (rejects empty / `/` / `*` /
-/// `**`) so degenerate exclusions can't reach the wire. Used by every
-/// `with_excluded_link_ids` setter that converts a peppylib-supplied
-/// `&[String]` into a `Vec<Segment>` on a wire sender.
-fn validate_excluded_link_ids(excluded: &[String]) -> crate::error::Result<Vec<Segment>> {
-    Ok(excluded
-        .iter()
-        .map(|s| Segment::try_link_id(s))
-        .collect::<Result<_, _>>()?)
-}
-
 /// Caller-side addressing for a service. `target_core_node` / `target_instance_id`
 /// are `None` for broadcast (translated to the protocol's `_any_` marker).
 /// `to_link_id` `None` means "any link_id" (wildcard at the wire slot), used
 /// by consumers with `from_any: true` on the dependency.
-///
-/// `excluded_link_ids` is the set of producer link_ids the consumer's
-/// sibling pinned `depends_on` entries already claim. It is serialized as
-/// the query attachment so the producer's `choose_link_id` can skip
-/// first-bound entries in this set, ensuring a from_any caller doesn't
-/// silently alias a pinned sibling's request. Falls back to first-bound if
-/// every bound link_id is excluded (keeps the call reachable). Empty when
-/// no siblings are registered for this `(name, tag)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireSender {
     pub(crate) bound_core_node: Segment,
@@ -500,7 +481,6 @@ pub struct ServiceWireSender {
     pub(crate) to_link_id: Option<Segment>,
     pub(crate) to_service_name: Segment,
     pub(crate) kind: ServiceKind,
-    pub(crate) excluded_link_ids: Vec<Segment>,
 }
 
 impl ServiceWireSender {
@@ -524,19 +504,7 @@ impl ServiceWireSender {
             to_link_id: to_link_id.map(Segment::try_link_id).transpose()?,
             to_service_name: Segment::try_from(to_service_name)?,
             kind,
-            excluded_link_ids: Vec::new(),
         })
-    }
-
-    /// Replaces the sibling-pinned exclusion set. Peppylib's `poll` looks up
-    /// the set on `MessengerHandle` when `to_link_id` is `None` and a sibling
-    /// pinned dependency is registered for the same `(name, tag)`; pinned
-    /// callers leave it empty. Each entry is validated as a link_id segment
-    /// (rejects empty / `/` / `*` / `**`) so degenerate exclusions can't
-    /// reach the wire.
-    pub fn with_excluded_link_ids(mut self, excluded: &[String]) -> crate::error::Result<Self> {
-        self.excluded_link_ids = validate_excluded_link_ids(excluded)?;
-        Ok(self)
     }
 
     pub fn to_service_name(&self) -> &str {
@@ -603,12 +571,6 @@ impl ServiceWireReceiver {
 /// as derived [`ServiceWireSender`]s with the appropriate [`ServiceKind`].
 /// Feedback subscription is built per `goal_id` by the transport adapter.
 /// `to_link_id` `None` means "any link_id" (wildcard).
-///
-/// `excluded_link_ids` is propagated into every derived
-/// [`ServiceWireSender`] (goal / cancel / result) so each sub-service's
-/// query attachment carries the same exclusion set, keeping the producer's
-/// link_id claim consistent across the three sub-services for a single
-/// goal_id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionWireSender {
     pub(crate) as_core_node: Segment,
@@ -618,7 +580,6 @@ pub struct ActionWireSender {
     pub(crate) to_target: SenderTarget,
     pub(crate) to_link_id: Option<Segment>,
     pub(crate) to_action_name: Segment,
-    pub(crate) excluded_link_ids: Vec<Segment>,
 }
 
 impl ActionWireSender {
@@ -640,17 +601,7 @@ impl ActionWireSender {
             to_target,
             to_link_id: to_link_id.map(Segment::try_link_id).transpose()?,
             to_action_name: Segment::try_from(to_action_name)?,
-            excluded_link_ids: Vec::new(),
         })
-    }
-
-    /// Replaces the sibling-pinned exclusion set. See
-    /// [`ServiceWireSender::with_excluded_link_ids`]; the set propagates
-    /// into each derived sub-service so goal / cancel / result agree on the
-    /// producer link_id claim.
-    pub fn with_excluded_link_ids(mut self, excluded: &[String]) -> crate::error::Result<Self> {
-        self.excluded_link_ids = validate_excluded_link_ids(excluded)?;
-        Ok(self)
     }
 
     pub fn goal_service(&self) -> ServiceWireSender {
@@ -700,7 +651,6 @@ impl ActionWireSender {
             to_link_id: self.to_link_id.clone(),
             to_service_name: self.to_action_name.clone(),
             kind,
-            excluded_link_ids: self.excluded_link_ids.clone(),
         }
     }
 }

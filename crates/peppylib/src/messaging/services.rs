@@ -349,7 +349,6 @@ impl ServiceMessenger {
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
-        let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
         let response_timeout: Option<Duration> = response_timeout.into();
 
         let started_at = Instant::now();
@@ -363,8 +362,7 @@ impl ServiceMessenger {
                 to_link_id,
                 to_service_name,
                 ServiceKind::Service,
-            )?
-            .with_excluded_link_ids(&excluded)?;
+            )?;
             // Discovery is capped at PROBE_TIMEOUT or the caller's response
             // budget, whichever is shorter; this preserves the user contract
             // that a tight `response_timeout` fails fast against unreachable
@@ -409,8 +407,7 @@ impl ServiceMessenger {
             to_link_id,
             to_service_name,
             ServiceKind::Service,
-        )?
-        .with_excluded_link_ids(&excluded)?;
+        )?;
         messenger
             .poll_service(
                 &sender,
@@ -442,7 +439,6 @@ impl ServiceMessenger {
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
     ) -> Result<bool> {
-        let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
@@ -452,8 +448,7 @@ impl ServiceMessenger {
             to_link_id,
             to_service_name,
             ServiceKind::Service,
-        )?
-        .with_excluded_link_ids(&excluded)?;
+        )?;
         match messenger
             .poll_service(
                 &sender,

@@ -242,29 +242,17 @@ impl ZenohWireFormat {
             caller_inst,
             link_id,
             kind: attachment.kind,
-            excluded_link_ids: attachment.excluded_link_ids,
         })
     }
 
-    /// Caller-side attachment bytes for a service query. Carries both the
-    /// request kind (UserRequest vs Probe — discriminates probes from real
-    /// requests without smuggling sentinels through the payload) and the
-    /// consumer's "excluded link_ids" set (sibling-pinned dependencies the
-    /// `from_any` caller has already claimed).
+    /// Caller-side attachment bytes for a service query. Carries the request
+    /// kind (UserRequest vs Probe) so probes can be discriminated from real
+    /// requests without smuggling sentinels through the payload.
     pub(crate) fn service_get_selector_attachment(
-        s: &ServiceWireSender,
+        _s: &ServiceWireSender,
         kind: ServiceQueryKind,
     ) -> bytes::Bytes {
-        let excluded: Vec<String> = s
-            .excluded_link_ids
-            .iter()
-            .map(|seg| seg.as_str().to_string())
-            .collect();
-        ServiceQueryAttachment {
-            kind,
-            excluded_link_ids: excluded,
-        }
-        .encode()
+        ServiceQueryAttachment { kind }.encode()
     }
 
     // ─── Actions ──────────────────────────────────────────────────────────
@@ -426,59 +414,38 @@ impl ServiceQueryKind {
     }
 }
 
-/// Service / action query attachment carrying the request kind plus the
-/// consumer's "excluded link_ids" set (the producer link_ids a sibling
-/// pinned dependency on the same `(name, tag)` has already claimed —
-/// consulted by [`ParsedInboundQuery::choose_link_id`] so a `from_any: true`
-/// consumer doesn't silently alias a pinned sibling's request).
+/// Service / action query attachment carrying the request kind so the
+/// producer can discriminate user requests from discovery probes without
+/// smuggling sentinels through the payload.
 ///
 /// Wire layout (mandatory on every service query):
-/// - byte 0: magic + version, `0x02`. Earlier `0x01` had no kind byte —
-///   any peer that produces V1 is mid-rollout and must redeploy.
+/// - byte 0: magic + version, `0x03`. Earlier versions also carried a
+///   sibling-pinned exclusion set; any peer producing an older magic is
+///   mid-rollout and must redeploy.
 /// - byte 1: kind discriminator (see [`ServiceQueryKind::as_byte`]).
-/// - byte 2: count `N` of excluded link_ids (max 255).
-/// - then `N` entries, each `(u8 len)(len bytes utf-8)`.
 ///
-/// Decode is strict: a missing attachment, wrong magic, unknown kind byte,
-/// or a truncated entry is reported as a [`ZenohWireParseError`] so
-/// mid-rollout schema skew surfaces loudly instead of as silent
-/// misclassification.
+/// Decode is strict: a missing attachment, wrong magic, or unknown kind
+/// byte is reported as a [`ZenohWireParseError`] so mid-rollout schema
+/// skew surfaces loudly instead of as silent misclassification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ServiceQueryAttachment {
     pub(crate) kind: ServiceQueryKind,
-    pub(crate) excluded_link_ids: Vec<String>,
 }
 
 impl ServiceQueryAttachment {
-    pub(crate) const MAGIC_V2: u8 = 0x02;
+    pub(crate) const MAGIC_V3: u8 = 0x03;
 
     pub(crate) fn encode(&self) -> bytes::Bytes {
-        let count = self.excluded_link_ids.len().min(u8::MAX as usize);
-        let mut buf = Vec::with_capacity(
-            3 + self
-                .excluded_link_ids
-                .iter()
-                .map(|s| 1 + s.len())
-                .sum::<usize>(),
-        );
-        buf.push(Self::MAGIC_V2);
-        buf.push(self.kind.as_byte());
-        buf.push(count as u8);
-        for s in self.excluded_link_ids.iter().take(count) {
-            let len = s.len().min(u8::MAX as usize) as u8;
-            buf.push(len);
-            buf.extend_from_slice(&s.as_bytes()[..len as usize]);
-        }
-        bytes::Bytes::from(buf)
+        bytes::Bytes::from(vec![Self::MAGIC_V3, self.kind.as_byte()])
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, ZenohWireParseError> {
         if bytes.is_empty() {
             return Err(ZenohWireParseError::MissingServiceQueryAttachment);
         }
-        if bytes[0] != Self::MAGIC_V2 {
+        if bytes[0] != Self::MAGIC_V3 {
             return Err(ZenohWireParseError::ServiceQueryAttachmentMagicMismatch {
-                expected: Self::MAGIC_V2,
+                expected: Self::MAGIC_V3,
                 got: bytes[0],
             });
         }
@@ -487,29 +454,7 @@ impl ServiceQueryAttachment {
             .ok_or(ZenohWireParseError::TruncatedServiceQueryAttachment)?;
         let kind = ServiceQueryKind::from_byte(kind_byte)
             .ok_or(ZenohWireParseError::UnknownServiceQueryKind(kind_byte))?;
-        let count = *bytes
-            .get(2)
-            .ok_or(ZenohWireParseError::TruncatedServiceQueryAttachment)?;
-        let mut excluded = Vec::with_capacity(count as usize);
-        let mut cursor = 3usize;
-        for _ in 0..count {
-            let len_byte = *bytes
-                .get(cursor)
-                .ok_or(ZenohWireParseError::TruncatedServiceQueryAttachment)?;
-            cursor += 1;
-            let len = len_byte as usize;
-            if cursor + len > bytes.len() {
-                return Err(ZenohWireParseError::TruncatedServiceQueryAttachment);
-            }
-            let s = std::str::from_utf8(&bytes[cursor..cursor + len])
-                .map_err(|_| ZenohWireParseError::InvalidUtf8InServiceQueryAttachment)?;
-            excluded.push(s.to_string());
-            cursor += len;
-        }
-        Ok(Self {
-            kind,
-            excluded_link_ids: excluded,
-        })
+        Ok(Self { kind })
     }
 }
 
@@ -599,10 +544,7 @@ impl ServiceReplyAttachment {
 ///
 /// `kind` is decoded from the query attachment and distinguishes user
 /// requests (handler runs) from probes (auto-replied without invoking the
-/// handler). `excluded_link_ids` is the consumer's "claimed by a sibling
-/// pinned dependency" set — `choose_link_id` skips first-bound entries in
-/// it so a from_any consumer doesn't silently alias a pinned sibling's
-/// request.
+/// handler).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedInboundQuery {
     pub(crate) caller_core: String,
@@ -614,26 +556,13 @@ pub(crate) struct ParsedInboundQuery {
     /// Whether this query is a real user request or a discovery probe.
     /// Decoded from the mandatory query attachment.
     pub(crate) kind: ServiceQueryKind,
-    /// Link_ids the consumer's sibling pinned dependencies already claim.
-    /// Empty when the consumer hasn't registered manifest siblings for
-    /// this `(name, tag)`.
-    pub(crate) excluded_link_ids: Vec<String>,
 }
 
 impl ParsedInboundQuery {
     /// Resolves the link_id the producer should bind this request to.
     ///
-    /// - Wildcard selector (`from_any` consumer): claims the first bound
-    ///   link_id NOT in `excluded_link_ids`. If every bound link_id is
-    ///   excluded, falls back to `bound_link_ids[0]` so the call doesn't
-    ///   fail purely because of the consumer's sibling claims; first-bound
-    ///   is the historical contract that keeps the call reachable. The
-    ///   non-excluded preference keeps `ctx.link_id()` stable across an
-    ///   action's goal / cancel / result sub-services, which dispatch
-    ///   independently but must agree on the link_id for a given goal_id.
-    /// - Literal selector matching a bound link_id: claims that literal
-    ///   (the exclusion set is ignored; a pinned caller asked specifically
-    ///   for this link_id).
+    /// - Wildcard selector (`from_any` consumer): claims `bound_link_ids[0]`.
+    /// - Literal selector matching a bound link_id: claims that literal.
     /// - Literal selector NOT in the bound set: returns `None`, signaling
     ///   the adapter to drop the query without replying. Unreachable in
     ///   practice because Zenoh's keyexpr matcher already filtered the
@@ -641,12 +570,6 @@ impl ParsedInboundQuery {
     ///   guard against mid-rollout schema skew.
     pub(crate) fn choose_link_id<'a>(&self, bound_link_ids: &'a [String]) -> Option<&'a str> {
         if self.link_id == SINGLE_CHUNK_WILDCARD {
-            if let Some(found) = bound_link_ids
-                .iter()
-                .find(|b| !self.excluded_link_ids.iter().any(|e| e == b.as_str()))
-            {
-                return Some(found.as_str());
-            }
             return bound_link_ids.first().map(String::as_str);
         }
         bound_link_ids
@@ -678,7 +601,6 @@ pub(crate) enum ZenohWireParseError {
     },
     TruncatedServiceQueryAttachment,
     UnknownServiceQueryKind(u8),
-    InvalidUtf8InServiceQueryAttachment,
     /// Service reply arrived with no attachment. Treated as a malformed
     /// reply and dropped — the consumer's poll loop ignores it and the
     /// usual timeout / unreachable path applies.
@@ -716,9 +638,6 @@ impl fmt::Display for ZenohWireParseError {
             }
             Self::UnknownServiceQueryKind(byte) => {
                 write!(f, "unknown service query kind discriminator: {byte:#04x}")
-            }
-            Self::InvalidUtf8InServiceQueryAttachment => {
-                write!(f, "service query attachment contained invalid UTF-8")
             }
             Self::MissingServiceReplyAttachment => {
                 write!(f, "service reply arrived with no attachment")

@@ -1321,3 +1321,208 @@ async fn node_run_bind_rejects_dead_key() {
         "dead-key error should name the unknown key. Got: {msg}"
     );
 }
+
+/// Positive control: a consumer with two pinned `depends_on` entries, run
+/// with `--bind` satisfying both, produces no warning and the run
+/// completes normally. Guards against the warning regressing from
+/// "missing pin" into "always fires" or "fires when satisfied".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let producer_name = "test_no_warn_producer";
+    let consumer_name = "test_no_warn_consumer";
+    let producer_left_id = "cam_left";
+    let producer_right_id = "cam_right";
+    let consumer_instance_id = "consumer_inst";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+    add_built_consumer_with_pins(
+        &node_ctx,
+        work_dir.path(),
+        consumer_name,
+        producer_name,
+        &["wrist_left", "wrist_right"],
+    )
+    .await;
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _left_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_left_id,
+    )
+    .await;
+    let _right_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_right_id,
+    )
+    .await;
+    for instance_id in [producer_left_id, producer_right_id] {
+        NodeCommand {
+            command: NodeCommands::Run {
+                node_ref: None,
+                node_name: Some(producer_name.to_string()),
+                tag: Some("v1".to_string()),
+                args: Vec::new(),
+                instance_id: Some(instance_id.to_string()),
+                binds: Vec::new(),
+                _link_id_removed: Vec::new(),
+                idle_timeout: 60,
+                max_timeout: 3600,
+                build: false,
+            },
+        }
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
+    }
+
+    let _consumer_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        consumer_name,
+        consumer_instance_id,
+    )
+    .await;
+
+    // Capture only the consumer-run logs so we can assert the missing-pin
+    // warning string is absent without false-positive matches from producer
+    // bootstrap output.
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(consumer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(consumer_instance_id.to_string()),
+            binds: vec![
+                ("wrist_left".to_string(), producer_left_id.to_string()),
+                ("wrist_right".to_string(), producer_right_id.to_string()),
+            ],
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("consumer run should succeed when all pinned deps have binds");
+
+    let logs = log_capture.logs();
+    assert!(
+        !logs.contains("pinned dependencies with no"),
+        "no missing-pin warning should fire when every pinned dep is bound. Logs:\n{logs}"
+    );
+}
+
+/// `--bind KEY@VALUE` where VALUE is an `instance_id` that belongs to a
+/// node of a different `(name, tag)` than the consumer's `depends_on`
+/// declared is a hard error (target mismatch). Catches a misrouting class
+/// the dead-key check doesn't cover: KEY *is* declared, the target
+/// *exists*, but it deploys the wrong node identity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_bind_rejects_target_mismatch() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let expected_producer = "test_mismatch_expected_producer";
+    let wrong_producer = "test_mismatch_wrong_producer";
+    let consumer_name = "test_mismatch_consumer";
+    let wrong_instance_id = "wrong_prod_inst";
+    let consumer_instance_id = "consumer_inst";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    add_built_producer(&node_ctx, work_dir.path(), expected_producer).await;
+    add_built_producer(&node_ctx, work_dir.path(), wrong_producer).await;
+    add_built_consumer_with_pins(
+        &node_ctx,
+        work_dir.path(),
+        consumer_name,
+        expected_producer,
+        &["wrist_left"],
+    )
+    .await;
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _wrong_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        wrong_producer,
+        wrong_instance_id,
+    )
+    .await;
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(wrong_producer.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(wrong_instance_id.to_string()),
+            binds: Vec::new(),
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("wrong-node producer run should succeed");
+
+    let result = NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(consumer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(consumer_instance_id.to_string()),
+            binds: vec![("wrist_left".to_string(), wrong_instance_id.to_string())],
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx);
+    let err = match result {
+        Err(e) => e,
+        Ok(()) => panic!("--bind to wrong-node instance should have been rejected"),
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains(wrong_instance_id),
+        "target-mismatch error should name the offending instance. Got: {msg}"
+    );
+    assert!(
+        msg.contains(expected_producer) || msg.contains("camera") || msg.contains("expected"),
+        "target-mismatch error should hint at the expected node identity. Got: {msg}"
+    );
+}

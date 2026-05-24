@@ -61,13 +61,6 @@ pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
     parameters: config::ParameterSchema,
-    /// Per-`(producer_name, producer_tag)` set of pinned sibling link_ids
-    /// declared by the node's `depends_on`. Populated by [`Self::set_pinned_siblings_map`]
-    /// before codegen runs; the [`build`] step emits a single
-    /// `register_consumer_dependencies_once` scaffold file that consumer
-    /// functions call to seed the messenger's sibling-precedence table on
-    /// first use.
-    pinned_siblings_map: HashMap<(String, String), Vec<String>>,
 }
 
 impl RustGenerator {
@@ -88,14 +81,6 @@ impl RustGenerator {
     /// Sets the node parameters for code generation.
     pub fn set_parameters(&mut self, parameters: config::ParameterSchema) {
         self.parameters = parameters;
-    }
-
-    /// Seeds the per-`(name, tag)` pinned-sibling map. Consumed-interface
-    /// codegen emits an `ensure_dependencies_registered` scaffold that
-    /// installs this map onto the runtime `MessengerHandle` so from_any
-    /// consumers learn which producer link_ids their pinned siblings claim.
-    pub fn set_pinned_siblings_map(&mut self, map: HashMap<(String, String), Vec<String>>) {
-        self.pinned_siblings_map = map;
     }
 
     fn push_section(&mut self, section: InterfaceArtifact) {
@@ -296,8 +281,6 @@ impl RustGenerator {
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
             ) -> crate::Result<Self> {
-                crate::consumer_dependencies::ensure_registered(node_runner.messenger());
-
                 #goal_payload_tokens
 
                 let action_handle = peppylib::ActionMessenger::send_goal(
@@ -1427,8 +1410,6 @@ impl LanguageGenerator for RustGenerator {
 
         let function_token = quote! {
             pub async fn #method_ident(#(#fn_param_tokens),*) -> crate::Result<#return_ty> {
-                crate::consumer_dependencies::ensure_registered(node_runner.messenger());
-
                 #request_payload_tokens
 
                 #poll_tokens
@@ -1633,7 +1614,6 @@ impl LanguageGenerator for RustGenerator {
         scaffold::add_capnp_schemas(&self.schemas, to_path.as_ref())?;
         scaffold::add_artifacts_to_lib(&to_path, self.sections)?;
         scaffold::add_parameters_to_lib(&to_path, &self.parameters)?;
-        scaffold::add_consumer_dependencies_to_lib(&to_path, &self.pinned_siblings_map)?;
         Ok(())
     }
 }
