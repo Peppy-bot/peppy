@@ -294,12 +294,10 @@ impl fmt::Debug for ServiceRequestContext {
 }
 
 impl ServiceMessenger {
-    /// Listen as a service. In the harmonized wire model the producer always
-    /// declares its queryable under the reserved default `_` link_id segment;
-    /// consumers pin a specific producer by `target_instance_id` derived from
-    /// the consumer's binding map, not by a producer-side link_id. The
-    /// `link_ids` parameter is retained for source compatibility but is
-    /// ignored — only one queryable is declared under the `_` segment.
+    /// Listen as a service. The producer declares one queryable under the
+    /// reserved default `_` link_id segment; consumers pin a specific
+    /// producer by `target_instance_id` derived from the consumer's
+    /// binding map.
     ///
     /// `as_identity` must match the [`SenderTarget`] callers will use in
     /// [`Self::poll`].
@@ -308,10 +306,8 @@ impl ServiceMessenger {
         as_core_node: &str,
         as_instance_id: &str,
         as_identity: SenderTarget,
-        link_ids: &[String],
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
-        let _ = link_ids;
         let recv = ServiceWireReceiver::new(
             as_core_node,
             as_instance_id,

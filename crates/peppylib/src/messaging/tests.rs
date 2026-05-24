@@ -10,8 +10,7 @@ use tokio::sync::oneshot;
 
 use crate::error::Error;
 use crate::messaging::{
-    ActionMessenger, MessengerHandle, NonEmptyPayload, SenderTarget, ServiceMessenger,
-    TopicMessenger,
+    ActionMessenger, MessengerHandle, SenderTarget, ServiceMessenger, TopicMessenger,
 };
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
@@ -143,7 +142,6 @@ async fn topic_publish_subscribe_no_from_instance_id() {
         emitter_core_node,
         emitter_instance_id,
         test_node_target(node_name),
-        &[],
         topic,
         qos,
         payload.clone(),
@@ -225,7 +223,6 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         emitter_core_node,
         emitter_instance_id2,
         test_node_target(node_name),
-        &[],
         topic,
         qos,
         payload.clone(),
@@ -315,7 +312,6 @@ async fn topic_publish_subscribe_with_from_core_node() {
         emitter_core_node2,
         emitter_instance_id,
         test_node_target(node_name),
-        &[],
         topic,
         qos,
         payload.clone(),
@@ -388,7 +384,6 @@ async fn topic_publish_reliable_5000hz_messages() {
             emitter_core_node,
             emitter_instance_id,
             test_node_target(node_name),
-            &[],
             topic,
             qos.clone(),
             payload,
@@ -480,7 +475,6 @@ async fn service_communication_poll_no_instance_id_target() {
             listener_core_node1,
             listener_instance_id1,
             test_node_target(listener_node_name),
-            &[],
             listener_service_name,
         )
         .await
@@ -527,7 +521,6 @@ async fn service_communication_poll_no_instance_id_target() {
             listener_core_node2,
             listener_instance_id2,
             test_node_target(listener_node_name),
-            &[],
             listener_service_name,
         )
         .await
@@ -668,7 +661,6 @@ async fn service_communication_poll_specific_instance_id() {
             listener_core_node1,
             listener_instance_id1,
             test_node_target(listener_node_name),
-            &[],
             listener_service_name,
         )
         .await
@@ -704,7 +696,6 @@ async fn service_communication_poll_specific_instance_id() {
             listener_core_node2,
             listener_instance_id2,
             test_node_target(listener_node_name),
-            &[],
             listener_service_name,
         )
         .await
@@ -833,7 +824,6 @@ async fn service_communication_poll_wrong_node() {
             listener_core_node,
             listener_instance_id,
             test_node_target(listener_node_name),
-            &[],
             listener_service_name,
         )
         .await
@@ -967,7 +957,6 @@ async fn service_communication_poll_wrong_core_node() {
             listener_core_node,
             listener_instance_id,
             test_node_target(listener_node_name),
-            &[],
             listener_service_name,
         )
         .await
@@ -1142,7 +1131,6 @@ async fn service_communication_fails_service_timeouts() {
             listener_core_node,
             listener_instance_id,
             test_node_target(listener_node_name),
-            &[],
             listener_service_name,
         )
         .await
@@ -1306,7 +1294,6 @@ async fn service_handle_request_processes_multiple_messages() {
             listener_core_node,
             listener_instance_id,
             test_node_target(listener_node_name),
-            &[],
             listener_service_name,
         )
         .await
@@ -1411,7 +1398,6 @@ async fn single_service_communication_multiple_polls_and_callers() {
             listener_core_node,
             listener_instance_id,
             test_node_target(listener_node_name),
-            &[],
             listener_service_name,
         )
         .await
@@ -1593,7 +1579,6 @@ async fn action_communication_no_instance_id_target() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 test_node_target(listener_node_name),
-                &[],
                 listener_action_name,
             )
             .await
@@ -1781,7 +1766,6 @@ async fn action_communication_with_instance_id_target() {
                 LISTENER_CORE_NODE1,
                 LISTENER_INSTANCE_ID1,
                 test_node_target(listener_node_name),
-                &[],
                 listener_action_name,
             )
             .await
@@ -1829,7 +1813,6 @@ async fn action_communication_with_instance_id_target() {
                 LISTENER_CORE_NODE2,
                 LISTENER_INSTANCE_ID2,
                 test_node_target(listener_node_name),
-                &[],
                 listener_action_name,
             )
             .await
@@ -2022,7 +2005,6 @@ async fn action_communication_goal_cancelled() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 test_node_target(listener_node_name),
-                &[],
                 listener_action_name,
             )
             .await
@@ -2279,7 +2261,6 @@ async fn single_action_communication_multiple_polls() {
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
                 test_node_target(listener_node_name),
-                &[],
                 listener_action_name,
             )
             .await
@@ -2495,79 +2476,7 @@ async fn single_action_communication_multiple_polls() {
 // test below.
 
 const LINK_LEFT: &str = "wrist_left";
-const LINK_RIGHT: &str = "wrist_right";
 const LINK_TORSO: &str = "torso";
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
-async fn service_listen_dispatches_under_each_bound_link_id() {
-    // Producer binds two link_ids on one listen call. Two consumers pin to
-    // different link_ids; both must reach the same handler and receive the
-    // response addressed to their pinned link_id. Plain happy path.
-    let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
-    let server_handle = router.messenger().await;
-    let mut endpoint = ServiceMessenger::listen(
-        &server_handle,
-        "server_core",
-        "server_inst",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        &bound,
-        "start_recording",
-    )
-    .await
-    .expect("listen should succeed");
-
-    let server_task = tokio::spawn(async move {
-        for _ in 0..2 {
-            endpoint
-                .handle_next_request(|ctx| {
-                    let link_id = ctx.link_id().to_string();
-                    async move { Ok(Payload::from(link_id.into_bytes())) }
-                })
-                .await
-                .expect("handle_next_request should succeed");
-        }
-    });
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let caller_handle = router.messenger().await;
-    let response_left = ServiceMessenger::poll(
-        &caller_handle,
-        "caller_core",
-        "caller_inst_left",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        Some(LINK_LEFT),
-        "start_recording",
-        Some("server_core"),
-        Some("server_inst"),
-        Payload::from_static(b"go"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("left poll should succeed");
-    assert_eq!(response_left.payload().as_ref(), LINK_LEFT.as_bytes());
-
-    let response_right = ServiceMessenger::poll(
-        &caller_handle,
-        "caller_core",
-        "caller_inst_right",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        Some(LINK_RIGHT),
-        "start_recording",
-        Some("server_core"),
-        Some("server_inst"),
-        Payload::from_static(b"go"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("right poll should succeed");
-    assert_eq!(response_right.payload().as_ref(), LINK_RIGHT.as_bytes());
-
-    server_task.await.expect("server task should not panic");
-    router.shutdown().await;
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
@@ -2580,14 +2489,12 @@ async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
     // The consumer surfaces `ServiceUnreachable` and the user handler
     // must NEVER fire.
     let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string()];
     let server_handle = router.messenger().await;
     let mut endpoint = ServiceMessenger::listen(
         &server_handle,
         "server_core",
         "server_inst",
         SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        &bound,
         "start_recording",
     )
     .await
@@ -2646,740 +2553,6 @@ async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
-async fn service_from_any_consumer_reaches_concrete_link_id_producer() {
-    // A `from_any: true` consumer (`to_link_id: None`) must reach a producer
-    // bound to a specific link_id. `session.get` accepts Zenoh wildcards, so
-    // `to_link_id: None` emits `*` at the link_id slot and the matcher routes
-    // the query to the producer's concrete-link_id queryable.
-    let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string()];
-    let server_handle = router.messenger().await;
-    let mut endpoint = ServiceMessenger::listen(
-        &server_handle,
-        "server_core",
-        "server_inst",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        &bound,
-        "start_recording",
-    )
-    .await
-    .expect("listen should succeed");
-
-    let server_task = tokio::spawn(async move {
-        endpoint
-            .handle_next_request(|ctx| {
-                let link_id = ctx.link_id().to_string();
-                async move { Ok(Payload::from(link_id.into_bytes())) }
-            })
-            .await
-            .expect("handle_next_request should succeed");
-    });
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let caller_handle = router.messenger().await;
-    let response = ServiceMessenger::poll(
-        &caller_handle,
-        "caller_core",
-        "from_any_caller",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        None, // ← `from_any: true` semantics — the exact case that was broken
-        "start_recording",
-        Some("server_core"),
-        Some("server_inst"),
-        Payload::from_static(b"go"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect(
-        "from_any consumer must reach the concrete-link_id producer (queryable selector wildcards \
-         the link_id slot, so Zenoh matches it against the producer's `wrist_left` literal)",
-    );
-    assert_eq!(
-        response.payload().as_ref(),
-        LINK_LEFT.as_bytes(),
-        "producer should respond stamped with its own bound link_id"
-    );
-
-    server_task.await.expect("server task should not panic");
-    router.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
-async fn action_feedback_routes_per_goal_link_id() {
-    // One producer binds two link_ids. Two consumers send goals targeting
-    // different link_ids. The producer's per-goal feedback must address
-    // each consumer's pinned link_id. A regression of this routing would
-    // either deliver feedback to the wrong consumer or fail to deliver at
-    // all (an invalid keyexpr containing `*`).
-    let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
-    let server_handle = router.messenger().await;
-    let action = ActionMessenger::expose(
-        &server_handle,
-        "server_core",
-        "server_inst",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        &bound,
-        "record",
-    )
-    .await
-    .expect("expose should succeed");
-
-    let mut goal_service = action.goal_service;
-    let mut cancel_service = action.cancel_service;
-    let mut result_service = action.result_service;
-    let factory = action.feedback_publisher_factory;
-
-    // Handle two goals: each emits one feedback message echoing the
-    // observed link_id, then accepts the result request and closes.
-    let server_task = tokio::spawn(async move {
-        for _ in 0..2 {
-            // goal
-            let (ctx, responder) = goal_service
-                .recv_next_request()
-                .await
-                .expect("goal recv")
-                .expect("goal closed");
-            let link_id = ctx.link_id().to_string();
-            let wire = ctx.message().payload().into_inner();
-            let declared = factory
-                .declare_from_wire(&link_id, wire)
-                .await
-                .expect("declare_from_wire");
-            responder
-                .respond(Payload::from(format!("accepted={link_id}").into_bytes()))
-                .await
-                .expect("goal respond");
-            declared
-                .publisher
-                .publish(
-                    NonEmptyPayload::try_new(Payload::from(
-                        format!("feedback={link_id}").into_bytes(),
-                    ))
-                    .expect("non-empty feedback"),
-                )
-                .await
-                .expect("feedback publish");
-
-            // Result request closes the feedback stream and answers.
-            let (_result_ctx, result_responder) = result_service
-                .recv_next_request()
-                .await
-                .expect("result recv")
-                .expect("result closed");
-            // Send end-of-stream so the consumer's feedback loop terminates.
-            declared.publisher.publish_end().await.expect("publish_end");
-            result_responder
-                .respond(Payload::from(format!("result={link_id}").into_bytes()))
-                .await
-                .expect("result respond");
-        }
-        // Drain any spurious cancel deliveries (none expected).
-        let _ = tokio::time::timeout(
-            Duration::from_millis(50),
-            cancel_service.recv_next_request(),
-        )
-        .await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    let exercise_link = |link_id: &'static str| {
-        let caller_handle = router.messenger();
-        async move {
-            let caller_handle = caller_handle.await;
-            let mut goal_handle = ActionMessenger::send_goal(
-                &caller_handle,
-                "caller_core",
-                &format!("caller_inst_{link_id}"),
-                SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-                Some(link_id),
-                "record",
-                Some("server_core"),
-                Some("server_inst"),
-                Payload::from_static(b"start"),
-                QoSProfile::Reliable,
-                Duration::from_secs(2),
-            )
-            .await
-            .expect("send_goal should succeed");
-
-            let goal_response = goal_handle.goal_response().payload().as_ref().to_vec();
-            assert_eq!(
-                goal_response,
-                format!("accepted={link_id}").into_bytes(),
-                "goal response should echo the targeted link_id"
-            );
-
-            let feedback = goal_handle
-                .on_next_feedback()
-                .await
-                .expect("feedback should be delivered");
-            assert_eq!(
-                feedback.payload().as_ref(),
-                format!("feedback={link_id}").as_bytes(),
-                "feedback must be scoped to the consumer's link_id, not crossed"
-            );
-
-            let result = ActionMessenger::request_result(
-                &caller_handle,
-                &goal_handle,
-                Duration::from_secs(2),
-            )
-            .await
-            .expect("request_result should succeed");
-            assert_eq!(
-                result.payload().as_ref(),
-                format!("result={link_id}").as_bytes(),
-                "result must come from the same link_id-scoped goal cycle"
-            );
-        }
-    };
-
-    // Sequence the two consumers so the producer task's `for _ in 0..2` is
-    // deterministic; a parallel issue would let the producer pick up goals
-    // in either order.
-    exercise_link(LINK_LEFT).await;
-    exercise_link(LINK_RIGHT).await;
-
-    server_task.await.expect("server task panicked");
-    router.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
-async fn service_multi_link_producer_from_any_consumer_fires_handler_exactly_once() {
-    // Regression test for the duplicate-dispatch bug: a producer binding two
-    // link_ids on one `listen_service` and a `from_any` consumer (no
-    // `to_link_id` pin) used to fire the user handler twice — once per bound
-    // link_id — because each link_id declared its own queryable and Zenoh's
-    // `QueryTarget::All` delivered the consumer's `*` selector to every
-    // matching queryable in the same process. After the fix a single
-    // queryable absorbs both and the dispatcher claims `bound_link_ids[0]`,
-    // so the handler fires exactly once.
-    let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
-    let server_handle = router.messenger().await;
-    let mut endpoint = ServiceMessenger::listen(
-        &server_handle,
-        "server_core",
-        "server_inst",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        &bound,
-        "start_recording",
-    )
-    .await
-    .expect("listen should succeed");
-
-    let handler_fired = Arc::new(AtomicUsize::new(0));
-    let handler_fired_clone = Arc::clone(&handler_fired);
-    let server_task = tokio::spawn(async move {
-        // Serve the one expected request, then race the second
-        // `handle_next_request` against a short deadline so a duplicate
-        // dispatch trips the counter without hanging the test forever.
-        endpoint
-            .handle_next_request(move |ctx| {
-                let fired = Arc::clone(&handler_fired_clone);
-                let link_id = ctx.link_id().to_string();
-                async move {
-                    fired.fetch_add(1, Ordering::SeqCst);
-                    Ok(Payload::from(link_id.into_bytes()))
-                }
-            })
-            .await
-            .expect("first handle_next_request should succeed");
-
-        let _ = tokio::time::timeout(
-            Duration::from_millis(250),
-            endpoint.handle_next_request(|_ctx| async move {
-                Ok(Payload::from_static(b"unexpected_duplicate"))
-            }),
-        )
-        .await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let caller_handle = router.messenger().await;
-    let response = ServiceMessenger::poll(
-        &caller_handle,
-        "caller_core",
-        "from_any_caller",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        None, // ← `from_any: true` — the case that double-dispatched before.
-        "start_recording",
-        Some("server_core"),
-        Some("server_inst"),
-        Payload::from_static(b"go"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("from_any poll against multi-link producer should succeed");
-    assert_eq!(
-        response.payload().as_ref(),
-        LINK_LEFT.as_bytes(),
-        "first-bound dispatch policy: producer should claim bound_link_ids[0]"
-    );
-
-    server_task.await.expect("server task panicked");
-
-    assert_eq!(
-        handler_fired.load(Ordering::SeqCst),
-        1,
-        "user handler must fire exactly once for one from_any consumer call",
-    );
-
-    router.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
-async fn action_multi_link_producer_from_any_consumer_fires_goal_handler_exactly_once() {
-    // Action-flavored regression: each action sub-service (goal, cancel,
-    // result) runs the dispatcher independently. First-bound policy keeps
-    // the link_id consistent across the lifecycle, so the user observes a
-    // single goal/cancel/result invocation per consumer call. Without the
-    // fix the producer would race two goal handlers on the same
-    // consumer-generated `goal_id` and declare two feedback publishers.
-    let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
-    let server_handle = router.messenger().await;
-    let action = ActionMessenger::expose(
-        &server_handle,
-        "server_core",
-        "server_inst",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        &bound,
-        "record",
-    )
-    .await
-    .expect("expose should succeed");
-
-    let mut goal_service = action.goal_service;
-    let mut cancel_service = action.cancel_service;
-    let mut result_service = action.result_service;
-    let factory = action.feedback_publisher_factory;
-
-    let goal_handler_count = Arc::new(AtomicUsize::new(0));
-    let result_handler_count = Arc::new(AtomicUsize::new(0));
-    let goal_count_clone = Arc::clone(&goal_handler_count);
-    let result_count_clone = Arc::clone(&result_handler_count);
-
-    let server_task = tokio::spawn(async move {
-        // Goal
-        let (ctx, responder) = goal_service
-            .recv_next_request()
-            .await
-            .expect("goal recv")
-            .expect("goal closed");
-        let link_id = ctx.link_id().to_string();
-        let wire = ctx.message().payload().into_inner();
-        let declared = factory
-            .declare_from_wire(&link_id, wire)
-            .await
-            .expect("declare_from_wire");
-        goal_count_clone.fetch_add(1, Ordering::SeqCst);
-        responder
-            .respond(Payload::from(format!("accepted={link_id}").into_bytes()))
-            .await
-            .expect("goal respond");
-        declared
-            .publisher
-            .publish(
-                NonEmptyPayload::try_new(Payload::from(format!("feedback={link_id}").into_bytes()))
-                    .expect("non-empty feedback"),
-            )
-            .await
-            .expect("feedback publish");
-
-        // Result
-        let (_result_ctx, result_responder) = result_service
-            .recv_next_request()
-            .await
-            .expect("result recv")
-            .expect("result closed");
-        result_count_clone.fetch_add(1, Ordering::SeqCst);
-        declared.publisher.publish_end().await.expect("publish_end");
-        result_responder
-            .respond(Payload::from(format!("result={link_id}").into_bytes()))
-            .await
-            .expect("result respond");
-
-        // Drain a potential duplicate goal that would only arrive if the
-        // bug were still present; bounded so the test ends in finite time.
-        let dup_goal =
-            tokio::time::timeout(Duration::from_millis(250), goal_service.recv_next_request())
-                .await;
-        if let Ok(Ok(Some((dup_ctx, dup_responder)))) = dup_goal {
-            goal_count_clone.fetch_add(1, Ordering::SeqCst);
-            // Best-effort respond so the consumer side doesn't hang on
-            // unexpected extra deliveries while we fail the assertion.
-            let dup_link_id = dup_ctx.link_id().to_string();
-            let _ = dup_responder
-                .respond(Payload::from(format!("dup={dup_link_id}").into_bytes()))
-                .await;
-        }
-
-        // Cancel must not be invoked at all.
-        let _ = tokio::time::timeout(
-            Duration::from_millis(50),
-            cancel_service.recv_next_request(),
-        )
-        .await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    let caller_handle = router.messenger().await;
-    let mut goal_handle = ActionMessenger::send_goal(
-        &caller_handle,
-        "caller_core",
-        "from_any_caller",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        None, // ← `from_any: true` — the case that double-dispatched before.
-        "record",
-        Some("server_core"),
-        Some("server_inst"),
-        Payload::from_static(b"start"),
-        QoSProfile::Reliable,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("send_goal should succeed");
-
-    assert_eq!(
-        goal_handle.goal_response().payload().as_ref(),
-        format!("accepted={LINK_LEFT}").into_bytes(),
-        "first-bound dispatch policy: goal handler should observe bound_link_ids[0]",
-    );
-
-    let feedback = goal_handle
-        .on_next_feedback()
-        .await
-        .expect("feedback should be delivered");
-    assert_eq!(
-        feedback.payload().as_ref(),
-        format!("feedback={LINK_LEFT}").as_bytes(),
-        "only one feedback publisher should exist — under the first-bound link_id",
-    );
-
-    let result =
-        ActionMessenger::request_result(&caller_handle, &goal_handle, Duration::from_secs(2))
-            .await
-            .expect("request_result should succeed");
-    assert_eq!(
-        result.payload().as_ref(),
-        format!("result={LINK_LEFT}").as_bytes(),
-        "result handler must observe the same link_id the goal handler did",
-    );
-
-    server_task.await.expect("server task panicked");
-
-    assert_eq!(
-        goal_handler_count.load(Ordering::SeqCst),
-        1,
-        "goal handler must fire exactly once for one from_any send_goal call",
-    );
-    assert_eq!(
-        result_handler_count.load(Ordering::SeqCst),
-        1,
-        "result handler must fire exactly once for one from_any request_result call",
-    );
-
-    router.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
-async fn topic_emit_fans_out_to_every_bound_link_id() {
-    // One emit on the producer side becomes N wire publishes. Two
-    // consumers pin to different link_ids; each must receive its own
-    // copy with the correct link_id in the wire path.
-    let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
-
-    let subscriber_handle = router.messenger().await;
-    let mut sub_left = TopicMessenger::subscribe(
-        &subscriber_handle,
-        "sub_core",
-        "sub_inst_left",
-        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
-        Some(LINK_LEFT),
-        "frames",
-        None,
-        None,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("left subscribe should succeed");
-    let mut sub_right = TopicMessenger::subscribe(
-        &subscriber_handle,
-        "sub_core",
-        "sub_inst_right",
-        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
-        Some(LINK_RIGHT),
-        "frames",
-        None,
-        None,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("right subscribe should succeed");
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let emitter_handle = router.messenger().await;
-    TopicMessenger::emit(
-        &emitter_handle,
-        "pub_core",
-        "pub_inst",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        &bound,
-        "frames",
-        QoSProfile::Reliable,
-        Payload::from_static(b"frame-0"),
-    )
-    .await
-    .expect("emit should succeed");
-
-    let recv_left = tokio::time::timeout(Duration::from_secs(2), sub_left.on_next_message())
-        .await
-        .expect("left subscriber should not time out")
-        .expect("left subscriber should receive a message");
-    assert_eq!(recv_left.payload().as_ref(), b"frame-0");
-
-    let recv_right = tokio::time::timeout(Duration::from_secs(2), sub_right.on_next_message())
-        .await
-        .expect("right subscriber should not time out")
-        .expect("right subscriber should receive a message");
-    assert_eq!(recv_right.payload().as_ref(), b"frame-0");
-
-    router.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
-async fn topic_emit_delivers_once_to_wildcard_subscriber() {
-    // Producer bound to two link_ids. A `from_link_id: None` subscriber
-    // wildcards the link_id slot and intersects every per-link_id publish
-    // the emit loop produces. The "primary marker" attachment must collapse
-    // those N publishes back to one delivery on the wildcard axis. Pinned
-    // subscribers on each bound link_id must continue to receive one
-    // message each — specifically the regression case is the publish for
-    // `effective[1..]` (marked secondary) that pinned subscribers still
-    // need to receive on their pinned keyexpr.
-    let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
-
-    let subscriber_handle = router.messenger().await;
-    let mut sub_any = TopicMessenger::subscribe(
-        &subscriber_handle,
-        "sub_core",
-        "sub_inst_any",
-        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
-        None,
-        "frames",
-        None,
-        None,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("wildcard subscribe should succeed");
-    let mut sub_left = TopicMessenger::subscribe(
-        &subscriber_handle,
-        "sub_core",
-        "sub_inst_left",
-        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
-        Some(LINK_LEFT),
-        "frames",
-        None,
-        None,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("left subscribe should succeed");
-    let mut sub_right = TopicMessenger::subscribe(
-        &subscriber_handle,
-        "sub_core",
-        "sub_inst_right",
-        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
-        Some(LINK_RIGHT),
-        "frames",
-        None,
-        None,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("right subscribe should succeed");
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let emitter_handle = router.messenger().await;
-    TopicMessenger::emit(
-        &emitter_handle,
-        "pub_core",
-        "pub_inst",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        &bound,
-        "frames",
-        QoSProfile::Reliable,
-        Payload::from_static(b"frame-0"),
-    )
-    .await
-    .expect("emit should succeed");
-
-    // Wildcard subscriber: exactly one delivery.
-    let first = tokio::time::timeout(Duration::from_secs(2), sub_any.on_next_message())
-        .await
-        .expect("wildcard subscriber should not time out")
-        .expect("wildcard subscriber should receive a message");
-    assert_eq!(first.payload().as_ref(), b"frame-0");
-
-    // Grace window: no duplicate arrives. 300ms is well past the loopback
-    // round-trip the previous publish completed in.
-    let second = tokio::time::timeout(Duration::from_millis(300), sub_any.on_next_message()).await;
-    assert!(
-        second.is_err(),
-        "wildcard subscriber must not receive a duplicate (got {:?})",
-        second.ok().flatten().map(|m| m.payload().as_ref().to_vec())
-    );
-
-    // Pinned subscribers each still receive their one copy. This proves the
-    // secondary publish for the non-first-bound link_id (LINK_RIGHT here)
-    // still reaches its pinned subscriber — pinned subscribers ignore the
-    // primary/secondary marker because their keyexpr already filters to
-    // exactly one publish per emit.
-    let left = tokio::time::timeout(Duration::from_secs(1), sub_left.on_next_message())
-        .await
-        .expect("left subscriber should not time out")
-        .expect("left subscriber should receive a message");
-    assert_eq!(left.payload().as_ref(), b"frame-0");
-    let right = tokio::time::timeout(Duration::from_secs(1), sub_right.on_next_message())
-        .await
-        .expect("right subscriber should not time out")
-        .expect("right subscriber should receive a message");
-    assert_eq!(right.payload().as_ref(), b"frame-0");
-
-    router.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
-async fn topic_pinned_subscriber_claims_link_id_from_wildcard_sibling() {
-    // Regression for the `from_any` sibling-precedence bug. A consumer
-    // process subscribes to the same `(name, tag)` twice: once pinned to
-    // LINK_LEFT and once via a `from_link_id: None` wildcard with
-    // LINK_LEFT registered as a sibling-claimed link_id. The producer emits
-    // on both bound link_ids; we expect:
-    //   - the pinned subscriber receives the LINK_LEFT publish (and only
-    //     that one);
-    //   - the wildcard subscriber receives the LINK_RIGHT publish (the
-    //     one NOT claimed by the pinned sibling) and skips LINK_LEFT.
-    //
-    // Without the precedence filter the wildcard subscription would still
-    // receive both publishes (the existing primary/secondary attachment
-    // marker collapses N copies of one emit, but it doesn't coordinate
-    // across sibling subscriptions in the same consumer process).
-    let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
-
-    let subscriber_handle = router.messenger().await;
-    // Register the sibling-pinned map before subscribing; the messenger
-    // looks it up at subscribe time when `from_link_id` is None.
-    let mut pinned_map = HashMap::new();
-    pinned_map.insert(
-        ("depth_camera".to_string(), "v1".to_string()),
-        vec![LINK_LEFT.to_string()],
-    );
-    subscriber_handle.register_consumer_dependencies(pinned_map);
-
-    let mut sub_pinned = TopicMessenger::subscribe(
-        &subscriber_handle,
-        "sub_core",
-        "sub_inst_pinned",
-        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
-        Some(LINK_LEFT),
-        "frames",
-        None,
-        None,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("pinned subscribe should succeed");
-    let mut sub_from_any = TopicMessenger::subscribe(
-        &subscriber_handle,
-        "sub_core",
-        "sub_inst_from_any",
-        Some(SenderTarget::interface("depth_camera", "v1").expect("iface target")),
-        None,
-        "frames",
-        None,
-        None,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("from_any subscribe should succeed");
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let emitter_handle = router.messenger().await;
-    TopicMessenger::emit(
-        &emitter_handle,
-        "pub_core",
-        "pub_inst",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        &bound,
-        "frames",
-        QoSProfile::Reliable,
-        Payload::from_static(b"frame-0"),
-    )
-    .await
-    .expect("emit should succeed");
-
-    // Pinned subscriber: receives exactly one message and it's on LINK_LEFT.
-    let pinned_msg = tokio::time::timeout(Duration::from_secs(2), sub_pinned.on_next_message())
-        .await
-        .expect("pinned subscriber should not time out")
-        .expect("pinned subscriber should receive a message");
-    assert_eq!(pinned_msg.payload().as_ref(), b"frame-0");
-    assert_eq!(pinned_msg.link_id(), LINK_LEFT);
-    // No second delivery on the pinned axis (defensive: pinned keyexpr
-    // already filters to one publish per emit, but this also guards
-    // against future fan-out changes).
-    let pinned_dup =
-        tokio::time::timeout(Duration::from_millis(250), sub_pinned.on_next_message()).await;
-    assert!(
-        pinned_dup.is_err(),
-        "pinned subscriber must not receive a duplicate"
-    );
-
-    // From_any subscriber: receives exactly one message and it's on
-    // LINK_RIGHT; the LINK_LEFT publish is dropped because a sibling
-    // pinned subscription claims it.
-    let from_any_msg = tokio::time::timeout(Duration::from_secs(2), sub_from_any.on_next_message())
-        .await
-        .expect("from_any subscriber should not time out")
-        .expect("from_any subscriber should receive a message");
-    assert_eq!(from_any_msg.payload().as_ref(), b"frame-0");
-    assert_eq!(
-        from_any_msg.link_id(),
-        LINK_RIGHT,
-        "from_any must skip LINK_LEFT (claimed by pinned sibling) and surface LINK_RIGHT instead"
-    );
-    let from_any_dup =
-        tokio::time::timeout(Duration::from_millis(250), sub_from_any.on_next_message()).await;
-    assert!(
-        from_any_dup.is_err(),
-        "from_any subscriber must not also receive the pinned-sibling-claimed link_id"
-    );
-
-    router.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn topic_duplicate_from_any_subscription_is_rejected() {
     // The wire-level dedupe for wildcard topic subscribers (the
     // primary/secondary attachment plus the sibling-exclusion filter)
@@ -3397,7 +2570,6 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
     // multi-link emit (proving the existing dedupe still works under the
     // enforced invariant).
     let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
     let subscriber_handle = router.messenger().await;
 
     // Register a degenerate sibling map: empty pinned siblings under the
@@ -3488,7 +2660,6 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
         "pub_core",
         "pub_inst",
         target(),
-        &bound,
         "frames",
         QoSProfile::Reliable,
         Payload::from_static(b"frame-0"),
@@ -3510,224 +2681,6 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
         dup.is_err(),
         "from_any subscriber must not receive a duplicate (got {:?})",
         dup.ok().flatten().map(|m| m.payload().as_ref().to_vec())
-    );
-
-    router.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
-async fn service_pinned_consumer_claims_link_id_from_from_any_sibling() {
-    // The consumer process has a pinned `depends_on` entry for LINK_LEFT and
-    // a separate `from_any: true` entry on the same (name, tag). After
-    // registering the sibling map, a from_any poll must NOT route to the
-    // producer's LINK_LEFT handler; `choose_link_id` skips it on the
-    // producer side after decoding the consumer's query attachment, and
-    // claims LINK_RIGHT instead. The pinned poll behaves as today.
-    let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
-    let server_handle = router.messenger().await;
-    let mut endpoint = ServiceMessenger::listen(
-        &server_handle,
-        "server_core",
-        "server_inst",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        &bound,
-        "start_recording",
-    )
-    .await
-    .expect("listen should succeed");
-
-    let observed_link_ids = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
-    let observed_clone = Arc::clone(&observed_link_ids);
-    let server_task = tokio::spawn(async move {
-        for _ in 0..2 {
-            endpoint
-                .handle_next_request(|ctx| {
-                    let observed = Arc::clone(&observed_clone);
-                    let link_id = ctx.link_id().to_string();
-                    async move {
-                        observed.lock().await.push(link_id.clone());
-                        Ok(Payload::from(link_id.into_bytes()))
-                    }
-                })
-                .await
-                .expect("handle_next_request should succeed");
-        }
-    });
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let caller_handle = router.messenger().await;
-    // Register only AFTER the first pinned call so the test also exercises
-    // a registration that arrives between calls; the second call (from_any)
-    // must observe the registration.
-    let pinned_response = ServiceMessenger::poll(
-        &caller_handle,
-        "caller_core",
-        "pinned_caller",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        Some(LINK_LEFT),
-        "start_recording",
-        Some("server_core"),
-        Some("server_inst"),
-        Payload::from_static(b"go"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("pinned poll should succeed");
-    assert_eq!(
-        pinned_response.payload().as_ref(),
-        LINK_LEFT.as_bytes(),
-        "pinned caller should reach LINK_LEFT"
-    );
-
-    let mut pinned_map = HashMap::new();
-    pinned_map.insert(
-        ("depth_camera".to_string(), "v1".to_string()),
-        vec![LINK_LEFT.to_string()],
-    );
-    caller_handle.register_consumer_dependencies(pinned_map);
-
-    let from_any_response = ServiceMessenger::poll(
-        &caller_handle,
-        "caller_core",
-        "from_any_caller",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        None,
-        "start_recording",
-        Some("server_core"),
-        Some("server_inst"),
-        Payload::from_static(b"go"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("from_any poll should succeed");
-    assert_eq!(
-        from_any_response.payload().as_ref(),
-        LINK_RIGHT.as_bytes(),
-        "from_any caller must claim LINK_RIGHT after the sibling exclusion is registered; LINK_LEFT is claimed by the pinned sibling"
-    );
-
-    server_task.await.expect("server task panicked");
-
-    let observed = observed_link_ids.lock().await.clone();
-    assert_eq!(
-        observed,
-        vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()],
-        "handler must observe LINK_LEFT for the pinned call and LINK_RIGHT for the from_any call"
-    );
-
-    router.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "covers removed multi-link_id producer behavior; under the harmonized wire model producers always advertise `_` and consumers pin via `from_instance_id` from the binding map"]
-async fn action_pinned_consumer_claims_link_id_from_from_any_sibling() {
-    // Action equivalent of the service test above. The sibling exclusion
-    // set rides on the query attachment for each sub-service (goal /
-    // cancel / result), so first-bound dispatch picks LINK_RIGHT for a
-    // from_any send_goal even though LINK_LEFT is bound first.
-    let router = TestRouterContext::start().await;
-    let bound = vec![LINK_LEFT.to_string(), LINK_RIGHT.to_string()];
-    let server_handle = router.messenger().await;
-    let action = ActionMessenger::expose(
-        &server_handle,
-        "server_core",
-        "server_inst",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        &bound,
-        "record",
-    )
-    .await
-    .expect("expose should succeed");
-
-    let mut goal_service = action.goal_service;
-    let mut result_service = action.result_service;
-    let factory = action.feedback_publisher_factory;
-
-    let observed_goal_link_id = Arc::new(tokio::sync::Mutex::new(String::new()));
-    let observed_clone = Arc::clone(&observed_goal_link_id);
-    let server_task = tokio::spawn(async move {
-        // Goal
-        let (ctx, responder) = goal_service
-            .recv_next_request()
-            .await
-            .expect("goal recv")
-            .expect("goal closed");
-        let link_id = ctx.link_id().to_string();
-        let wire = ctx.message().payload().into_inner();
-        *observed_clone.lock().await = link_id.clone();
-        let declared = factory
-            .declare_from_wire(&link_id, wire)
-            .await
-            .expect("declare_from_wire");
-        responder
-            .respond(Payload::from(format!("accepted={link_id}").into_bytes()))
-            .await
-            .expect("goal respond");
-
-        // Result
-        let (_result_ctx, result_responder) = result_service
-            .recv_next_request()
-            .await
-            .expect("result recv")
-            .expect("result closed");
-        declared.publisher.publish_end().await.expect("publish_end");
-        result_responder
-            .respond(Payload::from(format!("result={link_id}").into_bytes()))
-            .await
-            .expect("result respond");
-    });
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    let caller_handle = router.messenger().await;
-    let mut pinned_map = HashMap::new();
-    pinned_map.insert(
-        ("depth_camera".to_string(), "v1".to_string()),
-        vec![LINK_LEFT.to_string()],
-    );
-    caller_handle.register_consumer_dependencies(pinned_map);
-
-    let goal_handle = ActionMessenger::send_goal(
-        &caller_handle,
-        "caller_core",
-        "from_any_caller",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        None, // from_any
-        "record",
-        Some("server_core"),
-        Some("server_inst"),
-        Payload::from_static(b"start"),
-        QoSProfile::Reliable,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("send_goal should succeed");
-
-    assert_eq!(
-        goal_handle.goal_response().payload().as_ref(),
-        format!("accepted={LINK_RIGHT}").as_bytes(),
-        "from_any send_goal must claim LINK_RIGHT after the sibling exclusion is registered"
-    );
-
-    let result_response =
-        ActionMessenger::request_result(&caller_handle, &goal_handle, Duration::from_secs(2))
-            .await
-            .expect("request_result should succeed");
-    assert_eq!(
-        result_response.payload().as_ref(),
-        format!("result={LINK_RIGHT}").as_bytes(),
-        "result sub-service must agree on the chosen link_id (same exclusion set on the attachment)"
-    );
-
-    server_task.await.expect("server task panicked");
-
-    assert_eq!(
-        observed_goal_link_id.lock().await.clone(),
-        LINK_RIGHT,
-        "producer goal handler must observe LINK_RIGHT (sibling LINK_LEFT is excluded)"
     );
 
     router.shutdown().await;
@@ -3776,7 +2729,6 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
                 spec.core,
                 spec.inst,
                 spec.target,
-                &[],
                 spec.action_name,
             )
             .await

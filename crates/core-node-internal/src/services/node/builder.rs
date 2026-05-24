@@ -38,7 +38,6 @@ pub async fn listen_for_node_build(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        &[],
         names::NODE_BUILD_ACTION,
     )
     .await?;

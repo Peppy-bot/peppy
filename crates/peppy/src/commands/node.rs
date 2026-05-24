@@ -79,30 +79,24 @@ fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
 /// Parses a `KEY@VALUE` `--bind` argument: KEY is a `link_id` from the
 /// consumer's `depends_on`; VALUE is the producer `instance_id` to pin the
 /// consumer's subscription to. Splits on the first `@`; both halves must be
-/// non-empty. KEY is validated as a wire segment via `pmi::Segment::try_link_id`
-/// (which also rejects the reserved sentinel `_` and the `@` character). VALUE
-/// is left as a free-form `instance_id`; the daemon-side binding validator
-/// confirms it matches a running producer of the expected `(name, tag)`.
+/// non-empty. KEY is validated as a wire segment via the strict
+/// `pmi::Segment::try_from`, which rejects empty, `/`, `@`, `*`, `**`, and
+/// the reserved sentinel `_`. VALUE is left as a free-form `instance_id`;
+/// the daemon-side binding validator confirms it matches a running producer
+/// of the expected `(name, tag)`.
 fn parse_bind_kv(raw: &str) -> Result<(String, String), String> {
-    let pos = raw
-        .find('@')
+    let (key, value) = raw
+        .split_once('@')
         .ok_or_else(|| format!("invalid --bind value '{raw}': expected KEY@VALUE"))?;
-    let key = raw[..pos].trim().to_string();
-    let value = raw[pos + 1..].trim().to_string();
-    if key.is_empty() {
-        return Err(format!("invalid --bind value '{raw}': KEY cannot be empty"));
-    }
+    let key = key.trim();
+    let value = value.trim();
     if value.is_empty() {
         return Err(format!(
             "invalid --bind value '{raw}': VALUE cannot be empty"
         ));
     }
-    if key == pmi::DEFAULT_LINK_ID {
-        return Err(format!("invalid --bind KEY '{key}': `_` is reserved"));
-    }
-    pmi::Segment::try_link_id(&key)
-        .map_err(|_| format!("invalid --bind KEY '{key}': not a valid wire segment"))?;
-    Ok((key, value))
+    pmi::Segment::try_from(key).map_err(|e| format!("invalid --bind KEY '{key}': {e}"))?;
+    Ok((key.to_string(), value.to_string()))
 }
 
 /// Value parser for the now-removed `--link-id` flag. Always returns an

@@ -118,7 +118,6 @@ pub fn build_emitted_topic(
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
-    builder.line("[],");
     builder.line("TOPIC_NAME,");
     builder.line("qos,");
     builder.line("payload,");

@@ -200,15 +200,13 @@ impl PyActionMessenger {
     /// Pass `SenderTarget.node(name, tag)` for nodes or
     /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, link_ids, as_action_name))]
-    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_action_name))]
     fn expose<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
         as_identity: PySenderTarget,
-        link_ids: Vec<String>,
         as_action_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
@@ -219,7 +217,6 @@ impl PyActionMessenger {
                 &as_core_node,
                 &as_instance_id,
                 as_identity,
-                &link_ids,
                 &as_action_name,
             )
             .await

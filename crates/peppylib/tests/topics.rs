@@ -51,7 +51,6 @@ async fn topic_messenger_communication() {
         core_node,
         instance_id,
         test_node_target(node_name),
-        &[],
         topic_name,
         QoSProfile::Reliable,
         payload.clone(),

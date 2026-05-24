@@ -80,13 +80,9 @@ pub struct BindingTargetMismatch {
 /// variant so the five `String` fields do not inflate `ParsingError` past
 /// the `clippy::result_large_err` threshold.
 ///
-/// In the harmonized wire model the producer always advertises under the
-/// `_` link_id sentinel; consumers pin a specific producer by
-/// `from_instance_id` derived from the binding map. Two consumer
-/// instances of `{node_name}:{node_tag}` pinning the same `link_id` to
-/// *different* producers would silently route to different wire
-/// destinations from the same manifest — this is the case that fires
-/// the error.
+/// Two consumer instances of `{node_name}:{node_tag}` pinning the same
+/// `link_id` to *different* producers would silently route to different
+/// wire destinations from the same manifest.
 #[derive(Debug, Clone, Error)]
 #[error(
     "two instances of `{node_name}:{node_tag}` bind link_id `{link_id}` to different producers \

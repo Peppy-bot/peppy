@@ -24,7 +24,6 @@ pub async fn listen_for_shutdown(
         core_node_node,
         instance_id,
         as_identity,
-        &[],
         super::super::messaging::SHUTDOWN_SERVICE,
     )
     .await?;

@@ -181,16 +181,12 @@ pub fn build_exposed_service(
     builder.indent();
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
-    // Producer always declares its queryable under the reserved default
-    // `_` link_id segment; consumers pin by `target_instance_id` derived
-    // from the binding map.
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
-    builder.line("[],");
     builder.line("SERVICE_NAME,");
     builder.dedent();
     builder.line(")");

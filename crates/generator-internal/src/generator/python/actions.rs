@@ -292,7 +292,6 @@ pub fn build_exposed_action(
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{expose_target_expr},"));
-    builder.line("[],");
     builder.line("ACTION_NAME,");
     builder.dedent();
     builder.line(")");

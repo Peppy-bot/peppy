@@ -313,11 +313,8 @@ impl PyNodeRunner {
     /// `--bind` flags. `None` means the consumer wildcards
     /// `from_instance_id` on the wire and accepts any producer of the
     /// right `(name, tag)`.
-    fn binding_for(&self, link_id: &str) -> Option<String> {
-        self.inner
-            .processor()
-            .binding_for(link_id)
-            .map(str::to_owned)
+    fn binding_for(&self, link_id: &str) -> Option<&str> {
+        self.inner.processor().binding_for(link_id)
     }
 }
 

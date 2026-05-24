@@ -149,13 +149,10 @@ impl PyTopicMessenger {
         })
     }
 
-    /// Emit (publish) a message to a topic. In the harmonized wire model
-    /// the producer always advertises under the `_` link_id segment; the
-    /// `link_ids` parameter is retained for source compatibility but is
-    /// ignored. Pass `SenderTarget.node(name, tag)` or
-    /// `SenderTarget.interface(name, tag)`.
+    /// Emit (publish) a message to a topic. Pass `SenderTarget.node(name, tag)`
+    /// or `SenderTarget.interface(name, tag)`.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, link_ids, as_topic_name, qos, payload))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, payload))]
     #[allow(clippy::too_many_arguments)]
     fn emit<'py>(
         py: Python<'py>,
@@ -163,7 +160,6 @@ impl PyTopicMessenger {
         as_core_node: String,
         as_instance_id: String,
         as_target: PySenderTarget,
-        link_ids: Vec<String>,
         as_topic_name: String,
         qos: PyQoSProfile,
         payload: Vec<u8>,
@@ -176,7 +172,6 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 as_target,
-                &link_ids,
                 &as_topic_name,
                 qos.into(),
                 Payload::from(payload),

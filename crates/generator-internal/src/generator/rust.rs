@@ -283,11 +283,9 @@ impl RustGenerator {
 
         // The `to_target` matches the producer's emission shape: address the
         // dependency as an Interface if it exposes the action via
-        // `conforms_to`, otherwise as its native Node identity. The
-        // consumer never pins on `to_link_id` (producers always advertise
-        // the `_` sentinel); `target_instance_id` is resolved at runtime
-        // from the consumer's binding map, so the user-facing
-        // `target_instance_id` parameter no longer exists.
+        // `conforms_to`, otherwise as its native Node identity.
+        // `target_instance_id` is resolved at runtime from the consumer's
+        // binding map.
         let to_target_expr = consumed_to_target_expression(dependency);
         let target_instance_id_arg =
             crate::generator::rust::topics::consumed_from_instance_id_expression(dependency);

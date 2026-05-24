@@ -164,24 +164,18 @@ impl TopicMessenger {
         Ok(Subscription::new(subscription))
     }
 
-    /// Publishes a payload to a topic. In the harmonized wire model the
-    /// producer always advertises under the reserved default `_` segment;
-    /// consumers pin a specific producer by `from_instance_id` derived
-    /// from the consumer's binding map, not by a producer-side link_id.
-    /// The `link_ids` parameter is retained for source compatibility but
-    /// is ignored — producers no longer fan out per link_id.
-    #[allow(clippy::too_many_arguments)]
+    /// Publishes a payload to a topic. The producer advertises under the
+    /// reserved default `_` segment; consumers pin a specific producer by
+    /// `from_instance_id` derived from the consumer's binding map.
     pub async fn emit(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         as_target: SenderTarget,
-        link_ids: &[String],
         as_topic_name: &str,
         qos: QoSProfile,
         payload: Payload,
     ) -> Result<()> {
-        let _ = link_ids;
         let sender =
             TopicWireSender::new(as_core_node, as_instance_id, as_target, None, as_topic_name)?;
         messenger

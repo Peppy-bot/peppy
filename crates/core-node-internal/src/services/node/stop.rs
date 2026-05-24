@@ -32,7 +32,6 @@ pub async fn listen_for_node_stop(
         &core_node_node,
         &core_instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        &[],
         names::NODE_STOP,
     )
     .await?;

@@ -28,15 +28,6 @@ pub enum Error {
         node_name: String,
         node_tag: String,
     },
-    #[error(
-        "link_id `{link_id}` is already claimed by instance `{held_by}` of node `{node_name}`:{node_tag}"
-    )]
-    DuplicateLinkId {
-        link_id: String,
-        held_by: String,
-        node_name: String,
-        node_tag: String,
-    },
     #[error("Cannot remove node `{node_name}`:{node_tag} because it still has instances")]
     CannotRemoveNodeWithInstances { node_name: String, node_tag: String },
 

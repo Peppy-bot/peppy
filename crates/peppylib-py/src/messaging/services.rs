@@ -159,19 +159,14 @@ impl PyServiceMessenger {
     /// Start listening for service requests.
     ///
     /// Returns a `ServiceEndpoint` that can be used to handle incoming requests.
-    /// In the harmonized wire model the producer always declares its
-    /// queryable under the `_` link_id segment; the `link_ids` parameter is
-    /// retained for source compatibility but is ignored.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, link_ids, as_service_name))]
-    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_service_name))]
     fn listen<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
         as_identity: PySenderTarget,
-        link_ids: Vec<String>,
         as_service_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
@@ -182,7 +177,6 @@ impl PyServiceMessenger {
                 &as_core_node,
                 &as_instance_id,
                 as_identity,
-                &link_ids,
                 &as_service_name,
             )
             .await

@@ -66,7 +66,7 @@ pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> Vec<ParsingErro
         }
     }
 
-    check_duplicate_producer_link_ids(items, &instance_to_item, &mut errors);
+    check_duplicate_consumer_pins(items, &instance_to_item, &mut errors);
 
     errors
 }
@@ -76,13 +76,11 @@ pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> Vec<ParsingErro
 /// `bindings` map, and emit a `DuplicateConsumerPin` for every pair
 /// of sibling instances that end up claiming the same `link_id`.
 ///
-/// Why this matters: at runtime `prepare_and_spawn` enforces the same
-/// invariant (see `NodeEntity::prepare_and_spawn` in node-stack), but
-/// the launcher spawns instances sequentially. Without a parse-time
-/// check, a colliding launcher manifest would partially deploy — first
-/// instance wins, second one fails mid-flight — and leave the operator
-/// to clean up. We catch it before any spawn side-effect.
-fn check_duplicate_producer_link_ids(
+/// The launcher spawns instances sequentially, so without this
+/// parse-time check a colliding manifest would partially deploy —
+/// first instance wins, second one fails mid-flight — and leave the
+/// operator to clean up.
+fn check_duplicate_consumer_pins(
     items: &[BindingValidationItem<'_>],
     instance_to_item: &BTreeMap<&str, &BindingValidationItem<'_>>,
     errors: &mut Vec<ParsingError>,

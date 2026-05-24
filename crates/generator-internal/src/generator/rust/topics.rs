@@ -135,7 +135,6 @@ pub fn build_topic_emit(
                 with_core_node,
                 as_instance_id,
                 as_target,
-                &[],
                 as_topic,
                 qos,
                 payload,

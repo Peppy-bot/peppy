@@ -125,12 +125,6 @@ impl WireLinkId {
             Self::Wildcard { link_id } => link_id.as_deref(),
         }
     }
-
-    /// `true` when the dependency declared `from_any: true` (or is the
-    /// fixture sentinel). Used by codegen call-site selection.
-    pub fn is_wildcard(&self) -> bool {
-        matches!(self, Self::Wildcard { .. })
-    }
 }
 
 /// Identifies a dependency a consumer pulls from. `producer_name` +

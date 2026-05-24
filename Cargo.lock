@@ -2890,6 +2890,7 @@ dependencies = [
  "crossterm",
  "derive_more",
  "dirs 6.0.0",
+ "futures",
  "gix-url",
  "ipnet",
  "libc",

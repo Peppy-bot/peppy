@@ -21,7 +21,6 @@ async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockRespo
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
-        &[],
         names::CLOCK,
     )
     .await
@@ -91,7 +90,6 @@ async fn subscribe_clock_yields_typed_ticks() {
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
-        &[],
         names::CLOCK,
         QoSProfile::SensorData,
         canned.encode().expect("encode tick"),

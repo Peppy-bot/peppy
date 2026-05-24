@@ -34,15 +34,7 @@ impl Segment {
     /// reject `*` / `**` so a publisher can never advertise itself on a
     /// wildcard.
     pub fn try_link_id(s: &str) -> Result<Self, SegmentError> {
-        if s.is_empty() {
-            return Err(SegmentError::Empty);
-        }
-        if s.contains('/') {
-            return Err(SegmentError::ContainsSlash(s.to_string()));
-        }
-        if s.contains('@') {
-            return Err(SegmentError::ContainsAt(s.to_string()));
-        }
+        validate_segment_chars(s)?;
         if matches!(s, "*" | "**") {
             return Err(SegmentError::ReservedSentinel(s.to_string()));
         }
@@ -106,20 +98,29 @@ impl TryFrom<&str> for Segment {
     type Error = SegmentError;
 
     fn try_from(s: &str) -> Result<Self, SegmentError> {
-        if s.is_empty() {
-            return Err(SegmentError::Empty);
-        }
-        if s.contains('/') {
-            return Err(SegmentError::ContainsSlash(s.to_string()));
-        }
-        if s.contains('@') {
-            return Err(SegmentError::ContainsAt(s.to_string()));
-        }
+        validate_segment_chars(s)?;
         if matches!(s, "*" | "**") || s == DEFAULT_LINK_ID {
             return Err(SegmentError::ReservedSentinel(s.to_string()));
         }
         Ok(Self(s.to_string()))
     }
+}
+
+/// Shared char-level validation: non-empty, no `/`, no `@`. The reserved
+/// sentinel check differs between [`Segment::try_link_id`] (rejects only
+/// `*`/`**`) and [`Segment::try_from`] (also rejects `_`), so callers
+/// apply that check separately.
+fn validate_segment_chars(s: &str) -> Result<(), SegmentError> {
+    if s.is_empty() {
+        return Err(SegmentError::Empty);
+    }
+    if s.contains('/') {
+        return Err(SegmentError::ContainsSlash(s.to_string()));
+    }
+    if s.contains('@') {
+        return Err(SegmentError::ContainsAt(s.to_string()));
+    }
+    Ok(())
 }
 
 impl TryFrom<String> for Segment {

@@ -22,7 +22,6 @@ pub async fn listen_for_stack_list(
         core_node_node,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        &[],
         names::STACK_LIST,
     )
     .await?;

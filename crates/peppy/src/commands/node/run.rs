@@ -321,12 +321,15 @@ async fn validate_binds_against_stack(
         instances: Vec<DeploymentInstance>,
         depends_on: Option<config::node::DependsOn>,
     }
-    let mut snapshot: Vec<StackNode> = Vec::new();
-    for node in &graph.nodes {
-        if matches!(node.stage, Some(NodeStage::Root)) {
-            continue;
-        }
-        let info_response = poll_node_info(
+
+    let stack_nodes: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|n| !matches!(n.stage, Some(NodeStage::Root)))
+        .collect();
+
+    let info_futures = stack_nodes.iter().map(|node| async move {
+        let info = poll_node_info(
             &NodeInfoRequest::new(node.name.clone(), node.tag.clone()),
             messenger,
             core_node_name,
@@ -341,11 +344,16 @@ async fn validate_binds_against_stack(
                 node.name, node.tag
             ))
         })?;
+        Ok::<_, Error>(info)
+    });
+    let infos = futures::future::try_join_all(info_futures).await?;
+
+    let mut snapshot: Vec<StackNode> = Vec::with_capacity(stack_nodes.len());
+    for (node, info_response) in stack_nodes.iter().zip(infos) {
         let info = match info_response {
             NodeInfoResponse::Found(info) => info,
             NodeInfoResponse::NotInStack => continue,
         };
-        let depends_on = info.config.manifest.depends_on.clone();
         // Running instances of this node, with empty bindings — the
         // daemon-side `node_info` payload does not surface per-instance
         // bindings yet, so cross-CLI binding-duplicate detection between
@@ -374,7 +382,7 @@ async fn validate_binds_against_stack(
             name: node.name.clone(),
             tag: node.tag.clone(),
             instances,
-            depends_on,
+            depends_on: info.config.manifest.depends_on.clone(),
         });
     }
 
@@ -390,15 +398,12 @@ async fn validate_binds_against_stack(
         env_vars: BTreeMap::new(),
         framework: config::launcher::FrameworkOverrides::default(),
     };
-    let mut target_group_seen = false;
-    for entry in snapshot.iter_mut() {
-        if entry.name == target_name && entry.tag == target_tag {
-            entry.instances.push(synthetic_instance.clone());
-            target_group_seen = true;
-            break;
-        }
-    }
-    if !target_group_seen {
+    if let Some(group) = snapshot
+        .iter_mut()
+        .find(|e| e.name == target_name && e.tag == target_tag)
+    {
+        group.instances.push(synthetic_instance);
+    } else {
         // Fetch the target's depends_on so the validator can resolve
         // dead-key / missing-binding rules even for nodes that have no
         // running instance yet.

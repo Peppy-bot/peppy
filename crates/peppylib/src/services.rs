@@ -19,15 +19,9 @@ pub(crate) async fn listen_for_echo_service(
     service_name: &str,
     log_label: &'static str,
 ) -> PeppyResult<TaskHandle<PeppyResult<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
-        messenger,
-        core_node,
-        instance_id,
-        as_identity,
-        &[],
-        service_name,
-    )
-    .await?;
+    let mut endpoint =
+        ServiceMessenger::listen(messenger, core_node, instance_id, as_identity, service_name)
+            .await?;
 
     let handle = crate::runtime::spawn(async move {
         endpoint

@@ -669,7 +669,6 @@ async fn node_add_same_node_shutdown_existing_instances() {
         &started_core_node.core_node_name,
         INSTANCE_1,
         common::test_node_target(NODE_NAME),
-        &[],
         SHUTDOWN_SERVICE,
     )
     .await
@@ -703,7 +702,6 @@ async fn node_add_same_node_shutdown_existing_instances() {
         &started_core_node.core_node_name,
         INSTANCE_2,
         common::test_node_target(NODE_NAME),
-        &[],
         SHUTDOWN_SERVICE,
     )
     .await
@@ -982,7 +980,6 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         &started_core_node.core_node_name,
         INSTANCE_ID,
         common::test_node_target(DEPENDENCY_NODE_NAME),
-        &[],
         SHUTDOWN_SERVICE,
     )
     .await
@@ -1196,7 +1193,6 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         &started_core_node.core_node_name,
         INSTANCE_ID,
         common::test_node_target(DEPENDENCY_NODE_NAME),
-        &[],
         SHUTDOWN_SERVICE,
     )
     .await
@@ -1425,7 +1421,6 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         &started_core_node.core_node_name,
         INSTANCE_ID,
         common::test_node_target(DEPENDENCY_NODE_NAME),
-        &[],
         SHUTDOWN_SERVICE,
     )
     .await
