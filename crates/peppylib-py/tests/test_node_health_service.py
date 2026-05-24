@@ -30,7 +30,6 @@ async def test_node_health_request_response_roundtrip():
             TEST_CORE_NODE_NAME,
             TEST_INSTANCE_ID,
             SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-            [],
         )
 
         # Allow the service to fully establish its listeners

@@ -271,9 +271,9 @@ fn main() -> Result<()> {
 }
 ```
 
-The example above is for a **pinned** dependency. When the dependency
-declares `from_any: true`, `fire_goal` gains an extra
-`target_instance_id: Option<&str>` parameter; see
+The example above works for both pinned and `from_any: true`
+dependencies — `fire_goal` takes no call-site targeting argument. To pin
+the goal to a specific producer instance, declare a launcher binding; see
 [Instance targeting](#instance-targeting) below.
 
 The `fire_goal` function returns a `GoalResponse` containing:
@@ -282,9 +282,9 @@ The `fire_goal` function returns a `GoalResponse` containing:
 
 #### Discover-then-pin
 
-When `fire_goal` is called against a `from_any: true` dependency with
-`target_instance_id = None`, the framework runs a **discover-then-pin**
-sequence before sending the real goal:
+When `fire_goal` is called against a `from_any: true` dependency with no
+launcher binding, the framework runs a **discover-then-pin** sequence
+before sending the real goal:
 
 1. A lightweight probe is broadcast to every matching producer. The
    probe is auto-handled by the framework before any user goal handler
@@ -300,9 +300,9 @@ The non-winning producers see only the probe — their goal handler
 the goal concurrently, which for state-changing actions (motor commands,
 file writes, payment dispatches) is a real-world hazard.
 
-For pinned dependencies and for `from_any` calls with an explicit
-`target_instance_id`, the goal already addresses exactly one producer
-and discovery is skipped.
+For pinned dependencies and for `from_any` consumers pinned by a launcher
+binding, the goal already addresses exactly one producer and discovery is
+skipped.
 
 The cost is one additional round-trip on wildcard `fire_goal` calls
 (typically a few milliseconds). If the discovered producer dies between
@@ -407,33 +407,39 @@ literal link_id they request; the exclusion only applies to wildcard
 ## Instance targeting
 
 When the consumer's dependency has `from_any: true` and several producer
-instances expose the same action, the generator emits an extra
-`target_instance_id: Option<&str>` parameter on `fire_goal` so the
-caller can pin the goal to a specific producer:
+instances expose the same action, `fire_goal` does **not** take a
+call-site targeting argument. Which producer is reached depends on
+whether a launcher binding pins the dependency:
 
-- **`None`** (default): the framework discovers a single producer via a
-  probe and pins the goal to that one. Only the discovered producer
+- **No binding** (default): the framework discovers a single producer via
+  a probe and pins the goal to that one. Only the discovered producer
   receives the real goal request; non-winning producers stay idle. See
   [Discover-then-pin](#discover-then-pin) above.
-- **`Some("instance_id")`**: the goal request is pinned directly to the
-  producer whose `as_instance_id` matches. Only that producer ever sees
-  the goal, cancel, result, or feedback for this goal cycle, and no
-  discovery is performed.
+- **Pinned via a binding**: the goal is pinned directly to the bound
+  producer `instance_id`. Only that producer ever sees the goal, cancel,
+  result, or feedback for this goal cycle, and no discovery is performed.
 
-```rust
-// Target a specific producer instance for the goal.
-let goal = brain_move_arm::fire_goal(
-    &node_runner,
-    Duration::from_secs(5),
-    Some("left-arm-1"),
-    request,
-    QoSProfile::SensorData,
-)
-.await?;
+Declare the binding from the dependency's `link_id` to a producer
+`instance_id`. In a launcher / stack config:
+
+```json5
+{
+  source: { local: "./consumer" },
+  instances: [{
+    instance_id: "my_consumer",
+    bindings: { brain: "left-arm-1" },
+  }],
+}
 ```
 
-`target_instance_id` is **not** emitted on pinned dependencies; those
-already address one producer via the pinned `link_id` literal.
+or, when launching a single node during development:
+
+```sh
+peppy node run --bind brain@left-arm-1 .
+```
+
+The binding key (`brain`) is the `link_id` from the consumer's
+`depends_on`; the value is the target producer `instance_id`.
 
 ## Serial processing
 

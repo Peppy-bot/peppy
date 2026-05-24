@@ -311,7 +311,6 @@ The module name is the **topic name only** (e.g. `joint_commands`), since there 
                     let (instance_id, command) = joint_commands::on_next_message_received(
                         &node_runner_clone,
                         None,
-                        None,
                     )
                     .await
                     .expect("failed to receive joint command");
@@ -402,7 +401,6 @@ On the other side, the `arm_controller` uses a standard linked topic. Notice the
                     // Linked topic: module name is <link_id>_<topic_name>
                     let (instance_id, state) = robot_arm_joint_states::on_next_message_received(
                         &node_runner_clone,
-                        None,
                         None,
                     )
                     .await

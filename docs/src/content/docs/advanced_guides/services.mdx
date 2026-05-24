@@ -215,9 +215,9 @@ fn main() -> Result<()> {
 }
 ```
 
-For a `from_any: true` dependency, the generator emits an extra
-`target_instance_id: Option<&str>` parameter so the caller can pick a
-specific producer instance at call time. See
+For a `from_any: true` dependency, `poll` has the same signature — there
+is no call-site targeting argument. To pin the call to a specific producer
+instance, declare a launcher binding; see
 [Instance targeting](#instance-targeting) below.
 
 The response contains:
@@ -273,32 +273,42 @@ literal link_id they request; the exclusion only applies to wildcard
 ## Instance targeting
 
 When the consumer's dependency has `from_any: true` and several producer
-instances are advertising the same service, the generator emits an extra
-`target_instance_id: Option<&str>` parameter on `poll` so the caller can
-choose which producer to reach:
+instances advertise the same service, `poll` does **not** take a
+call-site targeting argument. Which producer is reached depends on
+whether a launcher binding pins the dependency:
 
-- **`None`** (default): the framework runs a **discover-then-pin** step
-  before sending the real request. A lightweight probe is broadcast to
-  every matching producer; the first to respond is pinned, and the real
-  request is delivered only to that producer. Only the pinned producer's
-  user handler runs. Use this when any instance can answer and you only
-  want one to execute.
-- **`Some("instance_id")`**: the request is pinned directly to the
-  producer whose `as_instance_id` matches. No discovery is performed.
+- **No binding** (default): the framework runs a **discover-then-pin**
+  step before sending the real request. A lightweight probe is broadcast
+  to every matching producer; the first to respond is pinned, and the
+  real request is delivered only to that producer. Only the pinned
+  producer's user handler runs. Use this when any instance can answer and
+  you only want one to execute.
+- **Pinned via a binding**: the request goes directly to the bound
+  producer `instance_id`; no discovery is performed.
 
-```rust
-// Target a specific producer instance.
-let response = uvc_camera_enable_camera::poll(
-    &node_runner,
-    Duration::from_secs(5),
-    Some("my-camera-instance"),
-    request,
-)
-.await?;
+Declare the binding from the dependency's `link_id` to a producer
+`instance_id`. In a launcher / stack config:
+
+```json5
+{
+  source: { local: "./consumer" },
+  instances: [{
+    instance_id: "my_consumer",
+    bindings: { uvc_camera: "my-camera-instance" },
+  }],
+}
 ```
 
-`target_instance_id` is **not** emitted on pinned dependencies; those
-already route to one producer via the pinned `link_id` literal.
+or, when launching a single node during development:
+
+```sh
+peppy node run --bind uvc_camera@my-camera-instance .
+```
+
+The binding key (`uvc_camera`) is the `link_id` from the consumer's
+`depends_on`; the value is the target producer `instance_id`. A pinned
+dependency (`from_any: false` with a non-default `link_id`) requires a
+binding; a `from_any` dependency works with or without one.
 
 ### Why discover-then-pin?
 
@@ -312,7 +322,7 @@ probe payload that is auto-handled by the framework before the user
 handler is invoked, so non-winning producers stay idle.
 
 The cost is one additional round-trip on wildcard calls (typically a
-few milliseconds). Pinned `Some(target_instance_id)` callers skip
+few milliseconds). Consumers pinned by a launcher binding skip
 discovery entirely and pay no overhead. If a tighter `response_timeout`
 is passed, discovery is capped at that budget rather than the framework's
 default probe timeout, so tight-budget failure modes still surface

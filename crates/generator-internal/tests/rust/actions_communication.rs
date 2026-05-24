@@ -190,7 +190,6 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         Duration::from_secs(5),
-        None,
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
@@ -509,7 +508,6 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         Duration::from_secs(5),
-        None,
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
@@ -850,7 +848,6 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         Duration::from_secs(5),
-        None,
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
@@ -1218,7 +1215,6 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         Duration::from_secs(5),
-        None,
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
@@ -1568,7 +1564,6 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         Duration::from_secs(5),
-        None,
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;

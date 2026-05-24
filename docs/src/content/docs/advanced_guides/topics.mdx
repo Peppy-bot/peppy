@@ -182,7 +182,6 @@ fn main() -> Result<()> {
         let (instance_id, frame) = uvc_camera_video_stream::on_next_message_received(
             &node_runner,
             None, // from_core_node (None = any)
-            None, // from_instance_id (None = any)
         )
         .await?;
 
@@ -199,7 +198,10 @@ fn main() -> Result<()> {
 The `on_next_message_received` function takes:
 - `node_runner` — the node runner reference.
 - `from_core_node` — optionally filter messages from a specific core node, or `None` for any.
-- `from_instance_id` — optionally filter messages from a specific instance, or `None` for any.
+
+To receive from a specific producer **instance**, pin it with a launcher
+binding (see [Instance targeting](#instance-targeting) below) rather than
+a call-site argument.
 
 It returns a tuple of:
 - `instance_id` — the instance that published the message.
@@ -227,7 +229,6 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
     loop {
         let result = uvc_camera_video_stream::on_next_message_received(
             &node_runner,
-            None,
             None,
         )
         .await;
@@ -280,20 +281,34 @@ claim, the `from_any` subscription receives nothing for that emit.
 
 ## Instance targeting
 
-When multiple instances of the same node are publishing, you can control which publisher you receive from:
+When multiple instances of the same node publish the same topic, a
+`from_any` consumer receives from **all** of them by default. To receive
+from one **specific** producer instance, pin it with a launcher binding —
+`on_next_message_received` no longer takes a call-site instance argument.
 
-- **`None`** (default) — messages from all instances are received.
-- **`Some("instance_id")`** — only messages from a specific instance are received.
+A binding maps the dependency's `link_id` to a producer `instance_id`. In
+a launcher / stack config:
 
-```rust
-// Only receive from a specific camera instance
-let (instance_id, frame) = uvc_camera_video_stream::on_next_message_received(
-    &node_runner,
-    None,
-    Some("my-camera-instance"),
-)
-.await?;
+```json5
+{
+  source: { local: "./consumer" },
+  instances: [{
+    instance_id: "my_consumer",
+    bindings: { uvc_camera: "my-camera-instance" },
+  }],
+}
 ```
+
+or, when launching a single node during development:
+
+```sh
+peppy node run --bind uvc_camera@my-camera-instance .
+```
+
+The binding key (`uvc_camera`) is the `link_id` from the consumer's
+`depends_on`; the value is the target producer `instance_id`. With no
+binding, a `from_any` consumer keeps receiving from every matching
+instance.
 
 ## Message format types
 

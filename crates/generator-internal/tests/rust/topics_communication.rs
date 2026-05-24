@@ -125,7 +125,7 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        let (instance_id, frame) = on_next_message_received(&node_runner, None, None).await?;
+        let (instance_id, frame) = on_next_message_received(&node_runner, None).await?;
         println!(
             "got {}x{} frame encoded as {} from {}",
             frame.width, frame.height, frame.encoding, &instance_id

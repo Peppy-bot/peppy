@@ -149,7 +149,7 @@ fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let request = uvc_camera_enable_camera::Request::new(true);
         let response =
-            uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), None, request).await?;
+            uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), request).await?;
         let error_msg = response.data.error_msg.as_deref().unwrap_or("<none>");
         println!(
             "enable_camera result: service_id={} enabled={} error={}",
@@ -440,7 +440,7 @@ use std::time::Duration;
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let response =
-            uvc_camera_get_system_status::poll(&node_runner, Duration::from_secs(5), None).await?;
+            uvc_camera_get_system_status::poll(&node_runner, Duration::from_secs(5)).await?;
         println!(
             "get_system_status result: service_id={} healthy={}",
             &response.instance_id,
@@ -721,7 +721,7 @@ fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let request = uvc_camera_enable_camera::Request::new(true);
         let response =
-            uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), None, request).await?;
+            uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), request).await?;
         let error_msg = response.data.error_msg.as_deref().unwrap_or("<none>");
         println!(
             "enable_camera result: enabled={} error={}",
