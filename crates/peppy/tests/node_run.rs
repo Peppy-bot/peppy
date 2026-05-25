@@ -1139,31 +1139,14 @@ async fn install_node_services(
     (ready, health)
 }
 
-/// Test A — running a producer with `--link-id main` when a stack
-/// consumer pins it with `front_left` and `front_right` emits a
-/// warning listing both link_ids and the consumer that asked.
-/// Test B — a second launch sees the first instance's `link_ids` as
-/// already-running and only warns about pins that are still
-/// uncovered.
-/// Test C — when the new instance fully covers every consumer-pin,
-/// no warning is emitted.
-/// Running two instances of the same node that both advertise the
-/// same `--link-id` is rejected by the daemon at goal-acceptance time.
-/// After the first instance is stopped, the second can reclaim the
-/// link_id. Sibling instances with disjoint link_ids both succeed.
-/// Sibling instances of the same producer with *different* `--link-id`
-/// values must both run — this is the intended multi-camera workflow.
-/// The duplicate-link_id guard must not over-reach into this case.
-/// Test D — when no consumer in the stack pins the target node, no
-/// warning fires.
-// ─── --bind harmonized-wire-model integration tests ───────────────────────
+// ─── --bind binding-driven-routing integration tests ───────────────────────
 
-/// Consumer manifest pins two `link_id`s. Running the consumer without
-/// `--bind` for any of them fires a warning that names every missing
-/// binding; the run still proceeds (binding-required is a warning, not
-/// an error, mirroring the pre-harmonization `--link-id` UX).
+/// Consumer manifest declares two pinned `link_id`s. Running the
+/// consumer without `--bind` for either of them is a hard error
+/// (rule 1: pinned-unbound rejection). The error names every missing
+/// link_id and the spawn must not happen.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_bind_warns_when_pinned_deps_have_no_binding() {
+async fn node_run_bind_rejects_pinned_unbound() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -1171,8 +1154,8 @@ async fn node_run_bind_warns_when_pinned_deps_have_no_binding() {
     let core_node_name = serve.core_node_name().to_string();
 
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
-    let producer_name = "test_bind_warn_producer";
-    let consumer_name = "test_bind_warn_consumer";
+    let producer_name = "test_bind_reject_producer";
+    let consumer_name = "test_bind_reject_consumer";
     let instance_id = "consumer_inst";
 
     let node_ctx = Arc::new(
@@ -1202,7 +1185,7 @@ async fn node_run_bind_warns_when_pinned_deps_have_no_binding() {
     let _services =
         install_node_services(&node_messenger, &core_node_name, consumer_name, instance_id).await;
 
-    NodeCommand {
+    let result = NodeCommand {
         command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
@@ -1216,25 +1199,27 @@ async fn node_run_bind_warns_when_pinned_deps_have_no_binding() {
             build: false,
         },
     }
-    .execute(&node_ctx)
-    .expect("node run should still proceed despite the warning");
+    .execute(&node_ctx);
+
+    let err = result.expect_err("node run must fail when pinned deps are unbound");
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("pinned deps must be bound"),
+        "error should use the spec wording 'pinned deps must be bound'. Got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("wrist_left"),
+        "error should name missing link_id 'wrist_left'. Got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("wrist_right"),
+        "error should name missing link_id 'wrist_right'. Got: {err_msg}"
+    );
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains("pinned dependencies with no"),
-        "warning preamble should be present. Logs:\n{logs}"
-    );
-    assert!(
-        logs.contains("wrist_left"),
-        "warning should name missing link_id 'wrist_left'. Logs:\n{logs}"
-    );
-    assert!(
-        logs.contains("wrist_right"),
-        "warning should name missing link_id 'wrist_right'. Logs:\n{logs}"
-    );
-    assert!(
-        logs.contains("Started node instance"),
-        "run should still complete. Logs:\n{logs}"
+        !logs.contains("Started node instance"),
+        "run must NOT complete when a pinned dep is unbound. Logs:\n{logs}"
     );
 }
 

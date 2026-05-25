@@ -192,7 +192,8 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
     )?;
 
     let from_target_expr = consumed_from_target_expression(dependency);
-    let from_instance_id_expr = consumed_from_instance_id_expression(dependency);
+    let consumer_filter_expr = consumed_consumer_filter_expression(dependency);
+    let is_from_any_lit = is_from_any_literal(dependency);
 
     Ok(quote! {
         pub async fn #fn_name(
@@ -209,10 +210,10 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     #from_target_expr,
-                    None,
+                    #is_from_any_lit,
                     topic_name,
                     from_core_node,
-                    #from_instance_id_expr,
+                    #consumer_filter_expr,
                     qos,
                 );
                 let mut subscription = subscription_future.await.map_err(|source| {
@@ -251,22 +252,61 @@ pub fn consumed_from_target_expression(
     quote!(Some(#target))
 }
 
-/// Returns the `Option<&str>` expression spliced into a generated subscribe /
-/// poll / send_goal call at the `from_instance_id` slot. Calls
-/// `Processor::binding_for(<manifest link_id>)` when the dependency carries a
-/// link_id (pinned or `from_any: true`); `None` for synthetic test fixtures
-/// that don't model a manifest dep. In the harmonized wire model the producer
-/// always advertises the `_` link_id sentinel, so the consumer pins by
-/// `from_instance_id` only — the binding map is the single source of truth.
-pub fn consumed_from_instance_id_expression(
+/// Returns the `&ConsumerFilter` expression spliced into a generated
+/// [`peppylib::TopicMessenger::subscribe`] call at the consumer-filter slot.
+/// Calls `Processor::consumer_filter(<manifest link_id>)` when the
+/// dependency carries a `link_id` (pinned or `from_any: true`); falls
+/// back to a `&ConsumerFilter::Any` reference for synthetic test
+/// fixtures that don't model a manifest dep. The validator pre-resolves
+/// the consumer's launcher / CLI binding map into per-slot
+/// [`config::runtime::SlotBinding`] entries, and the runtime processor
+/// expands those into [`peppylib::messaging::ConsumerFilter`]s — see the
+/// resolver in `peppylib::messaging::filter`.
+pub fn consumed_consumer_filter_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     match dependency.wire_link_id() {
         Some(link_id) => {
             let literal = Literal::string(link_id);
-            quote!(node_runner.processor().binding_for(#literal))
+            quote!(node_runner.processor().consumer_filter(#literal))
         }
-        None => quote!(None),
+        None => quote!(&peppylib::messaging::ConsumerFilter::Any),
+    }
+}
+
+/// Returns the `Option<&str>` expression spliced into a generated
+/// [`peppylib::ServiceMessenger::poll`] /
+/// [`peppylib::ActionMessenger::send_goal`] call at the
+/// `target_instance_id` slot. For pinned slots resolves to the single
+/// bound producer's `instance_id`; for `from_any` slots (bound or not)
+/// returns `None` and the call site falls back to wildcard discovery.
+/// For synthetic test fixtures with no manifest dep, emits `None`.
+pub fn consumed_pinned_target_expression(
+    dependency: &crate::generator::types::DependencyContext,
+) -> TokenStream {
+    match dependency.wire_link_id() {
+        Some(link_id) => {
+            let literal = Literal::string(link_id);
+            quote!(node_runner.processor().consumer_filter(#literal).pinned_target())
+        }
+        None => quote!(Option::<&str>::None),
+    }
+}
+
+/// `bool` literal for the `is_from_any` argument of
+/// [`peppylib::TopicMessenger::subscribe`]. `true` for `from_any: true`
+/// deps, `false` for pinned deps (and the test-fixture wildcard
+/// variant, which has no manifest dep and so should not reserve a
+/// `from_any` slot).
+pub fn is_from_any_literal(dependency: &crate::generator::types::DependencyContext) -> TokenStream {
+    let is_from_any = matches!(
+        dependency.link_id,
+        crate::generator::types::WireLinkId::Wildcard { link_id: Some(_) }
+    );
+    if is_from_any {
+        quote!(true)
+    } else {
+        quote!(false)
     }
 }
 

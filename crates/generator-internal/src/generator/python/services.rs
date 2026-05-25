@@ -28,17 +28,19 @@ pub(crate) fn sender_target_python_expr(
     }
 }
 
-/// Returns the Python expression for the consumer's `from_instance_id`
-/// argument: a `node_runner.binding_for(<link_id>)` call when the dependency
-/// carries a manifest link_id (pinned or `from_any: true`); `None` for
-/// synthetic test fixtures that don't model a manifest dep. The harmonized
-/// wire model never pins the consumer's `from_link_id`, so the binding map
-/// is the single source of truth.
+/// Returns the Python expression for the consumer's
+/// `target_instance_id` argument at a consumed service / action call
+/// site. Calls `node_runner.pinned_target_for(<link_id>)` when the
+/// dependency carries a manifest link_id; `None` for synthetic test
+/// fixtures that don't model a manifest dep. Pinned slots resolve to
+/// the bound producer's `instance_id`; `from_any` slots (bound or not)
+/// resolve to `None` and fall back to wildcard discover-then-pin at
+/// the call site.
 pub(crate) fn consumed_from_instance_id_python_expr(
     dependency: &crate::generator::types::DependencyContext,
 ) -> String {
     match dependency.wire_link_id() {
-        Some(link_id) => format!("node_runner.binding_for({link_id:?})"),
+        Some(link_id) => format!("node_runner.pinned_target_for({link_id:?})"),
         None => "None".to_string(),
     }
 }

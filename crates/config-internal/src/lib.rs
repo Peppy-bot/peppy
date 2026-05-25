@@ -30,8 +30,8 @@ pub use common::{
 
 // -- error --
 pub use error::{
-    BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateConsumerPin, Error as ConfigError,
-    MissingInterface, ParsingError, Result as ConfigResult,
+    BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateInstanceIdAcrossStack,
+    Error as ConfigError, MissingInterface, ParsingError, Result as ConfigResult,
 };
 
 // -- atomic_write --
@@ -95,7 +95,7 @@ pub mod node {
 // -- runtime --
 pub mod runtime {
     pub use crate::internal::runtime::{
-        LauncherRuntimeConfig, NodeInstanceConfig, ResolvedFramework, RuntimeConfig,
+        LauncherRuntimeConfig, NodeInstanceConfig, ResolvedFramework, RuntimeConfig, SlotBinding,
     };
 }
 
@@ -104,7 +104,8 @@ pub mod launcher {
     pub use crate::internal::launcher::{
         BindingValidationItem, Deployment, DeploymentGitSource, DeploymentInstance,
         DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
-        FrameworkOverrides, Name, PeppyLauncher, PeppyLauncherParser, validate_bindings,
+        FrameworkOverrides, Name, PeppyLauncher, PeppyLauncherParser, ValidatedBindings,
+        validate_bindings,
     };
 }
 

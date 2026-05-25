@@ -14,6 +14,9 @@ pub use actions::{
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
+mod filter;
+pub use filter::{ConsumerFilter, resolve_consumer_filter};
+
 // Public re-exports. `SenderTarget` / `InterfaceIdentifier` / `NodeIdentifier`
 // / `SenderTargetError` / `ServiceKind` describe the shape of messaging calls
 // and surface in user-facing peppylib APIs. `ActionWireSender` is exposed

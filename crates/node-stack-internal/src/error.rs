@@ -28,6 +28,21 @@ pub enum Error {
         node_name: String,
         node_tag: String,
     },
+    /// Stack-wide `instance_id` collision: the candidate `instance_id`
+    /// is already tracked by a *different* `(node_name, node_tag)` than
+    /// the one being spawned. Bindings address producers by raw
+    /// `instance_id` so duplicates across the stack would make
+    /// `--bind KEY@id` ambiguous. The validator catches this at plan
+    /// time; this is the daemon's defensive backstop at the trust
+    /// boundary.
+    #[error(
+        "Instance ID `{instance_id}` is already tracked by `{existing_node_name}`:{existing_node_tag}; instance_ids must be unique across the entire stack"
+    )]
+    DuplicateInstanceIdAcrossStack {
+        instance_id: String,
+        existing_node_name: String,
+        existing_node_tag: String,
+    },
     #[error("Cannot remove node `{node_name}`:{node_tag} because it still has instances")]
     CannotRemoveNodeWithInstances { node_name: String, node_tag: String },
 

@@ -96,7 +96,7 @@ fn main() -> Result<()> {
 ```
 
 The `request` argument contains:
-- `instance_id` — the instance that sent the request.
+- `instance_id` — the consumer instance that sent the request, read straight from the request context. The producer is binding-agnostic; it doesn't know which slot on the consumer this call is heading to.
 - `data` — the deserialized request payload (only present when a `request_message_format` is defined).
 
 `handle_next_request` processes a single request and returns.
@@ -133,6 +133,8 @@ tokio::spawn(async move {
     .await
 });
 ```
+
+A producer exposes its service exactly once and serves any consumer that calls it. Starting the producer before any consumer (or after them) is equally valid.
 
 ## Consuming a service
 
@@ -181,12 +183,7 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 ### Calling a service
 
 The code generator creates a module for each consumed service under `peppygen::consumed_services`.
-Use `poll` to send a request and wait for a response. The exact signature
-depends on whether the dependency is pinned to a `link_id` or has
-`from_any: true`.
-
-For a **pinned** dependency, the generator does not emit any addressing
-parameter; the pinned `link_id` literal already identifies one producer:
+Use `poll` to send a request and wait for a response. The signature is the same for pinned and `from_any: true` slots — there is no call-site targeting argument; the slot's binding (or lack of one) determines which producer handles the call.
 
 ```rust
 use peppygen::consumed_services::uvc_camera_enable_camera;
@@ -215,13 +212,8 @@ fn main() -> Result<()> {
 }
 ```
 
-For a `from_any: true` dependency, `poll` has the same signature — there
-is no call-site targeting argument. To pin the call to a specific producer
-instance, declare a launcher binding; see
-[Instance targeting](#instance-targeting) below.
-
 The response contains:
-- `instance_id` — the instance that handled the request.
+- `instance_id` — the producer instance that handled the request, read from the response context.
 - `data` — the deserialized response payload.
 
 For a service without a request body, `poll` simply takes no request:
@@ -237,57 +229,16 @@ let response = uvc_camera_get_camera_info::poll(
 println!("Camera: {} {}", response.data.card_type, response.data.size);
 ```
 
-### Pinned `link_id` takes precedence over `from_any`
+## Bindings and routing
 
-When the same `(name, tag)` appears in `depends_on` with both a pinned
-entry and a `from_any: true` entry, a `from_any` poll is routed to a
-producer link_id that **no pinned sibling claims**. The producer's
-dispatcher reads the consumer's sibling-claim set from the request
-attachment and picks the first bound link_id that's not in the set.
+Routing for services is the same consumer-side model used by topics. A binding `KEY: VALUE` creates a private channel from producer instance `VALUE` to one of the consumer's declared slots; the producer itself doesn't know or care about bindings.
 
-For example, with a producer bound to `wrist_left_camera` and
-`wrist_right_camera`:
+Each slot in `depends_on` is either:
 
-```json5
-{
-  depends_on: {
-    interfaces: [
-      { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
-      { name: "depth_camera", tag: "v1", link_id: "extra_camera", from_any: true },
-    ],
-  },
-}
-```
+- **Pinned** (the default — `from_any` absent or `false`): the slot must be bound. The code generator splices the bound producer's `instance_id` into the generated `poll` as the call's `target_instance_id`, so the wire request goes directly to that one producer. The validator rejects a pinned-unbound slot before the stack starts.
+- **`from_any: true`** (bound or unbound): the generator emits `None` for `target_instance_id` and the call site falls back to wildcard discovery. The framework runs a probe to every producer matching the slot's `(name, tag)`, pins the first responder, and delivers the real request only to that producer. The bindings (if any) constrain which producers the wildcard discovery may consider.
 
-| User calls | Producer routes to |
-| --- | --- |
-| `wrist_left_camera_get_status::poll(...)` | `wrist_left_camera` handler |
-| `extra_camera_get_status::poll(...)` | `wrist_right_camera` handler |
-
-If every bound link_id is claimed by a pinned sibling, the `from_any`
-call falls back to the first-bound link_id so the call doesn't fail
-purely because of the exclusion. Pinned callers always reach the
-literal link_id they request; the exclusion only applies to wildcard
-(`from_any: true`) callers.
-
-## Instance targeting
-
-When the consumer's dependency has `from_any: true` and several producer
-instances advertise the same service, `poll` does **not** take a
-call-site targeting argument. Which producer is reached depends on
-whether a launcher binding pins the dependency:
-
-- **No binding** (default): the framework runs a **discover-then-pin**
-  step before sending the real request. A lightweight probe is broadcast
-  to every matching producer; the first to respond is pinned, and the
-  real request is delivered only to that producer. Only the pinned
-  producer's user handler runs. Use this when any instance can answer and
-  you only want one to execute.
-- **Pinned via a binding**: the request goes directly to the bound
-  producer `instance_id`; no discovery is performed.
-
-Declare the binding from the dependency's `link_id` to a producer
-`instance_id`. In a launcher / stack config:
+In a launcher / stack config:
 
 ```json5
 {
@@ -305,33 +256,81 @@ or, when launching a single node during development:
 peppy node run --bind uvc_camera@my-camera-instance .
 ```
 
-The binding key (`uvc_camera`) is the `link_id` from the consumer's
-`depends_on`; the value is the target producer `instance_id`. A pinned
-dependency (`from_any: false` with a non-default `link_id`) requires a
-binding; a `from_any` dependency works with or without one.
+### Per-call precedence
+
+When several sibling slots of the same `(name, tag)` exist on a consumer — say a pinned `wrist_left_camera` and a `from_any` `extra_cam` for `(depth_camera, v1)` — the framework applies the same precedence rule that routes topics:
+
+1. If pinned slots' bindings name the producer the call resolves to → the producer's call lands on that pinned slot.
+2. Otherwise, if a `from_any` slot exists for the producer's `(name, tag)` and is either explicitly bound to that producer or unbound (wildcard fallback) → the call lands on the `from_any` slot.
+3. Otherwise the slot has no matching binding and the call cannot be resolved.
+
+### Worked example: `openarm01_backbone`
+
+A consumer that wires two specific depth cameras to dedicated wrist slots and lets a third slot reach any other depth camera:
+
+```json5
+// openarm01_backbone/peppy.json5
+{
+  manifest: {
+    name: "openarm01_backbone",
+    tag: "v1",
+    depends_on: {
+      interfaces: [
+        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
+        { name: "depth_camera", tag: "v1", link_id: "extra_cam", from_any: true },
+      ],
+    },
+  },
+  // ...
+}
+```
+
+```json5
+// peppy_launcher.json5
+{
+  deployments: [
+    { source: { name: "depth_camera:v1" }, instances: [
+      { instance_id: "left_cam" },
+      { instance_id: "right_cam" },
+      { instance_id: "ceiling_cam" },
+    ]},
+    { source: { name: "openarm01_backbone:v1" }, instances: [
+      { instance_id: "backbone_inst_1", bindings: {
+        wrist_left_camera: "left_cam",
+        wrist_right_camera: "right_cam",
+      }},
+    ]},
+  ],
+}
+```
+
+Four contract statements follow from this manifest:
+
+1. `wrist_left_camera_<service>::poll(...)` reaches `left_cam` (pinned-bound).
+2. `wrist_right_camera_<service>::poll(...)` reaches `right_cam` (pinned-bound).
+3. `extra_cam_<service>::poll(...)` reaches `ceiling_cam` via the unbound `from_any` wildcard (the discover-then-pin probe lands there because the pinned slots already claim the other producers).
+4. If `extra_cam` had been bound (e.g. `extra_cam: "ceiling_cam"`), discovery would be restricted to the bound set instead of every unclaimed producer.
 
 ### Why discover-then-pin?
 
-The underlying Zenoh transport broadcasts a wildcard service query to
-every matching producer (`QueryTarget::All`). Without discovery, every
-producer's user handler would run, even though the consumer only ever
-consumes the first reply. For idempotent reads that wastes work; for
-state-changing services it can cause real-world side effects on producers
-the consumer never intended to reach. The discover-then-pin step uses a
-probe payload that is auto-handled by the framework before the user
-handler is invoked, so non-winning producers stay idle.
+The underlying Zenoh transport broadcasts a wildcard service query to every matching producer (`QueryTarget::All`). Without discovery, every producer's user handler would run, even though the consumer only ever consumes the first reply. For idempotent reads that wastes work; for state-changing services it can cause real-world side effects on producers the consumer never intended to reach. The discover-then-pin step uses a probe payload that is auto-handled by the framework before the user handler is invoked, so non-winning producers stay idle.
 
-The cost is one additional round-trip on wildcard calls (typically a
-few milliseconds). Consumers pinned by a launcher binding skip
-discovery entirely and pay no overhead. If a tighter `response_timeout`
-is passed, discovery is capped at that budget rather than the framework's
-default probe timeout, so tight-budget failure modes still surface
-quickly.
+The cost is one additional round-trip on wildcard calls (typically a few milliseconds). Consumers whose slot is **pinned by a binding** skip discovery entirely and pay no overhead. If a tighter `response_timeout` is passed, discovery is capped at that budget rather than the framework's default probe timeout, so tight-budget failure modes still surface quickly.
 
-If the discovered producer dies between the probe and the real request,
-the call surfaces `ServiceUnreachable` and the caller can retry — the
-next attempt will re-discover and pin to a different producer if one is
-available.
+If the discovered producer dies between the probe and the real request, the call surfaces `ServiceUnreachable` and the caller can retry — the next attempt will re-discover and pin to a different producer if one is available.
+
+### Validator rules
+
+The launcher validator runs these checks before the stack starts:
+
+1. **Pinned-unbound is a hard error.** Every pinned slot in `depends_on` must have a binding whose `KEY` equals the slot's `link_id`.
+2. A `KEY` that matches a pinned slot's `link_id` binds that slot to `VALUE`.
+3. **Free-form `KEY`s are allowed for `from_any` slots.** A binding whose `KEY` doesn't match a pinned `link_id` is accepted as long as some `from_any` slot exists for `VALUE`'s `(name, tag)`; multiple such bindings on the same `from_any` slot accumulate.
+4. A `KEY` that matches neither a pinned `link_id` nor a `from_any` slot for `VALUE`'s `(name, tag)` is a dead key and is rejected.
+5. A pinned binding whose target `instance_id` deploys a different node than the slot expects is a target mismatch and is rejected.
+6. `KEY` uniqueness within a single invocation is enforced (no two bindings on the same consumer may share the same `KEY`).
+7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack — not just within a `(node_name, node_tag)` group. Bindings address producers by `instance_id`, so a duplicate would make the binding ambiguous.
 
 ## Error handling
 

@@ -18,6 +18,11 @@ use super::builder::StandaloneConfig;
 pub struct Processor {
     runtime_config: RuntimeConfig,
     validated_arguments: NodeArguments,
+    /// Pre-resolved per-`link_id` [`crate::messaging::ConsumerFilter`].
+    /// Computed once at startup from the daemon-supplied `slot_bindings`
+    /// plus the manifest's `depends_on`; cached so subscribe / poll /
+    /// send_goal call sites return a borrowed reference cheaply.
+    consumer_filters: BTreeMap<String, crate::messaging::ConsumerFilter>,
 }
 
 impl Processor {
@@ -52,9 +57,12 @@ impl Processor {
             &node_config.execution.parameters,
         )?;
 
+        let consumer_filters = build_consumer_filters(&runtime_config, &node_config);
+
         Ok(Self {
             runtime_config,
             validated_arguments,
+            consumer_filters,
         })
     }
 
@@ -111,9 +119,12 @@ impl Processor {
             "standalone-core",
         )?;
 
+        let consumer_filters = build_consumer_filters(&runtime_config, &node_config);
+
         Ok(Self {
             runtime_config,
             validated_arguments,
+            consumer_filters,
         })
     }
 
@@ -176,17 +187,64 @@ impl Processor {
         self.runtime_config.node_instance.framework.use_sim_time
     }
 
-    /// Producer `instance_id` pinned for this consumer's `link_id`, if any.
-    /// Returned by the launcher's `bindings: {}` map or the CLI's `--bind`
-    /// flags. `None` means the consumer wildcards `from_instance_id` on the
-    /// wire and accepts any producer of the right `(name, tag)`.
-    pub fn binding_for(&self, link_id: &str) -> Option<&str> {
-        self.runtime_config
-            .node_instance
-            .bindings
-            .get(link_id)
-            .map(String::as_str)
+    /// Resolved [`crate::messaging::ConsumerFilter`] for the consumer
+    /// slot declared at `link_id`. The filter is computed once at
+    /// startup from the daemon-supplied `slot_bindings` plus the
+    /// manifest's `depends_on` (so the pinned-claims-from_any
+    /// precedence rule is applied a single time) and cached on the
+    /// processor for the lifetime of the node.
+    ///
+    /// Generated subscribe / poll / send_goal call sites splice
+    /// `node_runner.processor().consumer_filter(<link_id>)` at the
+    /// consumer-filter argument slot.
+    pub fn consumer_filter(&self, link_id: &str) -> &crate::messaging::ConsumerFilter {
+        const ANY: crate::messaging::ConsumerFilter = crate::messaging::ConsumerFilter::Any;
+        self.consumer_filters.get(link_id).unwrap_or(&ANY)
     }
+
+    /// Convenience for service / action call sites: returns the single
+    /// producer `instance_id` this slot pins (`ConsumerFilter::Pin`)
+    /// as an owned `String`, or `None` for every other variant. The
+    /// owned form crosses the PyO3 boundary cleanly; native Rust call
+    /// sites can either use this or
+    /// [`Self::consumer_filter`]`.pinned_target()` (the latter borrows
+    /// from the cached filter).
+    pub fn pinned_target_for(&self, link_id: &str) -> Option<String> {
+        self.consumer_filter(link_id)
+            .pinned_target()
+            .map(str::to_owned)
+    }
+}
+
+/// Pre-resolve a [`ConsumerFilter`] for every `link_id` declared in
+/// the consumer manifest's `depends_on`. Called once during
+/// [`Processor::new_daemon`] / [`Processor::new_standalone`] so the
+/// per-link_id accessor is a borrow into a stable cache.
+fn build_consumer_filters(
+    runtime_config: &RuntimeConfig,
+    node_config: &NodeConfig,
+) -> BTreeMap<String, crate::messaging::ConsumerFilter> {
+    let depends_on = node_config.manifest.depends_on.as_ref();
+    let mut out = BTreeMap::new();
+    if let Some(deps) = depends_on {
+        for dep in &deps.nodes {
+            let filter = crate::messaging::resolve_consumer_filter(
+                dep.link_id.as_str(),
+                &runtime_config.node_instance.slot_bindings,
+                depends_on,
+            );
+            out.insert(dep.link_id.clone(), filter);
+        }
+        for dep in &deps.interfaces {
+            let filter = crate::messaging::resolve_consumer_filter(
+                dep.link_id.as_str(),
+                &runtime_config.node_instance.slot_bindings,
+                depends_on,
+            );
+            out.insert(dep.link_id.clone(), filter);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

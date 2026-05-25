@@ -965,12 +965,22 @@ async fn resolve_deployments(
     Ok(planned)
 }
 
+/// Output of [`validate_and_order_dependencies`]: a topological order
+/// of deployments to spawn, plus the resolved per-instance
+/// [`config::runtime::SlotBinding`] map produced by the launcher's
+/// binding validator. The map is keyed by `consumer_instance_id`; each
+/// inner map is keyed by the consumer's manifest `link_id`.
+type ResolvedSlotBindings = std::collections::BTreeMap<
+    String,
+    std::collections::BTreeMap<String, config::runtime::SlotBinding>,
+>;
+
 /// Step 3: Validate dependencies and compute a stable topological order.
 async fn validate_and_order_dependencies(
     ctx: &ProcessLaunchContext,
     planned: &[PlannedDeployment],
     root_config: &config::node::NodeConfig,
-) -> std::result::Result<Vec<NodeKey>, LaunchResult> {
+) -> std::result::Result<(Vec<NodeKey>, ResolvedSlotBindings), LaunchResult> {
     publish_stdout(
         ctx,
         "Validating dependencies",
@@ -1027,15 +1037,18 @@ async fn validate_and_order_dependencies(
             depends_on: p.config.manifest.depends_on.as_ref(),
         })
         .collect();
-    let binding_errors: Vec<String> = config::launcher::validate_bindings(&binding_items)
-        .into_iter()
-        .map(|e| e.to_string())
-        .collect();
-    if !binding_errors.is_empty() {
-        let msg = binding_errors.join("\n");
+    let validated = config::launcher::validate_bindings(&binding_items);
+    if !validated.errors.is_empty() {
+        let msg = validated
+            .errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
+    let resolved_slot_bindings = validated.slot_bindings;
 
     // Build the dependency graph for topological ordering.
     let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
@@ -1068,7 +1081,7 @@ async fn validate_and_order_dependencies(
     )
     .await;
 
-    Ok(ordered)
+    Ok((ordered, resolved_slot_bindings))
 }
 
 /// Perform a stable topological sort.
@@ -1279,6 +1292,10 @@ async fn start_node_instances(
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     backup_stack: &NodeStack,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
+    resolved_slot_bindings: &std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, config::runtime::SlotBinding>,
+    >,
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
 
@@ -1303,10 +1320,14 @@ async fn start_node_instances(
             )
             .await;
 
+            let slot_bindings = resolved_slot_bindings
+                .get(instance.instance_id.as_str())
+                .cloned()
+                .unwrap_or_default();
             let node_instance = config::runtime::NodeInstanceConfig {
                 arguments: instance.arguments.clone(),
                 framework: resolve_framework(&instance.framework, ctx.daemon_use_sim_time),
-                bindings: instance.bindings.clone(),
+                slot_bindings,
                 ..config::runtime::NodeInstanceConfig::new(instance.instance_id.clone())
             };
             let runtime_config = match RuntimeConfig::new(
@@ -1560,10 +1581,11 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 
     // Step 3: Validate dependencies and compute topological order
     let root_config = ctx.node_stack.root().read().config().clone();
-    let ordered = match validate_and_order_dependencies(&ctx, &planned, &root_config).await {
-        Ok(result) => result,
-        Err(launch_result) => return launch_result,
-    };
+    let (ordered, resolved_slot_bindings) =
+        match validate_and_order_dependencies(&ctx, &planned, &root_config).await {
+            Ok(result) => result,
+            Err(launch_result) => return launch_result,
+        };
 
     // Step 4: Snapshot and clear stack (the snapshot helps in case an `build_cmd` or `run_cmd` fails on one of the nodes)
     let backup_stack = match snapshot_and_clear_stack(&ctx).await {
@@ -1601,6 +1623,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
                 &planned_by_key,
                 &backup_stack,
                 &mut run_log_paths,
+                &resolved_slot_bindings,
             )
             .await,
         )

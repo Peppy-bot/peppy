@@ -103,6 +103,9 @@ fn main() -> Result<()> {
 The `emit` function takes the `node_runner` reference followed by each field from the `message_format` in order.
 Nested objects become generated structs (e.g. `video_stream::MessageHeader`) whose fields match the object definition.
 
+A producer publishes a **single stream** regardless of how many consumers are listening, and it never knows about the bindings consumers use to address it.
+Starting the producer before any consumer (or after them) is equally valid — consumers attach when they show up.
+
 For a topic with a simple message format:
 
 ```json5
@@ -199,13 +202,11 @@ The `on_next_message_received` function takes:
 - `node_runner` — the node runner reference.
 - `from_core_node` — optionally filter messages from a specific core node, or `None` for any.
 
-To receive from a specific producer **instance**, pin it with a launcher
-binding (see [Instance targeting](#instance-targeting) below) rather than
-a call-site argument.
-
 It returns a tuple of:
-- `instance_id` — the instance that published the message.
+- `instance_id` — the producer instance that published the message, read straight from the message context.
 - `message` — the deserialized message, with fields matching the topic's `message_format`.
+
+There is no call-site instance-targeting argument. To pin a `from_any` slot to one specific producer, use a launcher binding (see [Bindings and routing](#bindings-and-routing) below).
 
 ### Receiving messages continuously
 
@@ -248,46 +249,13 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
 }
 ```
 
-### Pinned `link_id` takes precedence over `from_any`
+## Bindings and routing
 
-When the same `(name, tag)` appears in `depends_on` with both a pinned
-entry and a `from_any: true` entry, the pinned entry **claims** its
-producer link_id exclusively. The `from_any` subscription will only fire
-for publishes on producer link_ids the pinned siblings don't claim.
+Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the launcher bindings that fill them decide which producer instance reaches which slot.
 
-For example, with a producer bound to `wrist_left_camera` and
-`wrist_right_camera`:
+A binding takes the form `KEY: VALUE` — `KEY` is a label local to the consumer (typically a `link_id` from `depends_on`), and `VALUE` is the target producer `instance_id`. Each binding creates a private one-way channel from that producer instance to one of the consumer's declared slots.
 
-```json5
-{
-  depends_on: {
-    interfaces: [
-      { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
-      { name: "depth_camera", tag: "v1", link_id: "extra_camera", from_any: true },
-    ],
-  },
-}
-```
-
-| Producer emits on | `wrist_left_camera_video_stream` | `extra_camera_video_stream` |
-| --- | --- | --- |
-| `wrist_left_camera` | ✓ delivered | skipped (claimed by pinned sibling) |
-| `wrist_right_camera` | not matched | ✓ delivered |
-
-This precedence is computed once at codegen time from the manifest and
-seeded onto the messenger at node bootstrap; no runtime configuration
-needed. If the producer binds only link_ids that the pinned siblings
-claim, the `from_any` subscription receives nothing for that emit.
-
-## Instance targeting
-
-When multiple instances of the same node publish the same topic, a
-`from_any` consumer receives from **all** of them by default. To receive
-from one **specific** producer instance, pin it with a launcher binding —
-`on_next_message_received` no longer takes a call-site instance argument.
-
-A binding maps the dependency's `link_id` to a producer `instance_id`. In
-a launcher / stack config:
+In a launcher / stack config:
 
 ```json5
 {
@@ -305,10 +273,80 @@ or, when launching a single node during development:
 peppy node run --bind uvc_camera@my-camera-instance .
 ```
 
-The binding key (`uvc_camera`) is the `link_id` from the consumer's
-`depends_on`; the value is the target producer `instance_id`. With no
-binding, a `from_any` consumer keeps receiving from every matching
-instance.
+### Per-message routing
+
+For every message a producer publishes, each consumer instance applies this rule on its own slots:
+
+1. **Pinned-bound wins.** If one or more pinned slots' bindings name the producer, the message is delivered to every such pinned slot.
+2. **Else `from_any` for the producer's `(name, tag)`.** A `from_any: true` slot for that producer kind receives the message if it is bound to this producer, or — if there is no `from_any` binding for that producer — as the wildcard fallback for unclaimed producers.
+3. **Else drop.** No slot claims the message; the consumer ignores it.
+
+Two consequences worth remembering:
+
+- A pinned-bound slot **preempts** the `from_any` slot for the same `(name, tag)` pair: as long as the producer is named by a pinned binding, only the pinned slot fires.
+- An explicit `from_any` binding **replaces** the wildcard fallback for that producer: once a `from_any` slot lists specific producer instance IDs, unlisted producers no longer flow into it.
+
+### Worked example: `openarm01_backbone`
+
+A consumer that wires two specific depth cameras to dedicated wrist slots and lets a third slot hoover up any other depth camera:
+
+```json5
+// openarm01_backbone/peppy.json5
+{
+  manifest: {
+    name: "openarm01_backbone",
+    tag: "v1",
+    depends_on: {
+      interfaces: [
+        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
+        { name: "depth_camera", tag: "v1", link_id: "extra_cam", from_any: true },
+      ],
+    },
+  },
+  // ...
+}
+```
+
+And the launcher that binds it:
+
+```json5
+// peppy_launcher.json5
+{
+  deployments: [
+    { source: { name: "depth_camera:v1" }, instances: [
+      { instance_id: "left_cam" },
+      { instance_id: "right_cam" },
+      { instance_id: "ceiling_cam" },
+    ]},
+    { source: { name: "openarm01_backbone:v1" }, instances: [
+      { instance_id: "backbone_inst_1", bindings: {
+        wrist_left_camera: "left_cam",
+        wrist_right_camera: "right_cam",
+      }},
+    ]},
+  ],
+}
+```
+
+Four contract statements follow from this manifest:
+
+1. A frame from `left_cam` arrives only on the `wrist_left_camera_video_stream` slot.
+2. A frame from `right_cam` arrives only on the `wrist_right_camera_video_stream` slot.
+3. A frame from `ceiling_cam` (no binding names it) flows into the `extra_cam_video_stream` slot via the wildcard fallback.
+4. If `extra_cam` had been bound explicitly (e.g. `extra_cam: "ceiling_cam"`), it would still receive `ceiling_cam` frames but would stop receiving frames from any depth camera not named by a binding.
+
+### Validator rules
+
+The launcher validator runs these checks before the stack starts:
+
+1. **Pinned-unbound is a hard error.** Every pinned (`from_any` absent or `false`) slot in `depends_on` must have a `--bind KEY@VALUE` whose `KEY` equals the slot's `link_id`.
+2. A `KEY` that matches a pinned slot's `link_id` binds that slot to `VALUE`.
+3. **Free-form `KEY`s are allowed for `from_any` slots.** A `--bind KEY@VALUE` whose `KEY` doesn't match a pinned `link_id` is accepted as long as some `from_any` slot exists for `VALUE`'s `(name, tag)`. Multiple such bindings on the same `from_any` slot accumulate.
+4. A `KEY` that matches neither a pinned `link_id` nor a `from_any` slot for `VALUE`'s `(name, tag)` is a dead key and is rejected.
+5. A pinned binding whose target `instance_id` deploys a different node than the slot expects is a target mismatch and is rejected.
+6. `KEY` uniqueness within a single invocation is enforced (no two bindings may share the same `KEY`).
+7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack — not just within a `(node_name, node_tag)` group. Bindings address producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
 
 ## Message format types
 

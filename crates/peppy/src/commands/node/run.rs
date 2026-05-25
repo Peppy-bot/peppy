@@ -1,7 +1,6 @@
 use config::AnyType;
-use config::ParsingError;
 use config::launcher::{BindingValidationItem, DeploymentInstance, Name, validate_bindings};
-use config::runtime::{NodeInstanceConfig, RuntimeConfig};
+use config::runtime::{NodeInstanceConfig, RuntimeConfig, SlotBinding};
 use core_node_api::NodeStage;
 use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::{
@@ -15,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
@@ -263,34 +262,32 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
-/// Outcome of running `validate_bindings` against the consumer being
-/// launched plus every running stack instance. The CLI demotes the
-/// "missing binding for pinned dep" check to a warning (so a `peppy
-/// node run` against an under-bound manifest still proceeds, mirroring
-/// the pre-harmonization `--link-id` warning UX), but propagates the
-/// rest as hard errors.
-struct BindValidationOutcome {
-    /// Hard-error message body, ready to surface from the CLI. `None` when
-    /// no hard errors fired.
-    hard_error: Option<String>,
-    /// Warning body listing the pinned deps the user didn't `--bind`.
-    /// Empty string when nothing is missing.
-    warning: String,
+/// Collapse the clap-parsed `Vec<(KEY, VALUE)>` into a `BTreeMap`,
+/// rejecting duplicate `KEY`s. Each `KEY` must be unique per invocation
+/// (rule 6) — pinned `KEY`s match a declared link_id, free-form `KEY`s
+/// label a `from_any` binding, and either way two bindings on the same
+/// key would clobber.
+fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
+    let mut map = BTreeMap::new();
+    for (key, value) in binds {
+        if map.insert(key.clone(), value.clone()).is_some() {
+            return Err(Error::ExecutionFailed(format!(
+                "duplicate binding key `{key}` on instance `{instance_id}` (each --bind KEY must be distinct)"
+            )));
+        }
+    }
+    Ok(map)
 }
 
-/// Best-effort check that fires before the `node_run` goal. Snapshots the
-/// running stack via `stack_list` + `node_info`, feeds it together with
-/// the consumer being launched into the launcher's `validate_bindings`,
-/// then partitions the errors:
-///   - `BindingMissingForPinnedDep`  → warning (CLI lets the run proceed)
-///   - everything else (`BindingDeadKey`, `BindingTargetMismatch`,
-///     `UnknownInstanceId`, `DuplicateConsumerPin`, …) → hard error
+/// Pre-flight bind validation. Snapshots the running stack via
+/// `stack_list` + `node_info`, feeds it together with the consumer
+/// being launched into the launcher's `validate_bindings`, and returns
+/// the resolved per-slot `SlotBinding` map for the consumer instance.
+/// Every rule violation is a hard error; there is no warning path.
 ///
 /// Returns `Ok(None)` on transient transport failures so the call site
-/// can swallow them and continue — the warning is informational, the
-/// hard-error variants happen to be the same ones the launcher already
-/// catches at plan-time, so an unreachable daemon is no worse here than
-/// it is for any other CLI command.
+/// can swallow them and continue — an unreachable daemon should fail
+/// the actual `node_run` invocation, not the pre-flight.
 async fn validate_binds_against_stack(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -298,7 +295,7 @@ async fn validate_binds_against_stack(
     target_tag: &str,
     target_instance_id: &str,
     binds: &BTreeMap<String, String>,
-) -> Result<Option<BindValidationOutcome>> {
+) -> Result<Option<BTreeMap<String, SlotBinding>>> {
     let stack_response = poll_stack_list(
         &StackListRequest::new(false),
         messenger,
@@ -354,14 +351,15 @@ async fn validate_binds_against_stack(
             NodeInfoResponse::Found(info) => info,
             NodeInfoResponse::NotInStack => continue,
         };
-        // Running instances of this node, with empty bindings — the
-        // daemon-side `node_info` payload does not surface per-instance
-        // bindings yet, so cross-CLI binding-duplicate detection between
-        // already-running consumers is a follow-up. Producer instances
-        // (the binding targets) only need `instance_id` for
-        // `validate_bindings` to resolve the target lookup; consumers
-        // would need their bindings to catch cross-invocation pin
-        // collisions.
+        // Running instances of this node. Their raw bindings map is
+        // empty here because none of the validator rules in the
+        // binding-driven dispatch model consults running consumers'
+        // bindings — rule 7 (stack-wide instance_id uniqueness) only
+        // needs `instance_id`s, and rules 1–5 / 6 are about the
+        // new invocation's bindings. The resolved `slot_bindings` is
+        // still surfaced through `node_info` for diagnostics and
+        // future cross-CLI checks; the validator's
+        // `BindingValidationItem` shape doesn't carry them today.
         let instances: Vec<DeploymentInstance> = node
             .instances
             .iter()
@@ -440,47 +438,22 @@ async fn validate_binds_against_stack(
         })
         .collect();
 
-    let errors = validate_bindings(&items);
-    let mut warnings: Vec<String> = Vec::new();
-    let mut hard: Vec<String> = Vec::new();
-    for err in errors {
-        match err {
-            ParsingError::BindingMissingForPinnedDep(_) => warnings.push(err.to_string()),
-            other => hard.push(other.to_string()),
-        }
+    let mut validated = validate_bindings(&items);
+    if !validated.errors.is_empty() {
+        let msg = validated
+            .errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(Error::ExecutionFailed(msg));
     }
-
-    let warning = if warnings.is_empty() {
-        String::new()
-    } else {
-        let mut body = format!(
-            "{target_name}:{target_tag} has pinned dependencies with no \
-             matching --bind; the consumer will accept any producer of the \
-             right (name, tag) and may receive merged streams from multiple \
-             producers:\n"
-        );
-        for w in warnings {
-            body.push_str("  - ");
-            body.push_str(&w);
-            body.push('\n');
-        }
-        body.push_str(
-            "Re-run with `--bind <KEY>@<PRODUCER_INSTANCE_ID>` for each \
-             pinned link_id to disambiguate.",
-        );
-        body
-    };
-
-    let hard_error = if hard.is_empty() {
-        None
-    } else {
-        Some(hard.join("\n"))
-    };
-
-    Ok(Some(BindValidationOutcome {
-        hard_error,
-        warning,
-    }))
+    Ok(Some(
+        validated
+            .slot_bindings
+            .remove(target_instance_id)
+            .unwrap_or_default(),
+    ))
 }
 
 /// Shared logic for running a node instance.
@@ -493,7 +466,7 @@ pub async fn run_instance_async(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
-    binds: BTreeMap<String, String>,
+    slot_bindings: BTreeMap<String, SlotBinding>,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     // Generate or use provided instance_id
@@ -523,7 +496,7 @@ pub async fn run_instance_async(
         messaging_port,
         NodeInstanceConfig {
             arguments,
-            bindings: binds,
+            slot_bindings,
             ..NodeInstanceConfig::new(
                 Name::new(instance_id.clone()).map_err(|e| Error::PeppyConfig(e.into()))?,
             )
@@ -678,8 +651,6 @@ async fn run_node_async(
         }
     }
 
-    let binds_map: BTreeMap<String, String> = binds.iter().cloned().collect();
-
     // Materialize the instance_id up-front so we can feed it into the
     // binding validator's synthetic `DeploymentInstance` and into
     // `run_instance_async` — they have to agree, otherwise a target-node
@@ -687,7 +658,9 @@ async fn run_node_async(
     // we actually spawn.
     let prelaunch_instance_id = instance_id.clone().unwrap_or_else(|| get_random(rng()));
 
-    match validate_binds_against_stack(
+    let binds_map = binds_to_map(&binds, &prelaunch_instance_id)?;
+
+    let slot_bindings = match validate_binds_against_stack(
         conn.messenger,
         &conn.core_node_name,
         &node_name,
@@ -697,19 +670,14 @@ async fn run_node_async(
     )
     .await
     {
-        Ok(Some(outcome)) => {
-            if let Some(err_body) = outcome.hard_error {
-                return Err(Error::ExecutionFailed(err_body));
-            }
-            if !outcome.warning.is_empty() {
-                warn!("{}", outcome.warning);
-            }
-        }
-        Ok(None) => {}
+        Ok(Some(slot_bindings)) => slot_bindings,
+        Ok(None) => BTreeMap::new(),
+        Err(e @ Error::ExecutionFailed(_)) => return Err(e),
         Err(e) => {
             debug!("skipping bind validation for {}:{}: {}", node_name, tag, e);
+            BTreeMap::new()
         }
-    }
+    };
 
     run_instance_async(
         conn.messenger,
@@ -718,7 +686,7 @@ async fn run_node_async(
         &tag,
         &args,
         Some(prelaunch_instance_id),
-        binds_map,
+        slot_bindings,
         &remaining_timeouts(&timeouts, start, "run")?,
     )
     .await?;

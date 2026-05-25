@@ -264,6 +264,36 @@ impl NodeStackInner {
         None
     }
 
+    /// Find the `(node_name, node_tag)` of any entity in the stack that
+    /// already tracks an instance with `instance_id`, in any state —
+    /// `Starting`, `Running`, etc. Used by the daemon's stack-wide
+    /// instance_id uniqueness guard at spawn time (the validator's
+    /// `rule 7` is the primary check at plan time; this is the
+    /// defensive backstop at the trust boundary).
+    ///
+    /// Skips the root entity — the daemon's own internals own an
+    /// `instance_id`, but it's not user-namable, so a collision there
+    /// is structurally impossible.
+    fn find_entity_label_for_instance_id_any_state(
+        &self,
+        instance_id: &Name,
+    ) -> Option<(String, String)> {
+        for handle in self.graph.node_weights() {
+            let guard = handle.read();
+            let owns_it = guard
+                .instances()
+                .iter()
+                .any(|inst| inst.instance_id() == instance_id);
+            if owns_it {
+                return Some((
+                    guard.config().manifest.name.as_str().to_owned(),
+                    guard.config().manifest.tag.clone(),
+                ));
+            }
+        }
+        None
+    }
+
     /// Same filtering rule as [`find_by_instance_id`]: only entities
     /// containing a `Running` instance with the given id are returned.
     fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
@@ -556,6 +586,7 @@ impl NodeStack {
             instance_id,
             Some(std::process::id()),
             InstanceState::Running,
+            std::collections::BTreeMap::new(),
         );
         let root_entity = NodeEntity::root(root_config, root_path, instance);
         Self {
@@ -619,6 +650,20 @@ impl NodeStack {
     pub fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
         let guard = self.shared.read();
         guard.find_entity_by_instance_id(instance_id)
+    }
+
+    /// Return the `(node_name, node_tag)` of any entity in the stack that
+    /// tracks an instance with `instance_id` in any state — `Starting`,
+    /// `Running`, etc. Used by the daemon to enforce stack-wide
+    /// `instance_id` uniqueness at the spawn trust boundary (per spec
+    /// rule 7). The validator catches collisions at plan time; this is
+    /// the defensive backstop.
+    pub fn find_entity_label_for_instance_id_any_state(
+        &self,
+        instance_id: &Name,
+    ) -> Option<(String, String)> {
+        let guard = self.shared.read();
+        guard.find_entity_label_for_instance_id_any_state(instance_id)
     }
 
     /// Adds a config to the stack or updates an existing one.

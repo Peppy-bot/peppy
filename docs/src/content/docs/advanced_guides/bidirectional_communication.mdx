@@ -13,6 +13,10 @@ This creates a directed graph: if `arm_controller` depends on `robot_arm`, it ca
 **External consumed topics** solve this by letting a node subscribe to a topic *without* declaring a dependency on the publisher.
 The subscriber defines the `message_format` inline and receives messages from any node that emits a matching topic.
 
+:::note
+External consumed topics sit **outside** the [binding-driven routing model](/advanced_guides/topics/#bindings-and-routing) that governs linked topics, services, and actions. There is no `link_id`, so no binding can target the slot, and the routing rules (pinned-bound, `from_any` claim, wildcard fallback) do not apply. An external slot is a pure wildcard: it receives every message published on the matching topic name, optionally narrowed by the call-site `from_core_node` / `from_instance_id` filters.
+:::
+
 ## Example: robot arm control loop
 
 Consider a robot arm that needs bidirectional communication between two nodes:
@@ -338,7 +342,10 @@ The module name is the **topic name only** (e.g. `joint_commands`), since there 
   </TabItem>
 </Tabs>
 
-The API is identical to linked consumed topics — the only difference is where the `message_format` comes from (inline vs. resolved from the dependency).
+The API is almost identical to linked consumed topics. Two differences are worth calling out:
+
+- The `message_format` is defined inline by the subscriber instead of resolved from the dependency.
+- External `on_next_message_received` exposes an extra `from_instance_id` parameter so the subscriber can narrow by producer instance at the call site. Linked consumers don't take this parameter because launcher bindings already steer their routing — there is no binding mechanism for external slots, so the call-site filter is the only narrowing handle they have.
 
 On the other side, the `arm_controller` uses a standard linked topic. Notice the module name includes the node prefix (`robot_arm_joint_states`):
 
@@ -453,10 +460,10 @@ PeppyOS has three communication patterns — topics, services, and actions — b
 | External form? | Yes — passive listening needs no dependency | No — calling requires a target node | No — same as services |
 
 A topic subscriber is **passive**: it declares a message format and waits for data to arrive, without knowing or addressing the publisher.
-That is why removing `depends_on` works — there is nothing to call.
+That is why removing `depends_on` works — there is nothing to call, so the [binding-driven routing](/advanced_guides/topics/#bindings-and-routing) used by linked topics, services, and actions does not apply: there is no `link_id` for a binding to target.
 
 [Services](/advanced_guides/services) and [actions](/advanced_guides/actions) are **caller-driven**: the consumer actively invokes a specific service on a specific node.
-Even without a config dependency, the consumer would still need to target that node at runtime, reintroducing the coupling that external consumed topics are designed to avoid.
+Even without a config dependency, the consumer would still need to target that node at runtime, reintroducing the coupling — and the binding plumbing — that external consumed topics are designed to avoid.
 
 In the robot arm example, `robot_arm` passively listens for `joint_commands` from any source — it never calls `arm_controller`.
 If it needed to call a service on `arm_controller` instead, it would need `depends_on`, creating the circular dependency that external consumed topics exist to prevent.

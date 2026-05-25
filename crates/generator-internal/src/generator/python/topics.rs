@@ -214,7 +214,18 @@ fn build_consumed_topic_inner(
         let from_instance_id = consumed_from_instance_id_python_expr(dep);
         builder.line(&format!("{from_instance_id},"));
         builder.line("peppylib.QoSProfile.Standard,");
-        builder.line("from_link_id=None,");
+        // `is_from_any: true` for `from_any: true` slots — gates the
+        // messenger's per-`(name, tag)` reservation. Pinned slots
+        // (and the test-fixture wildcard with no manifest dep) pass
+        // `false`.
+        let is_from_any = matches!(
+            dep.link_id,
+            crate::generator::types::WireLinkId::Wildcard { link_id: Some(_) }
+        );
+        builder.line(&format!(
+            "is_from_any={},",
+            if is_from_any { "True" } else { "False" }
+        ));
         builder.dedent();
         builder.line(")");
     } else {

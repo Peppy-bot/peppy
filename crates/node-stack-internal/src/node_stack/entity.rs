@@ -166,6 +166,11 @@ pub struct StartContext<'a> {
     /// nodes, the caller is responsible for any host_gateway rewriting before
     /// calling start (the entity treats this as opaque bytes).
     pub runtime_config_json5: &'a str,
+    /// Pre-resolved per-slot bindings for this instance, recorded on the
+    /// `TrackedNodeInstance` so the daemon can surface them via
+    /// `node_info`. The launcher / CLI compute this from the
+    /// validator's per-slot resolution before spawning.
+    pub slot_bindings: std::collections::BTreeMap<String, config::runtime::SlotBinding>,
     /// User + injected env vars (already passed through
     /// `validate_goal_env_vars`, `inject_rust_build_env`, and
     /// `inject_node_runtime_env` in core-node).
@@ -650,6 +655,7 @@ impl NodeEntity {
                 ctx.instance_id.clone(),
                 None,
                 InstanceState::Starting,
+                ctx.slot_bindings.clone(),
             ));
 
             (
@@ -1052,6 +1058,13 @@ pub struct TrackedNodeInstance {
     /// Persisted so it can be removed when the instance stops or aborts. `None`
     /// for snapshot-restored or test-fixture instances.
     runtime_config_path: Option<PathBuf>,
+    /// Pre-resolved per-slot bindings for this consumer instance,
+    /// mirroring [`config::runtime::NodeInstanceConfig::slot_bindings`].
+    /// Surfaced through `node_info` so the launcher / CLI can
+    /// cross-check newly-staged binding plans against running
+    /// consumers' existing claims. Empty when the node has no
+    /// `depends_on` slots.
+    slot_bindings: std::collections::BTreeMap<String, config::runtime::SlotBinding>,
 }
 
 impl TrackedNodeInstance {
@@ -1059,15 +1072,34 @@ impl TrackedNodeInstance {
     /// explicitly — there is no default. Callers that have just spawned a
     /// child process and have not yet committed it pass `InstanceState::Starting`;
     /// callers that are reconstructing an entity from a snapshot or test
-    /// fixture pass `InstanceState::Running`.
-    pub fn new(instance_id: Name, pid: Option<u32>, state: InstanceState) -> Self {
+    /// fixture pass `InstanceState::Running`. `slot_bindings` carries the
+    /// validator-resolved per-slot bindings for this instance — pass an
+    /// empty map when reconstructing test fixtures or instances whose
+    /// manifest has no `depends_on` slots.
+    pub fn new(
+        instance_id: Name,
+        pid: Option<u32>,
+        state: InstanceState,
+        slot_bindings: std::collections::BTreeMap<String, config::runtime::SlotBinding>,
+    ) -> Self {
         Self {
             instance_id,
             pid,
             state,
             instance_dir: None,
             runtime_config_path: None,
+            slot_bindings,
         }
+    }
+
+    /// Returns the validator-resolved per-slot bindings recorded for
+    /// this instance. Empty for instances whose manifest has no
+    /// `depends_on` slots or for snapshot-restored / test-fixture
+    /// instances built with an empty bindings map.
+    pub fn slot_bindings(
+        &self,
+    ) -> &std::collections::BTreeMap<String, config::runtime::SlotBinding> {
+        &self.slot_bindings
     }
 
     pub fn instance_id(&self) -> &Name {

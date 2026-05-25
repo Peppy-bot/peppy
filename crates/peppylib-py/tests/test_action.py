@@ -36,8 +36,8 @@ async def test_action_messenger_communication():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
-            [],
-            ACTION_NAME,)
+            ACTION_NAME,
+        )
 
         # Allow subscriptions to propagate
         await asyncio.sleep(0.05)
@@ -119,8 +119,8 @@ async def test_cancel_goal_concurrent_with_feedback():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
-            [],
-            ACTION_NAME,)
+            ACTION_NAME,
+        )
 
         await asyncio.sleep(0.05)
 
@@ -196,8 +196,8 @@ async def test_send_goal_honors_target_core_node():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
-            [],
-            ACTION_NAME,)
+            ACTION_NAME,
+        )
 
         await asyncio.sleep(0.05)
 
@@ -231,7 +231,6 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
-            [],
             "move",
         )
         iface_action = await ActionMessenger.expose(
@@ -239,7 +238,6 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.interface("arm", "v1"),
-            [],
             "move",
         )
 

@@ -193,6 +193,7 @@ async fn stop_instance_skips_starting_instances() {
         node_stack::StartContext {
             instance_id: &id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &harness.peppy_dirs,
@@ -704,6 +705,7 @@ async fn prepare_and_spawn_rejects_when_not_built() {
         node_stack::StartContext {
             instance_id: &instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
@@ -737,6 +739,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
         node_stack::StartContext {
             instance_id: &instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
@@ -807,6 +810,7 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
         node_stack::StartContext {
             instance_id: &instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
@@ -885,6 +889,7 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
         node_stack::StartContext {
             instance_id: &instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
@@ -969,6 +974,7 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
         node_stack::StartContext {
             instance_id: &instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
@@ -1044,6 +1050,7 @@ mod backwards_transitions_are_rejected {
                 Name::new("inst").unwrap(),
                 Some(1),
                 InstanceState::Running,
+                std::collections::BTreeMap::new(),
             )],
         }
     }

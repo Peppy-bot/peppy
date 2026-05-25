@@ -1,10 +1,35 @@
-use super::{FromAnyTopicGuard, MessengerHandle};
+use super::{ConsumerFilter, FromAnyTopicGuard, MessengerHandle};
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
 
+use std::collections::HashSet;
 use std::sync::Arc;
+
+/// In-process acceptance / rejection filter applied by
+/// [`Subscription::on_next_message`] above the wire layer. Synthesized
+/// from a [`ConsumerFilter`] whose variant cannot be expressed as a
+/// single wire-side `from_instance_id` pin.
+#[derive(Debug)]
+enum AcceptanceFilter {
+    /// Accept only messages whose source `instance_id` is in the set.
+    /// Built from [`ConsumerFilter::OnlyFrom`] with more than one
+    /// producer (single-producer collapses to a wire pin).
+    Allow(HashSet<String>),
+    /// Drop messages whose source `instance_id` is in the set.
+    /// Built from [`ConsumerFilter::AnyExcept`] with a non-empty set.
+    Deny(HashSet<String>),
+}
+
+impl AcceptanceFilter {
+    fn accepts(&self, instance_id: &str) -> bool {
+        match self {
+            AcceptanceFilter::Allow(set) => set.contains(instance_id),
+            AcceptanceFilter::Deny(set) => !set.contains(instance_id),
+        }
+    }
+}
 
 pub struct Subscription {
     inner: pmi::Subscription,
@@ -12,6 +37,10 @@ pub struct Subscription {
     /// topic sub; releases the messenger's per-`(name, tag)` reservation
     /// on drop. `None` for pinned subs and target-less subscriptions.
     _from_any_guard: Option<FromAnyTopicGuard>,
+    /// In-process filter applied to incoming messages before they
+    /// surface to user code. `None` when the wire-layer pin already
+    /// captures the consumer's filter (Pin / Any cases).
+    accept_filter: Option<AcceptanceFilter>,
 }
 
 impl Subscription {
@@ -19,6 +48,7 @@ impl Subscription {
         Self {
             inner,
             _from_any_guard: None,
+            accept_filter: None,
         }
     }
 
@@ -27,18 +57,44 @@ impl Subscription {
         self
     }
 
+    fn with_accept_filter(mut self, filter: AcceptanceFilter) -> Self {
+        self.accept_filter = Some(filter);
+        self
+    }
+
     pub async fn on_next_message(&mut self) -> Option<Message> {
-        self.inner.rx.recv().await.map(Message::from)
+        loop {
+            let raw = self.inner.rx.recv().await?;
+            let msg = Message::from(raw);
+            if self
+                .accept_filter
+                .as_ref()
+                .is_none_or(|f| f.accepts(msg.instance_id()))
+            {
+                return Some(msg);
+            }
+        }
     }
 
     pub(crate) fn try_on_next_message(
         &mut self,
     ) -> std::result::Result<Message, crate::types::TryRecvError> {
-        self.inner
-            .rx
-            .try_recv()
-            .map(Message::from)
-            .map_err(crate::types::TryRecvError::from)
+        loop {
+            match self.inner.rx.try_recv() {
+                Ok(raw) => {
+                    let msg = Message::from(raw);
+                    if self
+                        .accept_filter
+                        .as_ref()
+                        .is_none_or(|f| f.accepts(msg.instance_id()))
+                    {
+                        return Ok(msg);
+                    }
+                    // Filtered out — loop for the next message.
+                }
+                Err(err) => return Err(crate::types::TryRecvError::from(err)),
+            }
+        }
     }
 }
 
@@ -48,30 +104,47 @@ impl TopicMessenger {
     /// Subscribe to a topic published by a specific target. `from_target`
     /// `Some(SenderTarget)` filters on the publisher's identity; `None`
     /// wildcards the target segment (any node or interface emits a match).
-    /// `from_link_id` `Some(value)` filters to a producer's specific bound
-    /// link_id; `None` matches any link_id (used for `from_any: true`
-    /// consumers and for unscoped subscribes).
+    /// `is_from_any` marks this subscription as a `from_any: true` slot,
+    /// gating the messenger's per-`(name, tag)` reservation. The
+    /// [`ConsumerFilter`] selects whether the wire pins a producer or
+    /// wildcards plus an in-process filter; see the enum's variants.
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         from_target: Option<SenderTarget>,
-        from_link_id: Option<&str>,
+        is_from_any: bool,
         to_topic: &str,
         from_core_node: Option<&str>,
-        from_instance_id: Option<&str>,
+        filter: &ConsumerFilter,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        // Reserve the from_any `(name, tag)` slot before any wire work. The
-        // manifest validator enforces "at most one from_any topic sub per
-        // (name, tag) per messenger" at config time; this is the runtime
-        // guard at the wire's trust boundary. If wire setup fails afterwards
-        // the guard is dropped as a local and the slot is released.
-        let from_any_guard = match (&from_target, from_link_id) {
-            (Some(target), None) => Some(messenger.reserve_from_any_topic(
+        // Translate the ConsumerFilter into the wire-side
+        // `from_instance_id` pin plus an optional in-process filter.
+        let (wire_from_instance_id, accept_filter) = match filter {
+            ConsumerFilter::Pin(id) => (Some(id.as_str()), None),
+            ConsumerFilter::OnlyFrom(ids) if ids.len() == 1 => (Some(ids[0].as_str()), None),
+            ConsumerFilter::OnlyFrom(ids) => (
+                None,
+                Some(AcceptanceFilter::Allow(ids.iter().cloned().collect())),
+            ),
+            ConsumerFilter::AnyExcept(ids) if ids.is_empty() => (None, None),
+            ConsumerFilter::AnyExcept(ids) => (
+                None,
+                Some(AcceptanceFilter::Deny(ids.iter().cloned().collect())),
+            ),
+            ConsumerFilter::Any => (None, None),
+        };
+
+        // Reserve the from_any `(name, tag)` slot before any wire work.
+        // The manifest validator enforces "at most one from_any topic
+        // sub per (name, tag) per messenger" at config time; this is
+        // the runtime guard at the wire's trust boundary.
+        let from_any_guard = match (&from_target, is_from_any) {
+            (Some(target), true) => Some(messenger.reserve_from_any_topic(
                 from_core_node,
-                from_instance_id,
+                wire_from_instance_id,
                 target.name(),
                 target.tag(),
             )?),
@@ -81,15 +154,18 @@ impl TopicMessenger {
             as_core_node,
             as_instance_id,
             from_core_node,
-            from_instance_id,
+            wire_from_instance_id,
             from_target,
-            from_link_id,
+            None,
             to_topic,
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         let mut subscription = Subscription::new(subscription);
         if let Some(guard) = from_any_guard {
             subscription = subscription.with_from_any_guard(guard);
+        }
+        if let Some(filter) = accept_filter {
+            subscription = subscription.with_accept_filter(filter);
         }
         Ok(subscription)
     }

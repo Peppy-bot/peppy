@@ -167,10 +167,10 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         caller_core_node,
         caller_instance_id,
         Some(core_node_target(&started.core_node_name)),
-        None,
+        false,
         names::CLOCK,
         Some(&started.core_node_name),
-        None,
+        &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
     .await
@@ -1422,6 +1422,7 @@ async fn spawn_real_running_instance_inner(
         node_stack::StartContext {
             instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &started.peppy_dirs,

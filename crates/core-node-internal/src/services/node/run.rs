@@ -475,6 +475,28 @@ async fn process_node_run(
         }
     };
 
+    // Stack-wide `instance_id` uniqueness (spec rule 7): reject if the
+    // candidate id is already tracked by a *different* `(node_name,
+    // node_tag)` anywhere in the stack. The validator catches this at
+    // plan time (`peppy node run` / launcher); this is the daemon's
+    // defensive backstop at the trust boundary. Same-entity collisions
+    // are caught by `prepare_and_spawn` under its write lock.
+    if let Some((existing_name, existing_tag)) = ctx
+        .action
+        .node_stack
+        .find_entity_label_for_instance_id_any_state(&instance_id)
+        && (existing_name != node_name || existing_tag != tag)
+    {
+        let msg = format!(
+            "Instance ID `{}` is already tracked by `{}`:{}; instance_ids must be unique across the entire stack",
+            instance_id.as_str(),
+            existing_name,
+            existing_tag,
+        );
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeRunResult::failure(msg);
+    }
+
     let node_config = {
         let guard = entity_handle.read();
         if guard.artifact_path().is_none() {
@@ -606,6 +628,7 @@ async fn process_node_run(
     let start_ctx = node_stack::StartContext {
         instance_id: &instance_id,
         runtime_config_json5: &runtime_config_json5,
+        slot_bindings: runtime_config.node_instance.slot_bindings.clone(),
         env_vars: &env_vars,
         mount_paths_resolved: &resolved_mount_paths,
         peppy_dirs: &ctx.action.peppy_dirs,

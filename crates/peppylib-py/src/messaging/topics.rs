@@ -74,11 +74,12 @@ pub struct PyTopicMessenger;
 impl PyTopicMessenger {
     /// Subscribe to a topic. Pass `SenderTarget.node(name, tag)` or
     /// `SenderTarget.interface(name, tag)` to match the publisher's target,
-    /// or `None` to match any publisher. The producer's link_id slot is
-    /// wildcarded; pass `from_link_id` to pin a specific link_id (consumers
-    /// generated against `depends_on.interfaces`).
+    /// or `None` to match any publisher. `is_from_any` marks the slot as
+    /// `from_any: true` (gates the messenger's per-`(name, tag)`
+    /// reservation). `from_instance_id` pins a single producer instance;
+    /// `None` wildcards.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_core_node, from_instance_id, qos, from_link_id=None))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_core_node, from_instance_id, qos, is_from_any=false))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -90,20 +91,24 @@ impl PyTopicMessenger {
         from_core_node: Option<String>,
         from_instance_id: Option<String>,
         qos: PyQoSProfile,
-        from_link_id: Option<String>,
+        is_from_any: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let from_target = from_target.map(|t| t.into_inner());
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let filter = match from_instance_id {
+                Some(id) => peppylib::messaging::ConsumerFilter::Pin(id),
+                None => peppylib::messaging::ConsumerFilter::Any,
+            };
             let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 from_target,
-                from_link_id.as_deref(),
+                is_from_any,
                 &to_topic,
                 from_core_node.as_deref(),
-                from_instance_id.as_deref(),
+                &filter,
                 qos.into(),
             )
             .await

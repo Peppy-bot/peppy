@@ -34,8 +34,8 @@ async def test_service_messenger_communication():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
-            [],
-            SERVICE_NAME,)
+            SERVICE_NAME,
+        )
 
         # Allow listener to propagate
         await asyncio.sleep(0.05)
@@ -96,8 +96,8 @@ async def test_service_handler_exception_returns_service_error():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
-            [],
-            SERVICE_NAME,)
+            SERVICE_NAME,
+        )
 
         await asyncio.sleep(0.05)
 
@@ -138,7 +138,6 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
-            [],
             "control",
         )
         iface_service = await ServiceMessenger.listen(
@@ -146,7 +145,6 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.interface("camera", "v1"),
-            [],
             "control",
         )
 

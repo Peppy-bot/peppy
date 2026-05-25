@@ -272,8 +272,8 @@ impl RustGenerator {
         // `target_instance_id` is resolved at runtime from the consumer's
         // binding map.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let target_instance_id_arg =
-            crate::generator::rust::topics::consumed_from_instance_id_expression(dependency);
+        let pinned_target_expr =
+            crate::generator::rust::topics::consumed_pinned_target_expression(dependency);
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
@@ -291,7 +291,7 @@ impl RustGenerator {
                     None,
                     TARGET_ACTION_NAME,
                     None,
-                    #target_instance_id_arg,
+                    #pinned_target_expr,
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -1312,8 +1312,8 @@ impl LanguageGenerator for RustGenerator {
         // the `_` sentinel); `target_instance_id` is resolved at runtime
         // from the consumer's binding map.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let target_instance_id_arg =
-            crate::generator::rust::topics::consumed_from_instance_id_expression(dependency);
+        let pinned_target_expr =
+            crate::generator::rust::topics::consumed_pinned_target_expression(dependency);
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
@@ -1323,7 +1323,7 @@ impl LanguageGenerator for RustGenerator {
                 None,
                 SERVICE_NAME,
                 None,
-                #target_instance_id_arg,
+                #pinned_target_expr,
                 request_payload,
                 timeout,
             )
