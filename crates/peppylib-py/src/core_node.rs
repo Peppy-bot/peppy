@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::{ContainerInfo, InfoResponse, StackListResponse};
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pythonize::pythonize;
@@ -209,6 +209,22 @@ impl PyStackList {
     #[getter]
     fn dot_graph(&self) -> Option<&str> {
         self.dot_graph.as_deref()
+    }
+
+    /// Externally visible instance ids for the node identified by
+    /// `(node_name, node_tag)`. Raises `KeyError` when no node matches;
+    /// returns an empty list when the node exists but every instance is
+    /// still `starting`. Mirrors
+    /// `SerializedNodeGraph::running_instance_ids_by_node` on the Rust side.
+    fn running_instance_ids_by_node(
+        &self,
+        node_name: &str,
+        node_tag: &str,
+    ) -> PyResult<Vec<String>> {
+        self.graph
+            .running_instance_ids_by_node(node_name, node_tag)
+            .map(|ids| ids.into_iter().map(str::to_owned).collect())
+            .map_err(|err| PyKeyError::new_err(err.to_string()))
     }
 }
 

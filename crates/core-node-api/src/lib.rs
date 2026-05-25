@@ -12,7 +12,7 @@ mod payload;
 
 pub use error::{Error, Result};
 pub use graph::{
-    InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
+    InstanceState, NodeNotFound, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
     SerializedNodeGraph,
 };
 pub use payload::{EmptyPayloadError, NonEmptyPayload, Payload};
