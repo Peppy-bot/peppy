@@ -9,6 +9,25 @@ use std::{
 
 use crate::launcher::Name;
 
+/// Resolved per-slot binding for one of this consumer instance's declared
+/// `depends_on` entries. The validator translates a launcher / CLI `(KEY,
+/// VALUE)` binding map into this slot-keyed view before serializing into
+/// `NodeInstanceConfig` so the spawned node does no re-resolution work.
+///
+/// `Pinned` corresponds to a `depends_on` entry with `from_any: false`;
+/// it must be bound (the validator rejects pinned-unbound). `FromAnyBound`
+/// is a `from_any: true` slot for which the user supplied one or more
+/// bindings via free-form keys. `FromAnyUnbound` is a `from_any: true`
+/// slot the user left bindless — the wildcard fallback for producers no
+/// sibling slot has claimed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SlotBinding {
+    Pinned { producer_instance_id: String },
+    FromAnyBound { producer_instance_ids: Vec<String> },
+    FromAnyUnbound,
+}
+
 /// Represents a node instance at runtime. Used by RuntimeConfig to identify the running node and its configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -18,19 +37,20 @@ pub struct NodeInstanceConfig {
     pub arguments: BTreeMap<String, AnyType>,
     #[serde(default)]
     pub framework: ResolvedFramework,
-    /// Link_ids the producer is bound to. Each emit on a topic with an
-    /// `(interface | node)` producer target fans out into one wire
-    /// emission per bound link_id; service / action exposes register a
-    /// listener per bound link_id. Empty vec → the runtime substitutes
-    /// the reserved default `_` segment so the wire format stays
-    /// uniform.
-    #[serde(default)]
-    pub link_ids: Vec<String>,
+    /// Pre-resolved per-slot bindings for every `link_id` declared in the
+    /// consumer manifest's `depends_on`. Built by the validator from the
+    /// launcher / CLI raw binding map plus the manifest depends_on (which
+    /// distinguishes pinned vs `from_any` slots). Empty when the manifest
+    /// has no `depends_on` entries. Read by the generated subscribe /
+    /// poll / send_goal call sites via
+    /// [`crate::runtime::ConsumerFilter`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub slot_bindings: BTreeMap<String, SlotBinding>,
 }
 
 impl NodeInstanceConfig {
     /// Builds a config with everything except `instance_id` defaulted:
-    /// empty arguments, default framework, empty link_ids. Use with
+    /// empty arguments, default framework, empty slot bindings. Use with
     /// struct-update syntax to override a field:
     /// `NodeInstanceConfig { arguments, ..NodeInstanceConfig::new(id) }`.
     pub fn new(instance_id: Name) -> Self {
@@ -38,7 +58,7 @@ impl NodeInstanceConfig {
             instance_id,
             arguments: BTreeMap::new(),
             framework: ResolvedFramework::default(),
-            link_ids: Vec::new(),
+            slot_bindings: BTreeMap::new(),
         }
     }
 }

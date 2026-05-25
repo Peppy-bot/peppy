@@ -221,7 +221,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         node_tag,
         &run_options.args,
         run_options.instance_id,
-        Vec::new(),
+        std::collections::BTreeMap::new(),
         &timeouts,
     )
     .await?;

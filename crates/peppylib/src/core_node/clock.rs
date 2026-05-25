@@ -196,10 +196,10 @@ pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
             core_node,
             names::CORE_NODE_TAG,
         )?),
-        None,
+        false,
         names::CLOCK,
         Some(core_node),
-        None,
+        &crate::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
     .await?;

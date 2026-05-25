@@ -40,7 +40,6 @@ impl From<&NodeEntity> for SerializedNode {
                 .map(|i| SerializedInstance {
                     instance_id: i.instance_id().as_str().to_string(),
                     state: i.state(),
-                    link_ids: i.link_ids().to_vec(),
                 })
                 .collect(),
         }
@@ -167,16 +166,15 @@ pub struct StartContext<'a> {
     /// nodes, the caller is responsible for any host_gateway rewriting before
     /// calling start (the entity treats this as opaque bytes).
     pub runtime_config_json5: &'a str,
+    /// Pre-resolved per-slot bindings for this instance, recorded on the
+    /// `TrackedNodeInstance` so the daemon can surface them via
+    /// `node_info`. The launcher / CLI compute this from the
+    /// validator's per-slot resolution before spawning.
+    pub slot_bindings: std::collections::BTreeMap<String, config::runtime::SlotBinding>,
     /// User + injected env vars (already passed through
     /// `validate_goal_env_vars`, `inject_rust_build_env`, and
     /// `inject_node_runtime_env` in core-node).
     pub env_vars: &'a [(String, String)],
-    /// Producer-side `link_ids` this instance will advertise, mirrored from
-    /// `RuntimeConfig.node_instance.link_ids`. Recorded on the
-    /// `TrackedNodeInstance` so the daemon can expose it via `node_info` /
-    /// `stack_list` for downstream consumers (e.g. the CLI warning for
-    /// unsatisfied stack-consumer link_ids).
-    pub link_ids: &'a [String],
     /// Mount paths with `${parameters:...}` already resolved by core-node
     /// (against runtime arguments and the blocked-source policy). Container
     /// nodes only.
@@ -652,33 +650,12 @@ impl NodeEntity {
                 });
             }
 
-            // Reject collisions against link_ids already claimed by another
-            // live instance of the same node. A producer link_id is a 1:1
-            // binding contract from the consumer's perspective, so two
-            // instances advertising the same link_id would silently
-            // multiplex the wire. Empty ctx.link_ids (the default-launch
-            // path) claims nothing and trivially passes — the `_` sentinel
-            // is materialized downstream by the runtime processor and
-            // permits multiple `from_any` fan-in producers.
-            for new_link_id in ctx.link_ids {
-                if let Some(holder) = instances.iter().find(|inst| {
-                    inst.link_ids().iter().any(|existing| existing == new_link_id)
-                }) {
-                    return Err(Error::DuplicateLinkId {
-                        link_id: new_link_id.clone(),
-                        held_by: holder.instance_id().as_str().to_owned(),
-                        node_name: guard.config.manifest.name.as_str().to_owned(),
-                        node_tag: guard.config.manifest.tag.clone(),
-                    });
-                }
-            }
-
             let snapshot_artifact = artifact_path.clone();
             instances.push(TrackedNodeInstance::new(
                 ctx.instance_id.clone(),
                 None,
                 InstanceState::Starting,
-                ctx.link_ids.to_vec(),
+                ctx.slot_bindings.clone(),
             ));
 
             (
@@ -1081,10 +1058,13 @@ pub struct TrackedNodeInstance {
     /// Persisted so it can be removed when the instance stops or aborts. `None`
     /// for snapshot-restored or test-fixture instances.
     runtime_config_path: Option<PathBuf>,
-    /// Producer-side `link_ids` this instance advertises on the wire, mirroring
-    /// `RuntimeConfig.node_instance.link_ids` at start time. Empty for root
-    /// instances and for snapshot/test fixtures that don't track them.
-    link_ids: Vec<String>,
+    /// Pre-resolved per-slot bindings for this consumer instance,
+    /// mirroring [`config::runtime::NodeInstanceConfig::slot_bindings`].
+    /// Surfaced through `node_info` so the launcher / CLI can
+    /// cross-check newly-staged binding plans against running
+    /// consumers' existing claims. Empty when the node has no
+    /// `depends_on` slots.
+    slot_bindings: std::collections::BTreeMap<String, config::runtime::SlotBinding>,
 }
 
 impl TrackedNodeInstance {
@@ -1092,12 +1072,15 @@ impl TrackedNodeInstance {
     /// explicitly — there is no default. Callers that have just spawned a
     /// child process and have not yet committed it pass `InstanceState::Starting`;
     /// callers that are reconstructing an entity from a snapshot or test
-    /// fixture pass `InstanceState::Running`.
+    /// fixture pass `InstanceState::Running`. `slot_bindings` carries the
+    /// validator-resolved per-slot bindings for this instance — pass an
+    /// empty map when reconstructing test fixtures or instances whose
+    /// manifest has no `depends_on` slots.
     pub fn new(
         instance_id: Name,
         pid: Option<u32>,
         state: InstanceState,
-        link_ids: Vec<String>,
+        slot_bindings: std::collections::BTreeMap<String, config::runtime::SlotBinding>,
     ) -> Self {
         Self {
             instance_id,
@@ -1105,8 +1088,18 @@ impl TrackedNodeInstance {
             state,
             instance_dir: None,
             runtime_config_path: None,
-            link_ids,
+            slot_bindings,
         }
+    }
+
+    /// Returns the validator-resolved per-slot bindings recorded for
+    /// this instance. Empty for instances whose manifest has no
+    /// `depends_on` slots or for snapshot-restored / test-fixture
+    /// instances built with an empty bindings map.
+    pub fn slot_bindings(
+        &self,
+    ) -> &std::collections::BTreeMap<String, config::runtime::SlotBinding> {
+        &self.slot_bindings
     }
 
     pub fn instance_id(&self) -> &Name {
@@ -1119,11 +1112,6 @@ impl TrackedNodeInstance {
 
     pub fn state(&self) -> InstanceState {
         self.state
-    }
-
-    /// Returns the producer-side `link_ids` this instance advertises.
-    pub fn link_ids(&self) -> &[String] {
-        &self.link_ids
     }
 
     /// Returns the on-disk instance directory recorded during start, if any.

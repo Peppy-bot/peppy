@@ -686,8 +686,10 @@ fn consumed_action() {
 
     // fire_goal @classmethod with typed signature, serialization, and
     // ActionHandle construction. The fixture defaults to
-    // `WireLinkId::Wildcard`, so `target_instance_id` is exposed;
-    // `target_core_node` is never exposed in the generated API.
+    // `WireLinkId::wildcard()` (no manifest link_id), so the binding
+    // lookup splices `None` and the user-facing `target_instance_id`
+    // parameter is gone. `target_core_node` is never exposed in the
+    // generated API.
     assert_contains_all(
         &rendered,
         &[
@@ -697,7 +699,6 @@ fn consumed_action() {
             "request: GoalRequest",
             "timeout: float",
             "feedback_qos: peppylib.QoSProfile",
-            "target_instance_id: Optional[str] = None",
             ") -> Self:",
             "user_goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
@@ -709,6 +710,10 @@ fn consumed_action() {
             "handle.data = goal_response_data",
             "return handle",
         ],
+    );
+    assert!(
+        !rendered.contains("target_instance_id: Optional[str] = None"),
+        "target_instance_id should no longer appear as a generated parameter; got:\n{rendered}"
     );
     assert!(
         !rendered.contains("target_core_node"),

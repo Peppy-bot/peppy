@@ -350,7 +350,6 @@ pub fn build_exposed_service_method(
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     #target_expr,
-                    node_runner.processor().link_ids(),
                     #service_name_ref,
                 )
                 .await?;
@@ -401,7 +400,6 @@ pub fn build_exposed_service_method(
                     node_runner.core_node(),
                     service_instance_id.as_str(),
                     #target_expr,
-                    node_runner.processor().link_ids(),
                     service_name,
                 )
                 .await?;

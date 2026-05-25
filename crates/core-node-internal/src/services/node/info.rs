@@ -35,7 +35,6 @@ pub async fn listen_for_node_info(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        &[],
         names::NODE_INFO,
     )
     .await?;
@@ -149,7 +148,7 @@ async fn handle_node_info_request_inner(
             instances.push(NodeInstanceInfo {
                 instance_id: id.to_owned(),
                 state: instance.state(),
-                link_ids: instance.link_ids().to_vec(),
+                slot_bindings: instance.slot_bindings().clone(),
             });
             run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
         }

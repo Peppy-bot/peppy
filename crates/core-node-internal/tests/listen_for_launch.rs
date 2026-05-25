@@ -353,7 +353,6 @@ async fn send_launch_origin_and_wait(
         core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(core_node_name),
-        None,
         names::STACK_LAUNCH_ACTION,
         None,
         None,
@@ -466,7 +465,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &started_core_node.core_node_name,
             "camera_front",
             common::test_node_target(FAKE_UVC_CAMERA),
-            &[],
         )
         .await
         .expect("ready service should start"),
@@ -477,7 +475,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &started_core_node.core_node_name,
             "camera_front",
             common::test_node_target(FAKE_UVC_CAMERA),
-            &[],
         )
         .await
         .expect("health service should start"),
@@ -488,7 +485,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &started_core_node.core_node_name,
             "camera_rear",
             common::test_node_target(FAKE_UVC_CAMERA),
-            &[],
         )
         .await
         .expect("ready service should start"),
@@ -499,7 +495,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &started_core_node.core_node_name,
             "camera_rear",
             common::test_node_target(FAKE_UVC_CAMERA),
-            &[],
         )
         .await
         .expect("health service should start"),
@@ -510,7 +505,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &started_core_node.core_node_name,
             "the_brain",
             common::test_node_target(FAKE_ROBOT_BRAIN),
-            &[],
         )
         .await
         .expect("ready service should start"),
@@ -521,7 +515,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &started_core_node.core_node_name,
             "the_brain",
             common::test_node_target(FAKE_ROBOT_BRAIN),
-            &[],
         )
         .await
         .expect("health service should start"),
@@ -532,7 +525,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &started_core_node.core_node_name,
             "the_nervous_system",
             common::test_node_target(FAKE_OPENARM01_CONTROLLER),
-            &[],
         )
         .await
         .expect("ready service should start"),
@@ -543,7 +535,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &started_core_node.core_node_name,
             "the_nervous_system",
             common::test_node_target(FAKE_OPENARM01_CONTROLLER),
-            &[],
         )
         .await
         .expect("health service should start"),
@@ -631,7 +622,6 @@ async fn listen_for_launch_configuration_succeed() {
             &started_core_node.core_node_name,
             "camera_front",
             common::test_node_target(UVC_NODE_NAME),
-            &[],
         )
         .await
         .expect("ready service should start"),
@@ -642,7 +632,6 @@ async fn listen_for_launch_configuration_succeed() {
             &started_core_node.core_node_name,
             "camera_front",
             common::test_node_target(UVC_NODE_NAME),
-            &[],
         )
         .await
         .expect("health service should start"),
@@ -653,7 +642,6 @@ async fn listen_for_launch_configuration_succeed() {
             &started_core_node.core_node_name,
             "camera_rear",
             common::test_node_target(UVC_NODE_NAME),
-            &[],
         )
         .await
         .expect("ready service should start"),
@@ -664,7 +652,6 @@ async fn listen_for_launch_configuration_succeed() {
             &started_core_node.core_node_name,
             "camera_rear",
             common::test_node_target(UVC_NODE_NAME),
-            &[],
         )
         .await
         .expect("health service should start"),
@@ -675,7 +662,6 @@ async fn listen_for_launch_configuration_succeed() {
             &started_core_node.core_node_name,
             "main_robot_brain",
             common::test_node_target(ROBOT_NODE_NAME),
-            &[],
         )
         .await
         .expect("ready service should start"),
@@ -686,7 +672,6 @@ async fn listen_for_launch_configuration_succeed() {
             &started_core_node.core_node_name,
             "main_robot_brain",
             common::test_node_target(ROBOT_NODE_NAME),
-            &[],
         )
         .await
         .expect("health service should start"),
@@ -896,7 +881,6 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &started_core_node.core_node_name,
             "the_brain",
             common::test_node_target(BRAIN_NODE),
-            &[],
         )
         .await
         .expect("ready service should start"),
@@ -907,7 +891,6 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &started_core_node.core_node_name,
             "the_brain",
             common::test_node_target(BRAIN_NODE),
-            &[],
         )
         .await
         .expect("health service should start"),
@@ -918,7 +901,6 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &started_core_node.core_node_name,
             "the_arm",
             common::test_node_target(ARM_NODE),
-            &[],
         )
         .await
         .expect("ready service should start"),
@@ -929,7 +911,6 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &started_core_node.core_node_name,
             "the_arm",
             common::test_node_target(ARM_NODE),
-            &[],
         )
         .await
         .expect("health service should start"),
@@ -1261,7 +1242,6 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &started_core_node.core_node_name,
             "a1",
             common::test_node_target("node_a"),
-            &[],
         )
         .await
         .expect("ready should start"),
@@ -1272,7 +1252,6 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &started_core_node.core_node_name,
             "a1",
             common::test_node_target("node_a"),
-            &[],
         )
         .await
         .expect("health should start"),
@@ -1283,7 +1262,6 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &started_core_node.core_node_name,
             "b1",
             common::test_node_target("node_b"),
-            &[],
         )
         .await
         .expect("ready should start"),
@@ -1294,7 +1272,6 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &started_core_node.core_node_name,
             "b1",
             common::test_node_target("node_b"),
-            &[],
         )
         .await
         .expect("health should start"),
@@ -1390,7 +1367,6 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
             &started_core_node.core_node_name,
             "b1",
             common::test_node_target("node_b"),
-            &[],
         )
         .await
         .expect("ready should start"),
@@ -1715,7 +1691,6 @@ sleep \"${1:-60}\"
             &started_core_node.core_node_name,
             INSTANCE_ID,
             common::test_node_target(NODE_NAME),
-            &[],
         )
         .await
         .expect("ready service should start"),
@@ -1726,7 +1701,6 @@ sleep \"${1:-60}\"
             &started_core_node.core_node_name,
             INSTANCE_ID,
             common::test_node_target(NODE_NAME),
-            &[],
         )
         .await
         .expect("health service should start"),
@@ -1792,7 +1766,6 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
             &started_core_node.core_node_name,
             "main_robot_brain",
             common::test_node_target(ROBOT_NODE_NAME),
-            &[],
         )
         .await
         .expect("ready service should start"),
@@ -1803,7 +1776,6 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
             &started_core_node.core_node_name,
             "main_robot_brain",
             common::test_node_target(ROBOT_NODE_NAME),
-            &[],
         )
         .await
         .expect("health service should start"),

@@ -2,21 +2,21 @@
 title: Containers
 description: Make your nodes truly portable
 sidebar:
-  order: 5
+  order: 6
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 Containers package a node and all of its dependencies into a single, self-contained image.
-A containerized node runs identically regardless of what is installed on the host — no more "works on my machine" issues.
+A containerized node runs identically regardless of what is installed on the host: no more "works on my machine" issues.
 
 Use containers when you need:
-- **Portability** — ship a node to another machine without worrying about system dependencies.
-- **Reproducibility** — guarantee the same runtime environment every time.
-- **Isolation** — prevent conflicts between nodes that need different versions of the same library.
+- **Portability**: ship a node to another machine without worrying about system dependencies.
+- **Reproducibility**: guarantee the same runtime environment every time.
+- **Isolation**: prevent conflicts between nodes that need different versions of the same library.
 
 PeppyOS uses [Apptainer](https://apptainer.org/) as its container runtime.
-On macOS, Apptainer runs transparently inside a [Lima](https://lima-vm.io/) virtual machine — no extra setup is needed.
+On macOS, Apptainer runs transparently inside a [Lima](https://lima-vm.io/) virtual machine; no extra setup is needed.
 
 ## Setup (Linux)
 
@@ -28,8 +28,8 @@ peppy container setup
 
 This configures the following (prompting for `sudo` when needed):
 
-1. **uidmap package** — installs `newuidmap` (required for fakeroot mode).
-2. **AppArmor profile** (Ubuntu 24.04+ only) — installs a profile that allows Apptainer to create user namespaces.
+1. **uidmap package**: installs `newuidmap` (required for fakeroot mode).
+2. **AppArmor profile** (Ubuntu 24.04+ only): installs a profile that allows Apptainer to create user namespaces.
 
 To check the current state without making any changes:
 
@@ -40,7 +40,7 @@ peppy container status
 This prints a pass/fail summary of each prerequisite and exits with code `0` (all pass) or `1` (something needs fixing).
 
 :::note
-On macOS, no setup is needed — containers run inside a Lima VM which handles permissions transparently.
+On macOS, no setup is needed; containers run inside a Lima VM which handles permissions transparently.
 :::
 
 ## Initializing a container node
@@ -64,7 +64,7 @@ This generates the same project scaffolding as a regular node, plus an `apptaine
 
 ## The `peppy.json5` configuration
 
-A container node includes a `container` block inside its `execution` section instead of the usual `build_cmd` and `run_cmd` fields. The two are mutually exclusive — a node is either a container node or a process node, never both.
+A container node includes a `container` block inside its `execution` section instead of the usual `build_cmd` and `run_cmd` fields. The two are mutually exclusive: a node is either a container node or a process node, never both.
 
 <Tabs>
   <TabItem label="Python">
@@ -146,7 +146,7 @@ Compare this with a standard process node, which defines `build_cmd` and `run_cm
   </TabItem>
 </Tabs>
 
-Container nodes don't need `build_cmd` or `run_cmd` — the definition file takes care of both building and running the node.
+Container nodes don't need `build_cmd` or `run_cmd`; the definition file takes care of both building and running the node.
 
 ## The `apptainer.def` file
 
@@ -213,7 +213,7 @@ Each section serves a specific purpose:
 | `%labels` | Metadata embedded in the image |
 | `%environment` | Environment variables set when the container runs |
 | `%files` | Copies the node source into the image at `/opt/<node_name>` |
-| `%post` | Build steps — install system packages, toolchains, and compile the node |
+| `%post` | Build steps: install system packages, toolchains, and compile the node |
 | `%runscript` | Entry point executed when the container starts |
 
 :::note
@@ -222,17 +222,17 @@ The `%files` section copies the entire node directory into the container. PeppyO
 
 ## Adding a container node
 
-Adding a container node works the same as a regular node — first stage it, then build:
+Adding a container node works the same as a regular node: first stage it, then build.
 
 ```sh
 peppy node add ./my_node
 peppy node build my_node:v1
 ```
 
-You can also combine both steps with `peppy node add ./my_node --build` (shorthand `-b`). If you've just edited `peppy.json5`, add `--sync`/`-s` as well — e.g. `peppy node add ./my_node -sb` to sync, add, and build in one shot.
+You can also combine both steps with `peppy node add ./my_node --build` (shorthand `-b`). If you've just edited `peppy.json5`, add `--sync`/`-s` as well, e.g. `peppy node add ./my_node -sb` to sync, add, and build in one shot.
 
 Under the hood, PeppyOS runs `apptainer build` during the build phase to produce a `.sif` (Singularity Image Format) file.
-This replaces the `build_cmd` step used by process nodes — the entire build happens inside the container according to the `%post` section of the definition file.
+This replaces the `build_cmd` step used by process nodes; the entire build happens inside the container according to the `%post` section of the definition file.
 
 The resulting `.sif` file is stored in PeppyOS's internal storage and is ready to be started.
 
@@ -249,13 +249,13 @@ Starting a container node also uses the same command:
 peppy node run my_node
 ```
 
-PeppyOS runs the `.sif` image with `apptainer run`. Environment variables such as `PEPPY_RUNTIME_CONFIG` are passed into the container automatically — you don't need to configure anything beyond what a regular node requires.
+PeppyOS runs the `.sif` image with `apptainer run`. Environment variables such as `PEPPY_RUNTIME_CONFIG` are passed into the container automatically; you don't need to configure anything beyond what a regular node requires.
 
 The container executes the `%runscript` section, which runs the compiled binary (Rust) or the Python module entry point.
 
 ## Mounting host directories
 
-By default, a container is isolated from the host filesystem. Use `mount_paths` to bind-mount host directories into the running container — useful for sharing datasets, persisting output, or exposing device files.
+By default, a container is isolated from the host filesystem. Use `mount_paths` to bind-mount host directories into the running container, useful for sharing datasets, persisting output, or exposing device files.
 
 Add a `mount_paths` array to the `container` block inside `execution` in `peppy.json5`:
 
@@ -291,11 +291,11 @@ Each entry follows the format `host_path:container_path[:options]`:
 PeppyOS creates any missing parent directories on the host automatically before starting the container.
 
 :::note
-Top-level system directories such as `/`, `/tmp`, `/var`, `/etc`, `/dev`, `/usr`, `/home`, `/opt`, `/bin`, and `/sbin` cannot be used as mount sources. Subdirectories of these paths are fine — for example, `/tmp/my_app_data` is allowed but `/tmp` is not.
+Top-level system directories such as `/`, `/tmp`, `/var`, `/etc`, `/dev`, `/usr`, `/home`, `/opt`, `/bin`, and `/sbin` cannot be used as mount sources. Subdirectories of these paths are fine; for example, `/tmp/my_app_data` is allowed but `/tmp` is not.
 :::
 
 :::note
-On macOS, PeppyOS automatically configures the Lima VM to make mounted paths accessible inside the guest. No extra setup is needed — paths outside your home directory are handled transparently.
+On macOS, PeppyOS automatically configures the Lima VM to make mounted paths accessible inside the guest. No extra setup is needed; paths outside your home directory are handled transparently.
 :::
 
 ### Using parameters in mount paths
@@ -391,13 +391,13 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
 All fields are optional and default to an empty list when omitted.
 
 :::note
-These arguments are passed verbatim — no validation is performed beyond basic string checks. Incorrect flags will cause Apptainer or Lima to fail at build or start time.
+These arguments are passed verbatim; no validation is performed beyond basic string checks. Incorrect flags will cause Apptainer or Lima to fail at build or start time.
 :::
 
 ## macOS support
 
 On macOS, Apptainer is not natively available. PeppyOS bundles a [Lima](https://lima-vm.io/) virtual machine that runs Apptainer inside a lightweight Linux guest.
-This is handled transparently — all `peppy node` commands work identically on macOS and Linux. No additional installation or configuration is required.
+This is handled transparently; all `peppy node` commands work identically on macOS and Linux. No additional installation or configuration is required.
 
 ## Customizing the definition file
 
@@ -426,7 +426,7 @@ From: nvidia/cuda:12.4.0-devel-ubuntu24.04
 
 ### Using a pre-built base image for faster builds
 
-Every `peppy node add` runs the full `%post` section from scratch — installing system packages, toolchains, and compiling dependencies each time. For nodes with heavy dependencies this can be slow.
+Every `peppy node add` runs the full `%post` section from scratch, installing system packages, toolchains, and compiling dependencies each time. For nodes with heavy dependencies this can be slow.
 
 You can speed things up by baking those slow steps into a custom Docker image and using it as your base. The first build pays the cost once; every subsequent `node add` starts from the cached image and only rebuilds your application code.
 
@@ -523,7 +523,7 @@ You can speed things up by baking those slow steps into a custom Docker image an
   </TabItem>
 </Tabs>
 
-Now `peppy node add` only runs the application-specific build steps — package installation and toolchain setup are already in the base image.
+Now `peppy node add` only runs the application-specific build steps; package installation and toolchain setup are already in the base image.
 
 :::tip
 If multiple nodes share the same system dependencies, a single base image can serve all of them. Update the base image when dependencies change and tag it with a version so builds stay reproducible.

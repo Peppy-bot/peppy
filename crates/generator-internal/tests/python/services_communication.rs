@@ -146,7 +146,7 @@ from peppygen.consumed_services import uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)
-    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0, None)
+    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0)
     error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
     print(
         f"enable_camera result: service_id={response.instance_id} enabled={response.data.enabled} error={error_msg}",
@@ -459,7 +459,7 @@ from peppygen import NodeBuilder
 from peppygen.consumed_services import uvc_camera_get_system_status
 
 async def poll_service(node_runner):
-    response = await uvc_camera_get_system_status.poll(node_runner, 5.0, None)
+    response = await uvc_camera_get_system_status.poll(node_runner, 5.0)
     print(
         f"get_system_status result: service_id={response.instance_id} healthy={response.data.healthy}",
         flush=True,
@@ -755,7 +755,7 @@ from peppygen.consumed_services import uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)
-    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0, None)
+    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0)
     error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
     print(
         f"enable_camera result: enabled={response.data.enabled} error={error_msg}",

@@ -9,7 +9,7 @@ import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 One of PeppyOS's key features is the ability to share nodes with other people.
 As an example, we'll try to pull the `uvc_camera` node from [this repo](https://github.com/Peppy-bot/nodes_hub.git) in a separate shell.
 
-Because `nodes_hub` ships as one of the default [repositories](/advanced_guides/repositories/), `uvc_camera` is already in the index — so you can add it by `name:tag` without referring to the git URL at all:
+Because `nodes_hub` ships as one of the default [repositories](/advanced_guides/repositories/), `uvc_camera` is already in the index, so you can add it by `name:tag` without referring to the git URL at all:
 
 ```sh
 peppy node add uvc_camera:v1
@@ -28,7 +28,7 @@ peppy node add --ref main https://github.com/some-user/custom_nodes.git/uvc_came
 ```
 
 :::note
-When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node run uvc_camera:v1` corresponds to the tag found in `peppy.json5`. `--ref` is only accepted with a full git URL — for `name:tag` sources the ref is pinned once in `repositories.json5` when the repo is registered.
+When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node run uvc_camera:v1` corresponds to the tag found in `peppy.json5`. `--ref` is only accepted with a full git URL; for `name:tag` sources the ref is pinned once in `repositories.json5` when the repo is registered.
 :::
 
 
@@ -81,11 +81,11 @@ If we look at the logs of the started `fake_video_reconstruction` node:
 [2026-01-26T15:35:37.222] [stdout] Video saved to: /var/folders/kb/36lp35_92z5_jg6gfqhvkm600000gn/T/.tmpCJoXVL/reconstructed_video.mp4
 ```
 
-We can see the video has been saved to a temporary folder. Go ahead and open it—you'll find the reconstructed video of the robot.
+We can see the video has been saved to a temporary folder. Go ahead and open it; you'll find the reconstructed video of the robot.
 In the same way, you can share your own nodes by hosting them in a Git repository and connect them to remote nodes.
 A node can also be pulled in the same way if it's in a `.tar.zst` archive.
 
 :::tip
-When you're iterating on a node that depends on a hub node — and you don't want to `peppy node add` the hub node first just to regenerate peppygen — run `peppy node sync -r` instead. The `--include-repositories` flag lets the daemon resolve missing dependencies through the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) directly.
+When you're iterating on a node that depends on a hub node, and you don't want to `peppy node add` the hub node first just to regenerate peppygen, run `peppy node sync -r` instead. The `--include-repositories` flag lets the daemon resolve missing dependencies through the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) directly.
 :::
 

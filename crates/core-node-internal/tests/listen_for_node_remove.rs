@@ -194,7 +194,6 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
         common::test_node_target(TARGET_NODE_NAME),
-        &[],
     )
     .await
     .expect("failed to start shutdown service");
@@ -293,7 +292,6 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
         common::test_node_target(TARGET_NODE_NAME),
-        &[],
     )
     .await
     .expect("failed to start shutdown service");

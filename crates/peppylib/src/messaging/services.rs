@@ -294,48 +294,43 @@ impl fmt::Debug for ServiceRequestContext {
 }
 
 impl ServiceMessenger {
-    /// Listen as a service. `link_ids` is the set of producer link_ids this
-    /// process binds; the adapter declares one queryable per bound link_id
-    /// so Zenoh's keyexpr matcher routes each request to the right
-    /// queryable. An empty slice is normalized to the reserved default `_`
-    /// segment, matching producers launched without `--link-id`.
+    /// Listen as a service. The producer declares one queryable under the
+    /// reserved default `_` link_id segment; consumers pin a specific
+    /// producer by `target_instance_id` derived from the consumer's
+    /// binding map.
     ///
     /// `as_identity` must match the [`SenderTarget`] callers will use in
     /// [`Self::poll`].
-    #[allow(clippy::too_many_arguments)]
     pub async fn listen(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         as_identity: SenderTarget,
-        link_ids: &[String],
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
         let recv = ServiceWireReceiver::new(
             as_core_node,
             as_instance_id,
             as_identity,
-            link_ids,
             as_service_name,
             ServiceKind::Service,
         )?;
         messenger.expose_service(&recv).await
     }
 
-    /// Poll a service. `to_link_id` `None` emits the wildcard `*` in the
-    /// link_id slot so any matching producer queryable replies (used by
-    /// consumers without a pinned link_id); `Some(value)` targets a
-    /// specific producer link_id, used when a `depends_on` entry declares
-    /// a link_id.
+    /// Poll a service. The link_id wire slot is always emitted as `*`;
+    /// producers advertise under the reserved `_` segment and Zenoh's
+    /// matcher unifies the two.
     ///
-    /// When `target_instance_id` is `None` (wildcard / from_any), this
-    /// performs a discover-then-pin sequence: a lightweight probe is sent
-    /// to identify a single responding producer's `(core_node, instance_id)`,
-    /// then the real request is delivered pinned to that producer. The
-    /// probe is filtered server-side before the user handler runs, so
-    /// non-winning producers never see the request. This costs one extra
-    /// round-trip; pinned callers (`target_instance_id: Some`) skip
-    /// discovery and pay no overhead.
+    /// When either `target_core_node` or `target_instance_id` is `None`
+    /// (wildcard / from_any), this performs a discover-then-pin sequence:
+    /// a lightweight probe is sent to identify a single responding
+    /// producer's `(core_node, instance_id)`, then the real request is
+    /// delivered pinned to that producer. The probe is filtered
+    /// server-side before the user handler runs, so non-winning producers
+    /// never see the request. This costs one extra round-trip; fully
+    /// pinned callers (both `target_*` `Some`) skip discovery and pay no
+    /// overhead.
     ///
     /// `to_target` must match the [`SenderTarget`] the responder used in
     /// [`Self::listen`].
@@ -345,29 +340,27 @@ impl ServiceMessenger {
         bound_core_node: &str,
         as_instance_id: &str,
         to_target: SenderTarget,
-        to_link_id: Option<&str>,
         to_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
-        let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
         let response_timeout: Option<Duration> = response_timeout.into();
 
         let started_at = Instant::now();
-        let (resolved_core, resolved_inst) = if target_instance_id.is_none() {
+        let (resolved_core, resolved_inst) = if target_instance_id.is_none()
+            || target_core_node.is_none()
+        {
             let probe_sender = ServiceWireSender::new(
                 bound_core_node,
                 as_instance_id,
                 target_core_node,
                 target_instance_id,
                 to_target.clone(),
-                to_link_id,
                 to_service_name,
                 ServiceKind::Service,
-            )?
-            .with_excluded_link_ids(&excluded)?;
+            )?;
             // Discovery is capped at PROBE_TIMEOUT or the caller's response
             // budget, whichever is shorter; this preserves the user contract
             // that a tight `response_timeout` fails fast against unreachable
@@ -409,11 +402,9 @@ impl ServiceMessenger {
             resolved_core.as_deref(),
             resolved_inst.as_deref(),
             to_target,
-            to_link_id,
             to_service_name,
             ServiceKind::Service,
-        )?
-        .with_excluded_link_ids(&excluded)?;
+        )?;
         messenger
             .poll_service(
                 &sender,
@@ -425,7 +416,7 @@ impl ServiceMessenger {
     }
 
     /// Sends a lightweight probe to check whether a service is listening at
-    /// the targeted link_id. The probe is handled transparently by the
+    /// the targeted producer. The probe is handled transparently by the
     /// service's request loop; the user handler is never invoked. Returns
     /// `true` if the service responds within [`PROBE_TIMEOUT`], `false` if
     /// unreachable.
@@ -434,29 +425,24 @@ impl ServiceMessenger {
     /// IS the discovery step; routing through `poll` would issue two probes
     /// back to back. Calls the raw messenger path directly with the same
     /// wire-sender shape `poll` builds.
-    #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
         to_target: SenderTarget,
-        to_link_id: Option<&str>,
         to_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
     ) -> Result<bool> {
-        let excluded = messenger.excluded_link_ids_for_wildcard(Some(&to_target), to_link_id);
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
             target_core_node,
             target_instance_id,
             to_target,
-            to_link_id,
             to_service_name,
             ServiceKind::Service,
-        )?
-        .with_excluded_link_ids(&excluded)?;
+        )?;
         match messenger
             .poll_service(
                 &sender,

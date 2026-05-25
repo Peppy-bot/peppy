@@ -41,7 +41,6 @@ async fn action_messenger_communication() {
         core_node,
         instance_id,
         test_node_target(node_name),
-        &[],
         action_name,
     )
     .await
@@ -107,7 +106,6 @@ async fn action_messenger_communication() {
         core_node,
         instance_id,
         test_node_target(node_name),
-        None,
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -178,7 +176,6 @@ async fn setup_goal_handshake(
         core_node,
         instance_id,
         test_node_target(node_name),
-        &[],
         action_name,
     )
     .await
@@ -221,7 +218,6 @@ async fn setup_goal_handshake(
         core_node,
         instance_id,
         test_node_target(node_name),
-        None,
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -401,7 +397,6 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         test_node_target(node_name),
-        &[],
         action_name,
     )
     .await
@@ -411,7 +406,6 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
-        &[],
         action_name,
     )
     .await
@@ -463,7 +457,6 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         test_node_target(node_name),
-        None,
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -484,7 +477,6 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         core_node,
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
-        None,
         action_name,
         Some(core_node),
         Some(instance_id),
@@ -558,7 +550,6 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
                 spec.core,
                 spec.inst,
                 spec.target,
-                &[],
                 spec.action_name,
             )
             .await
@@ -632,7 +623,6 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
         "caller_core",
         "caller_inst",
         action_target,
-        None,
         action_name,
         None,
         None,

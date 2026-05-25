@@ -51,7 +51,6 @@ pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name:
             CORE_NODE,
             CLIENT_INSTANCE,
             test_node_target(CORE_NODE),
-            None,
             service_name,
             Some(CORE_NODE),
             None,

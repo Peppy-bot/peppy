@@ -399,14 +399,9 @@ impl MessengerBackend for ZenohAdapter {
             .complete(true)
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
-        let bound_link_ids: Vec<String> = recv
-            .link_ids
-            .iter()
-            .map(|s| s.as_str().to_string())
-            .collect();
         let recv_clone = recv.clone();
         tasks.spawn(async move {
-            handle_queryable(queryable, bound_link_ids, recv_clone, tx).await;
+            handle_queryable(queryable, recv_clone, tx).await;
         });
 
         Ok(ServiceQueryable::new(rx, tasks))
@@ -674,20 +669,19 @@ impl ZenohAdapter {
 }
 
 /// Per-queryable forwarder loop. Pulls inbound queries off `queryable`,
-/// parses the selector, resolves the caller's link_id intent against
-/// `bound_link_ids` via [`ParsedInboundQuery::choose_link_id`], builds an
-/// [`IncomingRequest`] with a [`ResponseToken::Zenoh`] (carrying the
+/// parses the selector, verifies the caller's link_id slot resolves to the
+/// producer's default `_` segment via [`ParsedInboundQuery::claim`], builds
+/// an [`IncomingRequest`] with a [`ResponseToken::Zenoh`] (carrying the
 /// concrete reply keyexpr) and pushes it onto `tx`.
 ///
 /// Probe / ACK semantics are handled by peppylib's request loop, not here —
 /// every claimed query (including probes) is delivered to peppylib via
 /// `tx`, and peppylib decides whether to reply inline or hand the request
-/// to the user handler. Queries whose selector pins a link_id outside
-/// `bound_link_ids` are dropped silently (defensive — Zenoh's matcher
-/// should already have filtered them out).
+/// to the user handler. Queries whose link_id slot is neither `*` nor `_`
+/// are dropped silently (defensive — Zenoh's matcher should already have
+/// filtered them out).
 async fn handle_queryable(
     queryable: zenoh::query::Queryable<zenoh::handlers::FifoChannelHandler<zenoh::query::Query>>,
-    bound_link_ids: Vec<String>,
     recv: ServiceWireReceiver,
     tx: tokio::sync::mpsc::Sender<IncomingRequest>,
 ) {
@@ -717,13 +711,13 @@ async fn handle_queryable(
             }
         };
 
-        let chosen_link_id = match parsed.choose_link_id(&bound_link_ids) {
+        let chosen_link_id = match parsed.claim() {
             Some(l) => l.to_string(),
             None => {
                 tracing::trace!(
                     query_keyexpr = %query.key_expr().as_str(),
                     parsed_link_id = %parsed.link_id,
-                    "dropping inbound query: parsed link_id not in bound set",
+                    "dropping inbound query: link_id slot is neither '*' nor '_'",
                 );
                 continue;
             }

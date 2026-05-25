@@ -7,14 +7,12 @@ pub async fn listen_for_node_ready(
     core_node_node: &str,
     instance_id: &str,
     as_identity: SenderTarget,
-    link_ids: &[String],
 ) -> PeppyResult<TaskHandle<PeppyResult<()>>> {
     super::listen_for_echo_service(
         messenger,
         core_node_node,
         instance_id,
         as_identity,
-        link_ids,
         NODE_READY_SERVICE,
         NODE_READY_SERVICE,
     )

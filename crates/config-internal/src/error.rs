@@ -45,9 +45,8 @@ where
 /// the `clippy::result_large_err` threshold.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "instance `{owner_instance_id}` declares a pinned `depends_on.{kind}` \
-     entry for `{expected_name}:{expected_tag}` (link_id `{link_id}`) but the \
-     launcher has no matching binding; this would cause silent message loss"
+    "instance `{owner_instance_id}` slot `{link_id}` has no binding; pinned deps must be bound \
+     (`depends_on.{kind}` entry `{expected_name}:{expected_tag}`)"
 )]
 pub struct BindingMissingForPinnedDep {
     pub owner_instance_id: String,
@@ -76,20 +75,63 @@ pub struct BindingTargetMismatch {
     pub actual_tag: String,
 }
 
-/// Payload for [`ParsingError::DuplicateProducerLinkId`]. Boxed in the
-/// variant so the five `String` fields do not inflate `ParsingError` past
-/// the `clippy::result_large_err` threshold.
+/// Payload for [`ParsingError::BindingInterfaceNotConformed`]. Raised when a
+/// `--bind` targets an interface slot but the producer's `interfaces.conforms_to`
+/// list does not include the requested `(interface_name, interface_tag)`.
+///
+/// Boxed in the variant for the same `clippy::result_large_err` reason as the
+/// other binding error payloads.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "two instances of `{node_name}:{node_tag}` would both publish link_id `{link_id}` \
-     (`{instance_a}` and `{instance_b}`); a producer link_id must be unique within a node"
+    "binding `{binding}` on instance `{owner_instance_id}` targets instance \
+     `{target_instance_id}` (deploys `{producer_name}:{producer_tag}`), but \
+     the consumer's `depends_on.interfaces` entry requires a producer whose \
+     `interfaces.conforms_to` includes `{interface_name}:{interface_tag}`"
 )]
-pub struct DuplicateProducerLinkId {
-    pub node_name: String,
-    pub node_tag: String,
-    pub link_id: String,
-    pub instance_a: String,
-    pub instance_b: String,
+pub struct BindingInterfaceNotConformed {
+    pub owner_instance_id: String,
+    pub binding: String,
+    pub target_instance_id: String,
+    pub interface_name: String,
+    pub interface_tag: String,
+    pub producer_name: String,
+    pub producer_tag: String,
+}
+
+/// Payload for [`ParsingError::DuplicateInstanceIdAcrossStack`]. Boxed in
+/// the variant for the same `result_large_err` reason as the other binding
+/// variants.
+///
+/// Two instances anywhere in the running stack (any `(node_name,
+/// node_tag)`) share an `instance_id`. The binding model addresses
+/// producers by `instance_id` only, so a stack-wide duplicate would make
+/// `--bind KEY@id` ambiguous.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "instance_id `{instance_id}` is used by both `{name_a}:{tag_a}` and `{name_b}:{tag_b}`; \
+     instance_ids must be unique across the entire stack"
+)]
+pub struct DuplicateInstanceIdAcrossStack {
+    pub instance_id: String,
+    pub name_a: String,
+    pub tag_a: String,
+    pub name_b: String,
+    pub tag_b: String,
+}
+
+/// Payload for [`ParsingError::BindingDeadKey`]. Boxed for the same
+/// `result_large_err` reason as the other binding variants — the five
+/// `String` fields push the enum past the lint threshold otherwise.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "binding `{binding}` on instance `{owner_instance_id}` does not match any `link_id` declared in the consumer's `depends_on` and no `from_any` slot accepts producer `{target_instance_id}` ({producer_name_tag}) (declared link_ids: [{declared_link_ids}])"
+)]
+pub struct BindingDeadKey {
+    pub owner_instance_id: String,
+    pub binding: String,
+    pub target_instance_id: String,
+    pub producer_name_tag: String,
+    pub declared_link_ids: String,
 }
 
 /// Payload for [`ParsingError::MissingInterface`]. Boxed in the variant so
@@ -171,13 +213,23 @@ pub enum ParsingError {
         owner_instance_id: String,
         binding: String,
     },
+    /// `--bind KEY@VALUE` whose `KEY` neither matches a declared pinned
+    /// `link_id` nor a declared `from_any` slot for VALUE's `(name, tag)`.
+    /// Boxed for the same `result_large_err` reason as the other binding
+    /// variants.
+    #[error(transparent)]
+    BindingDeadKey(Box<BindingDeadKey>),
+    /// Two `--bind KEY@…` entries on the same invocation share the same
+    /// `KEY`. Each `KEY` is the binding's label — pinned KEYs match a
+    /// declared link_id; `from_any` KEYs are free-form — and must be
+    /// distinct so the validator can resolve each to a slot
+    /// unambiguously.
     #[error(
-        "binding `{binding}` on instance `{owner_instance_id}` does not match any `link_id` declared in the consumer's `depends_on` (declared link_ids: [{declared_link_ids}])"
+        "duplicate binding key `{binding}` on instance `{owner_instance_id}` (each --bind KEY must be distinct)"
     )]
-    BindingDeadKey {
+    BindingDuplicateKey {
         owner_instance_id: String,
         binding: String,
-        declared_link_ids: String,
     },
     /// Boxed payload for the same reason as
     /// [`ParsingError::BindingTargetMismatch`]: keeps the variant's
@@ -192,13 +244,16 @@ pub enum ParsingError {
     /// `peppylib::PeppyError`).
     #[error(transparent)]
     BindingTargetMismatch(Box<BindingTargetMismatch>),
-    /// Two producer instances of the same `(node_name, node_tag)` would
-    /// end up advertising the same `link_id` (because consumer bindings
-    /// point that `link_id` at distinct producer `instance_id`s). Boxed
-    /// for the same `result_large_err` reason as the other binding
+    /// Pinned `--bind` targets an interface slot but the producer doesn't
+    /// declare conformance to the requested interface. Boxed for the same
+    /// `result_large_err` reason as the other binding variants.
+    #[error(transparent)]
+    BindingInterfaceNotConformed(Box<BindingInterfaceNotConformed>),
+    /// Two instances anywhere in the running stack share an `instance_id`.
+    /// Boxed for the same `result_large_err` reason as the other binding
     /// variants.
     #[error(transparent)]
-    DuplicateProducerLinkId(Box<DuplicateProducerLinkId>),
+    DuplicateInstanceIdAcrossStack(Box<DuplicateInstanceIdAcrossStack>),
 
     // -- container config: mount paths
     #[error(

@@ -218,7 +218,6 @@ fn service_receiver() -> ServiceWireReceiver {
         "server_core",
         "server_inst",
         test_node_target("robot_arm"),
-        &[],
         "ping",
         ServiceKind::Service,
     )
@@ -235,7 +234,6 @@ fn service_sender(
         target_core_node,
         target_instance_id,
         test_node_target("robot_arm"),
-        None,
         "ping",
         ServiceKind::Service,
     )
@@ -319,7 +317,6 @@ fn action_receiver() -> ActionWireReceiver {
         "server_core",
         "server_inst",
         test_node_target("robot_arm"),
-        &[],
         "pick_place",
     )
     .expect("valid wire fields")
@@ -332,7 +329,6 @@ fn action_sender() -> ActionWireSender {
         Some("server_core"),
         Some("server_inst"),
         test_node_target("robot_arm"),
-        None,
         "pick_place",
     )
     .expect("valid wire fields")

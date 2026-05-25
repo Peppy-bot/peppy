@@ -75,7 +75,6 @@ async fn main() {
         &core_node,
         &instance_id,
         SenderTarget::node(NODE_NAME, "v1").expect("test target"),
-        &[],
         SERVICE_NAME,
     )
 

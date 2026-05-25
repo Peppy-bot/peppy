@@ -14,6 +14,9 @@ pub use actions::{
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
+mod filter;
+pub use filter::{ConsumerFilter, resolve_consumer_filter};
+
 // Public re-exports. `SenderTarget` / `InterfaceIdentifier` / `NodeIdentifier`
 // / `SenderTargetError` / `ServiceKind` describe the shape of messaging calls
 // and surface in user-facing peppylib APIs. `ActionWireSender` is exposed
@@ -36,9 +39,9 @@ use pmi::{
     ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{
-    Arc, Mutex as StdMutex, OnceLock, RwLock,
+    Arc, Mutex as StdMutex,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,14 +58,6 @@ pub const SHUTDOWN_SERVICE: &str = "shutdown";
 /// Timeout for reachability probes sent by `is_reachable`.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Per-`(producer_name, producer_tag)` set of link_ids that this consumer
-/// process has pinned via `depends_on`. Populated once at node bootstrap by
-/// codegen via [`MessengerHandle::register_consumer_dependencies_once`]; consulted
-/// at subscribe / poll / send_goal time when the caller's `from_link_id` is
-/// `None` (a `from_any: true` consumer) to derive the producer link_ids the
-/// from_any path must skip. Empty / absent groups apply no exclusion.
-type PinnedSiblingMap = HashMap<(String, String), Vec<String>>;
-
 /// Key in [`MessengerHandle::active_from_any_topics`]. Two from_any topic
 /// subscriptions conflict only when they would observe the same producer
 /// publishes — i.e. they share the producer-side filter
@@ -75,15 +70,11 @@ type ActiveFromAnyKey = (Option<String>, Option<String>, String, String);
 #[derive(Clone)]
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
-    pinned_siblings: Arc<RwLock<PinnedSiblingMap>>,
     /// Live from_any topic subscriptions per `(producer_name, producer_tag)`.
-    /// The sibling-exclusion filter in [`topics::Subscription`] can only
-    /// dedupe correctly when at most one from_any subscription exists per
-    /// `(name, tag)` on this messenger; the manifest validator enforces this
-    /// at config time, but [`Self::register_consumer_dependencies`] and
-    /// direct calls to [`topics::TopicMessenger::subscribe`] can bypass it.
     /// [`topics::TopicMessenger::subscribe`] reserves a key here on the
-    /// from_any path; [`FromAnyTopicGuard`] releases it on drop.
+    /// from_any path; [`FromAnyTopicGuard`] releases it on drop. The manifest
+    /// validator already rejects duplicate from_any consumers, but this
+    /// guards against bypasses via direct messenger calls.
     active_from_any_topics: Arc<StdMutex<HashSet<ActiveFromAnyKey>>>,
 }
 
@@ -138,76 +129,8 @@ impl MessengerHandle {
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
         Self {
             messenger,
-            pinned_siblings: Arc::new(RwLock::new(HashMap::new())),
             active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
         }
-    }
-
-    /// Seed the per-`(producer_name, producer_tag)` map of pinned sibling
-    /// link_ids. Codegen calls this once at node bootstrap with the entries
-    /// it discovered in `depends_on.{nodes,interfaces}`: for each `(name,
-    /// tag)` group that contains at least one pinned dependency, the value
-    /// is the list of pinned link_ids on that group. Groups with only one
-    /// entry (whether pinned or from_any) can be omitted; the exclusion
-    /// only matters when a from_any sibling needs to skip pinned link_ids.
-    ///
-    /// Replaces any previous registration in full; multiple calls are
-    /// supported but only the latest map is observed.
-    pub fn register_consumer_dependencies(&self, pinned_per_group: PinnedSiblingMap) {
-        if let Ok(mut guard) = self.pinned_siblings.write() {
-            *guard = pinned_per_group;
-        }
-    }
-
-    /// Process-scoped idempotent variant of
-    /// [`Self::register_consumer_dependencies`] intended for the consumer
-    /// scaffold the code generator emits. The `build` closure produces the
-    /// map and is invoked at most once per process, even when many
-    /// `MessengerHandle`s are constructed or many consumed-interface
-    /// functions race to initialize it. Only the first call wins; later
-    /// calls are no-ops, mirroring the `OnceLock` shape the generator used
-    /// to inline into every node's `consumer_dependencies.rs`.
-    pub fn register_consumer_dependencies_once<F>(&self, build: F)
-    where
-        F: FnOnce() -> PinnedSiblingMap,
-    {
-        static REGISTERED: OnceLock<()> = OnceLock::new();
-        REGISTERED.get_or_init(|| {
-            self.register_consumer_dependencies(build());
-        });
-    }
-
-    /// Look up the pinned-sibling link_ids registered for a given
-    /// `(producer_name, producer_tag)`. Returns an empty vec when nothing
-    /// is registered or the (name, tag) pair isn't present. Callers
-    /// (TopicMessenger::subscribe, ServiceMessenger::poll,
-    /// ActionMessenger::send_goal) consult this when their `from_link_id`
-    /// argument is `None` to derive the excluded set for the wire receiver
-    /// / sender.
-    pub(crate) fn excluded_link_ids_for(&self, name: &str, tag: &str) -> Vec<String> {
-        let Ok(guard) = self.pinned_siblings.read() else {
-            return Vec::new();
-        };
-        guard
-            .get(&(name.to_string(), tag.to_string()))
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// Returns the sibling-pinned exclusion set when this caller is a
-    /// wildcard consumer of `target` (i.e. `link_id` is `None`). Returns
-    /// an empty vec for pinned callers and for topic subscriptions with no
-    /// addressable target. Centralizes the "only consult the map when
-    /// wildcard" gate so the three messaging entry points stay one-line.
-    pub(crate) fn excluded_link_ids_for_wildcard(
-        &self,
-        target: Option<&SenderTarget>,
-        link_id: Option<&str>,
-    ) -> Vec<String> {
-        let (Some(target), None) = (target, link_id) else {
-            return Vec::new();
-        };
-        self.excluded_link_ids_for(target.name(), target.tag())
     }
 
     /// Reserve a `(from_core_node, from_instance_id, producer_name,
@@ -304,7 +227,6 @@ impl MessengerHandle {
         let messenger = Self::new_session(adapter).await?;
         Ok(Self {
             messenger: Arc::new(Mutex::new(messenger)),
-            pinned_siblings: Arc::new(RwLock::new(HashMap::new())),
             active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
         })
     }

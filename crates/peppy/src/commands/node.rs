@@ -76,6 +76,43 @@ fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
     Ok((key, value))
 }
 
+/// Parses a `KEY@VALUE` `--bind` argument: KEY is a `link_id` from the
+/// consumer's `depends_on`; VALUE is the producer `instance_id` to pin the
+/// consumer's subscription to. Splits on the first `@`; both halves must be
+/// non-empty. KEY is validated as a wire segment via the strict
+/// `pmi::Segment::try_from`, which rejects empty, `/`, `@`, `*`, `**`, and
+/// the reserved sentinel `_`. VALUE is left as a free-form `instance_id`;
+/// the daemon-side binding validator confirms it matches a running producer
+/// of the expected `(name, tag)`.
+fn parse_bind_kv(raw: &str) -> Result<(String, String), String> {
+    let (key, value) = raw
+        .split_once('@')
+        .ok_or_else(|| format!("invalid --bind value '{raw}': expected KEY@VALUE"))?;
+    let key = key.trim();
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!(
+            "invalid --bind value '{raw}': VALUE cannot be empty"
+        ));
+    }
+    pmi::Segment::try_from(key).map_err(|e| format!("invalid --bind KEY '{key}': {e}"))?;
+    Ok((key.to_string(), value.to_string()))
+}
+
+/// Value parser for the now-removed `--link-id` flag. Always returns an
+/// error pointing the user at the replacement surface. See [`NodeCommands::Run`]
+/// for the hidden, parser-only flag that wires this in.
+fn link_id_removed_error(_: &str) -> Result<String, String> {
+    Err(
+        "--link-id has been removed. Producer-side link_id binding no longer \
+         exists; consumers pin to a specific producer via\n  \
+         peppy node run <node> --bind <KEY>@<PRODUCER_INSTANCE_ID>\n\
+         where KEY is a link_id declared in the consumer's depends_on and \
+         PRODUCER_INSTANCE_ID is the running producer's instance_id (peppy node list)."
+            .to_string(),
+    )
+}
+
 #[derive(Subcommand)]
 pub enum NodeCommands {
     /// Create a new peppy node
@@ -197,13 +234,32 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(short = 'i', long)]
         instance_id: Option<String>,
-        /// Bind one or more link_ids on the producer side. Repeatable
-        /// (`--link-id a --link-id b`) or comma-separated
-        /// (`--link-id a,b`). Defaults to the reserved `_` segment when
-        /// omitted; `_` and `*` are reserved and cannot be supplied by
-        /// the user.
-        #[arg(long = "link-id", value_delimiter = ',', action = clap::ArgAction::Append)]
-        link_ids: Vec<String>,
+        /// Pin a `link_id` from this consumer's `depends_on` to a specific
+        /// producer `instance_id`: `KEY@VALUE`. Repeatable
+        /// (`--bind a@p1 --bind b@p2`) or comma-separated
+        /// (`--bind a@p1,b@p2`). KEY must be a `link_id` declared in this
+        /// node's manifest; VALUE is the producer's `instance_id`
+        /// (see `peppy node list`). Missing bindings for pinned deps are
+        /// treated as validation errors and will abort the run.
+        #[arg(
+            long = "bind",
+            value_delimiter = ',',
+            value_parser = parse_bind_kv,
+            action = clap::ArgAction::Append,
+        )]
+        binds: Vec<(String, String)>,
+        /// Removed. The `--link-id` flag has been replaced by `--bind
+        /// KEY@VALUE`; the value parser always errors with a migration
+        /// hint. Kept as a hidden clap arg so legacy invocations get a
+        /// clear message instead of a generic "unknown flag" error.
+        #[arg(
+            long = "link-id",
+            hide = true,
+            value_delimiter = ',',
+            value_parser = link_id_removed_error,
+            action = clap::ArgAction::Append,
+        )]
+        _link_id_removed: Vec<String>,
         /// Idle timeout in seconds — resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -353,7 +409,8 @@ impl Command for NodeCommand {
                 tag,
                 args,
                 instance_id,
-                link_ids,
+                binds,
+                _link_id_removed,
                 idle_timeout,
                 max_timeout,
                 build,
@@ -362,8 +419,6 @@ impl Command for NodeCommand {
                     .or_else(|| node_name.zip(tag))
                     .expect("either node_ref or node_name+tag must be provided");
                 info!("Running node {}:{}...", node_name, tag);
-                let validated_link_ids =
-                    run::validate_link_ids(&link_ids).map_err(crate::error::Error::Sync)?;
                 let timeouts = TimeoutConfig {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
@@ -374,7 +429,7 @@ impl Command for NodeCommand {
                     tag,
                     args,
                     instance_id,
-                    validated_link_ids,
+                    binds,
                     timeouts,
                     build,
                 )
@@ -458,16 +513,24 @@ mod tests {
         }
     }
 
-    fn parse_run_link_ids(args: &[&str]) -> Vec<String> {
+    fn parse_run_binds(args: &[&str]) -> Vec<(String, String)> {
         let full: Vec<&str> = std::iter::once("peppy")
             .chain(std::iter::once("run"))
             .chain(args.iter().copied())
             .collect();
         let cli = TestCli::try_parse_from(full).expect("should parse");
         match cli.command {
-            NodeCommands::Run { link_ids, .. } => link_ids,
+            NodeCommands::Run { binds, .. } => binds,
             _ => panic!("expected Run variant"),
         }
+    }
+
+    fn try_parse_run(args: &[&str]) -> Result<TestCli, clap::Error> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("run"))
+            .chain(args.iter().copied())
+            .collect();
+        TestCli::try_parse_from(full)
     }
 
     fn parse_subcommand_force(subcommand: &str, args: &[&str]) -> bool {
@@ -618,26 +681,55 @@ mod tests {
     }
 
     #[test]
-    fn test_link_id_repeated() {
+    fn test_bind_repeated() {
         assert_eq!(
-            parse_run_link_ids(&["foo:v1", "--link-id", "a", "--link-id", "b"]),
-            vec!["a".to_string(), "b".to_string()]
+            parse_run_binds(&["foo:v1", "--bind", "feed@cam_a", "--bind", "ctl@cam_b"]),
+            vec![
+                ("feed".to_string(), "cam_a".to_string()),
+                ("ctl".to_string(), "cam_b".to_string())
+            ]
         );
     }
 
     #[test]
-    fn test_link_id_comma_delimited() {
+    fn test_bind_comma_delimited() {
         assert_eq!(
-            parse_run_link_ids(&["foo:v1", "--link-id", "a,b"]),
-            vec!["a".to_string(), "b".to_string()]
+            parse_run_binds(&["foo:v1", "--bind", "feed@cam_a,ctl@cam_b"]),
+            vec![
+                ("feed".to_string(), "cam_a".to_string()),
+                ("ctl".to_string(), "cam_b".to_string())
+            ]
         );
     }
 
     #[test]
-    fn test_link_id_mixed() {
-        assert_eq!(
-            parse_run_link_ids(&["foo:v1", "--link-id", "a,b", "--link-id", "c"]),
-            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+    fn test_bind_missing_at_separator_rejected() {
+        let err = try_parse_run(&["foo:v1", "--bind", "noseparator"])
+            .err()
+            .expect("missing @ should be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("KEY@VALUE"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_bind_reserved_sentinel_key_rejected() {
+        let err = try_parse_run(&["foo:v1", "--bind", "_@cam_a"])
+            .err()
+            .expect("`_` should be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("reserved"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_link_id_removed_with_migration_hint() {
+        let err = try_parse_run(&["foo:v1", "--link-id", "anything"])
+            .err()
+            .expect("--link-id should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--link-id has been removed"),
+            "msg should explain removal: {msg}"
         );
+        assert!(msg.contains("--bind"), "msg should point at --bind: {msg}");
     }
 }

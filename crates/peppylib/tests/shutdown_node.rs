@@ -24,7 +24,6 @@ async fn shutdown_node() {
         TEST_CORE_NODE_NAME,
         TEST_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
-        &[],
     )
     .await
     .expect("failed to start shutdown service");
@@ -41,7 +40,6 @@ async fn shutdown_node() {
         &client.core_node_name,
         CALLER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
-        None,
         SHUTDOWN_SERVICE,
         Some(&client.core_node_name),
         Some(&client.instance_id),

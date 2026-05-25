@@ -274,10 +274,12 @@ struct NodeInstanceInfo {
     instanceId @0 :Text;
     # Per-instance state: "starting" or "running"
     state @1 :Text;
-    # Producer-side link_ids this instance advertises on the wire. Mirrors
-    # `RuntimeConfig.node_instance.link_ids`. An empty list means the
-    # instance only publishes under the default link_id sentinel.
-    linkIds @2 :List(Text);
+    # JSON-encoded `BTreeMap<String, SlotBinding>` mirroring
+    # `RuntimeConfig.node_instance.slot_bindings`. Empty string when the
+    # node has no `depends_on` slots. Surfacing this lets the launcher /
+    # CLI cross-check newly-staged binding plans against what running
+    # consumers have already claimed.
+    slotBindingsJson @2 :Text;
 }
 
 # Node info lookup result.

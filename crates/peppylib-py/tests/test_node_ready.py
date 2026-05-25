@@ -36,7 +36,6 @@ async def test_ready_node():
             TEST_CORE_NODE_NAME,
             TEST_INSTANCE_ID,
             SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
-            [],
         )
 
         # Allow the service to fully establish its listeners

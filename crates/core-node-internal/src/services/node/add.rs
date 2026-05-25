@@ -53,7 +53,6 @@ pub async fn listen_for_node_add(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        &[],
         names::NODE_ADD_ACTION,
     )
     .await?;

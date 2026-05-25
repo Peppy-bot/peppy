@@ -1,10 +1,12 @@
 //! Cap'n Proto encoding utilities for node info messages.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 
 use capnp::message::Builder;
 use config::node::NodeConfig;
+use config::runtime::SlotBinding;
 
 use crate::graph::{InstanceState, NodeStage};
 use crate::node_capnp;
@@ -55,10 +57,12 @@ impl NodeInfoRequest {
 pub struct NodeInstanceInfo {
     pub instance_id: String,
     pub state: InstanceState,
-    /// Producer-side `link_ids` this instance advertises on the wire,
-    /// mirroring `RuntimeConfig.node_instance.link_ids`. An empty list
-    /// means the instance only publishes under the default link_id sentinel.
-    pub link_ids: Vec<String>,
+    /// Pre-resolved per-slot bindings for this consumer instance,
+    /// mirroring [`config::runtime::NodeInstanceConfig::slot_bindings`].
+    /// Empty when the node has no `depends_on` slots. Surfacing this
+    /// lets the launcher / CLI cross-check newly-staged binding plans
+    /// against what running consumers have already claimed.
+    pub slot_bindings: BTreeMap<String, SlotBinding>,
 }
 
 /// Body of a successful `node_info` lookup — carries all metadata about a
@@ -121,13 +125,17 @@ impl NodeInfoResponse {
                             let mut entry = instances_builder.reborrow().get(i as u32);
                             entry.set_instance_id(&inst.instance_id);
                             entry.set_state(inst.state.as_str());
-                            let link_id_count =
-                                capnp_list_len(inst.link_ids.len(), "NodeInstanceInfo.link_ids")?;
-                            let mut link_ids_builder =
-                                entry.reborrow().init_link_ids(link_id_count);
-                            for (j, link_id) in inst.link_ids.iter().enumerate() {
-                                link_ids_builder.set(j as u32, link_id.as_str());
-                            }
+                            let slot_bindings_json = if inst.slot_bindings.is_empty() {
+                                String::new()
+                            } else {
+                                serde_json5::to_string(&inst.slot_bindings).map_err(|e| {
+                                    crate::Error::Encoding(format!(
+                                        "failed to serialize slot_bindings for instance `{}`: {}",
+                                        inst.instance_id, e
+                                    ))
+                                })?
+                            };
+                            entry.set_slot_bindings_json(&slot_bindings_json);
                         }
                     }
                     found.set_add_log_path(
@@ -175,15 +183,22 @@ impl NodeInfoResponse {
                     let state_str = entry.get_state()?.to_str()?;
                     let state = InstanceState::from_str(state_str)
                         .map_err(|e| crate::Error::Decoding(e.to_string()))?;
-                    let link_ids_reader = entry.get_link_ids()?;
-                    let mut link_ids = Vec::with_capacity(link_ids_reader.len() as usize);
-                    for j in 0..link_ids_reader.len() {
-                        link_ids.push(link_ids_reader.get(j)?.to_str()?.to_owned());
-                    }
+                    let slot_bindings_json = entry.get_slot_bindings_json()?.to_str()?;
+                    let slot_bindings: BTreeMap<String, SlotBinding> =
+                        if slot_bindings_json.is_empty() {
+                            BTreeMap::new()
+                        } else {
+                            serde_json5::from_str(slot_bindings_json).map_err(|e| {
+                                crate::Error::Decoding(format!(
+                                    "failed to deserialize slot_bindings: {}",
+                                    e
+                                ))
+                            })?
+                        };
                     instances.push(NodeInstanceInfo {
                         instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
                         state,
-                        link_ids,
+                        slot_bindings,
                     });
                 }
                 let add_log_path =
@@ -259,21 +274,38 @@ mod tests {
     }
 
     #[test]
-    fn node_info_response_roundtrips_instance_link_ids() {
+    fn node_info_response_roundtrips_instance_slot_bindings() {
+        let bindings_a: BTreeMap<String, SlotBinding> = [
+            (
+                "wrist_left_camera".to_string(),
+                SlotBinding::Pinned {
+                    producer_instance_id: "cam1".to_string(),
+                },
+            ),
+            (
+                "extra_cam".to_string(),
+                SlotBinding::FromAnyBound {
+                    producer_instance_ids: vec!["cam2".to_string(), "cam3".to_string()],
+                },
+            ),
+            ("spare".to_string(), SlotBinding::FromAnyUnbound),
+        ]
+        .into_iter()
+        .collect();
         let info = NodeInfo {
             config: sample_config_for_roundtrip(),
             config_integrity: "0".repeat(64),
             stage: NodeStage::Ready,
             instances: vec![
                 NodeInstanceInfo {
-                    instance_id: "inst-with-links".to_string(),
+                    instance_id: "inst-with-bindings".to_string(),
                     state: InstanceState::Running,
-                    link_ids: vec!["front_left".to_string(), "front_right".to_string()],
+                    slot_bindings: bindings_a.clone(),
                 },
                 NodeInstanceInfo {
-                    instance_id: "inst-no-links".to_string(),
+                    instance_id: "inst-no-bindings".to_string(),
                     state: InstanceState::Starting,
-                    link_ids: vec![],
+                    slot_bindings: BTreeMap::new(),
                 },
             ],
             add_log_path: None,
@@ -288,13 +320,12 @@ mod tests {
             NodeInfoResponse::Found(info) => {
                 assert_eq!(info.instances.len(), 2);
                 assert_eq!(
-                    info.instances[0].link_ids,
-                    vec!["front_left".to_string(), "front_right".to_string()],
-                    "link_ids should round-trip for the first instance"
+                    info.instances[0].slot_bindings, bindings_a,
+                    "slot_bindings should round-trip for the first instance"
                 );
                 assert!(
-                    info.instances[1].link_ids.is_empty(),
-                    "empty link_ids should round-trip as empty"
+                    info.instances[1].slot_bindings.is_empty(),
+                    "empty slot_bindings should round-trip as empty"
                 );
             }
             NodeInfoResponse::NotInStack => panic!("expected Found"),

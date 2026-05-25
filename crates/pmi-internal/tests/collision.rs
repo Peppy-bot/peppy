@@ -267,7 +267,6 @@ async fn service_node_vs_interface_no_collision() {
         "server_core",
         "server_inst_node",
         test_node_target("widget"),
-        &[],
         "ping",
         ServiceKind::Service,
     )
@@ -276,7 +275,6 @@ async fn service_node_vs_interface_no_collision() {
         "server_core",
         "server_inst_iface",
         SenderTarget::interface("widget", "v1").unwrap(),
-        &[],
         "ping",
         ServiceKind::Service,
     )
@@ -300,7 +298,6 @@ async fn service_node_vs_interface_no_collision() {
         Some("server_core"),
         None,
         test_node_target("widget"),
-        None,
         "ping",
         ServiceKind::Service,
     )
@@ -311,7 +308,6 @@ async fn service_node_vs_interface_no_collision() {
         Some("server_core"),
         None,
         SenderTarget::interface("widget", "v1").unwrap(),
-        None,
         "ping",
         ServiceKind::Service,
     )

@@ -137,7 +137,6 @@ async fn node_run_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node ready service should start");
@@ -146,7 +145,6 @@ async fn node_run_command_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node health service should start");
@@ -159,7 +157,9 @@ async fn node_run_command_succeeds() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            link_ids: Vec::new(),
+            binds: Vec::new(),
+
+            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -368,7 +368,6 @@ async fn node_run_command_with_args_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node ready service should start");
@@ -377,7 +376,6 @@ async fn node_run_command_with_args_succeeds() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node health service should start");
@@ -396,7 +394,9 @@ async fn node_run_command_with_args_succeeds() {
             tag: Some("v1".to_string()),
             args,
             instance_id: Some(instance_id.to_string()),
-            link_ids: Vec::new(),
+            binds: Vec::new(),
+
+            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -574,7 +574,6 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         &core_node_name,
         custom_instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node ready service should start");
@@ -583,7 +582,6 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         &core_node_name,
         custom_instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node health service should start");
@@ -596,7 +594,9 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(custom_instance_id.to_string()),
-            link_ids: Vec::new(),
+            binds: Vec::new(),
+
+            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -757,7 +757,6 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node ready service should start");
@@ -766,7 +765,6 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node health service should start");
@@ -779,7 +777,9 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            link_ids: Vec::new(),
+            binds: Vec::new(),
+
+            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: true,
@@ -928,7 +928,6 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node ready service should start");
@@ -937,7 +936,6 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         &core_node_name,
         instance_id,
         test_node_target(node_name),
-        &[],
     )
     .await
     .expect("node health service should start");
@@ -951,7 +949,9 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            link_ids: Vec::new(),
+            binds: Vec::new(),
+
+            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: true,
@@ -1080,7 +1080,7 @@ async fn add_built_producer(
     .expect("producer node add should succeed");
 }
 
-async fn add_consumer_with_pins(
+async fn add_built_consumer_with_pins(
     node_ctx: &Arc<AppContext>,
     work_dir: &std::path::Path,
     consumer_name: &str,
@@ -1094,7 +1094,7 @@ async fn add_consumer_with_pins(
             source: Some(consumer_dir.display().to_string()),
             git_ref: None,
             sync: false,
-            build: false,
+            build: true,
             run: false,
             args: Vec::new(),
             instance_id: None,
@@ -1125,7 +1125,6 @@ async fn install_node_services(
         core_node_name,
         instance_id,
         test_node_target(producer_name),
-        &[],
     )
     .await
     .expect("node ready service should start");
@@ -1134,18 +1133,20 @@ async fn install_node_services(
         core_node_name,
         instance_id,
         test_node_target(producer_name),
-        &[],
     )
     .await
     .expect("node health service should start");
     (ready, health)
 }
 
-/// Test A — running a producer with `--link-id main` when a stack
-/// consumer pins it with `front_left` and `front_right` emits a
-/// warning listing both link_ids and the consumer that asked.
+// ─── --bind binding-driven-routing integration tests ───────────────────────
+
+/// Consumer manifest declares two pinned `link_id`s. Running the
+/// consumer without `--bind` for either of them is a hard error
+/// (rule 1: pinned-unbound rejection). The error names every missing
+/// link_id and the spawn must not happen.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_warns_when_stack_consumers_have_unsatisfied_link_ids() {
+async fn node_run_bind_rejects_pinned_unbound() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -1153,9 +1154,9 @@ async fn node_run_warns_when_stack_consumers_have_unsatisfied_link_ids() {
     let core_node_name = serve.core_node_name().to_string();
 
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
-    let producer_name = "test_warn_producer";
-    let consumer_name = "test_warn_consumer";
-    let instance_id = "main_instance";
+    let producer_name = "test_bind_reject_producer";
+    let consumer_name = "test_bind_reject_consumer";
+    let instance_id = "consumer_inst";
 
     let node_ctx = Arc::new(
         AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
@@ -1171,67 +1172,63 @@ async fn node_run_warns_when_stack_consumers_have_unsatisfied_link_ids() {
     let _guard = tracing::subscriber::set_default(subscriber);
 
     add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
-    add_consumer_with_pins(
+    add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
         consumer_name,
         producer_name,
-        &["front_left", "front_right"],
+        &["wrist_left", "wrist_right"],
     )
     .await;
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _services =
-        install_node_services(&node_messenger, &core_node_name, producer_name, instance_id).await;
+        install_node_services(&node_messenger, &core_node_name, consumer_name, instance_id).await;
 
-    NodeCommand {
+    let result = NodeCommand {
         command: NodeCommands::Run {
             node_ref: None,
-            node_name: Some(producer_name.to_string()),
+            node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            link_ids: vec!["main".to_string()],
+            binds: Vec::new(),
+            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
         },
     }
-    .execute(&node_ctx)
-    .expect("node run should succeed despite the warning");
+    .execute(&node_ctx);
+
+    let err = result.expect_err("node run must fail when pinned deps are unbound");
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("pinned deps must be bound"),
+        "error should use the spec wording 'pinned deps must be bound'. Got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("wrist_left"),
+        "error should name missing link_id 'wrist_left'. Got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("wrist_right"),
+        "error should name missing link_id 'wrist_right'. Got: {err_msg}"
+    );
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains("stack consumers that expect link_ids no instance is publishing"),
-        "warning preamble should be present. Logs:\n{logs}"
-    );
-    assert!(
-        logs.contains("front_left"),
-        "warning should name missing link_id 'front_left'. Logs:\n{logs}"
-    );
-    assert!(
-        logs.contains("front_right"),
-        "warning should name missing link_id 'front_right'. Logs:\n{logs}"
-    );
-    assert!(
-        logs.contains(&format!("{consumer_name}:v1")),
-        "warning should name the consumer ({consumer_name}:v1). Logs:\n{logs}"
-    );
-    assert!(
-        logs.contains("This instance will publish under: [main]"),
-        "warning should report the new instance's link_ids. Logs:\n{logs}"
-    );
-    assert!(
-        logs.contains("Started node instance"),
-        "run should still complete successfully. Logs:\n{logs}"
+        !logs.contains("Started node instance"),
+        "run must NOT complete when a pinned dep is unbound. Logs:\n{logs}"
     );
 }
 
-/// Test B — a second launch sees the first instance's `link_ids` as
-/// already-running and only warns about pins that are still
-/// uncovered.
+/// `--bind` with a KEY that isn't declared in the consumer's
+/// `depends_on` is a hard error (dead-binding). The launcher's
+/// `validate_bindings` already raises it as `BindingDeadKey`; the CLI
+/// surfaces the message and aborts the run before any spawn side-effect.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_warning_accounts_for_existing_running_instances() {
+async fn node_run_bind_rejects_dead_key() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -1239,120 +1236,83 @@ async fn node_run_warning_accounts_for_existing_running_instances() {
     let core_node_name = serve.core_node_name().to_string();
 
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
-    let producer_name = "test_warn_shrink_producer";
-    let consumer_name = "test_warn_shrink_consumer";
-    let first_instance = "inst_left";
-    let second_instance = "inst_main";
+    let producer_name = "test_dead_key_producer";
+    let consumer_name = "test_dead_key_consumer";
+    let producer_instance_id = "cam_a";
+    let consumer_instance_id = "consumer_inst";
 
     let node_ctx = Arc::new(
         AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
-    let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
     add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
-    add_consumer_with_pins(
+    add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
         consumer_name,
         producer_name,
-        &["front_left", "front_right"],
+        &["wrist_left"],
     )
     .await;
 
-    // First instance — supplies front_left only.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _services_first = install_node_services(
+    let _producer_svcs = install_node_services(
         &node_messenger,
         &core_node_name,
         producer_name,
-        first_instance,
+        producer_instance_id,
     )
     .await;
-    let marker_before_first = log_capture.logs().len();
     NodeCommand {
         command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(producer_name.to_string()),
             tag: Some("v1".to_string()),
             args: Vec::new(),
-            instance_id: Some(first_instance.to_string()),
-            link_ids: vec!["front_left".to_string()],
+            instance_id: Some(producer_instance_id.to_string()),
+            binds: Vec::new(),
+            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
         },
     }
     .execute(&node_ctx)
-    .expect("first node run should succeed");
+    .expect("producer run should succeed");
 
-    let first_logs = log_capture.logs()[marker_before_first..].to_string();
-    assert!(
-        first_logs.contains("front_right"),
-        "first run should warn about front_right. New logs:\n{first_logs}"
-    );
-    assert!(
-        !first_logs.contains("link_id `front_left`"),
-        "first run should NOT list front_left as missing — this instance covers it. New logs:\n{first_logs}"
-    );
-
-    // Second instance — supplies an unrelated link_id `main`, so
-    // front_right is still uncovered. front_left should now be
-    // accounted for by the *existing* running instance.
-    let _services_second = install_node_services(
-        &node_messenger,
-        &core_node_name,
-        producer_name,
-        second_instance,
-    )
-    .await;
-    let marker_before_second = log_capture.logs().len();
-    NodeCommand {
+    let result = NodeCommand {
         command: NodeCommands::Run {
             node_ref: None,
-            node_name: Some(producer_name.to_string()),
+            node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
             args: Vec::new(),
-            instance_id: Some(second_instance.to_string()),
-            link_ids: vec!["main".to_string()],
+            instance_id: Some(consumer_instance_id.to_string()),
+            binds: vec![("ghost".to_string(), producer_instance_id.to_string())],
+            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
         },
     }
-    .execute(&node_ctx)
-    .expect("second node run should succeed");
-
-    let second_logs = log_capture.logs()[marker_before_second..].to_string();
+    .execute(&node_ctx);
+    let err = match result {
+        Err(e) => e,
+        Ok(()) => panic!("--bind ghost@<id> should have been rejected as a dead-key"),
+    };
+    let msg = err.to_string();
     assert!(
-        second_logs.contains("front_right"),
-        "second run should still warn about front_right. New logs:\n{second_logs}"
-    );
-    assert!(
-        !second_logs.contains("link_id `front_left`"),
-        "second run should NOT list front_left as missing — the first instance covers it. New logs:\n{second_logs}"
-    );
-    assert!(
-        second_logs.contains("Existing running instances publish under:"),
-        "second run should advertise the existing instance's link_ids. New logs:\n{second_logs}"
-    );
-    assert!(
-        second_logs.contains("front_left"),
-        "second run should report front_left under the 'existing' line. New logs:\n{second_logs}"
+        msg.contains("ghost"),
+        "dead-key error should name the unknown key. Got: {msg}"
     );
 }
 
-/// Test C — when the new instance fully covers every consumer-pin,
-/// no warning is emitted.
+/// Positive control: a consumer with two pinned `depends_on` entries, run
+/// with `--bind` satisfying both, produces no warning and the run
+/// completes normally. Guards against the warning regressing from
+/// "missing pin" into "always fires" or "fires when satisfied".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_emits_no_warning_when_all_link_ids_are_covered() {
+async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -1360,240 +1320,72 @@ async fn node_run_emits_no_warning_when_all_link_ids_are_covered() {
     let core_node_name = serve.core_node_name().to_string();
 
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
-    let producer_name = "test_warn_covered_producer";
-    let consumer_name = "test_warn_covered_consumer";
-    let instance_id = "covered_instance";
+    let producer_name = "test_no_warn_producer";
+    let consumer_name = "test_no_warn_consumer";
+    let producer_left_id = "cam_left";
+    let producer_right_id = "cam_right";
+    let consumer_instance_id = "consumer_inst";
 
     let node_ctx = Arc::new(
         AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
-    let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
     add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
-    add_consumer_with_pins(
+    add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
         consumer_name,
         producer_name,
-        &["front_left", "front_right"],
+        &["wrist_left", "wrist_right"],
     )
     .await;
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _services =
-        install_node_services(&node_messenger, &core_node_name, producer_name, instance_id).await;
-
-    NodeCommand {
-        command: NodeCommands::Run {
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(instance_id.to_string()),
-            link_ids: vec!["front_left".to_string(), "front_right".to_string()],
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node run should succeed");
-
-    let logs = log_capture.logs();
-    assert!(
-        !logs.contains("stack consumers that expect link_ids no instance is publishing"),
-        "no warning should fire when every consumer pin is covered. Logs:\n{logs}"
-    );
-    assert!(
-        logs.contains("Started node instance"),
-        "run should complete successfully. Logs:\n{logs}"
-    );
-}
-
-/// Running two instances of the same node that both advertise the
-/// same `--link-id` is rejected by the daemon at goal-acceptance time.
-/// After the first instance is stopped, the second can reclaim the
-/// link_id. Sibling instances with disjoint link_ids both succeed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_rejects_duplicate_link_id_across_instances_of_same_node() {
-    let serve = ServeCommandEmulation::with_mock()
-        .await
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
-    let core_node_name = serve.core_node_name().to_string();
-
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
-    let producer_name = "test_duplinkid_producer";
-    let id_a = "cam_a";
-    let id_b = "cam_b";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-
-    let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
-    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
-
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _services_a =
-        install_node_services(&node_messenger, &core_node_name, producer_name, id_a).await;
-    let (_a_shutdown_handle, _a_shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
+    let _left_svcs = install_node_services(
         &node_messenger,
         &core_node_name,
-        id_a,
-        super::common::test_node_target(producer_name),
-        &[],
+        producer_name,
+        producer_left_id,
     )
-    .await
-    .expect("cam_a shutdown service should start");
-    let _services_b =
-        install_node_services(&node_messenger, &core_node_name, producer_name, id_b).await;
-
-    // First instance claims wrist_left_camera — succeeds.
-    NodeCommand {
-        command: NodeCommands::Run {
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(id_a.to_string()),
-            link_ids: vec!["wrist_left_camera".to_string()],
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("first node run should succeed");
-
-    // Second instance tries to claim the same link_id — the daemon
-    // rejects it via `DuplicateLinkId`, and the CLI surfaces the error.
-    let err = NodeCommand {
-        command: NodeCommands::Run {
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(id_b.to_string()),
-            link_ids: vec!["wrist_left_camera".to_string()],
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect_err("second node run should fail on link_id collision");
-
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("wrist_left_camera"),
-        "error should name the colliding link_id. Error:\n{msg}"
-    );
-    assert!(
-        msg.contains(id_a),
-        "error should name the holding instance. Error:\n{msg}"
-    );
-    assert!(
-        msg.contains("already claimed"),
-        "error should use the 'already claimed' phrasing. Error:\n{msg}"
-    );
-
-    // Stop the first instance to free the link_id.
-    NodeCommand {
-        command: NodeCommands::Stop {
-            instance_id: id_a.to_string(),
-        },
-    }
-    .execute(&node_ctx)
-    .expect("stopping cam_a should succeed");
-
-    // Second instance retries and now succeeds.
-    NodeCommand {
-        command: NodeCommands::Run {
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(id_b.to_string()),
-            link_ids: vec!["wrist_left_camera".to_string()],
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("cam_b should succeed after cam_a has stopped");
-
-    // Stack should now show exactly one running cam_b on the producer.
-    let messenger_handle = node_ctx
-        .messenger_handle()
-        .expect("messenger handle should be available");
-    let response = poll_stack_list(
-        &StackListRequest::new(false),
-        messenger_handle,
+    .await;
+    let _right_svcs = install_node_services(
+        &node_messenger,
         &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
+        producer_name,
+        producer_right_id,
     )
-    .await
-    .expect("stack_list request should complete");
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == producer_name && n.tag == "v1")
-        .expect("producer should still be in the stack");
-    assert_eq!(
-        node.instance_count(),
-        1,
-        "after stop+rerun, exactly one instance should remain. Graph: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
-}
+    .await;
+    for instance_id in [producer_left_id, producer_right_id] {
+        NodeCommand {
+            command: NodeCommands::Run {
+                node_ref: None,
+                node_name: Some(producer_name.to_string()),
+                tag: Some("v1".to_string()),
+                args: Vec::new(),
+                instance_id: Some(instance_id.to_string()),
+                binds: Vec::new(),
+                _link_id_removed: Vec::new(),
+                idle_timeout: 60,
+                max_timeout: 3600,
+                build: false,
+            },
+        }
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
+    }
 
-/// Sibling instances of the same producer with *different* `--link-id`
-/// values must both run — this is the intended multi-camera workflow.
-/// The duplicate-link_id guard must not over-reach into this case.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_allows_distinct_link_ids_on_same_node() {
-    let serve = ServeCommandEmulation::with_mock()
-        .await
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
-    let core_node_name = serve.core_node_name().to_string();
+    let _consumer_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        consumer_name,
+        consumer_instance_id,
+    )
+    .await;
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
-    let producer_name = "test_distinct_linkid_producer";
-    let id_a = "cam_left";
-    let id_b = "cam_right";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-
+    // Capture only the consumer-run logs so we can assert the missing-pin
+    // warning string is absent without false-positive matches from producer
+    // bootstrap output.
     let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
@@ -1602,135 +1394,120 @@ async fn node_run_allows_distinct_link_ids_on_same_node() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
-
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _services_a =
-        install_node_services(&node_messenger, &core_node_name, producer_name, id_a).await;
-    let _services_b =
-        install_node_services(&node_messenger, &core_node_name, producer_name, id_b).await;
-
     NodeCommand {
         command: NodeCommands::Run {
             node_ref: None,
-            node_name: Some(producer_name.to_string()),
+            node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
             args: Vec::new(),
-            instance_id: Some(id_a.to_string()),
-            link_ids: vec!["wrist_left_camera".to_string()],
+            instance_id: Some(consumer_instance_id.to_string()),
+            binds: vec![
+                ("wrist_left".to_string(), producer_left_id.to_string()),
+                ("wrist_right".to_string(), producer_right_id.to_string()),
+            ],
+            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
         },
     }
     .execute(&node_ctx)
-    .expect("cam_left should start");
-
-    NodeCommand {
-        command: NodeCommands::Run {
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(id_b.to_string()),
-            link_ids: vec!["wrist_right_camera".to_string()],
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("cam_right should start alongside cam_left");
-
-    let messenger_handle = node_ctx
-        .messenger_handle()
-        .expect("messenger handle should be available");
-    let response = poll_stack_list(
-        &StackListRequest::new(false),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == producer_name && n.tag == "v1")
-        .expect("producer should be in stack");
-    assert_eq!(
-        node.instance_count(),
-        2,
-        "both sibling instances should be running. Graph: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
-}
-
-/// Test D — when no consumer in the stack pins the target node, no
-/// warning fires.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_emits_no_warning_when_stack_has_no_consumer_pin() {
-    let serve = ServeCommandEmulation::with_mock()
-        .await
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
-    let core_node_name = serve.core_node_name().to_string();
-
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
-    let producer_name = "test_warn_no_consumer_producer";
-    let instance_id = "no_consumer_instance";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-
-    let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
-    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
-    // Intentionally no consumer in the stack.
-
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _services =
-        install_node_services(&node_messenger, &core_node_name, producer_name, instance_id).await;
-
-    NodeCommand {
-        command: NodeCommands::Run {
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(instance_id.to_string()),
-            link_ids: vec!["any".to_string()],
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node run should succeed");
+    .expect("consumer run should succeed when all pinned deps have binds");
 
     let logs = log_capture.logs();
     assert!(
-        !logs.contains("stack consumers that expect link_ids no instance is publishing"),
-        "no warning should fire when no consumer pins us. Logs:\n{logs}"
+        !logs.contains("pinned dependencies with no"),
+        "no missing-pin warning should fire when every pinned dep is bound. Logs:\n{logs}"
+    );
+}
+
+/// `--bind KEY@VALUE` where VALUE is an `instance_id` that belongs to a
+/// node of a different `(name, tag)` than the consumer's `depends_on`
+/// declared is a hard error (target mismatch). Catches a misrouting class
+/// the dead-key check doesn't cover: KEY *is* declared, the target
+/// *exists*, but it deploys the wrong node identity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_bind_rejects_target_mismatch() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let expected_producer = "test_mismatch_expected_producer";
+    let wrong_producer = "test_mismatch_wrong_producer";
+    let consumer_name = "test_mismatch_consumer";
+    let wrong_instance_id = "wrong_prod_inst";
+    let consumer_instance_id = "consumer_inst";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    add_built_producer(&node_ctx, work_dir.path(), expected_producer).await;
+    add_built_producer(&node_ctx, work_dir.path(), wrong_producer).await;
+    add_built_consumer_with_pins(
+        &node_ctx,
+        work_dir.path(),
+        consumer_name,
+        expected_producer,
+        &["wrist_left"],
+    )
+    .await;
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _wrong_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        wrong_producer,
+        wrong_instance_id,
+    )
+    .await;
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(wrong_producer.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(wrong_instance_id.to_string()),
+            binds: Vec::new(),
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("wrong-node producer run should succeed");
+
+    let result = NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(consumer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(consumer_instance_id.to_string()),
+            binds: vec![("wrist_left".to_string(), wrong_instance_id.to_string())],
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx);
+    let err = match result {
+        Err(e) => e,
+        Ok(()) => panic!("--bind to wrong-node instance should have been rejected"),
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains(wrong_instance_id),
+        "target-mismatch error should name the offending instance. Got: {msg}"
     );
     assert!(
-        logs.contains("Started node instance"),
-        "run should complete successfully. Logs:\n{logs}"
+        msg.contains(expected_producer) || msg.contains("camera") || msg.contains("expected"),
+        "target-mismatch error should hint at the expected node identity. Got: {msg}"
     );
 }

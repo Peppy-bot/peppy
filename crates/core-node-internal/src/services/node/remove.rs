@@ -30,7 +30,6 @@ pub async fn listen_for_node_remove(
         &core_node_node,
         &core_instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        &[],
         names::NODE_REMOVE,
     )
     .await?;
@@ -174,7 +173,6 @@ async fn handle_node_remove_request_inner(
                 core_node_node,
                 core_instance_id,
                 SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
-                None,
                 SHUTDOWN_SERVICE,
                 Some(core_node_node),
                 Some(target.instance_id.as_str()),
@@ -253,7 +251,6 @@ async fn handle_node_remove_request_inner(
                 core_node_node,
                 core_instance_id,
                 SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
-                None,
                 SHUTDOWN_SERVICE,
                 Some(core_node_node),
                 Some(target.instance_id.as_str()),

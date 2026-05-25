@@ -2,7 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
-use super::services::{consumed_link_id_python_expr, sender_target_python_expr};
+use super::services::{consumed_from_instance_id_python_expr, sender_target_python_expr};
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
@@ -118,7 +118,6 @@ pub fn build_emitted_topic(
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
-    builder.line("node_runner.link_ids(),");
     builder.line("TOPIC_NAME,");
     builder.line("qos,");
     builder.line("payload,");
@@ -191,7 +190,11 @@ fn build_consumed_topic_inner(
     // Generate on_next_message_received function
     builder.add_import("import peppylib");
     builder.blank_line();
-    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None, from_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
+    if dependency.is_some() {
+        builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None) -> Tuple[str, Message]:");
+    } else {
+        builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None, from_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
+    }
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
     if let Some(dep) = dependency {
@@ -208,10 +211,21 @@ fn build_consumed_topic_inner(
         builder.line(&format!("{from_target},"));
         builder.line("topic_name,");
         builder.line("from_core_node,");
-        builder.line("from_instance_id,");
+        let from_instance_id = consumed_from_instance_id_python_expr(dep);
+        builder.line(&format!("{from_instance_id},"));
         builder.line("peppylib.QoSProfile.Standard,");
-        let from_link_id = consumed_link_id_python_expr(dep);
-        builder.line(&format!("from_link_id={from_link_id},"));
+        // `is_from_any: true` for `from_any: true` slots — gates the
+        // messenger's per-`(name, tag)` reservation. Pinned slots
+        // (and the test-fixture wildcard with no manifest dep) pass
+        // `false`.
+        let is_from_any = matches!(
+            dep.link_id,
+            crate::generator::types::WireLinkId::Wildcard { link_id: Some(_) }
+        );
+        builder.line(&format!(
+            "is_from_any={},",
+            if is_from_any { "True" } else { "False" }
+        ));
         builder.dedent();
         builder.line(")");
     } else {

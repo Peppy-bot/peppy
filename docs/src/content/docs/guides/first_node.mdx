@@ -142,12 +142,12 @@ Let's go through the different options:
  - `interfaces`: This is where the interfaces that communicate with the other nodes is defined
 
 :::note[Tag format]
-A tag is **not** a semver version — bumping a tag always means "incompatible with the previous one". Pick a short label that identifies the contract: `v1`, `v2`, `donut`, `experimental`, etc.
+A tag is **not** a semver version; bumping a tag always means "incompatible with the previous one". Pick a short label that identifies the contract: `v1`, `v2`, `donut`, `experimental`, etc.
 
 Validation rules:
 - Must start with an ASCII letter (`a-z`, `A-Z`).
 - May contain letters, digits, `_` and `-` (same character set as node names).
-- Dots (`.`) are forbidden — `0.1.0` and `v1.2` are rejected.
+- Dots (`.`) are forbidden; `0.1.0` and `v1.2` are rejected.
 :::
 
 Let's modify this configuration file to expose a topic that sends a "hello world" message.
@@ -168,7 +168,7 @@ To apply these changes, the node needs to synchronize with the cache in the `.pe
 peppy node sync
 ```
 
-This command will generate the interfaces to use in our source code. If you'd rather sync, add, and build in a single step (useful once you're iterating quickly), use `peppy node add -sb` — or `-sr` to also start an instance after the build. We can now modify the code and access those interfaces:
+This command will generate the interfaces to use in our source code. If you'd rather sync, add, and build in a single step (useful once you're iterating quickly), use `peppy node add -sb`, or `-sr` to also start an instance after the build. We can now modify the code and access those interfaces:
 
 <Tabs>
   <TabItem label="Python">
@@ -179,6 +179,6 @@ This command will generate the interfaces to use in our source code. If you'd ra
   </TabItem>
 </Tabs>
 
-As you can see, the topic interface has already been generated. We didn't need to implement serialization, encoding, or communication layers—PeppyOS handles all of that automatically.
+As you can see, the topic interface has already been generated. We didn't need to implement serialization, encoding, or communication layers; PeppyOS handles all of that automatically.
 
 Additionally, the tag and name assigned to your node provide contract isolation. When the node's interfaces change in a way that breaks consumers, you publish under a new tag (e.g. `v2`); dependent nodes that pin the old tag keep working until they are explicitly migrated.

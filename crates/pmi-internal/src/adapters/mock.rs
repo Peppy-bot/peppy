@@ -169,14 +169,9 @@ impl MessengerBackend for MockAdapter {
         // exercise the same dispatch logic against the mock).
         let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
         let query_rx = self.declare_queryable_keyexpr(declare_keyexpr);
-        let bound_link_ids: Vec<String> = recv
-            .link_ids
-            .iter()
-            .map(|s| s.as_str().to_string())
-            .collect();
         let recv_clone = recv.clone();
         tasks.spawn(async move {
-            handle_mock_queryable(query_rx, bound_link_ids, recv_clone, tx).await;
+            handle_mock_queryable(query_rx, recv_clone, tx).await;
         });
 
         Ok(ServiceQueryable::new(rx, tasks))
@@ -489,16 +484,15 @@ impl MockAdapter {
 
 /// Per-queryable forwarder for the mock adapter. Mirrors
 /// [`super::zenoh::handle_queryable`]: drains inbound `MockQuery`s, parses
-/// the caller identity and link_id slot, dispatches to a concrete link_id
-/// from `bound_link_ids`, builds an [`IncomingRequest`] with a
-/// [`ResponseToken::Mock`] carrying the per-query reply channel, and
-/// pushes it to peppylib. Queries whose selector pins a link_id outside
-/// `bound_link_ids` are dropped (the `mock_query`'s reply_tx clone falls
-/// out of scope at end of iteration so the caller's reply stream finalizes
-/// once every reply_tx is dropped).
+/// the caller identity and link_id slot, claims the producer's default `_`
+/// segment via [`ParsedInboundQuery::claim`], builds an [`IncomingRequest`]
+/// with a [`ResponseToken::Mock`] carrying the per-query reply channel, and
+/// pushes it to peppylib. Queries whose link_id slot is neither `*` nor `_`
+/// are dropped (the `mock_query`'s reply_tx clone falls out of scope at end
+/// of iteration so the caller's reply stream finalizes once every reply_tx
+/// is dropped).
 async fn handle_mock_queryable(
     mut query_rx: mpsc::Receiver<MockQuery>,
-    bound_link_ids: Vec<String>,
     recv: ServiceWireReceiver,
     tx: mpsc::Sender<IncomingRequest>,
 ) {
@@ -519,13 +513,13 @@ async fn handle_mock_queryable(
             }
         };
 
-        let chosen_link_id = match parsed.choose_link_id(&bound_link_ids) {
+        let chosen_link_id = match parsed.claim() {
             Some(l) => l.to_string(),
             None => {
                 tracing::trace!(
                     selector = %mock_query.selector_keyexpr,
                     parsed_link_id = %parsed.link_id,
-                    "mock queryable: dropping query with link_id not in bound set",
+                    "mock queryable: dropping query with link_id slot neither '*' nor '_'",
                 );
                 continue;
             }
@@ -705,20 +699,19 @@ mod tests {
             "server_core",
             "server_inst",
             SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-            &["wrist_left".to_string()],
             "ping",
             ServiceKind::Service,
         )
         .expect("valid receiver");
 
-        // `to_link_id: None` ⇒ `*` at the link_id slot — the regression case.
+        // The link_id wire slot is unconditionally `*`; the producer accepts
+        // it via `ParsedInboundQuery::claim` and dispatches under `_`.
         let sender = ServiceWireSender::new(
             "caller_core",
             "caller_inst",
             Some("server_core"),
             Some("server_inst"),
             SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-            None,
             "ping",
             ServiceKind::Service,
         )
@@ -746,7 +739,7 @@ mod tests {
             .expect("producer should receive the query");
         assert_eq!(incoming.payload.to_bytes().as_ref(), b"ping?");
         assert_eq!(incoming.kind, ServiceQueryKind::UserRequest);
-        assert_eq!(incoming.link_id, "wrist_left");
+        assert_eq!(incoming.link_id, "_");
         assert_eq!(incoming.caller_core, "caller_core");
         assert_eq!(incoming.caller_inst, "caller_inst");
 

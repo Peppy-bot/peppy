@@ -81,7 +81,6 @@ pub async fn listen_for_node_run(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        &[],
         names::NODE_RUN_ACTION,
     )
     .await?;
@@ -476,6 +475,28 @@ async fn process_node_run(
         }
     };
 
+    // Stack-wide `instance_id` uniqueness (spec rule 7): reject if the
+    // candidate id is already tracked by a *different* `(node_name,
+    // node_tag)` anywhere in the stack. The validator catches this at
+    // plan time (`peppy node run` / launcher); this is the daemon's
+    // defensive backstop at the trust boundary. Same-entity collisions
+    // are caught by `prepare_and_spawn` under its write lock.
+    if let Some((existing_name, existing_tag)) = ctx
+        .action
+        .node_stack
+        .find_entity_label_for_instance_id_any_state(&instance_id)
+        && (existing_name != node_name || existing_tag != tag)
+    {
+        let msg = format!(
+            "Instance ID `{}` is already tracked by `{}`:{}; instance_ids must be unique across the entire stack",
+            instance_id.as_str(),
+            existing_name,
+            existing_tag,
+        );
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeRunResult::failure(msg);
+    }
+
     let node_config = {
         let guard = entity_handle.read();
         if guard.artifact_path().is_none() {
@@ -607,6 +628,7 @@ async fn process_node_run(
     let start_ctx = node_stack::StartContext {
         instance_id: &instance_id,
         runtime_config_json5: &runtime_config_json5,
+        slot_bindings: runtime_config.node_instance.slot_bindings.clone(),
         env_vars: &env_vars,
         mount_paths_resolved: &resolved_mount_paths,
         peppy_dirs: &ctx.action.peppy_dirs,
@@ -616,7 +638,6 @@ async fn process_node_run(
             publish_enabled: Arc::clone(&publish_enabled),
             hooks: Arc::new(feedback_sync.clone()),
         },
-        link_ids: &runtime_config.node_instance.link_ids,
     };
     // Reject early if an outer orchestrator already cancelled us — avoids
     // spawning a child process we're only going to tear down on the next line.
@@ -935,7 +956,6 @@ async fn perform_health_check(
             target.core_node_name,
             target.caller_instance_id,
             SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
-            None,
             NODE_HEALTH_SERVICE,
             Some(target.target_core_node),
             Some(target.target_instance_id),
@@ -1002,7 +1022,6 @@ async fn wait_for_ready_signal(
             target.core_node_name,
             target.caller_instance_id,
             SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
-            None,
             NODE_READY_SERVICE,
             Some(target.target_core_node),
             Some(target.target_instance_id),
@@ -1080,7 +1099,6 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 &p.core_node_name,
                 &p.caller_instance_id,
                 SenderTarget::node_from_validated(&p.to_node_name, &p.node_tag),
-                None,
                 NODE_HEALTH_SERVICE,
                 Some(&p.target_core_node),
                 Some(p.target_instance_id.as_str()),

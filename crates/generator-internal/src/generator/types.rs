@@ -74,41 +74,56 @@ pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> Strin
     }
 }
 
-/// What the generator should splice into the `link_id` wire slot for a
-/// consumer's subscribe / poll / send_goal call.
+/// What the generator should splice into the consumer's subscribe / poll /
+/// send_goal call for the `(from_link_id, from_instance_id)` pair.
+///
+/// In the harmonized wire model the consumer never pins by `link_id` (producers
+/// always advertise the `_` sentinel); instead it pins by `from_instance_id`
+/// looked up at runtime from `Processor::binding_for(<link_id>)`. The codegen
+/// still needs the manifest `link_id` even for `from_any: true` deps so the
+/// binding lookup can resolve them.
 #[derive(Debug, Clone)]
 pub enum WireLinkId {
-    /// Subscribe under a specific link_id. Set when the consumer's
-    /// `depends_on` entry pins a link_id and `from_any` is false.
+    /// Pinned dep: `depends_on` declared `link_id` and `from_any: false`.
+    /// The launcher / CLI validators require a matching binding (or fire a
+    /// warning); the codegen splices `binding_for(link_id)` for the pin.
     Pinned(String),
-    /// Subscribe with a wildcard at the wire slot. Set when the consumer's
-    /// `depends_on` entry has `from_any: true`, and used as the default in
-    /// generator-test fixtures that don't model the consumer's link_id.
-    Wildcard,
+    /// Wildcard dep. `link_id: Some` carries the manifest link_id for
+    /// `from_any: true` deps so an optional binding can still pin them;
+    /// `link_id: None` is reserved for synthetic generator-test fixtures
+    /// that don't model a manifest dep.
+    Wildcard { link_id: Option<String> },
 }
 
 impl WireLinkId {
-    /// `Pinned(s)` when `from_any` is false, `Wildcard` when true.
+    /// `Pinned(link_id)` when `from_any` is false, `Wildcard { link_id:
+    /// Some(link_id) }` when true. The link_id is kept either way so the
+    /// runtime binding lookup can resolve `from_any: true` deps too.
     pub fn from_link_id(link_id: impl Into<String>, from_any: bool) -> Self {
+        let link_id = link_id.into();
         if from_any {
-            Self::Wildcard
+            Self::Wildcard {
+                link_id: Some(link_id),
+            }
         } else {
-            Self::Pinned(link_id.into())
+            Self::Pinned(link_id)
         }
     }
 
-    /// The pinned link_id literal, or `None` for wildcard.
-    pub fn pinned(&self) -> Option<&str> {
+    /// Wildcard with no manifest link_id. Used by generator-test fixtures
+    /// that exercise the codegen without modeling a consumer dep.
+    pub fn wildcard() -> Self {
+        Self::Wildcard { link_id: None }
+    }
+
+    /// The manifest link_id literal, present for `Pinned` and for `Wildcard`
+    /// deps that came from a real `depends_on` entry. `None` only for the
+    /// test-fixture sentinel.
+    pub fn link_id(&self) -> Option<&str> {
         match self {
             Self::Pinned(s) => Some(s.as_str()),
-            Self::Wildcard => None,
+            Self::Wildcard { link_id } => link_id.as_deref(),
         }
-    }
-
-    /// `true` when the dependency declared `from_any: true`. Used by
-    /// codegen to gate the user-facing `target_instance_id` parameter.
-    pub fn is_wildcard(&self) -> bool {
-        matches!(self, Self::Wildcard)
     }
 }
 
@@ -144,7 +159,7 @@ impl DependencyContext {
             producer_name: node_name.into(),
             producer_tag: node_tag.into(),
             origin: None,
-            link_id: WireLinkId::Wildcard,
+            link_id: WireLinkId::wildcard(),
         }
     }
 
@@ -159,7 +174,7 @@ impl DependencyContext {
             producer_name: node_name.into(),
             producer_tag: node_tag.into(),
             origin: Some(origin),
-            link_id: WireLinkId::Wildcard,
+            link_id: WireLinkId::wildcard(),
         }
     }
 
@@ -178,22 +193,22 @@ impl DependencyContext {
                 iface_name,
                 iface_tag,
             }),
-            link_id: WireLinkId::Wildcard,
+            link_id: WireLinkId::wildcard(),
         }
     }
 
-    /// Set the wire-slot binding. Generator code splices [`WireLinkId::Pinned`]
-    /// into the wire slot and emits a wildcard for [`WireLinkId::Wildcard`].
+    /// Set the wire-slot binding. Generator code reads `link_id.link_id()`
+    /// to splice the binding lookup at the `from_instance_id` slot.
     pub fn with_link_id(mut self, link_id: WireLinkId) -> Self {
         self.link_id = link_id;
         self
     }
 
-    /// Returns the wire link_id literal to splice for this consumer:
-    /// `Some(link_id)` when [`WireLinkId::Pinned`], `None` when
-    /// [`WireLinkId::Wildcard`].
+    /// Returns the manifest link_id literal, when known. Used by codegen
+    /// to splice `processor().binding_for(<link_id>)` at the consumer's
+    /// `from_instance_id` wire slot.
     pub fn wire_link_id(&self) -> Option<&str> {
-        self.link_id.pinned()
+        self.link_id.link_id()
     }
 }
 

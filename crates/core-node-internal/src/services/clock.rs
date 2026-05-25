@@ -72,7 +72,6 @@ pub async fn listen_for_clock(
         core_node_node,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        &[],
         names::CLOCK,
     )
     .await?;
@@ -225,10 +224,10 @@ pub async fn subscribe_external_clock(
         core_node_name,
         instance_id,
         Some(SenderTarget::node(node_name, names::CORE_NODE_TAG)?),
-        None,
+        false,
         names::CLOCK,
         Some(core_node_name),
-        None,
+        &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
     .await?;

@@ -15,7 +15,6 @@ async fn receive_messages(node_runner: Arc<NodeRunner>) {
         let result = hello_world_param_message_stream::on_next_message_received(
             &node_runner,
             None,
-            None,
         )
         .await;
 

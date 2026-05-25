@@ -35,7 +35,6 @@ async fn main() {
         &core_node,
         &as_instance_id,
         SenderTarget::node(POLL_NODE_NAME, "v1").expect("test target"),
-        None,
         POLL_SERVICE_NAME,
         None, // target_core_node - not needed
         None, // target_instance_id - we don't need to point to a particular instance, any would work

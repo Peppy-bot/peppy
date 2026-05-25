@@ -2,56 +2,10 @@ use crate::error::{Error, Result};
 use askama::Template;
 use rust_embed::Embed;
 use std::{
-    collections::HashMap,
     fs,
     io::{self, ErrorKind},
     path::Path,
 };
-
-/// Builds the per-`(producer_name, producer_tag)` map of pinned sibling
-/// link_ids declared in a node's `depends_on.{nodes, interfaces}`. The map
-/// is keyed by `(name, tag)`; the value is the list of link_ids declared
-/// with `from_any: false` (or unset) on that group. Used by codegen to
-/// emit a single `MessengerHandle::register_consumer_dependencies_once`
-/// call at node bootstrap so from_any consumers know which producer
-/// link_ids a sibling pinned dependency on the same `(name, tag)` already
-/// claims.
-///
-/// Groups without any from_any sibling are still included; the registration
-/// is a no-op when nothing wildcards on this `(name, tag)`. Filtering at
-/// codegen time would require tracking the from_any/pinned split twice, so
-/// the runtime lookup just returns an empty exclusion set in that case.
-pub(crate) fn pinned_siblings_per_group(
-    manifest: &config::node::Manifest,
-) -> HashMap<(String, String), Vec<String>> {
-    let mut out: HashMap<(String, String), Vec<String>> = HashMap::new();
-    let Some(depends_on) = manifest.depends_on.as_ref() else {
-        return out;
-    };
-    for node in &depends_on.nodes {
-        if node.from_any {
-            continue;
-        }
-        out.entry((node.name.as_str().to_string(), node.tag.clone()))
-            .or_default()
-            .push(node.link_id.clone());
-    }
-    for iface in &depends_on.interfaces {
-        if iface.from_any {
-            continue;
-        }
-        out.entry((iface.name.as_str().to_string(), iface.tag.clone()))
-            .or_default()
-            .push(iface.link_id.clone());
-    }
-    // Sort entries within each group so the generated code is
-    // deterministic; important for codegen caching / fingerprints.
-    for ids in out.values_mut() {
-        ids.sort();
-        ids.dedup();
-    }
-    out
-}
 
 #[derive(Embed)]
 #[folder = "templates/"]

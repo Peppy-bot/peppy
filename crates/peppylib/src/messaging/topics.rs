@@ -1,37 +1,55 @@
-use super::{FromAnyTopicGuard, MessengerHandle};
+use super::{ConsumerFilter, FromAnyTopicGuard, MessengerHandle};
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
+
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// In-process acceptance / rejection filter applied by
+/// [`Subscription::on_next_message`] above the wire layer. Synthesized
+/// from a [`ConsumerFilter`] whose variant cannot be expressed as a
+/// single wire-side `from_instance_id` pin.
+#[derive(Debug)]
+enum AcceptanceFilter {
+    /// Accept only messages whose source `instance_id` is in the set.
+    /// Built from [`ConsumerFilter::OnlyFrom`] with more than one
+    /// producer (single-producer collapses to a wire pin).
+    Allow(HashSet<String>),
+    /// Drop messages whose source `instance_id` is in the set.
+    /// Built from [`ConsumerFilter::AnyExcept`] with a non-empty set.
+    Deny(HashSet<String>),
+}
+
+impl AcceptanceFilter {
+    fn accepts(&self, instance_id: &str) -> bool {
+        match self {
+            AcceptanceFilter::Allow(set) => set.contains(instance_id),
+            AcceptanceFilter::Deny(set) => !set.contains(instance_id),
+        }
+    }
+}
+
 pub struct Subscription {
     inner: pmi::Subscription,
-    /// Producer link_ids a sibling pinned `depends_on` entry on the same
-    /// `(name, tag)` already claims. Set by [`TopicMessenger::subscribe`]
-    /// when the receiver wildcards the link_id slot and the messenger has
-    /// a registered sibling set; empty otherwise. The receive paths skip
-    /// messages whose producer `link_id()` is in this set.
-    excluded_link_ids: Vec<String>,
     /// Live for the subscription's full lifetime when this is a from_any
     /// topic sub; releases the messenger's per-`(name, tag)` reservation
     /// on drop. `None` for pinned subs and target-less subscriptions.
     _from_any_guard: Option<FromAnyTopicGuard>,
+    /// In-process filter applied to incoming messages before they
+    /// surface to user code. `None` when the wire-layer pin already
+    /// captures the consumer's filter (Pin / Any cases).
+    accept_filter: Option<AcceptanceFilter>,
 }
 
 impl Subscription {
     pub(crate) fn new(inner: pmi::Subscription) -> Self {
         Self {
             inner,
-            excluded_link_ids: Vec::new(),
             _from_any_guard: None,
+            accept_filter: None,
         }
-    }
-
-    pub(crate) fn with_excluded_link_ids(mut self, excluded: Vec<String>) -> Self {
-        self.excluded_link_ids = excluded;
-        self
     }
 
     pub(crate) fn with_from_any_guard(mut self, guard: FromAnyTopicGuard) -> Self {
@@ -39,18 +57,22 @@ impl Subscription {
         self
     }
 
+    fn with_accept_filter(mut self, filter: AcceptanceFilter) -> Self {
+        self.accept_filter = Some(filter);
+        self
+    }
+
     pub async fn on_next_message(&mut self) -> Option<Message> {
-        // Drop sibling-claimed publishes before they cross into user code.
-        // The adapter's primary/secondary filter (for wildcard subscribers
-        // on a multi-link `emit`) already ran upstream; this is a separate
-        // policy layer that translates the consumer's manifest knowledge
-        // into a runtime drop.
         loop {
             let raw = self.inner.rx.recv().await?;
-            if self.should_drop(&raw) {
-                continue;
+            let msg = Message::from(raw);
+            if self
+                .accept_filter
+                .as_ref()
+                .is_none_or(|f| f.accepts(msg.instance_id()))
+            {
+                return Some(msg);
             }
-            return Some(Message::from(raw));
         }
     }
 
@@ -58,27 +80,21 @@ impl Subscription {
         &mut self,
     ) -> std::result::Result<Message, crate::types::TryRecvError> {
         loop {
-            let raw = self
-                .inner
-                .rx
-                .try_recv()
-                .map_err(crate::types::TryRecvError::from)?;
-            if self.should_drop(&raw) {
-                continue;
+            match self.inner.rx.try_recv() {
+                Ok(raw) => {
+                    let msg = Message::from(raw);
+                    if self
+                        .accept_filter
+                        .as_ref()
+                        .is_none_or(|f| f.accepts(msg.instance_id()))
+                    {
+                        return Ok(msg);
+                    }
+                    // Filtered out — loop for the next message.
+                }
+                Err(err) => return Err(crate::types::TryRecvError::from(err)),
             }
-            return Ok(Message::from(raw));
         }
-    }
-
-    fn should_drop(&self, msg: &pmi::TopicMessage) -> bool {
-        if self.excluded_link_ids.is_empty() {
-            return false;
-        }
-        let link_id = msg.link_id();
-        if link_id.is_empty() {
-            return false;
-        }
-        self.excluded_link_ids.iter().any(|e| e == link_id)
     }
 }
 
@@ -88,51 +104,68 @@ impl TopicMessenger {
     /// Subscribe to a topic published by a specific target. `from_target`
     /// `Some(SenderTarget)` filters on the publisher's identity; `None`
     /// wildcards the target segment (any node or interface emits a match).
-    /// `from_link_id` `Some(value)` filters to a producer's specific bound
-    /// link_id; `None` matches any link_id (used for `from_any: true`
-    /// consumers and for unscoped subscribes).
+    /// `is_from_any` marks this subscription as a `from_any: true` slot,
+    /// gating the messenger's per-`(name, tag)` reservation. The
+    /// [`ConsumerFilter`] selects whether the wire pins a producer or
+    /// wildcards plus an in-process filter; see the enum's variants.
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         from_target: Option<SenderTarget>,
-        from_link_id: Option<&str>,
+        is_from_any: bool,
         to_topic: &str,
         from_core_node: Option<&str>,
-        from_instance_id: Option<&str>,
+        filter: &ConsumerFilter,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        // Reserve the from_any `(name, tag)` slot before any wire work. The
-        // sibling-exclusion filter below assumes "at most one from_any topic
-        // sub per (name, tag) per messenger"; the manifest validator
-        // enforces it at config time but this is the runtime guard at the
-        // wire's trust boundary. If wire setup fails afterwards the guard
-        // is dropped as a local and the slot is released.
-        let from_any_guard = match (&from_target, from_link_id) {
-            (Some(target), None) => Some(messenger.reserve_from_any_topic(
+        // Translate the ConsumerFilter into the wire-side
+        // `from_instance_id` pin plus an optional in-process filter.
+        let (wire_from_instance_id, accept_filter) = match filter {
+            ConsumerFilter::Pin(id) => (Some(id.as_str()), None),
+            ConsumerFilter::OnlyFrom(ids) if ids.len() == 1 => (Some(ids[0].as_str()), None),
+            ConsumerFilter::OnlyFrom(ids) => (
+                None,
+                Some(AcceptanceFilter::Allow(ids.iter().cloned().collect())),
+            ),
+            ConsumerFilter::AnyExcept(ids) if ids.is_empty() => (None, None),
+            ConsumerFilter::AnyExcept(ids) => (
+                None,
+                Some(AcceptanceFilter::Deny(ids.iter().cloned().collect())),
+            ),
+            ConsumerFilter::Any => (None, None),
+        };
+
+        // Reserve the from_any `(name, tag)` slot before any wire work.
+        // The manifest validator enforces "at most one from_any topic
+        // sub per (name, tag) per messenger" at config time; this is
+        // the runtime guard at the wire's trust boundary.
+        let from_any_guard = match (&from_target, is_from_any) {
+            (Some(target), true) => Some(messenger.reserve_from_any_topic(
                 from_core_node,
-                from_instance_id,
+                wire_from_instance_id,
                 target.name(),
                 target.tag(),
             )?),
             _ => None,
         };
-        let excluded = messenger.excluded_link_ids_for_wildcard(from_target.as_ref(), from_link_id);
         let recv = TopicWireReceiver::new(
             as_core_node,
             as_instance_id,
             from_core_node,
-            from_instance_id,
+            wire_from_instance_id,
             from_target,
-            from_link_id,
+            None,
             to_topic,
-        )?
-        .with_defers_secondary_drop(!excluded.is_empty());
+        )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
-        let mut subscription = Subscription::new(subscription).with_excluded_link_ids(excluded);
+        let mut subscription = Subscription::new(subscription);
         if let Some(guard) = from_any_guard {
             subscription = subscription.with_from_any_guard(guard);
+        }
+        if let Some(filter) = accept_filter {
+            subscription = subscription.with_accept_filter(filter);
         }
         Ok(subscription)
     }
@@ -164,54 +197,23 @@ impl TopicMessenger {
         Ok(Subscription::new(subscription))
     }
 
-    /// Publishes a payload to a topic. `link_ids` is the set of producer
-    /// link_ids this emission should appear under on the wire. Zenoh `put`
-    /// keyexprs can't carry wildcards, so a producer bound to N link_ids
-    /// performs N publishes per emit. Duplicate entries are collapsed so
-    /// each scoped subscriber receives one message per unique link_id; the
-    /// first occurrence wins for ordering. An empty slice is normalized to
-    /// the reserved default `_` segment. On the first publish error the
-    /// loop aborts and the error is returned.
-    ///
-    /// The first publish (for `effective[0]`) is marked primary on the
-    /// wire; the rest are marked secondary. Wildcard subscribers
-    /// (`from_link_id: None`) drop secondaries so one `emit` yields one
-    /// delivery on the wildcard axis, even though the wire still carries N
-    /// publishes for pinned-subscriber reachability. See the topic-
-    /// attachment block in `pmi::wire::zenoh_format`.
-    #[allow(clippy::too_many_arguments)]
+    /// Publishes a payload to a topic. The producer advertises under the
+    /// reserved default `_` segment; consumers pin a specific producer by
+    /// `from_instance_id` derived from the consumer's binding map.
     pub async fn emit(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         as_target: SenderTarget,
-        link_ids: &[String],
         as_topic_name: &str,
         qos: QoSProfile,
         payload: Payload,
     ) -> Result<()> {
-        let effective: Vec<String> = if link_ids.is_empty() {
-            vec![pmi::DEFAULT_LINK_ID.to_string()]
-        } else {
-            let mut seen = HashSet::with_capacity(link_ids.len());
-            link_ids
-                .iter()
-                .filter(|id| seen.insert((*id).clone()))
-                .cloned()
-                .collect()
-        };
-        for (idx, link_id) in effective.iter().enumerate() {
-            let sender = TopicWireSender::new(
-                as_core_node,
-                as_instance_id,
-                as_target.clone(),
-                Some(link_id.as_str()),
-                as_topic_name,
-            )?;
-            messenger
-                .emit_topic_message(&sender, qos.clone(), payload.clone(), idx == 0)
-                .await?;
-        }
+        let sender =
+            TopicWireSender::new(as_core_node, as_instance_id, as_target, None, as_topic_name)?;
+        messenger
+            .emit_topic_message(&sender, qos, payload, true)
+            .await?;
         Ok(())
     }
 
