@@ -93,3 +93,98 @@ async def test_stack_list_returns_none_dot_graph_when_not_requested(tmp_path):
     assert brain["stage"] == "Ready"
     assert brain["instances"][0]["state"] == "running"
     assert result.dot_graph is None
+
+
+def _mixed_state_graph_json() -> str:
+    """A node with both `running` and `starting` instances, plus a sibling
+    that has no `running` instances, used to exercise filtering and the
+    "present but quiet" case."""
+    router = {
+        "name": "router",
+        "tag": "v1",
+        "config_path": "/tmp/router.json5",
+        "artifact_path": None,
+        "stage": "Ready",
+        "instances": [
+            {"instance_id": "r1", "state": "running"},
+            {"instance_id": "s1", "state": "starting"},
+            {"instance_id": "r2", "state": "running"},
+        ],
+    }
+    warming = {
+        "name": "warming",
+        "tag": "v1",
+        "config_path": "/tmp/warming.json5",
+        "artifact_path": None,
+        "stage": "Ready",
+        "instances": [{"instance_id": "s1", "state": "starting"}],
+    }
+    return json.dumps({"nodes": [router, warming], "edges": []})
+
+
+@pytest.mark.asyncio
+async def test_running_instance_ids_by_node_returns_running_only(tmp_path):
+    """`StackList.running_instance_ids_by_node` filters out `starting` entries."""
+    response_bytes = StackListResponse(_mixed_state_graph_json(), None).encode()
+
+    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
+    try:
+        handler = await spawn_stub_listener(
+            server_handle, "stack_list", response_bytes
+        )
+        await wait_until_reachable(node_runner.messenger(), "stack_list")
+
+        result = await stack_list(node_runner, False, 3.0)
+
+        await handler
+    finally:
+        await router.stop()
+
+    assert result.running_instance_ids_by_node("router", "v1") == ["r1", "r2"]
+
+
+@pytest.mark.asyncio
+async def test_running_instance_ids_by_node_empty_when_all_starting(tmp_path):
+    """A present node with only `starting` instances returns an empty list,
+    not a KeyError — that's how callers tell "warming up" from "not in stack"."""
+    response_bytes = StackListResponse(_mixed_state_graph_json(), None).encode()
+
+    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
+    try:
+        handler = await spawn_stub_listener(
+            server_handle, "stack_list", response_bytes
+        )
+        await wait_until_reachable(node_runner.messenger(), "stack_list")
+
+        result = await stack_list(node_runner, False, 3.0)
+
+        await handler
+    finally:
+        await router.stop()
+
+    assert result.running_instance_ids_by_node("warming", "v1") == []
+
+
+@pytest.mark.asyncio
+async def test_running_instance_ids_by_node_raises_key_error_when_missing(tmp_path):
+    """A missing `(name, tag)` raises `KeyError` carrying the `name:tag` it tried."""
+    response_bytes = StackListResponse(_mixed_state_graph_json(), None).encode()
+
+    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
+    try:
+        handler = await spawn_stub_listener(
+            server_handle, "stack_list", response_bytes
+        )
+        await wait_until_reachable(node_runner.messenger(), "stack_list")
+
+        result = await stack_list(node_runner, False, 3.0)
+
+        await handler
+    finally:
+        await router.stop()
+
+    with pytest.raises(KeyError, match="no node matches `missing:v1`"):
+        result.running_instance_ids_by_node("missing", "v1")
+
+    with pytest.raises(KeyError, match="no node matches `router:v2`"):
+        result.running_instance_ids_by_node("router", "v2")

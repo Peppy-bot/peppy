@@ -176,3 +176,201 @@ pub struct SerializedNodeGraph {
     pub nodes: Vec<SerializedNode>,
     pub edges: Vec<SerializedEdge>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeNotFound {
+    pub name: String,
+    pub tag: String,
+}
+
+impl fmt::Display for NodeNotFound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "no node matches `{}:{}`", self.name, self.tag)
+    }
+}
+
+impl std::error::Error for NodeNotFound {}
+
+impl SerializedNodeGraph {
+    /// Externally visible instance ids for the node identified by
+    /// `(node_name, node_tag)`. Returns `NodeNotFound` when no node
+    /// matches; returns `Ok(vec![])` when the node exists but every
+    /// instance is still `Starting`. The `(name, tag)` pair is unique
+    /// across `nodes`, so the first match is the only match.
+    pub fn running_instance_ids_by_node(
+        &self,
+        node_name: &str,
+        node_tag: &str,
+    ) -> Result<Vec<&str>, NodeNotFound> {
+        self.nodes
+            .iter()
+            .find(|n| n.name == node_name && n.tag == node_tag)
+            .map(SerializedNode::running_instance_ids)
+            .ok_or_else(|| NodeNotFound {
+                name: node_name.to_owned(),
+                tag: node_tag.to_owned(),
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_node(name: &str, tag: &str, instances: &[(&str, InstanceState)]) -> SerializedNode {
+        SerializedNode {
+            name: name.into(),
+            tag: tag.into(),
+            config_path: String::new(),
+            artifact_path: None,
+            stage: Some(NodeStage::Ready),
+            instances: instances
+                .iter()
+                .map(|(id, st)| SerializedInstance {
+                    instance_id: (*id).into(),
+                    state: *st,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn running_instance_ids_filters_starting() {
+        let node = make_node(
+            "foo",
+            "v1",
+            &[
+                ("r1", InstanceState::Running),
+                ("s1", InstanceState::Starting),
+                ("r2", InstanceState::Running),
+            ],
+        );
+        assert_eq!(node.running_instance_ids(), vec!["r1", "r2"]);
+    }
+
+    #[test]
+    fn running_instance_ids_empty_when_all_starting() {
+        let node = make_node(
+            "foo",
+            "v1",
+            &[
+                ("s1", InstanceState::Starting),
+                ("s2", InstanceState::Starting),
+            ],
+        );
+        assert!(node.running_instance_ids().is_empty());
+    }
+
+    #[test]
+    fn by_node_returns_running_only() {
+        let graph = SerializedNodeGraph {
+            nodes: vec![make_node(
+                "foo",
+                "v1",
+                &[
+                    ("r1", InstanceState::Running),
+                    ("s1", InstanceState::Starting),
+                    ("r2", InstanceState::Running),
+                ],
+            )],
+            edges: vec![],
+        };
+        assert_eq!(
+            graph.running_instance_ids_by_node("foo", "v1"),
+            Ok(vec!["r1", "r2"])
+        );
+    }
+
+    #[test]
+    fn by_node_ok_empty_when_all_starting() {
+        let graph = SerializedNodeGraph {
+            nodes: vec![make_node(
+                "foo",
+                "v1",
+                &[
+                    ("s1", InstanceState::Starting),
+                    ("s2", InstanceState::Starting),
+                ],
+            )],
+            edges: vec![],
+        };
+        assert_eq!(graph.running_instance_ids_by_node("foo", "v1"), Ok(vec![]));
+    }
+
+    #[test]
+    fn by_node_err_when_name_mismatch() {
+        let graph = SerializedNodeGraph {
+            nodes: vec![make_node("foo", "v1", &[("r1", InstanceState::Running)])],
+            edges: vec![],
+        };
+        assert_eq!(
+            graph.running_instance_ids_by_node("bar", "v1"),
+            Err(NodeNotFound {
+                name: "bar".into(),
+                tag: "v1".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn by_node_err_when_tag_mismatch() {
+        let graph = SerializedNodeGraph {
+            nodes: vec![make_node("foo", "v1", &[("r1", InstanceState::Running)])],
+            edges: vec![],
+        };
+        assert_eq!(
+            graph.running_instance_ids_by_node("foo", "v2"),
+            Err(NodeNotFound {
+                name: "foo".into(),
+                tag: "v2".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn by_node_err_on_empty_graph() {
+        let graph = SerializedNodeGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+        assert_eq!(
+            graph.running_instance_ids_by_node("foo", "v1"),
+            Err(NodeNotFound {
+                name: "foo".into(),
+                tag: "v1".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn by_node_picks_correct_among_many() {
+        let graph = SerializedNodeGraph {
+            nodes: vec![
+                make_node("foo", "v1", &[("foo_v1_r1", InstanceState::Running)]),
+                make_node(
+                    "foo",
+                    "v2",
+                    &[
+                        ("foo_v2_r1", InstanceState::Running),
+                        ("foo_v2_r2", InstanceState::Running),
+                    ],
+                ),
+                make_node("bar", "v1", &[("bar_v1_r1", InstanceState::Running)]),
+            ],
+            edges: vec![],
+        };
+        assert_eq!(
+            graph.running_instance_ids_by_node("foo", "v2"),
+            Ok(vec!["foo_v2_r1", "foo_v2_r2"])
+        );
+    }
+
+    #[test]
+    fn node_not_found_display() {
+        let err = NodeNotFound {
+            name: "router".into(),
+            tag: "v1".into(),
+        };
+        assert_eq!(err.to_string(), "no node matches `router:v1`");
+    }
+}

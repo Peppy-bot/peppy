@@ -170,6 +170,37 @@ The example below uses `stack_list` to count the running instances of each node 
   </TabItem>
 </Tabs>
 
+### Looking up instances by `(name, tag)`
+
+When you know which dependency you want, skip the manual iteration with `StackList.running_instance_ids_by_node(name, tag)`. The Rust signature is `Result<Vec<&str>, NodeNotFound>`; Python raises `KeyError` for the same condition. In both languages, an empty list (not an error) means the node is present but every instance is still `starting`, useful for a router that wants to back off during warmup rather than fail loudly.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python title="src/my_node/__main__.py"
+    result = await stack_list(node_runner, False, 3.0)
+    try:
+        ids = result.running_instance_ids_by_node("router_target", "v1")
+    except KeyError as e:
+        print(e)
+    else:
+        if ids:
+            print(f"dispatch to {ids}")
+        else:
+            print("router_target:v1 is present but all instances are still starting")
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust title="src/main.rs"
+    let result = stack_list(&node_runner, false, Duration::from_secs(3)).await?;
+    match result.graph.running_instance_ids_by_node("router_target", "v1") {
+        Ok(ids) if !ids.is_empty() => println!("dispatch to {ids:?}"),
+        Ok(_) => println!("router_target:v1 is present but all instances are still starting"),
+        Err(err) => println!("{err}"),
+    }
+    ```
+  </TabItem>
+</Tabs>
+
 :::note
 Both `info` and `stack_list` default to a 10-second timeout. Pass an explicit timeout when calling from a latency-sensitive path so a slow or unreachable core node does not stall your node.
 :::
