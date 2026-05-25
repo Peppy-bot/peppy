@@ -381,7 +381,7 @@ fn collect_declared_slots(
     (pinned, from_any)
 }
 
-/// A producer node satisfies an interface slot iff its `conforms_to`
+/// A producer node satisfies an interface slot if its `conforms_to`
 /// list contains an item with the slot's `(name, tag)`. sha256 is not
 /// cross-checked here; each side independently verifies its own
 /// declared sha256 against the on-disk interface document at cache

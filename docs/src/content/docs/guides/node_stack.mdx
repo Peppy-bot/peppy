@@ -11,7 +11,7 @@ The **node stack** is the central registry that manages all your nodes and their
 - **Nodes** are registered configurations that can have multiple running instances
 - **Edges** represent explicit dependencies declared via `depends_on` in the node manifest
 
-When you add a node to the stack, PeppyOS validates that all its dependencies are satisfied—ensuring that any topics, services, or actions your node relies on are provided by other nodes already in the stack. This dependency validation prevents runtime errors and helps you understand how your nodes interconnect.
+When you add a node to the stack, PeppyOS validates that all its dependencies are satisfied, ensuring that any topics, services, or actions your node relies on are provided by other nodes already in the stack. This dependency validation prevents runtime errors and helps you understand how your nodes interconnect.
 
 The stack always contains a **core node** and an instance of it at its root, which coordinates the lifecycle of all other nodes. You can query the stack to see which nodes depend on each other, visualize the dependency graph, and manage node instances.
 The **node stack** is started as a daemon on your system and the `peppy` binary communicates with it to execute user actions.
@@ -24,7 +24,7 @@ Inside your node directory, add it to the PeppyOS stack by running:
 peppy node add .
 ```
 
-This command registers the node with the core node by staging a snapshot of the source directory. After a successful add, the node enters the `Added` stage: its config is known to the daemon, but no runnable artifact exists yet — `build_cmd` has not been run. You'll produce that artifact in the next section with [`peppy node build`](#building-hello_world).
+This command registers the node with the core node by staging a snapshot of the source directory. After a successful add, the node enters the `Added` stage: its config is known to the daemon, but no runnable artifact exists yet (since `build_cmd` has not been run). You'll produce that artifact in the next section with [`peppy node build`](#building-hello_world).
 
 The output of this command provides some useful information:
 
@@ -36,7 +36,7 @@ Added node hello_world:v1 to the node stack
 This gives you access to the log file for debugging in case the `add` command fails.
 When a node is added to the node stack, a copy is made in the peppy cache under `~/.peppy/built_nodes/` to "snapshot" the node based on its name and tag.
 No two copies of the same node with the same name + tag can exist at the same time in the node stack.
-Re-adding a node with the same name and tag overrides the one that was previously in the node stack, except if that node has dependencies—in which case the operation fails.
+Re-adding a node with the same name and tag overrides the one that was previously in the node stack, except if that node has dependencies, in which case the operation fails.
 
 ## Building `hello_world`
 
@@ -101,7 +101,7 @@ Now that you've seen all three steps, `peppy node add` exposes flags that chain 
 
 - `--build` (`-b`) runs `peppy node build` immediately after the add succeeds.
 - `--run` (`-r`) also spawns an instance once the build finishes, and implies `--build`.
-- `--sync` (`-s`) runs `peppy node sync` **before** the add, so the snapshot picks up any edits you made to `peppy.json5`. Only valid for local filesystem sources — remote git/HTTP sources are synced server-side on fetch.
+- `--sync` (`-s`) runs `peppy node sync` **before** the add, so the snapshot picks up any edits you made to `peppy.json5`. Only valid for local filesystem sources; remote git/HTTP sources are synced server-side on fetch.
 
 ```sh
 peppy node add -sb .    # sync, then add, then build
@@ -111,7 +111,7 @@ peppy node add -sr .    # sync, then add, then build, then run an instance
 :::tip
 `-sb` and `-sr` are the shorthands you'll reach for constantly during development. The typical edit-loop is: change `peppy.json5` or source, hit `peppy node add -sr .`, watch the logs, iterate. Without `-s`, a stale `.peppy/` bindings directory can make the daemon see an out-of-date interface; without `-r`, you have to follow every add and build with a separate `peppy node run`. Bundling them collapses the whole "I edited something, now run it" cycle to a single command.
 
-If you pass runtime `key=value` arguments alongside `-r`, keep them **after** the source path — `peppy node add -sr . frequency=30` — so the source positional isn't confused with the trailing args.
+If you pass runtime `key=value` arguments alongside `-r`, keep them **after** the source path (e.g. `peppy node add -sr . frequency=30`), so the source positional isn't confused with the trailing args.
 :::
 
 ## Checking node status
@@ -140,18 +140,18 @@ Dependencies
   (none)
 ```
 
-The `STAGE` column reports each node's **stage** — its artifact-level lifecycle:
+The `STAGE` column reports each node's **stage**, its artifact-level lifecycle:
 
-- **`Added`** — the node is registered and a snapshot of the source has been taken, but `build_cmd` has not been run yet, so there is no runnable artifact.
-- **`Building`** — a build is in progress. A second concurrent `node build` on the same entity is rejected until this one finishes.
-- **`Ready`** — the build artifact is on disk. The node can be run; it may currently have zero, one, or several instances.
-- **`Root`** — the synthetic core-node entity. Always present, and always reports exactly one running instance (the daemon itself).
+- **`Added`**: the node is registered and a snapshot of the source has been taken, but `build_cmd` has not been run yet, so there is no runnable artifact.
+- **`Building`**: a build is in progress. A second concurrent `node build` on the same entity is rejected until this one finishes.
+- **`Ready`**: the build artifact is on disk. The node can be run; it may currently have zero, one, or several instances.
+- **`Root`**: the synthetic core-node entity. Always present, and always reports exactly one running instance (the daemon itself).
 
 The `INSTANCES` column aggregates per-instance state (`starting`, `running`) for the node, independently of its stage. To see individual instance IDs, use [`peppy node info`](#inspecting-a-node-with-peppy-node-info).
 
 ## Inspecting a node with `peppy node info`
 
-When you need more than the one-line view from `stack list`, `peppy node info` dumps the node's stage, its currently-tracked instances with their individual states, and the paths to its add log and per-instance run logs. It takes a `<node_name>:<node_tag>` reference to a node **that has already been added to the stack** — it doesn't touch the filesystem or any git/http source, so run `peppy node add` first if the node isn't in the stack yet:
+When you need more than the one-line view from `stack list`, `peppy node info` dumps the node's stage, its currently-tracked instances with their individual states, and the paths to its add log and per-instance run logs. It takes a `<node_name>:<node_tag>` reference to a node **that has already been added to the stack**; it doesn't touch the filesystem or any git/http source, so run `peppy node add` first if the node isn't in the stack yet:
 
 ```sh
 peppy node info hello_world:v1
@@ -196,7 +196,7 @@ Config SHA256: 67505086f8ac099d0861cb5dfa539b1c8c3c9354ad90ed7713a5147c7cb43342
 
 This is usually the fastest way to answer "is my node built yet?" and "where is the log for this specific instance?". The `Add log` path is what `peppy node add` writes to; per-instance run logs are what `peppy node run` writes to. Build logs live under `~/.peppy/logs/build/` and are surfaced by `peppy node build` directly when it runs.
 
-`Exposed Interfaces` summarizes the topics, services, and actions the node publishes or consumes per its `peppy.json5`. `Config SHA256` is the fingerprint of the config that was fed through peppygen — it's what `peppy node add` checks against to refuse a stale snapshot and tell you to run `peppy node sync`.
+`Exposed Interfaces` summarizes the topics, services, and actions the node publishes or consumes per its `peppy.json5`. `Config SHA256` is the fingerprint of the config that was fed through peppygen; it's what `peppy node add` checks against to refuse a stale snapshot and tell you to run `peppy node sync`.
 
 ## Stopping your node
 

@@ -8,7 +8,7 @@ sidebar:
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 In a standard PeppyOS setup, a node subscribes to topics from its declared dependencies using `link_id`.
-This creates a directed graph: if `arm_controller` depends on `robot_arm`, it can expect topics from `robot_arm` — but not the other way around, since that would create a circular dependency.
+This creates a directed graph: if `arm_controller` depends on `robot_arm`, it can expect topics from `robot_arm`, but not the other way around, since that would create a circular dependency.
 
 **External consumed topics** solve this by letting a node subscribe to a topic *without* declaring a dependency on the publisher.
 The subscriber defines the `message_format` inline and receives messages from any node that emits a matching topic.
@@ -21,8 +21,8 @@ External consumed topics sit **outside** the [binding-driven routing model](/adv
 
 Consider a robot arm that needs bidirectional communication between two nodes:
 
-- **`arm_controller`** — plans trajectories and sends joint commands.
-- **`robot_arm`** — drives the physical joints and reports their state.
+- **`arm_controller`**: plans trajectories and sends joint commands.
+- **`robot_arm`**: drives the physical joints and reports their state.
 
 ```
 arm_controller                                  robot_arm
@@ -33,7 +33,7 @@ arm_controller                                  robot_arm
       │                                              │
 ```
 
-`arm_controller` depends on `robot_arm` to consume its `joint_states` topic — that's a standard linked consumed topic.
+`arm_controller` depends on `robot_arm` to consume its `joint_states` topic; that's a standard linked consumed topic.
 `robot_arm` needs to receive `joint_commands`, but it cannot depend on `arm_controller` (circular dependency).
 Instead, it declares `joint_commands` as an **external consumed topic**.
 
@@ -49,7 +49,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
       manifest: {
         name: "robot_arm",
         tag: "v1",
-        // No depends_on — robot_arm does not depend on arm_controller
+        // No depends_on; robot_arm does not depend on arm_controller
       },
       interfaces: {
         topics: {
@@ -74,7 +74,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
           ],
           consumes: [
             {
-              // No link_id — this is an external consumed topic
+              // No link_id; this is an external consumed topic
               name: "joint_commands",
               message_format: {
                 target_positions: {
@@ -103,7 +103,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
       manifest: {
         name: "robot_arm",
         tag: "v1",
-        // No depends_on — robot_arm does not depend on arm_controller
+        // No depends_on; robot_arm does not depend on arm_controller
       },
       interfaces: {
         topics: {
@@ -128,7 +128,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
           ],
           consumes: [
             {
-              // No link_id — this is an external consumed topic
+              // No link_id; this is an external consumed topic
               name: "joint_commands",
               message_format: {
                 target_positions: {
@@ -186,7 +186,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
           ],
           consumes: [
             {
-              link_id: "robot_arm",  // Linked — references depends_on
+              link_id: "robot_arm",  // Linked: references depends_on
               name: "joint_states",
             },
           ],
@@ -231,7 +231,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
           ],
           consumes: [
             {
-              link_id: "robot_arm",  // Linked — references depends_on
+              link_id: "robot_arm",  // Linked: references depends_on
               name: "joint_states",
             },
           ],
@@ -249,7 +249,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
 
 :::note
 The `message_format` of an external consumed topic is defined inline by the subscriber.
-For linked consumed topics, the format is resolved automatically from the dependency's configuration — which is why only `link_id` and `name` are needed.
+For linked consumed topics, the format is resolved automatically from the dependency's configuration, which is why only `link_id` and `name` are needed.
 :::
 
 ## Receiving external messages
@@ -345,7 +345,7 @@ The module name is the **topic name only** (e.g. `joint_commands`), since there 
 The API is almost identical to linked consumed topics. Two differences are worth calling out:
 
 - The `message_format` is defined inline by the subscriber instead of resolved from the dependency.
-- External `on_next_message_received` exposes an extra `from_instance_id` parameter so the subscriber can narrow by producer instance at the call site. Linked consumers don't take this parameter because launcher bindings already steer their routing — there is no binding mechanism for external slots, so the call-site filter is the only narrowing handle they have.
+- External `on_next_message_received` exposes an extra `from_instance_id` parameter so the subscriber can narrow by producer instance at the call site. Linked consumers don't take this parameter because launcher bindings already steer their routing; there is no binding mechanism for external slots, so the call-site filter is the only narrowing handle they have.
 
 On the other side, the `arm_controller` uses a standard linked topic. Notice the module name includes the node prefix (`robot_arm_joint_states`):
 
@@ -449,31 +449,31 @@ On the other side, the `arm_controller` uses a standard linked topic. Notice the
 
 ## Why only topics?
 
-PeppyOS has three communication patterns — topics, services, and actions — but only topics support external (dependency-free) subscriptions. The reason is how each pattern flows data:
+PeppyOS has three communication patterns (topics, services, and actions), but only topics support external (dependency-free) subscriptions. The reason is how each pattern flows data:
 
 | | Topics | Services | Actions |
 |---|---|---|---|
 | Pattern | Publish-subscribe | Request-response | Goal-feedback-result |
 | Data flow | One-way: publisher → subscriber | Two-way: request then response | Multi-step: goal, feedback, result |
 | Initiator | Publisher pushes; subscriber listens passively | Consumer actively calls the exposer | Consumer orchestrates the full lifecycle |
-| Coupling | None — subscriber does not call the publisher | Inherent — consumer targets a specific service | Inherent — built on services, same constraint |
-| External form? | Yes — passive listening needs no dependency | No — calling requires a target node | No — same as services |
+| Coupling | None (subscriber does not call the publisher) | Inherent (consumer targets a specific service) | Inherent (built on services, same constraint) |
+| External form? | Yes (passive listening needs no dependency) | No (calling requires a target node) | No (same as services) |
 
 A topic subscriber is **passive**: it declares a message format and waits for data to arrive, without knowing or addressing the publisher.
-That is why removing `depends_on` works — there is nothing to call, so the [binding-driven routing](/advanced_guides/topics/#bindings-and-routing) used by linked topics, services, and actions does not apply: there is no `link_id` for a binding to target.
+That is why removing `depends_on` works: there is nothing to call, so the [binding-driven routing](/advanced_guides/topics/#bindings-and-routing) used by linked topics, services, and actions does not apply: there is no `link_id` for a binding to target.
 
 [Services](/advanced_guides/services) and [actions](/advanced_guides/actions) are **caller-driven**: the consumer actively invokes a specific service on a specific node.
-Even without a config dependency, the consumer would still need to target that node at runtime, reintroducing the coupling — and the binding plumbing — that external consumed topics are designed to avoid.
+Even without a config dependency, the consumer would still need to target that node at runtime, reintroducing the coupling (and the binding plumbing) that external consumed topics are designed to avoid.
 
-In the robot arm example, `robot_arm` passively listens for `joint_commands` from any source — it never calls `arm_controller`.
+In the robot arm example, `robot_arm` passively listens for `joint_commands` from any source; it never calls `arm_controller`.
 If it needed to call a service on `arm_controller` instead, it would need `depends_on`, creating the circular dependency that external consumed topics exist to prevent.
 
 ## When to use external consumed topics
 
 Use external consumed topics when:
 
-- **Bidirectional communication** — two nodes need to exchange data and a direct dependency would create a cycle.
-- **Loose coupling** — the subscriber should not care which specific node publishes the data. For instance, a `robot_arm` node that accepts commands from any controller (teleoperation, autonomous planner, calibration script).
-- **Non-DAG communication** — the publisher is not part of the node stack, or the relationship between publisher and subscriber is not a natural dependency.
+- **Bidirectional communication**: two nodes need to exchange data and a direct dependency would create a cycle.
+- **Loose coupling**: the subscriber should not care which specific node publishes the data. For instance, a `robot_arm` node that accepts commands from any controller (teleoperation, autonomous planner, calibration script).
+- **Non-DAG communication**: the publisher is not part of the node stack, or the relationship between publisher and subscriber is not a natural dependency.
 
-For all other cases, prefer linked consumed topics — they enforce explicit dependencies and let PeppyOS resolve message formats automatically.
+For all other cases, prefer linked consumed topics; they enforce explicit dependencies and let PeppyOS resolve message formats automatically.

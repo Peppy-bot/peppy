@@ -27,7 +27,7 @@ Start by cloning [this repository](https://github.com/Peppy-bot/launch_example):
 </Steps>
 
 In the root directory, you'll find a [`peppy_launcher.json5`](https://github.com/Peppy-bot/launch_example/blob/main/peppy_launcher.json5) file. Opening it reveals the following structure:
- 1. The file is identified by `peppy_schema: "launcher_v1"` at the root — peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node_v1"`)
+ 1. The file is identified by `peppy_schema: "launcher_v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node_v1"`)
  2. All deployments are defined in the `deployments` array
  3. Each deployment requires a `source` and `instances` attribute
 
@@ -55,7 +55,7 @@ The repository source resolves nodes from a locally cached index. Run `peppy rep
 ```
 
 ```json5
-// Repository source (combined shorthand — equivalent to the example above)
+// Repository source (combined shorthand, equivalent to the example above)
 {
   source: {
     name: "openarm01_controller:v1",
@@ -90,7 +90,7 @@ PeppyOS automatically inspects the `name` and `tag` of each node, verifies that 
 
 ### Launching from a repository
 
-Launchers discovered by `peppy repo refresh` (see [Repositories](/advanced_guides/repositories/)) can be invoked by bare name — no path required:
+Launchers discovered by `peppy repo refresh` (see [Repositories](/advanced_guides/repositories/)) can be invoked by bare name, no path required:
 
 ```sh
 peppy stack launch openarm01_sim_teleop

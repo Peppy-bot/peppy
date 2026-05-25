@@ -7,14 +7,14 @@ sidebar:
 
 Repositories tell peppy where to look for nodes and launchers. When you run `peppy repo refresh`, peppy walks every configured repository and indexes:
 
-- **Nodes**, identified by filename — every `peppy.json5` file is treated as a node config.
-- **Launchers**, identified by content — every `.json5` file whose body declares `peppy_schema: "launcher_v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
+- **Nodes**, identified by filename: every `peppy.json5` file is treated as a node config.
+- **Launchers**, identified by content: every `.json5` file whose body declares `peppy_schema: "launcher_v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
 
 Out of the box, three repositories are configured:
 
-- **`nodes_hub`** (`https://github.com/Peppy-bot/nodes_hub`, tracked on `main`) — a curated collection of ready-to-use nodes.
-- **`launchers_hub`** (`https://github.com/Peppy-bot/launchers_hub`, tracked on `main`) — community launch files that compose nodes from the hubs.
-- **`openarm01_nodes`** (`https://github.com/Peppy-bot/openarm01_nodes`, tracked on `main`) — nodes specific to the OpenArm01 robot.
+- **`nodes_hub`** (`https://github.com/Peppy-bot/nodes_hub`, tracked on `main`): a curated collection of ready-to-use nodes.
+- **`launchers_hub`** (`https://github.com/Peppy-bot/launchers_hub`, tracked on `main`): community launch files that compose nodes from the hubs.
+- **`openarm01_nodes`** (`https://github.com/Peppy-bot/openarm01_nodes`, tracked on `main`): nodes specific to the OpenArm01 robot.
 
 Add your own local directory with `peppy repo add /path/to/my/nodes` so peppy can discover nodes you create locally.
 
@@ -56,7 +56,7 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 peppy repo init
 ```
 
-Syncs `repositories.json5` with the bundled default template. If the file does not yet exist it is created verbatim; otherwise any missing default entries are appended without touching your existing entries. Use this after upgrading peppy to pick up new defaults (for example when `launchers_hub` was added) without having to restart the daemon. The command operates directly on the local config file — no daemon connection is required.
+Syncs `repositories.json5` with the bundled default template. If the file does not yet exist it is created verbatim; otherwise any missing default entries are appended without touching your existing entries. Use this after upgrading peppy to pick up new defaults (for example when `launchers_hub` was added) without having to restart the daemon. The command operates directly on the local config file; no daemon connection is required.
 
 ### List repositories
 
@@ -136,13 +136,13 @@ peppy repo exclude /home/user/projects/private-nodes
 
 ## Using a repository-indexed node
 
-Once a node appears in `peppy repo list`, you can add it by its `name:tag` without supplying a path or URL — peppy resolves the source through the cached index at `~/.peppy/cache/nodes.json5`:
+Once a node appears in `peppy repo list`, you can add it by its `name:tag` without supplying a path or URL; peppy resolves the source through the cached index at `~/.peppy/cache/nodes.json5`:
 
 ```sh
 peppy node add uvc_camera:v1
 ```
 
-This is the shortest form of `peppy node add`. It works for any node provided by any repository listed in `repositories.json5`, including the default [nodes_hub](https://github.com/Peppy-bot/nodes_hub) community repository. When several repositories provide the same `name:tag`, the [resolution rule from `repo refresh`](#refresh-the-index) applies — the repository with the lower `id` wins.
+This is the shortest form of `peppy node add`. It works for any node provided by any repository listed in `repositories.json5`, including the default [nodes_hub](https://github.com/Peppy-bot/nodes_hub) community repository. When several repositories provide the same `name:tag`, the [resolution rule from `repo refresh`](#refresh-the-index) applies: the repository with the lower `id` wins.
 
 One constraint applies to this source shape:
 
@@ -152,7 +152,7 @@ If the node you want to add lives in a repository that is **not** in `repositori
 
 ## Syncing against repositories
 
-`peppy node sync` regenerates a node's interface code (peppygen) from its `peppy.json5`. By default, every dependency the node declares must already be in the [node stack](/guides/node_stack/) — otherwise the sync fails with an "X does not exist in the stack" error.
+`peppy node sync` regenerates a node's interface code (peppygen) from its `peppy.json5`. By default, every dependency the node declares must already be in the [node stack](/guides/node_stack/), otherwise the sync fails with an "X does not exist in the stack" error.
 
 Pass `-r` (or `--include-repositories`) to let peppy fall back to the repository cache when a dependency is missing from the stack:
 
@@ -162,8 +162,8 @@ peppy node sync -r
 
 The lookup order is:
 
-1. **Node stack** — wins whenever the dependency is already in the stack. Stack-resolved deps are listed under `Synchronized from node stack:` in the command output.
-2. **Repository cache** (`~/.peppy/cache/nodes.json5`) — consulted only when the stack does not have the dependency. Repo-resolved deps are listed under `Synchronized from repositories:`, each tagged with its source kind (`fs`, `git`, or `http`).
+1. **Node stack**: wins whenever the dependency is already in the stack. Stack-resolved deps are listed under `Synchronized from node stack:` in the command output.
+2. **Repository cache** (`~/.peppy/cache/nodes.json5`): consulted only when the stack does not have the dependency. Repo-resolved deps are listed under `Synchronized from repositories:`, each tagged with its source kind (`fs`, `git`, or `http`).
 
 Repository-resolved git dependencies reuse the same persistent checkout cache as `peppy node add`, so the same repository is never cloned more than once during a single sync run.
 

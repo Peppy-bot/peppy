@@ -56,10 +56,10 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
 ```
 
 The `qos_profile` controls delivery guarantees. Available profiles are:
-- **`sensor_data`** — optimised for high-frequency data where occasional drops are acceptable.
-- **`standard`** — balanced defaults suitable for most use cases. This is the default when `qos_profile` is omitted.
-- **`reliable`** — guarantees delivery at the cost of higher latency.
-- **`critical`** — strongest delivery guarantees for safety-critical data.
+- **`sensor_data`**: optimised for high-frequency data where occasional drops are acceptable.
+- **`standard`**: balanced defaults suitable for most use cases. This is the default when `qos_profile` is omitted.
+- **`reliable`**: guarantees delivery at the cost of higher latency.
+- **`critical`**: strongest delivery guarantees for safety-critical data.
 
 ### Publishing messages
 
@@ -104,7 +104,7 @@ The `emit` function takes the `node_runner` reference followed by each field fro
 Nested objects become generated structs (e.g. `video_stream::MessageHeader`) whose fields match the object definition.
 
 A producer publishes a **single stream** regardless of how many consumers are listening, and it never knows about the bindings consumers use to address it.
-Starting the producer before any consumer (or after them) is equally valid — consumers attach when they show up.
+Starting the producer before any consumer (or after them) is equally valid; consumers attach when they show up.
 
 For a topic with a simple message format:
 
@@ -171,13 +171,13 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 :::
 
 :::tip
-To depend on a contract instead of a specific producer node — so any conforming node can fill the slot at launch time — declare the dep under `depends_on.interfaces` rather than `depends_on.nodes`. See the [Interface conformance](/advanced_guides/interface_conformance) guide.
+To depend on a contract instead of a specific producer node, so any conforming node can fill the slot at launch time, declare the dep under `depends_on.interfaces` rather than `depends_on.nodes`. See the [Interface conformance](/advanced_guides/interface_conformance) guide.
 :::
 
 ### Receiving messages
 
 The code generator creates a module for each consumed topic under `peppygen::consumed_topics`.
-The module name is `<link_id>_<topic_name>` based on the `link_id` field — in this case `uvc_camera_video_stream`.
+The module name is `<link_id>_<topic_name>` based on the `link_id` field; in this case `uvc_camera_video_stream`.
 Use `on_next_message_received` to wait for the next message:
 
 ```rust
@@ -203,12 +203,12 @@ fn main() -> Result<()> {
 ```
 
 The `on_next_message_received` function takes:
-- `node_runner` — the node runner reference.
-- `from_core_node` — optionally filter messages from a specific core node, or `None` for any.
+- `node_runner`: the node runner reference.
+- `from_core_node`: optionally filter messages from a specific core node, or `None` for any.
 
 It returns a tuple of:
-- `instance_id` — the producer instance that published the message, read straight from the message context.
-- `message` — the deserialized message, with fields matching the topic's `message_format`.
+- `instance_id`: the producer instance that published the message, read straight from the message context.
+- `message`: the deserialized message, with fields matching the topic's `message_format`.
 
 There is no call-site instance-targeting argument. To pin a `from_any` slot to one specific producer, use a launcher binding (see [Bindings and routing](#bindings-and-routing) below).
 
@@ -257,7 +257,7 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
 
 Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the launcher bindings that fill them decide which producer instance reaches which slot.
 
-A binding takes the form `KEY: VALUE` — `KEY` is a label local to the consumer (typically a `link_id` from `depends_on`), and `VALUE` is the target producer `instance_id`. Each binding creates a private one-way channel from that producer instance to one of the consumer's declared slots.
+A binding takes the form `KEY: VALUE`, where `KEY` is a label local to the consumer (typically a `link_id` from `depends_on`) and `VALUE` is the target producer `instance_id`. Each binding creates a private one-way channel from that producer instance to one of the consumer's declared slots.
 
 In a launcher / stack config:
 
@@ -282,7 +282,7 @@ peppy node run --bind uvc_camera@my-camera-instance .
 For every message a producer publishes, each consumer instance applies this rule on its own slots:
 
 1. **Pinned-bound wins.** If one or more pinned slots' bindings name the producer, the message is delivered to every such pinned slot.
-2. **Else `from_any` for the producer's `(name, tag)`.** A `from_any: true` slot for that producer kind receives the message if it is bound to this producer, or — if there is no `from_any` binding for that producer — as the wildcard fallback for unclaimed producers.
+2. **Else `from_any` for the producer's `(name, tag)`.** A `from_any: true` slot for that producer kind receives the message if it is bound to this producer, or (if there is no `from_any` binding for that producer) as the wildcard fallback for unclaimed producers.
 3. **Else drop.** No slot claims the message; the consumer ignores it.
 
 Two consequences worth remembering:
@@ -346,11 +346,11 @@ The launcher validator runs these checks before the stack starts:
 
 1. **Pinned-unbound is a hard error.** Every pinned (`from_any` absent or `false`) slot in `depends_on` must have a `--bind KEY@VALUE` whose `KEY` equals the slot's `link_id`.
 2. A `KEY` that matches a pinned slot's `link_id` binds that slot to `VALUE`.
-3. **Free-form `KEY`s are allowed for `from_any` slots.** A `--bind KEY@VALUE` whose `KEY` doesn't match a pinned `link_id` is accepted as long as some `from_any` slot accepts `VALUE` as a satisfying producer. For node slots, the producer's `(node_name, node_tag)` must equal the slot's declared pair. For interface slots, the producer's `interfaces.conforms_to` must include the slot's `(name, tag)` — see [Interface conformance](/advanced_guides/interface_conformance) for the conformance contract. Multiple such bindings on the same `from_any` slot accumulate.
+3. **Free-form `KEY`s are allowed for `from_any` slots.** A `--bind KEY@VALUE` whose `KEY` doesn't match a pinned `link_id` is accepted as long as some `from_any` slot accepts `VALUE` as a satisfying producer. For node slots, the producer's `(node_name, node_tag)` must equal the slot's declared pair. For interface slots, the producer's `interfaces.conforms_to` must include the slot's `(name, tag)`; see [Interface conformance](/advanced_guides/interface_conformance) for the conformance contract. Multiple such bindings on the same `from_any` slot accumulate.
 4. A `KEY` that matches neither a pinned `link_id` nor a `from_any` slot satisfied by `VALUE` is a dead key and is rejected.
 5. A pinned binding whose target `instance_id` deploys a different node than the slot expects (for node deps) or a node that does not `conforms_to` the requested interface (for interface deps) is rejected. Node-dep mismatches surface as `BindingTargetMismatch`; interface-dep mismatches surface as `BindingInterfaceNotConformed`.
 6. `KEY` uniqueness within a single invocation is enforced (no two bindings may share the same `KEY`).
-7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack — not just within a `(node_name, node_tag)` group. Bindings address producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
+7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. Bindings address producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
 
 ## Message format types
 
@@ -375,7 +375,7 @@ The `message_format` supports the following field types:
 
 Fields can also use complex types:
 
-- **Object** — a nested struct:
+- **Object**: a nested struct:
   ```json5
   header: {
     $type: "object",
@@ -383,14 +383,14 @@ Fields can also use complex types:
     frame_id: "u32"
   }
   ```
-- **Array** — a variable-length list:
+- **Array**: a variable-length list:
   ```json5
   frame: {
     $type: "array",
     $items: "u8"
   }
   ```
-- **Fixed-length array** — an array with a known size:
+- **Fixed-length array**: an array with a known size:
   ```json5
   position: {
     $type: "array",
@@ -398,7 +398,7 @@ Fields can also use complex types:
     $length: 3
   }
   ```
-- **Optional** — a field that may be absent:
+- **Optional**: a field that may be absent:
   ```json5
   error_msg: {
     $type: "string",

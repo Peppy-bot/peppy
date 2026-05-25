@@ -9,13 +9,13 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 A peppy node can either declare its `topics`, `services` and `actions` directly in its own `peppy.json5`, or it can claim conformance to a separately-defined **interface**. An interface is a standalone document with its own `peppy_schema: "interface_v1"` that names a set of topics, services and actions. Producers conform to the interface; consumers depend on the interface. Both sides cite the interface by `(name, tag)`, and the launcher binds a conforming producer to the consumer at launch time.
 
-Interface conformance is the abstraction you reach for when several nodes implement the same contract. A `realsense_d405` driver, a `webcam` driver, and a `gazebo_camera_sim` all expose the same `video_stream` topic. Without conformance, every consumer would have to hard-code one of those producer names. With conformance, the consumer asks for the `depth_camera:v1` interface and the launcher decides which physical driver fills the slot.
+Interface conformance is the abstraction you reach for when several nodes implement the same contract. A `realsense_d405` driver, a `zed_2i` driver, and a `mujoco_depth_camera_sim` all expose the same `video_stream` topic. Without conformance, every consumer would have to hard-code one of those producer names. With conformance, the consumer asks for the `depth_camera:v1` interface and the launcher decides which physical driver (or its sim equivalent) fills the slot.
 
 ## The three pieces
 
 ### 1. The interface document
 
-An interface lives in its own file under a repository peppy scans (see [Repositories](/advanced_guides/repositories)). It uses `peppy_schema: "interface_v1"` and declares the same `topics` / `services` / `actions` shapes you would put on a node — except the `interfaces` block is the contract itself, with no `emits` / `consumes` split:
+An interface lives in its own file under a repository peppy scans (see [Repositories](/advanced_guides/repositories)). It uses `peppy_schema: "interface_v1"` and declares the same `topics` / `services` / `actions` shapes you would put on a node, except the `interfaces` block is the contract itself, with no `emits` / `consumes` split:
 
 ```json5
 // depth_camera/peppy.json5 (inside a registered repo)
@@ -54,11 +54,11 @@ An interface lives in its own file under a repository peppy scans (see [Reposito
 }
 ```
 
-After `peppy repo refresh`, the interface is cached and addressable by `(name, tag)`. Files use whatever filename you like — peppy identifies an `interface_v1` document by its `peppy_schema` field.
+After `peppy repo refresh`, the interface is cached and addressable by `(name, tag)`. Files use whatever filename you like; peppy identifies an `interface_v1` document by its `peppy_schema` field.
 
 ### 2. A producer that conforms
 
-A producer node declares conformance with an `interfaces.conforms_to` list. Each entry names an interface by `(name, tag)`. The producer does not re-declare the interface's topics or services — it inherits them by reference:
+A producer node declares conformance with an `interfaces.conforms_to` list. Each entry names an interface by `(name, tag)`. The producer does not re-declare the interface's topics or services; it inherits them by reference:
 
 ```json5
 // realsense_d405/peppy.json5
@@ -83,11 +83,11 @@ A producer node declares conformance with an `interfaces.conforms_to` list. Each
 
 The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `conforms_to` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the contract directly would get.
 
-A single node can conform to multiple interfaces (e.g. `[{depth_camera, v1}, {uvc_camera, v1}]`) — it then satisfies any consumer slot that asks for either.
+A single node can conform to multiple interfaces (e.g. `[{depth_camera, v1}, {uvc_camera, v1}]`), and then satisfies any consumer slot that asks for either.
 
 ### 3. A consumer that depends on the interface
 
-A consumer references an interface through `manifest.depends_on.interfaces` rather than `depends_on.nodes`. Every interface dep carries a `link_id` and optionally a `from_any` flag — exactly like a node dep — but its `(name, tag)` names the interface contract instead of a concrete producer:
+A consumer references an interface through `manifest.depends_on.interfaces` rather than `depends_on.nodes`. Every interface dep carries a `link_id` and optionally a `from_any` flag (exactly like a node dep), but its `(name, tag)` names the interface contract instead of a concrete producer:
 
 ```json5
 // video_reconstruction/peppy.json5
@@ -124,7 +124,7 @@ The consumer never names a producer node. It names the interface, and the launch
 
 ## Binding a conforming producer
 
-The matching predicate at binding time is: *a producer satisfies an interface slot iff its `interfaces.conforms_to` includes the slot's `(name, tag)`*. The producer's own node name is irrelevant. A `webcam:v1` node that `conforms_to: [{ depth_camera, v1 }]` is just as valid for a `depth_camera:v1` slot as a `realsense_d405:v1` node that conforms.
+The matching predicate at binding time is: *a producer satisfies an interface slot if its `interfaces.conforms_to` includes the slot's `(name, tag)`*. The producer's own node name is irrelevant. A `zed_2i:v1` node that `conforms_to: [{ depth_camera, v1 }]` is just as valid for a `depth_camera:v1` slot as a `realsense_d405:v1` node that conforms.
 
 ### Pinned interface bindings
 
@@ -157,7 +157,7 @@ peppy node run --instance-id=depth_cam_inst1 realsense_d405:v1
 peppy node run --instance-id=video_rec_1 --bind=rear_camera@depth_cam_inst1 video_reconstruction:v1
 ```
 
-If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, the launcher rejects the binding with a `BindingInterfaceNotConformed` error citing the expected interface and the producer's actual `(name, tag)`. The producer's node name does **not** save it — a node called `depth_camera:v1` that fails to declare `conforms_to: [{ depth_camera, v1 }]` is treated like any other non-conforming node.
+If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, the launcher rejects the binding with a `BindingInterfaceNotConformed` error citing the expected interface and the producer's actual `(name, tag)`. The producer's node name does **not** save it: a node called `depth_camera:v1` that fails to declare `conforms_to: [{ depth_camera, v1 }]` is treated like any other non-conforming node.
 
 ### From-any interface bindings
 
@@ -175,7 +175,7 @@ manifest: {
 }
 ```
 
-The launcher routes each `--bind` whose value names a conforming producer to the first matching slot in `link_id` order (alphabetical). Pinned slots claim their producers first; the remaining bindings fall into the from_any slot. The same per-message routing rules as node deps apply — see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for the wildcard-vs-explicit semantics.
+The launcher routes each `--bind` whose value names a conforming producer to the first matching slot in `link_id` order (alphabetical). Pinned slots claim their producers first; the remaining bindings fall into the from_any slot. The same per-message routing rules as node deps apply; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for the wildcard-vs-explicit semantics.
 
 ## sha256 pinning
 
@@ -193,7 +193,7 @@ interfaces: {
 }
 ```
 
-Each side independently verifies its pinned `sha256` against the on-disk interface document at cache-resolution time — peppy refuses to start a node whose pinned interface revision is not in the cache. The two sides are not cross-checked: a producer that pins `sha256` against the cached interface and a consumer that does not pin can still bind, as long as both pass their own checks.
+Each side independently verifies its pinned `sha256` against the on-disk interface document at cache-resolution time. Peppy refuses to start a node whose pinned interface revision is not in the cache. The two sides are not cross-checked: a producer that pins `sha256` against the cached interface and a consumer that does not pin can still bind, as long as both pass their own checks.
 
 ## Worked example: multi-camera reconstruction
 
@@ -204,9 +204,9 @@ Combining the pieces above, a typical setup looks like this:
 │   topics: [video_stream]
 │   services: [video_stream_info]
 │
-├─ realsense_d405:v1 (node)        conforms_to: [{depth_camera, v1}]
-├─ webcam_uvc:v1     (node)        conforms_to: [{depth_camera, v1}]
-└─ gazebo_camera:v1  (node)        conforms_to: [{depth_camera, v1}]
+├─ realsense_d405:v1         (node)  conforms_to: [{depth_camera, v1}]
+├─ zed_2i:v1                 (node)  conforms_to: [{depth_camera, v1}]
+└─ mujoco_depth_camera_sim:v1 (node) conforms_to: [{depth_camera, v1}]
 
 video_reconstruction:v1 (consumer)
    depends_on.interfaces: [
@@ -226,15 +226,15 @@ A launcher can wire the three slots to any mix of conforming producers:
       { instance_id: "rs_left" },
       { instance_id: "rs_right" },
     ]},
-    { source: { name: "webcam_uvc:v1" }, instances: [
-      { instance_id: "fallback_webcam" },
+    { source: { name: "zed_2i:v1" }, instances: [
+      { instance_id: "zed_overhead" },
     ]},
     { source: { name: "video_reconstruction:v1" }, instances: [{
       instance_id: "recon_1",
       bindings: {
         left_cam: "rs_left",
         right_cam: "rs_right",
-        any_label: "fallback_webcam",
+        any_label: "zed_overhead",
       },
     }],
     },
@@ -242,12 +242,12 @@ A launcher can wire the three slots to any mix of conforming producers:
 }
 ```
 
-`left_cam` and `right_cam` are pinned interface bindings — the launcher checks `rs_left` and `rs_right` both conform to `depth_camera:v1` (they do, via the `realsense_d405:v1` producer node). `any_label` is a free-form binding key; the launcher attaches it to the `backup_cams` from_any slot because `fallback_webcam`'s node `(webcam_uvc:v1)` conforms to `depth_camera:v1`.
+`left_cam` and `right_cam` are pinned interface bindings: the launcher checks `rs_left` and `rs_right` both conform to `depth_camera:v1` (they do, via the `realsense_d405:v1` producer node). `any_label` is a free-form binding key; the launcher attaches it to the `backup_cams` from_any slot because `zed_overhead`'s node `(zed_2i:v1)` conforms to `depth_camera:v1`.
 
-Swapping `realsense_d405:v1` for `gazebo_camera:v1` in the launcher requires no change to the consumer node — both producers conform to the same interface and the binding works unchanged.
+Swapping `realsense_d405:v1` for `mujoco_depth_camera_sim:v1` in the launcher requires no change to the consumer node, since both producers conform to the same interface and the binding works unchanged.
 
 ## What conformance is not
 
 - **Conformance is explicit.** A node that natively emits `video_stream` but does not declare `conforms_to: [{ depth_camera, v1 }]` does **not** satisfy a `depth_camera:v1` interface slot, even if every field matches. The contract is the explicit `conforms_to` claim, not structural duck typing.
-- **Node identity is irrelevant.** A producer whose node name and tag coincidentally equal an interface's `(name, tag)` is treated like any other producer: it only satisfies the slot if it declares `conforms_to`. The reverse is also true — a producer named `realsense_d405:v1` satisfies a `depth_camera:v1` slot as soon as it declares conformance.
+- **Node identity is irrelevant.** A producer whose node name and tag coincidentally equal an interface's `(name, tag)` is treated like any other producer: it only satisfies the slot if it declares `conforms_to`. The reverse is also true: a producer named `realsense_d405:v1` satisfies a `depth_camera:v1` slot as soon as it declares conformance.
 - **Conformance does not flow through node deps.** `depends_on.nodes` still names a specific producer node by `(name, tag)`; `depends_on.interfaces` is what introduces conformance-based matching. The two coexist on the same consumer.

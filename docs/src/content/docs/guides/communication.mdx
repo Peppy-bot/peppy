@@ -162,7 +162,7 @@ Finally, add this new node to the stack:
 </Steps>
 
 :::tip
-You can combine both steps into a single command with `peppy node add . --sync` (or `-s`). Add `-b`/`-r` to also build or run in the same invocation — e.g. `peppy node add . -sb`.
+You can combine both steps into a single command with `peppy node add . --sync` (or `-s`). Add `-b`/`-r` to also build or run in the same invocation, e.g. `peppy node add . -sb`.
 :::
 
 :::note
@@ -226,7 +226,7 @@ We can see the messages received from the `hello_world_param:v1` instance!
 
 ## Starting a second instance with different parameters
 
-Now let's push things a little further. Imagine we need a second instance with different parameters—we can start one like this:
+Now let's push things a little further. Imagine we need a second instance with different parameters; we can start one like this:
 ```sh
 ❯ peppy node run hello_world_param:v1 name=you
 Running node hello_world_param:v1...
