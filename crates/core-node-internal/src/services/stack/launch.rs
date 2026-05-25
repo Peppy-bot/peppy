@@ -1664,7 +1664,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// Builds a phase future that signals `cleanup_ran` iff it observes the
+    /// Builds a phase future that signals `cleanup_ran` if it observes the
     /// cancel token — simulating `run_node_run`'s `abort_started` branch.
     /// If instead the outer runner drops this future, the flag stays false
     /// and the test fails, matching the real-world orphan bug.

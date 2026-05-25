@@ -703,6 +703,7 @@ fn consumed_action() {
             "user_goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
             "feedback_qos,",
+            "to_link_id=None,",
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",
             "handle._inner = action_handle",

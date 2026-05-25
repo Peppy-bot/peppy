@@ -239,8 +239,8 @@ pub enum NodeCommands {
         /// (`--bind a@p1 --bind b@p2`) or comma-separated
         /// (`--bind a@p1,b@p2`). KEY must be a `link_id` declared in this
         /// node's manifest; VALUE is the producer's `instance_id`
-        /// (see `peppy node list`). Missing bindings for pinned deps fire
-        /// a warning; the run still proceeds.
+        /// (see `peppy node list`). Missing bindings for pinned deps are
+        /// treated as validation errors and will abort the run.
         #[arg(
             long = "bind",
             value_delimiter = ',',

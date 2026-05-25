@@ -83,7 +83,7 @@ pub struct ValidatedBindings {
 ///    `KEY` equals the slot's `link_id`. Otherwise
 ///    [`ParsingError::BindingMissingForPinnedDep`].
 /// 3. Free-form `--bind KEY@VALUE` where `KEY` doesn't match a pinned
-///    `link_id` is accepted iff a `from_any: true` slot exists for
+///    `link_id` is accepted if a `from_any: true` slot exists for
 ///    VALUE's `(name, tag)`. Multiple bindings on the same from_any
 ///    slot accumulate.
 /// 4. A `--bind` whose `KEY` matches neither a pinned `link_id` nor a
@@ -937,13 +937,15 @@ mod tests {
     /// `deserialize_instances`).
     #[test]
     fn rule7_does_not_double_report_intra_group_duplicates() {
-        // Two instances under the same (name, tag) — would be rejected
-        // by the deserializer in real parsing, but if they slip
-        // through, this validator must not double-fire.
+        // Two instances under the same (name, tag) sharing the same
+        // `instance_id` — would be rejected by the deserializer in real
+        // parsing, but if they slip through, this validator must hit
+        // the intra-group skip branch instead of reporting a stack-wide
+        // duplicate.
         let camera_instances = parse_instances(
             r#"[
-                { instance_id: "inst_a" },
-                { instance_id: "inst_b" }
+                { instance_id: "shared_inst" },
+                { instance_id: "shared_inst" }
             ]"#,
         );
         let items = vec![item("camera", "v1", &camera_instances, None)];

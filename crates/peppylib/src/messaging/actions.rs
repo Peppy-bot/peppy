@@ -8,6 +8,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
 use pmi::{ActionWireReceiver, ActionWireSender, PublisherQoS, SenderTarget, ServiceQueryKind};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::time::Duration;
 
 pub struct ActionMessenger;
@@ -378,6 +379,7 @@ impl ActionMessenger {
         // addressing slot. The probe runs server-side without invoking the
         // goal handler; only the discovered producer will receive the real
         // goal request.
+        let started_at = Instant::now();
         let (resolved_core, resolved_inst) =
             if target_instance_id.is_none() || target_core_node.is_none() {
                 let probe_sender = ActionWireSender::new(
@@ -421,12 +423,22 @@ impl ActionMessenger {
             .subscribe_action_feedback(&sender, &goal_id, feedback_qos.into())
             .await?;
 
+        // Discovery counts against the caller's single end-to-end budget;
+        // pass only the remaining slice to `poll_service` so a tight
+        // `goal_timeout` can't be silently doubled by a slow probe.
+        let remaining_goal_budget = goal_timeout.saturating_sub(started_at.elapsed());
+        if remaining_goal_budget.is_zero() {
+            return Err(Error::ServiceTimeout {
+                instance_id: resolved_inst.clone(),
+                service_name: to_action_name.to_string(),
+            });
+        }
         let goal_response = messenger
             .poll_service(
                 &sender.goal_service(),
                 goal_payload,
                 ServiceQueryKind::UserRequest,
-                goal_timeout,
+                remaining_goal_budget,
             )
             .await?;
 

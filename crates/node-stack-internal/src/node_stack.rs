@@ -280,6 +280,9 @@ impl NodeStackInner {
     ) -> Option<(String, String)> {
         for handle in self.graph.node_weights() {
             let guard = handle.read();
+            if self.is_root(&key_from_entity(&guard)) {
+                continue;
+            }
             let owns_it = guard
                 .instances()
                 .iter()
@@ -823,7 +826,7 @@ impl NodeStack {
     /// defined below — they are intentionally kept as plain data so the
     /// call-site reads as `stack.restore_snapshot_if_matches(target, snap)`.
     ///
-    /// Atomically restore an entity to a previously captured snapshot, iff the
+    /// Atomically restore an entity to a previously captured snapshot, if the
     /// slot still holds the expected handle+generation. Used by the node-add
     /// rebuild path to roll back to the prior `Ready` state when a rebuild
     /// fails after `push_config` has already replaced the entity in-place.
