@@ -349,34 +349,33 @@ impl ServiceMessenger {
         let response_timeout: Option<Duration> = response_timeout.into();
 
         let started_at = Instant::now();
-        let (resolved_core, resolved_inst) = if target_instance_id.is_none()
-            || target_core_node.is_none()
-        {
-            let probe_sender = ServiceWireSender::new(
-                bound_core_node,
-                as_instance_id,
-                target_core_node,
-                target_instance_id,
-                to_target.clone(),
-                to_service_name,
-                ServiceKind::Service,
-            )?;
-            // Discovery is capped at PROBE_TIMEOUT or the caller's response
-            // budget, whichever is shorter; this preserves the user contract
-            // that a tight `response_timeout` fails fast against unreachable
-            // targets.
-            let discovery_timeout = response_timeout
-                .map(|t| t.min(PROBE_TIMEOUT))
-                .unwrap_or(PROBE_TIMEOUT);
-            let (core, inst) =
-                discover_producer(messenger, &probe_sender, discovery_timeout).await?;
-            (Some(core), Some(inst))
-        } else {
-            (
-                target_core_node.map(str::to_string),
-                target_instance_id.map(str::to_string),
-            )
-        };
+        let (resolved_core, resolved_inst) =
+            if target_instance_id.is_none() || target_core_node.is_none() {
+                let probe_sender = ServiceWireSender::new(
+                    bound_core_node,
+                    as_instance_id,
+                    target_core_node,
+                    target_instance_id,
+                    to_target.clone(),
+                    to_service_name,
+                    ServiceKind::Service,
+                )?;
+                // Discovery is capped at PROBE_TIMEOUT or the caller's response
+                // budget, whichever is shorter; this preserves the user contract
+                // that a tight `response_timeout` fails fast against unreachable
+                // targets.
+                let discovery_timeout = response_timeout
+                    .map(|t| t.min(PROBE_TIMEOUT))
+                    .unwrap_or(PROBE_TIMEOUT);
+                let (core, inst) =
+                    discover_producer(messenger, &probe_sender, discovery_timeout).await?;
+                (Some(core), Some(inst))
+            } else {
+                (
+                    target_core_node.map(str::to_string),
+                    target_instance_id.map(str::to_string),
+                )
+            };
 
         // Discovery counts against the caller's single end-to-end budget;
         // pass only the remaining slice to `poll_service` so a tight

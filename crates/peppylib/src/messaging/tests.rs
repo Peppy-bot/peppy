@@ -2981,14 +2981,13 @@ async fn service_communication_poll_wildcard_core_pinned_instance_discovers() {
     let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
     let service_ready_timeout = Duration::from_secs(1);
 
-    let spawn_listener = |ready_tx: oneshot::Sender<()>,
+    let spawn_listener = |handle: MessengerHandle,
+                          ready_tx: oneshot::Sender<()>,
                           core_node: &'static str,
                           response_payload: Payload,
                           call_count: Arc<AtomicUsize>| {
-        let handle = router.messenger();
         let request_payload = request_payload.clone();
-        async move {
-            let handle = handle.await;
+        tokio::spawn(async move {
             let mut service = ServiceMessenger::listen(
                 &handle,
                 core_node,
@@ -2999,41 +2998,39 @@ async fn service_communication_poll_wildcard_core_pinned_instance_discovers() {
             .await
             .expect("service should start");
 
-            tokio::spawn(async move {
-                let handler = service.handle_next_request(|request| {
-                    let response_payload = response_payload.clone();
-                    async move {
-                        assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
-                        assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                        assert_eq!(request.message().payload(), &request_payload);
-                        call_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(response_payload)
-                    }
-                });
+            let handler = service.handle_next_request(|request| {
+                let response_payload = response_payload.clone();
+                async move {
+                    assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
+                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
+                    assert_eq!(request.message().payload(), &request_payload);
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(response_payload)
+                }
+            });
 
-                ready_tx.send(()).unwrap();
-                // Either listener may win the discovery race; whichever
-                // loses simply times out without invoking the handler.
-                let _ = tokio::time::timeout(service_wait_timeout, handler).await;
-                Ok::<(), Error>(())
-            })
-        }
+            ready_tx.send(()).unwrap();
+            // Either listener may win the discovery race; whichever
+            // loses simply times out without invoking the handler.
+            let _ = tokio::time::timeout(service_wait_timeout, handler).await;
+            Ok::<(), Error>(())
+        })
     };
 
     let task1 = spawn_listener(
+        router.messenger().await,
         ready_tx1,
         listener_core_node1,
         response_payload.clone(),
         Arc::clone(&call_count),
-    )
-    .await;
+    );
     let task2 = spawn_listener(
+        router.messenger().await,
         ready_tx2,
         listener_core_node2,
         response_payload.clone(),
         Arc::clone(&call_count),
-    )
-    .await;
+    );
 
     tokio::time::timeout(service_ready_timeout, ready_rx1)
         .await
@@ -3054,8 +3051,8 @@ async fn service_communication_poll_wildcard_core_pinned_instance_discovers() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None,                       // wildcard target_core_node — must trigger discovery
-            Some(shared_instance_id),   // pinned target_instance_id
+            None,                     // wildcard target_core_node — must trigger discovery
+            Some(shared_instance_id), // pinned target_instance_id
             request_payload.clone(),
             Duration::from_secs(1),
         )
@@ -3196,8 +3193,8 @@ async fn action_send_goal_wildcard_core_pinned_instance_discovers() {
         "caller_inst",
         action_target,
         action_name,
-        None,               // wildcard target_core_node — must trigger discovery
-        Some(shared_inst),  // pinned target_instance_id
+        None,              // wildcard target_core_node — must trigger discovery
+        Some(shared_inst), // pinned target_instance_id
         Payload::from_static(b"go"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -3217,7 +3214,8 @@ async fn action_send_goal_wildcard_core_pinned_instance_discovers() {
 
     let total = goal_a.load(Ordering::SeqCst) + goal_b.load(Ordering::SeqCst);
     assert_eq!(
-        total, 1,
+        total,
+        1,
         "exactly one producer must run its goal handler — discover-then-pin \
          must pin to one producer even when only target_core_node is wildcard \
          (a={}, b={})",
