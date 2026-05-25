@@ -314,7 +314,8 @@ The module name is the **topic name only** (e.g. `joint_commands`), since there 
                 loop {
                     let (instance_id, command) = joint_commands::on_next_message_received(
                         &node_runner_clone,
-                        None,
+                        None, // from_core_node (None = any)
+                        None, // from_instance_id (None = any)
                     )
                     .await
                     .expect("failed to receive joint command");
