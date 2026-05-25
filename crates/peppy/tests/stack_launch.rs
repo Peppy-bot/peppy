@@ -1,4 +1,5 @@
 use config::node::Toolchain;
+use peppy::commands::repo::{RepoCommand, RepoCommands};
 use peppy::test_support::{
     LogCapture, ServeCommandEmulation, override_build_cmd, override_run_cmd_silent,
 };
@@ -659,9 +660,10 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
 }
 
 /// Writes a minimal peppy.json5 with an explicit `run_cmd` (so the daemon's
-/// build phase is skipped) and an optional `depends_on` block. Mirrors
-/// `write_node_config` but accepts run_cmd as owned strings and a manifest
-/// extension for `depends_on`.
+/// build phase is skipped), an optional `depends_on` block, and an optional
+/// top-level `interfaces` block. Mirrors `write_node_config` but accepts
+/// run_cmd as owned strings and manifest/interfaces extensions for tests
+/// that need to exercise binding resolution against `conforms_to`.
 fn write_node_config_for_helper(
     nodes_directory: &Path,
     node_name: &str,
@@ -669,6 +671,7 @@ fn write_node_config_for_helper(
     git_hash: &str,
     run_cmd: &[String],
     depends_on_json5: Option<&str>,
+    interfaces_json5: Option<&str>,
 ) -> PathBuf {
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
@@ -681,13 +684,16 @@ fn write_node_config_for_helper(
     let manifest_extra = depends_on_json5
         .map(|deps| format!(",\n            depends_on: {deps}"))
         .unwrap_or_default();
+    let interfaces_extra = interfaces_json5
+        .map(|ifaces| format!(",\n            interfaces: {ifaces}"))
+        .unwrap_or_default();
     let body = format!(
         r#"{{
             peppy_schema: "node_v1",
             manifest: {{
                 name: "{node_name}",
                 tag: "{node_tag}"{manifest_extra}
-            }},
+            }}{interfaces_extra},
             execution: {{
                 language: "rust",
                 run_cmd: [{run_cmd_json5}]
@@ -756,6 +762,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         &git_hash,
         &producer_run_cmd,
         None,
+        None,
     );
 
     let consumer_run_cmd = vec![
@@ -776,6 +783,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         &git_hash,
         &consumer_run_cmd,
         Some(&consumer_depends_on),
+        None,
     );
 
     let ctx = Arc::new(
@@ -1059,5 +1067,515 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
             .any(|n| n.name == camera_name || n.name == lidar_name),
         "rejected launcher must not have added or spawned anything. Graph: {:?}",
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+    );
+}
+
+/// Writes a minimal `peppy_schema: "interface_v1"` document at `path`.
+/// Used by the conformance-binding integration tests to materialize the
+/// interface contract on disk alongside the producer/consumer node
+/// configs that reference it.
+fn write_interface_v1_doc(path: &Path, name: &str, tag: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("failed to create interface parent dir");
+    }
+    let body = format!(
+        r#"{{
+            peppy_schema: "interface_v1",
+            manifest: {{ name: "{name}", tag: "{tag}" }},
+            interfaces: {{
+                topics: [
+                    {{
+                        name: "video_stream",
+                        qos_profile: "sensor_data",
+                        message_format: {{
+                            width: "u32",
+                            height: "u32",
+                            encoding: "string"
+                        }}
+                    }}
+                ]
+            }}
+        }}"#
+    );
+    fs::write(path, body).expect("failed to write interface_v1 doc");
+}
+
+/// Regression for the launcher binding validator: a producer node that
+/// `conforms_to` the consumer's `depends_on.interfaces` entry must
+/// satisfy a pinned interface binding, even when the producer's node
+/// name differs from the interface name. The previous validator matched
+/// only by `(node_name, node_tag)`, which silently accepted coincidental
+/// name matches and rejected real `conforms_to` producers.
+///
+/// This test exercises a real `peppy_schema: "interface_v1"` document
+/// alongside a `node_v1` producer declaring conformance to it and a
+/// `node_v1` consumer declaring the interface dep.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_resolves_conforms_to_binding_with_real_interface_doc() {
+    let serve = ServeCommandEmulation::with_zenoh()
+        .await
+        .expect("failed to create zenoh serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
+    let interface_repo_dir = tempfile::tempdir().expect("failed to create temp interface repo");
+    let consumer_dump = dump_dir.path().join("consumer.json5");
+
+    let interface_name = "depth_camera_iface";
+    let interface_tag = "v1";
+    let producer_name = "realsense_d405";
+    let consumer_name = "video_reconstruction";
+    let node_tag = "v1";
+    let producer_instance_id = "depth_cam_inst1";
+    let consumer_instance_id = "video_rec_1";
+    let link_id = "rear_camera";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    // Materialize the interface contract document on disk and register
+    // the containing directory as an fs-type repo. The launcher binding
+    // validator only inspects `conforms_to` claims, but the daemon's
+    // node-add path also resolves the interface document from cache
+    // for consumers declaring `depends_on.interfaces` — without the
+    // repo refresh the consumer node-add would fail before
+    // `validate_bindings` ever runs.
+    write_interface_v1_doc(
+        &interface_repo_dir
+            .path()
+            .join("depth_camera_iface/peppy.json5"),
+        interface_name,
+        interface_tag,
+    );
+    let conf_dir = serve.temp_dir().join("conf");
+    fs::create_dir_all(&conf_dir).expect("create conf dir");
+    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
+        { "id": 1, "type": "fs", "path": interface_repo_dir.path().to_string_lossy() }
+    ]))
+    .expect("serialize repos");
+    fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+
+    let producer_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "exec sleep 30".to_string(),
+    ];
+    let producer_interfaces = format!(
+        r#"{{
+            conforms_to: [{{ name: "{interface_name}", tag: "{interface_tag}" }}]
+        }}"#
+    );
+    let producer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        producer_name,
+        node_tag,
+        &git_hash,
+        &producer_run_cmd,
+        None,
+        Some(&producer_interfaces),
+    );
+
+    let consumer_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
+            consumer_dump.display()
+        ),
+    ];
+    let consumer_depends_on = format!(
+        r#"{{
+            nodes: [],
+            interfaces: [{{
+                name: "{interface_name}",
+                tag: "{interface_tag}",
+                link_id: "{link_id}"
+            }}]
+        }}"#
+    );
+    let consumer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        consumer_name,
+        node_tag,
+        &git_hash,
+        &consumer_run_cmd,
+        Some(&consumer_depends_on),
+        None,
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    RepoCommand {
+        command: RepoCommands::Refresh,
+    }
+    .execute(&ctx)
+    .expect("repo refresh should populate interface cache");
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let _ready_producer = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        producer_instance_id,
+        test_node_target(producer_name),
+    )
+    .await
+    .expect("producer ready service should start");
+    let _health_producer = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        producer_instance_id,
+        test_node_target(producer_name),
+    )
+    .await
+    .expect("producer health service should start");
+    let (_shutdown_producer, _) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        producer_instance_id,
+        test_node_target(producer_name),
+    )
+    .await
+    .expect("producer shutdown service should start");
+    let _ready_consumer = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        consumer_instance_id,
+        test_node_target(consumer_name),
+    )
+    .await
+    .expect("consumer ready service should start");
+    let _health_consumer = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        consumer_instance_id,
+        test_node_target(consumer_name),
+    )
+    .await
+    .expect("consumer health service should start");
+    let (_shutdown_consumer, _) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        consumer_instance_id,
+        test_node_target(consumer_name),
+    )
+    .await
+    .expect("consumer shutdown service should start");
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {{
+                    source: {{ local: "{producer_path}" }},
+                    instances: [{{ instance_id: "{producer_instance_id}" }}]
+                }},
+                {{
+                    source: {{ local: "{consumer_path}" }},
+                    instances: [{{
+                        instance_id: "{consumer_instance_id}",
+                        bindings: {{ {link_id}: "{producer_instance_id}" }}
+                    }}]
+                }}
+            ]
+        }}"#,
+        producer_path = producer_path.display(),
+        consumer_path = consumer_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect("launch should succeed with conforming producer");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
+    while Instant::now() < deadline {
+        if let Ok(content) = fs::read_to_string(&consumer_dump)
+            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+        {
+            consumer_config = Some(cfg);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    for instance_id in [consumer_instance_id, producer_instance_id] {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(&ctx);
+    }
+
+    let consumer_config = consumer_config.unwrap_or_else(|| {
+        panic!(
+            "consumer runtime config dump never appeared / parsed at {}",
+            consumer_dump.display()
+        )
+    });
+    assert_eq!(
+        consumer_config.node_instance.slot_bindings.get(link_id),
+        Some(&config::runtime::SlotBinding::Pinned {
+            producer_instance_id: producer_instance_id.to_string(),
+        }),
+        "interface dep `{link_id}` should resolve to the conforming producer's instance",
+    );
+}
+
+/// Regression for the bug: a producer whose node name coincidentally
+/// matches a consumer's interface dep name+tag but who does NOT declare
+/// `interfaces.conforms_to` must be rejected at binding validation.
+/// Prior to the fix, the validator accepted this by node-identity
+/// coincidence and the conformance gap stayed invisible.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_rejects_binding_when_producer_omits_conforms_to() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+
+    // Interface, producer node and (collision) producer node name all
+    // share `depth_camera:v1`. The bug's "coincidental name match" only
+    // accepts this producer because the validator matched node-identity
+    // — there is no `conforms_to` declared on the producer.
+    let interface_name = "depth_camera";
+    let interface_tag = "v1";
+    let producer_name = "depth_camera"; // intentional coincidence
+    let consumer_name = "video_reconstruction";
+    let node_tag = "v1";
+    let producer_instance_id = "depth_cam_inst1";
+    let consumer_instance_id = "video_rec_1";
+    let link_id = "rear_camera";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    let interface_doc_path = nodes_dir.path().join("interfaces/depth_camera.peppy.json5");
+    write_interface_v1_doc(&interface_doc_path, interface_name, interface_tag);
+
+    let run_cmd = vec!["sh".to_string(), "-c".to_string(), "sleep 30".to_string()];
+    // Producer omits `interfaces.conforms_to` entirely.
+    let producer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        producer_name,
+        node_tag,
+        &git_hash,
+        &run_cmd,
+        None,
+        None,
+    );
+
+    let consumer_depends_on = format!(
+        r#"{{
+            nodes: [],
+            interfaces: [{{
+                name: "{interface_name}",
+                tag: "{interface_tag}",
+                link_id: "{link_id}"
+            }}]
+        }}"#
+    );
+    let consumer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        consumer_name,
+        node_tag,
+        &git_hash,
+        &run_cmd,
+        Some(&consumer_depends_on),
+        None,
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {{
+                    source: {{ local: "{producer_path}" }},
+                    instances: [{{ instance_id: "{producer_instance_id}" }}]
+                }},
+                {{
+                    source: {{ local: "{consumer_path}" }},
+                    instances: [{{
+                        instance_id: "{consumer_instance_id}",
+                        bindings: {{ {link_id}: "{producer_instance_id}" }}
+                    }}]
+                }}
+            ]
+        }}"#,
+        producer_path = producer_path.display(),
+        consumer_path = consumer_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    let result = StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx);
+
+    let err_msg = result
+        .expect_err("launch must fail when producer omits conforms_to")
+        .to_string();
+    assert!(
+        err_msg.contains("conforms_to"),
+        "error should mention conforms_to. Got:\n{err_msg}"
+    );
+    assert!(
+        err_msg.contains(link_id),
+        "error should name the consumer's slot `{link_id}`. Got:\n{err_msg}"
+    );
+    assert!(
+        err_msg.contains(producer_instance_id),
+        "error should name the target producer instance. Got:\n{err_msg}"
+    );
+}
+
+/// `conforms_to` matching is strict on `(name, tag)`: a producer
+/// declaring conformance to the right interface name but a different
+/// tag must be rejected at binding validation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+
+    let interface_name = "depth_camera";
+    let consumer_wants_tag = "v1";
+    let producer_claims_tag = "v2"; // mismatch
+    let producer_name = "realsense_d405";
+    let consumer_name = "video_reconstruction";
+    let node_tag = "v1";
+    let producer_instance_id = "depth_cam_inst1";
+    let consumer_instance_id = "video_rec_1";
+    let link_id = "rear_camera";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    // Both interface tags exist on disk so the test isn't ambiguous
+    // about whether the doc is missing vs. the wrong one. Only the v1
+    // contract is what the consumer asks for.
+    write_interface_v1_doc(
+        &nodes_dir
+            .path()
+            .join("interfaces/depth_camera_v1.peppy.json5"),
+        interface_name,
+        consumer_wants_tag,
+    );
+    write_interface_v1_doc(
+        &nodes_dir
+            .path()
+            .join("interfaces/depth_camera_v2.peppy.json5"),
+        interface_name,
+        producer_claims_tag,
+    );
+
+    let run_cmd = vec!["sh".to_string(), "-c".to_string(), "sleep 30".to_string()];
+    let producer_interfaces = format!(
+        r#"{{
+            conforms_to: [{{ name: "{interface_name}", tag: "{producer_claims_tag}" }}]
+        }}"#
+    );
+    let producer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        producer_name,
+        node_tag,
+        &git_hash,
+        &run_cmd,
+        None,
+        Some(&producer_interfaces),
+    );
+
+    let consumer_depends_on = format!(
+        r#"{{
+            nodes: [],
+            interfaces: [{{
+                name: "{interface_name}",
+                tag: "{consumer_wants_tag}",
+                link_id: "{link_id}"
+            }}]
+        }}"#
+    );
+    let consumer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        consumer_name,
+        node_tag,
+        &git_hash,
+        &run_cmd,
+        Some(&consumer_depends_on),
+        None,
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {{
+                    source: {{ local: "{producer_path}" }},
+                    instances: [{{ instance_id: "{producer_instance_id}" }}]
+                }},
+                {{
+                    source: {{ local: "{consumer_path}" }},
+                    instances: [{{
+                        instance_id: "{consumer_instance_id}",
+                        bindings: {{ {link_id}: "{producer_instance_id}" }}
+                    }}]
+                }}
+            ]
+        }}"#,
+        producer_path = producer_path.display(),
+        consumer_path = consumer_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    let result = StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx);
+
+    let err_msg = result
+        .expect_err("launch must fail when producer's conforms_to tag mismatches")
+        .to_string();
+    assert!(
+        err_msg.contains("conforms_to"),
+        "error should mention conforms_to. Got:\n{err_msg}"
+    );
+    assert!(
+        err_msg.contains(&format!("{interface_name}:{consumer_wants_tag}")),
+        "error should name the requested interface `{interface_name}:{consumer_wants_tag}`. Got:\n{err_msg}"
     );
 }

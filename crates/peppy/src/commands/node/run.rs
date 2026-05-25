@@ -1,5 +1,6 @@
 use config::AnyType;
 use config::launcher::{BindingValidationItem, DeploymentInstance, Name, validate_bindings};
+use config::node::ConformsToItem;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig, SlotBinding};
 use core_node_api::NodeStage;
 use core_node_api::SerializedNodeGraph;
@@ -317,6 +318,11 @@ async fn validate_binds_against_stack(
         tag: String,
         instances: Vec<DeploymentInstance>,
         depends_on: Option<config::node::DependsOn>,
+        /// Producer-side `interfaces.conforms_to`. Empty when the node
+        /// declares no conformance. Threaded through into the binding
+        /// validator so interface-dep slots can check this node's
+        /// conformance claims.
+        conforms_to: Vec<ConformsToItem>,
     }
 
     let stack_nodes: Vec<_> = graph
@@ -381,6 +387,12 @@ async fn validate_binds_against_stack(
             tag: node.tag.clone(),
             instances,
             depends_on: info.config.manifest.depends_on.clone(),
+            conforms_to: info
+                .config
+                .interfaces
+                .conforms_to
+                .clone()
+                .unwrap_or_default(),
         });
     }
 
@@ -419,12 +431,18 @@ async fn validate_binds_against_stack(
             NodeInfoResponse::Found(info) => Some(info),
             NodeInfoResponse::NotInStack => None,
         });
-        let depends_on = info_response.and_then(|info| info.config.manifest.depends_on.clone());
+        let depends_on = info_response
+            .as_ref()
+            .and_then(|info| info.config.manifest.depends_on.clone());
+        let conforms_to = info_response
+            .and_then(|info| info.config.interfaces.conforms_to.clone())
+            .unwrap_or_default();
         snapshot.push(StackNode {
             name: target_name.to_owned(),
             tag: target_tag.to_owned(),
             instances: vec![synthetic_instance],
             depends_on,
+            conforms_to,
         });
     }
 
@@ -435,6 +453,7 @@ async fn validate_binds_against_stack(
             node_tag: &s.tag,
             instances: &s.instances,
             depends_on: s.depends_on.as_ref(),
+            conforms_to: &s.conforms_to,
         })
         .collect();
 

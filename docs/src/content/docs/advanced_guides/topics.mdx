@@ -170,6 +170,10 @@ Error: `web_video_stream:v1` depends on `uvc_camera:v1`, but it does not exist i
 Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back to the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) for dependencies that aren't in the stack.
 :::
 
+:::tip
+To depend on a contract instead of a specific producer node — so any conforming node can fill the slot at launch time — declare the dep under `depends_on.interfaces` rather than `depends_on.nodes`. See the [Interface conformance](/advanced_guides/interface_conformance) guide.
+:::
+
 ### Receiving messages
 
 The code generator creates a module for each consumed topic under `peppygen::consumed_topics`.
@@ -342,9 +346,9 @@ The launcher validator runs these checks before the stack starts:
 
 1. **Pinned-unbound is a hard error.** Every pinned (`from_any` absent or `false`) slot in `depends_on` must have a `--bind KEY@VALUE` whose `KEY` equals the slot's `link_id`.
 2. A `KEY` that matches a pinned slot's `link_id` binds that slot to `VALUE`.
-3. **Free-form `KEY`s are allowed for `from_any` slots.** A `--bind KEY@VALUE` whose `KEY` doesn't match a pinned `link_id` is accepted as long as some `from_any` slot exists for `VALUE`'s `(name, tag)`. Multiple such bindings on the same `from_any` slot accumulate.
-4. A `KEY` that matches neither a pinned `link_id` nor a `from_any` slot for `VALUE`'s `(name, tag)` is a dead key and is rejected.
-5. A pinned binding whose target `instance_id` deploys a different node than the slot expects is a target mismatch and is rejected.
+3. **Free-form `KEY`s are allowed for `from_any` slots.** A `--bind KEY@VALUE` whose `KEY` doesn't match a pinned `link_id` is accepted as long as some `from_any` slot accepts `VALUE` as a satisfying producer. For node slots, the producer's `(node_name, node_tag)` must equal the slot's declared pair. For interface slots, the producer's `interfaces.conforms_to` must include the slot's `(name, tag)` — see [Interface conformance](/advanced_guides/interface_conformance) for the conformance contract. Multiple such bindings on the same `from_any` slot accumulate.
+4. A `KEY` that matches neither a pinned `link_id` nor a `from_any` slot satisfied by `VALUE` is a dead key and is rejected.
+5. A pinned binding whose target `instance_id` deploys a different node than the slot expects (for node deps) or a node that does not `conforms_to` the requested interface (for interface deps) is rejected. Node-dep mismatches surface as `BindingTargetMismatch`; interface-dep mismatches surface as `BindingInterfaceNotConformed`.
 6. `KEY` uniqueness within a single invocation is enforced (no two bindings may share the same `KEY`).
 7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack — not just within a `(node_name, node_tag)` group. Bindings address producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
 

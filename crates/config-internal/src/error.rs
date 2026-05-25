@@ -75,6 +75,29 @@ pub struct BindingTargetMismatch {
     pub actual_tag: String,
 }
 
+/// Payload for [`ParsingError::BindingInterfaceNotConformed`]. Raised when a
+/// `--bind` targets an interface slot but the producer's `interfaces.conforms_to`
+/// list does not include the requested `(interface_name, interface_tag)`.
+///
+/// Boxed in the variant for the same `clippy::result_large_err` reason as the
+/// other binding error payloads.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "binding `{binding}` on instance `{owner_instance_id}` targets instance \
+     `{target_instance_id}` (deploys `{producer_name}:{producer_tag}`), but \
+     the consumer's `depends_on.interfaces` entry requires a producer whose \
+     `interfaces.conforms_to` includes `{interface_name}:{interface_tag}`"
+)]
+pub struct BindingInterfaceNotConformed {
+    pub owner_instance_id: String,
+    pub binding: String,
+    pub target_instance_id: String,
+    pub interface_name: String,
+    pub interface_tag: String,
+    pub producer_name: String,
+    pub producer_tag: String,
+}
+
 /// Payload for [`ParsingError::DuplicateInstanceIdAcrossStack`]. Boxed in
 /// the variant for the same `result_large_err` reason as the other binding
 /// variants.
@@ -221,6 +244,11 @@ pub enum ParsingError {
     /// `peppylib::PeppyError`).
     #[error(transparent)]
     BindingTargetMismatch(Box<BindingTargetMismatch>),
+    /// Pinned `--bind` targets an interface slot but the producer doesn't
+    /// declare conformance to the requested interface. Boxed for the same
+    /// `result_large_err` reason as the other binding variants.
+    #[error(transparent)]
+    BindingInterfaceNotConformed(Box<BindingInterfaceNotConformed>),
     /// Two instances anywhere in the running stack share an `instance_id`.
     /// Boxed for the same `result_large_err` reason as the other binding
     /// variants.

@@ -1035,6 +1035,7 @@ async fn validate_and_order_dependencies(
             node_tag: &p.node_tag,
             instances: &p.deployment.instances,
             depends_on: p.config.manifest.depends_on.as_ref(),
+            conforms_to: p.config.interfaces.conforms_to.as_deref().unwrap_or(&[]),
         })
         .collect();
     let validated = config::launcher::validate_bindings(&binding_items);
