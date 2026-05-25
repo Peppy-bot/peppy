@@ -109,16 +109,12 @@ async fn node_run_command_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "v1")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         0,
@@ -191,16 +187,12 @@ async fn node_run_command_succeeds() {
     // Verify the node has 1 instance now
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "v1")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         1,
@@ -340,16 +332,12 @@ async fn node_run_command_with_args_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "v1")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         0,
@@ -432,16 +420,12 @@ async fn node_run_command_with_args_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "v1")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         1,
@@ -546,16 +530,12 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "v1")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         0,
@@ -633,16 +613,12 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "v1")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         1,
@@ -818,9 +794,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "v1")
+        .find_node(node_name, "v1")
         .expect("graph should contain the added node");
     assert_eq!(
         node.instance_count(),
@@ -985,9 +959,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "v1")
+        .find_node(node_name, "v1")
         .expect("graph should contain the added node");
     assert_eq!(
         node.instance_count(),

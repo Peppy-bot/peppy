@@ -256,16 +256,12 @@ async fn node_launch_command_succeed() {
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 
-    let node_b = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_b_name && n.tag == node_tag)
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain node_b after launch. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node_b = graph.find_node(node_b_name, node_tag).unwrap_or_else(|| {
+        panic!(
+            "graph should contain node_b after launch. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node_b.instance_count(),
         1,
@@ -300,16 +296,12 @@ async fn node_launch_command_succeed() {
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse after stop");
 
-    let node_b = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_b_name && n.tag == node_tag)
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain node_b after stop. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node_b = graph.find_node(node_b_name, node_tag).unwrap_or_else(|| {
+        panic!(
+            "graph should contain node_b after stop. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node_b.instance_count(),
         0,

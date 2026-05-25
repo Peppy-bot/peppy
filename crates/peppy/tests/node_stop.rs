@@ -140,16 +140,12 @@ async fn node_stop_command_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "v1")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         0,
@@ -194,16 +190,12 @@ async fn node_stop_command_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "v1")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         1,
@@ -244,16 +236,12 @@ async fn node_stop_command_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "v1")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         0,

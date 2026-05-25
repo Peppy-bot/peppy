@@ -192,19 +192,22 @@ impl fmt::Display for NodeNotFound {
 impl std::error::Error for NodeNotFound {}
 
 impl SerializedNodeGraph {
+    /// Look up a node by its `(name, tag)` identity. The pair is unique
+    /// across `nodes`, so the first match is the only match.
+    pub fn find_node(&self, name: &str, tag: &str) -> Option<&SerializedNode> {
+        self.nodes.iter().find(|n| n.name == name && n.tag == tag)
+    }
+
     /// Externally visible instance ids for the node identified by
     /// `(node_name, node_tag)`. Returns `NodeNotFound` when no node
     /// matches; returns `Ok(vec![])` when the node exists but every
-    /// instance is still `Starting`. The `(name, tag)` pair is unique
-    /// across `nodes`, so the first match is the only match.
+    /// instance is still `Starting`.
     pub fn running_instance_ids_by_node(
         &self,
         node_name: &str,
         node_tag: &str,
     ) -> Result<Vec<&str>, NodeNotFound> {
-        self.nodes
-            .iter()
-            .find(|n| n.name == node_name && n.tag == node_tag)
+        self.find_node(node_name, node_tag)
             .map(SerializedNode::running_instance_ids)
             .ok_or_else(|| NodeNotFound {
                 name: node_name.to_owned(),
@@ -259,6 +262,32 @@ mod tests {
             ],
         );
         assert!(node.running_instance_ids().is_empty());
+    }
+
+    #[test]
+    fn find_node_returns_matching_node() {
+        let graph = SerializedNodeGraph {
+            nodes: vec![
+                make_node("foo", "v1", &[]),
+                make_node("foo", "v2", &[("r1", InstanceState::Running)]),
+                make_node("bar", "v1", &[]),
+            ],
+            edges: vec![],
+        };
+        let node = graph.find_node("foo", "v2").expect("node should be found");
+        assert_eq!(node.name, "foo");
+        assert_eq!(node.tag, "v2");
+        assert_eq!(node.instances.len(), 1);
+    }
+
+    #[test]
+    fn find_node_returns_none_when_missing() {
+        let graph = SerializedNodeGraph {
+            nodes: vec![make_node("foo", "v1", &[])],
+            edges: vec![],
+        };
+        assert!(graph.find_node("foo", "v2").is_none());
+        assert!(graph.find_node("bar", "v1").is_none());
     }
 
     #[test]
