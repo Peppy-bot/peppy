@@ -322,14 +322,15 @@ impl ServiceMessenger {
     /// producers advertise under the reserved `_` segment and Zenoh's
     /// matcher unifies the two.
     ///
-    /// When `target_instance_id` is `None` (wildcard / from_any), this
-    /// performs a discover-then-pin sequence: a lightweight probe is sent
-    /// to identify a single responding producer's `(core_node, instance_id)`,
-    /// then the real request is delivered pinned to that producer. The
-    /// probe is filtered server-side before the user handler runs, so
-    /// non-winning producers never see the request. This costs one extra
-    /// round-trip; pinned callers (`target_instance_id: Some`) skip
-    /// discovery and pay no overhead.
+    /// When either `target_core_node` or `target_instance_id` is `None`
+    /// (wildcard / from_any), this performs a discover-then-pin sequence:
+    /// a lightweight probe is sent to identify a single responding
+    /// producer's `(core_node, instance_id)`, then the real request is
+    /// delivered pinned to that producer. The probe is filtered
+    /// server-side before the user handler runs, so non-winning producers
+    /// never see the request. This costs one extra round-trip; fully
+    /// pinned callers (both `target_*` `Some`) skip discovery and pay no
+    /// overhead.
     ///
     /// `to_target` must match the [`SenderTarget`] the responder used in
     /// [`Self::listen`].
@@ -348,7 +349,9 @@ impl ServiceMessenger {
         let response_timeout: Option<Duration> = response_timeout.into();
 
         let started_at = Instant::now();
-        let (resolved_core, resolved_inst) = if target_instance_id.is_none() {
+        let (resolved_core, resolved_inst) = if target_instance_id.is_none()
+            || target_core_node.is_none()
+        {
             let probe_sender = ServiceWireSender::new(
                 bound_core_node,
                 as_instance_id,

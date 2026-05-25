@@ -2945,3 +2945,285 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
 
     router.shutdown().await;
 }
+
+/// Regression: when only `target_core_node` is missing (caller pins
+/// `target_instance_id` but leaves the core_node slot wildcard), `poll`
+/// must still run discover-then-pin. Before the fix in `services::poll`,
+/// the gating condition was `target_instance_id.is_none()`, so this
+/// shape skipped discovery and emitted a partial-wildcard query
+/// (`*/.../inst_id/...`) that Zenoh delivered to every listener sharing
+/// `inst_id`, regardless of core_node — running side effects on more
+/// than one producer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_communication_poll_wildcard_core_pinned_instance_discovers() {
+    let router = TestRouterContext::start().await;
+
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+
+    // Both listeners share the SAME instance_id but differ on core_node.
+    // Without discovery, the OLD wire selector `*/.../shared_inst/...`
+    // would match both and both handlers would run.
+    let shared_instance_id = "shared_inst";
+    let listener_core_node1 = "listener_core_node_a";
+    let listener_core_node2 = "listener_core_node_b";
+
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
+    const CALLER_CORE_NODE: &str = "caller_core_node";
+
+    let request_payload = Payload::from_static(b"enable=true");
+    let response_payload = Payload::from_static(b"ack");
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    let (ready_tx1, ready_rx1) = oneshot::channel();
+    let (ready_tx2, ready_rx2) = oneshot::channel();
+    let service_wait_timeout = Duration::from_millis(1500);
+    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
+    let service_ready_timeout = Duration::from_secs(1);
+
+    let spawn_listener = |ready_tx: oneshot::Sender<()>,
+                          core_node: &'static str,
+                          response_payload: Payload,
+                          call_count: Arc<AtomicUsize>| {
+        let handle = router.messenger();
+        let request_payload = request_payload.clone();
+        async move {
+            let handle = handle.await;
+            let mut service = ServiceMessenger::listen(
+                &handle,
+                core_node,
+                shared_instance_id,
+                test_node_target(listener_node_name),
+                listener_service_name,
+            )
+            .await
+            .expect("service should start");
+
+            tokio::spawn(async move {
+                let handler = service.handle_next_request(|request| {
+                    let response_payload = response_payload.clone();
+                    async move {
+                        assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
+                        assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
+                        assert_eq!(request.message().payload(), &request_payload);
+                        call_count.fetch_add(1, Ordering::SeqCst);
+                        Ok(response_payload)
+                    }
+                });
+
+                ready_tx.send(()).unwrap();
+                // Either listener may win the discovery race; whichever
+                // loses simply times out without invoking the handler.
+                let _ = tokio::time::timeout(service_wait_timeout, handler).await;
+                Ok::<(), Error>(())
+            })
+        }
+    };
+
+    let task1 = spawn_listener(
+        ready_tx1,
+        listener_core_node1,
+        response_payload.clone(),
+        Arc::clone(&call_count),
+    )
+    .await;
+    let task2 = spawn_listener(
+        ready_tx2,
+        listener_core_node2,
+        response_payload.clone(),
+        Arc::clone(&call_count),
+    )
+    .await;
+
+    tokio::time::timeout(service_ready_timeout, ready_rx1)
+        .await
+        .expect("service 1 should signal readiness before timeout")
+        .expect("service 1 should signal readiness");
+    tokio::time::timeout(service_ready_timeout, ready_rx2)
+        .await
+        .expect("service 2 should signal readiness before timeout")
+        .expect("service 2 should signal readiness");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    {
+        let caller_handle = router.messenger().await;
+        let response = ServiceMessenger::poll(
+            &caller_handle,
+            CALLER_CORE_NODE,
+            CALLER_INSTANCE_ID,
+            test_node_target(listener_node_name),
+            listener_service_name,
+            None,                       // wildcard target_core_node — must trigger discovery
+            Some(shared_instance_id),   // pinned target_instance_id
+            request_payload.clone(),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("caller should receive response");
+
+        assert_eq!(response.instance_id(), shared_instance_id);
+        assert!(
+            response.core_node() == listener_core_node1
+                || response.core_node() == listener_core_node2,
+            "response must come from one of the listeners, got {:?}",
+            response.core_node(),
+        );
+        assert_eq!(response.payload(), &response_payload);
+    }
+
+    tokio::time::timeout(service_task_timeout, task1)
+        .await
+        .expect("service task 1 should finish within timeout")
+        .expect("service task 1 panicked")
+        .expect("service task 1 returned error");
+    tokio::time::timeout(service_task_timeout, task2)
+        .await
+        .expect("service task 2 should finish within timeout")
+        .expect("service task 2 panicked")
+        .expect("service task 2 returned error");
+
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        1,
+        "exactly one listener handler must run — discover-then-pin must \
+         pin to one producer even when only target_core_node is wildcard",
+    );
+
+    tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
+}
+
+/// Regression mirror for actions: when only `target_core_node` is
+/// missing on `send_goal`, discover-then-pin must still run. Two
+/// producers sharing the same `instance_id` (differing on `core_node`)
+/// would both execute the goal handler under a partial-wildcard send,
+/// which violates the safety contract for actions with side effects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn action_send_goal_wildcard_core_pinned_instance_discovers() {
+    let router = TestRouterContext::start().await;
+
+    let action_target = SenderTarget::interface("manipulator", "v1").expect("iface target");
+    let action_name = "abort_safe";
+
+    // Same instance_id on both servers; different core_nodes.
+    let shared_inst = "shared_inst";
+    let server_a_core = "server_a_core";
+    let server_b_core = "server_b_core";
+
+    struct ProducerSpec {
+        core: &'static str,
+        inst: &'static str,
+        target: SenderTarget,
+        action_name: &'static str,
+    }
+
+    async fn spawn_producer(
+        router: &TestRouterContext,
+        spec: ProducerSpec,
+        goal_count: Arc<AtomicUsize>,
+        ready: oneshot::Sender<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        let handle = router.messenger().await;
+        tokio::spawn(async move {
+            let action = ActionMessenger::expose(
+                &handle,
+                spec.core,
+                spec.inst,
+                spec.target,
+                spec.action_name,
+            )
+            .await
+            .expect("expose should succeed");
+
+            let mut goal_service = action.goal_service;
+            ready.send(()).expect("ready");
+
+            // The loser of the discovery race never sees a real goal and
+            // simply times out below.
+            if let Ok(Ok(Some((_ctx, goal_responder)))) =
+                tokio::time::timeout(Duration::from_millis(800), goal_service.recv_next_request())
+                    .await
+            {
+                goal_count.fetch_add(1, Ordering::SeqCst);
+                goal_responder
+                    .respond(Payload::from(spec.core.as_bytes().to_vec()))
+                    .await
+                    .expect("goal respond");
+            }
+        })
+    }
+
+    let goal_a = Arc::new(AtomicUsize::new(0));
+    let goal_b = Arc::new(AtomicUsize::new(0));
+    let (ready_a_tx, ready_a_rx) = oneshot::channel();
+    let (ready_b_tx, ready_b_rx) = oneshot::channel();
+
+    let task_a = spawn_producer(
+        &router,
+        ProducerSpec {
+            core: server_a_core,
+            inst: shared_inst,
+            target: action_target.clone(),
+            action_name,
+        },
+        Arc::clone(&goal_a),
+        ready_a_tx,
+    )
+    .await;
+    let task_b = spawn_producer(
+        &router,
+        ProducerSpec {
+            core: server_b_core,
+            inst: shared_inst,
+            target: action_target.clone(),
+            action_name,
+        },
+        Arc::clone(&goal_b),
+        ready_b_tx,
+    )
+    .await;
+
+    ready_a_rx.await.expect("server A ready");
+    ready_b_rx.await.expect("server B ready");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = router.messenger().await;
+    let goal_handle = ActionMessenger::send_goal(
+        &caller_handle,
+        "caller_core",
+        "caller_inst",
+        action_target,
+        action_name,
+        None,               // wildcard target_core_node — must trigger discovery
+        Some(shared_inst),  // pinned target_instance_id
+        Payload::from_static(b"go"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("send_goal should succeed");
+
+    assert_eq!(goal_handle.goal_response().instance_id(), shared_inst);
+    let winner_core = goal_handle.goal_response().core_node().to_string();
+    assert!(
+        winner_core == server_a_core || winner_core == server_b_core,
+        "goal_response core_node must come from one of the producers, got {winner_core:?}",
+    );
+
+    task_a.await.expect("server A task panicked");
+    task_b.await.expect("server B task panicked");
+
+    let total = goal_a.load(Ordering::SeqCst) + goal_b.load(Ordering::SeqCst);
+    assert_eq!(
+        total, 1,
+        "exactly one producer must run its goal handler — discover-then-pin \
+         must pin to one producer even when only target_core_node is wildcard \
+         (a={}, b={})",
+        goal_a.load(Ordering::SeqCst),
+        goal_b.load(Ordering::SeqCst),
+    );
+
+    router.shutdown().await;
+}
