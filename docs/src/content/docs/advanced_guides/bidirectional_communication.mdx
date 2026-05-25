@@ -478,3 +478,24 @@ Use external consumed topics when:
 - **Non-DAG communication**: the publisher is not part of the node stack, or the relationship between publisher and subscriber is not a natural dependency.
 
 For all other cases, prefer linked consumed topics; they enforce explicit dependencies and let PeppyOS resolve message formats automatically.
+
+## When to use bidirectional communication vs. actions?
+
+Bidirectional communication (via external consumed topics) and [actions](/advanced_guides/actions/) can both look like "two nodes talking back and forth", but they model different shapes of interaction. The distinction is **lifecycle**: does the exchange have a defined start and end, or does it run continuously for as long as the nodes are up?
+
+|  | Bidirectional communication | Actions |
+|---|---|---|
+| Lifecycle | Continuous; runs for the whole lifetime of both nodes | Bounded; each goal has an explicit start (goal accepted) and end (result delivered, cancelled, or errored) |
+| Initiator | Either side publishes whenever it has data | Client issues a goal; server responds |
+| Concurrency | Both streams flow in parallel, indefinitely | One goal at a time per action (serial) |
+| Per-exchange feedback | Implicit (each side publishes its own stream) | Explicit feedback channel during the goal |
+| Cancellation | No notion; you just stop publishing | First-class cancel request mid-flight |
+| Natural fit | Inner control loops, continuous state mirroring, telemetry exchanges that never "finish" | Discrete jobs with a clear "done" condition |
+
+In the robot arm example on this page, `arm_controller` and `robot_arm` exchange `joint_commands` and `joint_states` **continuously** for as long as the robot is powered on. There is no point at which the exchange "completes"; each side just keeps producing its stream. That is the bidirectional shape: a continuous mechanism that works across the whole lifecycle of the robot, with no specific start or end.
+
+Actions cover the opposite shape. A `move_arm` action that takes `(arm_id, desired_position)` has a clear beginning (goal accepted), an end (the arm reaches the position, or the goal is cancelled), and a single in-flight job at a time. The framework gives you a feedback channel for progress and a cancel channel to abort early, both scoped to that one goal. When the result arrives, that exchange is over.
+
+A useful test: if you find yourself wanting to say *"the controller asks the arm to do X and waits until it's done"*, that is an action. If you find yourself saying *"the controller streams setpoints at 100 Hz and the arm streams state back at 1 kHz"*, that is bidirectional communication.
+
+Both shapes can coexist on the same pair of nodes. A `robot_arm` might expose a `calibrate` action (run once at startup, has a definite end) **and** exchange `joint_commands` / `joint_states` continuously with whatever controller is driving it.
