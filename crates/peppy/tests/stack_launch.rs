@@ -904,7 +904,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         if producer_config.is_some() && consumer_config.is_some() {
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     // Stop both instances after both dumps are captured so a failure
@@ -1100,16 +1100,12 @@ fn write_interface_v1_doc(path: &Path, name: &str, tag: &str) {
     fs::write(path, body).expect("failed to write interface_v1 doc");
 }
 
-/// Regression for the launcher binding validator: a producer node that
-/// `conforms_to` the consumer's `depends_on.interfaces` entry must
-/// satisfy a pinned interface binding, even when the producer's node
-/// name differs from the interface name. The previous validator matched
-/// only by `(node_name, node_tag)`, which silently accepted coincidental
-/// name matches and rejected real `conforms_to` producers.
-///
-/// This test exercises a real `peppy_schema: "interface_v1"` document
-/// alongside a `node_v1` producer declaring conformance to it and a
-/// `node_v1` consumer declaring the interface dep.
+/// End-to-end check that a pinned interface binding resolves against
+/// the producer's `interfaces.conforms_to` declaration. Exercises a real
+/// `peppy_schema: "interface_v1"` document on disk alongside a `node_v1`
+/// producer declaring conformance and a `node_v1` consumer declaring
+/// the interface dep — pairs the unit-level binding validator tests
+/// with the full launch pipeline (cache resolution + daemon node-add).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_resolves_conforms_to_binding_with_real_interface_doc() {
     let serve = ServeCommandEmulation::with_zenoh()
@@ -1307,7 +1303,7 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_interface_doc() {
             consumer_config = Some(cfg);
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     for instance_id in [consumer_instance_id, producer_instance_id] {
@@ -1334,11 +1330,10 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_interface_doc() {
     );
 }
 
-/// Regression for the bug: a producer whose node name coincidentally
-/// matches a consumer's interface dep name+tag but who does NOT declare
-/// `interfaces.conforms_to` must be rejected at binding validation.
-/// Prior to the fix, the validator accepted this by node-identity
-/// coincidence and the conformance gap stayed invisible.
+/// Interface satisfaction is determined solely by `interfaces.conforms_to`,
+/// never by node identity: a producer whose node name coincidentally
+/// matches a consumer's interface dep name+tag but who declares no
+/// `conforms_to` must be rejected at binding validation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_binding_when_producer_omits_conforms_to() {
     let serve = ServeCommandEmulation::with_mock()
@@ -1347,10 +1342,9 @@ async fn stack_launch_rejects_binding_when_producer_omits_conforms_to() {
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
 
-    // Interface, producer node and (collision) producer node name all
-    // share `depth_camera:v1`. The bug's "coincidental name match" only
-    // accepts this producer because the validator matched node-identity
-    // — there is no `conforms_to` declared on the producer.
+    // Interface name and producer node name intentionally collide on
+    // `depth_camera:v1` to confirm the validator ignores node-identity
+    // coincidence and requires an explicit `conforms_to` declaration.
     let interface_name = "depth_camera";
     let interface_tag = "v1";
     let producer_name = "depth_camera"; // intentional coincidence

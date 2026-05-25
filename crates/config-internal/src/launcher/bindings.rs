@@ -143,17 +143,7 @@ pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> ValidatedBindin
                         });
                         continue;
                     };
-                    let producer_satisfies = match slot.kind {
-                        SlotKind::Node => {
-                            target_item.node_name == slot.name && target_item.node_tag == slot.tag
-                        }
-                        SlotKind::Interface => producer_satisfies_interface(
-                            target_item.conforms_to,
-                            slot.name,
-                            slot.tag,
-                        ),
-                    };
-                    if !producer_satisfies {
+                    if !slot_matches_producer(&slot, target_item) {
                         out.errors.push(match slot.kind {
                             SlotKind::Node => ParsingError::BindingTargetMismatch(Box::new(
                                 BindingTargetMismatch {
@@ -201,22 +191,9 @@ pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> ValidatedBindin
                     });
                     continue;
                 };
-                let producer_name_tag =
-                    format!("{}:{}", target_item.node_name, target_item.node_tag);
-
                 let mut attached = false;
                 for (slot_link_id, slot) in &declared_from_any {
-                    let matches = match slot.kind {
-                        SlotKind::Node => {
-                            target_item.node_name == slot.name && target_item.node_tag == slot.tag
-                        }
-                        SlotKind::Interface => producer_satisfies_interface(
-                            target_item.conforms_to,
-                            slot.name,
-                            slot.tag,
-                        ),
-                    };
-                    if matches {
+                    if slot_matches_producer(slot, target_item) {
                         from_any_explicit
                             .entry((*slot_link_id).to_string())
                             .or_default()
@@ -231,7 +208,10 @@ pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> ValidatedBindin
                             owner_instance_id: instance.instance_id.to_string(),
                             binding: binding_key.clone(),
                             target_instance_id: target_id.clone(),
-                            producer_name_tag,
+                            producer_name_tag: format!(
+                                "{}:{}",
+                                target_item.node_name, target_item.node_tag
+                            ),
                             declared_link_ids: declared_csv.clone(),
                         })));
                 }
@@ -381,19 +361,19 @@ fn collect_declared_slots(
     (pinned, from_any)
 }
 
-/// A producer node satisfies an interface slot if its `conforms_to`
-/// list contains an item with the slot's `(name, tag)`. sha256 is not
-/// cross-checked here; each side independently verifies its own
-/// declared sha256 against the on-disk interface document at cache
-/// resolution time.
-fn producer_satisfies_interface(
-    producer_conforms_to: &[ConformsToItem],
-    slot_name: &str,
-    slot_tag: &str,
-) -> bool {
-    producer_conforms_to
-        .iter()
-        .any(|item| item.name.as_str() == slot_name && item.tag.as_str() == slot_tag)
+/// Does a producer satisfy a declared slot? Node slots match by
+/// `(name, tag)` identity; interface slots match against the producer's
+/// `conforms_to`. sha256 is not cross-checked here — each side
+/// independently verifies its own declared sha256 against the on-disk
+/// interface document at cache resolution time.
+fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'_>) -> bool {
+    match slot.kind {
+        SlotKind::Node => producer.node_name == slot.name && producer.node_tag == slot.tag,
+        SlotKind::Interface => producer
+            .conforms_to
+            .iter()
+            .any(|item| item.name.as_str() == slot.name && item.tag.as_str() == slot.tag),
+    }
 }
 
 fn format_declared_keys(pinned: &DeclaredSlots<'_>, from_any: &DeclaredSlots<'_>) -> String {
@@ -748,12 +728,10 @@ mod tests {
         assert_eq!(info.target_instance_id, "actually_lidar");
     }
 
-    /// Pinned interface dep targets a producer that does NOT declare
-    /// `conforms_to` for the requested interface: rejected with
-    /// `BindingInterfaceNotConformed`. This is the symmetric regression
-    /// for the from_any path — pinned interface bindings used to skip
-    /// the producer check entirely, silently accepting non-conforming
-    /// producers.
+    /// Pinned interface bindings check the producer's `conforms_to`
+    /// (not just node identity). A producer with no matching
+    /// `conforms_to` entry is rejected with
+    /// `BindingInterfaceNotConformed`.
     #[test]
     fn pinned_interface_binding_rejects_non_conforming_producer() {
         let cons_instances = parse_instances(
@@ -857,9 +835,10 @@ mod tests {
             }"#,
         );
         let prod_instances = parse_instances(r#"[{ instance_id: "depth_cam_inst1" }]"#);
-        // Producer's node name `depth_camera:v1` coincidentally matches
-        // the interface name, but the validator now only honors explicit
-        // `conforms_to` claims — so the producer must declare it.
+        // Producer's node name coincidentally matches the interface
+        // name+tag, but the validator only honors explicit `conforms_to`
+        // claims — node-identity matching never satisfies an interface
+        // slot.
         let producer_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
         let items = vec![
             item(
@@ -1010,7 +989,6 @@ mod tests {
     /// A `from_any` interface dep accepts a producer whose
     /// `interfaces.conforms_to` includes the requested interface, even
     /// when the producer's node name differs from the interface name.
-    /// This is the canonical positive case for the bug fix.
     #[test]
     fn from_any_interface_dep_accepts_producer_via_conforms_to() {
         let cons_instances = parse_instances(
@@ -1048,9 +1026,8 @@ mod tests {
 
     /// A `from_any` interface dep rejects a producer that lacks the
     /// matching `conforms_to`, even when its node name coincidentally
-    /// equals the requested interface name+tag. Codifies the bug: a
-    /// `depth_camera:v1` node that does not declare conformance must
-    /// not satisfy a `depth_camera:v1` interface slot.
+    /// equals the requested interface name+tag. Interface satisfaction
+    /// is determined solely by `conforms_to`, never by node identity.
     #[test]
     fn from_any_interface_dep_rejects_producer_without_conforms_to() {
         let cons_instances = parse_instances(
@@ -1071,9 +1048,10 @@ mod tests {
             }"#,
         );
         let prod_instances = parse_instances(r#"[{ instance_id: "depth_cam_inst_1" }]"#);
-        // Producer's node identity matches the interface name+tag, but
-        // it declares no `conforms_to`. Today's bug accepts this; the
-        // fix rejects it.
+        // Producer's node identity coincidentally matches the interface
+        // name+tag, but it declares no `conforms_to` — must be rejected
+        // (the binding's `KEY` doesn't match any pinned link_id either,
+        // so this falls through to `BindingDeadKey`).
         let items = vec![
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("depth_camera", "v1", &prod_instances, None),

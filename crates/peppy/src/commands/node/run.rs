@@ -386,13 +386,8 @@ async fn validate_binds_against_stack(
             name: node.name.clone(),
             tag: node.tag.clone(),
             instances,
-            depends_on: info.config.manifest.depends_on.clone(),
-            conforms_to: info
-                .config
-                .interfaces
-                .conforms_to
-                .clone()
-                .unwrap_or_default(),
+            depends_on: info.config.manifest.depends_on,
+            conforms_to: info.config.interfaces.conforms_to.unwrap_or_default(),
         });
     }
 
@@ -431,12 +426,13 @@ async fn validate_binds_against_stack(
             NodeInfoResponse::Found(info) => Some(info),
             NodeInfoResponse::NotInStack => None,
         });
-        let depends_on = info_response
-            .as_ref()
-            .and_then(|info| info.config.manifest.depends_on.clone());
-        let conforms_to = info_response
-            .and_then(|info| info.config.interfaces.conforms_to.clone())
-            .unwrap_or_default();
+        let (depends_on, conforms_to) = match info_response {
+            Some(info) => (
+                info.config.manifest.depends_on,
+                info.config.interfaces.conforms_to.unwrap_or_default(),
+            ),
+            None => (None, Vec::new()),
+        };
         snapshot.push(StackNode {
             name: target_name.to_owned(),
             tag: target_tag.to_owned(),
