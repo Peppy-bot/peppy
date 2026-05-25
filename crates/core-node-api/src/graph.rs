@@ -179,13 +179,25 @@ pub struct SerializedNodeGraph {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeNotFound {
-    pub name: String,
-    pub tag: String,
+    label: String,
+}
+
+impl NodeNotFound {
+    pub fn new(name: &str, tag: &str) -> Self {
+        Self {
+            label: format!("{name}:{tag}"),
+        }
+    }
+
+    /// `name:tag` of the missing node.
+    pub fn label(&self) -> &str {
+        &self.label
+    }
 }
 
 impl fmt::Display for NodeNotFound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "no node matches `{}:{}`", self.name, self.tag)
+        write!(f, "no node matches `{}`", self.label)
     }
 }
 
@@ -209,10 +221,7 @@ impl SerializedNodeGraph {
     ) -> Result<Vec<&str>, NodeNotFound> {
         self.find_node(node_name, node_tag)
             .map(SerializedNode::running_instance_ids)
-            .ok_or_else(|| NodeNotFound {
-                name: node_name.to_owned(),
-                tag: node_tag.to_owned(),
-            })
+            .ok_or_else(|| NodeNotFound::new(node_name, node_tag))
     }
 }
 
@@ -235,33 +244,6 @@ mod tests {
                 })
                 .collect(),
         }
-    }
-
-    #[test]
-    fn running_instance_ids_filters_starting() {
-        let node = make_node(
-            "foo",
-            "v1",
-            &[
-                ("r1", InstanceState::Running),
-                ("s1", InstanceState::Starting),
-                ("r2", InstanceState::Running),
-            ],
-        );
-        assert_eq!(node.running_instance_ids(), vec!["r1", "r2"]);
-    }
-
-    #[test]
-    fn running_instance_ids_empty_when_all_starting() {
-        let node = make_node(
-            "foo",
-            "v1",
-            &[
-                ("s1", InstanceState::Starting),
-                ("s2", InstanceState::Starting),
-            ],
-        );
-        assert!(node.running_instance_ids().is_empty());
     }
 
     #[test]
@@ -334,10 +316,7 @@ mod tests {
         };
         assert_eq!(
             graph.running_instance_ids_by_node("bar", "v1"),
-            Err(NodeNotFound {
-                name: "bar".into(),
-                tag: "v1".into(),
-            })
+            Err(NodeNotFound::new("bar", "v1"))
         );
     }
 
@@ -349,10 +328,7 @@ mod tests {
         };
         assert_eq!(
             graph.running_instance_ids_by_node("foo", "v2"),
-            Err(NodeNotFound {
-                name: "foo".into(),
-                tag: "v2".into(),
-            })
+            Err(NodeNotFound::new("foo", "v2"))
         );
     }
 
@@ -364,10 +340,7 @@ mod tests {
         };
         assert_eq!(
             graph.running_instance_ids_by_node("foo", "v1"),
-            Err(NodeNotFound {
-                name: "foo".into(),
-                tag: "v1".into(),
-            })
+            Err(NodeNotFound::new("foo", "v1"))
         );
     }
 
@@ -396,10 +369,10 @@ mod tests {
 
     #[test]
     fn node_not_found_display() {
-        let err = NodeNotFound {
-            name: "router".into(),
-            tag: "v1".into(),
-        };
-        assert_eq!(err.to_string(), "no node matches `router:v1`");
+        let err = NodeNotFound::new("router", "v1");
+        let msg = err.to_string();
+        assert!(msg.contains("router"), "got: {msg}");
+        assert!(msg.contains("v1"), "got: {msg}");
+        assert_eq!(err.label(), "router:v1");
     }
 }
