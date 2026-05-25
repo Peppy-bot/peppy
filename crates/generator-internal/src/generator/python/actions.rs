@@ -801,7 +801,6 @@ pub fn build_consumed_action(
     builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");
-    builder.line("to_link_id=None,");
     builder.dedent();
     builder.line(")");
 

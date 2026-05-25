@@ -156,7 +156,6 @@ fn sample_action_sender() -> ActionWireSender {
         target_core_node: Some(seg("target_core")),
         target_instance_id: Some(seg("target_inst")),
         to_target: test_node_target("robot_arm"),
-        to_link_id: Some(seg("link_a")),
         to_action_name: seg("pick_place"),
     }
 }
@@ -174,8 +173,6 @@ fn action_sender_goal_service_threads_kind_and_name() {
     assert_eq!(goal.to_target.name(), "robot_arm");
     assert_eq!(goal.to_target.tag(), "v1");
     assert!(goal.to_target.is_node());
-    assert_eq!(goal.to_link_id, action.to_link_id);
-    assert_eq!(goal.to_link_id.as_deref(), Some("link_a"));
 }
 
 #[test]
@@ -190,8 +187,6 @@ fn action_sender_cancel_and_result_only_differ_by_kind() {
     assert_eq!(cancel.to_target, goal.to_target);
     assert_eq!(result.to_service_name, goal.to_service_name);
     assert_eq!(result.to_target, goal.to_target);
-    assert_eq!(cancel.to_link_id, goal.to_link_id);
-    assert_eq!(result.to_link_id, goal.to_link_id);
 }
 
 #[test]
@@ -212,7 +207,6 @@ fn action_sender_pinned_to_overwrites_identity_and_preserves_rest() {
     assert_eq!(pinned.as_core_node, wildcard.as_core_node);
     assert_eq!(pinned.as_instance_id, wildcard.as_instance_id);
     assert_eq!(pinned.to_target, wildcard.to_target);
-    assert_eq!(pinned.to_link_id, wildcard.to_link_id);
     assert_eq!(pinned.to_action_name, wildcard.to_action_name);
 }
 
@@ -230,7 +224,6 @@ fn sample_action_receiver() -> ActionWireReceiver {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
         as_identity: SenderTarget::interface("manipulator", "v1").expect("valid interface target"),
-        link_ids: vec![Segment::default_link_id()],
         as_action_name: seg("pick_place"),
     }
 }
@@ -245,8 +238,6 @@ fn action_receiver_goal_service_threads_kind_and_name() {
     assert_eq!(goal.as_instance_id, "server_inst");
     assert_eq!(goal.as_identity.name(), "manipulator");
     assert!(goal.as_identity.is_interface());
-    assert_eq!(goal.link_ids, action.link_ids);
-    assert_eq!(goal.link_ids, vec![Segment::default_link_id()]);
 }
 
 #[test]
@@ -260,7 +251,6 @@ fn action_receiver_all_three_variants_have_consistent_addressing() {
         assert_eq!(derived.as_instance_id, goal.as_instance_id);
         assert_eq!(derived.as_identity, goal.as_identity);
         assert_eq!(derived.as_service_name, goal.as_service_name);
-        assert_eq!(derived.link_ids, goal.link_ids);
     }
     assert_eq!(cancel.kind, ServiceKind::ActionCancel);
     assert_eq!(result.kind, ServiceKind::ActionResult);

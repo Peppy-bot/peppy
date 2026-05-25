@@ -78,7 +78,6 @@ async fn main() {
         &core_node_name,
         &as_instance_id,
         SenderTarget::node(NODE_NAME, "v1").expect("test target"),
-        None,
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found
@@ -131,7 +130,6 @@ async fn main() {
         &core_node_name,
         &as_instance_id,
         SenderTarget::node(NODE_NAME, "v1").expect("test target"),
-        None,
         ACTION_NAME,
         None, // Binds with the first core node that is found
         None, // Binds with the first action that is found

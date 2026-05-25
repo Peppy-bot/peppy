@@ -288,7 +288,6 @@ impl RustGenerator {
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     #to_target_expr,
-                    None,
                     TARGET_ACTION_NAME,
                     None,
                     #pinned_target_expr,
@@ -1307,10 +1306,9 @@ impl LanguageGenerator for RustGenerator {
 
         // The `to_target` matches the producer's emission shape: if the
         // dependency exposes the service via `conforms_to`, address it as the
-        // interface; otherwise as the dependency's node identity. The
-        // consumer never pins on `to_link_id` (producers always advertise
-        // the `_` sentinel); `target_instance_id` is resolved at runtime
-        // from the consumer's binding map.
+        // interface; otherwise as the dependency's node identity.
+        // `target_instance_id` is resolved at runtime from the consumer's
+        // binding map.
         let to_target_expr = consumed_to_target_expression(dependency);
         let pinned_target_expr =
             crate::generator::rust::topics::consumed_pinned_target_expression(dependency);
@@ -1320,7 +1318,6 @@ impl LanguageGenerator for RustGenerator {
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 #to_target_expr,
-                None,
                 SERVICE_NAME,
                 None,
                 #pinned_target_expr,

@@ -975,7 +975,6 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         &started.core_node_name,
         common::CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
-        None,
         core_node::names::NODE_RUN_ACTION,
         Some(&started.core_node_name),
         None,

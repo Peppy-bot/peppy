@@ -744,7 +744,6 @@ async fn service_communication_poll_no_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
-            None,
             listener_service_name,
             None, // Here we don't specify any node
             None, // We don't specify any instance_id target either
@@ -928,7 +927,6 @@ async fn service_communication_poll_specific_instance_id() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
-            None,
             listener_service_name,
             None,                        // Here we don't specify any target core node
             Some(listener_instance_id2), // We specify listener_instance_id2 as the target
@@ -1046,7 +1044,6 @@ async fn service_communication_poll_wrong_node() {
                 CALLER_CORE_NODE,
                 CALLER_INSTANCE_ID,
                 test_node_target(listener_node_name),
-                None,
                 listener_service_name,
                 None,               // target_core_node
                 Some("wrong_node"), // Use a wrong instance_id here
@@ -1178,7 +1175,6 @@ async fn service_communication_poll_wrong_core_node() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
-            None,
             listener_service_name,
             Some("wrong_core_node"), // target_core_node - wrong one!
             None,                    // no specific target_instance_id
@@ -1240,7 +1236,6 @@ async fn service_communication_fails_service_not_started() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
-            None,
             listener_service_name,
             None,
             None,
@@ -1366,7 +1361,6 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
-            None,
             listener_service_name,
             None,
             None,
@@ -1387,7 +1381,6 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
-            None,
             listener_service_name,
             None,
             None,
@@ -1509,7 +1502,6 @@ async fn service_handle_request_processes_multiple_messages() {
                 CALLER_CORE_NODE,
                 CALLER_INSTANCE_ID,
                 test_node_target(listener_node_name),
-                None,
                 listener_service_name,
                 None,
                 Some(listener_instance_id),
@@ -1652,7 +1644,6 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         CALLER_CORE_NODE,
                         &caller_id,
                         test_node_target(listener_node_name),
-                        None,
                         listener_service_name,
                         None,
                         Some(listener_instance_id),
@@ -1850,7 +1841,6 @@ async fn action_communication_no_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
-            None,
             listener_action_name,
             None, // No target core_id
             None, // No target instance_id
@@ -2084,7 +2074,6 @@ async fn action_communication_with_instance_id_target() {
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
-            None,
             listener_action_name,
             Some(LISTENER_CORE_NODE2),
             Some(LISTENER_INSTANCE_ID2),
@@ -2302,7 +2291,6 @@ async fn action_communication_goal_cancelled() {
         CALLER_CORE_NODE,
         CALLER_INSTANCE_ID,
         test_node_target(listener_node_name),
-        None,
         listener_action_name,
         Some(LISTENER_CORE_NODE),
         Some(LISTENER_INSTANCE_ID),
@@ -2571,7 +2559,6 @@ async fn single_action_communication_multiple_polls() {
                 CALLER_CORE_NODE,
                 &case.client_id,
                 test_node_target(listener_node_name),
-                None,
                 listener_action_name,
                 None,
                 None,
@@ -2636,92 +2623,6 @@ async fn single_action_communication_multiple_polls() {
         .expect("action handler task panicked")
         .expect("action handler returned error");
 
-    router.shutdown().await;
-}
-
-// ─── link_id queryable dispatch ────────────────────────────────────────────
-//
-// These tests pin the producer-side dispatch behavior: a single queryable
-// per `listen_service` call (`*` at the link_id slot) with the adapter's
-// `handle_queryable` claiming a concrete bound link_id per inbound request
-// via `ParsedInboundQuery::choose_link_id`. Cross-talk, ACK ordering,
-// per-goal feedback routing, and `from_any` single-invocation are the
-// failure modes the design must not introduce; each gets a dedicated
-// test below.
-
-const LINK_TORSO: &str = "torso";
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_listen_drops_request_for_unbound_link_id_without_ack() {
-    // Producer binds only LINK_LEFT. A consumer pins to LINK_TORSO.
-    // The producer's queryable now carries `*` at the link_id slot, so
-    // the consumer's `torso` literal selector intersects and the query
-    // does reach the producer's `handle_queryable`. The dispatcher then
-    // checks the parsed link_id against the bound set (`["wrist_left"]`),
-    // finds no match, and drops the query silently — no reply, no ACK.
-    // The consumer surfaces `ServiceUnreachable` and the user handler
-    // must NEVER fire.
-    let router = TestRouterContext::start().await;
-    let server_handle = router.messenger().await;
-    let mut endpoint = ServiceMessenger::listen(
-        &server_handle,
-        "server_core",
-        "server_inst",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        "start_recording",
-    )
-    .await
-    .expect("listen should succeed");
-
-    let handler_fired = Arc::new(AtomicUsize::new(0));
-    let handler_fired_clone = Arc::clone(&handler_fired);
-    let server_task = tokio::spawn(async move {
-        // The wildcard queryable matches the `torso` selector first, so the
-        // request reaches the producer's dispatcher; `choose_link_id` then
-        // returns `None` because `torso` isn't in the bound set and the
-        // request is dropped without being handed to `handle_next_request`.
-        // That leaves this call blocked indefinitely, so we race it against
-        // a wall-clock budget; the counter trips only if the handler runs.
-        let _ = tokio::time::timeout(
-            Duration::from_millis(500),
-            endpoint.handle_next_request(move |_ctx| {
-                let fired = Arc::clone(&handler_fired_clone);
-                async move {
-                    fired.fetch_add(1, Ordering::SeqCst);
-                    Ok(Payload::from_static(b"unexpected"))
-                }
-            }),
-        )
-        .await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let caller_handle = router.messenger().await;
-    let err = ServiceMessenger::poll(
-        &caller_handle,
-        "caller_core",
-        "caller_inst_torso",
-        SenderTarget::interface("depth_camera", "v1").expect("iface target"),
-        Some(LINK_TORSO),
-        "start_recording",
-        Some("server_core"),
-        Some("server_inst"),
-        Payload::from_static(b"go"),
-        Duration::from_millis(250),
-    )
-    .await
-    .expect_err("poll to unbound link_id must not succeed");
-    match err {
-        Error::ServiceUnreachable { .. } => {}
-        other => panic!("expected ServiceUnreachable, got {other:?}"),
-    }
-    assert_eq!(
-        handler_fired.load(Ordering::SeqCst),
-        0,
-        "user handler must not run for an unbound link_id"
-    );
-    server_task.await.expect("server task panicked");
     router.shutdown().await;
 }
 
@@ -2981,7 +2882,6 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
         "caller_core",
         "caller_inst",
         action_target,
-        None,
         action_name,
         None, // wildcard target_core_node
         None, // wildcard target_instance_id

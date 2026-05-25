@@ -341,7 +341,6 @@ pub fn build_consumed_service(
     builder.line(&format!("{target_instance_id_expr},"));
     builder.line("request_payload,");
     builder.line("timeout,");
-    builder.line("to_link_id=None,");
     builder.dedent();
     builder.line(")");
 

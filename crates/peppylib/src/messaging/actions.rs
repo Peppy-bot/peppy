@@ -291,25 +291,18 @@ impl ActionMessenger {
         as_identity: SenderTarget,
         as_action_name: &str,
     ) -> Result<ActionCreation> {
-        let recv = ActionWireReceiver::new(
-            bound_core_node,
-            as_instance_id,
-            as_identity,
-            &[],
-            as_action_name,
-        )?;
+        let recv =
+            ActionWireReceiver::new(bound_core_node, as_instance_id, as_identity, as_action_name)?;
         messenger.expose_action(&recv).await
     }
 
-    /// Probe an action service. `to_link_id` `None` targets the default
-    /// link_id; `Some(value)` targets a specific producer link_id.
+    /// Probe an action service.
     #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
         to_target: SenderTarget,
-        to_link_id: Option<&str>,
         to_action_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
@@ -320,7 +313,6 @@ impl ActionMessenger {
             target_core_node,
             target_instance_id,
             to_target,
-            to_link_id,
             to_action_name,
         )?;
         match messenger
@@ -344,8 +336,7 @@ impl ActionMessenger {
     /// matching feedback topic, and polls the goal service.
     ///
     /// `to_target` must match the [`SenderTarget`] the action server used
-    /// in [`Self::expose`]. `to_link_id` `None` targets the default
-    /// link_id; `Some(value)` targets a specific producer link_id.
+    /// in [`Self::expose`].
     ///
     /// When either `target_core_node` or `target_instance_id` is `None`
     /// (wildcard / from_any), this performs a discover-then-pin sequence:
@@ -364,7 +355,6 @@ impl ActionMessenger {
         as_core_node: &str,
         as_instance_id: &str,
         to_target: SenderTarget,
-        to_link_id: Option<&str>,
         to_action_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
@@ -388,7 +378,6 @@ impl ActionMessenger {
                     target_core_node,
                     target_instance_id,
                     to_target.clone(),
-                    to_link_id,
                     to_action_name,
                 )?;
                 // Cap discovery at PROBE_TIMEOUT or the caller's goal budget,
@@ -412,7 +401,6 @@ impl ActionMessenger {
             resolved_core.as_deref(),
             resolved_inst.as_deref(),
             to_target,
-            to_link_id,
             to_action_name,
         )?;
 

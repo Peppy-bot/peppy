@@ -8,8 +8,8 @@
 //! diverging this one.
 
 use crate::wire::{
-    ActionWireReceiver, ActionWireSender, SenderTarget, ServiceKind, ServiceWireReceiver,
-    ServiceWireSender, TopicWireReceiver, TopicWireSender,
+    ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, SenderTarget, ServiceKind,
+    ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use std::fmt;
 
@@ -57,8 +57,8 @@ impl ZenohWireFormat {
         // dropping wildcard topic messages whose producer link_id is
         // already claimed by a pinned subscription. Service reply keyexprs
         // also carry a literal at this index (it's the link_id the
-        // responder claimed via `choose_link_id`), so segment 8 is
-        // populated there too; an empty value would only appear for a
+        // responder claimed via `ParsedInboundQuery::claim`), so segment 8
+        // is populated there too; an empty value would only appear for a
         // truncated wire shape and is treated as "no link_id" since it can
         // never match a pinned literal.
         let link_id = segments
@@ -98,36 +98,21 @@ impl ZenohWireFormat {
         )
     }
 
-    // ─── Topic attachment ─────────────────────────────────────────────────
-    //
-    // A producer bound to N link_ids issues N `put`s per `emit` because Zenoh
-    // `put` keyexprs can't carry wildcards. A subscriber that wildcards the
-    // link_id slot intersects all N — without help, it receives the same
-    // payload N times per emit. The producer marks the publish for
-    // `effective[0]` (first-bound) as primary and the rest as secondary; the
-    // adapter drops secondaries for wildcard subscribers. Pinned subscribers
-    // ignore the marker because their keyexpr already filters to a single
-    // publish per emit. This is the topic-side analog of the service
-    // "first-bound dispatch" pattern in [`ParsedInboundQuery::choose_link_id`].
-
     // ─── Services ─────────────────────────────────────────────────────────
     //
     // Services and action sub-services (goal / cancel / result) ride on
     // Zenoh queryables. The producer declares exactly one queryable per
-    // `listen_service` call with `*` at the link_id slot, regardless of how
-    // many link_ids the receiver binds. Producer-side dispatch (in the
-    // adapter's `handle_queryable`) picks the concrete link_id from the
-    // bound set when claiming each inbound query — `from_any` consumers
-    // claim `bound_link_ids[0]`, pinned consumers claim the literal they
-    // sent. This keeps the user handler firing exactly once per consumer
-    // call, even when a single producer process binds N link_ids.
+    // `listen_service` call with `*` at the link_id slot. Producers always
+    // advertise under the reserved default `_` link_id; the adapter
+    // [`ParsedInboundQuery::claim`] accepts either `*` (from `from_any`
+    // consumers) or `_` (post-binding-map consumers) at the link_id slot
+    // and drops anything else defensively.
 
     /// Producer-side queryable keyexpr, declared once per `listen_service`.
     /// Layout `{bound_core}/*/{as_inst}/*/{service_root}` — the `*` slots
     /// match any caller's `core_node` / `instance_id`, and the link_id slot
-    /// inside `service_root` is also `*` so a single queryable absorbs every
-    /// link_id literal the producer binds. The adapter resolves which
-    /// concrete link_id to bind each request to after parsing the selector.
+    /// inside `service_root` is also `*` so a single queryable absorbs the
+    /// `*` and `_` literals consumers may send.
     pub(crate) fn service_queryable_declare(r: &ServiceWireReceiver) -> String {
         let root = service_root(
             &r.as_identity,
@@ -144,14 +129,17 @@ impl ZenohWireFormat {
     /// Caller-side get selector. Layout
     /// `{to_core|*}/{bound_core_caller}/{to_inst|*}/{caller_inst}/{service_root}`.
     ///
-    /// The link_id slot inside `service_root` is `*` when the caller didn't
-    /// pin one (the `from_any: true` fix — `get` selectors may carry Zenoh
-    /// wildcards, unlike `put` keyexprs) and a concrete literal otherwise.
-    /// Likewise the `to_core` / `to_inst` slots use `*` when the caller
+    /// The link_id slot inside `service_root` is always `*`: producers
+    /// advertise under the reserved `_` segment and Zenoh's matcher unifies
+    /// the two. The `to_core` / `to_inst` slots use `*` when the caller
     /// broadcasts, replacing the legacy `_any_` marker.
     pub(crate) fn service_get_selector(s: &ServiceWireSender) -> String {
-        let link_id = s.to_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let root = service_root(&s.to_target, link_id, &s.to_service_name, s.kind);
+        let root = service_root(
+            &s.to_target,
+            SINGLE_CHUNK_WILDCARD,
+            &s.to_service_name,
+            s.kind,
+        );
         let target_core = s
             .target_core_node
             .as_deref()
@@ -186,10 +174,10 @@ impl ZenohWireFormat {
     /// Parses a query selector keyexpr (the caller's get-side keyexpr, as
     /// delivered to the producer via `query.key_expr()`) to extract the
     /// caller's identity slots and the link_id slot. The producer's single
-    /// queryable declares `*` at the link_id position, so the selector's
-    /// literal-or-`*` at that slot is the only signal of which bound link_id
-    /// the consumer wanted — [`ParsedInboundQuery::choose_link_id`] resolves
-    /// that into a concrete claim from the producer's bound set.
+    /// queryable declares `*` at the link_id position, so the selector
+    /// carries either `*` (from `from_any` consumers) or `_` (the default
+    /// literal) — [`ParsedInboundQuery::claim`] confirms it's one of the two
+    /// and resolves to the default `_` segment.
     pub(crate) fn parse_inbound_query(
         receiver: &ServiceWireReceiver,
         query_keyexpr: &str,
@@ -260,9 +248,10 @@ impl ZenohWireFormat {
     /// Server-side per-goal feedback publish:
     /// `*/{bound_core}/*/{as_inst}/action/{discriminator}/{name}/{tag}/{link_id}/{as_action}/feedback/{as_inst}/{goal_id}`.
     ///
-    /// `link_id` is the link_id parsed from the goal's request keyexpr, not
-    /// the receiver's bound set, since a producer bound to multiple link_ids
-    /// publishes feedback addressed to whichever link_id the goal targeted.
+    /// `link_id` is the link_id parsed from the goal's request keyexpr — the
+    /// adapter's `claim()` resolves it to the producer's default `_` segment
+    /// before publishing, so feedback rides on the same wire slot the goal
+    /// targeted.
     pub(crate) fn action_feedback_publish(
         r: &ActionWireReceiver,
         link_id: &str,
@@ -276,12 +265,10 @@ impl ZenohWireFormat {
     }
 
     /// Client-side per-goal feedback subscribe. Wildcards on server-side fields
-    /// when the target is not pinned. `to_link_id: None` → match the
-    /// producer's link_id slot via the transport wildcard `*`, since
-    /// subscribes (unlike publishes) accept wildcards.
+    /// when the target is not pinned. The link_id slot is always `*` to match
+    /// the producer's `_` advertisement via Zenoh's matcher.
     pub(crate) fn action_feedback_subscribe(s: &ActionWireSender, goal_id: &str) -> String {
-        let link_id = s.to_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
-        let action_root = action_root(&s.to_target, link_id, &s.to_action_name);
+        let action_root = action_root(&s.to_target, SINGLE_CHUNK_WILDCARD, &s.to_action_name);
         let target_core = s
             .target_core_node
             .as_deref()
@@ -539,8 +526,8 @@ impl ServiceReplyAttachment {
 /// Result of parsing an inbound queryable selector. Carries the
 /// caller-identity slots plus the link_id slot from the selector — the
 /// producer's single queryable declares `*` at the link_id slot, so the
-/// adapter inspects this field to decide which of its bound link_ids to
-/// claim for the inbound request via [`Self::choose_link_id`].
+/// adapter inspects this field via [`Self::claim`] to confirm the selector
+/// targeted the producer's default `_` segment (or a `*` wildcard).
 ///
 /// `kind` is decoded from the query attachment and distinguishes user
 /// requests (handler runs) from probes (auto-replied without invoking the
@@ -550,8 +537,8 @@ pub(crate) struct ParsedInboundQuery {
     pub(crate) caller_core: String,
     pub(crate) caller_inst: String,
     /// Raw value of the link_id slot in the selector. Either the
-    /// single-chunk wildcard `*` (a `from_any` consumer) or a concrete
-    /// literal (a pinned consumer).
+    /// single-chunk wildcard `*` (a `from_any` consumer) or the default
+    /// `_` literal (a pinned consumer, post-binding-map era).
     pub(crate) link_id: String,
     /// Whether this query is a real user request or a discovery probe.
     /// Decoded from the mandatory query attachment.
@@ -559,23 +546,18 @@ pub(crate) struct ParsedInboundQuery {
 }
 
 impl ParsedInboundQuery {
-    /// Resolves the link_id the producer should bind this request to.
-    ///
-    /// - Wildcard selector (`from_any` consumer): claims `bound_link_ids[0]`.
-    /// - Literal selector matching a bound link_id: claims that literal.
-    /// - Literal selector NOT in the bound set: returns `None`, signaling
-    ///   the adapter to drop the query without replying. Unreachable in
-    ///   practice because Zenoh's keyexpr matcher already filtered the
-    ///   selector against the producer's queryable, but kept as a defensive
-    ///   guard against mid-rollout schema skew.
-    pub(crate) fn choose_link_id<'a>(&self, bound_link_ids: &'a [String]) -> Option<&'a str> {
-        if self.link_id == SINGLE_CHUNK_WILDCARD {
-            return bound_link_ids.first().map(String::as_str);
+    /// Confirms the inbound link_id slot is one the producer answers to and
+    /// returns the literal the producer should claim (always
+    /// [`DEFAULT_LINK_ID`]). Wildcard `*` and the literal `_` both succeed;
+    /// anything else returns `None` so the adapter drops the query without
+    /// replying. Unreachable in practice because Zenoh's keyexpr matcher
+    /// already filtered the selector against the producer's queryable, but
+    /// kept as a defensive guard against mid-rollout schema skew.
+    pub(crate) fn claim(&self) -> Option<&'static str> {
+        match self.link_id.as_str() {
+            SINGLE_CHUNK_WILDCARD | DEFAULT_LINK_ID => Some(DEFAULT_LINK_ID),
+            _ => None,
         }
-        bound_link_ids
-            .iter()
-            .find(|b| b.as_str() == self.link_id)
-            .map(String::as_str)
     }
 }
 

@@ -312,18 +312,15 @@ impl ServiceMessenger {
             as_core_node,
             as_instance_id,
             as_identity,
-            &[],
             as_service_name,
             ServiceKind::Service,
         )?;
         messenger.expose_service(&recv).await
     }
 
-    /// Poll a service. `to_link_id` `None` emits the wildcard `*` in the
-    /// link_id slot so any matching producer queryable replies (used by
-    /// consumers without a pinned link_id); `Some(value)` targets a
-    /// specific producer link_id, used when a `depends_on` entry declares
-    /// a link_id.
+    /// Poll a service. The link_id wire slot is always emitted as `*`;
+    /// producers advertise under the reserved `_` segment and Zenoh's
+    /// matcher unifies the two.
     ///
     /// When `target_instance_id` is `None` (wildcard / from_any), this
     /// performs a discover-then-pin sequence: a lightweight probe is sent
@@ -342,7 +339,6 @@ impl ServiceMessenger {
         bound_core_node: &str,
         as_instance_id: &str,
         to_target: SenderTarget,
-        to_link_id: Option<&str>,
         to_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
@@ -359,7 +355,6 @@ impl ServiceMessenger {
                 target_core_node,
                 target_instance_id,
                 to_target.clone(),
-                to_link_id,
                 to_service_name,
                 ServiceKind::Service,
             )?;
@@ -404,7 +399,6 @@ impl ServiceMessenger {
             resolved_core.as_deref(),
             resolved_inst.as_deref(),
             to_target,
-            to_link_id,
             to_service_name,
             ServiceKind::Service,
         )?;
@@ -419,7 +413,7 @@ impl ServiceMessenger {
     }
 
     /// Sends a lightweight probe to check whether a service is listening at
-    /// the targeted link_id. The probe is handled transparently by the
+    /// the targeted producer. The probe is handled transparently by the
     /// service's request loop; the user handler is never invoked. Returns
     /// `true` if the service responds within [`PROBE_TIMEOUT`], `false` if
     /// unreachable.
@@ -428,13 +422,11 @@ impl ServiceMessenger {
     /// IS the discovery step; routing through `poll` would issue two probes
     /// back to back. Calls the raw messenger path directly with the same
     /// wire-sender shape `poll` builds.
-    #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
         to_target: SenderTarget,
-        to_link_id: Option<&str>,
         to_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
@@ -445,7 +437,6 @@ impl ServiceMessenger {
             target_core_node,
             target_instance_id,
             to_target,
-            to_link_id,
             to_service_name,
             ServiceKind::Service,
         )?;

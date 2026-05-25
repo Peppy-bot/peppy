@@ -517,7 +517,6 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started_core_node.core_node_name),
-        None,
         names::NODE_ADD_ACTION,
         Some(&started_core_node.core_node_name),
         None,
