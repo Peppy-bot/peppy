@@ -790,8 +790,9 @@ pub fn collect_consumed_interfaces(
                         .services
                         .iter()
                         .find(|s| s.name.trim() == name)?;
-                    let request_format = exposed.request_message_format.clone()?;
-                    let response_format = exposed.response_message_format.clone()?;
+                    let request_format = exposed.request_message_format.clone().unwrap_or_default();
+                    let response_format =
+                        exposed.response_message_format.clone().unwrap_or_default();
                     Some((request_format, response_format))
                 },
             ) else {
@@ -1860,5 +1861,83 @@ mod conforms_to_tests {
             err.contains("drifted") && err.contains("peppy repo refresh"),
             "drift error should mention drift + refresh, got: {err}"
         );
+    }
+
+    #[test]
+    fn consumed_service_with_response_only_format_resolves() {
+        const UVC_V1_BODY: &str = r#"{
+            peppy_schema: "interface_v1",
+            manifest: { name: "uvc_camera", tag: "v1" },
+            interfaces: {
+                services: [
+                    {
+                        name: "video_stream_info",
+                        response_message_format: {
+                            width: "u32",
+                            height: "u32",
+                            frames_per_second: "u8",
+                        }
+                    }
+                ]
+            }
+        }"#;
+
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_interface(tmp.path(), "uvc_camera", "v1", UVC_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let manifest: config::node::Manifest = serde_json5::from_str(
+            r#"{
+                name: "uvc_consumer",
+                tag: "v1",
+                depends_on: {
+                    interfaces: [
+                        { name: "uvc_camera", tag: "v1", link_id: "camera" }
+                    ]
+                }
+            }"#,
+        )
+        .expect("manifest parses");
+        let cfg: Interfaces = serde_json5::from_str(
+            r#"{
+                services: {
+                    consumes: [
+                        { link_id: "camera", name: "video_stream_info" }
+                    ]
+                }
+            }"#,
+        )
+        .expect("interfaces parses");
+
+        let out = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, &|_| {})
+            .expect("response-only service must resolve");
+
+        assert_eq!(
+            out.len(),
+            1,
+            "expected exactly one ConsumedService, got {} entries (pre-fix this was 0 — \
+             the service was silently dropped)",
+            out.len()
+        );
+        match out[0].interface() {
+            InterfaceVariant::ConsumedService {
+                service,
+                request_format,
+                response_format,
+                ..
+            } => {
+                assert_eq!(service.name, "video_stream_info");
+                assert!(
+                    request_format.0.is_empty(),
+                    "response-only service should have empty request format"
+                );
+                assert_eq!(
+                    response_format.0.len(),
+                    3,
+                    "response format should preserve all three declared fields"
+                );
+            }
+            other => panic!("expected ConsumedService variant, got {other:?}"),
+        }
     }
 }
