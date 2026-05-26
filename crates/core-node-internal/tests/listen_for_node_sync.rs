@@ -1962,3 +1962,106 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
         response.error_message
     );
 }
+
+/// End-to-end regression for the user-reported bug: a `conforms_to` entry
+/// resolved from a git-sourced interface cache must materialize the repo
+/// checkout before reading the interface manifest. The interface cache
+/// records a *repo-relative* path (e.g. `cameras/depth_camera.json5`), so
+/// without `ensure_checkout` the daemon would have tried to read that path
+/// from the daemon's CWD and failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_sync_resolves_git_sourced_conforms_to_interface() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    // Build a local git repo that hosts the interface manifest at the
+    // same repo-relative location the real `interfaces_hub` uses.
+    let source_parent = tempdir().expect("source parent tempdir");
+    let source_repo_dir = source_parent.path().join("interfaces_hub");
+    std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
+    let branch = init_local_git_repo(&source_repo_dir);
+
+    const INTERFACE_BODY: &str = r#"{
+        peppy_schema: "interface_v1",
+        manifest: { name: "depth_camera", tag: "v1" },
+        interfaces: {
+            topics: [
+                { name: "video_stream", qos_profile: "sensor_data" }
+            ]
+        }
+    }"#;
+
+    std::fs::create_dir_all(source_repo_dir.join("cameras")).expect("cameras dir");
+    std::fs::write(
+        source_repo_dir.join("cameras/depth_camera.json5"),
+        INTERFACE_BODY,
+    )
+    .expect("write interface file");
+
+    // Stage and commit the interface file on top of the initial empty
+    // commit so a fresh clone sees it on the resolved ref.
+    let repo = git2::Repository::open(&source_repo_dir).expect("reopen repo");
+    let mut index = repo.index().expect("index");
+    index
+        .add_all(["cameras/*"].iter(), git2::IndexAddOption::DEFAULT, None)
+        .expect("add_all");
+    index.write().expect("write index");
+    let tree_id = index.write_tree().expect("write_tree");
+    let tree = repo.find_tree(tree_id).expect("find_tree");
+    let parent_oid = repo.head().unwrap().target().unwrap();
+    let parent = repo.find_commit(parent_oid).expect("find_commit");
+    let sig = git2::Signature::now("Test", "test@example.com").expect("sig");
+    repo.commit(Some("HEAD"), &sig, &sig, "add interface", &tree, &[&parent])
+        .expect("commit interface");
+
+    let repo_url = source_repo_dir.display().to_string();
+
+    TestPackagesCache::new()
+        .interface_git_entry(
+            "depth_camera",
+            "v1",
+            &repo_url,
+            &branch,
+            "cameras/depth_camera.json5",
+            INTERFACE_BODY,
+        )
+        .write(&started.peppy_dirs);
+
+    // The node under sync declares `conforms_to` against the git-sourced
+    // interface. Before the fix, `handle_node_sync_request` errored here
+    // with "failed to read cached interface ... at cameras/depth_camera.json5".
+    let node_dir = tempdir().expect("node tempdir");
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            peppy_schema: "node_v1",
+            manifest: { name: "depth_publisher", tag: "v1" },
+            interfaces: {
+                topics: { emits: [], consumes: [] },
+                services: { exposes: [] },
+                actions: { exposes: [] },
+                conforms_to: [
+                    { name: "depth_camera", tag: "v1" }
+                ],
+            },
+            execution: { language: "rust", run_cmd: ["sleep", "10"] }
+        }"#,
+    );
+
+    let response = sync_with_flag(&started, node_dir.path(), true).await;
+    assert!(
+        response.success,
+        "sync should resolve the git-sourced conforms_to interface, got error: {}",
+        response.error_message
+    );
+
+    // The interface's checkout should exist on disk now — this proves
+    // `ensure_checkout` ran rather than `std::fs::read` silently relying
+    // on a path that happened to exist in the daemon's CWD.
+    let checkout_count = std::fs::read_dir(started.peppy_dirs.git_checkouts_dir())
+        .expect("git_checkouts_dir should exist")
+        .count();
+    assert_eq!(
+        checkout_count, 1,
+        "exactly one git checkout dir should have been materialized"
+    );
+}

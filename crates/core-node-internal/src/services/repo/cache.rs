@@ -535,15 +535,44 @@ pub(crate) fn resolve_repo_launcher_path(
         )
     })?;
 
-    match entry.source_type {
-        RepoSourceKind::Fs => Ok(PathBuf::from(&entry.path)),
+    resolve_cached_artifact_path(
+        peppy_dirs,
+        entry.source_type,
+        entry.source_uri.as_deref(),
+        entry.resolved_ref.as_deref(),
+        &entry.path,
+        on_feedback,
+    )
+    .map_err(|e| format!("launcher `{name}`: {e}"))
+}
+
+/// Translates a cache entry's `(source_type, source_uri, resolved_ref, path)`
+/// tuple into a concrete on-disk path. Shared between launcher and interface
+/// resolution so the Fs/Git/Url branching lives in one place.
+///
+/// For Git entries this materializes the repo's checkout via
+/// [`crate::services::node::cache::git::ensure_checkout`] (blocking — wrap
+/// callers in `spawn_blocking` when running inside Tokio) and joins the
+/// repo-relative `path` onto the checkout dir. `on_feedback` receives
+/// clone/refresh progress lines.
+///
+/// Errors are artifact-agnostic (no "launcher" / "interface" wording); the
+/// caller is expected to `map_err` with its own context prefix.
+pub(crate) fn resolve_cached_artifact_path(
+    peppy_dirs: &PeppyDirs,
+    source_type: RepoSourceKind,
+    source_uri: Option<&str>,
+    resolved_ref: Option<&str>,
+    path: &str,
+    on_feedback: &dyn Fn(&str),
+) -> std::result::Result<PathBuf, String> {
+    match source_type {
+        RepoSourceKind::Fs => Ok(PathBuf::from(path)),
         RepoSourceKind::Git => {
-            let repo_url = entry.source_uri.as_deref().ok_or_else(|| {
-                format!("cache entry for launcher `{name}` is git but has no source_uri")
-            })?;
-            let repo_ref = entry.resolved_ref.as_deref().ok_or_else(|| {
-                format!("cache entry for launcher `{name}` is git but has no resolved_ref")
-            })?;
+            let repo_url =
+                source_uri.ok_or_else(|| "git cache entry missing source_uri".to_string())?;
+            let repo_ref =
+                resolved_ref.ok_or_else(|| "git cache entry missing resolved_ref".to_string())?;
             let checkout = crate::services::node::cache::git::ensure_checkout(
                 peppy_dirs,
                 repo_url,
@@ -551,11 +580,9 @@ pub(crate) fn resolve_repo_launcher_path(
                 None,
                 on_feedback,
             )?;
-            Ok(checkout.join(&entry.path))
+            Ok(checkout.join(path))
         }
-        RepoSourceKind::Url => Err(format!(
-            "launcher `{name}` is sourced from a URL repository, which is not yet supported"
-        )),
+        RepoSourceKind::Url => Err("url-sourced cache entry is not yet supported".to_string()),
     }
 }
 
@@ -1077,6 +1104,158 @@ mod tests {
         let err = resolve_repo_launcher_path("demo", &peppy_dirs, &|_| {})
             .expect_err("url launcher should error");
         assert!(err.contains("not yet supported"), "got: {err}");
+    }
+
+    // -- resolve_cached_artifact_path tests --
+
+    /// Initializes a bare-bones git repository at `repo_dir` and writes a
+    /// single committed file at the given repo-relative path. Returns the
+    /// branch name resolved from HEAD (e.g. "main" / "master").
+    fn init_repo_with_file(repo_dir: &Path, file_path: &str, contents: &str) -> String {
+        let repo = git2::Repository::init(repo_dir).expect("git init");
+        let abs = repo_dir.join(file_path);
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        std::fs::write(&abs, contents).expect("write committed file");
+
+        let rel = Path::new(file_path);
+        let mut index = repo.index().expect("open index");
+        index.add_path(rel).expect("add file");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let sig = git2::Signature::now("Peppy", "peppy@example.com").expect("signature");
+        repo.commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
+            .expect("commit");
+
+        repo.head()
+            .expect("head")
+            .shorthand()
+            .expect("shorthand")
+            .to_owned()
+    }
+
+    /// `Fs` entries are already absolute on disk — the helper returns the
+    /// recorded path verbatim without touching the git checkout cache.
+    #[test]
+    fn resolve_cached_artifact_path_fs_returns_path_verbatim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let abs = tmp.path().join("artifact.json5");
+
+        let resolved = resolve_cached_artifact_path(
+            &peppy_dirs,
+            RepoSourceKind::Fs,
+            None,
+            None,
+            abs.to_string_lossy().as_ref(),
+            &|_| {},
+        )
+        .expect("fs resolve should succeed");
+        assert_eq!(resolved, abs);
+    }
+
+    /// `Url` source kind isn't wired through repo refresh yet; the helper
+    /// surfaces a generic (artifact-agnostic) "not yet supported" error so
+    /// callers can layer their own context prefix.
+    #[test]
+    fn resolve_cached_artifact_path_url_returns_not_yet_supported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let err = resolve_cached_artifact_path(
+            &peppy_dirs,
+            RepoSourceKind::Url,
+            Some("https://example.com/archive.tzst"),
+            None,
+            "artifact.json5",
+            &|_| {},
+        )
+        .expect_err("url should error");
+        assert!(err.contains("not yet supported"), "got: {err}");
+        assert!(
+            !err.contains("launcher") && !err.contains("interface"),
+            "helper error should be artifact-agnostic, got: {err}"
+        );
+    }
+
+    /// Git entries are useless without a clone URL; the helper rejects
+    /// them up-front rather than crashing inside `ensure_checkout`.
+    #[test]
+    fn resolve_cached_artifact_path_git_requires_source_uri() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let err = resolve_cached_artifact_path(
+            &peppy_dirs,
+            RepoSourceKind::Git,
+            None,
+            Some("main"),
+            "artifact.json5",
+            &|_| {},
+        )
+        .expect_err("missing source_uri should error");
+        assert!(err.contains("source_uri"), "got: {err}");
+    }
+
+    /// Git entries are also useless without a resolved ref to check out.
+    #[test]
+    fn resolve_cached_artifact_path_git_requires_resolved_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let err = resolve_cached_artifact_path(
+            &peppy_dirs,
+            RepoSourceKind::Git,
+            Some("https://example.com/repo.git"),
+            None,
+            "artifact.json5",
+            &|_| {},
+        )
+        .expect_err("missing resolved_ref should error");
+        assert!(err.contains("resolved_ref"), "got: {err}");
+    }
+
+    /// Regression for the launcher side of the bug class: a git-sourced
+    /// `LauncherCacheEntry` records a repo-relative `path`, so resolution
+    /// must materialize the checkout and join the relative path on top —
+    /// not just read `entry.path` from the CWD. This test covered nothing
+    /// before; the missing coverage is what let the symmetric interface
+    /// bug land.
+    #[test]
+    fn resolve_launcher_git_materializes_checkout() {
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+
+        let source_parent = tempfile::tempdir().unwrap();
+        let source_repo_dir = source_parent.path().join("launchers_hub");
+        std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
+        let branch = init_repo_with_file(&source_repo_dir, "launchers/demo.json5", "{}");
+        let repo_url = source_repo_dir.display().to_string();
+
+        write_launcher_cache(
+            &peppy_dirs,
+            &[mk_launcher_entry(
+                "demo",
+                RepoSourceKind::Git,
+                Some(&repo_url),
+                Some(&branch),
+                "launchers/demo.json5",
+                0,
+            )],
+        )
+        .unwrap();
+
+        let resolved = resolve_repo_launcher_path("demo", &peppy_dirs, &|_| {})
+            .expect("git launcher resolve should succeed");
+        assert!(
+            resolved.is_absolute(),
+            "resolved path should be absolute, got {}",
+            resolved.display()
+        );
+        assert!(resolved.ends_with("launchers/demo.json5"));
+        assert!(
+            resolved.exists(),
+            "resolved path should exist on disk after ensure_checkout"
+        );
     }
 
     /// The write is atomic: the final file is created via a tmp + rename

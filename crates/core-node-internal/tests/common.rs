@@ -772,13 +772,14 @@ pub async fn send_node_add_and_wait_with_env<'a>(
     .await
 }
 
-/// Builder for a `nodes.json5` cache fixture. Tests call
-/// [`TestPackagesCache::fs_entry`] / `git_entry` / `http_entry` to declare
-/// discovered nodes and then [`TestPackagesCache::write`] to serialize
-/// the file under `peppy_dirs.cache_dir()/nodes.json5`.
+/// Builder for `nodes.json5` and `interfaces.json5` cache fixtures. Tests call
+/// [`TestPackagesCache::fs_entry`] / `git_entry` / `interface_git_entry` to
+/// declare discovered items, then [`TestPackagesCache::write`] to serialize
+/// the files under `peppy_dirs.cache_dir()`.
 #[derive(Default)]
 pub struct TestPackagesCache {
     entries: Vec<serde_json::Value>,
+    interfaces: Vec<serde_json::Value>,
 }
 
 impl TestPackagesCache {
@@ -838,6 +839,47 @@ impl TestPackagesCache {
         self
     }
 
+    /// Adds an `interfaces.json5` entry for a git-sourced interface. `body`
+    /// is the on-disk interface JSON5 (assumed already committed at
+    /// `path_in_repo` inside `repo_url`); its sha256 is computed here so
+    /// the cache fingerprint matches what `ensure_checkout` will read.
+    pub fn interface_git_entry(
+        mut self,
+        name: &str,
+        tag: &str,
+        repo_url: &str,
+        resolved_ref: &str,
+        path_in_repo: &str,
+        body: &str,
+    ) -> Self {
+        let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
+        let mut m = serde_json::Map::new();
+        m.insert(
+            "interface_name".into(),
+            serde_json::Value::String(name.into()),
+        );
+        m.insert("tag".into(), serde_json::Value::String(tag.into()));
+        m.insert("sha256".into(), serde_json::Value::String(sha));
+        m.insert(
+            "source_type".into(),
+            serde_json::Value::String("git".into()),
+        );
+        m.insert(
+            "source_uri".into(),
+            serde_json::Value::String(repo_url.into()),
+        );
+        m.insert(
+            "resolved_ref".into(),
+            serde_json::Value::String(resolved_ref.into()),
+        );
+        m.insert(
+            "path".into(),
+            serde_json::Value::String(path_in_repo.into()),
+        );
+        self.interfaces.push(serde_json::Value::Object(m));
+        self
+    }
+
     pub fn write(self, peppy_dirs: &config::consts::PeppyDirs) {
         let cache_dir = peppy_dirs.cache_dir();
         std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
@@ -845,6 +887,15 @@ impl TestPackagesCache {
             serde_json::to_string_pretty(&self.entries).expect("failed to serialize cache entries");
         std::fs::write(nodes_repo_cache_path(peppy_dirs), content)
             .expect("failed to write nodes.json5 fixture");
+        if !self.interfaces.is_empty() {
+            let interfaces_content = serde_json::to_string_pretty(&self.interfaces)
+                .expect("failed to serialize interface cache entries");
+            std::fs::write(
+                core_node::interfaces_repo_cache_path(peppy_dirs),
+                interfaces_content,
+            )
+            .expect("failed to write interfaces.json5 fixture");
+        }
     }
 }
 

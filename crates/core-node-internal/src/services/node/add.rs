@@ -849,6 +849,9 @@ pub(crate) async fn run_node_add(
             let sync_peppy_dirs = action_context.peppy_dirs.clone();
 
             let sync_result = tokio::task::spawn_blocking(move || {
+                let on_feedback = |line: &str| {
+                    tracing::info!(target: "peppy::interface", "{line}");
+                };
                 sync::auto_sync_if_missing(
                     AutoSyncParams {
                         node_dir: &sync_node_dir,
@@ -856,6 +859,7 @@ pub(crate) async fn run_node_add(
                         manifest: &sync_manifest,
                         interfaces: &sync_interfaces,
                         git_hash: &sync_git_hash,
+                        on_feedback: &on_feedback,
                     },
                     &sync_node_stack,
                     &sync_peppy_dirs,
@@ -1221,11 +1225,15 @@ async fn process_node_add(
     } else {
         generator::CrateDeployMode::Symlink
     };
+    let interface_feedback = |line: &str| {
+        tracing::info!(target: "peppy::interface", "{line}");
+    };
     let consumed_interfaces = match collect_consumed_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         stack_resolver(&ctx.action.node_stack),
         &ctx.action.peppy_dirs,
+        &interface_feedback,
     ) {
         Ok(v) => v,
         Err(reason) => {

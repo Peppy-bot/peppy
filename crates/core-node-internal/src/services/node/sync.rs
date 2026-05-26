@@ -347,11 +347,15 @@ async fn handle_node_sync_request_inner(
                 }
 
                 // Collect consumed interfaces with resolved message formats
+                let interface_feedback = |line: &str| {
+                    tracing::info!(target: "peppy::interface", "{line}");
+                };
                 let mut interfaces = match collect_consumed_interfaces(
                     &node_config.manifest,
                     &node_config.interfaces,
                     resolve_dep,
                     &peppy_dirs,
+                    &interface_feedback,
                 ) {
                     Ok(v) => v,
                     Err(reason) => {
@@ -363,7 +367,11 @@ async fn handle_node_sync_request_inner(
                         .map_err(Into::into);
                     }
                 };
-                let conformed = match resolve_conforms_to(&node_config.interfaces, &peppy_dirs) {
+                let conformed = match resolve_conforms_to(
+                    &node_config.interfaces,
+                    &peppy_dirs,
+                    &interface_feedback,
+                ) {
                     Ok(v) => v,
                     Err(reason) => {
                         return NodeSyncResponse::failure(format!(
@@ -654,6 +662,7 @@ pub fn collect_consumed_interfaces(
     interfaces_cfg: &config::node::Interfaces,
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
     peppy_dirs: &PeppyDirs,
+    on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
     let dep_lookup = build_dependency_lookup(manifest);
@@ -683,12 +692,14 @@ pub fn collect_consumed_interfaces(
                     continue;
                 };
                 let conformed =
-                    resolve_conforms_to(&dep_config.interfaces, peppy_dirs).map_err(|e| {
-                        format!(
-                            "failed to resolve `conforms_to` for dependency `{}:{}`: {e}",
-                            entry.name, entry.tag
-                        )
-                    })?;
+                    resolve_conforms_to(&dep_config.interfaces, peppy_dirs, on_feedback).map_err(
+                        |e| {
+                            format!(
+                                "failed to resolve `conforms_to` for dependency `{}:{}`: {e}",
+                                entry.name, entry.tag
+                            )
+                        },
+                    )?;
                 node_dep_offerings.insert(
                     node_key,
                     build_dependency_offerings(&dep_config, &conformed),
@@ -703,6 +714,7 @@ pub fn collect_consumed_interfaces(
                     &entry.name,
                     &entry.tag,
                     entry.sha256.as_deref(),
+                    on_feedback,
                 )?;
                 iface_dep_contracts.insert(link_id.clone(), parsed);
             }
@@ -1075,6 +1087,7 @@ pub(crate) fn resolve_interface_doc(
     name: &str,
     tag: &str,
     sha256_pin: Option<&str>,
+    on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<config::interface::PeppyInterface, String> {
     let cache = repo_cache::load_interface_cache(peppy_dirs)
         .map_err(|e| format!("failed to load interface cache: {e}"))?;
@@ -1093,10 +1106,20 @@ pub(crate) fn resolve_interface_doc(
         })?,
     };
 
-    let bytes = std::fs::read(&entry.path).map_err(|e| {
+    let resolved_path = repo_cache::resolve_cached_artifact_path(
+        peppy_dirs,
+        entry.source_type,
+        entry.source_uri.as_deref(),
+        entry.resolved_ref.as_deref(),
+        &entry.path,
+        on_feedback,
+    )
+    .map_err(|e| format!("interface `{name}:{tag}`: {e}"))?;
+
+    let bytes = std::fs::read(&resolved_path).map_err(|e| {
         format!(
             "failed to read cached interface `{name}:{tag}` at {}: {e}",
-            entry.path
+            resolved_path.display()
         )
     })?;
     let actual_sha = config::fingerprint::fingerprint_for_bytes(&bytes);
@@ -1135,6 +1158,7 @@ pub(crate) fn resolve_interface_doc(
 pub fn resolve_conforms_to(
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
+    on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let Some(items) = interfaces_cfg.conforms_to.as_ref() else {
         return Ok(Vec::new());
@@ -1176,7 +1200,8 @@ pub fn resolve_conforms_to(
     for item in items {
         let name = item.name.as_str();
         let tag = item.tag.as_str();
-        let parsed = resolve_interface_doc(peppy_dirs, name, tag, item.sha256.as_deref())?;
+        let parsed =
+            resolve_interface_doc(peppy_dirs, name, tag, item.sha256.as_deref(), on_feedback)?;
 
         let origin = InterfaceOrigin {
             iface_name: name.to_string(),
@@ -1227,6 +1252,9 @@ pub struct AutoSyncParams<'a> {
     pub manifest: &'a config::node::Manifest,
     pub interfaces: &'a config::node::Interfaces,
     pub git_hash: &'a str,
+    /// Receives progress lines emitted by `ensure_checkout` when a
+    /// git-sourced `conforms_to` interface needs to be materialized.
+    pub on_feedback: &'a dyn Fn(&str),
 }
 
 /// Auto-generates the `.peppy` directory for a node that has never been synced.
@@ -1265,6 +1293,7 @@ pub fn auto_sync_if_missing(
                 params.interfaces,
                 stack_resolver(node_stack),
                 peppy_dirs,
+                params.on_feedback,
             )
             .map_err(|reason| {
                 crate::Error::Io(std::io::Error::other(format!(
@@ -1272,8 +1301,8 @@ pub fn auto_sync_if_missing(
                     reason
                 )))
             })?;
-            let conformed =
-                resolve_conforms_to(params.interfaces, peppy_dirs).map_err(|reason| {
+            let conformed = resolve_conforms_to(params.interfaces, peppy_dirs, params.on_feedback)
+                .map_err(|reason| {
                     crate::Error::Io(std::io::Error::other(format!(
                         "failed to resolve `conforms_to` interfaces: {}",
                         reason
@@ -1490,7 +1519,7 @@ mod conforms_to_tests {
             actions: None,
             conforms_to: None,
         };
-        let out = resolve_conforms_to(&cfg, &dirs).expect("ok");
+        let out = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect("ok");
         assert!(out.is_empty());
     }
 
@@ -1510,7 +1539,7 @@ mod conforms_to_tests {
             sha256: None,
         }]);
 
-        let out = resolve_conforms_to(&cfg, &dirs).expect("happy path");
+        let out = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect("happy path");
         assert_eq!(out.len(), 1, "should pull the one video_stream topic");
         match out[0].interface() {
             InterfaceVariant::EmittedTopic {
@@ -1535,7 +1564,7 @@ mod conforms_to_tests {
             sha256: None,
         }]);
 
-        let err = resolve_conforms_to(&cfg, &dirs).expect_err("miss must error");
+        let err = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect_err("miss must error");
         assert!(
             err.contains("`depth_camera:v1`") && err.contains("peppy repo refresh"),
             "missing-from-cache error should name the entry and suggest refresh, got: {err}"
@@ -1563,7 +1592,7 @@ mod conforms_to_tests {
             },
         ]);
 
-        let err = resolve_conforms_to(&cfg, &dirs).expect_err("dup must error");
+        let err = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect_err("dup must error");
         assert!(
             err.contains("duplicate") && err.contains("depth_camera:v1"),
             "duplicate error should name the entry, got: {err}"
@@ -1594,7 +1623,7 @@ mod conforms_to_tests {
             },
         ]);
 
-        let err = resolve_conforms_to(&cfg, &dirs).expect_err("collision must error");
+        let err = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect_err("collision must error");
         assert!(
             err.contains("collide") && err.contains("normalization"),
             "sanitize-collision error should mention collision + normalization, got: {err}"
@@ -1630,7 +1659,7 @@ mod conforms_to_tests {
             sha256: None,
         }]);
 
-        let out = resolve_conforms_to(&cfg, &dirs).expect("happy path");
+        let out = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect("happy path");
 
         let mut saw_service = false;
         let mut saw_action = false;
@@ -1682,7 +1711,151 @@ mod conforms_to_tests {
             tag: "v1".to_string(),
             sha256: None,
         }]);
-        let err = resolve_conforms_to(&cfg, &dirs).expect_err("drift must error");
+        let err = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect_err("drift must error");
+        assert!(
+            err.contains("drifted") && err.contains("peppy repo refresh"),
+            "drift error should mention drift + refresh, got: {err}"
+        );
+    }
+
+    /// Seeds a local git repository at `repo_dir` with a single file at the
+    /// given repo-relative path, then returns the branch name (e.g. "main"
+    /// or "master") that `ensure_checkout` can target.
+    fn init_git_repo_with_interface(
+        repo_dir: &std::path::Path,
+        repo_relative_path: &str,
+        body: &str,
+    ) -> String {
+        let repo = git2::Repository::init(repo_dir).expect("git init");
+        let abs = repo_dir.join(repo_relative_path);
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        fs::write(&abs, body).expect("write interface file");
+
+        let mut index = repo.index().expect("open index");
+        index
+            .add_path(std::path::Path::new(repo_relative_path))
+            .expect("add path");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let sig = git2::Signature::now("Peppy", "peppy@example.com").expect("signature");
+        repo.commit(Some("HEAD"), &sig, &sig, "seed interface", &tree, &[])
+            .expect("commit");
+        repo.head()
+            .expect("head")
+            .shorthand()
+            .expect("shorthand")
+            .to_owned()
+    }
+
+    /// Direct regression for the user-reported bug: a `conforms_to` entry
+    /// whose cache record is git-sourced (so `entry.path` is repo-relative)
+    /// must materialize the checkout via `ensure_checkout` and read from the
+    /// joined absolute path, not from CWD.
+    #[test]
+    fn resolve_conforms_to_git_sourced_interface_reads_from_checkout() {
+        let peppy_tmp = TempDir::new().unwrap();
+        let dirs = PeppyDirs::new(peppy_tmp.path().to_path_buf());
+        fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
+
+        let source_parent = TempDir::new().unwrap();
+        let source_repo_dir = source_parent.path().join("interfaces_hub");
+        fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
+        let branch = init_git_repo_with_interface(
+            &source_repo_dir,
+            "cameras/depth_camera.json5",
+            DEPTH_V1_BODY,
+        );
+        let repo_url = source_repo_dir.display().to_string();
+
+        let entry = repo_cache::InterfaceCacheEntry {
+            interface_name: "depth_camera".to_string(),
+            tag: "v1".to_string(),
+            sha256: config::fingerprint::fingerprint_for_bytes(DEPTH_V1_BODY.as_bytes()),
+            source_type: RepoSourceKind::Git,
+            source_uri: Some(repo_url),
+            resolved_ref: Some(branch),
+            path: "cameras/depth_camera.json5".to_string(),
+            repo_id: 0,
+        };
+        let cache_path = repo_cache::interfaces_repo_cache_path(&dirs);
+        fs::write(
+            &cache_path,
+            serde_json5::to_string(&vec![entry]).expect("serialize cache"),
+        )
+        .expect("write cache file");
+
+        let cfg = interfaces_with_conforms(vec![ConformsToItem {
+            name: Name::new("depth_camera").unwrap(),
+            tag: "v1".to_string(),
+            sha256: None,
+        }]);
+
+        let out = resolve_conforms_to(&cfg, &dirs, &|_| {})
+            .expect("git-sourced conforms_to should resolve");
+        assert_eq!(out.len(), 1, "should pull the one video_stream topic");
+        match out[0].interface() {
+            InterfaceVariant::EmittedTopic {
+                topic,
+                origin: Some(o),
+            } => {
+                assert_eq!(topic.name, "video_stream");
+                assert_eq!(o.iface_name, "depth_camera");
+                assert_eq!(o.iface_tag, "v1");
+            }
+            other => panic!("expected EmittedTopic with origin, got {other:?}"),
+        }
+    }
+
+    /// Companion to the git happy-path test: proves the drift fingerprint
+    /// check runs against the *resolved* (checkout-joined) path, not just
+    /// the cache record. Pinning a stale sha256 in the cache must still
+    /// trigger the drift error even when the on-disk content lives in a
+    /// git checkout the resolver has to materialize first.
+    #[test]
+    fn resolve_conforms_to_git_sourced_drift_detected() {
+        let peppy_tmp = TempDir::new().unwrap();
+        let dirs = PeppyDirs::new(peppy_tmp.path().to_path_buf());
+        fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
+
+        let source_parent = TempDir::new().unwrap();
+        let source_repo_dir = source_parent.path().join("interfaces_hub");
+        fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
+        let branch = init_git_repo_with_interface(
+            &source_repo_dir,
+            "cameras/depth_camera.json5",
+            DEPTH_V1_BODY,
+        );
+        let repo_url = source_repo_dir.display().to_string();
+
+        let entry = repo_cache::InterfaceCacheEntry {
+            interface_name: "depth_camera".to_string(),
+            tag: "v1".to_string(),
+            // Deliberately wrong fingerprint — must trigger drift detection.
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            source_type: RepoSourceKind::Git,
+            source_uri: Some(repo_url),
+            resolved_ref: Some(branch),
+            path: "cameras/depth_camera.json5".to_string(),
+            repo_id: 0,
+        };
+        let cache_path = repo_cache::interfaces_repo_cache_path(&dirs);
+        fs::write(
+            &cache_path,
+            serde_json5::to_string(&vec![entry]).expect("serialize cache"),
+        )
+        .expect("write cache file");
+
+        let cfg = interfaces_with_conforms(vec![ConformsToItem {
+            name: Name::new("depth_camera").unwrap(),
+            tag: "v1".to_string(),
+            sha256: None,
+        }]);
+
+        let err =
+            resolve_conforms_to(&cfg, &dirs, &|_| {}).expect_err("git-sourced drift must error");
         assert!(
             err.contains("drifted") && err.contains("peppy repo refresh"),
             "drift error should mention drift + refresh, got: {err}"
