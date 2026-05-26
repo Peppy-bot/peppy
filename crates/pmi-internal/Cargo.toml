@@ -35,6 +35,10 @@ tokio = { version = "1", features = [
     "test-util",
 ] }
 serde_json5 = "0.2"
+# Used by the FIFO-noise regression test in `tests/wire.rs` to install a
+# process-wide tracing subscriber that counts `zenoh::api::handlers::fifo`
+# ERROR events. Already in the dependency tree transitively via zenoh.
+tracing-subscriber = "0.3"
 
 [features]
 default = ["zenoh"]

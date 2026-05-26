@@ -3140,6 +3140,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "zenoh",
  "zip",
 ]
