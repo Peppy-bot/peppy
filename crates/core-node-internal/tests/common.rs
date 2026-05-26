@@ -880,6 +880,34 @@ impl TestPackagesCache {
         self
     }
 
+    /// Adds an `interfaces.json5` entry for a filesystem-sourced interface.
+    /// `body` is the on-disk interface JSON5 (assumed already written at
+    /// `absolute_path`); its sha256 is computed here so the cache
+    /// fingerprint matches what `resolve_interface_doc` reads back.
+    pub fn interface_fs_entry(
+        mut self,
+        name: &str,
+        tag: &str,
+        absolute_path: impl AsRef<Path>,
+        body: &str,
+    ) -> Self {
+        let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
+        let mut m = serde_json::Map::new();
+        m.insert(
+            "interface_name".into(),
+            serde_json::Value::String(name.into()),
+        );
+        m.insert("tag".into(), serde_json::Value::String(tag.into()));
+        m.insert("sha256".into(), serde_json::Value::String(sha));
+        m.insert("source_type".into(), serde_json::Value::String("fs".into()));
+        m.insert(
+            "path".into(),
+            serde_json::Value::String(absolute_path.as_ref().to_string_lossy().into_owned()),
+        );
+        self.interfaces.push(serde_json::Value::Object(m));
+        self
+    }
+
     pub fn write(self, peppy_dirs: &config::consts::PeppyDirs) {
         let cache_dir = peppy_dirs.cache_dir();
         std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");

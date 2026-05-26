@@ -2,7 +2,8 @@ use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_acti
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::sync::{
-    self, AutoSyncParams, collect_consumed_interfaces, generate_peppygen_for_node, stack_resolver,
+    self, AutoSyncParams, collect_consumed_interfaces, generate_peppygen_for_node,
+    resolve_conforms_to, stack_resolver,
 };
 use super::{
     clone_with_progress, extract_tar_zst, format_bytes, generate_random_id,
@@ -1228,7 +1229,7 @@ async fn process_node_add(
     let interface_feedback = |line: &str| {
         tracing::info!(target: "peppy::interface", "{line}");
     };
-    let consumed_interfaces = match collect_consumed_interfaces(
+    let mut consumed_interfaces = match collect_consumed_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         stack_resolver(&ctx.action.node_stack),
@@ -1242,6 +1243,19 @@ async fn process_node_add(
             return NodeAddResult::failure(&ctx.log_path, msg);
         }
     };
+    let conformed = match resolve_conforms_to(
+        &node_config.interfaces,
+        &ctx.action.peppy_dirs,
+        &interface_feedback,
+    ) {
+        Ok(v) => v,
+        Err(reason) => {
+            let msg = format!("Failed to resolve `conforms_to` interfaces: {}", reason);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
+        }
+    };
+    consumed_interfaces.extend(conformed);
     if let Err(e) = generate_peppygen_for_node(
         language,
         &working_dir,
