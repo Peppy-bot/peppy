@@ -111,7 +111,9 @@ peppy node add -sr .    # sync, then add, then build, then run an instance
 :::tip
 `-sb` and `-sr` are the shorthands you'll reach for constantly during development. The typical edit-loop is: change `peppy.json5` or source, hit `peppy node add -sr .`, watch the logs, iterate. Without `-s`, a stale `.peppy/` bindings directory can make the daemon see an out-of-date interface; without `-r`, you have to follow every add and build with a separate `peppy node run`. Bundling them collapses the whole "I edited something, now run it" cycle to a single command.
 
-If you pass runtime `key=value` arguments alongside `-r`, keep them **after** the source path — `peppy node add -sr . frequency=30` — so the source positional isn't confused with the trailing args.
+If you pass runtime `key=value` arguments alongside `-r`, keep them **after** the source path (e.g. `peppy node add -sr . frequency=30`), so the source positional isn't confused with the trailing args.
+
+Run-time flags (`--bind KEY@VALUE`, `--instance-id`) and trailing `key=value` arguments are only accepted when `--run` is set; without `--run` there is no instance to apply them to, and the CLI rejects the combination at parse time.
 :::
 
 ## Checking node status

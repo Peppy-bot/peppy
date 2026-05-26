@@ -129,9 +129,8 @@ Examples:
 ```
 
 :::caution
-The git `ref` and `deployment.source` tag share the same format but are independent values.
-This means you could have a git `ref` of `v0.1.0` while `peppy.json5` specifies `v0.1.1`.
-Ensure your git tags match the version in `peppy.json5` to avoid confusion!
+The git `ref` and `deployment.source` tag are independent values with different formats. The git `ref` follows git's own rules (it can be a branch, a commit SHA, or any tag the repository defines, including dotted forms like `v0.1.0`). The peppy `tag` follows peppy's stricter format (no dots; must start with an ASCII letter, e.g. `v1`, `donut`).
+This means you could check out git `ref` `v0.1.0` of a repository whose `peppy.json5` specifies peppy `tag` `v1`. Ensure your git tags and peppy tags evolve in lockstep to avoid confusion!
 :::
 
 From within the cloned repository, execute the launcher:
