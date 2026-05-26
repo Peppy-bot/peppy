@@ -64,7 +64,7 @@ impl Subscription {
 
     pub async fn on_next_message(&mut self) -> Option<Message> {
         loop {
-            let raw = self.inner.rx.recv().await?;
+            let raw = self.inner.rx.recv_async().await.ok()?;
             let msg = Message::from(raw);
             if self
                 .accept_filter

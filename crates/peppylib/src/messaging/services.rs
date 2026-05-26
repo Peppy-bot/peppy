@@ -207,8 +207,8 @@ impl ServiceEndpoint {
 
     async fn next_request(&mut self) -> Result<(ServiceRequestContext, ResponseToken)> {
         loop {
-            match self.queryable.rx.recv().await {
-                Some(incoming) => {
+            match self.queryable.rx.recv_async().await {
+                Ok(incoming) => {
                     match incoming.kind {
                         ServiceQueryKind::Probe => {
                             // Auto-handle probes: reply with `Response` kind
@@ -244,7 +244,7 @@ impl ServiceEndpoint {
                         }
                     }
                 }
-                None => return Err(Error::ServiceRequestStreamClosed),
+                Err(_) => return Err(Error::ServiceRequestStreamClosed),
             }
         }
     }

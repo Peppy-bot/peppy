@@ -1,8 +1,8 @@
 use super::super::error::{Error, Result};
 use super::super::types::{
-    IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend, MockResponseToken,
-    NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable,
-    ServiceReply, SubscriberQoS, Subscription, TopicMessage,
+    AbortOnDrop, IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend,
+    MockResponseToken, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
+    ServiceQueryable, ServiceReply, SubscriberQoS, Subscription, TopicMessage,
 };
 use super::super::wire::zenoh_format::ZenohWireFormat;
 use super::super::wire::{
@@ -58,7 +58,7 @@ type MessageLog = Arc<Mutex<HashMap<String, Vec<Message>>>>;
 /// `from_link_id: None` case) — `route_publish` drops non-primary fan-out
 /// for those entries so a multi-link `emit` yields one delivery.
 pub struct MockSubscription {
-    tx: mpsc::Sender<TopicMessage>,
+    tx: flume::Sender<TopicMessage>,
     drop_secondary: bool,
 }
 
@@ -161,8 +161,7 @@ impl MessengerBackend for MockAdapter {
             });
         }
 
-        let (tx, rx) = mpsc::channel::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
-        let mut tasks = tokio::task::JoinSet::new();
+        let (tx, rx) = flume::bounded::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
 
         // One queryable per listen call (see `ZenohAdapter::listen_service`
         // for the rationale — the same shape applies here so peppylib tests
@@ -170,11 +169,14 @@ impl MessengerBackend for MockAdapter {
         let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
         let query_rx = self.declare_queryable_keyexpr(declare_keyexpr);
         let recv_clone = recv.clone();
-        tasks.spawn(async move {
+        let join_handle = tokio::spawn(async move {
             handle_mock_queryable(query_rx, recv_clone, tx).await;
         });
 
-        Ok(ServiceQueryable::new(rx, tasks))
+        Ok(ServiceQueryable::new(
+            rx,
+            vec![Box::new(AbortOnDrop(join_handle.abort_handle()))],
+        ))
     }
 
     async fn call_service(
@@ -236,7 +238,10 @@ impl MessengerBackend for MockAdapter {
             .await;
         });
 
-        Ok(ReplyStream::new(output_rx, pump_task.abort_handle()))
+        Ok(ReplyStream::new(
+            output_rx,
+            Some(Box::new(AbortOnDrop(pump_task.abort_handle()))),
+        ))
     }
 
     async fn subscribe_action_feedback(
@@ -412,7 +417,7 @@ impl MockAdapter {
                 .push(message.clone());
         }
 
-        let senders: Vec<mpsc::Sender<TopicMessage>> = {
+        let senders: Vec<flume::Sender<TopicMessage>> = {
             let subscriptions = subscriptions.lock().unwrap();
             let mut matched = Vec::new();
             for (pattern, subs) in subscriptions.iter() {
@@ -430,7 +435,7 @@ impl MockAdapter {
         };
 
         for sender in senders {
-            let _ = sender.send(response.clone()).await;
+            let _ = sender.send_async(response.clone()).await;
         }
         Ok(())
     }
@@ -459,7 +464,7 @@ impl MockAdapter {
             });
         }
 
-        let (tx, rx) = mpsc::channel(qos.channel_size());
+        let (tx, rx) = flume::bounded(qos.channel_size());
 
         {
             let mut subscriptions = self.subscriptions.lock().unwrap();
@@ -472,13 +477,12 @@ impl MockAdapter {
                 });
         }
 
-        // No background task is needed — the mock writes directly into the
-        // sender from `publish_keyexpr`. The dummy task gives us an abort
-        // handle to satisfy the `Subscription` type.
-        let join_handle = tokio::spawn(async {});
-        let abort_handle = join_handle.abort_handle();
-
-        Ok(Subscription::new(rx, abort_handle))
+        // No background task or guard is needed — the mock writes directly
+        // into the sender from `publish_keyexpr`, so dropping the
+        // Subscription's `rx` is enough to stop reception. The stale `tx`
+        // clone in the subscriptions map is benign: `route_publish` ignores
+        // send errors on dead senders.
+        Ok(Subscription::new(rx, Box::new(())))
     }
 }
 
@@ -494,7 +498,7 @@ impl MockAdapter {
 async fn handle_mock_queryable(
     mut query_rx: mpsc::Receiver<MockQuery>,
     recv: ServiceWireReceiver,
-    tx: mpsc::Sender<IncomingRequest>,
+    tx: flume::Sender<IncomingRequest>,
 ) {
     while let Some(mock_query) = query_rx.recv().await {
         let parsed = match ZenohWireFormat::parse_inbound_query(
@@ -542,7 +546,7 @@ async fn handle_mock_queryable(
             token,
         };
 
-        if tx.send(request).await.is_err() {
+        if tx.send_async(request).await.is_err() {
             break;
         }
     }
@@ -717,7 +721,7 @@ mod tests {
         )
         .expect("valid sender");
 
-        let mut queryable = adapter
+        let queryable = adapter
             .listen_service(&receiver)
             .await
             .expect("queryable declare should succeed");
@@ -734,7 +738,7 @@ mod tests {
 
         let incoming = queryable
             .rx
-            .recv()
+            .recv_async()
             .await
             .expect("producer should receive the query");
         assert_eq!(incoming.payload.to_bytes().as_ref(), b"ping?");
@@ -821,15 +825,15 @@ mod tests {
         )
         .expect("recv right");
 
-        let mut sub_any = adapter
+        let sub_any = adapter
             .subscribe_topic(&recv_any, SubscriberQoS::Standard)
             .await
             .expect("wildcard subscribe");
-        let mut sub_left = adapter
+        let sub_left = adapter
             .subscribe_topic(&recv_left, SubscriberQoS::Standard)
             .await
             .expect("pinned left subscribe");
-        let mut sub_right = adapter
+        let sub_right = adapter
             .subscribe_topic(&recv_right, SubscriberQoS::Standard)
             .await
             .expect("pinned right subscribe");
@@ -846,7 +850,11 @@ mod tests {
             .expect("secondary publish");
 
         // Wildcard subscriber: receives the primary only.
-        let first = sub_any.rx.recv().await.expect("wildcard receives once");
+        let first = sub_any
+            .rx
+            .recv_async()
+            .await
+            .expect("wildcard receives once");
         assert_eq!(first.payload().to_bytes().as_ref(), b"frame-0");
         // No second delivery in-process — the secondary was dropped.
         assert!(
@@ -856,9 +864,17 @@ mod tests {
 
         // Pinned subscribers each receive their one publish, regardless of
         // whether it was tagged primary or secondary.
-        let left = sub_left.rx.recv().await.expect("pinned left receives");
+        let left = sub_left
+            .rx
+            .recv_async()
+            .await
+            .expect("pinned left receives");
         assert_eq!(left.payload().to_bytes().as_ref(), b"frame-0");
-        let right = sub_right.rx.recv().await.expect("pinned right receives");
+        let right = sub_right
+            .rx
+            .recv_async()
+            .await
+            .expect("pinned right receives");
         assert_eq!(right.payload().to_bytes().as_ref(), b"frame-0");
     }
 }

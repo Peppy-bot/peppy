@@ -391,27 +391,31 @@ impl MessengerBackend for ZenohAdapter {
             .as_ref()
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
 
-        let (tx, rx) =
-            tokio::sync::mpsc::channel::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
-        let mut tasks = tokio::task::JoinSet::new();
+        let (tx, rx) = flume::bounded::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
 
         // One queryable per listen call. The declared keyexpr has `*` at the
         // link_id slot so a single queryable absorbs every bound link_id —
-        // `handle_queryable` does the dispatch by parsing the selector. Two
-        // queryables for one process would let a `from_any` consumer's `*`
-        // selector double-deliver via `QueryTarget::All`.
+        // `process_inbound_query` does the dispatch by parsing the selector.
+        // Two queryables for one process would let a `from_any` consumer's
+        // `*` selector double-deliver via `QueryTarget::All`.
+        //
+        // Use a callback handler rather than the default FIFO so dropping the
+        // returned `ServiceQueryable` undeclares the queryable inline — no
+        // task to abort, no race window where in-flight inbound queries can
+        // land on a closed FIFO and trigger
+        // `zenoh::api::handlers::fifo: error=sending on a closed channel`.
         let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
+        let recv_clone = recv.clone();
         let queryable = session
             .declare_queryable(&declare_keyexpr)
             .complete(true)
+            .callback(move |query| {
+                process_inbound_query(query, &recv_clone, &tx);
+            })
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
-        let recv_clone = recv.clone();
-        tasks.spawn(async move {
-            handle_queryable(queryable, recv_clone, tx).await;
-        });
 
-        Ok(ServiceQueryable::new(rx, tasks))
+        Ok(ServiceQueryable::new(rx, vec![Box::new(queryable)]))
     }
 
     async fn call_service(
@@ -435,7 +439,21 @@ impl MessengerBackend for ZenohAdapter {
 
         let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
 
-        let replies = session
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
+
+        // Use a callback handler rather than the default FIFO handler. The
+        // FIFO handler's internal flume sender logs
+        // `zenoh::api::handlers::fifo: error=sending on a closed channel` at
+        // ERROR level whenever zenoh tries to deliver a reply after its
+        // receiver was dropped. With `QueryTarget::All` plus the long
+        // `NO_TIMEOUT_SENTINEL`, sibling producers routinely reply after
+        // peppylib's `poll_service` has already taken the winning response
+        // and dropped this `ReplyStream`; every late reply produced one
+        // ERROR line. A callback handler has no intermediate channel — if
+        // our tokio mpsc receiver is gone, `try_send` errors are discarded
+        // silently here.
+        session
             .get(&selector)
             .payload(payload.into_zbytes())
             .attachment(attachment.to_vec())
@@ -443,18 +461,12 @@ impl MessengerBackend for ZenohAdapter {
             .consolidation(zenoh::query::ConsolidationMode::None)
             .accept_replies(zenoh::query::ReplyKeyExpr::Any)
             .timeout(timeout)
-            .await
-            .map_err(|e| Error::BackendError(e.to_string()))?;
-
-        let (tx, rx) =
-            tokio::sync::mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
-        let join_handle = tokio::spawn(async move {
-            while let Ok(reply) = replies.recv_async().await {
+            .callback(move |reply| {
                 let sample = match reply.result() {
                     Ok(sample) => sample,
                     Err(err) => {
                         tracing::warn!(?err, "service reply contained an error");
-                        continue;
+                        return;
                     }
                 };
                 let key_expr = sample.key_expr().as_str();
@@ -467,27 +479,22 @@ impl MessengerBackend for ZenohAdapter {
                     Ok(a) => a.kind,
                     Err(err) => {
                         tracing::error!(%key_expr, %err, "dropping service reply with malformed attachment");
-                        continue;
+                        return;
                     }
                 };
                 match TopicMessage::from_zbytes(key_expr, zbytes) {
                     Ok(message) => {
-                        if tx
-                            .send(ServiceReply::new(message, reply_kind))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                        let _ = tx.try_send(ServiceReply::new(message, reply_kind));
                     }
                     Err(err) => {
                         tracing::error!(%key_expr, %err, "failed to parse service reply keyexpr");
                     }
                 }
-            }
-        });
+            })
+            .await
+            .map_err(|e| Error::BackendError(e.to_string()))?;
 
-        Ok(ReplyStream::new(rx, join_handle.abort_handle()))
+        Ok(ReplyStream::new(rx, None))
     }
 
     async fn subscribe_action_feedback(
@@ -615,76 +622,68 @@ impl ZenohAdapter {
         qos: SubscriberQoS,
         drop_secondary: bool,
     ) -> Result<Subscription> {
-        let (tx, rx) = tokio::sync::mpsc::channel(qos.channel_size());
+        let (tx, rx) = flume::bounded(qos.channel_size());
 
         let session = self
             .session
             .as_ref()
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
 
+        // Callback handler rather than the default FIFO so dropping the
+        // returned `Subscription` undeclares the subscriber inline — no
+        // forwarder task to abort, no race window where in-flight samples
+        // can land on a closed FIFO and trigger
+        // `zenoh::api::handlers::fifo: error=sending on a closed channel`.
+        //
+        // `flume::Sender::send` is sync-blocking when the buffer is full so
+        // Reliable QoS topics get end-to-end backpressure all the way down
+        // to zenoh's reception thread (matching the original behaviour of
+        // zenoh's internal FIFO handler). `Err` here means the receiver was
+        // dropped — silently discard, the subscription is going away.
         let subscriber = session
             .declare_subscriber(&keyexpr)
+            .callback(move |sample| {
+                let SampleFields {
+                    key_expr,
+                    payload,
+                    attachment,
+                    ..
+                } = sample.into();
+                if drop_secondary {
+                    let raw = attachment
+                        .as_ref()
+                        .map(|z| z.to_bytes())
+                        .unwrap_or_default();
+                    if !TopicAttachment::decode(raw.as_ref()).is_primary {
+                        return;
+                    }
+                }
+                let key_expr = key_expr.as_str();
+                match TopicMessage::from_zbytes(key_expr, payload) {
+                    Ok(message) => {
+                        let _ = tx.send(message);
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            %key_expr,
+                            %err,
+                            "Failed to build ResponseMessage from sample"
+                        );
+                    }
+                }
+            })
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
 
-        let join_handle = tokio::spawn(async move {
-            loop {
-                match subscriber.recv_async().await {
-                    Ok(sample) => {
-                        let SampleFields {
-                            key_expr,
-                            payload,
-                            attachment,
-                            ..
-                        } = sample.into();
-                        if drop_secondary {
-                            let raw = attachment
-                                .as_ref()
-                                .map(|z| z.to_bytes())
-                                .unwrap_or_default();
-                            if !TopicAttachment::decode(raw.as_ref()).is_primary {
-                                continue;
-                            }
-                        }
-                        let key_expr = key_expr.as_str();
-                        match TopicMessage::from_zbytes(key_expr, payload) {
-                            Ok(message) => {
-                                if let Err(e) = tx.send(message).await {
-                                    tracing::error!("Failed to send message: {}", e);
-                                    break;
-                                }
-                            }
-                            Err(err) => {
-                                tracing::error!(
-                                    %key_expr,
-                                    %err,
-                                    "Failed to build ResponseMessage from sample"
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        // `recv_async` only errors when the channel is
-                        // disconnected, which is the normal shutdown path
-                        // (session close / subscriber undeclare). Logging at
-                        // warn level fires once per subscriber on every
-                        // shutdown and drowns the actual shutdown message.
-                        tracing::debug!("Subscriber channel closed: {}", e);
-                        break;
-                    }
-                }
-            }
-        });
-        let abort_handle = join_handle.abort_handle();
-        Ok(Subscription::new(rx, abort_handle))
+        Ok(Subscription::new(rx, Box::new(subscriber)))
     }
 }
 
-/// Per-queryable forwarder loop. Pulls inbound queries off `queryable`,
-/// parses the selector, verifies the caller's link_id slot resolves to the
-/// producer's default `_` segment via [`ParsedInboundQuery::claim`], builds
-/// an [`IncomingRequest`] with a [`ResponseToken::Zenoh`] (carrying the
-/// concrete reply keyexpr) and pushes it onto `tx`.
+/// Per-query inbound handler. Parses the selector, verifies the caller's
+/// link_id slot resolves to the producer's default `_` segment via
+/// [`ParsedInboundQuery::claim`], builds an [`IncomingRequest`] with a
+/// [`ResponseToken::Zenoh`] (carrying the concrete reply keyexpr) and pushes
+/// it onto `tx`.
 ///
 /// Probe / ACK semantics are handled by peppylib's request loop, not here —
 /// every claimed query (including probes) is delivered to peppylib via
@@ -692,81 +691,69 @@ impl ZenohAdapter {
 /// to the user handler. Queries whose link_id slot is neither `*` nor `_`
 /// are dropped silently (defensive — Zenoh's matcher should already have
 /// filtered them out).
-async fn handle_queryable(
-    queryable: zenoh::query::Queryable<zenoh::handlers::FifoChannelHandler<zenoh::query::Query>>,
-    recv: ServiceWireReceiver,
-    tx: tokio::sync::mpsc::Sender<IncomingRequest>,
+///
+/// This runs inside zenoh's reception callback, so the function is sync —
+/// `flume::Sender::send` blocks the zenoh worker thread when the buffer is
+/// full so peppylib applies backpressure rather than losing requests, and
+/// returns `Err` (silently ignored) only when the consumer has dropped the
+/// `ServiceQueryable`.
+fn process_inbound_query(
+    query: zenoh::query::Query,
+    recv: &ServiceWireReceiver,
+    tx: &flume::Sender<IncomingRequest>,
 ) {
-    loop {
-        let query = match queryable.recv_async().await {
-            Ok(q) => q,
-            Err(e) => {
-                // `recv_async` only errors when the channel is disconnected,
-                // which is the normal shutdown path (session close /
-                // queryable undeclare). Same reason as the subscriber loop:
-                // warn-level here fires once per queryable on every shutdown.
-                tracing::debug!(error = %e, "service queryable channel closed");
-                break;
-            }
-        };
-
-        let attachment_bytes = query.attachment().map(|z| z.to_bytes()).unwrap_or_default();
-        let parsed = match ZenohWireFormat::parse_inbound_query(
-            &recv,
-            query.key_expr().as_str(),
-            attachment_bytes.as_ref(),
-        ) {
-            Ok(p) => p,
-            Err(err) => {
-                tracing::warn!(
-                    query_keyexpr = %query.key_expr().as_str(),
-                    %err,
-                    "failed to parse inbound service query selector",
-                );
-                continue;
-            }
-        };
-
-        let chosen_link_id = match parsed.claim() {
-            Some(l) => l.to_string(),
-            None => {
-                tracing::trace!(
-                    query_keyexpr = %query.key_expr().as_str(),
-                    parsed_link_id = %parsed.link_id,
-                    "dropping inbound query: link_id slot is neither '*' nor '_'",
-                );
-                continue;
-            }
-        };
-
-        let reply_keyexpr = ZenohWireFormat::service_reply_keyexpr(
-            &recv,
-            &chosen_link_id,
-            &parsed.caller_core,
-            &parsed.caller_inst,
-        );
-
-        let payload = match query.payload() {
-            Some(zb) => Payload::from_zbytes(zb.clone()),
-            None => Payload::from_bytes(bytes::Bytes::new()),
-        };
-
-        let token = ResponseToken::Zenoh(ZenohResponseToken::new(query, reply_keyexpr));
-        let request = IncomingRequest {
-            payload,
-            kind: parsed.kind,
-            link_id: chosen_link_id,
-            caller_core: parsed.caller_core,
-            caller_inst: parsed.caller_inst,
-            token,
-        };
-
-        if tx.send(request).await.is_err() {
-            // Peppylib dropped the receiver; the ServiceQueryable is being
-            // torn down. Exit the loop and let the queryable drop.
-            break;
+    let attachment_bytes = query.attachment().map(|z| z.to_bytes()).unwrap_or_default();
+    let parsed = match ZenohWireFormat::parse_inbound_query(
+        recv,
+        query.key_expr().as_str(),
+        attachment_bytes.as_ref(),
+    ) {
+        Ok(p) => p,
+        Err(err) => {
+            tracing::warn!(
+                query_keyexpr = %query.key_expr().as_str(),
+                %err,
+                "failed to parse inbound service query selector",
+            );
+            return;
         }
-    }
+    };
+
+    let chosen_link_id = match parsed.claim() {
+        Some(l) => l.to_string(),
+        None => {
+            tracing::trace!(
+                query_keyexpr = %query.key_expr().as_str(),
+                parsed_link_id = %parsed.link_id,
+                "dropping inbound query: link_id slot is neither '*' nor '_'",
+            );
+            return;
+        }
+    };
+
+    let reply_keyexpr = ZenohWireFormat::service_reply_keyexpr(
+        recv,
+        &chosen_link_id,
+        &parsed.caller_core,
+        &parsed.caller_inst,
+    );
+
+    let payload = match query.payload() {
+        Some(zb) => Payload::from_zbytes(zb.clone()),
+        None => Payload::from_bytes(bytes::Bytes::new()),
+    };
+
+    let token = ResponseToken::Zenoh(ZenohResponseToken::new(query, reply_keyexpr));
+    let request = IncomingRequest {
+        payload,
+        kind: parsed.kind,
+        link_id: chosen_link_id,
+        caller_core: parsed.caller_core,
+        caller_inst: parsed.caller_inst,
+        token,
+    };
+
+    let _ = tx.send(request);
 }
 
 /// Zenoh-side per-topic publisher returned by [`ZenohAdapter::declare_publisher`].

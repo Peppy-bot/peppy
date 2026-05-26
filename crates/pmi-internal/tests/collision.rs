@@ -36,10 +36,10 @@ async fn wait_for_subscriber_discovery() {
 
 /// Asserts the subscriber receives a payload exactly equal to `expected`.
 async fn expect_payload(sub: &mut Subscription, expected: &Bytes, label: &str) {
-    let msg = tokio::time::timeout(RECV_TIMEOUT, sub.rx.recv())
+    let msg = tokio::time::timeout(RECV_TIMEOUT, sub.rx.recv_async())
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for message on {label}"))
-        .unwrap_or_else(|| panic!("channel closed before message on {label}"));
+        .unwrap_or_else(|_| panic!("channel closed before message on {label}"));
     assert_eq!(
         msg.payload(),
         expected,
@@ -49,17 +49,17 @@ async fn expect_payload(sub: &mut Subscription, expected: &Bytes, label: &str) {
 
 /// Asserts the subscriber receives no payload within `NO_MESSAGE_TIMEOUT`.
 async fn expect_no_payload(sub: &mut Subscription, label: &str) {
-    match tokio::time::timeout(NO_MESSAGE_TIMEOUT, sub.rx.recv()).await {
+    match tokio::time::timeout(NO_MESSAGE_TIMEOUT, sub.rx.recv_async()).await {
         Err(_) => {
             // Timed out — no payload arrived, which is the success case.
         }
-        Ok(Some(msg)) => {
+        Ok(Ok(msg)) => {
             panic!(
                 "{label}: subscriber received an unexpected payload of {} bytes (collision)",
                 msg.payload().len()
             );
         }
-        Ok(None) => {
+        Ok(Err(_)) => {
             // Channel closed — also acceptable, no payload arrived.
         }
     }
@@ -202,7 +202,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
     )
     .unwrap();
 
-    let mut sub = instance
+    let sub = instance
         .messenger()
         .subscribe_topic(&receiver, SubscriberQoS::Standard)
         .await
@@ -236,7 +236,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
     // Collect both payloads (in either order — both publishers race).
     let mut seen = Vec::with_capacity(2);
     for _ in 0..2 {
-        let msg = tokio::time::timeout(RECV_TIMEOUT, sub.rx.recv())
+        let msg = tokio::time::timeout(RECV_TIMEOUT, sub.rx.recv_async())
             .await
             .expect("untargeted subscriber should see both publishers")
             .expect("subscription channel should not close");
@@ -365,17 +365,17 @@ async fn service_node_vs_interface_no_collision() {
 /// Waits for the first inbound request on the service queryable's fan-in
 /// channel. Returns `None` on timeout.
 async fn recv_first_query(queryable: &mut ServiceQueryable) -> Option<pmi::IncomingRequest> {
-    tokio::time::timeout(RECV_TIMEOUT, queryable.rx.recv())
+    tokio::time::timeout(RECV_TIMEOUT, queryable.rx.recv_async())
         .await
         .ok()
-        .flatten()
+        .and_then(|r| r.ok())
 }
 
 /// Fails the test if the queryable yields another request within
 /// `NO_MESSAGE_TIMEOUT`. Used after consuming the expected query to confirm
 /// no cross-talk from the opposite target.
 async fn assert_no_further_query(queryable: &mut ServiceQueryable, label: &str) {
-    if let Ok(Some(req)) = tokio::time::timeout(NO_MESSAGE_TIMEOUT, queryable.rx.recv()).await {
+    if let Ok(Ok(req)) = tokio::time::timeout(NO_MESSAGE_TIMEOUT, queryable.rx.recv_async()).await {
         panic!(
             "{label}: received unexpected cross-talk payload of {} bytes",
             req.payload.len()

@@ -34,19 +34,19 @@ async fn wait_for_subscriber_discovery() {
 /// `label` is included in the panic message so reviewers can identify which
 /// receiver stalled in CI.
 async fn recv_or_timeout(sub: &mut Subscription, label: &str) -> TopicMessage {
-    tokio::time::timeout(RECV_TIMEOUT, sub.rx.recv())
+    tokio::time::timeout(RECV_TIMEOUT, sub.rx.recv_async())
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for message on {label}"))
-        .unwrap_or_else(|| panic!("channel closed before message on {label}"))
+        .unwrap_or_else(|_| panic!("channel closed before message on {label}"))
 }
 
 /// Waits for the next inbound request on a service queryable's fan-in
 /// channel. Panics on timeout.
 async fn recv_request(queryable: &mut ServiceQueryable) -> IncomingRequest {
-    tokio::time::timeout(RECV_TIMEOUT, queryable.rx.recv())
+    tokio::time::timeout(RECV_TIMEOUT, queryable.rx.recv_async())
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for inbound service request"))
-        .unwrap_or_else(|| panic!("service queryable channel closed before request arrived"))
+        .unwrap_or_else(|_| panic!("service queryable channel closed before request arrived"))
 }
 
 /// Waits for the next reply on a service `ReplyStream` and returns its

@@ -28,13 +28,13 @@ mod zenoh_tests {
     /// `label` is included in both timeout and channel-closed panics so test
     /// failures in CI pinpoint which subscription stalled.
     async fn recv_or_timeout(
-        rx: &mut tokio::sync::mpsc::Receiver<pmi::TopicMessage>,
+        rx: &mut flume::Receiver<pmi::TopicMessage>,
         label: &str,
     ) -> pmi::TopicMessage {
-        tokio::time::timeout(RECV_TIMEOUT, rx.recv())
+        tokio::time::timeout(RECV_TIMEOUT, rx.recv_async())
             .await
             .unwrap_or_else(|_| panic!("timed out waiting for message on {label}"))
-            .unwrap_or_else(|| panic!("channel closed before message on {label}"))
+            .unwrap_or_else(|_| panic!("channel closed before message on {label}"))
     }
 
     fn sender(as_topic_name: &str) -> TopicWireSender {

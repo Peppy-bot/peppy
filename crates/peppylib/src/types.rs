@@ -65,11 +65,11 @@ impl std::fmt::Display for TryRecvError {
 
 impl std::error::Error for TryRecvError {}
 
-impl From<tokio::sync::mpsc::error::TryRecvError> for TryRecvError {
-    fn from(err: tokio::sync::mpsc::error::TryRecvError) -> Self {
+impl From<flume::TryRecvError> for TryRecvError {
+    fn from(err: flume::TryRecvError) -> Self {
         match err {
-            tokio::sync::mpsc::error::TryRecvError::Empty => TryRecvError::Empty,
-            tokio::sync::mpsc::error::TryRecvError::Disconnected => TryRecvError::Disconnected,
+            flume::TryRecvError::Empty => TryRecvError::Empty,
+            flume::TryRecvError::Disconnected => TryRecvError::Disconnected,
         }
     }
 }

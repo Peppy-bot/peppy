@@ -90,6 +90,18 @@ impl From<QoSProfile> for SubscriberQoS {
 /// `Duration`; one day is far longer than any in-process or interactive
 /// test wait, so it stands in for "wait indefinitely" without forcing
 /// each adapter to track its own value.
+///
+/// The window must also cover the slowest legitimate user service handler
+/// — once the consumer receives `Ack`, the zenoh query must stay open long
+/// enough for the producer's `Response` reply. Shortening this would
+/// silently cap how long a service handler may run.
+///
+/// During this window zenoh holds per-query state and keeps invoking the
+/// reply callback installed by `call_service`. The callback `try_send`s
+/// into a tokio mpsc; once the consumer has dropped its `ReplyStream` the
+/// sends silently fail. This is benign with the callback-based handler
+/// (the FIFO handler used to log every such send at ERROR level — see the
+/// comment in [`crate::adapters::zenoh::ZenohAdapter::call_service`]).
 pub(crate) const NO_TIMEOUT_SENTINEL: std::time::Duration = std::time::Duration::from_secs(86_400);
 
 /// Defines the messaging interface.
@@ -182,55 +194,71 @@ pub trait MessengerBackend {
     fn get_host(&self) -> SocketAddr;
 }
 
-/// Handles message receiving and cleanup
+/// Opaque drop-guard returned by adapters. The handle's `Drop` releases the
+/// backing messenger entity (zenoh's `Subscriber<()>` / `Queryable<()>`,
+/// which undeclare on drop; or [`AbortOnDrop`] for adapters that still drive
+/// the messaging surface via a spawned forwarder task).
+pub type Guard = Box<dyn std::any::Any + Send + Sync>;
+
+/// Wraps a tokio task handle so dropping the wrapper cancels the task.
+/// `AbortHandle` alone does not abort on drop — only the explicit `.abort()`
+/// call does — so adapters that need that semantics wrap their handle in
+/// this type before stashing it in a [`Guard`].
+pub struct AbortOnDrop(pub tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Caller-side handle for a topic subscription. The adapter-owned `_guard`
+/// keeps the underlying messenger entity (zenoh `Subscriber<()>`, mock
+/// registration token, etc.) alive for the lifetime of this struct and
+/// releases it cleanly on drop.
+///
+/// The channel is `flume::bounded` rather than `tokio::sync::mpsc` because
+/// zenoh's reception callback runs synchronously inside zenoh's tokio
+/// runtime; `tokio::sync::mpsc::Sender::blocking_send` panics from inside a
+/// runtime, whereas `flume::Sender::send` just blocks the OS thread when
+/// the buffer is full — preserving end-to-end backpressure for Reliable
+/// QoS topics.
 pub struct Subscription {
-    // stream of messages; could be tokio::sync::mpsc::Receiver or a Stream
-    pub rx: tokio::sync::mpsc::Receiver<TopicMessage>,
-    // Handle to abort the background task when subscription is dropped
-    abort_handle: tokio::task::AbortHandle,
+    pub rx: flume::Receiver<TopicMessage>,
+    _guard: Guard,
 }
 
 impl Subscription {
-    pub fn new(
-        rx: tokio::sync::mpsc::Receiver<TopicMessage>,
-        abort_handle: tokio::task::AbortHandle,
-    ) -> Self {
-        Self { rx, abort_handle }
+    pub fn new(rx: flume::Receiver<TopicMessage>, guard: Guard) -> Self {
+        Self { rx, _guard: guard }
     }
 
     pub async fn on_next_message(&mut self) -> Option<TopicMessage> {
-        self.rx.recv().await
-    }
-}
-
-impl Drop for Subscription {
-    fn drop(&mut self) {
-        // Abort the background task to prevent resource leaks
-        self.abort_handle.abort();
+        self.rx.recv_async().await.ok()
     }
 }
 
 /// Server-side handle yielded by [`MessengerBackend::listen_service`] for a
-/// service or action sub-service. Internally holds one Zenoh `Queryable` (or
-/// mock equivalent) per producer-bound link_id, fanned into a single
-/// [`IncomingRequest`] channel.
+/// service or action sub-service. The adapter-owned `_guards` keep one
+/// queryable (Zenoh `Queryable<()>` or mock equivalent) per producer-bound
+/// link_id alive, fanned into a single [`IncomingRequest`] channel.
+/// Dropping the handle drops every guard, which undeclares the underlying
+/// queryables.
 ///
-/// Dropping the handle aborts the background forwarder tasks; each task owns
-/// its `zenoh::query::Queryable`, which is undeclared automatically when the
-/// task is dropped.
+/// Like [`Subscription`], the channel uses `flume` so the zenoh reception
+/// callback can `send` synchronously with backpressure rather than dropping
+/// inbound requests when the consumer falls behind.
 pub struct ServiceQueryable {
-    pub rx: tokio::sync::mpsc::Receiver<IncomingRequest>,
-    /// JoinSet aborts every spawned task on drop, which in turn drops the
-    /// `Queryable` each task owns.
-    _tasks: tokio::task::JoinSet<()>,
+    pub rx: flume::Receiver<IncomingRequest>,
+    _guards: Vec<Guard>,
 }
 
 impl ServiceQueryable {
-    pub fn new(
-        rx: tokio::sync::mpsc::Receiver<IncomingRequest>,
-        tasks: tokio::task::JoinSet<()>,
-    ) -> Self {
-        Self { rx, _tasks: tasks }
+    pub fn new(rx: flume::Receiver<IncomingRequest>, guards: Vec<Guard>) -> Self {
+        Self {
+            rx,
+            _guards: guards,
+        }
     }
 }
 
@@ -271,21 +299,12 @@ impl ServiceReply {
 /// discriminate without inspecting payload bytes.
 pub struct ReplyStream {
     pub rx: tokio::sync::mpsc::Receiver<ServiceReply>,
-    abort_handle: tokio::task::AbortHandle,
+    _guard: Option<Guard>,
 }
 
 impl ReplyStream {
-    pub fn new(
-        rx: tokio::sync::mpsc::Receiver<ServiceReply>,
-        abort_handle: tokio::task::AbortHandle,
-    ) -> Self {
-        Self { rx, abort_handle }
-    }
-}
-
-impl Drop for ReplyStream {
-    fn drop(&mut self) {
-        self.abort_handle.abort();
+    pub fn new(rx: tokio::sync::mpsc::Receiver<ServiceReply>, guard: Option<Guard>) -> Self {
+        Self { rx, _guard: guard }
     }
 }
 
