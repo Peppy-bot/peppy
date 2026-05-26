@@ -642,6 +642,7 @@ pub struct InterfaceDependency {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DependsOn {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<NodeDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub interfaces: Vec<InterfaceDependency>,
@@ -1729,6 +1730,19 @@ mod tests {
             ]
         }"#;
         assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    }
+
+    #[test]
+    fn depends_on_with_only_interfaces() {
+        let json5 = r#"{
+            interfaces: [
+                { name: "uvc_camera", tag: "v1", link_id: "camera" }
+            ]
+        }"#;
+        let deps: DependsOn = serde_json5::from_str(json5).expect("nodes should be optional");
+        assert!(deps.nodes.is_empty());
+        assert_eq!(deps.interfaces.len(), 1);
+        assert_eq!(deps.interfaces[0].link_id, "camera");
     }
 
     #[test]
