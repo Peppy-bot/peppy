@@ -230,7 +230,7 @@ pub fn build_consumed_service(
     let request_format = non_empty_message_format(Some(request_arguments));
     let response_format = non_empty_message_format(Some(response_arguments));
 
-    // Capnp schema loaders
+    // Capnp schema loaders.
     if request_schema_info.is_some() || response_schema_info.is_some() {
         emit_capnp_preamble(&mut builder);
     }

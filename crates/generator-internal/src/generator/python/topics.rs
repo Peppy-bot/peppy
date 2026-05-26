@@ -11,16 +11,19 @@ pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
 }
 
-/// Emits the shared `_PKG_DIR` constant and related imports needed by capnp schema loaders.
-/// Call this once before emitting any loaders via [`emit_capnp_loader_fn`].
+/// Emits the imports needed by capnp schema loaders. Call this once before
+/// emitting any loaders via [`emit_capnp_loader_fn`].
+///
+/// Schemas are resolved via `importlib.resources.files("peppygen")` so the
+/// lookup is independent of where the calling file lives in the package
+/// tree — native artifacts at `peppygen/{category}/{leaf}.py` and conformed
+/// ones nested under `peppygen/{category}/{iface}/{tag}/{leaf}.py` share
+/// the same loader body.
 pub(crate) fn emit_capnp_preamble(builder: &mut PythonCodeBuilder) {
     builder.add_import("import capnp");
     builder.add_import("import types");
     builder.add_import("from functools import lru_cache");
-    builder.add_import("from pathlib import Path");
-    builder.blank_line();
-    builder.line("_PKG_DIR = Path(__file__).resolve().parent.parent");
-    builder.blank_line();
+    builder.add_import("from importlib.resources import files");
 }
 
 /// Emits a single `@lru_cache` loader function for a capnp schema.
@@ -34,7 +37,7 @@ pub(crate) fn emit_capnp_loader_fn(
     builder.line(&format!("def {loader_fn_name}() -> types.ModuleType:"));
     builder.indent();
     builder.line(&format!(
-        "return capnp.load(str(_PKG_DIR / \"capnp/{}.capnp\"))",
+        "return capnp.load(str(files(\"peppygen\") / \"capnp\" / \"{}.capnp\"))",
         schema_info.file_stem
     ));
     builder.dedent();

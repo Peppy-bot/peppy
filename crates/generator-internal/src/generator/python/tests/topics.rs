@@ -129,18 +129,19 @@ fn emit_topic() {
             "import types",
             "from dataclasses import dataclass",
             "from functools import lru_cache",
-            "from pathlib import Path",
+            "from importlib.resources import files",
         ],
     );
 
-    // Module directory and lazy cached schema loader
+    // Lazy cached schema loader. Resource lookup goes through
+    // `importlib.resources.files("peppygen")` so it's independent of where
+    // the calling file lives in the package tree.
     assert_contains_all(
         &rendered,
         &[
-            "_PKG_DIR = Path(__file__).resolve().parent.parent",
             "@lru_cache(maxsize=1)",
             "def _video_stream_message_capnp() -> types.ModuleType:",
-            "return capnp.load(str(_PKG_DIR / \"capnp/video_stream_message.capnp\"))",
+            "return capnp.load(str(files(\"peppygen\") / \"capnp\" / \"video_stream_message.capnp\"))",
         ],
     );
 
@@ -458,19 +459,18 @@ fn consumed_topic() {
             "import types",
             "from dataclasses import dataclass",
             "from functools import lru_cache",
-            "from pathlib import Path",
+            "from importlib.resources import files",
             "from typing import Optional, Tuple",
         ],
     );
 
-    // Module directory and lazy cached schema loader
+    // Lazy cached schema loader using `importlib.resources`.
     assert_contains_all(
         &rendered,
         &[
-            "_PKG_DIR = Path(__file__).resolve().parent.parent",
             "@lru_cache(maxsize=1)",
             "def _video_stream_message_capnp() -> types.ModuleType:",
-            "return capnp.load(str(_PKG_DIR / \"capnp/video_stream_message.capnp\"))",
+            "return capnp.load(str(files(\"peppygen\") / \"capnp\" / \"video_stream_message.capnp\"))",
         ],
     );
 

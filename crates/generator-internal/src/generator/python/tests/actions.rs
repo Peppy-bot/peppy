@@ -189,8 +189,7 @@ fn exposed_action() {
             "import capnp",
             "import types",
             "from functools import lru_cache",
-            "from pathlib import Path",
-            "_PKG_DIR = Path(__file__).resolve().parent.parent",
+            "from importlib.resources import files",
         ],
     );
 
@@ -607,8 +606,7 @@ fn consumed_action() {
             "import capnp",
             "import types",
             "from functools import lru_cache",
-            "from pathlib import Path",
-            "_PKG_DIR = Path(__file__).resolve().parent.parent",
+            "from importlib.resources import files",
         ],
     );
 

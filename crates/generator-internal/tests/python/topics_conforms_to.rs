@@ -173,6 +173,32 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
     assert!(depth_v1_src.contains("depth_v1_marker"));
     assert!(depth_v2_src.contains("depth_v2_marker"));
     assert!(uvc_v1_src.contains("uvc_v1_marker"));
+
+    // Capnp schemas are resolved via `importlib.resources.files("peppygen")`,
+    // which is independent of the calling file's depth. This regressed once
+    // when the loader used `_PKG_DIR = Path(__file__).parent.parent` — fine
+    // for the flat native path but two levels short for nested conformed
+    // artifacts at `peppygen/<category>/<iface>/<tag>/<leaf>.py`, which made
+    // `capnp.load()` raise silently inside the asyncio loop and hung the
+    // consumer. All four files (native + three conformed) should now emit
+    // the same loader form.
+    let expected_loader = "files(\"peppygen\") / \"capnp\" /";
+    for (label, src) in [
+        ("native", &native_src),
+        ("depth_v1", &depth_v1_src),
+        ("depth_v2", &depth_v2_src),
+        ("uvc_v1", &uvc_v1_src),
+    ] {
+        assert!(
+            src.contains(expected_loader),
+            "{label} source should load schema via `{expected_loader}`:\n{src}",
+        );
+        assert!(
+            !src.contains("_PKG_DIR"),
+            "{label} source should no longer reference the legacy `_PKG_DIR` \
+             constant:\n{src}",
+        );
+    }
 }
 
 /// Exercises hyphen-to-underscore normalization in the `iface_tag` for the

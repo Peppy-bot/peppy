@@ -117,4 +117,24 @@ fn nests_conformed_services_under_iface_name_and_tag() {
         arm_v2_src.contains("peppylib.SenderTarget.interface(\"arm\", \"v2\")"),
         "arm v2 leaf should pass `SenderTarget.interface(\"arm\", \"v2\")`:\n{arm_v2_src}",
     );
+
+    // Capnp schemas are resolved via `importlib.resources.files("peppygen")`,
+    // independent of the calling file's depth. Native + conformed services
+    // must all emit the same loader form.
+    let expected_loader = "files(\"peppygen\") / \"capnp\" /";
+    for (label, src) in [
+        ("native", &native_src),
+        ("camera_v1", &camera_v1_src),
+        ("arm_v2", &arm_v2_src),
+    ] {
+        assert!(
+            src.contains(expected_loader),
+            "{label} service should load schema via `{expected_loader}`:\n{src}",
+        );
+        assert!(
+            !src.contains("_PKG_DIR"),
+            "{label} service should no longer reference the legacy `_PKG_DIR` \
+             constant:\n{src}",
+        );
+    }
 }
