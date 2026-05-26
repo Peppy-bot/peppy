@@ -411,15 +411,20 @@ impl RustGenerator {
         Ok((method_tokens, helper_items))
     }
 
-    /// Builds the on_next_feedback_message method for consumed actions
+    /// Builds the on_next_feedback_message method for consumed actions.
+    ///
+    /// `schema_key` is the producer-scoped key from
+    /// [`consumed_action_schema_keys`][`crate::generator::naming::consumed_action_schema_keys`]
+    /// and determines both the artifact name (drives the cap'n proto schema_id)
+    /// and the registered file_stem.
     fn build_consumed_action_feedback_method(
         &mut self,
         context: &mut GenerationContext,
         format: &MessageFormat,
         action_struct_name: &str,
+        schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
-        let feedback_schema_name = format!("{action_struct_name}_feedback");
-        let format_artifacts = map_message_format(&feedback_schema_name, Some(format))?
+        let format_artifacts = map_message_format(schema_key, Some(format))?
             .expect("feedback format should always yield encoding artifacts");
 
         let struct_prefix = format!("{action_struct_name}Feedback");
@@ -440,14 +445,8 @@ impl RustGenerator {
             .collect();
         context.add_struct(struct_ident.clone(), fields);
 
-        let schema_key = format!("{schema_struct_name}_payload");
         let encoding = self
-            .prepare_message_encoding(
-                &schema_key,
-                &struct_prefix,
-                Some(&format_artifacts),
-                &params,
-            )?
+            .prepare_message_encoding(schema_key, &struct_prefix, Some(&format_artifacts), &params)?
             .expect("feedback encoding spec should exist");
         let reader_type = encoding.reader_type.clone();
 
@@ -1041,18 +1040,9 @@ impl LanguageGenerator for RustGenerator {
         if module_label.trim().is_empty() {
             module_label = String::from("topic");
         }
-        let mut module_component = sanitize_component(&module_label);
-        if module_component.is_empty() {
-            module_component = String::from("topic");
-        }
 
-        let schema_key = if !topic_component.is_empty() {
-            format!("on_next_{topic_component}_message")
-        } else if !node_component.is_empty() {
-            format!("on_next_{node_component}_message")
-        } else {
-            format!("{module_component}_message")
-        };
+        let schema_key =
+            crate::generator::naming::consumed_topic_schema_key(node_name, linked.name.as_str());
 
         let format_artifacts = map_message_format(&schema_key, Some(&arguments))?
             .expect("message encoding spec should exist when message format is provided");
@@ -1129,7 +1119,7 @@ impl LanguageGenerator for RustGenerator {
         }
 
         let module_label = name.trim().to_string();
-        let schema_key = format!("on_next_{topic_component}_message");
+        let schema_key = crate::generator::naming::consumed_topic_schema_key("", name);
 
         let format_artifacts = map_message_format(&schema_key, Some(&arguments))?
             .expect("message encoding spec should exist when message format is provided");
@@ -1217,17 +1207,10 @@ impl LanguageGenerator for RustGenerator {
         )?;
         let struct_prefix = to_camel_case(service_name_component.as_str());
 
-        let method_label = {
-            let mut components = Vec::with_capacity(3);
-            components.push(String::from("poll"));
-
-            let node_ident = prefixed_ident("", Some(dependency_node_name), "node");
-            components.push(node_ident.to_string());
-
-            components.push(service_name_component.clone());
-
-            components.join("_")
-        };
+        let method_label = crate::generator::naming::consumed_service_request_schema_key(
+            dependency_node_name,
+            service.name.as_str(),
+        );
         let method_ident = Ident::new("poll", Span::call_site());
 
         let mut context = GenerationContext::default();
@@ -1346,7 +1329,11 @@ impl LanguageGenerator for RustGenerator {
             if let Some(response_artifacts) = response_artifacts.as_ref() {
                 let response_struct_name = format!("{struct_prefix}Response");
 
-                let response_schema_key = format!("{method_label}_response");
+                let response_schema_key =
+                    crate::generator::naming::consumed_service_response_schema_key(
+                        dependency_node_name,
+                        service.name.as_str(),
+                    );
                 let response_schema = self.register_schema(
                     &response_schema_key,
                     &response_struct_name,
@@ -1475,7 +1462,16 @@ impl LanguageGenerator for RustGenerator {
             (false, false) => format!("{node_component}_{action_component}"),
         };
         let action_prefix = to_camel_case(&base_component);
+        // `action_struct_name` names Rust IDENTIFIERS in the generated code
+        // (e.g. `UvcCameraEnableActionGoalMessage`). The cap'n proto schema
+        // keys (file_stems) are produced separately via the shared helper so
+        // both the Rust and Python generators emit the same file_stems for
+        // the same `(producer, action)` input.
         let action_struct_name = format!("{action_prefix}Action");
+        let action_schema_keys = crate::generator::naming::consumed_action_schema_keys(
+            dependency_node_name,
+            action.name.as_str(),
+        );
 
         let mut context = GenerationContext::default();
         let mut methods: Vec<TokenStream> = Vec::new();
@@ -1493,24 +1489,24 @@ impl LanguageGenerator for RustGenerator {
         let feedback_format = non_empty_message_format(messages.feedback.as_ref());
         let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
-        let goal_schema_key = format!("{action_struct_name}_fire_goal");
         let (goal_method, mut goal_helpers, has_goal_response_data) = self
             .build_consumed_action_fire_goal_method(
                 &mut context,
                 &action_struct_name,
                 goal_request_format,
                 goal_response_format,
-                &goal_schema_key,
+                &action_schema_keys.goal_request,
                 dependency,
             )?;
         methods.push(goal_method);
         helper_items.append(&mut goal_helpers);
 
-        let cancel_schema_key = format!("{action_struct_name}_cancel_goal");
         let cancel_response_format = cancel_action_response_format();
-        let cancel_artifacts =
-            map_message_format(&cancel_schema_key, Some(&cancel_response_format))?
-                .expect("cancel response format should yield artifacts");
+        let cancel_artifacts = map_message_format(
+            &action_schema_keys.cancel_response,
+            Some(&cancel_response_format),
+        )?
+        .expect("cancel response format should yield artifacts");
         let (cancel_method, mut cancel_helpers) = self.build_consumed_action_response_method(
             &mut context,
             ConsumedActionResponseMethodSpec {
@@ -1520,7 +1516,13 @@ impl LanguageGenerator for RustGenerator {
                 data_struct_name: "CancelResponseData",
                 deserializer_name: "deserialize_cancel_response",
                 schema_message_prefix: "CancelResponseMessage",
-                schema_key: &cancel_schema_key,
+                // The `build_consumed_action_response_method` adds `_response`
+                // to the `schema_key` it receives, so pass the cancel base
+                // (`_cancel_goal`) here.
+                schema_key: action_schema_keys
+                    .cancel_response
+                    .strip_suffix("_response")
+                    .unwrap_or(&action_schema_keys.cancel_response),
                 response_artifacts: Some(cancel_artifacts),
                 messenger_call: quote! {
                     peppylib::ActionMessenger::cancel_goal(
@@ -1540,16 +1542,14 @@ impl LanguageGenerator for RustGenerator {
                     &mut context,
                     feedback_format,
                     &action_struct_name,
+                    &action_schema_keys.feedback,
                 )?;
             methods.push(feedback_method);
             helper_items.append(&mut feedback_helpers);
         }
 
-        let result_schema_key = format!("{action_struct_name}_get_result");
-        let result_artifacts = map_message_format(
-            &format!("{result_schema_key}_response"),
-            result_response_format,
-        )?;
+        let result_artifacts =
+            map_message_format(&action_schema_keys.result_response, result_response_format)?;
         let (result_method, mut result_helpers) = self.build_consumed_action_response_method(
             &mut context,
             ConsumedActionResponseMethodSpec {
@@ -1559,7 +1559,12 @@ impl LanguageGenerator for RustGenerator {
                 data_struct_name: "ResultResponseData",
                 deserializer_name: "deserialize_result_response",
                 schema_message_prefix: "ResultResponseMessage",
-                schema_key: &result_schema_key,
+                // `build_consumed_action_response_method` appends `_response`
+                // to the schema_key it receives.
+                schema_key: action_schema_keys
+                    .result_response
+                    .strip_suffix("_response")
+                    .unwrap_or(&action_schema_keys.result_response),
                 response_artifacts: result_artifacts,
                 messenger_call: quote! {
                     peppylib::ActionMessenger::request_result(

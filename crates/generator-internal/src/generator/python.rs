@@ -254,7 +254,11 @@ impl LanguageGenerator for PythonGenerator {
                 context: "add_consumed_topic called with ConsumedTopic::External; use add_external_consumed_topic instead".into(),
             });
         };
-        let schema_info = self.register_schema(&linked.name, &arguments)?;
+        let schema_key = crate::generator::naming::consumed_topic_schema_key(
+            linked.link_id.as_str(),
+            linked.name.as_str(),
+        );
+        let schema_info = self.register_schema(&schema_key, &arguments)?;
         let code = topics::build_consumed_topic(topic, &arguments, &schema_info, dependency)?;
         let module_label = module_name_from_components(&linked.link_id, &linked.name);
         self.push_section(self.make_artifact(
@@ -267,7 +271,8 @@ impl LanguageGenerator for PythonGenerator {
     }
 
     fn add_external_consumed_topic(&mut self, name: &str, arguments: MessageFormat) -> Result<()> {
-        let schema_info = self.register_schema(name, &arguments)?;
+        let schema_key = crate::generator::naming::consumed_topic_schema_key("", name);
+        let schema_info = self.register_schema(&schema_key, &arguments)?;
         let code = topics::build_external_consumed_topic(name, &arguments, &schema_info)?;
         let module_label = name.trim().to_string();
         self.push_section(self.make_artifact(
@@ -286,12 +291,19 @@ impl LanguageGenerator for PythonGenerator {
         response_arguments: &MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
+        let producer_name = dependency.producer_name.as_str();
         let request_schema_info = self.register_optional_schema(
-            format!("{}_request", service.name),
+            crate::generator::naming::consumed_service_request_schema_key(
+                producer_name,
+                &service.name,
+            ),
             non_empty_message_format(Some(request_arguments)),
         )?;
         let response_schema_info = self.register_optional_schema(
-            format!("{}_response", service.name),
+            crate::generator::naming::consumed_service_response_schema_key(
+                producer_name,
+                &service.name,
+            ),
             non_empty_message_format(Some(response_arguments)),
         )?;
 
@@ -319,26 +331,27 @@ impl LanguageGenerator for PythonGenerator {
         messages: &ConsumedActionMessage,
         dependency: &DependencyContext,
     ) -> Result<()> {
+        let action_schema_keys = crate::generator::naming::consumed_action_schema_keys(
+            dependency.producer_name.as_str(),
+            action.name.as_str(),
+        );
         let goal_request_schema_info = self.register_optional_schema(
-            format!("{}_goal_request", action.name),
+            &action_schema_keys.goal_request,
             messages.goal_request.as_ref(),
         )?;
         let goal_response_schema_info = self.register_optional_schema(
-            format!("{}_goal_response", action.name),
+            &action_schema_keys.goal_response,
             messages.goal_response.as_ref(),
         )?;
 
         let cancel_format = cancel_action_response_format();
-        let cancel_response_schema_info = Some(
-            self.register_schema(&format!("{}_cancel_response", action.name), &cancel_format)?,
-        );
+        let cancel_response_schema_info =
+            Some(self.register_schema(&action_schema_keys.cancel_response, &cancel_format)?);
 
-        let feedback_schema_info = self.register_optional_schema(
-            format!("{}_feedback", action.name),
-            messages.feedback.as_ref(),
-        )?;
+        let feedback_schema_info = self
+            .register_optional_schema(&action_schema_keys.feedback, messages.feedback.as_ref())?;
         let result_response_schema_info = self.register_optional_schema(
-            format!("{}_result_response", action.name),
+            &action_schema_keys.result_response,
             messages.result_response.as_ref(),
         )?;
 

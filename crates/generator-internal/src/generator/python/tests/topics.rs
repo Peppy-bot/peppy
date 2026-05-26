@@ -464,13 +464,16 @@ fn consumed_topic() {
         ],
     );
 
-    // Lazy cached schema loader using `importlib.resources`.
+    // Lazy cached schema loader using `importlib.resources`. The
+    // `on_next_` prefix on the file_stem comes from the shared
+    // `consumed_topic_schema_key` helper in `naming.rs`, matching the Rust
+    // generator's output.
     assert_contains_all(
         &rendered,
         &[
             "@lru_cache(maxsize=1)",
-            "def _video_stream_message_capnp() -> types.ModuleType:",
-            "return capnp.load(str(files(\"peppygen\") / \"capnp\" / \"video_stream_message.capnp\"))",
+            "def _on_next_video_stream_message_capnp() -> types.ModuleType:",
+            "return capnp.load(str(files(\"peppygen\") / \"capnp\" / \"on_next_video_stream_message.capnp\"))",
         ],
     );
 
@@ -491,7 +494,7 @@ fn consumed_topic() {
         &rendered,
         &[
             "def _deserialize_payload(payload: bytes) -> Message:",
-            "with _video_stream_message_capnp().VideoStreamMessage.from_bytes(payload) as capnp_msg:",
+            "with _on_next_video_stream_message_capnp().OnNextVideoStreamMessage.from_bytes(payload) as capnp_msg:",
         ],
     );
 

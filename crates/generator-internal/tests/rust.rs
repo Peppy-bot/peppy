@@ -5,6 +5,8 @@ mod helpers;
 mod actions_communication;
 #[path = "rust/actions_conforms_to.rs"]
 mod actions_conforms_to;
+#[path = "rust/consumed_services_dedup.rs"]
+mod consumed_services_dedup;
 #[path = "rust/consumed_topics_dedup.rs"]
 mod consumed_topics_dedup;
 #[path = "rust/generate_lib.rs"]

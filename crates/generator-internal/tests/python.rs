@@ -5,6 +5,8 @@ mod helpers;
 mod actions_communication;
 #[path = "python/actions_conforms_to.rs"]
 mod actions_conforms_to;
+#[path = "python/consumed_services_dedup.rs"]
+mod consumed_services_dedup;
 #[path = "python/consumed_topics_dedup.rs"]
 mod consumed_topics_dedup;
 #[path = "python/generate_lib.rs"]

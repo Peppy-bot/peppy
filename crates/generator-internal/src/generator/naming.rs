@@ -274,6 +274,99 @@ pub(crate) fn resolve_schema_file_stem(schema_key: &str) -> ResolvedSchemaFileSt
     }
 }
 
+/// Sanitizes `raw` via [`sanitize_component`]; if the result is empty,
+/// substitutes `fallback`. Used by the shared schema-key helpers below so
+/// degenerate inputs (empty producer or entity name) produce a stable,
+/// non-empty schema_key in both the Rust and Python generators.
+pub(crate) fn sanitize_or(raw: &str, fallback: &str) -> String {
+    let component = sanitize_component(raw);
+    if component.is_empty() {
+        fallback.to_string()
+    } else {
+        component
+    }
+}
+
+/// Schema key for the cap'n proto message backing a consumed topic.
+///
+/// Same output in both generators so a Rust node and a Python node that
+/// consume identical topics produce matching capnp file_stems. The producer
+/// node is intentionally NOT part of the key: two consumers of the same
+/// topic name from different producers share one capnp file, and the
+/// per-language `register_schema` collision check makes the dedup safe by
+/// reusing the first registration's struct identity for any later one.
+pub(crate) fn consumed_topic_schema_key(producer_name: &str, topic_name: &str) -> String {
+    let topic = sanitize_component(topic_name);
+    let producer = sanitize_component(producer_name);
+    if !topic.is_empty() {
+        format!("on_next_{topic}")
+    } else if !producer.is_empty() {
+        format!("on_next_{producer}")
+    } else {
+        String::from("on_next_topic")
+    }
+}
+
+/// Request-message schema key for a consumed service. Includes the producer
+/// node so two consumers of a same-named service from different producers
+/// each get their own capnp file (and never silently share a deduplicated
+/// schema).
+///
+/// Shared between the Rust and Python generators.
+pub(crate) fn consumed_service_request_schema_key(
+    producer_name: &str,
+    service_name: &str,
+) -> String {
+    let producer = sanitize_or(producer_name, "node");
+    let service = sanitize_or(service_name, "service");
+    format!("poll_{producer}_{service}")
+}
+
+/// Response-message schema key for a consumed service. Always
+/// `{request_schema_key}_response` so the pair stays consistent.
+pub(crate) fn consumed_service_response_schema_key(
+    producer_name: &str,
+    service_name: &str,
+) -> String {
+    format!(
+        "{}_response",
+        consumed_service_request_schema_key(producer_name, service_name)
+    )
+}
+
+/// The five cap'n proto schema keys a consumed action needs (one per wire
+/// message type). Bundled so callers don't have to re-derive the
+/// `(producer, action)` tuple for each kind.
+pub(crate) struct ConsumedActionSchemaKeys {
+    pub goal_request: String,
+    pub goal_response: String,
+    pub cancel_response: String,
+    pub feedback: String,
+    pub result_response: String,
+}
+
+/// Schema keys for every cap'n proto message a consumed action produces.
+/// Includes the producer node so cross-producer same-action-name doesn't
+/// collide on the deduplicated file_stem.
+///
+/// Shared between the Rust and Python generators so the same input produces
+/// matching file_stems in both languages.
+pub(crate) fn consumed_action_schema_keys(
+    producer_name: &str,
+    action_name: &str,
+) -> ConsumedActionSchemaKeys {
+    let producer = sanitize_or(producer_name, "node");
+    let action = sanitize_or(action_name, "action");
+    let prefix = format!("{producer}_{action}");
+    ConsumedActionSchemaKeys {
+        goal_request: format!("{prefix}_fire_goal"),
+        goal_response: format!("{prefix}_fire_goal_response"),
+        cancel_response: format!("{prefix}_cancel_goal_response"),
+        feedback: format!("{prefix}_feedback"),
+        result_response: format!("{prefix}_get_result_response"),
+    }
+}
+
 /// Generates a unique module name by appending a numeric suffix on collision.
 ///
 /// `sanitize_fn` converts the raw name into a valid module name for the target language.
