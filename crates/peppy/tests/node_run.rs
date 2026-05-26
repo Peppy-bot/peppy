@@ -1183,8 +1183,8 @@ async fn node_run_bind_rejects_pinned_unbound() {
     let err = result.expect_err("node run must fail when pinned deps are unbound");
     let err_msg = err.to_string();
     assert!(
-        err_msg.contains("pinned deps must be bound"),
-        "error should use the spec wording 'pinned deps must be bound'. Got: {err_msg}"
+        err_msg.contains("is unbound"),
+        "error should report each slot as unbound. Got: {err_msg}"
     );
     assert!(
         err_msg.contains("wrist_left"),

@@ -458,9 +458,8 @@ async fn validate_binds_against_stack(
         let msg = validated
             .errors
             .iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
+            .map(|e| format!("\n  - {e}"))
+            .collect::<String>();
         return Err(Error::ExecutionFailed(msg));
     }
     Ok(Some(

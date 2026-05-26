@@ -40,18 +40,38 @@ where
     })
 }
 
+/// Whether a declared slot is a node dep (matched by `(name, tag)` identity)
+/// or an interface dep (matched against the producer's `conforms_to`). Used
+/// in error payloads so messages can name the expected category in singular
+/// human form instead of leaking the `depends_on.nodes` / `depends_on.interfaces`
+/// field path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotKind {
+    Node,
+    Interface,
+}
+
+impl core::fmt::Display for SlotKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            SlotKind::Node => "node",
+            SlotKind::Interface => "interface",
+        })
+    }
+}
+
 /// Payload for [`ParsingError::BindingMissingForPinnedDep`]. Boxed in the
 /// variant so the five `String` fields do not inflate `ParsingError` past
 /// the `clippy::result_large_err` threshold.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "instance `{owner_instance_id}` slot `{link_id}` has no binding; pinned deps must be bound \
-     (`depends_on.{kind}` entry `{expected_name}:{expected_tag}`)"
+    "instance `{owner_instance_id}`: slot `{link_id}` is unbound \
+     (expected {kind} `{expected_name}:{expected_tag}`)"
 )]
 pub struct BindingMissingForPinnedDep {
     pub owner_instance_id: String,
     pub link_id: String,
-    pub kind: String,
+    pub kind: SlotKind,
     pub expected_name: String,
     pub expected_tag: String,
 }
@@ -61,9 +81,9 @@ pub struct BindingMissingForPinnedDep {
 /// inflate `ParsingError` past the `clippy::result_large_err` threshold.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "binding `{binding}` on instance `{owner_instance_id}` targets instance \
-     `{target_instance_id}` (deploys `{actual_name}:{actual_tag}`), but the \
-     consumer's `depends_on.nodes` entry expects `{expected_name}:{expected_tag}`"
+    "binding `{binding}` on instance `{owner_instance_id}`: target \
+     `{target_instance_id}` deploys node `{actual_name}:{actual_tag}`, \
+     but slot expects node `{expected_name}:{expected_tag}`"
 )]
 pub struct BindingTargetMismatch {
     pub owner_instance_id: String,
@@ -83,10 +103,10 @@ pub struct BindingTargetMismatch {
 /// other binding error payloads.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "binding `{binding}` on instance `{owner_instance_id}` targets instance \
-     `{target_instance_id}` (deploys `{producer_name}:{producer_tag}`), but \
-     the consumer's `depends_on.interfaces` entry requires a producer whose \
-     `interfaces.conforms_to` includes `{interface_name}:{interface_tag}`"
+    "binding `{binding}` on instance `{owner_instance_id}`: target \
+     `{target_instance_id}` deploys `{producer_name}:{producer_tag}`, but \
+     the slot requires interface `{interface_name}:{interface_tag}` (add it \
+     to the producer's `conforms_to`)"
 )]
 pub struct BindingInterfaceNotConformed {
     pub owner_instance_id: String,
@@ -108,8 +128,8 @@ pub struct BindingInterfaceNotConformed {
 /// `--bind KEY@id` ambiguous.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "instance_id `{instance_id}` is used by both `{name_a}:{tag_a}` and `{name_b}:{tag_b}`; \
-     instance_ids must be unique across the entire stack"
+    "duplicate instance_id `{instance_id}`: used by both `{name_a}:{tag_a}` \
+     and `{name_b}:{tag_b}` (instance_ids must be unique across the stack)"
 )]
 pub struct DuplicateInstanceIdAcrossStack {
     pub instance_id: String,
@@ -124,7 +144,10 @@ pub struct DuplicateInstanceIdAcrossStack {
 /// `String` fields push the enum past the lint threshold otherwise.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "binding `{binding}` on instance `{owner_instance_id}` does not match any `link_id` declared in the consumer's `depends_on` and no `from_any` slot accepts producer `{target_instance_id}` ({producer_name_tag}) (declared link_ids: [{declared_link_ids}])"
+    "binding `{binding}` on instance `{owner_instance_id}` matches no \
+     declared slot, and no `from_any` slot accepts producer \
+     `{target_instance_id}` ({producer_name_tag}); declared link_ids: \
+     [{declared_link_ids}]"
 )]
 pub struct BindingDeadKey {
     pub owner_instance_id: String,

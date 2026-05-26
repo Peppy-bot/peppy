@@ -20,7 +20,7 @@
 
 use crate::error::{
     BindingDeadKey, BindingInterfaceNotConformed, BindingMissingForPinnedDep,
-    BindingTargetMismatch, DuplicateInstanceIdAcrossStack, ParsingError,
+    BindingTargetMismatch, DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
 };
 use crate::node::{ConformsToItem, DependsOn};
 use crate::runtime::SlotBinding;
@@ -42,15 +42,6 @@ pub struct BindingValidationItem<'a> {
     /// to decide whether this node can satisfy a consumer's interface
     /// slot.
     pub conforms_to: &'a [ConformsToItem],
-}
-
-/// Whether a declared slot is a node dep (matched by `(name, tag)`
-/// identity) or an interface dep (matched against the producer's
-/// `conforms_to`).
-#[derive(Clone, Copy)]
-enum SlotKind {
-    Node,
-    Interface,
 }
 
 /// Per-slot metadata extracted from `depends_on` during validation.
@@ -241,16 +232,12 @@ pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> ValidatedBindin
                 if pinned_keys_seen.contains(*slot_link_id) {
                     continue;
                 }
-                let kind = match slot.kind {
-                    SlotKind::Interface => "interfaces",
-                    SlotKind::Node => "nodes",
-                };
                 out.errors
                     .push(ParsingError::BindingMissingForPinnedDep(Box::new(
                         BindingMissingForPinnedDep {
                             owner_instance_id: instance.instance_id.to_string(),
                             link_id: (*slot_link_id).to_string(),
-                            kind: kind.to_string(),
+                            kind: slot.kind,
                             expected_name: slot.name.to_string(),
                             expected_tag: slot.tag.to_string(),
                         },
@@ -516,12 +503,16 @@ mod tests {
         };
         assert_eq!(info.owner_instance_id, "cons1");
         assert_eq!(info.link_id, "main");
-        assert_eq!(info.kind, "nodes");
+        assert_eq!(info.kind, SlotKind::Node);
         assert_eq!(info.expected_name, "camera");
         assert_eq!(info.expected_tag, "v1");
         let msg = info.to_string();
         assert!(
-            msg.contains("pinned deps must be bound"),
+            msg.contains("slot `main` is unbound"),
+            "unexpected error message: {msg}"
+        );
+        assert!(
+            msg.contains("expected node `camera:v1`"),
             "unexpected error message: {msg}"
         );
     }
@@ -695,7 +686,7 @@ mod tests {
                 out.errors[0]
             );
         };
-        assert_eq!(info.kind, "interfaces");
+        assert_eq!(info.kind, SlotKind::Interface);
         assert_eq!(info.link_id, "depth");
     }
 

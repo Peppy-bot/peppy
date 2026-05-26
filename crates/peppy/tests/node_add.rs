@@ -1135,7 +1135,7 @@ fn write_consumer_with_pinned_depends_on(
 /// the consumer despite the missing binding — exactly the bug from the
 /// reproducer at the top of this file. The fix routes both `node run` and
 /// `node add -r` through `validate_and_run_instance`, so the same
-/// `pinned deps must be bound` error fires for both.
+/// unbound-slot error fires for both.
 #[test]
 fn node_add_with_run_rejects_unbound_pinned_dependency() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
@@ -1226,8 +1226,8 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
     );
     let msg = err.to_string();
     assert!(
-        msg.contains("pinned deps must be bound"),
-        "error should use the spec wording 'pinned deps must be bound'. Got: {msg}"
+        msg.contains("is unbound"),
+        "error should report the slot as unbound. Got: {msg}"
     );
     assert!(
         msg.contains("wrist_left"),

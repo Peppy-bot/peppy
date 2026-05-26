@@ -957,7 +957,10 @@ async fn resolve_deployments(
     }
 
     if !planning_errors.is_empty() {
-        let msg = planning_errors.join("\n");
+        let msg = planning_errors
+            .iter()
+            .map(|e| format!("\n  - {e}"))
+            .collect::<String>();
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
@@ -1023,7 +1026,10 @@ async fn validate_and_order_dependencies(
         .collect();
 
     if !dependency_errors.is_empty() {
-        let msg = dependency_errors.join("\n");
+        let msg = dependency_errors
+            .iter()
+            .map(|e| format!("\n  - {e}"))
+            .collect::<String>();
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
@@ -1043,9 +1049,8 @@ async fn validate_and_order_dependencies(
         let msg = validated
             .errors
             .iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
+            .map(|e| format!("\n  - {e}"))
+            .collect::<String>();
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }

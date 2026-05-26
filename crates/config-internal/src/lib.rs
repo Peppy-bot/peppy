@@ -31,7 +31,7 @@ pub use common::{
 // -- error --
 pub use error::{
     BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateInstanceIdAcrossStack,
-    Error as ConfigError, MissingInterface, ParsingError, Result as ConfigResult,
+    Error as ConfigError, MissingInterface, ParsingError, Result as ConfigResult, SlotKind,
 };
 
 // -- atomic_write --
