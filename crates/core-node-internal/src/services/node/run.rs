@@ -469,7 +469,12 @@ async fn process_node_run(
     let entity_handle = match ctx.action.node_stack.find(&node_name, &tag) {
         Some(entity) => entity,
         None => {
-            let msg = format!("Node '{}:{}' not found in node stack", node_name, tag);
+            let msg = format!(
+                "Node '{}:{}' not found in node stack. \
+                 Run `peppy node list` to see currently-loaded nodes, or `peppy node add {}:{}` to add it \
+                 (the daemon does not persist added nodes across restarts).",
+                node_name, tag, node_name, tag
+            );
             write_error_to_log(&ctx.log_file, &msg);
             return NodeRunResult::failure(msg);
         }
@@ -501,8 +506,8 @@ async fn process_node_run(
         let guard = entity_handle.read();
         if guard.artifact_path().is_none() {
             let msg = format!(
-                "Node '{}:{}' has not been built yet (still in Added stage)",
-                node_name, tag
+                "Node '{}:{}' is added but not built, run `peppy node build {}:{}` first.",
+                node_name, tag, node_name, tag
             );
             drop(guard);
             write_error_to_log(&ctx.log_file, &msg);
