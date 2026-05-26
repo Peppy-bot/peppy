@@ -12,17 +12,28 @@ use tracing::info;
 
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
-use super::run::run_instance_async;
+use super::run::validate_and_run_instance;
 use super::source::parse_node_source;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 use peppylib::core_node::transport::{poll_node_info, send_node_add};
-/// Options for running a node instance immediately after adding it.
+/// Options that only apply when `peppy node add` chains a run after the add
+/// (`--run` / `-r`). Grouping them into an `Option<RunAfterAddOptions>` on
+/// [`AddNodeParams`] makes the invariant explicit in the type: positional
+/// `args`, `--instance-id`, and `--bind` simply do not exist on an add that
+/// stops at "added" (or at "added + built"). The clap surface enforces the
+/// same rule with `requires = "run"` so an invocation like `peppy node add .
+/// --bind feed@cam_a` is rejected at parse time rather than silently
+/// dropped.
 pub struct RunAfterAddOptions {
     pub args: Vec<(String, String)>,
     pub instance_id: Option<String>,
+    /// `--bind KEY@VALUE` pairs to pin pinned `link_id`s to producer
+    /// `instance_id`s. Validated by the same launcher rules that gate
+    /// `peppy node run` via [`validate_and_run_instance`].
+    pub binds: Vec<(String, String)>,
 }
 
 /// Parameters for adding a node.
@@ -214,14 +225,14 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         return Ok(());
     };
 
-    run_instance_async(
+    validate_and_run_instance(
         conn.messenger,
         &conn.core_node_name,
         node_name,
         node_tag,
         &run_options.args,
         run_options.instance_id,
-        std::collections::BTreeMap::new(),
+        &run_options.binds,
         &timeouts,
     )
     .await?;

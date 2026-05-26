@@ -86,6 +86,7 @@ fn node_add_command_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -239,6 +240,7 @@ fn node_add_command_with_run_arg_succeeds() {
             run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -371,6 +373,7 @@ fn node_add_after_failed_sync_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -415,6 +418,7 @@ fn node_add_after_failed_sync_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -564,6 +568,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -618,6 +623,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             run: false, // Don't run a new instance this time
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: true, // Bypass confirmation prompt
@@ -745,6 +751,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -929,6 +936,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -957,6 +965,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1048,6 +1057,7 @@ fn node_add_with_sync_flag_rejects_remote_source() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1064,5 +1074,469 @@ fn node_add_with_sync_flag_rejects_remote_source() {
         err.contains("--sync is only valid for local node sources"),
         "error should mention local-source restriction, got: {}",
         err
+    );
+}
+
+// ─── `node add --run` shares binding validation with `node run` ────────────
+//
+// These tests pin down the contract introduced when fixing the
+// `peppy node add -sbr` bypass: chaining a run from `node add` must go
+// through the same launcher binding rules as a standalone `peppy node run`.
+// Before the fix, `add -r` constructed the launch with an empty
+// `slot_bindings` map and skipped `validate_bindings`, so a consumer with
+// pinned `depends_on` would silently spawn unbound — exactly the
+// regression spec'd at the top of this file.
+
+/// Writes a consumer manifest declaring `depends_on.nodes` pinned to
+/// `(producer_name, "v1")`. Mirrors the helper in `tests/node_run.rs`;
+/// duplicated here so this file has no cross-module test dependency.
+fn write_consumer_with_pinned_depends_on(
+    work_dir: &std::path::Path,
+    consumer_name: &str,
+    producer_name: &str,
+    link_ids: &[&str],
+) -> std::path::PathBuf {
+    let consumer_dir = work_dir.join(consumer_name);
+    std::fs::create_dir_all(&consumer_dir).expect("create consumer dir");
+    let entries = link_ids
+        .iter()
+        .map(|lid| {
+            format!(r#"            {{ name: "{producer_name}", tag: "v1", link_id: "{lid}" }}"#)
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let body = format!(
+        r#"{{
+    peppy_schema: "node_v1",
+    manifest: {{
+        name: "{consumer_name}",
+        tag: "v1",
+        depends_on: {{
+            nodes: [
+{entries}
+            ]
+        }}
+    }},
+    execution: {{
+        language: "rust",
+        run_cmd: ["sleep", "30"]
+    }}
+}}
+"#
+    );
+    std::fs::write(consumer_dir.join("peppy.json5"), body).expect("write consumer peppy.json5");
+    consumer_dir
+}
+
+/// `peppy node add . -sbr` (sync + build + run) on a consumer whose
+/// manifest declares a pinned `depends_on` entry MUST fail validation when
+/// no `--bind` is supplied. Before the fix the chained-run path called
+/// `run_instance_async` with an empty slot map, so the daemon would spawn
+/// the consumer despite the missing binding — exactly the bug from the
+/// reproducer at the top of this file. The fix routes both `node run` and
+/// `node add -r` through `validate_and_run_instance`, so the same
+/// `pinned deps must be bound` error fires for both.
+#[test]
+fn node_add_with_run_rejects_unbound_pinned_dependency() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let producer_name = "test_add_r_unbound_producer";
+    let consumer_name = "test_add_r_unbound_consumer";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // Set up a built producer the consumer depends on; we don't spawn an
+    // instance of it because the validator's pinned-unbound rule fires on
+    // declaration alone — no producer instance is needed to reproduce.
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(producer_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("producer node init should succeed");
+    let producer_path = work_dir.path().join(producer_name);
+    peppy::test_support::override_run_cmd(&producer_path.join("peppy.json5"));
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(producer_path.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            binds: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("producer node add should succeed");
+
+    // Consumer with a single pinned link_id. With no `--bind`, launching
+    // this consumer must be rejected.
+    let consumer_dir = write_consumer_with_pinned_depends_on(
+        work_dir.path(),
+        consumer_name,
+        producer_name,
+        &["wrist_left"],
+    );
+
+    let result = NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(consumer_dir.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: true, // chain run, the path that used to bypass validation
+            args: Vec::new(),
+            instance_id: None,
+            binds: Vec::new(), // <-- the bug: this used to silently succeed
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx);
+
+    let err = result.expect_err(
+        "node add -r on a consumer with unbound pinned deps must fail with the same error \
+         as `node run` — chaining must NOT bypass binding validation",
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("pinned deps must be bound"),
+        "error should use the spec wording 'pinned deps must be bound'. Got: {msg}"
+    );
+    assert!(
+        msg.contains("wrist_left"),
+        "error should name the missing link_id. Got: {msg}"
+    );
+
+    // The instance must NEVER have been spawned: the validator runs
+    // *before* `run_instance_async`, so no "Started node instance" log
+    // should appear.
+    let logs = log_capture.logs();
+    assert!(
+        !logs.contains("Started node instance"),
+        "node add -r must NOT spawn an instance when a pinned dep is unbound. Logs:\n{logs}"
+    );
+}
+
+/// Positive control: `peppy node add -r --bind KEY@VALUE` (where KEY is a
+/// declared pinned link_id and VALUE is the producer's instance_id) is the
+/// supported path. The same producer/consumer scaffolding as the
+/// rejection test above, but with the binding supplied — the consumer
+/// must launch cleanly.
+#[test]
+fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let producer_name = "test_add_r_bound_producer";
+    let consumer_name = "test_add_r_bound_consumer";
+    let producer_instance_id = "cam_a";
+    let consumer_instance_id = "consumer_inst";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // Add + build the producer.
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(producer_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("producer node init should succeed");
+    let producer_path = work_dir.path().join(producer_name);
+    peppy::test_support::override_run_cmd(&producer_path.join("peppy.json5"));
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(producer_path.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            binds: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("producer node add should succeed");
+
+    // Spawn an instance of the producer so the binding's VALUE resolves
+    // to a real running instance_id.
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _producer_ready = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            producer_instance_id,
+            test_node_target(producer_name),
+        ))
+        .expect("producer ready service should start");
+    let _producer_health = rt
+        .block_on(listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            producer_instance_id,
+            test_node_target(producer_name),
+        ))
+        .expect("producer health service should start");
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(producer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(producer_instance_id.to_string()),
+            binds: Vec::new(),
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("producer run should succeed");
+
+    let consumer_dir = write_consumer_with_pinned_depends_on(
+        work_dir.path(),
+        consumer_name,
+        producer_name,
+        &["wrist_left"],
+    );
+
+    let _consumer_ready = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            consumer_instance_id,
+            test_node_target(consumer_name),
+        ))
+        .expect("consumer ready service should start");
+    let _consumer_health = rt
+        .block_on(listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            consumer_instance_id,
+            test_node_target(consumer_name),
+        ))
+        .expect("consumer health service should start");
+
+    // `node add -r --bind wrist_left@cam_a` — exactly the invocation the
+    // reproducer at the top of this file wanted to work.
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(consumer_dir.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: true,
+            args: Vec::new(),
+            instance_id: Some(consumer_instance_id.to_string()),
+            binds: vec![("wrist_left".to_string(), producer_instance_id.to_string())],
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node add -r --bind on a satisfied pinned dep must succeed");
+
+    let logs = log_capture.logs();
+    // Match the consumer's specific instance_id so this stays a real
+    // signal — bare "Started node instance" would also match the producer
+    // we spawned above and pass even if the consumer never launched.
+    assert!(
+        logs.contains(&format!("Started node instance '{consumer_instance_id}'")),
+        "consumer should launch when its pinned dep is bound. Logs:\n{logs}"
+    );
+}
+
+/// `--bind KEY@VALUE` on `node add -r` where KEY is NOT in the consumer's
+/// `depends_on` is a dead-binding. The launcher's `validate_bindings`
+/// flags it on `node run`; chaining the run from `node add` must surface
+/// the same rejection (same code path now). Catches the symmetric
+/// regression: not only "missing binding is detected", but also "a bogus
+/// binding KEY is detected" through the chained-run path.
+#[test]
+fn node_add_with_run_rejects_dead_binding_key() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let producer_name = "test_add_r_deadkey_producer";
+    let consumer_name = "test_add_r_deadkey_consumer";
+    let producer_instance_id = "cam_a";
+    // Deterministic id so we can tell the producer's start log apart from
+    // the consumer's. The whole point of the assertion below is that the
+    // consumer never starts; matching on a literal "Started node instance"
+    // would also fire on the producer start above and produce a false
+    // failure.
+    let consumer_instance_id = "deadkey_consumer_inst";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(producer_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("producer node init should succeed");
+    let producer_path = work_dir.path().join(producer_name);
+    peppy::test_support::override_run_cmd(&producer_path.join("peppy.json5"));
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(producer_path.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            binds: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("producer node add should succeed");
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _producer_ready = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            producer_instance_id,
+            test_node_target(producer_name),
+        ))
+        .expect("producer ready service should start");
+    let _producer_health = rt
+        .block_on(listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            producer_instance_id,
+            test_node_target(producer_name),
+        ))
+        .expect("producer health service should start");
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(producer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(producer_instance_id.to_string()),
+            binds: Vec::new(),
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("producer run should succeed");
+
+    let consumer_dir = write_consumer_with_pinned_depends_on(
+        work_dir.path(),
+        consumer_name,
+        producer_name,
+        &["wrist_left"],
+    );
+
+    let result = NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(consumer_dir.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: true,
+            args: Vec::new(),
+            instance_id: Some(consumer_instance_id.to_string()),
+            // `ghost` is not declared in the consumer's depends_on —
+            // dead-binding.
+            binds: vec![("ghost".to_string(), producer_instance_id.to_string())],
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx);
+
+    let err = result.expect_err("dead-binding KEY must be rejected on `node add -r` too");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ghost"),
+        "dead-key error should name the unknown KEY. Got: {msg}"
+    );
+
+    let logs = log_capture.logs();
+    assert!(
+        !logs.contains(&format!("Started node instance '{consumer_instance_id}'")),
+        "consumer must NOT spawn when a dead binding key is supplied. Logs:\n{logs}"
     );
 }

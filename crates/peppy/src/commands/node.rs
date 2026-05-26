@@ -169,13 +169,33 @@ pub enum NodeCommands {
         /// Combines with `--sync` via `-sr` (sync + build + run).
         #[arg(short = 'r', long)]
         run: bool,
-        /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
-        /// These are passed to the node via PEPPY_RUNTIME_CONFIG when run is true
-        #[arg(value_parser = parse_key_value_arg)]
+        /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30).
+        /// These are passed to the node via PEPPY_RUNTIME_CONFIG and only make
+        /// sense when `--run` is set — `requires = "run"` so a bare
+        /// `peppy node add . frequency=30` errors at parse time instead of
+        /// silently ignoring the argument.
+        #[arg(value_parser = parse_key_value_arg, requires = "run")]
         args: Vec<(String, String)>,
-        /// Optional: specify a deterministic instance ID
-        #[arg(long, hide = true)]
+        /// Optional: specify a deterministic instance ID for the spawn.
+        /// Only meaningful with `--run`; gated with `requires = "run"`.
+        #[arg(long, hide = true, requires = "run")]
         instance_id: Option<String>,
+        /// Pin a `link_id` from this consumer's `depends_on` to a specific
+        /// producer `instance_id`: `KEY@VALUE`. Repeatable
+        /// (`--bind a@p1 --bind b@p2`) or comma-separated
+        /// (`--bind a@p1,b@p2`). Only valid alongside `--run`: without a
+        /// chained run there is no instance to apply the bindings to, so
+        /// `requires = "run"` rejects the combination at parse time.
+        /// Validation is shared with `peppy node run` — see
+        /// `validate_and_run_instance` for the rule set.
+        #[arg(
+            long = "bind",
+            value_delimiter = ',',
+            value_parser = parse_bind_kv,
+            action = clap::ArgAction::Append,
+            requires = "run",
+        )]
+        binds: Vec<(String, String)>,
         /// Idle timeout in seconds — resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -344,12 +364,21 @@ impl Command for NodeCommand {
                 run,
                 args,
                 instance_id,
+                binds,
                 idle_timeout,
                 max_timeout,
                 force,
             } => {
+                // `requires = "run"` on `args`, `instance_id`, and `binds`
+                // means we can only land here with `run == false` when
+                // *all three* are empty; the run-only fields therefore have
+                // a single legal home: inside `Some(RunAfterAddOptions)`.
                 let run_options = if run {
-                    Some(add::RunAfterAddOptions { args, instance_id })
+                    Some(add::RunAfterAddOptions {
+                        args,
+                        instance_id,
+                        binds,
+                    })
                 } else {
                     None
                 };
@@ -531,6 +560,26 @@ mod tests {
             .chain(args.iter().copied())
             .collect();
         TestCli::try_parse_from(full)
+    }
+
+    fn try_parse_add(args: &[&str]) -> Result<TestCli, clap::Error> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("add"))
+            .chain(args.iter().copied())
+            .collect();
+        TestCli::try_parse_from(full)
+    }
+
+    fn parse_add_binds(args: &[&str]) -> Vec<(String, String)> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("add"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Add { binds, .. } => binds,
+            _ => panic!("expected Add variant"),
+        }
     }
 
     fn parse_subcommand_force(subcommand: &str, args: &[&str]) -> bool {
@@ -731,5 +780,157 @@ mod tests {
             "msg should explain removal: {msg}"
         );
         assert!(msg.contains("--bind"), "msg should point at --bind: {msg}");
+    }
+
+    // ─── `peppy node add` --bind / requires=run parse-time enforcement ───
+
+    /// `--bind` on `node add` requires `--run`; the binds parser is the same
+    /// as `node run`'s, so a `KEY@VALUE` pair lands on the `binds` field as
+    /// a tuple.
+    #[test]
+    fn add_with_run_accepts_bind() {
+        let binds = parse_add_binds(&[".", "-r", "--bind", "feed@cam_a"]);
+        assert_eq!(binds, vec![("feed".to_string(), "cam_a".to_string())]);
+    }
+
+    /// Comma-delimited form and repeated `--bind` both feed the same `binds`
+    /// vector on `node add -r`, exactly like on `node run`.
+    #[test]
+    fn add_with_run_bind_repeated_and_comma_delimited() {
+        let repeated = parse_add_binds(&[".", "-r", "--bind", "feed@cam_a", "--bind", "ctl@cam_b"]);
+        let comma = parse_add_binds(&[".", "-r", "--bind", "feed@cam_a,ctl@cam_b"]);
+        let expected = vec![
+            ("feed".to_string(), "cam_a".to_string()),
+            ("ctl".to_string(), "cam_b".to_string()),
+        ];
+        assert_eq!(repeated, expected);
+        assert_eq!(comma, expected);
+    }
+
+    /// `-sbr` plus `--bind` is the bug-replication shape from the report:
+    /// the previous CLI accepted `add . -sbr` and ran an instance with no
+    /// bindings. Now `--bind` must parse on that same invocation so the
+    /// user can supply them in one shot.
+    #[test]
+    fn add_sbr_with_bind_parses() {
+        let cli = try_parse_add(&[".", "-sbr", "--bind", "feed@cam_a"])
+            .expect("`add . -sbr --bind feed@cam_a` should parse");
+        match cli.command {
+            NodeCommands::Add {
+                sync,
+                build,
+                run,
+                binds,
+                ..
+            } => {
+                assert!(sync && build && run, "-sbr should set all three");
+                assert_eq!(binds, vec![("feed".to_string(), "cam_a".to_string())]);
+            }
+            _ => panic!("expected Add variant"),
+        }
+    }
+
+    /// Core fix: `--bind` without `--run` is meaningless (nothing to apply
+    /// the bindings to), so clap rejects it at parse time.
+    #[test]
+    fn add_bind_without_run_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "--bind", "feed@cam_a"])
+            .err()
+            .expect("--bind without --run must be a parse error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--run") || msg.contains("<RUN>"),
+            "error should name the missing --run flag: {msg}"
+        );
+    }
+
+    /// Same enforcement when sync+build are present but `--run` isn't:
+    /// `-sb` is "stop at built", and `--bind` doesn't belong there either.
+    #[test]
+    fn add_sb_with_bind_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "-sb", "--bind", "feed@cam_a"])
+            .err()
+            .expect("`-sb --bind` (no `r`) must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--run") || msg.contains("<RUN>"),
+            "error should name the missing --run flag: {msg}"
+        );
+    }
+
+    /// Positional `key=value` arguments are runtime overrides, so they only
+    /// make sense when chaining a run. `requires = "run"` rejects bare
+    /// `add . frequency=30` instead of silently ignoring the value.
+    #[test]
+    fn add_positional_args_without_run_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "frequency=30"])
+            .err()
+            .expect("trailing key=value without --run must be a parse error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--run") || msg.contains("<RUN>"),
+            "error should name the missing --run flag: {msg}"
+        );
+    }
+
+    /// `--instance-id` only matters when there's a spawn. Without `--run`
+    /// the instance is never created, so the flag is rejected at parse time
+    /// rather than being silently dropped on the floor.
+    #[test]
+    fn add_instance_id_without_run_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "--instance-id", "my-inst"])
+            .err()
+            .expect("--instance-id without --run must be a parse error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--run") || msg.contains("<RUN>"),
+            "error should name the missing --run flag: {msg}"
+        );
+    }
+
+    /// Sanity: a plain `add` with neither run-only flag must keep parsing
+    /// — `requires = "run"` only fires when one of the gated fields is
+    /// present.
+    #[test]
+    fn add_without_any_run_only_args_still_parses() {
+        let cli = try_parse_add(&["."]).expect("plain `add .` should parse");
+        match cli.command {
+            NodeCommands::Add {
+                run,
+                args,
+                instance_id,
+                binds,
+                ..
+            } => {
+                assert!(!run);
+                assert!(args.is_empty());
+                assert!(instance_id.is_none());
+                assert!(binds.is_empty());
+            }
+            _ => panic!("expected Add variant"),
+        }
+    }
+
+    /// The bind value parser is shared between `node add` and `node run`,
+    /// so the reserved-sentinel rejection on `_@…` must trigger on `add`
+    /// too. Catches a regression where `add` would silently accept invalid
+    /// keys that `run` rejects.
+    #[test]
+    fn add_bind_reserved_sentinel_key_rejected() {
+        let err = try_parse_add(&[".", "-r", "--bind", "_@cam_a"])
+            .err()
+            .expect("`_@…` must be rejected on `add` too");
+        let msg = err.to_string();
+        assert!(msg.contains("reserved"), "msg: {msg}");
+    }
+
+    /// And the missing-`@` rejection.
+    #[test]
+    fn add_bind_missing_at_separator_rejected() {
+        let err = try_parse_add(&[".", "-r", "--bind", "noseparator"])
+            .err()
+            .expect("missing `@` must be rejected on `add` too");
+        let msg = err.to_string();
+        assert!(msg.contains("KEY@VALUE"), "msg: {msg}");
     }
 }

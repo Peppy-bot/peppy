@@ -86,6 +86,7 @@ async fn node_stop_command_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,

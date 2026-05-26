@@ -471,8 +471,67 @@ async fn validate_binds_against_stack(
     ))
 }
 
-/// Shared logic for running a node instance.
-/// Used by both `run_node` and `add_node` (when --run is set).
+/// Validate the supplied `--bind` pairs against the running stack, resolve
+/// them to per-slot `SlotBinding`s, then spawn the instance. This is the
+/// single entry point shared between `peppy node run` and `peppy node add
+/// --run`: both surfaces must accept `--bind` and enforce the same binding
+/// rules, so there is exactly one code path responsible for materializing
+/// the instance_id, running `validate_bindings`, and calling
+/// [`run_instance_async`].
+///
+/// `instance_id` is materialized up-front so the synthetic
+/// `DeploymentInstance` fed to the validator and the actual spawn refer to
+/// the same id; mismatching them would point validator errors at a
+/// different instance than the one that ends up running.
+#[allow(clippy::too_many_arguments)]
+pub async fn validate_and_run_instance(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    tag: &str,
+    args: &[(String, String)],
+    instance_id: Option<String>,
+    binds: &[(String, String)],
+    timeouts: &TimeoutConfig,
+) -> Result<String> {
+    let prelaunch_instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
+    let binds_map = binds_to_map(binds, &prelaunch_instance_id)?;
+    let slot_bindings = match validate_binds_against_stack(
+        messenger,
+        core_node_name,
+        node_name,
+        tag,
+        &prelaunch_instance_id,
+        &binds_map,
+    )
+    .await
+    {
+        Ok(Some(slot_bindings)) => slot_bindings,
+        Ok(None) => BTreeMap::new(),
+        Err(e @ Error::ExecutionFailed(_)) => return Err(e),
+        Err(e) => {
+            debug!("skipping bind validation for {}:{}: {}", node_name, tag, e);
+            BTreeMap::new()
+        }
+    };
+
+    run_instance_async(
+        messenger,
+        core_node_name,
+        node_name,
+        tag,
+        args,
+        Some(prelaunch_instance_id),
+        slot_bindings,
+        timeouts,
+    )
+    .await
+}
+
+/// Spawn a node instance with already-resolved `slot_bindings`. Callers must
+/// have validated `binds` via [`validate_and_run_instance`] first — invoking
+/// this directly bypasses every binding rule and exists only as the lower
+/// half of the validate-then-spawn split.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
@@ -666,42 +725,14 @@ async fn run_node_async(
         }
     }
 
-    // Materialize the instance_id up-front so we can feed it into the
-    // binding validator's synthetic `DeploymentInstance` and into
-    // `run_instance_async` — they have to agree, otherwise a target-node
-    // mismatch error would point at a different instance_id than the one
-    // we actually spawn.
-    let prelaunch_instance_id = instance_id.clone().unwrap_or_else(|| get_random(rng()));
-
-    let binds_map = binds_to_map(&binds, &prelaunch_instance_id)?;
-
-    let slot_bindings = match validate_binds_against_stack(
-        conn.messenger,
-        &conn.core_node_name,
-        &node_name,
-        &tag,
-        &prelaunch_instance_id,
-        &binds_map,
-    )
-    .await
-    {
-        Ok(Some(slot_bindings)) => slot_bindings,
-        Ok(None) => BTreeMap::new(),
-        Err(e @ Error::ExecutionFailed(_)) => return Err(e),
-        Err(e) => {
-            debug!("skipping bind validation for {}:{}: {}", node_name, tag, e);
-            BTreeMap::new()
-        }
-    };
-
-    run_instance_async(
+    validate_and_run_instance(
         conn.messenger,
         &conn.core_node_name,
         &node_name,
         &tag,
         &args,
-        Some(prelaunch_instance_id),
-        slot_bindings,
+        instance_id,
+        &binds,
         &remaining_timeouts(&timeouts, start, "run")?,
     )
     .await?;
