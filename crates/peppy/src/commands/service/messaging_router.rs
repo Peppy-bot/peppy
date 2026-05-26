@@ -50,6 +50,15 @@ impl ServeAsyncCommand for MessagingRouter {
             {
                 let mut messenger = messenger.lock().await;
                 info!("Shutting down the messaging router...");
+                // Close the client session before killing the router so the
+                // session's undeclare-face messages can reach zenohd. Doing
+                // it the other way around leaves zenoh spamming
+                // "Undefined face context" when the session's lingering
+                // Arc clones (publishers, etc.) finally drop and trigger
+                // close over a dead transport.
+                if let Err(err) = messenger.stop_session().await {
+                    tracing::warn!("Failed to stop messaging session cleanly: {err}");
+                }
                 messenger
                     .stop_router()
                     .await

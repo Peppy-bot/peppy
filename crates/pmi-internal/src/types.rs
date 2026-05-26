@@ -102,8 +102,13 @@ pub trait MessengerBackend {
     /// Initialize the pubsub session.
     fn start_session(&mut self) -> impl Future<Output = Result<()>> + Send;
 
-    /// Shuts down the pubsub session.
-    fn stop_session(self) -> impl Future<Output = Result<()>> + Send;
+    /// Gracefully shuts down the pubsub session. For transports with a separate
+    /// router process (e.g. Zenoh) this MUST be called while the router is
+    /// still reachable — the close handshake undeclares every face on the
+    /// router side, and skipping it leaves zenoh logging `Undefined face
+    /// context` when the session Drop later tries to close over a dead
+    /// transport.
+    fn stop_session(&mut self) -> impl Future<Output = Result<()>> + Send;
 
     // ─── Topics ───────────────────────────────────────────────────────────
 
@@ -783,8 +788,8 @@ impl MessengerBackend for Messenger {
         dispatch!(&mut self.adapter, start_session)
     }
 
-    async fn stop_session(self) -> Result<()> {
-        dispatch!(self.adapter, stop_session)
+    async fn stop_session(&mut self) -> Result<()> {
+        dispatch!(&mut self.adapter, stop_session)
     }
 
     async fn subscribe_topic(

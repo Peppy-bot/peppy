@@ -112,7 +112,7 @@ impl MessengerBackend for MockAdapter {
         Ok(())
     }
 
-    async fn stop_session(mut self) -> Result<()> {
+    async fn stop_session(&mut self) -> Result<()> {
         if !self.is_session_connected {
             return Err(Error::ShutdownError);
         }

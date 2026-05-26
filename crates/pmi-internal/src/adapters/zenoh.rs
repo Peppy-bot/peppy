@@ -328,9 +328,16 @@ impl MessengerBackend for ZenohAdapter {
         Ok(())
     }
 
-    async fn stop_session(mut self) -> Result<()> {
+    async fn stop_session(&mut self) -> Result<()> {
         if let Some(session) = self.session.take() {
-            drop(session);
+            // Close while zenohd is still alive so the undeclare-face
+            // messages reach the router. Drop's later close becomes a
+            // no-op (primitives already taken), which is what keeps the
+            // session's other Arc clones — e.g. ZenohPublisher — from
+            // spamming "Undefined face context" when they finally drop.
+            if let Err(err) = session.close().await {
+                tracing::warn!("Zenoh session close returned an error: {err}");
+            }
         }
         Ok(())
     }
@@ -657,7 +664,12 @@ impl ZenohAdapter {
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("Subscriber stopped receiving messages: {}", e);
+                        // `recv_async` only errors when the channel is
+                        // disconnected, which is the normal shutdown path
+                        // (session close / subscriber undeclare). Logging at
+                        // warn level fires once per subscriber on every
+                        // shutdown and drowns the actual shutdown message.
+                        tracing::debug!("Subscriber channel closed: {}", e);
                         break;
                     }
                 }
@@ -689,7 +701,11 @@ async fn handle_queryable(
         let query = match queryable.recv_async().await {
             Ok(q) => q,
             Err(e) => {
-                tracing::warn!(error = %e, "service queryable stopped");
+                // `recv_async` only errors when the channel is disconnected,
+                // which is the normal shutdown path (session close /
+                // queryable undeclare). Same reason as the subscriber loop:
+                // warn-level here fires once per queryable on every shutdown.
+                tracing::debug!(error = %e, "service queryable channel closed");
                 break;
             }
         };
