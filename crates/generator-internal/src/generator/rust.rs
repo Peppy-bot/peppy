@@ -100,13 +100,27 @@ impl RustGenerator {
         struct_prefix: &str,
         artifacts: &CapnpSchemaArtifacts,
     ) -> Result<SchemaInfo> {
-        let schema_source = artifacts.encoding_schema();
         let resolved = resolve_schema_file_stem(schema_key);
+
+        // When multiple callers (e.g. two consumed topics sharing producer+topic
+        // with different link_ids) resolve to the same capnp file, the schema
+        // file is written once but every caller still needs a Rust-side
+        // reference to a struct that actually exists in it. Reuse the first
+        // registration's struct identity for every subsequent collision.
+        if let Some(existing) = self.schemas.get(&resolved.file_stem) {
+            return Ok(SchemaInfo {
+                file_stem: resolved.file_stem,
+                struct_module: existing.struct_module().to_string(),
+            });
+        }
+
+        let schema_source = artifacts.encoding_schema();
         let struct_name = format!("{struct_prefix}Message");
         let struct_module = crate::generator::naming::normalize_snake_case(&struct_name);
         let schema = schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
-        let capnp_schema = CapnpSchema::new(resolved.file_stem.clone(), schema);
+        let capnp_schema =
+            CapnpSchema::new(resolved.file_stem.clone(), struct_module.clone(), schema);
         self.schemas
             .insert(resolved.file_stem.clone(), capnp_schema);
 

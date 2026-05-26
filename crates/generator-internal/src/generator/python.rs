@@ -104,9 +104,10 @@ impl PythonGenerator {
         let schema_text =
             schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
+        let struct_module = crate::generator::naming::normalize_snake_case(&struct_name);
         self.schemas.insert(
             resolved.file_stem.clone(),
-            CapnpSchema::new(resolved.file_stem.clone(), schema_text),
+            CapnpSchema::new(resolved.file_stem.clone(), struct_module, schema_text),
         );
 
         Ok(PythonSchemaInfo {

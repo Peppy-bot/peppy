@@ -866,16 +866,25 @@ mod tests {
 #[derive(Clone)]
 pub struct CapnpSchema {
     file_stem: String,
+    struct_module: String,
     schema: String,
 }
 
 impl CapnpSchema {
-    pub fn new(file_stem: String, schema: String) -> Self {
-        Self { file_stem, schema }
+    pub fn new(file_stem: String, struct_module: String, schema: String) -> Self {
+        Self {
+            file_stem,
+            struct_module,
+            schema,
+        }
     }
 
     pub fn file_stem(&self) -> &str {
         &self.file_stem
+    }
+
+    pub fn struct_module(&self) -> &str {
+        &self.struct_module
     }
 
     pub fn schema(&self) -> &str {
