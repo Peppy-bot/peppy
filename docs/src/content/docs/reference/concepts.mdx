@@ -23,7 +23,7 @@ The manifest defines a node's identity:
 | `name` | A validated identifier (ASCII letters, digits, `_`, `-`) |
 | `tag` | A short contract identifier (e.g., `v1`, `donut`). Must start with an ASCII letter; allowed chars are letters, digits, `_`, `-`. Dots are forbidden. |
 | `labels` | Optional metadata labels |
-| `depends_on` | Optional dependency declarations on other nodes |
+| `depends_on` | Optional dependency declarations on other nodes (`depends_on.nodes`) or interface contracts (`depends_on.interfaces`); see [Interface conformance](/advanced_guides/interface_conformance) |
 
 A node is uniquely identified by its `name:tag` combination.
 
