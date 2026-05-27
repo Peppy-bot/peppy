@@ -1029,9 +1029,13 @@ async fn validate_and_order_dependencies(
     }
 
     // The root entity stays in the stack across launches (snapshot_and_clear_stack
-    // preserves it), so its instance_id participates in stack-wide uniqueness
-    // checks. Synthesize a single-instance DeploymentInstance for it — only
-    // instance_id is consulted by check_stack_wide_instance_id_uniqueness.
+    // preserves it), so its instance_id must participate in stack-wide uniqueness
+    // checks. Synthesize a single-instance DeploymentInstance for it, but pass
+    // `depends_on: None` / empty `conforms_to` in the binding item below so the
+    // per-instance binding rules treat the root as inert and only
+    // check_stack_wide_instance_id_uniqueness (which reads name/tag/instance_id)
+    // acts on it. Forwarding the root's real depends_on would make Rule 1 emit
+    // BindingMissingForPinnedDep, because the synthesized instance has no bindings.
     let root_instance_id_str = ctx
         .node_stack
         .root()
@@ -1066,8 +1070,8 @@ async fn validate_and_order_dependencies(
             node_name: root_config.manifest.name.as_str(),
             node_tag: root_config.manifest.tag.as_str(),
             instances: &root_instances,
-            depends_on: root_config.manifest.depends_on.as_ref(),
-            conforms_to: root_config.interfaces.conforms_to.as_deref().unwrap_or(&[]),
+            depends_on: None,
+            conforms_to: &[],
         });
     }
     let validated = config::launcher::validate_bindings(&binding_items);

@@ -1233,6 +1233,10 @@ async fn process_node_add(
     };
     let interface_feedback = |line: &str| {
         tracing::info!(target: "peppy::interface", "{line}");
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: line.to_string(),
+        });
     };
     let mut consumed_interfaces = match collect_consumed_interfaces(
         &node_config.manifest,
