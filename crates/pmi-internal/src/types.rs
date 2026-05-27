@@ -198,13 +198,23 @@ pub trait MessengerBackend {
 /// backing messenger entity (zenoh's `Subscriber<()>` / `Queryable<()>`,
 /// which undeclare on drop; or [`AbortOnDrop`] for adapters that still drive
 /// the messaging surface via a spawned forwarder task).
-pub type Guard = Box<dyn std::any::Any + Send + Sync>;
+///
+/// Crate-private because only adapter modules construct guards; the [`Any`]
+/// bound is an implementation detail used to erase heterogeneous adapter
+/// types, not a downcast surface for callers.
+pub(crate) type Guard = Box<dyn std::any::Any + Send + Sync>;
 
 /// Wraps a tokio task handle so dropping the wrapper cancels the task.
 /// `AbortHandle` alone does not abort on drop — only the explicit `.abort()`
 /// call does — so adapters that need that semantics wrap their handle in
 /// this type before stashing it in a [`Guard`].
-pub struct AbortOnDrop(pub tokio::task::AbortHandle);
+pub struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl AbortOnDrop {
+    pub fn new(handle: tokio::task::AbortHandle) -> Self {
+        Self(handle)
+    }
+}
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -229,7 +239,7 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    pub fn new(rx: flume::Receiver<TopicMessage>, guard: Guard) -> Self {
+    pub(crate) fn new(rx: flume::Receiver<TopicMessage>, guard: Guard) -> Self {
         Self { rx, _guard: guard }
     }
 
@@ -254,7 +264,7 @@ pub struct ServiceQueryable {
 }
 
 impl ServiceQueryable {
-    pub fn new(rx: flume::Receiver<IncomingRequest>, guards: Vec<Guard>) -> Self {
+    pub(crate) fn new(rx: flume::Receiver<IncomingRequest>, guards: Vec<Guard>) -> Self {
         Self {
             rx,
             _guards: guards,
@@ -303,7 +313,7 @@ pub struct ReplyStream {
 }
 
 impl ReplyStream {
-    pub fn new(rx: tokio::sync::mpsc::Receiver<ServiceReply>, guard: Option<Guard>) -> Self {
+    pub(crate) fn new(rx: tokio::sync::mpsc::Receiver<ServiceReply>, guard: Option<Guard>) -> Self {
         Self { rx, _guard: guard }
     }
 }

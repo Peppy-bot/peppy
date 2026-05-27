@@ -1,21 +1,15 @@
-//! Regression guard for the noisy zenoh FIFO handler.
+//! Invariant: the three zenoh adapter integration points (`call_service`,
+//! `subscribe_keyexpr`, `listen_service`) must use the callback handler, not
+//! zenoh's default `flume::bounded` FIFO handler. The FIFO handler logs
+//! `error=sending on a closed channel` at ERROR (`target =
+//! zenoh::api::handlers::fifo`) when zenoh delivers a reply/sample/query
+//! after the receiver is dropped — which fires routinely once a consumer
+//! takes the first reply of a wildcard service call and drops its
+//! `ReplyStream` while the query window stays open.
 //!
-//! Background: zenoh's default reception handler is a `flume::bounded` FIFO,
-//! and its internal callback logs `error=sending on a closed channel` at
-//! ERROR level (`target = zenoh::api::handlers::fifo`) whenever zenoh tries
-//! to deliver a reply / sample / query after its receiver has been dropped.
-//! That fires routinely on the consumer side of a wildcard service call:
-//! peppylib takes the first valid response and drops the `ReplyStream`, but
-//! the zenoh session keeps the query open for the full `.timeout(...)`
-//! window — every sibling producer's late reply then hits the closed FIFO
-//! and prints an ERROR line. The adapter switched all three integration
-//! points (`call_service`, `subscribe_keyexpr`, `listen_service`) to the
-//! callback handler precisely to eliminate this.
-//!
-//! This test reinstates the scenario end-to-end against a real zenohd
-//! process and asserts that **zero** `zenoh::api::handlers::fifo` ERROR
-//! events are emitted. A future change that reverts any of those sites to
-//! the default FIFO handler will fail this test loudly.
+//! This test runs that scenario end-to-end against a real zenohd process and
+//! asserts zero `zenoh::api::handlers::fifo` ERROR events. Failure means an
+//! integration point was reverted to the FIFO handler.
 
 #![cfg(feature = "build_zenoh")]
 

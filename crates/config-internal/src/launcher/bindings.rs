@@ -199,10 +199,8 @@ pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> ValidatedBindin
                             owner_instance_id: instance.instance_id.to_string(),
                             binding: binding_key.clone(),
                             target_instance_id: target_id.clone(),
-                            producer_name_tag: format!(
-                                "{}:{}",
-                                target_item.node_name, target_item.node_tag
-                            ),
+                            producer_name: target_item.node_name.to_string(),
+                            producer_tag: target_item.node_tag.to_string(),
                             declared_link_ids: declared_csv.clone(),
                         })));
                 }
@@ -479,7 +477,8 @@ mod tests {
         assert_eq!(info.owner_instance_id, "cons1");
         assert_eq!(info.binding, "stale_slot");
         assert_eq!(info.target_instance_id, "prod1");
-        assert_eq!(info.producer_name_tag, "camera:v1");
+        assert_eq!(info.producer_name, "camera");
+        assert_eq!(info.producer_tag, "v1");
         assert_eq!(info.declared_link_ids, "main");
     }
 
@@ -1056,7 +1055,8 @@ mod tests {
         };
         assert_eq!(info.binding, "extra_cam");
         assert_eq!(info.target_instance_id, "depth_cam_inst_1");
-        assert_eq!(info.producer_name_tag, "depth_camera:v1");
+        assert_eq!(info.producer_name, "depth_camera");
+        assert_eq!(info.producer_tag, "v1");
     }
 
     /// `conforms_to` matching is strict on `(name, tag)`: a producer

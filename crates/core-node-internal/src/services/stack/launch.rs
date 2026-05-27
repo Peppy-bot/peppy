@@ -957,10 +957,7 @@ async fn resolve_deployments(
     }
 
     if !planning_errors.is_empty() {
-        let msg = planning_errors
-            .iter()
-            .map(|e| format!("\n  - {e}"))
-            .collect::<String>();
+        let msg = config::format_bulleted(&planning_errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
@@ -1026,10 +1023,7 @@ async fn validate_and_order_dependencies(
         .collect();
 
     if !dependency_errors.is_empty() {
-        let msg = dependency_errors
-            .iter()
-            .map(|e| format!("\n  - {e}"))
-            .collect::<String>();
+        let msg = config::format_bulleted(&dependency_errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
@@ -1046,11 +1040,7 @@ async fn validate_and_order_dependencies(
         .collect();
     let validated = config::launcher::validate_bindings(&binding_items);
     if !validated.errors.is_empty() {
-        let msg = validated
-            .errors
-            .iter()
-            .map(|e| format!("\n  - {e}"))
-            .collect::<String>();
+        let msg = config::format_bulleted(&validated.errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }

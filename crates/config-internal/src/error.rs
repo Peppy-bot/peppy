@@ -2,6 +2,17 @@ use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// Formats `items` as a `\n  - `-prefixed bulleted list (no leading or
+/// trailing newline outside the bullets themselves). Used to render
+/// validation/binding error collections inside parent diagnostic strings.
+pub fn format_bulleted<T, I>(items: I) -> String
+where
+    T: core::fmt::Display,
+    I: IntoIterator<Item = T>,
+{
+    items.into_iter().map(|e| format!("\n  - {e}")).collect()
+}
+
 /// Deserializes JSON5 content with field-path tracking.
 ///
 /// On error, prepends the JSON path (e.g. `execution.run_cmd`) to standard
@@ -140,20 +151,21 @@ pub struct DuplicateInstanceIdAcrossStack {
 }
 
 /// Payload for [`ParsingError::BindingDeadKey`]. Boxed for the same
-/// `result_large_err` reason as the other binding variants — the five
+/// `result_large_err` reason as the other binding variants — the six
 /// `String` fields push the enum past the lint threshold otherwise.
 #[derive(Debug, Clone, Error)]
 #[error(
     "binding `{binding}` on instance `{owner_instance_id}` matches no \
-     declared slot, and no `from_any` slot accepts producer \
-     `{target_instance_id}` ({producer_name_tag}); declared link_ids: \
-     [{declared_link_ids}]"
+     declared slot, and no `from_any` slot accepts target \
+     `{target_instance_id}` (deploys `{producer_name}:{producer_tag}`); \
+     declared link_ids: [{declared_link_ids}]"
 )]
 pub struct BindingDeadKey {
     pub owner_instance_id: String,
     pub binding: String,
     pub target_instance_id: String,
-    pub producer_name_tag: String,
+    pub producer_name: String,
+    pub producer_tag: String,
     pub declared_link_ids: String,
 }
 

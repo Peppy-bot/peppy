@@ -455,11 +455,7 @@ async fn validate_binds_against_stack(
 
     let mut validated = validate_bindings(&items);
     if !validated.errors.is_empty() {
-        let msg = validated
-            .errors
-            .iter()
-            .map(|e| format!("\n  - {e}"))
-            .collect::<String>();
+        let msg = config::format_bulleted(&validated.errors);
         return Err(Error::ExecutionFailed(msg));
     }
     Ok(Some(
