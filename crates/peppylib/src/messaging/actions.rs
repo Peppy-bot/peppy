@@ -584,7 +584,9 @@ pub fn decode_cancel_ack(payload: &[u8]) -> Result<(bool, Option<String>)> {
 /// Rendezvous between a goal's [`GoalContext::complete`] and the result service
 /// loop. Either side may arrive first: the result request parks its responder
 /// here when the goal is still running; `complete` stores the value for a
-/// result request that has not arrived yet (and replays it to late polls).
+/// result request that has not arrived yet. The first such poll fetches the
+/// value and evicts the slot (deliver-once); if no poll arrives, the slot is
+/// evicted after a grace window when the [`GoalContext`] drops.
 enum ResultRendezvous {
     Empty,
     ValueReady(Payload),
@@ -744,6 +746,7 @@ pub struct ConcurrentAction {
     factory: ActionFeedbackPublisherFactory,
     registry: GoalRegistry,
     has_feedback: bool,
+    result_retention_grace: Duration,
     stop: CancellationToken,
     cancel_loop: TaskHandle<()>,
     result_loop: TaskHandle<()>,
@@ -799,10 +802,19 @@ impl ConcurrentAction {
             factory: feedback_publisher_factory,
             registry,
             has_feedback,
+            result_retention_grace: RESULT_RETENTION_GRACE,
             stop,
             cancel_loop,
             result_loop,
         }
+    }
+
+    /// Override how long a completed-but-unfetched result stays routable after
+    /// its [`GoalContext`] drops (default [`RESULT_RETENTION_GRACE`]). Exposed
+    /// mainly so tests can exercise eviction without waiting the full window.
+    pub fn with_result_retention_grace(mut self, grace: Duration) -> Self {
+        self.result_retention_grace = grace;
+        self
     }
 
     /// Wait for the next goal request. Returns a [`PendingGoal`] the caller
@@ -844,6 +856,7 @@ impl ConcurrentAction {
             responder,
             feedback,
             registry: Arc::clone(&self.registry),
+            result_retention_grace: self.result_retention_grace,
         }))
     }
 }
@@ -866,6 +879,7 @@ pub struct PendingGoal {
     core_node: String,
     instance_id: String,
     request_bytes: Bytes,
+    result_retention_grace: Duration,
     responder: ServiceResponder,
     feedback: Option<ActionFeedbackPublisher>,
     registry: GoalRegistry,
@@ -922,6 +936,10 @@ impl PendingGoal {
             feedback: self.feedback,
             registry: self.registry,
             completed: AtomicBool::new(false),
+            result_retention_grace: self.result_retention_grace,
+            // `accept` is always awaited on the runtime, so a handle is
+            // available here; `Drop` reuses it to spawn cleanup from any thread.
+            runtime: tokio::runtime::Handle::current(),
         })
     }
 
@@ -945,6 +963,16 @@ pub struct GoalContext {
     feedback: Option<ActionFeedbackPublisher>,
     registry: GoalRegistry,
     completed: AtomicBool,
+    /// How long to keep a completed-but-unfetched result routable after this
+    /// context drops; propagated from the [`ConcurrentAction`].
+    result_retention_grace: Duration,
+    /// Runtime handle captured at accept time so `Drop` can schedule its async
+    /// cleanup (closing the feedback stream, grace-evicting the slot) even when
+    /// the context is dropped off the runtime. This is the case in the
+    /// peppylib-py binding, where Python's GC drops the wrapping object on the
+    /// interpreter thread, so capturing the handle keeps cleanup identical
+    /// across Rust and Python rather than silently degrading off-runtime.
+    runtime: tokio::runtime::Handle,
 }
 
 impl GoalContext {
@@ -1022,16 +1050,51 @@ impl GoalContext {
     }
 }
 
+/// How long a completed-but-unfetched result stays routable after its
+/// [`GoalContext`] is dropped. This lets a worker `complete` and drop the
+/// context immediately (e.g. at the end of a spawned task) while a slightly
+/// late client `get_result` can still retrieve the result, without letting an
+/// unfetched slot linger for the life of the server.
+const RESULT_RETENTION_GRACE: Duration = Duration::from_secs(30);
+
 impl Drop for GoalContext {
     fn drop(&mut self) {
-        // Only clean up here if the goal was abandoned without a result. A
-        // completed goal's slot outlives its context: the value sits in the
-        // registry until a result request delivers it (deliver-once), which is
-        // what lets workers `complete` and drop the context in the same breath
-        // before the client calls `get_result`. Any responder parked in an
-        // abandoned slot is dropped with it, cleanly closing the pending poll.
         if !self.completed.load(Ordering::SeqCst) {
+            // The goal was abandoned without a result (early return, a panic in
+            // the worker, or the context simply dropped). Evict the slot so
+            // later cancel/result requests get a definitive answer, and close
+            // this goal's feedback stream so a client draining feedback breaks
+            // out of its loop instead of hanging forever. Any result request
+            // currently parked in the slot is dropped with it, cleanly closing
+            // that poll. `publish_end` is async, so fire-and-forget on the
+            // captured runtime handle (works even when dropped off-runtime).
             self.registry.lock().unwrap().remove(&self.goal_id);
+            if let Some(publisher) = &self.feedback {
+                let publisher = publisher.clone();
+                self.runtime.spawn(async move {
+                    let _ = publisher.publish_end().await;
+                });
+            }
+            return;
+        }
+
+        // The goal completed. `deliver` removes the slot as soon as a result
+        // request is answered (deliver-once), so if the slot is already gone a
+        // poll has fetched the result and there is nothing to clean up. If the
+        // slot is still present the result is buffered but unfetched: a worker
+        // may `complete` and drop the context in the same breath before the
+        // client calls `get_result`, so keep the value routable for a grace
+        // window, then evict it. Without this, a completed goal whose result is
+        // never fetched would leak its slot for the life of the server.
+        let still_buffered = self.registry.lock().unwrap().contains_key(&self.goal_id);
+        if still_buffered {
+            let registry = Arc::clone(&self.registry);
+            let goal_id = self.goal_id.clone();
+            let grace = self.result_retention_grace;
+            self.runtime.spawn(async move {
+                tokio::time::sleep(grace).await;
+                registry.lock().unwrap().remove(&goal_id);
+            });
         }
     }
 }

@@ -665,6 +665,180 @@ async fn concurrent_action_reject_then_accept() {
     drop(server_handle);
 }
 
+/// Dropping a `GoalContext` without completing the goal (the worker returned
+/// early, panicked, or otherwise abandoned it) must close the goal's feedback
+/// stream and evict its slot. A client draining feedback then breaks out with
+/// `ActionFeedbackChannelClosed` instead of hanging forever, and a later
+/// `get_result` gets a definitive "no active goal" error rather than parking.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_action_abandoned_goal_closes_feedback() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let core_node = "test_core";
+    let instance_id = "exposer";
+    let node_name = "brain";
+    let action_name = "move_arm";
+
+    let server_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("server handle");
+    let client_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("client handle");
+
+    let mut action = ConcurrentAction::expose(
+        &server_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        true,
+    )
+    .await
+    .expect("expose should succeed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The server accepts the goal and then abandons it: the context is dropped
+    // without ever calling `complete`.
+    let server = tokio::spawn(async move {
+        while let Ok(Some(pending)) = action.recv_next_goal().await {
+            let Ok(ctx) = pending.accept(Payload::from_static(b"accepted")).await else {
+                continue;
+            };
+            drop(ctx);
+        }
+    });
+
+    let mut goal = ActionMessenger::send_goal(
+        &client_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        Some(core_node),
+        Some(instance_id),
+        Payload::from_static(b"X"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("send goal");
+
+    // Feedback must resolve to a clean close, not hang.
+    let closed = tokio::time::timeout(Duration::from_secs(2), goal.on_next_feedback())
+        .await
+        .expect("abandoned goal must close feedback, not hang");
+    match closed {
+        Err(PeppyError::ActionFeedbackChannelClosed) => {}
+        other => panic!("expected ActionFeedbackChannelClosed, got {other:?}"),
+    }
+
+    // The slot was evicted on abandon, so a result request gets a definitive
+    // error instead of parking forever.
+    let result =
+        ActionMessenger::request_result(&client_handle, &goal, Duration::from_secs(2)).await;
+    assert!(
+        result.is_err(),
+        "result request for an abandoned goal must error, got {result:?}",
+    );
+
+    server.abort();
+    drop(server_handle);
+}
+
+/// A completed goal's result must survive the worker dropping its context (so a
+/// slightly late `get_result` still resolves), but a result that is never
+/// fetched must be evicted after the retention grace rather than leaking its
+/// registry slot for the life of the server. Uses a short grace so the
+/// eviction half is fast and deterministic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_action_completed_result_evicted_after_grace() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let core_node = "test_core";
+    let instance_id = "exposer";
+    let node_name = "brain";
+    let action_name = "move_arm";
+    let grace = Duration::from_millis(200);
+
+    let server_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("server handle");
+    let client_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("client handle");
+
+    let mut action = ConcurrentAction::expose(
+        &server_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        false,
+    )
+    .await
+    .expect("expose should succeed")
+    .with_result_retention_grace(grace);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The server accepts each goal, completes it immediately, and drops the
+    // context (end of the loop body) without waiting for the client to fetch.
+    let server = tokio::spawn(async move {
+        while let Ok(Some(pending)) = action.recv_next_goal().await {
+            let request = pending.request_bytes().to_vec();
+            let Ok(ctx) = pending.accept(Payload::from_static(b"accepted")).await else {
+                continue;
+            };
+            let mut result = b"result:".to_vec();
+            result.extend_from_slice(&request);
+            let _ = ctx.complete(Payload::from(result)).await;
+        }
+    });
+
+    let send = |payload: &'static [u8]| {
+        ActionMessenger::send_goal(
+            &client_handle,
+            core_node,
+            instance_id,
+            test_node_target(node_name),
+            action_name,
+            Some(core_node),
+            Some(instance_id),
+            Payload::from_static(payload),
+            QoSProfile::Reliable,
+            Duration::from_secs(2),
+        )
+    };
+
+    // Fetched within the grace: the result survives the context drop.
+    let goal_fast = send(b"A").await.expect("send goal A");
+    let res = ActionMessenger::request_result(&client_handle, &goal_fast, Duration::from_secs(2))
+        .await
+        .expect("result A within grace");
+    assert_eq!(res.payload().as_ref(), b"result:A");
+
+    // Never fetched in time: after well over the grace window the slot is
+    // evicted, so the result request gets a definitive error instead of the
+    // slot leaking forever.
+    let goal_slow = send(b"B").await.expect("send goal B");
+    tokio::time::sleep(grace * 5).await;
+    let evicted =
+        ActionMessenger::request_result(&client_handle, &goal_slow, Duration::from_secs(2)).await;
+    assert!(
+        evicted.is_err(),
+        "an unfetched result must be evicted after the grace, got {evicted:?}",
+    );
+
+    server.abort();
+    drop(server_handle);
+}
+
 /// A single node exposes the *same* action name under two distinct iface
 /// scopes (native + a conformed interface). Their goal services must wire to
 /// distinct paths, so a `send_goal` targeting one scope must only ever hit
