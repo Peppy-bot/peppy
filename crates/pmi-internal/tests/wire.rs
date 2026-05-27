@@ -3,10 +3,12 @@
 //! the wire protocol actually exchanges messages over the bus.
 //!
 //! Gated on `build_zenoh` because each test spawns a zenohd process. Serialized
-//! via the same `ZENOH_SERIAL` mutex pattern as `tests/zenoh.rs` to avoid
-//! parallel-startup handshake flakiness.
+//! via [`common::ZENOH_SERIAL`] to avoid parallel-startup handshake flakiness.
 
 #![cfg(feature = "build_zenoh")]
+
+mod common;
+use common::{RECV_TIMEOUT, ZENOH_SERIAL, test_node_target, wait_for_subscriber_discovery};
 
 use bytes::Bytes;
 use pmi::{
@@ -15,20 +17,6 @@ use pmi::{
     ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription, TopicMessage,
     TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
-use std::time::Duration;
-use tokio::sync::Mutex;
-
-static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
-
-fn test_node_target(name: &str) -> SenderTarget {
-    SenderTarget::node(name, "v1").expect("test node target")
-}
-
-const RECV_TIMEOUT: Duration = Duration::from_secs(5);
-
-async fn wait_for_subscriber_discovery() {
-    tokio::time::sleep(Duration::from_millis(500)).await;
-}
 
 /// Awaits the next message on `sub` or fails the test after `RECV_TIMEOUT`. The
 /// `label` is included in the panic message so reviewers can identify which

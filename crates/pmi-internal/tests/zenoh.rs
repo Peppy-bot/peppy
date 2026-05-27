@@ -1,28 +1,16 @@
-#[cfg(feature = "build_zenoh")]
+#![cfg(feature = "build_zenoh")]
+
+mod common;
+
 mod zenoh_tests {
+    use crate::common::{
+        RECV_TIMEOUT, ZENOH_SERIAL, test_node_target, wait_for_subscriber_discovery,
+    };
     use bytes::Bytes;
     use pmi::{
-        MessengerBackend, Payload, PublisherQoS, SenderTarget, SubscriberQoS, TopicWireReceiver,
-        TopicWireSender, ZenohAdapter,
+        MessengerBackend, Payload, PublisherQoS, SubscriberQoS, TopicWireReceiver, TopicWireSender,
+        ZenohAdapter,
     };
-    use std::time::Duration;
-    use tokio::sync::Mutex;
-
-    /// Each test spawns a zenohd process. Parallel startup overloads the
-    /// transient handshake; serializing with a mutex eliminates the flakiness
-    /// without adding time-based probes.
-    static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
-
-    fn test_node_target(name: &str) -> SenderTarget {
-        SenderTarget::node(name, "v1").expect("test node target")
-    }
-
-    const RECV_TIMEOUT: Duration = Duration::from_secs(5);
-
-    /// Small delay to allow Zenoh's subscriber discovery to propagate.
-    async fn wait_for_subscriber_discovery() {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
 
     /// Awaits a single message on `rx` or fails the test on timeout. The
     /// `label` is included in both timeout and channel-closed panics so test

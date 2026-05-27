@@ -1,3 +1,28 @@
+//! Zenoh-backed implementation of [`crate::MessengerBackend`].
+//!
+//! ## Why callback handlers, not FIFO
+//!
+//! Every receive-side zenoh API call in this module (`declare_subscriber`,
+//! `declare_queryable`, `session.get`) uses `.callback(...)` rather than the
+//! default FIFO reception handler. Zenoh's FIFO handler holds an internal
+//! `flume::bounded` channel and logs
+//! `zenoh::api::handlers::fifo: error=sending on a closed channel` at ERROR
+//! whenever zenoh tries to deliver a sample/query/reply after the
+//! receiver-side has been dropped — a routine event in this codebase (e.g. a
+//! `QueryTarget::All` `call_service` keeps the query open until its
+//! `NO_TIMEOUT_SENTINEL`, and sibling producers' late replies hit a
+//! `ReplyStream` the consumer dropped after the first valid response).
+//!
+//! Callback handlers have no intermediate channel: each callback invocation
+//! either forwards into our own `flume::bounded` channel (subscriber /
+//! queryable, where blocking `send` preserves backpressure) or our own tokio
+//! mpsc (`call_service`, where `try_send` silently drops on a closed/full
+//! receiver because the caller only needs the first valid reply).
+//!
+//! The `tests/fifo_noise.rs` integration test pins this invariant: it
+//! asserts zero `zenoh::api::handlers::fifo` ERROR events during a wildcard
+//! service call with a late-replying sibling producer.
+
 use crate::error::{Error, Result};
 use crate::types::{
     IncomingRequest, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
@@ -398,12 +423,6 @@ impl MessengerBackend for ZenohAdapter {
         // `process_inbound_query` does the dispatch by parsing the selector.
         // Two queryables for one process would let a `from_any` consumer's
         // `*` selector double-deliver via `QueryTarget::All`.
-        //
-        // Use a callback handler rather than the default FIFO so dropping the
-        // returned `ServiceQueryable` undeclares the queryable inline — no
-        // task to abort, no race window where in-flight inbound queries can
-        // land on a closed FIFO and trigger
-        // `zenoh::api::handlers::fifo: error=sending on a closed channel`.
         let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
         let recv_clone = recv.clone();
         let queryable = session
@@ -442,17 +461,20 @@ impl MessengerBackend for ZenohAdapter {
         let (tx, rx) =
             tokio::sync::mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
 
-        // Use a callback handler rather than the default FIFO handler. The
-        // FIFO handler's internal flume sender logs
-        // `zenoh::api::handlers::fifo: error=sending on a closed channel` at
-        // ERROR level whenever zenoh tries to deliver a reply after its
-        // receiver was dropped. With `QueryTarget::All` plus the long
-        // `NO_TIMEOUT_SENTINEL`, sibling producers routinely reply after
-        // peppylib's `poll_service` has already taken the winning response
-        // and dropped this `ReplyStream`; every late reply produced one
-        // ERROR line. A callback handler has no intermediate channel — if
-        // our tokio mpsc receiver is gone, `try_send` errors are discarded
-        // silently here.
+        // `try_send` (not `send`) because the callback runs synchronously on
+        // a zenoh worker thread that we must not block. Two drop conditions
+        // are tolerated here:
+        //   1. receiver dropped — caller has the first valid reply and has
+        //      released the `ReplyStream`; sibling producers' late replies
+        //      go nowhere, which is intentional;
+        //   2. channel full (capacity = `SubscriberQoS::Standard.channel_size`)
+        //      — would only happen if the consumer's `poll_service` loop
+        //      stalls for thousands of replies; in practice the consumer
+        //      drains the channel as fast as zenoh fills it, so this branch
+        //      is effectively unreachable. If it ever fires, the lost reply
+        //      is acceptable: `QueryTarget::All` is best-effort fan-in, not
+        //      a guaranteed-delivery API.
+        // See the module-level "Why callback handlers, not FIFO" doc.
         session
             .get(&selector)
             .payload(payload.into_zbytes())
@@ -629,17 +651,12 @@ impl ZenohAdapter {
             .as_ref()
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
 
-        // Callback handler rather than the default FIFO so dropping the
-        // returned `Subscription` undeclares the subscriber inline — no
-        // forwarder task to abort, no race window where in-flight samples
-        // can land on a closed FIFO and trigger
-        // `zenoh::api::handlers::fifo: error=sending on a closed channel`.
-        //
-        // `flume::Sender::send` is sync-blocking when the buffer is full so
-        // Reliable QoS topics get end-to-end backpressure all the way down
-        // to zenoh's reception thread (matching the original behaviour of
-        // zenoh's internal FIFO handler). `Err` here means the receiver was
-        // dropped — silently discard, the subscription is going away.
+        // Blocking `flume::Sender::send` (not `try_send`) so Reliable QoS
+        // topics get end-to-end backpressure: if the consumer's buffer is
+        // full, zenoh's reception thread blocks here, propagating the stall
+        // back to the publisher. `Err` only fires once the receiver is
+        // dropped — silently discard, the subscription is going away. See
+        // the module-level "Why callback handlers, not FIFO" doc.
         let subscriber = session
             .declare_subscriber(&keyexpr)
             .callback(move |sample| {

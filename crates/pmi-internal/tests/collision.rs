@@ -8,9 +8,13 @@
 //! Mirrors the unit-level checks in `wire/zenoh_format/tests.rs` but exercises
 //! the full transport stack (zenohd routing + adapter) instead of just the
 //! keyexpr string. Gated on `build_zenoh` because each test spawns a zenohd
-//! process; serialized via `COLLISION_SERIAL` to avoid handshake flakiness.
+//! process; serialized via [`common::ZENOH_SERIAL`] to avoid handshake
+//! flakiness.
 
 #![cfg(feature = "build_zenoh")]
+
+mod common;
+use common::{RECV_TIMEOUT, ZENOH_SERIAL, test_node_target, wait_for_subscriber_discovery};
 
 use bytes::Bytes;
 use pmi::{
@@ -19,20 +23,8 @@ use pmi::{
     TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
 use std::time::Duration;
-use tokio::sync::Mutex;
 
-static COLLISION_SERIAL: Mutex<()> = Mutex::const_new(());
-
-fn test_node_target(name: &str) -> SenderTarget {
-    SenderTarget::node(name, "v1").expect("test node target")
-}
-
-const RECV_TIMEOUT: Duration = Duration::from_secs(5);
 const NO_MESSAGE_TIMEOUT: Duration = Duration::from_millis(500);
-
-async fn wait_for_subscriber_discovery() {
-    tokio::time::sleep(Duration::from_millis(500)).await;
-}
 
 /// Asserts the subscriber receives a payload exactly equal to `expected`.
 async fn expect_payload(sub: &mut Subscription, expected: &Bytes, label: &str) {
@@ -70,7 +62,7 @@ async fn expect_no_payload(sub: &mut Subscription, label: &str) {
 /// receive ONLY its matching publisher's payload.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn topic_node_vs_interface_no_collision() {
-    let _lock = COLLISION_SERIAL.lock().await;
+    let _lock = ZENOH_SERIAL.lock().await;
     let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("Failed to start zenohd");
@@ -168,7 +160,7 @@ async fn topic_node_vs_interface_no_collision() {
 /// the wildcard semantic for the discriminator segment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
-    let _lock = COLLISION_SERIAL.lock().await;
+    let _lock = ZENOH_SERIAL.lock().await;
     let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("Failed to start zenohd");
@@ -257,7 +249,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
 /// caller targeting Interface must reach only the interface server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_node_vs_interface_no_collision() {
-    let _lock = COLLISION_SERIAL.lock().await;
+    let _lock = ZENOH_SERIAL.lock().await;
     let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("Failed to start zenohd");

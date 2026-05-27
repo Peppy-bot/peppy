@@ -95,13 +95,6 @@ impl From<QoSProfile> for SubscriberQoS {
 /// — once the consumer receives `Ack`, the zenoh query must stay open long
 /// enough for the producer's `Response` reply. Shortening this would
 /// silently cap how long a service handler may run.
-///
-/// During this window zenoh holds per-query state and keeps invoking the
-/// reply callback installed by `call_service`. The callback `try_send`s
-/// into a tokio mpsc; once the consumer has dropped its `ReplyStream` the
-/// sends silently fail. This is benign with the callback-based handler
-/// (the FIFO handler used to log every such send at ERROR level — see the
-/// comment in [`crate::adapters::zenoh::ZenohAdapter::call_service`]).
 pub(crate) const NO_TIMEOUT_SENTINEL: std::time::Duration = std::time::Duration::from_secs(86_400);
 
 /// Defines the messaging interface.

@@ -13,20 +13,20 @@
 
 #![cfg(feature = "build_zenoh")]
 
+mod common;
+use common::{ZENOH_SERIAL, test_node_target};
+
 use bytes::Bytes;
 use pmi::{
-    MessengerBackend, Payload, SenderTarget, ServiceKind, ServiceQueryKind, ServiceWireReceiver,
+    MessengerBackend, Payload, ServiceKind, ServiceQueryKind, ServiceWireReceiver,
     ServiceWireSender, ZenohAdapter,
 };
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::registry::Registry;
-
-static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
 
 /// Process-wide counter of `zenoh::api::handlers::fifo` ERROR events. The
 /// global subscriber installed by [`install_subscriber_once`] increments this
@@ -60,10 +60,6 @@ fn install_subscriber_once() {
         tracing::subscriber::set_global_default(subscriber)
             .expect("no other tracing subscriber should be installed in this test binary");
     });
-}
-
-fn test_node_target(name: &str) -> SenderTarget {
-    SenderTarget::node(name, "v1").expect("test node target")
 }
 
 fn service_receiver(bound_core_node: &str, as_instance_id: &str) -> ServiceWireReceiver {
