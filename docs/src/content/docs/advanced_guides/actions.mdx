@@ -480,7 +480,7 @@ while True:
   </TabItem>
 </Tabs>
 
-Each goal has its own feedback stream, addressed by `goal_id`, so feedback for one goal never reaches another handle, even when several goals run concurrently on the same server. The server closes a goal's stream when its worker completes the goal (`complete` or `complete_cancelled`); the in-flight `on_next_feedback_message` then resolves with the closed-channel error, so the loop-until-error pattern drains feedback cleanly before you request the result.
+Each goal has its own feedback stream, addressed by `goal_id`, so feedback for one goal never reaches another handle, even when several goals run concurrently on the same server. The server closes a goal's stream when its worker completes the goal (`complete` or `complete_cancelled`); the in-flight `on_next_feedback_message` then resolves with the closed-channel error, so the loop-until-error pattern drains feedback cleanly before you request the result. The stream also closes if the worker abandons the goal without completing it (an early return or a panic), so a client draining feedback always terminates rather than hanging.
 
 ### Getting the result
 
@@ -511,6 +511,8 @@ print(
 ```
   </TabItem>
 </Tabs>
+
+`get_result` is deliver-once: the first successful call consumes the goal's buffered result, and the result is retained only for a short grace period after the worker finishes, so call it promptly (the drain-feedback-until-closed loop shown above does this for you). If the worker abandons the goal without ever completing it (an early return or a panic), the framework closes the feedback stream and `get_result` returns an error instead of blocking forever.
 
 ### Cancelling a goal
 

@@ -16,7 +16,7 @@ use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
 use peppylib::messaging::{MessengerHandle, SenderTarget, TopicMessenger};
 use peppylib::runtime::{TaskHandle, spawn};
-use peppylib::{ActionMessenger, PeppyError, ServiceMessenger};
+use peppylib::{ActionMessenger, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -42,19 +42,6 @@ pub fn test_node_target(name: &str) -> SenderTarget {
 /// `CORE_NODE_TAG`, not the `v1` used for ordinary test nodes.
 pub fn core_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, names::CORE_NODE_TAG).expect("core node target")
-}
-
-/// Returns `Ok(())` if the payload is a "result pending" sentinel, or `Err` with a
-/// decode-failure message otherwise.
-fn check_pending_or_decode_error(
-    payload: &[u8],
-    err: impl std::fmt::Display,
-) -> Result<(), String> {
-    if peppylib::encoding::is_result_pending(payload) {
-        Ok(())
-    } else {
-        Err(format!("Failed to decode result: {}", err))
-    }
 }
 
 /// A wrapper around `TaskHandle` that aborts the task when dropped.
@@ -368,32 +355,9 @@ async fn send_node_run_and_wait_internal(
     let mut last_activity = tokio::time::Instant::now();
     let feedback_tx = feedback_tx.as_ref();
 
+    // Drain feedback until the server closes the stream on completion, honoring
+    // the idle / max-timeout budgets, then fetch the buffered result once.
     loop {
-        // Drain feedback so the publisher doesn't block on a full channel.
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
-                return Err("Timeout waiting for node_run result".to_string());
-            }
-            if now.duration_since(last_activity) >= timeouts.result {
-                return Err("Timeout waiting for node_run result (idle)".to_string());
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    let payload = msg.payload();
-                    if let Ok(feedback) = NodeRunFeedback::decode(payload.as_ref())
-                        && let Some(tx) = feedback_tx
-                    {
-                        let _ = tx.send(feedback);
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
             return Err("Timeout waiting for node_run result".to_string());
@@ -401,41 +365,35 @@ async fn send_node_run_and_wait_internal(
         if now.duration_since(last_activity) >= timeouts.result {
             return Err("Timeout waiting for node_run result (idle)".to_string());
         }
-        let poll_timeout = Duration::from_millis(200);
-
-        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
-            Ok(msg) => {
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
-                match NodeRunResult::decode(&payload) {
-                    Ok(result) => {
-                        // Drain any remaining feedback that may have arrived while polling for the
-                        // result so callers can reliably assert on stdout/stderr markers.
-                        loop {
-                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
-                                break;
-                            };
-                            let payload = msg.payload();
-                            if let Ok(feedback) = NodeRunFeedback::decode(payload.as_ref())
-                                && let Some(tx) = feedback_tx
-                            {
-                                let _ = tx.send(feedback);
-                            }
-                        }
-                        return Ok(NodeRunTestResponse {
-                            goal_response,
-                            result,
-                        });
-                    }
-                    Err(err) => {
-                        check_pending_or_decode_error(payload.as_ref(), err)?;
-                    }
+                if let Ok(feedback) = NodeRunFeedback::decode(payload.as_ref())
+                    && let Some(tx) = feedback_tx
+                {
+                    let _ = tx.send(feedback);
                 }
             }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => return Err(format!("Failed to get result: {}", err)),
+            Ok(Err(_)) => break,
+            Err(_) => {}
         }
+    }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let fetch_timeout = absolute_deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .max(Duration::from_secs(1));
+    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
+        Ok(msg) => {
+            let result = NodeRunResult::decode(&msg.payload())
+                .map_err(|err| format!("Failed to decode result: {}", err))?;
+            Ok(NodeRunTestResponse {
+                goal_response,
+                result,
+            })
+        }
+        Err(err) => Err(format!("Failed to get result: {}", err)),
     }
 }
 
@@ -543,32 +501,9 @@ async fn send_node_add_and_wait_internal<'a>(
     let mut last_activity = tokio::time::Instant::now();
     let feedback_tx = feedback_tx.as_ref();
 
+    // Drain feedback until the server closes the stream on completion, then
+    // fetch the buffered result once.
     loop {
-        // Drain feedback so the publisher doesn't block on a full channel.
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
-                return Err("Timeout waiting for node_add result".to_string());
-            }
-            if now.duration_since(last_activity) >= result_timeout {
-                return Err("Timeout waiting for node_add result (idle)".to_string());
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    let payload = msg.payload();
-                    if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref())
-                        && let Some(tx) = feedback_tx
-                    {
-                        let _ = tx.send(feedback);
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
             return Err("Timeout waiting for node_add result".to_string());
@@ -576,38 +511,29 @@ async fn send_node_add_and_wait_internal<'a>(
         if now.duration_since(last_activity) >= result_timeout {
             return Err("Timeout waiting for node_add result (idle)".to_string());
         }
-        let poll_timeout = Duration::from_millis(200);
-
-        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
-            Ok(msg) => {
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
-                match NodeAddResult::decode(&payload) {
-                    Ok(result) => {
-                        // Drain any remaining feedback that may have arrived while polling for the
-                        // result so callers can reliably assert on stdout/stderr markers.
-                        loop {
-                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
-                                break;
-                            };
-                            let payload = msg.payload();
-                            if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref())
-                                && let Some(tx) = feedback_tx
-                            {
-                                let _ = tx.send(feedback);
-                            }
-                        }
-                        return Ok(result);
-                    }
-                    Err(err) => {
-                        check_pending_or_decode_error(payload.as_ref(), err)?;
-                    }
+                if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref())
+                    && let Some(tx) = feedback_tx
+                {
+                    let _ = tx.send(feedback);
                 }
             }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => return Err(format!("Failed to get result: {}", err)),
+            Ok(Err(_)) => break,
+            Err(_) => {}
         }
+    }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let fetch_timeout = absolute_deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .max(Duration::from_secs(1));
+    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
+        Ok(msg) => NodeAddResult::decode(&msg.payload())
+            .map_err(|err| format!("Failed to decode result: {}", err)),
+        Err(err) => Err(format!("Failed to get result: {}", err)),
     }
 }
 
@@ -661,30 +587,9 @@ pub async fn send_node_build_and_wait(
     let absolute_deadline = tokio::time::Instant::now() + result_timeout;
     let mut last_activity = tokio::time::Instant::now();
 
+    // Drain feedback until the server closes the stream on completion, then
+    // fetch the buffered result once.
     loop {
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
-                return Err("Timeout waiting for node_build result".to_string());
-            }
-            if now.duration_since(last_activity) >= result_timeout {
-                return Err("Timeout waiting for node_build result (idle)".to_string());
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    if let Some(tx) = feedback_tx
-                        && let Ok(feedback) = NodeBuildFeedback::decode(msg.payload().as_ref())
-                    {
-                        let _ = tx.send(feedback);
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
             return Err("Timeout waiting for node_build result".to_string());
@@ -692,38 +597,28 @@ pub async fn send_node_build_and_wait(
         if now.duration_since(last_activity) >= result_timeout {
             return Err("Timeout waiting for node_build result (idle)".to_string());
         }
-        let poll_timeout = Duration::from_millis(200);
-
-        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
-            Ok(msg) => {
-                let payload = msg.payload();
-                match NodeBuildResult::decode(&payload) {
-                    Ok(result) => {
-                        // Drain any remaining feedback that may have arrived while polling for the
-                        // result so callers can reliably assert on stdout/stderr markers.
-                        loop {
-                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
-                                break;
-                            };
-                            let payload = msg.payload();
-                            if let Ok(feedback) = NodeBuildFeedback::decode(payload.as_ref())
-                                && let Some(tx) = feedback_tx
-                            {
-                                let _ = tx.send(feedback);
-                            }
-                        }
-                        return Ok(result);
-                    }
-                    Err(err) => {
-                        check_pending_or_decode_error(payload.as_ref(), err)?;
-                    }
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
+                if let Some(tx) = feedback_tx
+                    && let Ok(feedback) = NodeBuildFeedback::decode(msg.payload().as_ref())
+                {
+                    let _ = tx.send(feedback);
                 }
             }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => return Err(format!("Failed to get build result: {}", err)),
+            Ok(Err(_)) => break,
+            Err(_) => {}
         }
+    }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let fetch_timeout = absolute_deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .max(Duration::from_secs(1));
+    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
+        Ok(msg) => NodeBuildResult::decode(&msg.payload())
+            .map_err(|err| format!("Failed to decode build result: {}", err)),
+        Err(err) => Err(format!("Failed to get build result: {}", err)),
     }
 }
 

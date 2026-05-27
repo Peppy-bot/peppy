@@ -986,6 +986,14 @@ impl GoalContext {
         self.request_bytes.as_ref()
     }
 
+    /// A clone of this goal's feedback publisher, for handing to a feedback
+    /// forwarder sub-task that runs alongside the worker. `None` when the action
+    /// declares no feedback topic. The publisher is scoped to this goal, so
+    /// forwarded messages only reach this goal's stream.
+    pub fn feedback_publisher(&self) -> Option<ActionFeedbackPublisher> {
+        self.feedback.clone()
+    }
+
     /// Publish a feedback message on this goal's stream. Errors if the action
     /// has no feedback topic.
     pub async fn publish_feedback(&self, payload: NonEmptyPayload) -> Result<()> {

@@ -6,7 +6,7 @@ pub(crate) mod cache;
 mod common;
 mod env;
 mod feedback;
-mod gate;
+pub(crate) mod gate;
 mod git_utils;
 mod info;
 mod init;

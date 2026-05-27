@@ -1,7 +1,8 @@
 use crate::Result;
 use crate::names;
-use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
+use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::clone_with_progress;
+use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::repo::cache::{InterfaceCacheEntry, LauncherCacheEntry};
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::normalize_repo_entries;
@@ -16,16 +17,13 @@ use core_node_api::encoding::{
     RepoSource, RepoSourceKind,
 };
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
+use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
-use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult};
+use peppylib::{MessengerHandle, PeppyError, PeppyResult};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
@@ -47,17 +45,19 @@ pub async fn listen_for_repo_refresh(
     node_name: &str,
     peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ActionMessenger::expose(
+    let action = ConcurrentAction::expose(
         messenger,
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::REPO_REFRESH_ACTION,
+        true,
     )
     .await?;
 
     let handler = RepoRefreshGoalHandler {
         peppy_dirs: peppy_dirs.clone(),
+        gate: ConcurrencyGate::new(),
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -65,68 +65,60 @@ pub async fn listen_for_repo_refresh(
     Ok(handle)
 }
 
-impl ActionResult for RepoRefreshResult {
-    fn identifier() -> &'static str {
-        "repo_refresh_result"
-    }
-
-    fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode().map_err(Into::into)
-    }
-}
-
 #[derive(Clone)]
 struct RepoRefreshGoalHandler {
     peppy_dirs: PeppyDirs,
+    gate: ConcurrencyGate,
+}
+
+fn encode_refresh_accepted() -> PeppyResult<Payload> {
+    RepoRefreshGoalResponse::accepted()
+        .encode()
+        .map_err(|e| PeppyError::InvalidServiceRequest {
+            identifier: "repo_refresh".to_string(),
+            reason: e.to_string(),
+        })
+}
+
+fn encode_refresh_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
+    RepoRefreshGoalResponse::rejected(reason)
+        .encode()
+        .map_err(|e| PeppyError::InvalidServiceRequest {
+            identifier: "repo_refresh".to_string(),
+            reason: e.to_string(),
+        })
 }
 
 impl GoalHandler for RepoRefreshGoalHandler {
-    type Result = RepoRefreshResult;
-
-    async fn handle_goal(
-        &self,
-        _context: ServiceRequestContext,
-        user_payload: bytes::Bytes,
-        feedback_publisher: ActionFeedbackPublisher,
-        state: Arc<Mutex<ActionState<RepoRefreshResult>>>,
-    ) -> PeppyResult<Payload> {
-        {
-            let current = state.lock().await;
-            if matches!(*current, ActionState::Running { .. }) {
-                let response = RepoRefreshGoalResponse::rejected(
-                    "a repo refresh operation is already in progress",
-                );
-                return response
-                    .encode()
-                    .map_err(|e| PeppyError::InvalidServiceRequest {
-                        identifier: "repo_refresh".to_string(),
-                        reason: e.to_string(),
-                    });
-            }
+    async fn handle_goal(&self, pending: PendingGoal) {
+        if let Err(e) = RepoRefreshGoal::decode(pending.request_bytes()) {
+            reject_goal(
+                pending,
+                encode_refresh_rejected(format!("invalid goal payload: {e}")),
+            )
+            .await;
+            return;
         }
 
-        if let Err(e) = RepoRefreshGoal::decode(&user_payload) {
-            let response =
-                RepoRefreshGoalResponse::rejected(format!("invalid goal payload: {}", e));
-            *state.lock().await = ActionState::Rejected;
-            return response
-                .encode()
-                .map_err(|e| PeppyError::InvalidServiceRequest {
-                    identifier: "repo_refresh".to_string(),
-                    reason: e.to_string(),
-                });
+        if let Admission::AlreadyRunning { .. } = self.gate.try_admit(300, false) {
+            reject_goal(
+                pending,
+                encode_refresh_rejected("a repo refresh operation is already in progress"),
+            )
+            .await;
+            return;
         }
 
-        {
-            let mut s = state.lock().await;
-            *s = ActionState::Running {
-                started_at: Instant::now(),
-                timeout_secs: 300,
-            };
-        }
+        let Some(goal_ctx) = accept_goal(pending, encode_refresh_accepted()).await else {
+            self.gate.clear_running();
+            return;
+        };
 
         let peppy_dirs = self.peppy_dirs.clone();
-        let state_clone = Arc::clone(&state);
+        let feedback_publisher = goal_ctx
+            .feedback_publisher()
+            .expect("repo_refresh declares a feedback topic");
+        let gate_for_task = self.gate.clone();
 
         tokio::spawn(async move {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RepoRefreshFeedback>();
@@ -191,21 +183,16 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 Err(e) => RepoRefreshResult::failure(format!("task panicked: {}", e)),
             };
 
-            // Flush all pending feedbacks before marking the result ready —
-            // the CLI stops draining feedback once it sees a concrete result.
+            // Flush all pending feedbacks before completing — the end-of-stream
+            // sentinel that `complete` emits must not race ahead of the final
+            // feedback lines.
             let _ = drain.await;
 
-            let mut s = state_clone.lock().await;
-            *s = ActionState::Completed { result };
+            if let Ok(payload) = result.encode() {
+                let _ = goal_ctx.complete(payload).await;
+            }
+            gate_for_task.finish();
         });
-
-        let response = RepoRefreshGoalResponse::accepted();
-        response
-            .encode()
-            .map_err(|e| PeppyError::InvalidServiceRequest {
-                identifier: "repo_refresh".to_string(),
-                reason: e.to_string(),
-            })
     }
 }
 

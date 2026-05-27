@@ -1,44 +1,50 @@
-//! Goal-admission concurrency gate shared by `node_add`, `node_build`, and
-//! `node_run`.
+//! Goal-admission concurrency gate shared by the built-in single-goal actions
+//! (`node_add`, `node_build`, `node_run`, `stack_launch`, `repo_refresh`).
 //!
 //! Each of those actions allows only one in-flight task at a time and rejects
 //! concurrent goals with `"action already in progress (times out in Xs)"`.
 //! `node_add` and `node_build` additionally support `--force`, which aborts
-//! the in-flight task before admitting the new one. `node_run` does not
-//! support force, so its handler simply never calls [`ConcurrencyGate::force_abort`].
+//! the in-flight task before admitting the new one. Actions without force
+//! simply never pass `force = true` to [`ConcurrencyGate::try_admit`].
 //!
 //! All gate state lives behind a single `parking_lot::Mutex`, so admission
-//! decisions never await.
+//! decisions never await. Unlike a poll-based design, the gate does not retain
+//! the completed goal's context: the work task calls
+//! [`peppylib::messaging::GoalContext::complete`] and drops the context, and the
+//! SDK keeps the result fetchable for its retention grace, which comfortably
+//! covers the client's immediate single fetch.
 
-use super::super::action_loop::{ActionResult, ActionState};
 use parking_lot::Mutex;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 /// Outcome of [`ConcurrencyGate::try_admit`].
 pub(crate) enum Admission {
-    /// The new goal was admitted. State has been transitioned to `Running` and
-    /// the gate clock started.
+    /// The new goal was admitted; the gate clock has been started.
     Admitted,
-    /// A goal is already in flight and force was not requested. State is
-    /// left unchanged.
+    /// A goal is already in flight and force was not requested.
     AlreadyRunning { remaining_secs: u64 },
 }
 
-/// Handle to the in-flight task and its cancellation token. Only populated by
-/// handlers that support `--force` (add, build); `node_run` leaves it `None`.
+/// Timing for the in-flight goal, used to report `remaining_secs` on rejection.
+struct RunningInfo {
+    started_at: Instant,
+    timeout_secs: u64,
+}
+
 #[derive(Default)]
 struct GateState {
+    /// `Some` while a goal is in flight (drives admission decisions).
+    running: Option<RunningInfo>,
+    /// Handle to the in-flight task and its cancellation token. Only populated
+    /// by handlers that support `--force`; others leave them `None`.
     running_task: Option<JoinHandle<()>>,
     cancel_token: Option<CancellationToken>,
 }
 
 /// Single-task admission gate. Cheap to clone (`Arc` inside).
-///
-/// Timing data (started_at, timeout_secs) lives on [`ActionState::Running`]
-/// so the gate itself only manages the abort-task handle.
 #[derive(Clone, Default)]
 pub(crate) struct ConcurrencyGate {
     state: Arc<Mutex<GateState>>,
@@ -49,20 +55,49 @@ impl ConcurrencyGate {
         Self::default()
     }
 
-    /// Cancels and aborts the in-flight task if one is recorded. Called by
-    /// add/build's `--force` path before admitting a replacement goal.
-    ///
-    /// The cancellation token is signalled first so that `tokio::select!`
-    /// branches in the spawned task can run cleanup (e.g. rolling back an
-    /// entity stuck in `Building` state) before the hard abort fires.
-    fn force_abort(&self) {
+    /// Admits a new goal, starting the gate clock. When a goal is already in
+    /// flight and `force` is true, the previous task is cancelled and aborted
+    /// before admission proceeds (aborting drops its `GoalContext`, which closes
+    /// the old goal's feedback stream and evicts its registry slot). Otherwise
+    /// the in-flight goal's `remaining_secs` is returned and the gate is left
+    /// unchanged so the caller can encode a rejection.
+    pub(crate) fn try_admit(&self, timeout_secs: u64, force: bool) -> Admission {
         let mut state = self.state.lock();
-        if let Some(token) = state.cancel_token.take() {
-            token.cancel();
+        if let Some(running) = &state.running {
+            if !force {
+                let remaining = Duration::from_secs(running.timeout_secs)
+                    .saturating_sub(running.started_at.elapsed())
+                    .as_secs();
+                return Admission::AlreadyRunning {
+                    remaining_secs: remaining,
+                };
+            }
+            // Force: signal cancellation so the spawned task can run cleanup,
+            // then hard-abort it.
+            if let Some(token) = state.cancel_token.take() {
+                token.cancel();
+            }
+            if let Some(handle) = state.running_task.take() {
+                handle.abort();
+            }
         }
-        if let Some(handle) = state.running_task.take() {
-            handle.abort();
-        }
+        state.running = Some(RunningInfo {
+            started_at: Instant::now(),
+            timeout_secs,
+        });
+        state.running_task = None;
+        state.cancel_token = None;
+        Admission::Admitted
+    }
+
+    /// Clears the running slot. Used on the rare failure path where a goal was
+    /// admitted but couldn't be started (e.g. log-file creation failed), so a
+    /// retry isn't wrongly rejected.
+    pub(crate) fn clear_running(&self) {
+        let mut state = self.state.lock();
+        state.running = None;
+        state.running_task = None;
+        state.cancel_token = None;
     }
 
     /// Stores the spawned task handle and its cancellation token so a future
@@ -73,31 +108,14 @@ impl ConcurrencyGate {
         state.cancel_token = Some(cancel_token);
     }
 
-    /// Admits a new goal by transitioning the caller-held `ActionState` to
-    /// `Running` and recording the admission clock. When a goal is already in
-    /// flight and `force_abort_if_running` is true, the previous task is
-    /// aborted before admission proceeds. Otherwise the in-flight goal's
-    /// `remaining_secs` is returned and the state is left unchanged so the
-    /// caller can encode a rejection.
-    pub(crate) fn try_admit<R: ActionResult>(
-        &self,
-        state_guard: &mut ActionState<R>,
-        timeout_secs: u64,
-        force_abort_if_running: bool,
-    ) -> Admission {
-        if matches!(*state_guard, ActionState::Running { .. }) {
-            if !force_abort_if_running {
-                return Admission::AlreadyRunning {
-                    remaining_secs: state_guard.remaining_secs(),
-                };
-            }
-            self.force_abort();
-        }
-        *state_guard = ActionState::Running {
-            started_at: Instant::now(),
-            timeout_secs,
-        };
-        self.state.lock().running_task = None;
-        Admission::Admitted
+    /// Marks the in-flight goal finished: clears the running slot so the next
+    /// goal can be admitted. The work task completes and drops its
+    /// `GoalContext` separately; the SDK retains the result for its grace
+    /// window so the client's fetch still resolves.
+    pub(crate) fn finish(&self) {
+        let mut state = self.state.lock();
+        state.running = None;
+        state.running_task = None;
+        state.cancel_token = None;
     }
 }
