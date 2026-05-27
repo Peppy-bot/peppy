@@ -74,9 +74,11 @@ pub fn build_goal_decision_enum(has_response: bool) -> TokenStream {
     }
 }
 
-/// `handle_goal_next_request`: receive the next goal, decode it, run the user
-/// decider, then accept (returning a `GoalContext`) or reject. Returns
-/// `Ok(None)` when the goal was rejected or the goal stream closed.
+/// `handle_goal_next_request`: returns the next *accepted* goal as a
+/// `GoalContext`. The user decider runs on each incoming goal; rejected goals
+/// are answered and skipped transparently (the method keeps polling), so a
+/// returned `Ok(None)` means the goal stream has closed (the node is shutting
+/// down) and the caller should stop its accept loop. Errors propagate as `Err`.
 ///
 /// `response_serialization`, when present, serializes a local `response`
 /// (`GoalResponse`) into a `peppylib::Payload`.
@@ -110,14 +112,15 @@ pub fn build_handle_goal_next_request(
                     GoalDecision::Accept(response) => {
                         let response_payload = #serialize;
                         let inner = pending.accept(response_payload).await?;
-                        Ok(Some(GoalContext { inner, request }))
+                        return Ok(Some(GoalContext { inner, request }));
                     }
                 },
                 quote! {
+                    // Rejected: answer the client and keep polling for the
+                    // next goal. A reject never ends the accept loop.
                     GoalDecision::Reject(response) => {
                         let response_payload = #serialize_reject;
                         pending.reject(response_payload).await?;
-                        Ok(None)
                     }
                 },
             )
@@ -126,13 +129,14 @@ pub fn build_handle_goal_next_request(
             quote! {
                 GoalDecision::Accept => {
                     let inner = pending.accept(peppylib::Payload::new()).await?;
-                    Ok(Some(GoalContext { inner, request }))
+                    return Ok(Some(GoalContext { inner, request }));
                 }
             },
             quote! {
+                // Rejected: answer the client and keep polling for the next
+                // goal. A reject never ends the accept loop.
                 GoalDecision::Reject => {
                     pending.reject(peppylib::Payload::new()).await?;
-                    Ok(None)
                 }
             },
         ),
@@ -146,13 +150,16 @@ pub fn build_handle_goal_next_request(
         where
             F: Fn(&GoalRequest) -> crate::Result<GoalDecision>,
         {
-            let Some(pending) = self.inner.recv_next_goal().await? else {
-                return Ok(None);
-            };
-            #decode_and_build_request
-            match decider(&request)? {
-                #accept_arm
-                #reject_arm
+            loop {
+                let Some(pending) = self.inner.recv_next_goal().await? else {
+                    // The goal stream has closed (node shutting down).
+                    return Ok(None);
+                };
+                #decode_and_build_request
+                match decider(&request)? {
+                    #accept_arm
+                    #reject_arm
+                }
             }
         }
     }

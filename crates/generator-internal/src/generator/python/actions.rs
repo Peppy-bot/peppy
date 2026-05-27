@@ -217,10 +217,12 @@ pub fn build_exposed_action(
         "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> \"GoalContext | None\":",
     );
     builder.indent();
+    builder.line("while True:");
+    builder.indent();
     builder.line("pending = await self._inner.recv_next_goal()");
     builder.line("if pending is None:");
     builder.indent();
-    builder.line("return None");
+    builder.line("return None  # goal stream closed (node shutting down)");
     builder.dedent();
     if has_goal_request {
         builder.line("request_data = _deserialize_goal_request(pending.request_bytes)");
@@ -262,11 +264,10 @@ pub fn build_exposed_action(
     builder.line("ctx = await pending.accept(response_bytes)");
     builder.line("return GoalContext(ctx, request)");
     builder.dedent();
-    builder.line("else:");
-    builder.indent();
+    // Rejected: answer the client and keep polling for the next goal (the
+    // accept branch above returns, so this runs only when not accepted).
     builder.line("await pending.reject(response_bytes)");
-    builder.line("return None");
-    builder.dedent();
+    builder.dedent(); // end while loop
     builder.dedent(); // end handle_goal_next_request
 
     builder.dedent(); // end class ActionHandle

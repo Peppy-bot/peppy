@@ -580,6 +580,91 @@ async fn concurrent_action_cancel_targets_one_goal() {
     drop(server_handle);
 }
 
+/// A rejected goal is answered (the client still gets its goal response) without
+/// creating a `GoalContext`, and the server goes on to accept a later goal. This
+/// is the engine primitive the generated `handle_goal_next_request` relies on to
+/// skip rejections internally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_action_reject_then_accept() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let core_node = "test_core";
+    let instance_id = "exposer";
+    let node_name = "brain";
+    let action_name = "move_arm";
+
+    let server_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("server handle");
+    let client_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("client handle");
+
+    let mut action = ConcurrentAction::expose(
+        &server_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        true,
+    )
+    .await
+    .expect("expose should succeed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Reject goals whose payload is "reject"; accept the rest and echo the
+    // request into the result. The loop keeps serving after a rejection.
+    let server = tokio::spawn(async move {
+        while let Ok(Some(pending)) = action.recv_next_goal().await {
+            let request = pending.request_bytes().to_vec();
+            if request == b"reject" {
+                let _ = pending.reject(Payload::from_static(b"rejected")).await;
+                continue;
+            }
+            let Ok(ctx) = pending.accept(Payload::from_static(b"accepted")).await else {
+                continue;
+            };
+            let mut result = b"result:".to_vec();
+            result.extend_from_slice(&request);
+            let _ = ctx.complete(Payload::from(result)).await;
+        }
+    });
+
+    let send = |payload: &'static [u8]| {
+        ActionMessenger::send_goal(
+            &client_handle,
+            core_node,
+            instance_id,
+            test_node_target(node_name),
+            action_name,
+            Some(core_node),
+            Some(instance_id),
+            Payload::from_static(payload),
+            QoSProfile::Reliable,
+            Duration::from_secs(2),
+        )
+    };
+
+    // First goal is rejected: the client still gets the goal response.
+    let goal_a = send(b"reject").await.expect("send rejected goal");
+    assert_eq!(goal_a.goal_response().payload().as_ref(), b"rejected");
+
+    // After the rejection the server keeps serving, so the next goal is
+    // accepted and its result is routed back by goal_id.
+    let goal_b = send(b"B").await.expect("send accepted goal");
+    assert_eq!(goal_b.goal_response().payload().as_ref(), b"accepted");
+    let res_b = ActionMessenger::request_result(&client_handle, &goal_b, Duration::from_secs(2))
+        .await
+        .expect("result B");
+    assert_eq!(res_b.payload().as_ref(), b"result:B");
+
+    server.abort();
+    drop(server_handle);
+}
+
 /// A single node exposes the *same* action name under two distinct iface
 /// scopes (native + a conformed interface). Their goal services must wire to
 /// distinct paths, so a `send_goal` targeting one scope must only ever hit

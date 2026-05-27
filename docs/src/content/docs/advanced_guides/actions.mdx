@@ -110,7 +110,7 @@ The `feedback_topic` block is optional: actions that don't stream progress can o
 ### Handling goals
 
 After running `peppy node sync`, the code generator creates a module for each exposed action under `peppygen::exposed_actions`.
-Use `ActionHandle::expose` to set up the action, then loop accepting goals. `handle_goal_next_request` returns a per-goal `GoalContext` (or `None` when you reject the goal). Spawn a worker per context so goals run concurrently; each context owns that goal's feedback, cancel signal, and result, so nothing crosses between goals:
+Use `ActionHandle::expose` to set up the action, then loop accepting goals. `handle_goal_next_request` returns the next *accepted* goal as a `GoalContext`; rejected goals are answered and skipped for you, so the accept loop ends only when the goal stream closes (the node is shutting down). Spawn a worker per context so goals run concurrently; each context owns that goal's feedback, cancel signal, and result, so nothing crosses between goals:
 
 <Tabs>
   <TabItem label="Rust">
@@ -125,25 +125,21 @@ fn main() -> Result<()> {
         // Spawn the accept loop so this setup closure returns and the node
         // starts serving. The loop runs for the life of the node.
         tokio::spawn(async move {
-            loop {
-                // Accept or reject the next goal. The closure decides
-                // concurrency: e.g. reject a goal for a busy `arm_id`.
-                let maybe_ctx = action
-                    .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
-                        println!(
-                            "goal from {}: arm_id={} desired={:?}",
-                            request.instance_id, request.data.arm_id, request.data.desired_position
-                        );
-                        Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
-                    })
-                    .await;
-
-                let ctx = match maybe_ctx {
-                    Ok(Some(ctx)) => ctx,
-                    Ok(None) => continue,   // goal rejected; wait for the next one
-                    Err(_) => break,        // goal stream closed (shutting down)
-                };
-
+            // Each call returns the next accepted goal; rejected goals are
+            // answered and skipped, so the loop ends only when the stream
+            // closes (None) or errors.
+            while let Ok(Some(ctx)) = action
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
+                    println!(
+                        "goal from {}: arm_id={} desired={:?}",
+                        request.instance_id, request.data.arm_id, request.data.desired_position
+                    );
+                    // The decider sets the concurrency policy: e.g. reject a
+                    // goal for a busy `arm_id`.
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
+                })
+                .await
+            {
                 // Drive this goal concurrently with any others already running.
                 tokio::spawn(async move {
                     // Feedback goes through this goal's context, not a shared slot.
@@ -181,8 +177,8 @@ async def drive(ctx):
 async def run_action(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
-    # Accept or reject the next goal. The decider decides concurrency:
-    # e.g. reject a goal for a busy arm_id.
+    # The decider sets the concurrency policy: e.g. reject a goal for a busy
+    # arm_id. Rejected goals are answered and skipped internally.
     def decide(request):
         print(
             f"goal from {request.instance_id}: arm_id={request.data.arm_id} "
@@ -194,7 +190,7 @@ async def run_action(node_runner):
     while True:
         ctx = await action.handle_goal_next_request(decide)
         if ctx is None:
-            break  # goal rejected, or the goal stream closed (shutting down)
+            break  # goal stream closed (node shutting down)
         asyncio.create_task(drive(ctx))
 
 
@@ -215,7 +211,7 @@ if __name__ == "__main__":
 
 The decider returns a `GoalDecision`:
 - `GoalDecision::Accept(...)` (`GoalDecision.accept(...)` in Python) accepts the goal, replies to the client, and yields a `GoalContext`.
-- `GoalDecision::Reject(...)` (`GoalDecision.reject(...)` in Python) rejects it: the client still receives the `GoalResponse`, but no context is created. This is where you enforce per-resource concurrency limits.
+- `GoalDecision::Reject(...)` (`GoalDecision.reject(...)` in Python) rejects it: the client still receives the `GoalResponse`, but no context is created and the accept loop transparently moves on to the next goal. This is where you enforce per-resource concurrency limits.
 
 The `GoalRequest` passed to the decider contains:
 - `instance_id`: the client instance that sent the goal. The producer is binding-agnostic; it doesn't know which slot on the client this goal is heading to.
@@ -230,6 +226,73 @@ The `GoalContext` (`ctx`) is the only handle you need to drive the goal:
 - `ctx.complete(...)` / `ctx.complete_cancelled(...)`: deliver the final result.
 
 A producer exposes its action once and serves any client that fires a goal at it. Starting the producer before or after the client is equally valid.
+
+To enforce a concurrency limit (say, one in-flight goal per arm), reject a goal whose arm is already busy, and release the arm when the goal finishes. The decider and the per-goal workers share the busy set:
+
+<Tabs>
+  <TabItem label="Rust">
+```rust
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
+// Arms currently driving a goal. Shared by the decider and the workers.
+let busy: Arc<Mutex<HashSet<u16>>> = Arc::new(Mutex::new(HashSet::new()));
+
+while let Ok(Some(ctx)) = action
+    .handle_goal_next_request({
+        let busy = Arc::clone(&busy);
+        move |request| -> Result<move_arm::GoalDecision> {
+            // `HashSet::insert` returns false when the arm is already busy.
+            if busy.lock().unwrap().insert(request.data.arm_id) {
+                Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
+            } else {
+                Ok(move_arm::GoalDecision::Reject(move_arm::GoalResponse::new(false)))
+            }
+        }
+    })
+    .await
+{
+    let busy = Arc::clone(&busy);
+    tokio::spawn(async move {
+        let arm_id = ctx.request().data.arm_id;
+        ctx.complete(true, None, [98, 4, 26]).await.ok();
+        // Release the arm so future goals for it are accepted again.
+        busy.lock().unwrap().remove(&arm_id);
+    });
+}
+```
+  </TabItem>
+  <TabItem label="Python">
+```python
+# Arms currently driving a goal. Shared by the decider and the workers;
+# asyncio is single-threaded, so a plain set is safe here.
+busy: set[int] = set()
+
+
+async def drive(ctx):
+    arm_id = ctx.request().data.arm_id
+    await ctx.complete(True, None, [98, 4, 26])
+    # Release the arm so future goals for it are accepted again.
+    busy.discard(arm_id)
+
+
+def decide(request):
+    arm_id = request.data.arm_id
+    if arm_id in busy:
+        # This arm is already moving; reject so the caller can retry later.
+        return move_arm.GoalDecision.reject(move_arm.GoalResponse(accepted=False))
+    busy.add(arm_id)
+    return move_arm.GoalDecision.accept(move_arm.GoalResponse(accepted=True))
+
+
+while True:
+    ctx = await action.handle_goal_next_request(decide)
+    if ctx is None:
+        break
+    asyncio.create_task(drive(ctx))
+```
+  </TabItem>
+</Tabs>
 
 ### Handling cancellation
 
