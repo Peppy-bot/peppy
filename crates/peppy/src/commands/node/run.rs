@@ -50,6 +50,21 @@ enum BuildDecision {
     Wait,
 }
 
+/// Build a `DeploymentInstance` that carries only an `instance_id`.
+/// `arguments`, `env_vars`, `framework`, and `bindings` are all left at
+/// their default-empty values. Used by [`validate_binds_against_stack`]
+/// to feed running-stack instances into the launcher's binding validator
+/// without fabricating per-instance data the validator does not consult.
+fn empty_deployment_instance(instance_id: Name) -> DeploymentInstance {
+    DeploymentInstance {
+        instance_id,
+        arguments: BTreeMap::new(),
+        env_vars: BTreeMap::new(),
+        framework: config::launcher::FrameworkOverrides::default(),
+        bindings: BTreeMap::new(),
+    }
+}
+
 /// Pure helper: compute the remaining `max_secs` budget given how many
 /// seconds have already elapsed. Split out from `remaining_timeouts` so the
 /// budget-arithmetic + error path can be unit-tested without needing a
@@ -286,6 +301,21 @@ fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMa
 /// the resolved per-slot `SlotBinding` map for the consumer instance.
 /// Every rule violation is a hard error; there is no warning path.
 ///
+/// The snapshot is split into two flavors of [`BindingValidationItem`]:
+///
+/// - **Inert items** — one per already-running `(name, tag)` group. They
+///   carry real `instances` (so stack-wide `instance_id` uniqueness can
+///   fire) and real `conforms_to` (so the new instance can still match
+///   them as a producer / interface-conformant target), but their
+///   `depends_on` is `None`. Their declared slots were already validated
+///   when each instance was first spawned, so re-running per-instance
+///   rules against them — with the empty `bindings` we synthesize here
+///   — would emit spurious `BindingMissingForPinnedDep` errors for
+///   pins the running invocation actually satisfied.
+/// - **One live item** — for the synthesized new instance, carrying the
+///   target's real `depends_on` + `conforms_to`. This is the only item
+///   whose pinned slots are checked by Rule 1.
+///
 /// Returns `Ok(None)` on transient transport failures so the call site
 /// can swallow them and continue — an unreachable daemon should fail
 /// the actual `node_run` invocation, not the pre-flight.
@@ -311,17 +341,14 @@ async fn validate_binds_against_stack(
     let graph: SerializedNodeGraph = serde_json::from_str(&stack_response.graph_json)
         .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))?;
 
-    // Snapshot every running (name, tag) → its instances + each instance's
-    // bindings. Skip Root (the daemon's own internals).
+    /// Inert snapshot entry for an already-running `(name, tag)` group.
+    /// Note the missing `depends_on` field: by construction these items
+    /// are deliberately decoupled from per-instance binding rules — see
+    /// the function-level doc above.
     struct StackNode {
         name: String,
         tag: String,
         instances: Vec<DeploymentInstance>,
-        depends_on: Option<config::node::DependsOn>,
-        /// Producer-side `interfaces.conforms_to`. Empty when the node
-        /// declares no conformance. Threaded through into the binding
-        /// validator so interface-dep slots can check this node's
-        /// conformance claims.
         conforms_to: Vec<ConformsToItem>,
     }
 
@@ -351,21 +378,38 @@ async fn validate_binds_against_stack(
     });
     let infos = futures::future::try_join_all(info_futures).await?;
 
+    // `(depends_on, conforms_to)` for the target node, harvested from
+    // the snapshot if the target is already in the stack so we can
+    // avoid a second `node_info` round-trip. Falls back to `None` /
+    // empty when the target hasn't been added yet (also covers transient
+    // misses below).
+    let mut target_depends_on: Option<config::node::DependsOn> = None;
+    let mut target_conforms_to: Vec<ConformsToItem> = Vec::new();
+    let mut target_seen_in_stack = false;
+
     let mut snapshot: Vec<StackNode> = Vec::with_capacity(stack_nodes.len());
     for (node, info_response) in stack_nodes.iter().zip(infos) {
         let info = match info_response {
             NodeInfoResponse::Found(info) => info,
             NodeInfoResponse::NotInStack => continue,
         };
-        // Running instances of this node. Their raw bindings map is
-        // empty here because none of the validator rules in the
-        // binding-driven dispatch model consults running consumers'
-        // bindings — rule 7 (stack-wide instance_id uniqueness) only
-        // needs `instance_id`s, and rules 1–5 / 6 are about the
-        // new invocation's bindings. The resolved `slot_bindings` is
-        // still surfaced through `node_info` for diagnostics and
-        // future cross-CLI checks; the validator's
-        // `BindingValidationItem` shape doesn't carry them today.
+        // Harvest the target's manifest/interfaces from its snapshot
+        // entry so we don't need a second `node_info` call below.
+        if node.name == target_name && node.tag == target_tag {
+            target_depends_on = info.config.manifest.depends_on.clone();
+            target_conforms_to = info
+                .config
+                .interfaces
+                .conforms_to
+                .clone()
+                .unwrap_or_default();
+            target_seen_in_stack = true;
+        }
+        // The validator only reads `instance_id` and `bindings` for
+        // inert items (`bindings` is unused under `depends_on: None`,
+        // but kept empty to satisfy the type). `arguments`, `env_vars`,
+        // and `framework` are not consulted; default-initialize them
+        // rather than fabricating data the validator would ignore.
         let instances: Vec<DeploymentInstance> = node
             .instances
             .iter()
@@ -373,45 +417,22 @@ async fn validate_binds_against_stack(
             .filter_map(|inst| {
                 Name::new(inst.instance_id.clone())
                     .ok()
-                    .map(|id| DeploymentInstance {
-                        instance_id: id,
-                        bindings: BTreeMap::new(),
-                        arguments: BTreeMap::new(),
-                        env_vars: BTreeMap::new(),
-                        framework: config::launcher::FrameworkOverrides::default(),
-                    })
+                    .map(empty_deployment_instance)
             })
             .collect();
         snapshot.push(StackNode {
             name: node.name.clone(),
             tag: node.tag.clone(),
             instances,
-            depends_on: info.config.manifest.depends_on,
             conforms_to: info.config.interfaces.conforms_to.unwrap_or_default(),
         });
     }
 
-    // Synthesize a `DeploymentInstance` for the consumer we're about to
-    // launch and append it to its `(name, tag)` group (or create the
-    // group if the target node isn't in the stack yet, e.g. when the
-    // user is launching the only instance of a freshly-added node).
-    let synthetic_instance = DeploymentInstance {
-        instance_id: Name::new(target_instance_id.to_owned())
-            .map_err(|e| Error::PeppyConfig(e.into()))?,
-        bindings: binds.clone(),
-        arguments: BTreeMap::new(),
-        env_vars: BTreeMap::new(),
-        framework: config::launcher::FrameworkOverrides::default(),
-    };
-    if let Some(group) = snapshot
-        .iter_mut()
-        .find(|e| e.name == target_name && e.tag == target_tag)
-    {
-        group.instances.push(synthetic_instance);
-    } else {
-        // Fetch the target's depends_on so the validator can resolve
-        // dead-key / missing-binding rules even for nodes that have no
-        // running instance yet.
+    // Target wasn't in the stack snapshot (e.g., the user is launching
+    // the only instance of a freshly-added node). Fall back to a direct
+    // `node_info` lookup so the validator can still resolve dead-key /
+    // missing-binding rules against the target's declared manifest.
+    if !target_seen_in_stack {
         let info_response = poll_node_info(
             &NodeInfoRequest::new(target_name.to_owned(), target_tag.to_owned()),
             messenger,
@@ -426,32 +447,40 @@ async fn validate_binds_against_stack(
             NodeInfoResponse::Found(info) => Some(info),
             NodeInfoResponse::NotInStack => None,
         });
-        let (depends_on, conforms_to) = match info_response {
-            Some(info) => (
-                info.config.manifest.depends_on,
-                info.config.interfaces.conforms_to.unwrap_or_default(),
-            ),
-            None => (None, Vec::new()),
-        };
-        snapshot.push(StackNode {
-            name: target_name.to_owned(),
-            tag: target_tag.to_owned(),
-            instances: vec![synthetic_instance],
-            depends_on,
-            conforms_to,
-        });
+        if let Some(info) = info_response {
+            target_depends_on = info.config.manifest.depends_on;
+            target_conforms_to = info.config.interfaces.conforms_to.unwrap_or_default();
+        }
     }
 
-    let items: Vec<BindingValidationItem<'_>> = snapshot
+    // The one live item: the synthesized new instance with the target's
+    // real `depends_on` + `conforms_to`. Lives in its own group so it
+    // never inherits the inert `depends_on: None` of an existing target
+    // group.
+    let synthetic_instances = vec![DeploymentInstance {
+        bindings: binds.clone(),
+        ..empty_deployment_instance(
+            Name::new(target_instance_id.to_owned()).map_err(|e| Error::PeppyConfig(e.into()))?,
+        )
+    }];
+
+    let mut items: Vec<BindingValidationItem<'_>> = snapshot
         .iter()
         .map(|s| BindingValidationItem {
             node_name: &s.name,
             node_tag: &s.tag,
             instances: &s.instances,
-            depends_on: s.depends_on.as_ref(),
+            depends_on: None,
             conforms_to: &s.conforms_to,
         })
         .collect();
+    items.push(BindingValidationItem {
+        node_name: target_name,
+        node_tag: target_tag,
+        instances: &synthetic_instances,
+        depends_on: target_depends_on.as_ref(),
+        conforms_to: &target_conforms_to,
+    });
 
     let mut validated = validate_bindings(&items);
     if !validated.errors.is_empty() {

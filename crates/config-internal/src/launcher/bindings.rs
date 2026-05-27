@@ -867,6 +867,72 @@ mod tests {
         );
     }
 
+    /// An "inert" item (`depends_on: None`) must NOT trigger Rule 1
+    /// against the slots it would have declared if `depends_on` were
+    /// populated — it represents a node whose bindings were already
+    /// resolved at spawn time. At the same time, its instances and
+    /// `conforms_to` must still feed the producer-lookup index so a
+    /// live consumer in the same `validate_bindings` call can satisfy
+    /// pinned node / interface deps against them.
+    ///
+    /// This locks in the contract that
+    /// `peppy::commands::node::run::validate_binds_against_stack`
+    /// relies on when it folds already-running stack nodes into the
+    /// validator snapshot without re-checking their bindings.
+    #[test]
+    fn inert_item_with_no_depends_on_does_not_trigger_rule1_but_remains_a_producer() {
+        // Live consumer with a pinned node dep + a pinned interface dep.
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "cons1",
+                bindings: { cam: "node_prod_inst", depth: "iface_prod_inst" }
+            }]"#,
+        );
+        let cons_depends_on = parse_depends_on(
+            r#"{
+                nodes: [{ name: "camera", tag: "v1", link_id: "cam" }],
+                interfaces: [{ name: "depth_camera", tag: "v1", link_id: "depth" }]
+            }"#,
+        );
+
+        // Inert node producer: depends_on omitted entirely, even though
+        // it WOULD declare deps in real life. If Rule 1 fired against
+        // inert items, this is where the false positive would surface.
+        let node_prod_instances = parse_instances(r#"[{ instance_id: "node_prod_inst" }]"#);
+
+        // Inert interface producer: same shape, plus a `conforms_to`
+        // entry that should still match the consumer's interface dep.
+        let iface_prod_instances = parse_instances(r#"[{ instance_id: "iface_prod_inst" }]"#);
+        let iface_prod_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
+
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&cons_depends_on)),
+            // Inert items: depends_on intentionally `None`.
+            item("camera", "v1", &node_prod_instances, None),
+            item_with_conforms_to(
+                "webcam",
+                "v1",
+                &iface_prod_instances,
+                None,
+                &iface_prod_conforms,
+            ),
+        ];
+        let out = validate_bindings(&items);
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            slot_binding(&out, "cons1", "cam"),
+            Some(SlotBinding::Pinned {
+                producer_instance_id: "node_prod_inst".to_string()
+            })
+        );
+        assert_eq!(
+            slot_binding(&out, "cons1", "depth"),
+            Some(SlotBinding::Pinned {
+                producer_instance_id: "iface_prod_inst".to_string()
+            })
+        );
+    }
+
     /// Defensive: an instance lookup miss for a binding target.
     #[test]
     fn rejects_binding_whose_target_is_unknown_to_planner() {

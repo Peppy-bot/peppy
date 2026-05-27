@@ -1540,3 +1540,232 @@ fn node_add_with_run_rejects_dead_binding_key() {
         "consumer must NOT spawn when a dead binding key is supplied. Logs:\n{logs}"
     );
 }
+
+/// `peppy node add . -sbr --instance-id=<new> --bind <slot>@<id>` for
+/// a consumer whose pinned deps are satisfied must succeed even when
+/// ANOTHER consumer (with its own pinned deps satisfied) is already
+/// running in the stack. The chained-run pre-flight scopes binding
+/// validation to the new invocation only; bystander consumers' pins
+/// are not its concern.
+#[test]
+fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let producer_name = "test_add_r_noff_producer";
+    let bystander_name = "test_add_r_noff_bystander";
+    let new_consumer_name = "test_add_r_noff_new_consumer";
+    let producer_left_id = "cam_left";
+    let producer_right_id = "cam_right";
+    let bystander_instance_id = "bystander_inst";
+    let new_consumer_instance_id = "new_consumer_inst";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // Build the producer and two consumer-instance pre-reqs.
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(producer_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("producer node init should succeed");
+    let producer_path = work_dir.path().join(producer_name);
+    peppy::test_support::override_run_cmd(&producer_path.join("peppy.json5"));
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(producer_path.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            binds: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("producer node add should succeed");
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _producer_left_ready = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            producer_left_id,
+            test_node_target(producer_name),
+        ))
+        .expect("producer-left ready service should start");
+    let _producer_left_health = rt
+        .block_on(listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            producer_left_id,
+            test_node_target(producer_name),
+        ))
+        .expect("producer-left health service should start");
+    let _producer_right_ready = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            producer_right_id,
+            test_node_target(producer_name),
+        ))
+        .expect("producer-right ready service should start");
+    let _producer_right_health = rt
+        .block_on(listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            producer_right_id,
+            test_node_target(producer_name),
+        ))
+        .expect("producer-right health service should start");
+    for instance_id in [producer_left_id, producer_right_id] {
+        NodeCommand {
+            command: NodeCommands::Run {
+                node_ref: None,
+                node_name: Some(producer_name.to_string()),
+                tag: Some("v1".to_string()),
+                args: Vec::new(),
+                instance_id: Some(instance_id.to_string()),
+                binds: Vec::new(),
+                _link_id_removed: Vec::new(),
+                idle_timeout: 60,
+                max_timeout: 3600,
+                build: false,
+            },
+        }
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
+    }
+
+    // Stand up + run the bystander consumer with both pins bound.
+    let bystander_dir = write_consumer_with_pinned_depends_on(
+        work_dir.path(),
+        bystander_name,
+        producer_name,
+        &["wrist_left", "wrist_right"],
+    );
+    let _bystander_ready = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            bystander_instance_id,
+            test_node_target(bystander_name),
+        ))
+        .expect("bystander ready service should start");
+    let _bystander_health = rt
+        .block_on(listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            bystander_instance_id,
+            test_node_target(bystander_name),
+        ))
+        .expect("bystander health service should start");
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(bystander_dir.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: true,
+            args: Vec::new(),
+            instance_id: Some(bystander_instance_id.to_string()),
+            binds: vec![
+                ("wrist_left".to_string(), producer_left_id.to_string()),
+                ("wrist_right".to_string(), producer_right_id.to_string()),
+            ],
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("bystander `add -r` with both pins bound must succeed");
+
+    // `node add -sbr` for a NEW consumer with its own single pin
+    // satisfied. The validator must not surface the bystander's
+    // already-satisfied pins as unbound.
+    let new_consumer_dir = write_consumer_with_pinned_depends_on(
+        work_dir.path(),
+        new_consumer_name,
+        producer_name,
+        &["only_pin"],
+    );
+    let _new_consumer_ready = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            new_consumer_instance_id,
+            test_node_target(new_consumer_name),
+        ))
+        .expect("new-consumer ready service should start");
+    let _new_consumer_health = rt
+        .block_on(listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            new_consumer_instance_id,
+            test_node_target(new_consumer_name),
+        ))
+        .expect("new-consumer health service should start");
+
+    let result = NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(new_consumer_dir.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: true,
+            args: Vec::new(),
+            instance_id: Some(new_consumer_instance_id.to_string()),
+            binds: vec![("only_pin".to_string(), producer_left_id.to_string())],
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx);
+
+    if let Err(err) = &result {
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("wrist_left") && !msg.contains("wrist_right"),
+            "`add -r` must not report the bystander's already-satisfied pins as unbound. \
+             Got: {msg}"
+        );
+    }
+    result.expect(
+        "`add -r` for a new consumer must succeed when its own pins are bound, regardless \
+         of which other consumers are already running",
+    );
+
+    let logs = log_capture.logs();
+    assert!(
+        logs.contains(&format!(
+            "Started node instance '{new_consumer_instance_id}'"
+        )),
+        "new consumer must launch. Logs:\n{logs}"
+    );
+}

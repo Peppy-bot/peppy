@@ -1490,3 +1490,463 @@ async fn node_run_bind_rejects_target_mismatch() {
         "target-mismatch error should hint at the expected node identity. Got: {msg}"
     );
 }
+
+/// Launching a new instance must not surface unbound-slot errors for
+/// pins that belong to a *different* consumer already running in the
+/// stack with all its pins satisfied. The pre-flight only validates
+/// the new invocation's bindings; bindings of running consumers were
+/// resolved when those consumers were started and are not the new
+/// invocation's concern.
+///
+/// Setup: producer `cam` is built, plus a built consumer `cons_a` with
+/// two pinned `link_id`s on `cam`. Spawn two `cam` instances and
+/// `cons_a` with valid `--bind`s satisfying both pins. Then spawn a
+/// THIRD `cam` instance — `cons_a` is running clean, the new
+/// invocation has no binds at all, and Rule 1 must NOT fire against
+/// `cons_a`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let producer_name = "test_no_falseflag_producer";
+    let consumer_name = "test_no_falseflag_consumer";
+    let producer_left_id = "cam_left";
+    let producer_right_id = "cam_right";
+    let producer_extra_id = "cam_extra";
+    let consumer_instance_id = "cons_a_inst";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+    add_built_consumer_with_pins(
+        &node_ctx,
+        work_dir.path(),
+        consumer_name,
+        producer_name,
+        &["wrist_left", "wrist_right"],
+    )
+    .await;
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _left_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_left_id,
+    )
+    .await;
+    let _right_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_right_id,
+    )
+    .await;
+    for instance_id in [producer_left_id, producer_right_id] {
+        NodeCommand {
+            command: NodeCommands::Run {
+                node_ref: None,
+                node_name: Some(producer_name.to_string()),
+                tag: Some("v1".to_string()),
+                args: Vec::new(),
+                instance_id: Some(instance_id.to_string()),
+                binds: Vec::new(),
+                _link_id_removed: Vec::new(),
+                idle_timeout: 60,
+                max_timeout: 3600,
+                build: false,
+            },
+        }
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
+    }
+
+    let _consumer_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        consumer_name,
+        consumer_instance_id,
+    )
+    .await;
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(consumer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(consumer_instance_id.to_string()),
+            binds: vec![
+                ("wrist_left".to_string(), producer_left_id.to_string()),
+                ("wrist_right".to_string(), producer_right_id.to_string()),
+            ],
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("consumer run with both pins bound should succeed");
+
+    // Third producer instance: `cons_a` is already running with all
+    // its pinned slots satisfied, and this invocation has nothing to
+    // do with `cons_a`. The pre-flight must validate only the new
+    // synthesized instance — `cons_a`'s pinned slots are out of scope.
+    let _extra_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_extra_id,
+    )
+    .await;
+    let result = NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(producer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(producer_extra_id.to_string()),
+            binds: Vec::new(),
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx);
+
+    if let Err(err) = &result {
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("wrist_left") && !msg.contains("wrist_right"),
+            "running an unrelated node must not report the existing consumer's pinned slots \
+             as unbound. Got: {msg}"
+        );
+    }
+    result.expect(
+        "running a third producer instance must not fail validation because of an existing \
+         consumer's already-satisfied pinned slots",
+    );
+}
+
+/// Rule 1 (`BindingMissingForPinnedDep`) fires for the new instance's
+/// missing pinned binds, scoped to that instance only. Inert items for
+/// already-running consumers participate in producer lookup and
+/// stack-wide `instance_id` uniqueness but never contribute slots to
+/// Rule 1.
+///
+/// Setup: producer `cam` is built, plus consumer `cons_a` (running
+/// with both pins bound) and consumer `cons_b` (a second consumer
+/// with one pinned `link_id`). Launching `cons_b` with no `--bind`
+/// must be rejected with an error naming `cons_b`'s missing link_id
+/// only — never `cons_a`'s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_still_rejects_pinned_unbound_on_new_instance_when_others_run_clean() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let producer_name = "test_rule1_still_fires_producer";
+    let consumer_a_name = "test_rule1_still_fires_cons_a";
+    let consumer_b_name = "test_rule1_still_fires_cons_b";
+    let producer_left_id = "cam_left";
+    let producer_right_id = "cam_right";
+    let consumer_a_instance_id = "cons_a_inst";
+    let consumer_b_instance_id = "cons_b_inst";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+    add_built_consumer_with_pins(
+        &node_ctx,
+        work_dir.path(),
+        consumer_a_name,
+        producer_name,
+        &["wrist_left", "wrist_right"],
+    )
+    .await;
+    add_built_consumer_with_pins(
+        &node_ctx,
+        work_dir.path(),
+        consumer_b_name,
+        producer_name,
+        &["second_consumer_pin"],
+    )
+    .await;
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _left_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_left_id,
+    )
+    .await;
+    let _right_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_right_id,
+    )
+    .await;
+    for instance_id in [producer_left_id, producer_right_id] {
+        NodeCommand {
+            command: NodeCommands::Run {
+                node_ref: None,
+                node_name: Some(producer_name.to_string()),
+                tag: Some("v1".to_string()),
+                args: Vec::new(),
+                instance_id: Some(instance_id.to_string()),
+                binds: Vec::new(),
+                _link_id_removed: Vec::new(),
+                idle_timeout: 60,
+                max_timeout: 3600,
+                build: false,
+            },
+        }
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
+    }
+
+    let _cons_a_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        consumer_a_name,
+        consumer_a_instance_id,
+    )
+    .await;
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(consumer_a_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(consumer_a_instance_id.to_string()),
+            binds: vec![
+                ("wrist_left".to_string(), producer_left_id.to_string()),
+                ("wrist_right".to_string(), producer_right_id.to_string()),
+            ],
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("consumer_a run with both pins bound should succeed");
+
+    // cons_b has a pinned dep but we deliberately omit --bind. Rule 1
+    // must fire for cons_b's slot, NOT for cons_a's already-satisfied
+    // slots.
+    let result = NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(consumer_b_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(consumer_b_instance_id.to_string()),
+            binds: Vec::new(),
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx);
+
+    let err = result.expect_err("cons_b with no --bind must be rejected by Rule 1");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("second_consumer_pin"),
+        "Rule 1 must still name cons_b's missing link_id. Got: {msg}"
+    );
+    assert!(
+        msg.contains(consumer_b_instance_id),
+        "Rule 1 error should name the new instance ('{consumer_b_instance_id}'). Got: {msg}"
+    );
+    assert!(
+        !msg.contains("wrist_left") && !msg.contains("wrist_right"),
+        "Rule 1 must NOT report cons_a's already-satisfied pins as unbound. Got: {msg}"
+    );
+    assert!(
+        !msg.contains(consumer_a_instance_id),
+        "Rule 1 error must not implicate cons_a's instance_id. Got: {msg}"
+    );
+}
+
+/// When the target node already has running instances, the pre-flight
+/// splits the synthesized new instance into its own validator group:
+/// existing instances of the same node are inert under per-instance
+/// rules, and only the new instance's bindings are checked. A second
+/// instance launched with valid `--bind`s succeeds; one launched with
+/// missing `--bind`s fails naming only itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_target_already_in_stack_validates_only_new_instance() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let producer_name = "test_target_in_stack_producer";
+    let consumer_name = "test_target_in_stack_consumer";
+    let producer_left_id = "cam_left";
+    let producer_right_id = "cam_right";
+    let consumer_inst_1 = "cons_inst_1";
+    let consumer_inst_2 = "cons_inst_2";
+    let consumer_inst_3_bad = "cons_inst_3";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+    add_built_consumer_with_pins(
+        &node_ctx,
+        work_dir.path(),
+        consumer_name,
+        producer_name,
+        &["wrist_left", "wrist_right"],
+    )
+    .await;
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _left_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_left_id,
+    )
+    .await;
+    let _right_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_right_id,
+    )
+    .await;
+    for instance_id in [producer_left_id, producer_right_id] {
+        NodeCommand {
+            command: NodeCommands::Run {
+                node_ref: None,
+                node_name: Some(producer_name.to_string()),
+                tag: Some("v1".to_string()),
+                args: Vec::new(),
+                instance_id: Some(instance_id.to_string()),
+                binds: Vec::new(),
+                _link_id_removed: Vec::new(),
+                idle_timeout: 60,
+                max_timeout: 3600,
+                build: false,
+            },
+        }
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
+    }
+
+    // First consumer instance: both pins bound.
+    let _cons_1_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        consumer_name,
+        consumer_inst_1,
+    )
+    .await;
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(consumer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(consumer_inst_1.to_string()),
+            binds: vec![
+                ("wrist_left".to_string(), producer_left_id.to_string()),
+                ("wrist_right".to_string(), producer_right_id.to_string()),
+            ],
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("first consumer instance with both pins bound should succeed");
+
+    // Second consumer instance: also both pins bound. cons_inst_1
+    // enters the validator snapshot as an inert entry (no depends_on)
+    // and cons_inst_2 as a live entry whose bindings are checked
+    // against the consumer's depends_on.
+    let _cons_2_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        consumer_name,
+        consumer_inst_2,
+    )
+    .await;
+    NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(consumer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(consumer_inst_2.to_string()),
+            binds: vec![
+                ("wrist_left".to_string(), producer_left_id.to_string()),
+                ("wrist_right".to_string(), producer_right_id.to_string()),
+            ],
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("second consumer instance must succeed when its own binds are valid");
+
+    // Third consumer instance with deliberately missing binds. The
+    // error must name only cons_inst_3 — never cons_inst_1 or
+    // cons_inst_2 (whose binds were already validated at their own
+    // spawn time).
+    let result = NodeCommand {
+        command: NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(consumer_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(consumer_inst_3_bad.to_string()),
+            binds: Vec::new(),
+            _link_id_removed: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx);
+
+    let err = result.expect_err("third consumer instance with no --bind must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains(consumer_inst_3_bad),
+        "error should name the new instance ('{consumer_inst_3_bad}'). Got: {msg}"
+    );
+    assert!(
+        !msg.contains(consumer_inst_1) && !msg.contains(consumer_inst_2),
+        "error must not implicate the already-running consumer instances. Got: {msg}"
+    );
+}
