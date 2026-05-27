@@ -216,7 +216,7 @@ async def run_exposer(node_runner):
 
     def goal_handler(request):
         print(f"server received scan goal scan_id={request.data.scan_id}", flush=True)
-        return perform_scan.GoalDecision.accept(perform_scan.GoalResponse(accepted=True))
+        return perform_scan.GoalResponse.accept()
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)

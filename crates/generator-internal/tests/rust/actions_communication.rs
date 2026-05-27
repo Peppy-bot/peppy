@@ -265,12 +265,12 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
                     println!(
                         "server received goal arm_id={} desired={:?}",
                         request.data.arm_id, request.data.desired_position
                     );
-                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
+                    Ok(move_arm::GoalResponse::accept())
                 })
                 .await;
 
@@ -581,12 +581,12 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
                     println!(
                         "server received goal arm_id={} desired={:?}",
                         request.data.arm_id, request.data.desired_position
                     );
-                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
+                    Ok(move_arm::GoalResponse::accept())
                 })
                 .await;
 
@@ -932,12 +932,12 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
                     println!(
                         "server received goal arm_id={} desired={:?}",
                         request.data.arm_id, request.data.desired_position
                     );
-                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
+                    Ok(move_arm::GoalResponse::accept())
                 })
                 .await;
 
@@ -1300,8 +1300,8 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|_request| -> Result<move_arm::GoalDecision> {
-                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
+                    Ok(move_arm::GoalResponse::accept())
                 })
                 .await;
 
@@ -1668,8 +1668,8 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|_request| -> Result<move_arm::GoalDecision> {
-                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
+                    Ok(move_arm::GoalResponse::accept())
                 })
                 .await;
 

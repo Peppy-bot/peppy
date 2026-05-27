@@ -298,7 +298,7 @@ async def run_exposer(node_runner):
             f"server received goal arm_id={request.data.arm_id} desired={request.data.desired_position}",
             flush=True,
         )
-        return move_arm.GoalDecision.accept(move_arm.GoalResponse(accepted=True))
+        return move_arm.GoalResponse.accept()
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)
@@ -623,7 +623,7 @@ async def run_exposer(node_runner):
             f"server received goal arm_id={request.data.arm_id} desired={request.data.desired_position}",
             flush=True,
         )
-        return move_arm.GoalDecision.accept(move_arm.GoalResponse(accepted=True))
+        return move_arm.GoalResponse.accept()
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)
@@ -894,7 +894,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project. Reproduces the exact pattern that
     // deadlocked pre-fix: the goal handler is `async` and `await`s
-    // `emit_feedback(...)` before returning `GoalResponse(accepted=True)`.
+    // `emit_feedback(...)` before returning `GoalResponse.accept()`.
     // See the test docstring above for the full motivation and root cause.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new().unwrap();
@@ -942,7 +942,7 @@ async def run_exposer(node_runner):
             f"server received goal arm_id={request.data.arm_id} desired={request.data.desired_position}",
             flush=True,
         )
-        return move_arm.GoalDecision.accept(move_arm.GoalResponse(accepted=True))
+        return move_arm.GoalResponse.accept()
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)
@@ -1275,7 +1275,7 @@ async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
     def goal_handler(_request):
-        return move_arm.GoalDecision.accept(move_arm.GoalResponse(accepted=True))
+        return move_arm.GoalResponse.accept()
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)
@@ -1633,7 +1633,7 @@ async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
     def goal_handler(_request):
-        return move_arm.GoalDecision.accept(move_arm.GoalResponse(accepted=True))
+        return move_arm.GoalResponse.accept()
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)
@@ -2001,7 +2001,7 @@ async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
     def goal_handler(_request):
-        return move_arm.GoalDecision.accept(move_arm.GoalResponse(accepted=True))
+        return move_arm.GoalResponse.accept()
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)

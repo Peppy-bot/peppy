@@ -238,25 +238,23 @@ fn exposed_action() {
         ],
     );
 
-    // GoalResponse struct (the user-facing response data + its constructor)
+    // GoalResponse struct: framework-owned goal acknowledgement
+    // ({accepted, error_message}) with its `new` constructor and the
+    // accept/reject helpers the decider returns. There is no GoalDecision.
     assert_contains_all(
         &rendered,
         &[
             "pub struct GoalResponse",
             "impl GoalResponse",
-            "pub fn new(accepted: bool) -> Self",
+            "pub fn new(accepted: bool, error_message: Option<String>) -> Self",
+            "pub fn accept() -> Self",
+            "pub fn reject(reason: impl Into<String>) -> Self",
         ],
     );
-
-    // GoalDecision enum: the user closure accepts or rejects, carrying the
-    // GoalResponse to send to the client.
-    assert_contains_all(
-        &rendered,
-        &[
-            "pub enum GoalDecision",
-            "Accept(GoalResponse)",
-            "Reject(GoalResponse)",
-        ],
+    assert_rendered!(
+        !rendered.contains("GoalDecision"),
+        rendered,
+        "GoalDecision enum is removed; the decider returns a framework GoalResponse"
     );
 
     // ActionHandle wraps the concurrent-action engine.
@@ -283,7 +281,7 @@ fn exposed_action() {
         &rendered,
         &[
             "pub async fn handle_goal_next_request",
-            "F: Fn(&GoalRequest) -> crate::Result<GoalDecision>",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
             "crate::Result<Option<GoalContext>>",
             "recv_next_goal",
         ],
@@ -343,16 +341,23 @@ fn expose_action_without_request_body() {
         .next()
         .expect("artifact is present");
 
-    // GoalRequest still exists (with instance_id and core_node) even without data
+    // GoalRequest still exists (with instance_id and core_node) even without
+    // data. The framework GoalResponse (+ accept/reject) is always present.
     assert_contains_all(
         &rendered,
         &[
             "pub struct GoalRequest",
             "pub struct GoalResponse",
-            "pub enum GoalDecision",
+            "pub fn accept() -> Self",
+            "pub fn reject(reason: impl Into<String>) -> Self",
             "pub async fn handle_goal_next_request",
-            "F: Fn(&GoalRequest) -> crate::Result<GoalDecision>",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
         ],
+    );
+    assert_rendered!(
+        !rendered.contains("GoalDecision"),
+        rendered,
+        "GoalDecision enum is removed"
     );
 
     // No request data → GoalRequest has no `data` field and no deserializer.
@@ -458,17 +463,25 @@ fn expose_feedback_only_action() {
             "pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self>",
             "peppylib::messaging::ConcurrentAction::expose",
             "pub async fn handle_goal_next_request",
-            "pub enum GoalDecision",
+            "pub struct GoalResponse",
             "pub struct GoalContext",
             "pub async fn publish_feedback",
         ],
     );
 
-    // No goal response → GoalDecision variants carry no payload.
+    // The goal acknowledgement is framework-owned, so even a feedback-only
+    // action gets the GoalResponse accept/reject helpers and no GoalDecision.
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub fn accept() -> Self",
+            "pub fn reject(reason: impl Into<String>) -> Self",
+        ],
+    );
     assert_rendered!(
-        !rendered.contains("Accept(GoalResponse)"),
+        !rendered.contains("GoalDecision"),
         rendered,
-        "GoalDecision carries no payload when the goal has no response"
+        "GoalDecision enum is removed; the goal ack is framework-owned"
     );
     // No result service → no completion methods.
     assert_rendered!(
@@ -535,7 +548,7 @@ fn expose_two_actions() {
         rotate_servo,
         &[
             "pub async fn handle_goal_next_request",
-            "F: Fn(&GoalRequest) -> crate::Result<GoalDecision>",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
             "pub struct GoalResponse",
             "pub async fn complete",
             "pub async fn publish_feedback",
@@ -898,24 +911,25 @@ fn consumed_action_without_response_payload() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    // ActionHandle struct without GoalResponseData (no goal response format)
+    // The goal acknowledgement is framework-owned, so GoalResponseData and the
+    // `pub data` field are always present even when the action declares no goal
+    // response format.
     assert_contains_all(
         &rendered,
         &[
             "pub struct ActionHandle",
             "messenger: peppylib::MessengerHandle",
             "inner: peppylib::messaging::ActionGoalHandle",
+            "pub data: GoalResponseData",
             "impl ActionHandle",
             "pub async fn fire_goal",
             "pub async fn get_result",
             "peppylib::ActionMessenger::send_goal",
             "peppylib::ActionMessenger::request_result",
+            "pub struct GoalResponseData",
+            "pub accepted: bool",
+            "fn deserialize_goal_response",
         ],
-    );
-    assert_rendered!(
-        !rendered.contains("GoalResponseData"),
-        rendered,
-        "expected no GoalResponseData when goal response format is absent"
     );
 }
 

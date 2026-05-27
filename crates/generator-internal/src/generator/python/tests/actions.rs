@@ -216,18 +216,23 @@ fn exposed_action() {
         ],
     );
 
-    // GoalResponse dataclass
-    assert_contains_all(&rendered, &["class GoalResponse:"]);
-
-    // GoalDecision class: the user decider accepts or rejects, carrying the
-    // GoalResponse to send to the client.
+    // GoalResponse: framework-owned goal acknowledgement dataclass with
+    // accept()/reject(reason) staticmethods the decider returns. There is no
+    // GoalDecision.
     assert_contains_all(
         &rendered,
         &[
-            "class GoalDecision:",
-            "def accept(response):",
-            "def reject(response):",
+            "class GoalResponse:",
+            "accepted: bool",
+            "error_message: Optional[str]",
+            "def accept():",
+            "def reject(reason):",
         ],
+    );
+    assert_rendered!(
+        !rendered.contains("GoalDecision"),
+        &rendered,
+        "GoalDecision class is removed; the decider returns a framework GoalResponse"
     );
 
     // ActionHandle class
@@ -272,7 +277,7 @@ fn exposed_action() {
     assert_contains_all(
         &rendered,
         &[
-            "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> \"GoalContext | None\":",
+            "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalResponse]) -> \"GoalContext | None\":",
             "pending = await self._inner.recv_next_goal()",
             "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)",
             "ctx = await pending.accept(response_bytes)",
@@ -343,15 +348,22 @@ fn expose_action_without_request_body() {
         .next()
         .expect("artifact is present");
 
-    // GoalRequest still exists (with metadata) even without request data
+    // GoalRequest still exists (with metadata) even without request data. The
+    // framework GoalResponse (+ accept/reject) is always present.
     assert_contains_all(
         &rendered,
         &[
             "class GoalRequest:",
             "class GoalResponse:",
-            "class GoalDecision:",
+            "def accept():",
+            "def reject(reason):",
             "async def handle_goal_next_request(",
         ],
+    );
+    assert_rendered!(
+        !rendered.contains("GoalDecision"),
+        &rendered,
+        "GoalDecision class is removed"
     );
 
     // No request data → no deserializer and a GoalRequest without `data`.
@@ -471,7 +483,7 @@ fn expose_two_actions() {
             "\"move_arm\"",
             "import capnp",
             "class GoalRequest:",
-            "class GoalDecision:",
+            "class GoalResponse:",
             "class GoalContext:",
             "class ActionHandle:",
             "@classmethod",
@@ -489,7 +501,6 @@ fn expose_two_actions() {
             "\"rotate_servo_clockwise\"",
             "import capnp",
             "class GoalResponse:",
-            "class GoalDecision:",
             "class GoalContext:",
             "class ActionHandle:",
             "@classmethod",
@@ -891,12 +902,10 @@ fn consumed_action_without_response_payload() {
         ],
     );
 
-    // Should NOT have deserialization for goal_response or result_response
-    assert_rendered!(
-        !rendered.contains("def _deserialize_goal_response"),
-        &rendered,
-        "expected no _deserialize_goal_response when goal_response is None"
-    );
+    // The goal acknowledgement is framework-owned, so goal_response
+    // deserialization is always present even when the action declares none.
+    assert_contains_all(&rendered, &["def _deserialize_goal_response("]);
+    // result_response is NOT framework-owned, so it stays absent here.
     assert_rendered!(
         !rendered.contains("def _deserialize_result_response"),
         &rendered,
@@ -915,7 +924,9 @@ fn consumed_action_without_response_payload() {
     // ActionHandle class
     assert_contains_all(&rendered, &["class ActionHandle:"]);
 
-    // fire_goal should have serialization (goal_request exists) but no handle.data (no goal_response)
+    // fire_goal should have serialization (goal_request exists). The goal
+    // acknowledgement is framework-owned, so GoalResponseData and handle.data
+    // are always present even when the action declares no goal response.
     assert_contains_all(
         &rendered,
         &[
@@ -923,13 +934,11 @@ fn consumed_action_without_response_payload() {
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",
             "handle._inner = action_handle",
+            "handle.data = goal_response_data",
             "return handle",
+            "class GoalResponseData:",
+            "accepted: bool",
         ],
-    );
-    assert_rendered!(
-        !rendered.contains("handle.data"),
-        &rendered,
-        "expected no handle.data when goal_response is None"
     );
 
     // get_result should return without data

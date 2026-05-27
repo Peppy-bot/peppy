@@ -7,7 +7,8 @@ use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_pream
 use super::type_mapping::{collect_fields_from_format, uses_optional};
 use crate::error::Result;
 use crate::generator::types::{
-    ConsumedActionMessage, InterfaceOrigin, cancel_action_response_format, non_empty_message_format,
+    ConsumedActionMessage, InterfaceOrigin, cancel_action_response_format,
+    goal_action_response_format, non_empty_message_format,
 };
 use config::node::{ConsumedAction, ExposedAction};
 
@@ -61,10 +62,10 @@ pub fn build_exposed_action(
         .goal_service
         .as_ref()
         .and_then(|goal| non_empty_message_format(goal.request_message_format.as_ref()));
-    let goal_response_format = action
-        .goal_service
-        .as_ref()
-        .and_then(|goal| non_empty_message_format(goal.response_message_format.as_ref()));
+    // The goal acknowledgement is framework-owned ({accepted, error_message});
+    // any goal response declared in the action schema is ignored.
+    let goal_response_fmt = goal_action_response_format();
+    let goal_response_format = Some(&goal_response_fmt);
     let result_response_format = action
         .result_service
         .as_ref()
@@ -75,10 +76,9 @@ pub fn build_exposed_action(
         .and_then(|topic| non_empty_message_format(topic.message_format.as_ref()));
 
     let has_goal_request = goal_request_format.is_some();
-    let has_goal_response = goal_response_format.is_some();
 
     // ---------------------------------------------------------------
-    // Dataclasses: GoalRequest[Data], GoalResponse, GoalDecision
+    // Dataclasses: GoalRequest[Data], GoalResponse (framework ack)
     // ---------------------------------------------------------------
 
     if let Some(fmt) = goal_request_format {
@@ -98,46 +98,28 @@ pub fn build_exposed_action(
         );
     }
 
-    if let Some(fmt) = goal_response_format {
-        emit_format_as_dataclass(&mut builder, "GoalResponse", fmt)?;
-    }
-
-    // GoalDecision: the user decider returns accept/reject, carrying the
-    // GoalResponse to send to the client (no payload when there's no response).
-    builder.line("class GoalDecision:");
+    // GoalResponse: the framework goal acknowledgement ({accepted,
+    // error_message}). The decider returns one via GoalResponse.accept() or
+    // GoalResponse.reject(reason); the `accepted` flag is the single source of
+    // truth for the accept/reject decision and the value the client reads.
+    builder.add_import("from dataclasses import dataclass");
+    builder.add_import("from typing import Optional");
+    builder.line("@dataclass");
+    builder.line("class GoalResponse:");
     builder.indent();
-    if has_goal_response {
-        builder.line("def __init__(self, accepted: bool, response):");
-        builder.indent();
-        builder.line("self.accepted = accepted");
-        builder.line("self.response = response");
-        builder.dedent();
-        builder.line("@staticmethod");
-        builder.line("def accept(response):");
-        builder.indent();
-        builder.line("return GoalDecision(True, response)");
-        builder.dedent();
-        builder.line("@staticmethod");
-        builder.line("def reject(response):");
-        builder.indent();
-        builder.line("return GoalDecision(False, response)");
-        builder.dedent();
-    } else {
-        builder.line("def __init__(self, accepted: bool):");
-        builder.indent();
-        builder.line("self.accepted = accepted");
-        builder.dedent();
-        builder.line("@staticmethod");
-        builder.line("def accept():");
-        builder.indent();
-        builder.line("return GoalDecision(True)");
-        builder.dedent();
-        builder.line("@staticmethod");
-        builder.line("def reject():");
-        builder.indent();
-        builder.line("return GoalDecision(False)");
-        builder.dedent();
-    }
+    builder.line("accepted: bool");
+    builder.line("error_message: Optional[str]");
+    builder.blank_line();
+    builder.line("@staticmethod");
+    builder.line("def accept():");
+    builder.indent();
+    builder.line("return GoalResponse(True, None)");
+    builder.dedent();
+    builder.line("@staticmethod");
+    builder.line("def reject(reason):");
+    builder.indent();
+    builder.line("return GoalResponse(False, reason)");
+    builder.dedent();
     builder.dedent();
     builder.blank_line();
 
@@ -214,7 +196,7 @@ pub fn build_exposed_action(
 
     // handle_goal_next_request
     builder.line(
-        "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> \"GoalContext | None\":",
+        "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalResponse]) -> \"GoalContext | None\":",
     );
     builder.indent();
     builder.line("while True:");
@@ -234,14 +216,13 @@ pub fn build_exposed_action(
             "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)",
         );
     }
-    builder.line("decision = handler(request)");
-    builder.line("if hasattr(decision, \"__await__\"):");
+    builder.line("response = handler(request)");
+    builder.line("if hasattr(response, \"__await__\"):");
     builder.indent();
-    builder.line("decision = await decision");
+    builder.line("response = await response");
     builder.dedent();
     // Serialize the GoalResponse once; both accept and reject reply with it.
     if let Some((fmt, info)) = goal_response_format.zip(goal_response_schema_info) {
-        builder.line("response = decision.response");
         let loader_fn_name = capnp_loader_fn_name(info);
         builder.line(&format!(
             "capnp_msg = {loader_fn_name}().{}.new_message()",
@@ -259,7 +240,7 @@ pub fn build_exposed_action(
     } else {
         builder.line("response_bytes = b\"\"");
     }
-    builder.line("if decision.accepted:");
+    builder.line("if response.accepted:");
     builder.indent();
     builder.line("ctx = await pending.accept(response_bytes)");
     builder.line("return GoalContext(ctx, request)");
@@ -388,7 +369,9 @@ pub fn build_consumed_action(
     let mut builder = PythonCodeBuilder::new();
 
     let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
-    let goal_response_format = non_empty_message_format(messages.goal_response.as_ref());
+    // The goal acknowledgement is framework-owned ({accepted, error_message}).
+    let goal_response_fmt = goal_action_response_format();
+    let goal_response_format = Some(&goal_response_fmt);
     let feedback_format = non_empty_message_format(messages.feedback.as_ref());
     let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 

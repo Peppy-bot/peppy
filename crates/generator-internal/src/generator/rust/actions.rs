@@ -50,41 +50,42 @@ pub fn build_action_expose_method(
     }
 }
 
-/// The decision a goal handler returns: `Accept`/`Reject`, each carrying the
-/// `GoalResponse` sent to the client. When the action has no goal response the
-/// variants carry no payload. This is how the user controls concurrency —
-/// rejecting a goal (e.g. because a resource is busy) yields no `GoalContext`.
-pub fn build_goal_decision_enum(has_response: bool) -> TokenStream {
-    if has_response {
-        quote! {
-            #[allow(dead_code)]
-            pub enum GoalDecision {
-                Accept(GoalResponse),
-                Reject(GoalResponse),
+/// Framework constructors for the goal acknowledgement the decider returns.
+/// `accepted()` admits the goal (the worker gets a `GoalContext`); `rejected`
+/// declines it (no context) and carries the reason back to the client. This is
+/// how the user controls concurrency, e.g. rejecting a goal for a busy resource.
+/// The `accepted` flag is the single source of truth for the accept/reject
+/// decision and the value the client reads from `fire_goal`.
+pub fn build_goal_response_constructors() -> TokenStream {
+    quote! {
+        impl GoalResponse {
+            /// Accept the goal. The client sees `accepted == true`.
+            pub fn accept() -> Self {
+                Self::new(true, None)
             }
-        }
-    } else {
-        quote! {
-            #[allow(dead_code)]
-            pub enum GoalDecision {
-                Accept,
-                Reject,
+
+            /// Reject the goal, carrying the reason to the client (which sees
+            /// `accepted == false` and `error_message == Some(reason)`).
+            pub fn reject(reason: impl Into<String>) -> Self {
+                Self::new(false, Some(reason.into()))
             }
         }
     }
 }
 
 /// `handle_goal_next_request`: returns the next *accepted* goal as a
-/// `GoalContext`. The user decider runs on each incoming goal; rejected goals
-/// are answered and skipped transparently (the method keeps polling), so a
+/// `GoalContext`. The user decider runs on each incoming goal and returns a
+/// `GoalResponse` (`GoalResponse::accepted()` / `GoalResponse::rejected(reason)`);
+/// the framework `accepted` flag decides whether the goal is admitted. Rejected
+/// goals are answered and skipped transparently (the method keeps polling), so a
 /// returned `Ok(None)` means the goal stream has closed (the node is shutting
 /// down) and the caller should stop its accept loop. Errors propagate as `Err`.
 ///
-/// `response_serialization`, when present, serializes a local `response`
-/// (`GoalResponse`) into a `peppylib::Payload`.
+/// `response_serialization` serializes a local `response` (`GoalResponse`) into
+/// a `peppylib::Payload`.
 pub fn build_handle_goal_next_request(
     has_request_data: bool,
-    response_serialization: Option<TokenStream>,
+    response_serialization: TokenStream,
 ) -> TokenStream {
     let decode_and_build_request = if has_request_data {
         quote! {
@@ -104,51 +105,13 @@ pub fn build_handle_goal_next_request(
         }
     };
 
-    let (accept_arm, reject_arm) = match response_serialization {
-        Some(serialize) => {
-            let serialize_reject = serialize.clone();
-            (
-                quote! {
-                    GoalDecision::Accept(response) => {
-                        let response_payload = #serialize;
-                        let inner = pending.accept(response_payload).await?;
-                        return Ok(Some(GoalContext { inner, request }));
-                    }
-                },
-                quote! {
-                    // Rejected: answer the client and keep polling for the
-                    // next goal. A reject never ends the accept loop.
-                    GoalDecision::Reject(response) => {
-                        let response_payload = #serialize_reject;
-                        pending.reject(response_payload).await?;
-                    }
-                },
-            )
-        }
-        None => (
-            quote! {
-                GoalDecision::Accept => {
-                    let inner = pending.accept(peppylib::Payload::new()).await?;
-                    return Ok(Some(GoalContext { inner, request }));
-                }
-            },
-            quote! {
-                // Rejected: answer the client and keep polling for the next
-                // goal. A reject never ends the accept loop.
-                GoalDecision::Reject => {
-                    pending.reject(peppylib::Payload::new()).await?;
-                }
-            },
-        ),
-    };
-
     quote! {
         pub async fn handle_goal_next_request<F>(
             &mut self,
             decider: F,
         ) -> crate::Result<Option<GoalContext>>
         where
-            F: Fn(&GoalRequest) -> crate::Result<GoalDecision>,
+            F: Fn(&GoalRequest) -> crate::Result<GoalResponse>,
         {
             loop {
                 let Some(pending) = self.inner.recv_next_goal().await? else {
@@ -156,10 +119,16 @@ pub fn build_handle_goal_next_request(
                     return Ok(None);
                 };
                 #decode_and_build_request
-                match decider(&request)? {
-                    #accept_arm
-                    #reject_arm
+                let response = decider(&request)?;
+                let accepted = response.accepted;
+                let response_payload = #response_serialization;
+                if accepted {
+                    let inner = pending.accept(response_payload).await?;
+                    return Ok(Some(GoalContext { inner, request }));
                 }
+                // Rejected: answer the client and keep polling for the next
+                // goal. A reject never ends the accept loop.
+                pending.reject(response_payload).await?;
             }
         }
     }
