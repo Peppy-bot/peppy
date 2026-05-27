@@ -1,4 +1,4 @@
-use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
+use super::super::action_loop::{GoalHandler, reply_goal, run_action_loop};
 use super::gate::ConcurrencyGate;
 use super::write_error_to_log;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
@@ -13,14 +13,14 @@ use futures::FutureExt;
 use node_stack::{BuildContext, NodeStack};
 use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
+use peppylib::messaging::{ServiceRequestContext, ServiceResponder};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::fs::File;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -52,16 +52,6 @@ pub async fn listen_for_node_build(
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
     Ok(handle)
-}
-
-impl ActionResult for NodeBuildResult {
-    fn identifier() -> &'static str {
-        "node_build_result"
-    }
-
-    fn encode_result(&self) -> Result<Payload> {
-        self.encode().map_err(Into::into)
-    }
 }
 
 /// Inputs required to drive a single `node_build` run to completion.
@@ -150,17 +140,13 @@ struct NodeBuildGoalHandler {
 }
 
 impl GoalHandler for NodeBuildGoalHandler {
-    type Result = NodeBuildResult;
-
     async fn handle_goal(
         &self,
-        context: ServiceRequestContext,
-        user_payload: bytes::Bytes,
-        feedback_publisher: ActionFeedbackPublisher,
-        state: Arc<Mutex<ActionState<NodeBuildResult>>>,
-    ) -> PeppyResult<Payload> {
-        self.handle_goal_request(context, user_payload, feedback_publisher, state)
-            .await
+        request: ServiceRequestContext,
+        responder: ServiceResponder,
+        server: &peppylib::messaging::ActionServer,
+    ) {
+        self.handle_goal_request(request, responder, server).await
     }
 }
 
@@ -174,32 +160,53 @@ fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
 impl NodeBuildGoalHandler {
     async fn handle_goal_request(
         &self,
-        context: ServiceRequestContext,
-        user_payload: bytes::Bytes,
-        feedback_publisher: ActionFeedbackPublisher,
-        state: Arc<Mutex<ActionState<NodeBuildResult>>>,
-    ) -> PeppyResult<Payload> {
-        let sender_instance_id = context.message().instance_id();
+        request: ServiceRequestContext,
+        responder: ServiceResponder,
+        server: &peppylib::messaging::ActionServer,
+    ) {
+        let sender_instance_id = request.message().instance_id().to_string();
 
-        let goal = match NodeBuildGoal::decode(&user_payload) {
-            Ok(g) => g,
-            Err(e) => return encode_rejected_goal(format!("invalid payload: {}", e)),
+        let goal = {
+            let wrapped = request.message().payload();
+            let user_payload = match peppylib::messaging::unwrap_goal_payload(wrapped.as_ref()) {
+                Ok((_, user)) => user,
+                Err(e) => {
+                    reply_goal(
+                        responder,
+                        encode_rejected_goal(format!("malformed goal envelope: {e}")),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            match NodeBuildGoal::decode(user_payload) {
+                Ok(g) => g,
+                Err(e) => {
+                    reply_goal(
+                        responder,
+                        encode_rejected_goal(format!("invalid payload: {e}")),
+                    )
+                    .await;
+                    return;
+                }
+            }
         };
 
+        if goal.force {
+            debug!("Force flag set: aborting any previous node_build task");
+        }
+        if let super::gate::Admission::AlreadyRunning { remaining_secs } =
+            self.gate.try_admit(goal.timeout_secs, goal.force)
         {
-            let mut state_guard = state.lock().await;
-            if goal.force && matches!(*state_guard, ActionState::Running { .. }) {
-                debug!("Force flag set: aborting previous node_build task");
-            }
-            if let super::gate::Admission::AlreadyRunning { remaining_secs } =
-                self.gate
-                    .try_admit(&mut state_guard, goal.timeout_secs, goal.force)
-            {
-                return encode_rejected_goal(format!(
+            reply_goal(
+                responder,
+                encode_rejected_goal(format!(
                     "action already in progress (times out in {remaining_secs}s), \
                      use `--force` to force building the node"
-                ));
-            }
+                )),
+            )
+            .await;
+            return;
         }
 
         debug!(
@@ -214,12 +221,16 @@ impl NodeBuildGoalHandler {
         {
             Some(handle) => handle,
             None => {
-                let mut state_guard = state.lock().await;
-                *state_guard = ActionState::Rejected;
-                return encode_rejected_goal(format!(
-                    "node `{}:{}` is not in the node stack — run `peppy node add` first",
-                    goal.node_name, goal.node_tag
-                ));
+                self.gate.clear_running();
+                reply_goal(
+                    responder,
+                    encode_rejected_goal(format!(
+                        "node `{}:{}` is not in the node stack — run `peppy node add` first",
+                        goal.node_name, goal.node_tag
+                    )),
+                )
+                .await;
+                return;
             }
         };
 
@@ -232,21 +243,29 @@ impl NodeBuildGoalHandler {
         };
         let (working_dir_guard, captured_generation) = match pending {
             Err(stage) => {
-                let mut state_guard = state.lock().await;
-                *state_guard = ActionState::Rejected;
-                return encode_rejected_goal(format!(
-                    "node `{}:{}` is in stage `{}`; cannot build",
-                    goal.node_name, goal.node_tag, stage
-                ));
+                self.gate.clear_running();
+                reply_goal(
+                    responder,
+                    encode_rejected_goal(format!(
+                        "node `{}:{}` is in stage `{}`; cannot build",
+                        goal.node_name, goal.node_tag, stage
+                    )),
+                )
+                .await;
+                return;
             }
             Ok((None, _)) => {
-                let mut state_guard = state.lock().await;
-                *state_guard = ActionState::Rejected;
-                return encode_rejected_goal(format!(
-                    "node `{}:{}` has no staged working directory; \
-                     re-run `peppy node add` to stage one",
-                    goal.node_name, goal.node_tag
-                ));
+                self.gate.clear_running();
+                reply_goal(
+                    responder,
+                    encode_rejected_goal(format!(
+                        "node `{}:{}` has no staged working directory; \
+                         re-run `peppy node add` to stage one",
+                        goal.node_name, goal.node_tag
+                    )),
+                )
+                .await;
+                return;
             }
             Ok((Some(g), generation)) => (g, generation),
         };
@@ -258,14 +277,34 @@ impl NodeBuildGoalHandler {
             Ok(result) => result,
             Err(error_msg) => {
                 debug!("{}", error_msg);
-                let mut state_guard = state.lock().await;
-                *state_guard = ActionState::Rejected;
-                return encode_rejected_goal(error_msg);
+                self.gate.clear_running();
+                reply_goal(responder, encode_rejected_goal(error_msg)).await;
+                return;
             }
         };
         debug!("Build log file: {}", log_path.display());
 
-        let state_clone = Arc::clone(&state);
+        let goal_ctx = match server.register_goal(&request).await {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                self.gate.clear_running();
+                let _ = responder
+                    .respond_error(format!("failed to register goal: {e}"))
+                    .await;
+                return;
+            }
+        };
+
+        reply_goal(
+            responder,
+            super::encode_response_or_err(
+                "node_build_goal",
+                NodeBuildGoalResponse::accepted(&log_path).encode(),
+            ),
+        )
+        .await;
+
+        let feedback_publisher = goal_ctx.feedback_publisher();
         let action_context = self.context.clone();
         let log_path_clone = log_path.clone();
         let cancel_token = CancellationToken::new();
@@ -281,11 +320,12 @@ impl NodeBuildGoalHandler {
         let entity_handle_for_cancel = entity_handle.clone();
         let generation_for_cancel = captured_generation;
         let log_path_for_cancel = log_path.clone();
+        let gate_for_task = self.gate.clone();
 
         let task_handle = tokio::spawn(async move {
             let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
             let consumer_handle =
-                super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
+                super::spawn_feedback_forwarder(feedback_rx, feedback_publisher, |line| {
                     NodeBuildFeedback::from_stream(line.stream, &line.line).encode()
                 });
 
@@ -318,16 +358,13 @@ impl NodeBuildGoalHandler {
             };
 
             let _ = consumer_handle.await;
-            let mut state_guard = state_clone.lock().await;
-            *state_guard = ActionState::Completed { result };
+            if let Ok(payload) = result.encode() {
+                let _ = goal_ctx.complete(payload).await;
+            }
+            gate_for_task.finish(goal_ctx);
         });
 
         self.gate.set_task(task_handle, cancel_token);
-
-        super::encode_response_or_err(
-            "node_build_goal",
-            NodeBuildGoalResponse::accepted(&log_path).encode(),
-        )
     }
 }
 

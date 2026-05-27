@@ -1739,7 +1739,7 @@ async fn action_communication_no_instance_id_target() {
         let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
-            let mut action = ActionMessenger::expose(
+            let mut action = ActionMessenger::expose_creation(
                 &action_handle,
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
@@ -1780,7 +1780,18 @@ async fn action_communication_no_instance_id_target() {
                 async move {
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert!(request.message().payload().is_empty());
+                    let result_payload = request.message().payload();
+                    let (result_goal_id, result_body) =
+                        crate::messaging::unwrap_goal_payload(result_payload.as_ref())
+                            .expect("result request carries a goal envelope");
+                    assert!(
+                        !result_goal_id.is_empty(),
+                        "result request must name a goal"
+                    );
+                    assert!(
+                        result_body.is_empty(),
+                        "result request body should be empty"
+                    );
 
                     Ok(response_payload)
                 }
@@ -1925,7 +1936,7 @@ async fn action_communication_with_instance_id_target() {
         let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
-            let mut action = ActionMessenger::expose(
+            let mut action = ActionMessenger::expose_creation(
                 &action_handle,
                 LISTENER_CORE_NODE1,
                 LISTENER_INSTANCE_ID1,
@@ -1972,7 +1983,7 @@ async fn action_communication_with_instance_id_target() {
         let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
-            let mut action = ActionMessenger::expose(
+            let mut action = ActionMessenger::expose_creation(
                 &action_handle,
                 LISTENER_CORE_NODE2,
                 LISTENER_INSTANCE_ID2,
@@ -2013,7 +2024,18 @@ async fn action_communication_with_instance_id_target() {
                 async move {
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert!(request.message().payload().is_empty());
+                    let result_payload = request.message().payload();
+                    let (result_goal_id, result_body) =
+                        crate::messaging::unwrap_goal_payload(result_payload.as_ref())
+                            .expect("result request carries a goal envelope");
+                    assert!(
+                        !result_goal_id.is_empty(),
+                        "result request must name a goal"
+                    );
+                    assert!(
+                        result_body.is_empty(),
+                        "result request body should be empty"
+                    );
 
                     Ok(response_payload)
                 }
@@ -2163,7 +2185,7 @@ async fn action_communication_goal_cancelled() {
         let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
-            let mut action = ActionMessenger::expose(
+            let mut action = ActionMessenger::expose_creation(
                 &action_handle,
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
@@ -2257,9 +2279,17 @@ async fn action_communication_goal_cancelled() {
 
             assert_eq!(cancel_context.message().core_node(), CALLER_CORE_NODE);
             assert_eq!(cancel_context.message().instance_id(), CALLER_INSTANCE_ID);
+            let cancel_payload = cancel_context.message().payload();
+            let (cancel_goal_id, cancel_body) =
+                crate::messaging::unwrap_goal_payload(cancel_payload.as_ref())
+                    .expect("cancel request carries a goal envelope");
             assert!(
-                cancel_context.message().payload().is_empty(),
-                "cancel service should receive empty payload"
+                !cancel_goal_id.is_empty(),
+                "cancel request must name a goal"
+            );
+            assert!(
+                cancel_body.is_empty(),
+                "cancel request body should be empty"
             );
 
             cancel_call_count.fetch_add(1, Ordering::SeqCst);
@@ -2418,7 +2448,7 @@ async fn single_action_communication_multiple_polls() {
         let cases = Arc::clone(&cases);
 
         tokio::spawn(async move {
-            let action = ActionMessenger::expose(
+            let action = ActionMessenger::expose_creation(
                 &action_handle,
                 LISTENER_CORE_NODE,
                 LISTENER_INSTANCE_ID,
@@ -2512,7 +2542,18 @@ async fn single_action_communication_multiple_polls() {
             for _ in 0..client_total {
                 let handler = result_service
                     .spawn_next_request_handler(move |request| async move {
-                        assert!(request.message().payload().is_empty());
+                        let result_payload = request.message().payload();
+                        let (result_goal_id, result_body) =
+                            crate::messaging::unwrap_goal_payload(result_payload.as_ref())
+                                .expect("result request carries a goal envelope");
+                        assert!(
+                            !result_goal_id.is_empty(),
+                            "result request must name a goal"
+                        );
+                        assert!(
+                            result_body.is_empty(),
+                            "result request body should be empty"
+                        );
 
                         Ok(Payload::from_static(b"result=done"))
                     })
@@ -2788,7 +2829,7 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
     ) -> tokio::task::JoinHandle<()> {
         let handle = router.messenger().await;
         tokio::spawn(async move {
-            let action = ActionMessenger::expose(
+            let action = ActionMessenger::expose_creation(
                 &handle,
                 spec.core,
                 spec.inst,
@@ -3124,7 +3165,7 @@ async fn action_send_goal_wildcard_core_pinned_instance_discovers() {
     ) -> tokio::task::JoinHandle<()> {
         let handle = router.messenger().await;
         tokio::spawn(async move {
-            let action = ActionMessenger::expose(
+            let action = ActionMessenger::expose_creation(
                 &handle,
                 spec.core,
                 spec.inst,

@@ -1,15 +1,22 @@
 use super::discovery::discover_producer;
 use super::generate_short_id;
 use super::topics::Subscription;
-use super::{MessengerHandle, PROBE_TIMEOUT, ServiceEndpoint, TopicPublisher};
+use super::{
+    MessengerHandle, PROBE_TIMEOUT, ServiceEndpoint, ServiceRequestContext, ServiceResponder,
+    TopicPublisher,
+};
 use crate::error::{Error, Result};
+use crate::runtime::{CancellationToken, TaskHandle, spawn};
 use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
 use pmi::{ActionWireReceiver, ActionWireSender, PublisherQoS, SenderTarget, ServiceQueryKind};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 use tokio::time::Duration;
+use tracing::warn;
 
 pub struct ActionMessenger;
 
@@ -83,6 +90,32 @@ fn is_safe_goal_id(goal_id: &str) -> bool {
         && goal_id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+const CANCEL_ACK_ENCODING: &str = "action_cancel_ack";
+
+/// Encode the SDK-owned cancel acknowledgement. The cancel service no longer
+/// runs a user handler: the SDK fires the goal's cancel signal and replies
+/// with this one-byte ack. `true` means the goal was in flight (its signal
+/// fired); `false` means there was no such goal (unknown or already finished).
+/// This is the single source of truth for the cancel response wire shape;
+/// generated clients decode it via [`decode_cancel_ack`].
+pub fn encode_cancel_ack(accepted: bool) -> Payload {
+    Payload::from(Bytes::from_static(if accepted { &[1u8] } else { &[0u8] }))
+}
+
+/// Decode a cancel acknowledgement produced by [`encode_cancel_ack`]. Rejects
+/// any payload that is not exactly the single accepted/rejected byte rather
+/// than silently coercing it (parse, don't validate).
+pub fn decode_cancel_ack(payload: &[u8]) -> Result<bool> {
+    match payload {
+        [0] => Ok(false),
+        [1] => Ok(true),
+        _ => Err(Error::InternalEncodingError {
+            identifier: CANCEL_ACK_ENCODING.to_string(),
+            reason: format!("expected a single 0/1 byte, got {} bytes", payload.len()),
+        }),
+    }
 }
 
 /// Re-exported from `core-node-api` so callers can use the existing
@@ -278,6 +311,380 @@ pub struct ActionCreation {
     pub result_service: ServiceEndpoint,
 }
 
+// ---------------------------------------------------------------------------
+// Concurrent goals: per-goal registry, rendezvous, and `GoalContext`
+// ---------------------------------------------------------------------------
+
+/// Result-rendezvous state for one in-flight goal. The worker delivers the
+/// result via [`GoalContext::complete`] while the client requests it via the
+/// result service; the two can arrive in either order, so the slot buffers
+/// whichever comes first.
+enum ResultSlot {
+    /// Neither side has arrived yet.
+    Empty,
+    /// `complete` ran first: the result waits here for the next result request.
+    Buffered(Payload),
+    /// A result request arrived first: its responder is parked here until
+    /// `complete` delivers.
+    Waiting(ServiceResponder),
+    /// The result has been handed to at least one requester. Retained (rather
+    /// than dropped) so a client retry or a late duplicate request still gets
+    /// an answer for as long as the [`GoalContext`] is alive.
+    Delivered(Payload),
+}
+
+/// Per-goal server-side state, shared between the [`GoalContext`] the worker
+/// owns and the cancel/result pumps that route requests by `goal_id`.
+struct GoalSlot {
+    /// Fired by the cancel pump when a cancel request names this goal.
+    /// `GoalContext::cancel_signal` awaits it; idempotent and resolves
+    /// immediately if the cancel already arrived.
+    cancel: CancellationToken,
+    result: StdMutex<ResultSlot>,
+}
+
+impl GoalSlot {
+    fn new() -> Self {
+        Self {
+            cancel: CancellationToken::new(),
+            result: StdMutex::new(ResultSlot::Empty),
+        }
+    }
+}
+
+/// `goal_id -> GoalSlot` map shared by the cancel pump, the result pump, and
+/// every live [`GoalContext`]. Cloning shares the same underlying map.
+#[derive(Clone, Default)]
+struct GoalRegistry {
+    inner: Arc<StdMutex<HashMap<String, Arc<GoalSlot>>>>,
+}
+
+impl GoalRegistry {
+    fn insert(&self, goal_id: String, slot: Arc<GoalSlot>) {
+        self.inner.lock().unwrap().insert(goal_id, slot);
+    }
+
+    fn get(&self, goal_id: &str) -> Option<Arc<GoalSlot>> {
+        self.inner.lock().unwrap().get(goal_id).cloned()
+    }
+
+    fn remove(&self, goal_id: &str) {
+        self.inner.lock().unwrap().remove(goal_id);
+    }
+
+    /// Fire the cancel signal for `goal_id`. Returns whether the goal was
+    /// in flight (so the cancel pump can ack accepted/not-accepted).
+    fn signal_cancel(&self, goal_id: &str) -> bool {
+        match self.inner.lock().unwrap().get(goal_id) {
+            Some(slot) => {
+                slot.cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Deliver a buffered result to `responder`, or park `responder` until
+/// [`GoalContext::complete`] delivers. The decision is made under the slot
+/// lock; the (async) reply happens after the lock is released.
+async fn rendezvous_result(slot: &GoalSlot, responder: ServiceResponder) {
+    enum Outcome {
+        Deliver(Payload, ServiceResponder),
+        Parked,
+        Busy(ServiceResponder),
+    }
+
+    let outcome = {
+        let mut guard = slot.result.lock().unwrap();
+        match std::mem::replace(&mut *guard, ResultSlot::Empty) {
+            ResultSlot::Buffered(payload) => {
+                *guard = ResultSlot::Delivered(payload.clone());
+                Outcome::Deliver(payload, responder)
+            }
+            ResultSlot::Delivered(payload) => {
+                let reply = payload.clone();
+                *guard = ResultSlot::Delivered(payload);
+                Outcome::Deliver(reply, responder)
+            }
+            ResultSlot::Empty => {
+                *guard = ResultSlot::Waiting(responder);
+                Outcome::Parked
+            }
+            ResultSlot::Waiting(previous) => {
+                *guard = ResultSlot::Waiting(previous);
+                Outcome::Busy(responder)
+            }
+        }
+    };
+
+    match outcome {
+        Outcome::Deliver(payload, responder) => {
+            let _ = responder.respond(payload).await;
+        }
+        Outcome::Parked => {}
+        Outcome::Busy(responder) => {
+            let _ = responder
+                .respond_error("a result request is already pending for this goal".to_string())
+                .await;
+        }
+    }
+}
+
+/// Drains cancel requests for one action server, routing each to the named
+/// goal's cancel signal and replying with the SDK cancel ack. Ends when the
+/// endpoint closes.
+async fn run_cancel_pump(mut endpoint: ServiceEndpoint, registry: GoalRegistry) {
+    loop {
+        match endpoint.recv_next_request().await {
+            Ok(Some((context, responder))) => {
+                let accepted = match unwrap_goal_payload(context.message().payload().as_ref()) {
+                    Ok((goal_id, _)) => registry.signal_cancel(goal_id),
+                    Err(_) => false,
+                };
+                let _ = responder.respond(encode_cancel_ack(accepted)).await;
+            }
+            Ok(None) => break,
+            Err(err) => {
+                warn!(%err, "action cancel pump stopping after error");
+                break;
+            }
+        }
+    }
+}
+
+/// Drains result requests for one action server, routing each to the named
+/// goal's result rendezvous. Ends when the endpoint closes.
+async fn run_result_pump(mut endpoint: ServiceEndpoint, registry: GoalRegistry) {
+    loop {
+        match endpoint.recv_next_request().await {
+            Ok(Some((context, responder))) => {
+                match unwrap_goal_payload(context.message().payload().as_ref()) {
+                    Ok((goal_id, _)) => match registry.get(goal_id) {
+                        Some(slot) => rendezvous_result(&slot, responder).await,
+                        None => {
+                            let _ = responder
+                                .respond_error(format!("no in-flight goal `{goal_id}`"))
+                                .await;
+                        }
+                    },
+                    Err(err) => {
+                        let _ = responder
+                            .respond_error(format!("malformed result request: {err}"))
+                            .await;
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(err) => {
+                warn!(%err, "action result pump stopping after error");
+                break;
+            }
+        }
+    }
+}
+
+/// Per-goal handle handed to user code for a single accepted goal. Owns that
+/// goal's feedback publisher, cancel signal, and result delivery; it is the
+/// only handle the worker needs to drive the goal to completion. `Send` +
+/// `'static`, so it moves freely into a spawned worker task (see the
+/// compile-time assertion in the tests).
+pub struct GoalContext {
+    goal_id: String,
+    request: Bytes,
+    core_node: String,
+    instance_id: String,
+    link_id: String,
+    feedback: ActionFeedbackPublisher,
+    slot: Arc<GoalSlot>,
+    registry: GoalRegistry,
+    finalized: AtomicBool,
+}
+
+impl GoalContext {
+    /// The `goal_id` this context drives, as generated by the client and
+    /// carried in the goal envelope.
+    pub fn goal_id(&self) -> &str {
+        &self.goal_id
+    }
+
+    /// Envelope-stripped goal request bytes, ready for the typed decoder.
+    pub fn request_bytes(&self) -> &[u8] {
+        &self.request
+    }
+
+    /// Caller core node that fired this goal.
+    pub fn core_node(&self) -> &str {
+        &self.core_node
+    }
+
+    /// Caller instance id that fired this goal.
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    /// Producer-side link_id this goal was received on.
+    pub fn link_id(&self) -> &str {
+        &self.link_id
+    }
+
+    /// Resolves when a cancel request for this goal has been received.
+    /// Idempotent and resolves immediately if the cancel already arrived, so
+    /// it is safe to await inside a `tokio::select!`.
+    pub async fn cancel_signal(&self) {
+        self.slot.cancel.cancelled().await;
+    }
+
+    /// Whether a cancel for this goal has already been received.
+    pub fn is_cancelled(&self) -> bool {
+        self.slot.cancel.is_cancelled()
+    }
+
+    /// Publish one feedback message on this goal's stream. Empty payloads are
+    /// rejected because the empty payload is the end-of-stream sentinel that
+    /// [`Self::complete`] emits.
+    pub async fn publish_feedback(&self, payload: NonEmptyPayload) -> Result<()> {
+        self.feedback.publish(payload).await
+    }
+
+    /// A clone of this goal's feedback publisher, for handing to a feedback
+    /// forwarder task that runs alongside the worker. The publisher is scoped
+    /// to this goal, so forwarded messages only reach this goal's stream.
+    pub fn feedback_publisher(&self) -> ActionFeedbackPublisher {
+        self.feedback.clone()
+    }
+
+    /// Deliver the final result for this goal. Closes the feedback stream
+    /// first (so a client draining feedback breaks out before reading the
+    /// result), then rendezvous with the client's result request by
+    /// `goal_id`. Idempotent: a second call is a no-op. The result is
+    /// retained for retries until this context is dropped.
+    pub async fn complete(&self, result: Payload) -> Result<()> {
+        if self.finalized.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        let _ = self.feedback.publish_end().await;
+
+        let parked = {
+            let mut guard = self.slot.result.lock().unwrap();
+            match std::mem::replace(&mut *guard, ResultSlot::Empty) {
+                ResultSlot::Waiting(responder) => {
+                    *guard = ResultSlot::Delivered(result.clone());
+                    Some(responder)
+                }
+                ResultSlot::Empty => {
+                    *guard = ResultSlot::Buffered(result.clone());
+                    None
+                }
+                // A result is already buffered or delivered for this goal:
+                // keep it (the `finalized` guard above normally prevents this).
+                existing => {
+                    *guard = existing;
+                    None
+                }
+            }
+        };
+        if let Some(responder) = parked {
+            let _ = responder.respond(result).await;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for GoalContext {
+    fn drop(&mut self) {
+        // Evict the slot so any later cancel/result request gets a definitive
+        // "no such goal" answer instead of routing to a finished goal.
+        self.registry.remove(&self.goal_id);
+
+        // If the worker abandoned the goal without completing it, close the
+        // feedback stream so a draining client doesn't hang. Drop is sync and
+        // `publish_end` is async, so fire-and-forget on the runtime (only when
+        // one is available, to avoid panicking during runtime teardown).
+        if !self.finalized.swap(true, Ordering::SeqCst)
+            && tokio::runtime::Handle::try_current().is_ok()
+        {
+            let publisher = self.feedback.clone();
+            spawn(async move {
+                let _ = publisher.publish_end().await;
+            });
+        }
+    }
+}
+
+/// Server-side handle for an action that supports multiple concurrent goals.
+/// Returned by [`ActionMessenger::expose`]. Background pumps (spawned here)
+/// own the cancel and result services and route each request to the right
+/// [`GoalContext`] by `goal_id`; the caller drives the goal-accept loop via
+/// [`Self::recv_next_goal`] + [`Self::register_goal`].
+pub struct ActionServer {
+    goal_service: ServiceEndpoint,
+    feedback_factory: ActionFeedbackPublisherFactory,
+    registry: GoalRegistry,
+    cancel_pump: TaskHandle<()>,
+    result_pump: TaskHandle<()>,
+}
+
+impl ActionServer {
+    fn from_creation(creation: ActionCreation) -> Self {
+        let registry = GoalRegistry::default();
+        let cancel_pump = spawn(run_cancel_pump(creation.cancel_service, registry.clone()));
+        let result_pump = spawn(run_result_pump(creation.result_service, registry.clone()));
+        Self {
+            goal_service: creation.goal_service,
+            feedback_factory: creation.feedback_publisher_factory,
+            registry,
+            cancel_pump,
+            result_pump,
+        }
+    }
+
+    /// Wait for the next goal request. Returns the request context plus a
+    /// [`ServiceResponder`] so the caller can run its own accept/reject
+    /// decision (typed goal response, admission control) before registering.
+    /// Returns `Ok(None)` when the goal service has closed.
+    pub async fn recv_next_goal(
+        &mut self,
+    ) -> Result<Option<(ServiceRequestContext, ServiceResponder)>> {
+        self.goal_service.recv_next_request().await
+    }
+
+    /// Register an accepted goal: declare its per-goal feedback publisher,
+    /// insert its routing slot, and return the [`GoalContext`] the worker
+    /// drives. Insert the slot *before* responding "accepted" to the client
+    /// (the client only sends cancel/result after it sees acceptance), so a
+    /// fast cancel/result can never miss the slot.
+    pub async fn register_goal(&self, context: &ServiceRequestContext) -> Result<GoalContext> {
+        let link_id = context.link_id().to_string();
+        let wire = context.message().payload().into_inner();
+        let declared = self
+            .feedback_factory
+            .declare_from_wire(&link_id, wire)
+            .await?;
+        let slot = Arc::new(GoalSlot::new());
+        self.registry
+            .insert(declared.goal_id.clone(), Arc::clone(&slot));
+        Ok(GoalContext {
+            goal_id: declared.goal_id,
+            request: declared.user_payload,
+            core_node: context.message().core_node().to_string(),
+            instance_id: context.message().instance_id().to_string(),
+            link_id,
+            feedback: declared.publisher,
+            slot,
+            registry: self.registry.clone(),
+            finalized: AtomicBool::new(false),
+        })
+    }
+}
+
+impl Drop for ActionServer {
+    fn drop(&mut self) {
+        self.cancel_pump.abort();
+        self.result_pump.abort();
+    }
+}
+
 impl ActionMessenger {
     /// Expose an action server. The producer declares its queryables under
     /// the reserved default `_` link_id segment; consumers pin a specific
@@ -285,6 +692,30 @@ impl ActionMessenger {
     /// binding map. `as_identity` must match what callers pass to
     /// [`Self::send_goal`].
     pub async fn expose(
+        messenger: &MessengerHandle,
+        bound_core_node: &str,
+        as_instance_id: &str,
+        as_identity: SenderTarget,
+        as_action_name: &str,
+    ) -> Result<ActionServer> {
+        let creation = Self::expose_creation(
+            messenger,
+            bound_core_node,
+            as_instance_id,
+            as_identity,
+            as_action_name,
+        )
+        .await?;
+        Ok(ActionServer::from_creation(creation))
+    }
+
+    /// Low-level expose that yields the raw [`ActionCreation`] (the three
+    /// service endpoints plus the feedback factory) instead of an
+    /// [`ActionServer`]. [`Self::expose`] builds the concurrent goal server on
+    /// top of this; it is also the entry point for callers (the Python
+    /// bindings, messaging-layer tests) that drive the goal/cancel/result
+    /// services manually.
+    pub async fn expose_creation(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
@@ -443,22 +874,31 @@ impl ActionMessenger {
         action_handle: &ActionGoalHandle,
         cancel_timeout: Duration,
     ) -> Result<Message> {
-        Self::cancel_with_sender(messenger_handle, &action_handle.sender, cancel_timeout).await
+        Self::cancel_with_sender(
+            messenger_handle,
+            &action_handle.sender,
+            &action_handle.goal_id,
+            cancel_timeout,
+        )
+        .await
     }
 
-    /// Like [`cancel_goal`](Self::cancel_goal) but takes a cloned sender
-    /// directly. External wrappers (e.g. Python bindings) hold a clone so
-    /// they can cancel without locking the goal handle during the network
-    /// round-trip.
+    /// Like [`cancel_goal`](Self::cancel_goal) but takes a cloned sender and
+    /// the `goal_id` directly. External wrappers (e.g. Python bindings) hold a
+    /// clone so they can cancel without locking the goal handle during the
+    /// network round-trip. The `goal_id` is wrapped into the request envelope
+    /// so the server routes the cancel to the right in-flight goal.
     pub async fn cancel_with_sender(
         messenger_handle: &MessengerHandle,
         sender: &ActionWireSender,
+        goal_id: &str,
         cancel_timeout: Duration,
     ) -> Result<Message> {
+        let payload = wrap_goal_payload(goal_id, &[])?;
         messenger_handle
             .poll_service(
                 &sender.cancel_service(),
-                Payload::new(),
+                payload,
                 ServiceQueryKind::UserRequest,
                 cancel_timeout,
             )
@@ -470,22 +910,30 @@ impl ActionMessenger {
         action_handle: &ActionGoalHandle,
         result_timeout: Duration,
     ) -> Result<Message> {
-        Self::request_result_with_sender(messenger_handle, &action_handle.sender, result_timeout)
-            .await
+        Self::request_result_with_sender(
+            messenger_handle,
+            &action_handle.sender,
+            &action_handle.goal_id,
+            result_timeout,
+        )
+        .await
     }
 
     /// Like [`request_result`](Self::request_result) but takes a cloned sender
-    /// directly. Mirrors [`cancel_with_sender`](Self::cancel_with_sender).
+    /// and the `goal_id` directly. Mirrors
+    /// [`cancel_with_sender`](Self::cancel_with_sender).
     pub async fn request_result_with_sender(
         messenger_handle: &MessengerHandle,
         sender: &ActionWireSender,
+        goal_id: &str,
         result_timeout: Duration,
     ) -> Result<Message> {
         let action_name = sender.to_action_name().to_string();
+        let payload = wrap_goal_payload(goal_id, &[])?;
         messenger_handle
             .poll_service(
                 &sender.result_service(),
-                Payload::new(),
+                payload,
                 ServiceQueryKind::UserRequest,
                 result_timeout,
             )
@@ -588,5 +1036,27 @@ mod envelope_tests {
     fn unwrap_rejects_non_utf8_goal_id() {
         // 0xFF / 0xFE form an invalid UTF-8 sequence.
         assert_unwrap_error(unwrap_goal_payload(&[0x02, 0xFF, 0xFE, b'p']));
+    }
+
+    #[test]
+    fn cancel_ack_roundtrips() {
+        assert!(decode_cancel_ack(encode_cancel_ack(true).as_ref()).expect("decode true"));
+        assert!(!decode_cancel_ack(encode_cancel_ack(false).as_ref()).expect("decode false"));
+    }
+
+    #[test]
+    fn cancel_ack_rejects_malformed() {
+        assert!(decode_cancel_ack(&[]).is_err());
+        assert!(decode_cancel_ack(&[2]).is_err());
+        assert!(decode_cancel_ack(&[0, 1]).is_err());
+    }
+
+    #[test]
+    fn goal_context_and_server_are_send_static() {
+        fn assert_send_static<T: Send + 'static>() {}
+        // The worker moves a `GoalContext` into a spawned task, and the
+        // `ActionServer` is held across awaits; both must be `Send + 'static`.
+        assert_send_static::<GoalContext>();
+        assert_send_static::<ActionServer>();
     }
 }

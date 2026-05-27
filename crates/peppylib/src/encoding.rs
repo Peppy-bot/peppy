@@ -137,13 +137,3 @@ pub fn decode_message(
     serialize::read_message(data, ReaderOptions::default())
         .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
 }
-
-/// Prefix used by action services to indicate a result is not yet available.
-pub const RESULT_PENDING_PREFIX: &str = "result pending";
-
-/// Returns `true` if the payload is a "result pending" sentinel from an action service.
-pub fn is_result_pending(payload: &[u8]) -> bool {
-    std::str::from_utf8(payload)
-        .map(|text| text.starts_with(RESULT_PENDING_PREFIX))
-        .unwrap_or(false)
-}

@@ -1,4 +1,4 @@
-use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
+use super::super::action_loop::{GoalHandler, reply_goal, run_action_loop};
 use super::gate::ConcurrencyGate;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
@@ -15,7 +15,7 @@ use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext,
+    NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext, ServiceResponder,
 };
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::process::Child;
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -106,16 +106,6 @@ pub async fn listen_for_node_run(
     Ok(handle)
 }
 
-impl ActionResult for NodeRunResult {
-    fn identifier() -> &'static str {
-        "node_run_result"
-    }
-
-    fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode().map_err(Into::into)
-    }
-}
-
 #[derive(Clone)]
 struct NodeRunGoalHandler {
     context: NodeRunActionContext,
@@ -123,20 +113,16 @@ struct NodeRunGoalHandler {
 }
 
 impl GoalHandler for NodeRunGoalHandler {
-    type Result = NodeRunResult;
-
     async fn handle_goal(
         &self,
-        context: ServiceRequestContext,
-        user_payload: bytes::Bytes,
-        feedback_publisher: ActionFeedbackPublisher,
-        state: Arc<Mutex<ActionState<NodeRunResult>>>,
-    ) -> PeppyResult<Payload> {
+        request: ServiceRequestContext,
+        responder: ServiceResponder,
+        server: &peppylib::messaging::ActionServer,
+    ) {
         handle_goal_request(
-            context,
-            user_payload,
-            feedback_publisher,
-            state,
+            request,
+            responder,
+            server,
             self.context.clone(),
             self.gate.clone(),
         )
@@ -325,31 +311,51 @@ pub(crate) async fn run_node_run(
 }
 
 async fn handle_goal_request(
-    context: ServiceRequestContext,
-    user_payload: bytes::Bytes,
-    feedback_publisher: ActionFeedbackPublisher,
-    state: Arc<Mutex<ActionState<NodeRunResult>>>,
+    request: ServiceRequestContext,
+    responder: ServiceResponder,
+    server: &peppylib::messaging::ActionServer,
     action_context: NodeRunActionContext,
     gate: ConcurrencyGate,
-) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id().to_string();
+) {
+    let sender_instance_id = request.message().instance_id().to_string();
 
-    let goal = match NodeRunGoal::decode(&user_payload) {
-        Ok(goal) => goal,
-        Err(e) => {
-            return encode_rejected_start_goal(format!("invalid payload: {}", e));
+    let goal = {
+        let wrapped = request.message().payload();
+        let user_payload = match peppylib::messaging::unwrap_goal_payload(wrapped.as_ref()) {
+            Ok((_, user)) => user,
+            Err(e) => {
+                reply_goal(
+                    responder,
+                    encode_rejected_start_goal(format!("malformed goal envelope: {e}")),
+                )
+                .await;
+                return;
+            }
+        };
+        match NodeRunGoal::decode(user_payload) {
+            Ok(goal) => goal,
+            Err(e) => {
+                reply_goal(
+                    responder,
+                    encode_rejected_start_goal(format!("invalid payload: {e}")),
+                )
+                .await;
+                return;
+            }
         }
     };
 
+    if let super::gate::Admission::AlreadyRunning { remaining_secs } =
+        gate.try_admit(goal.timeout_secs, false)
     {
-        let mut state_guard = state.lock().await;
-        if let super::gate::Admission::AlreadyRunning { remaining_secs } =
-            gate.try_admit(&mut state_guard, goal.timeout_secs, false)
-        {
-            return encode_rejected_start_goal(format!(
+        reply_goal(
+            responder,
+            encode_rejected_start_goal(format!(
                 "action already in progress (times out in {remaining_secs}s)"
-            ));
-        }
+            )),
+        )
+        .await;
+        return;
     }
 
     // Parse runtime config to get instance_id for log file naming
@@ -357,9 +363,9 @@ async fn handle_goal_request(
         Ok(config) => config,
         Err(e) => {
             let error_msg = format!("Failed to parse PEPPY_RUNTIME_CONFIG: {}", e);
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            return encode_rejected_start_goal(error_msg);
+            gate.clear_running();
+            reply_goal(responder, encode_rejected_start_goal(error_msg)).await;
+            return;
         }
     };
 
@@ -380,22 +386,40 @@ async fn handle_goal_request(
         Ok(result) => result,
         Err(error_msg) => {
             debug!("{}", error_msg);
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            return encode_rejected_start_goal(error_msg);
+            gate.clear_running();
+            reply_goal(responder, encode_rejected_start_goal(error_msg)).await;
+            return;
         }
     };
 
     debug!("Created log file for node run: {}", log_path.display());
 
-    // Panics are caught via catch_unwind so the state always transitions to
-    // Completed — without this, a panic silently aborts the task and leaves
-    // the state stuck on Running, causing clients to time out.
-    let state_clone = Arc::clone(&state);
+    let goal_ctx = match server.register_goal(&request).await {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            gate.clear_running();
+            let _ = responder
+                .respond_error(format!("failed to register goal: {e}"))
+                .await;
+            return;
+        }
+    };
+
+    reply_goal(
+        responder,
+        super::encode_response_or_err(
+            "node_run_goal",
+            NodeRunGoalResponse::accepted(&log_path).encode(),
+        ),
+    )
+    .await;
+
+    let feedback_publisher = goal_ctx.feedback_publisher();
+    let gate_for_task = gate.clone();
     tokio::spawn(async move {
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-        let _consumer_handle =
-            super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
+        let consumer_handle =
+            super::spawn_feedback_forwarder(feedback_rx, feedback_publisher, |line| {
                 NodeRunFeedback::from_stream(line.stream, &line.line).encode()
             });
 
@@ -412,14 +436,14 @@ async fn handle_goal_request(
         )
         .await;
 
-        let mut state_guard = state_clone.lock().await;
-        *state_guard = ActionState::Completed { result };
+        // Drain feedback before completing so the end-of-stream sentinel that
+        // `complete` emits doesn't race ahead of the final feedback lines.
+        let _ = consumer_handle.await;
+        if let Ok(payload) = result.encode() {
+            let _ = goal_ctx.complete(payload).await;
+        }
+        gate_for_task.finish(goal_ctx);
     });
-
-    super::encode_response_or_err(
-        "node_run_goal",
-        NodeRunGoalResponse::accepted(&log_path).encode(),
-    )
 }
 
 fn encode_rejected_start_goal(reason: impl Into<String>) -> PeppyResult<Payload> {

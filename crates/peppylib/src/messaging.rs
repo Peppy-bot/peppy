@@ -8,8 +8,9 @@ mod topics;
 
 pub use actions::{
     ActionCreation, ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle,
-    ActionMessenger, DeclaredFeedback, EmptyPayloadError, NonEmptyPayload, generate_goal_id,
-    unwrap_goal_payload, wrap_goal_payload,
+    ActionMessenger, ActionServer, DeclaredFeedback, EmptyPayloadError, GoalContext,
+    NonEmptyPayload, decode_cancel_ack, encode_cancel_ack, generate_goal_id, unwrap_goal_payload,
+    wrap_goal_payload,
 };
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};

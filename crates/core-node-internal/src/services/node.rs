@@ -6,7 +6,9 @@ pub(crate) mod cache;
 mod common;
 mod env;
 mod feedback;
-mod gate;
+// The single-goal admission gate is shared by every built-in action, including
+// the `repo` and `stack` ones, so it is reachable from outside `node`.
+pub(crate) mod gate;
 mod git_utils;
 mod info;
 mod init;

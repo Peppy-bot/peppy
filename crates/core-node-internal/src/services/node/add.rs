@@ -1,4 +1,4 @@
-use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
+use super::super::action_loop::{GoalHandler, reply_goal, run_action_loop};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::sync::{
@@ -23,7 +23,7 @@ use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
 use node_stack::{InstanceState, NodeStack, WorkingDirGuard};
 use parking_lot::Mutex as StdMutex;
-use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
+use peppylib::messaging::{ServiceRequestContext, ServiceResponder};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::fs::File;
@@ -32,7 +32,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -74,16 +74,6 @@ pub async fn listen_for_node_add(
     Ok(handle)
 }
 
-impl ActionResult for NodeAddResult {
-    fn identifier() -> &'static str {
-        "node_add_result"
-    }
-
-    fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode().map_err(Into::into)
-    }
-}
-
 #[derive(Clone)]
 struct NodeAddGoalHandler {
     context: NodeAddActionContext,
@@ -91,20 +81,16 @@ struct NodeAddGoalHandler {
 }
 
 impl GoalHandler for NodeAddGoalHandler {
-    type Result = NodeAddResult;
-
     async fn handle_goal(
         &self,
-        context: ServiceRequestContext,
-        user_payload: bytes::Bytes,
-        feedback_publisher: ActionFeedbackPublisher,
-        state: Arc<Mutex<ActionState<NodeAddResult>>>,
-    ) -> PeppyResult<Payload> {
+        request: ServiceRequestContext,
+        responder: ServiceResponder,
+        server: &peppylib::messaging::ActionServer,
+    ) {
         handle_goal_request(
-            context,
-            user_payload,
-            feedback_publisher,
-            state,
+            request,
+            responder,
+            server,
             self.context.clone(),
             self.gate.clone(),
         )
@@ -954,33 +940,55 @@ pub(crate) async fn run_node_add(
 }
 
 async fn handle_goal_request(
-    context: ServiceRequestContext,
-    user_payload: bytes::Bytes,
-    feedback_publisher: ActionFeedbackPublisher,
-    state: Arc<Mutex<ActionState<NodeAddResult>>>,
+    request: ServiceRequestContext,
+    responder: ServiceResponder,
+    server: &peppylib::messaging::ActionServer,
     action_context: NodeAddActionContext,
     gate: ConcurrencyGate,
-) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
+) {
+    let sender_instance_id = request.message().instance_id().to_string();
 
-    let goal = match NodeAddGoal::decode(&user_payload) {
-        Ok(g) => g,
-        Err(e) => return encode_rejected_goal(format!("invalid payload: {}", e)),
+    let goal = {
+        let wrapped = request.message().payload();
+        let user_payload = match peppylib::messaging::unwrap_goal_payload(wrapped.as_ref()) {
+            Ok((_, user)) => user,
+            Err(e) => {
+                reply_goal(
+                    responder,
+                    encode_rejected_goal(format!("malformed goal envelope: {e}")),
+                )
+                .await;
+                return;
+            }
+        };
+        match NodeAddGoal::decode(user_payload) {
+            Ok(g) => g,
+            Err(e) => {
+                reply_goal(
+                    responder,
+                    encode_rejected_goal(format!("invalid payload: {e}")),
+                )
+                .await;
+                return;
+            }
+        }
     };
 
+    if goal.force {
+        debug!("Force flag set: aborting any previous node_add task");
+    }
+    if let super::gate::Admission::AlreadyRunning { remaining_secs } =
+        gate.try_admit(goal.timeout_secs, goal.force)
     {
-        let mut state_guard = state.lock().await;
-        if goal.force && matches!(*state_guard, ActionState::Running { .. }) {
-            debug!("Force flag set: aborting previous node_add task");
-        }
-        if let super::gate::Admission::AlreadyRunning { remaining_secs } =
-            gate.try_admit(&mut state_guard, goal.timeout_secs, goal.force)
-        {
-            return encode_rejected_goal(format!(
+        reply_goal(
+            responder,
+            encode_rejected_goal(format!(
                 "action already in progress (times out in {remaining_secs}s), \
                  use `--force` to force adding the node"
-            ));
-        }
+            )),
+        )
+        .await;
+        return;
     }
 
     match &goal.source {
@@ -1016,23 +1024,46 @@ async fn handle_goal_request(
         Ok(result) => result,
         Err(error_msg) => {
             debug!("{}", error_msg);
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            return encode_rejected_goal(error_msg);
+            gate.clear_running();
+            reply_goal(responder, encode_rejected_goal(error_msg)).await;
+            return;
         }
     };
 
     debug!("Created log file for node add: {}", log_path.display());
 
-    let state_clone = Arc::clone(&state);
+    // Register the per-goal context before replying accepted, so a fast
+    // cancel/result for this goal can't miss the routing slot.
+    let goal_ctx = match server.register_goal(&request).await {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            gate.clear_running();
+            let _ = responder
+                .respond_error(format!("failed to register goal: {e}"))
+                .await;
+            return;
+        }
+    };
+
+    reply_goal(
+        responder,
+        super::encode_response_or_err(
+            "node_add_goal",
+            NodeAddGoalResponse::accepted(&log_path).encode(),
+        ),
+    )
+    .await;
+
+    let feedback_publisher = goal_ctx.feedback_publisher();
     let log_path_clone = log_path.clone();
     let cancel_token = CancellationToken::new();
     let cancel_token_clone = cancel_token.clone();
     let log_path_for_cancel = log_path.clone();
+    let gate_for_task = gate.clone();
     let task_handle = tokio::spawn(async move {
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
         let consumer_handle =
-            super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
+            super::spawn_feedback_forwarder(feedback_rx, feedback_publisher, |line| {
                 NodeAddFeedback::from_stream(line.stream, &line.line).encode()
             });
 
@@ -1069,16 +1100,16 @@ async fn handle_goal_request(
 
         // Wait for the feedback consumer to drain before completing.
         let _ = consumer_handle.await;
-        let mut state_guard = state_clone.lock().await;
-        *state_guard = ActionState::Completed { result };
+        // Deliver the result (rendezvous with the client's get_result), then
+        // retain the context on the gate so the result stays fetchable until
+        // the next goal is admitted.
+        if let Ok(payload) = result.encode() {
+            let _ = goal_ctx.complete(payload).await;
+        }
+        gate_for_task.finish(goal_ctx);
     });
 
     gate.set_task(task_handle, cancel_token);
-
-    super::encode_response_or_err(
-        "node_add_goal",
-        NodeAddGoalResponse::accepted(&log_path).encode(),
-    )
 }
 
 async fn shutdown_existing_instances(

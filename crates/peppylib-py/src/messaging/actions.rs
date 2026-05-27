@@ -212,7 +212,10 @@ impl PyActionMessenger {
         let handle = messenger.inner.clone();
         let as_identity = as_identity.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let creation = ActionMessenger::expose(
+            // Use the low-level `expose_creation` (the raw services) rather than
+            // `expose` (the concurrent `ActionServer`): the Python bindings drive
+            // the goal/cancel/result services directly.
+            let creation = ActionMessenger::expose_creation(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
@@ -306,10 +309,12 @@ impl PyActionMessenger {
         let cancel_timeout = duration_from_secs_f64("cancel_timeout_secs", cancel_timeout_secs)?;
         let handle = messenger.inner.clone();
         let sender = goal_handle.sender.clone();
+        let goal_id = goal_handle.goal_id.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let response = ActionMessenger::cancel_with_sender(&handle, &sender, cancel_timeout)
-                .await
-                .map_err(to_py_err)?;
+            let response =
+                ActionMessenger::cancel_with_sender(&handle, &sender, &goal_id, cancel_timeout)
+                    .await
+                    .map_err(to_py_err)?;
             Ok(PyTopicMessage::from(response))
         })
     }
@@ -328,11 +333,16 @@ impl PyActionMessenger {
         let result_timeout = duration_from_secs_f64("result_timeout_secs", result_timeout_secs)?;
         let handle = messenger.inner.clone();
         let sender = goal_handle.sender.clone();
+        let goal_id = goal_handle.goal_id.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let response =
-                ActionMessenger::request_result_with_sender(&handle, &sender, result_timeout)
-                    .await
-                    .map_err(to_py_err)?;
+            let response = ActionMessenger::request_result_with_sender(
+                &handle,
+                &sender,
+                &goal_id,
+                result_timeout,
+            )
+            .await
+            .map_err(to_py_err)?;
             Ok(PyTopicMessage::from(response))
         })
     }
