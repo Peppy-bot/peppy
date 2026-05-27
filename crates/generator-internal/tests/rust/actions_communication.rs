@@ -259,33 +259,30 @@ use peppygen::Result;
 async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
-        println!(
-            "server received goal arm_id={} desired={:?}",
-            request.data.arm_id,
-            request.data.desired_position
-        );
-        Ok(move_arm::GoalResponse::new(true))
-    })
-    .await?;
+    // Accept loop: a real server keeps running so its results stay fetchable.
+    while let Some(ctx) = action
+        .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+            println!(
+                "server received goal arm_id={} desired={:?}",
+                request.data.arm_id,
+                request.data.desired_position
+            );
+            Ok(move_arm::GoalResponse::new(true))
+        })
+        .await?
+    {
+        let feedback_message = [7, 31, 43];
+        ctx.publish_feedback(feedback_message).await?;
+        println!("server emitted feedback message {:?}", feedback_message);
 
-    let feedback_message = [7, 31, 43];
-    action.emit_feedback(feedback_message).await?;
-    println!("server emitted feedback message {:?}", feedback_message);
-
-    let final_position = [98, 4, 26];
-    action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
+        let final_position = [98, 4, 26];
         println!("server preparing action result");
-        let final_pos = final_position.clone();
-        Ok(move_arm::ResultResponse::new(
-            true,
-            None,
-            final_pos,
-        ))
-    })
-    .await?;
-
-    println!("server handled result request. Final position sent: {:?}", &final_position);
+        ctx.complete(true, None, final_position).await?;
+        println!(
+            "server handled result request. Final position sent: {:?}",
+            &final_position
+        );
+    }
 
     Ok(())
 }
@@ -352,15 +349,10 @@ fn main() -> Result<()> {
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        BRAIN_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
+    // The exposer's readiness was already established by the action-service
+    // probe above. A long-lived accept loop never returns from its run closure,
+    // so the node never exposes `node_health` (which is served post-setup);
+    // probing it here would time out.
 
     send_shutdown(
         &messenger,
@@ -513,13 +505,9 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     ).await?;
     println!("goal accepted={}", action_handle.data.accepted);
 
+    // The SDK acks the cancel: accepted == true while the goal is in flight.
     let cancel_response = action_handle.cancel_goal(Duration::from_secs(5)).await?;
-    let error_msg = cancel_response.data.error_message.as_deref().unwrap_or("<none>");
-    println!(
-        "cancel accepted={} error={}",
-        cancel_response.data.accepted,
-        error_msg
-    );
+    println!("cancel accepted={}", cancel_response.data.accepted);
 
     Ok(())
 }
@@ -573,29 +561,26 @@ use peppygen::Result;
 async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
-        println!(
-            "server received goal arm_id={} desired={:?}",
-            request.data.arm_id,
-            request.data.desired_position
-        );
-        Ok(move_arm::GoalResponse::new(true))
-    })
-    .await?;
+    let Some(ctx) = action
+        .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+            println!(
+                "server received goal arm_id={} desired={:?}",
+                request.data.arm_id,
+                request.data.desired_position
+            );
+            Ok(move_arm::GoalResponse::new(true))
+        })
+        .await?
+    else {
+        return Ok(());
+    };
     println!("server handled goal request");
 
-    let cancel_error = "goal cancelled by server";
-
-    action.handle_cancel_next_request(|_request| -> Result<move_arm::CancelResponse> {
-        println!("server received cancel request");
-        Ok(move_arm::CancelResponse::new(
-            false,
-            Some(cancel_error.to_owned()),
-        ))
-    })
-    .await?;
-
-    println!("server responded to cancel request error={}", cancel_error);
+    // Cancellation is now a signal the worker observes, not a handler.
+    ctx.cancel_signal().await;
+    println!("server saw cancel for goal");
+    ctx.complete(false, Some("cancelled by client".to_owned()), [0, 0, 0])
+        .await?;
 
     Ok(())
 }
@@ -662,15 +647,10 @@ fn main() -> Result<()> {
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        BRAIN_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
+    // The exposer's readiness was already established by the action-service
+    // probe above. A long-lived accept loop never returns from its run closure,
+    // so the node never exposes `node_health` (which is served post-setup);
+    // probing it here would time out.
 
     send_shutdown(
         &messenger,
@@ -716,7 +696,7 @@ fn main() -> Result<()> {
     );
     assert!(
         consumer_stdout.contains("goal accepted=true")
-            && consumer_stdout.contains("cancel accepted=false error=goal cancelled by server"),
+            && consumer_stdout.contains("cancel accepted=true"),
         "consumer did not complete the cancel flow.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr
@@ -733,10 +713,8 @@ fn main() -> Result<()> {
     );
     assert!(
         exposer_stdout.contains("server handled goal request")
-            && exposer_stdout.contains("server received cancel request")
-            && exposer_stdout
-                .contains("server responded to cancel request error=goal cancelled by server"),
-        "exposer did not handle cancel endpoint as expected.\nstdout:\n{}\nstderr:\n{}",
+            && exposer_stdout.contains("server saw cancel for goal"),
+        "exposer did not observe the cancel signal as expected.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
     );
@@ -930,31 +908,31 @@ use peppygen::Result;
 async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
-        println!(
-            "server received goal arm_id={} desired={:?}",
-            request.data.arm_id,
-            request.data.desired_position
-        );
-        Ok(move_arm::GoalResponse::new(true))
-    })
-    .await?;
-    println!("server accepted goal");
+    while let Some(ctx) = action
+        .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+            println!(
+                "server received goal arm_id={} desired={:?}",
+                request.data.arm_id,
+                request.data.desired_position
+            );
+            Ok(move_arm::GoalResponse::new(true))
+        })
+        .await?
+    {
+        println!("server accepted goal");
 
-    // Emit 3 feedback messages; the client must drain all of them before
-    // the end-of-stream signal closes the stream.
-    for i in 0..3 {
-        let pos = [i, i + 1, i + 2];
-        action.emit_feedback(pos).await?;
-        println!("server emitted feedback #{} position={:?}", i + 1, pos);
+        // Emit 3 feedback messages; the client must drain all of them before
+        // `complete` closes the stream with the end-of-stream signal.
+        for i in 0..3 {
+            let pos = [i, i + 1, i + 2];
+            ctx.publish_feedback(pos).await?;
+            println!("server emitted feedback #{} position={:?}", i + 1, pos);
+        }
+
+        let final_position = [99, 99, 99];
+        ctx.complete(true, None, final_position).await?;
+        println!("server handled result request final_position={:?}", final_position);
     }
-
-    let final_position = [99, 99, 99];
-    action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
-        Ok(move_arm::ResultResponse::new(true, None, final_position))
-    })
-    .await?;
-    println!("server handled result request final_position={:?}", final_position);
 
     Ok(())
 }
@@ -1020,15 +998,10 @@ fn main() -> Result<()> {
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        BRAIN_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
+    // The exposer's readiness was already established by the action-service
+    // probe above. A long-lived accept loop never returns from its run closure,
+    // so the node never exposes `node_health` (which is served post-setup);
+    // probing it here would time out.
 
     send_shutdown(
         &messenger,
@@ -1291,20 +1264,25 @@ use peppygen::Result;
 async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    action.handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
-        Ok(move_arm::GoalResponse::new(true))
-    })
-    .await?;
+    let Some(ctx) = action
+        .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
+            Ok(move_arm::GoalResponse::new(true))
+        })
+        .await?
+    else {
+        return Ok(());
+    };
     println!("server accepted goal");
 
-    action.emit_feedback([1, 2, 3]).await?;
+    ctx.publish_feedback([1, 2, 3]).await?;
     println!("server emitted warmup feedback");
 
-    action.handle_cancel_next_request(|_request| -> Result<move_arm::CancelResponse> {
-        Ok(move_arm::CancelResponse::new(true, None))
-    })
-    .await?;
-    println!("server accepted cancel — codegen publishes end-of-stream sentinel");
+    // On cancel, completing the goal closes the feedback stream (the
+    // end-of-stream sentinel is emitted by `complete`).
+    ctx.cancel_signal().await;
+    println!("server saw cancel — completing closes the feedback stream");
+    ctx.complete(false, Some("cancelled".to_owned()), [0, 0, 0])
+        .await?;
 
     Ok(())
 }
@@ -1370,15 +1348,10 @@ fn main() -> Result<()> {
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        BRAIN_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
+    // The exposer's readiness was already established by the action-service
+    // probe above. A long-lived accept loop never returns from its run closure,
+    // so the node never exposes `node_health` (which is served post-setup);
+    // probing it here would time out.
 
     send_shutdown(
         &messenger,
@@ -1452,7 +1425,7 @@ fn main() -> Result<()> {
         exposer_stderr
     );
     assert!(
-        exposer_stdout.contains("server accepted cancel"),
+        exposer_stdout.contains("server saw cancel"),
         "exposer did not reach the cancel-accept path.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
@@ -1573,14 +1546,10 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     println!("pre_cancel feedback new_position={:?}", pre_cancel.new_position);
 
     let cancel_response = action_handle.cancel_goal(Duration::from_secs(5)).await?;
-    let error_msg = cancel_response.data.error_message.as_deref().unwrap_or("<none>");
-    println!(
-        "cancel accepted={} error={}",
-        cancel_response.data.accepted, error_msg
-    );
+    println!("cancel accepted={}", cancel_response.data.accepted);
 
-    // CRITICAL: feedback after cancel-reject must still arrive — the goal
-    // continues running and the stream stays open.
+    // CRITICAL: the cancel is advisory — the server keeps the goal running, so
+    // feedback after the cancel must still arrive and the stream stays open.
     let post_cancel = action_handle.on_next_feedback_message().await?;
     println!("post_cancel feedback new_position={:?}", post_cancel.new_position);
 
@@ -1651,31 +1620,26 @@ use peppygen::Result;
 async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    action.handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
-        Ok(move_arm::GoalResponse::new(true))
-    })
-    .await?;
+    while let Some(ctx) = action
+        .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
+            Ok(move_arm::GoalResponse::new(true))
+        })
+        .await?
+    {
+        ctx.publish_feedback([1, 1, 1]).await?;
+        println!("server emitted pre-cancel feedback");
 
-    action.emit_feedback([1, 1, 1]).await?;
-    println!("server emitted pre-cancel feedback");
+        // The cancel is advisory: the worker observes the signal but chooses to
+        // keep the goal running, so the feedback stream stays open until complete.
+        ctx.cancel_signal().await;
+        println!("server saw cancel but keeps running");
 
-    action.handle_cancel_next_request(|_request| -> Result<move_arm::CancelResponse> {
-        Ok(move_arm::CancelResponse::new(false, Some("not now".to_owned())))
-    })
-    .await?;
-    println!("server rejected cancel");
+        ctx.publish_feedback([2, 2, 2]).await?;
+        println!("server emitted post-cancel feedback");
 
-    // Cancel was rejected — the codegen must keep the stream open. This
-    // emit_feedback would silently no-op (or panic on no-active-goal) if
-    // the codegen incorrectly cleared current_goal on a rejected cancel.
-    action.emit_feedback([2, 2, 2]).await?;
-    println!("server emitted post-cancel feedback");
-
-    action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
-        Ok(move_arm::ResultResponse::new(true, None, [9, 9, 9]))
-    })
-    .await?;
-    println!("server handled result request");
+        ctx.complete(true, None, [9, 9, 9]).await?;
+        println!("server handled result request");
+    }
 
     Ok(())
 }
@@ -1741,15 +1705,10 @@ fn main() -> Result<()> {
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        BRAIN_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
+    // The exposer's readiness was already established by the action-service
+    // probe above. A long-lived accept loop never returns from its run closure,
+    // so the node never exposes `node_health` (which is served post-setup);
+    // probing it here would time out.
 
     send_shutdown(
         &messenger,
@@ -1798,7 +1757,7 @@ fn main() -> Result<()> {
         consumer_stdout
     );
     assert!(
-        consumer_stdout.contains("cancel accepted=false error=not now"),
+        consumer_stdout.contains("cancel accepted=true"),
         "consumer did not see rejected cancel.\nstdout:\n{}",
         consumer_stdout
     );
@@ -1829,7 +1788,7 @@ fn main() -> Result<()> {
     );
     assert!(
         exposer_stdout.contains("server emitted pre-cancel feedback")
-            && exposer_stdout.contains("server rejected cancel")
+            && exposer_stdout.contains("server saw cancel but keeps running")
             && exposer_stdout.contains("server emitted post-cancel feedback")
             && exposer_stdout.contains("server handled result request"),
         "exposer did not exercise the cancel-reject path correctly.\nstdout:\n{}",

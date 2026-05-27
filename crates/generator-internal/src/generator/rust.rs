@@ -35,9 +35,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use actions::{
-    ActionHandleRole, build_action_expose_method, build_action_feedback_emit,
-    build_action_handle_method, build_action_handle_struct, build_action_payload_handler,
-    build_action_request_deserializer,
+    build_action_complete_method, build_action_expose_method, build_action_goal_method,
+    build_action_handle_struct, build_action_payload_handler, build_action_publish_feedback,
+    build_action_request_deserializer, build_goal_context,
 };
 use context::{GenerationContext, collect_function_params, map_message_format};
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
@@ -717,14 +717,12 @@ impl LanguageGenerator for RustGenerator {
         let action_prefix = to_camel_case(&base_name);
 
         let mut context = GenerationContext::default();
-        let mut action_handle_methods: Vec<TokenStream> = Vec::new();
+        // Methods on the per-goal `GoalContext` (publish_feedback, complete).
+        let mut context_methods: Vec<TokenStream> = Vec::new();
         let mut helper_tokens: Vec<TokenStream> = Vec::new();
+        let mut goal_method: Option<TokenStream> = None;
 
         let action_name_literal = Literal::string(&action.name);
-
-        let has_goal = action.goal_service.is_some();
-        let has_feedback = action.feedback_topic.is_some();
-        let has_result = action.result_service.is_some();
 
         if let Some(goal) = action.goal_service.as_ref() {
             let label = format!("{base_name}_goal");
@@ -809,148 +807,44 @@ impl LanguageGenerator for RustGenerator {
             )?;
             helper_tokens.push(goal_handler_fn);
 
-            let goal_role = if has_feedback {
-                ActionHandleRole::Goal
-            } else {
-                ActionHandleRole::Plain
-            };
-            let goal_method = build_action_handle_method(
-                &Ident::new("handle_goal_next_request", Span::call_site()),
-                &Ident::new("handle_goal_payload", Span::call_site()),
-                &Ident::new("GoalRequest", Span::call_site()),
-                &Ident::new("GoalResponse", Span::call_site()),
-                &Ident::new("goal_service", Span::call_site()),
+            // Cancel is now an SDK-driven signal (no user handler): the goal
+            // method's `GoalContext` exposes `cancel_signal()`.
+            goal_method = Some(build_action_goal_method(
                 encoding.is_some(),
-                goal_role,
-            );
-            action_handle_methods.push(goal_method);
-
-            let cancel_label = format!("{base_name}_goal_cancel");
-            let cancel_schema_prefix = format!("{action_prefix}GoalCancel");
-            let cancel_response_format = cancel_action_response_format();
-            let cancel_response_artifacts =
-                map_message_format(&cancel_label, Some(&cancel_response_format))?;
-
-            context.add_metadata_struct(Ident::new("CancelRequest", Span::call_site()), None);
-
-            let _cancel_params = collect_function_params(
-                None,
-                cancel_response_artifacts.as_ref(),
-                "Cancel",
-                &mut context,
-                None,
-            )?;
-
-            let cancel_response_spec =
-                if let Some(return_artifacts) = cancel_response_artifacts.as_ref() {
-                    let schema_key = scoped_schema_key(origin, &format!("{cancel_label}_response"));
-                    let schema_info = self.register_schema(
-                        &schema_key,
-                        &format!("{cancel_schema_prefix}Response"),
-                        return_artifacts,
-                    )?;
-                    Some(ServiceResponseSpec {
-                        format: return_artifacts.message_format(),
-                        struct_ident: Ident::new("CancelResponse", Span::call_site()),
-                        builder_type: schema_info.builder_type_tokens(),
-                        include_service_instance_id: false,
-                    })
-                } else {
-                    None
-                };
-
-            let cancel_handler_fn = build_action_payload_handler(
-                &Ident::new("handle_cancel_payload", Span::call_site()),
-                &Ident::new("deserialize_cancel_request", Span::call_site()),
-                &Ident::new("CancelRequest", Span::call_site()),
-                None,
-                cancel_response_spec.as_ref(),
-                false,
-            )?;
-            helper_tokens.push(cancel_handler_fn);
-
-            let cancel_role = if has_feedback {
-                ActionHandleRole::Cancel
-            } else {
-                ActionHandleRole::Plain
-            };
-            let cancel_method = build_action_handle_method(
-                &Ident::new("handle_cancel_next_request", Span::call_site()),
-                &Ident::new("handle_cancel_payload", Span::call_site()),
-                &Ident::new("CancelRequest", Span::call_site()),
-                &Ident::new("CancelResponse", Span::call_site()),
-                &Ident::new("cancel_service", Span::call_site()),
-                false,
-                cancel_role,
-            );
-            action_handle_methods.push(cancel_method);
+                response_spec.is_some(),
+            ));
         }
 
         if let Some(result) = action.result_service.as_ref() {
             let label = format!("{base_name}_result");
-            let schema_struct_prefix = format!("{action_prefix}Result");
+            let struct_prefix = format!("{action_prefix}Result");
 
             let response_artifacts = map_message_format(
                 &format!("{label}_response"),
                 result.response_message_format.as_ref(),
             )?;
 
-            context.add_metadata_struct(Ident::new("ResultRequest", Span::call_site()), None);
-
-            let _result_params = collect_function_params(
-                None,
+            // `complete` takes the result fields as params and serializes them;
+            // there is no server-side result request to decode.
+            let params = collect_function_params(
                 response_artifacts.as_ref(),
-                "Result",
+                None,
+                &struct_prefix,
                 &mut context,
                 None,
             )?;
-
-            let result_response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
-                let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
-                let schema_info = self.register_schema(
-                    &schema_key,
-                    &format!("{schema_struct_prefix}Response"),
-                    return_artifacts,
-                )?;
-                Some(ServiceResponseSpec {
-                    format: return_artifacts.message_format(),
-                    struct_ident: Ident::new("ResultResponse", Span::call_site()),
-                    builder_type: schema_info.builder_type_tokens(),
-                    include_service_instance_id: false,
-                })
-            } else {
-                None
-            };
-
-            let result_handler_fn = build_action_payload_handler(
-                &Ident::new("handle_result_payload", Span::call_site()),
-                &Ident::new("deserialize_result_request", Span::call_site()),
-                &Ident::new("ResultRequest", Span::call_site()),
-                None,
-                result_response_spec.as_ref(),
-                false,
+            let encoding = self.prepare_message_encoding(
+                &scoped_schema_key(origin, &format!("{label}_response")),
+                &format!("{struct_prefix}Response"),
+                response_artifacts.as_ref(),
+                &params,
             )?;
-            helper_tokens.push(result_handler_fn);
 
-            let result_role = if has_feedback {
-                ActionHandleRole::Result
-            } else {
-                ActionHandleRole::Plain
-            };
-            let result_method = build_action_handle_method(
-                &Ident::new("handle_result_next_request", Span::call_site()),
-                &Ident::new("handle_result_payload", Span::call_site()),
-                &Ident::new("ResultRequest", Span::call_site()),
-                &Ident::new("ResultResponse", Span::call_site()),
-                &Ident::new("result_service", Span::call_site()),
-                false,
-                result_role,
-            );
-            action_handle_methods.push(result_method);
+            context_methods.push(build_action_complete_method(&params, encoding.as_ref()));
         }
 
         if let Some(feedback) = action.feedback_topic.as_ref() {
-            let label = format!("emit_feedback {}", &action.name);
+            let label = format!("publish_feedback {}", &action.name);
             let struct_prefix = format!("{action_prefix}Feedback");
             let feedback_schema_name = format!("{base_name}_feedback");
             let format_artifacts =
@@ -969,16 +863,21 @@ impl LanguageGenerator for RustGenerator {
                 &params,
             )?;
 
-            let method_tokens = build_action_feedback_emit(&params, encoding.as_ref(), &label);
-            action_handle_methods.push(method_tokens);
+            context_methods.push(build_action_publish_feedback(
+                &params,
+                encoding.as_ref(),
+                &label,
+            ));
         }
 
-        if action_handle_methods.is_empty() {
+        // An action with no goal service has no GoalContext-based server API.
+        let Some(goal_method) = goal_method else {
             return Ok(());
-        }
+        };
 
-        let action_handle_struct = build_action_handle_struct(has_goal, has_feedback, has_result);
-        let expose_method = build_action_expose_method(has_goal, has_feedback, has_result, origin);
+        let action_handle_struct = build_action_handle_struct();
+        let expose_method = build_action_expose_method(origin);
+        let goal_context = build_goal_context(context_methods);
 
         let mut items = vec![quote!(const ACTION_NAME: &str = #action_name_literal;)];
         items.extend(context.into_tokens());
@@ -986,9 +885,10 @@ impl LanguageGenerator for RustGenerator {
         items.push(quote! {
             impl ActionHandle {
                 #expose_method
-                #( #action_handle_methods )*
+                #goal_method
             }
         });
+        items.push(goal_context);
         items.extend(helper_tokens);
 
         let tokens: TokenStream = quote! {
@@ -1501,40 +1401,49 @@ impl LanguageGenerator for RustGenerator {
         methods.push(goal_method);
         helper_items.append(&mut goal_helpers);
 
+        // The cancel response is now an SDK-owned one-byte ack (the cancel
+        // service no longer runs a user handler), so it is decoded via
+        // `decode_cancel_ack` rather than the capnp codec used for goal/result.
+        // `error_message` is always `None` because the SDK only reports whether
+        // the goal was in flight.
         let cancel_response_format = cancel_action_response_format();
         let cancel_artifacts = map_message_format(
             &action_schema_keys.cancel_response,
             Some(&cancel_response_format),
         )?
         .expect("cancel response format should yield artifacts");
-        let (cancel_method, mut cancel_helpers) = self.build_consumed_action_response_method(
+        let cancel_data_ident = Ident::new("CancelResponseData", Span::call_site());
+        let _cancel_params = collect_function_params(
+            None,
+            Some(&cancel_artifacts),
+            &format!("{action_struct_name}CancelResponse"),
             &mut context,
-            ConsumedActionResponseMethodSpec {
-                action_struct_name: &action_struct_name,
-                method_name: "cancel_goal",
-                response_struct_name: "CancelResponse",
-                data_struct_name: "CancelResponseData",
-                deserializer_name: "deserialize_cancel_response",
-                schema_message_prefix: "CancelResponseMessage",
-                // The `build_consumed_action_response_method` adds `_response`
-                // to the `schema_key` it receives, so pass the cancel base
-                // (`_cancel_goal`) here.
-                schema_key: action_schema_keys
-                    .cancel_response
-                    .strip_suffix("_response")
-                    .unwrap_or(&action_schema_keys.cancel_response),
-                response_artifacts: Some(cancel_artifacts),
-                messenger_call: quote! {
-                    peppylib::ActionMessenger::cancel_goal(
-                        &self.messenger,
-                        &self.inner,
-                        timeout,
-                    )
-                },
-            },
+            Some(&cancel_data_ident),
         )?;
-        methods.push(cancel_method);
-        helper_items.append(&mut cancel_helpers);
+        context.add_metadata_struct(
+            Ident::new("CancelResponse", Span::call_site()),
+            Some(&cancel_data_ident),
+        );
+        methods.push(quote! {
+            pub async fn cancel_goal(
+                &self,
+                timeout: std::time::Duration,
+            ) -> crate::Result<CancelResponse> {
+                let response =
+                    peppylib::ActionMessenger::cancel_goal(&self.messenger, &self.inner, timeout)
+                        .await?;
+                let accepted =
+                    peppylib::messaging::decode_cancel_ack(response.payload().as_ref())?;
+                Ok(CancelResponse {
+                    instance_id: response.instance_id().to_string(),
+                    core_node: response.core_node().to_string(),
+                    data: CancelResponseData {
+                        accepted,
+                        error_message: None,
+                    },
+                })
+            }
+        });
 
         if let Some(feedback_format) = feedback_format {
             let (feedback_method, mut feedback_helpers) = self

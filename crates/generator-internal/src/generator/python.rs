@@ -16,8 +16,8 @@ mod type_mapping;
 use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, DependencyContext, InterfaceArtifact, InterfaceKind,
-    InterfaceOrigin, LanguageGenerator, cancel_action_response_format, non_empty_message_format,
-    scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
+    InterfaceOrigin, LanguageGenerator, non_empty_message_format, scoped_schema_key,
+    validate_fixed_length_array_items, validate_generated_type_name_collisions,
     validate_message_format_field_names,
 };
 use crate::error::{Error, Result};
@@ -200,16 +200,6 @@ impl LanguageGenerator for PythonGenerator {
                 .and_then(|goal_service| goal_service.response_message_format.as_ref()),
         )?;
 
-        let cancel_response_schema_info = if action.goal_service.is_some() {
-            let cancel_format = cancel_action_response_format();
-            Some(self.register_schema(
-                &scoped_schema_key(origin, &format!("{}_cancel_response", action.name)),
-                &cancel_format,
-            )?)
-        } else {
-            None
-        };
-
         let result_response_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_result_response", action.name)),
             action
@@ -229,7 +219,6 @@ impl LanguageGenerator for PythonGenerator {
             action,
             goal_request_schema_info.as_ref(),
             goal_response_schema_info.as_ref(),
-            cancel_response_schema_info.as_ref(),
             result_response_schema_info.as_ref(),
             feedback_schema_info.as_ref(),
             origin,
@@ -344,10 +333,6 @@ impl LanguageGenerator for PythonGenerator {
             messages.goal_response.as_ref(),
         )?;
 
-        let cancel_format = cancel_action_response_format();
-        let cancel_response_schema_info =
-            Some(self.register_schema(&action_schema_keys.cancel_response, &cancel_format)?);
-
         let feedback_schema_info = self
             .register_optional_schema(&action_schema_keys.feedback, messages.feedback.as_ref())?;
         let result_response_schema_info = self.register_optional_schema(
@@ -361,7 +346,6 @@ impl LanguageGenerator for PythonGenerator {
             actions::ConsumedActionSchemaInfo {
                 goal_request: goal_request_schema_info.as_ref(),
                 goal_response: goal_response_schema_info.as_ref(),
-                cancel_response: cancel_response_schema_info.as_ref(),
                 feedback: feedback_schema_info.as_ref(),
                 result_response: result_response_schema_info.as_ref(),
             },

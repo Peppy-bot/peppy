@@ -1,17 +1,31 @@
+//! Concurrent action server example.
+//!
+//! Exposes a single action and serves many goals at once: the accept loop
+//! registers each goal, replies "accepted", and hands the goal's
+//! `GoalContext` to an independent worker task before going back to accept the
+//! next goal. Each worker streams progress feedback on its own goal's stream
+//! while watching that goal's cancel signal, then delivers a result. Because
+//! every goal owns a separate context, two clients fire goals that progress in
+//! parallel, and cancelling one goal never disturbs another.
+//!
+//! Pair this with the `hello_world_action_subscribes` example (run two
+//! subscribers at once to see the concurrency) and a `zenohd` router.
+
 use chrono::Local;
 use colored::Colorize;
 use config::consts::DEFAULT_MESSAGING_PORT;
 use names_generator2::get_random;
-use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
-use peppylib::{ActionMessenger, MessengerHandle, Payload, PeppyResult};
+use peppylib::messaging::{ActionServer, GoalContext, NonEmptyPayload, SenderTarget};
+use peppylib::{ActionMessenger, MessengerHandle, Payload};
 use rand::rng;
-use std::sync::Arc;
+use std::time::Duration;
 use tokio::signal;
-use tokio::sync::Mutex;
-use peppylib::messaging::SenderTarget;
 
 const NODE_NAME: &str = "hello_node";
 const ACTION_NAME: &str = "hello_action";
+
+/// How long each simulated work step takes between feedback messages.
+const STEP_DELAY: Duration = Duration::from_millis(400);
 
 async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     MessengerHandle::from_host_port(host, port)
@@ -28,320 +42,123 @@ fn current_timestamp() -> String {
     Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-fn payload_as_text(request: &ServiceRequestContext) -> String {
-    let payload = request.message().payload();
-    String::from_utf8_lossy(payload.as_ref()).to_string()
-}
-
-async fn handle_goal_request(
-    request: ServiceRequestContext,
-    feedback_publisher: &TopicPublisher,
-) -> PeppyResult<Payload> {
-    let request_id = request.request_id();
-    let core_node = request.message().core_node();
-    let instance_id = request.message().instance_id();
-    let payload_text = payload_as_text(&request);
-
-    let timestamp = current_timestamp();
-    println!(
-        "{}",
-        format!("[GOAL] [{timestamp}] Received goal `{request_id}` from `{instance_id}` and core node `{core_node}`")
-            .bold()
-            .green()
-    );
-
-    let feedback_text = format!("feedback: working on `{payload_text}`");
-    feedback_publisher
-        .publish(Payload::from(feedback_text.clone().into_bytes()))
-        .await?;
-
-    let timestamp = current_timestamp();
+/// Per-goal worker. Streams progress feedback for one goal while racing the
+/// goal's cancel signal, then delivers the result. The goal's payload is the
+/// name of the resource (e.g. a device) this goal targets; the framework has
+/// already stripped the wire envelope, so `request_bytes` is the user payload.
+async fn run_goal(ctx: GoalContext) {
+    let target = String::from_utf8_lossy(ctx.request_bytes()).into_owned();
     println!(
         "{}",
         format!(
-            "[FEEDBACK] [{timestamp}] Published feedback `{feedback_text}` for goal `{request_id}`"
+            "[GOAL] [{}] accepted goal `{}` for `{target}`",
+            current_timestamp(),
+            ctx.goal_id()
         )
         .bold()
-        .yellow()
+        .green()
     );
 
-    let response_text = format!("goal accepted: {payload_text}");
-
-    let timestamp = current_timestamp();
-    println!(
-        "{}",
-        format!("[GOAL] [{timestamp}] Responding to goal `{request_id}` with `{response_text}`")
-            .bold()
-            .green()
-    );
-
-    Ok(Payload::from(response_text.into_bytes()))
-}
-
-async fn handle_cancel_request(request: ServiceRequestContext) -> PeppyResult<Payload> {
-    let request_id = request.request_id();
-    let timestamp = current_timestamp();
-    println!(
-        "{}",
-        format!("[CANCEL] [{timestamp}] Received cancel request for goal `{request_id}`")
-            .bold()
-            .magenta()
-    );
-
-    if !request.message().payload().is_empty() {
-        let timestamp = current_timestamp();
-        println!(
-            "{}",
-            format!(
-                "[CANCEL] [{timestamp}] Cancel payload `{}` will be ignored.",
-                payload_as_text(&request)
-            )
-            .bold()
-            .magenta()
-        );
-    }
-
-    let response_text = format!("cancel acknowledged for goal `{request_id}`");
-    let timestamp = current_timestamp();
-    println!(
-        "{}",
-        format!("[CANCEL] [{timestamp}] Responding to cancel request with `{response_text}`")
-            .bold()
-            .magenta()
-    );
-
-    Ok(Payload::from(response_text.into_bytes()))
-}
-
-async fn handle_result_request(request: ServiceRequestContext) -> PeppyResult<Payload> {
-    let request_id = request.request_id();
-    let instance_id = request.message().instance_id();
-    let payload_text = payload_as_text(&request);
-
-    let timestamp = current_timestamp();
-    println!(
-        "{}",
-        format!(
-            "[RESULT] [{timestamp}] Received result request `{request_id}` from `{instance_id}` with payload `{payload_text}`"
-        )
-        .bold()
-        .cyan()
-    );
-
-    let response_text = format!("SUCCESS!");
-    let timestamp = current_timestamp();
-    println!(
-        "{}",
-        format!(
-            "[RESULT] [{timestamp}] Responding to result request `{request_id}` with `{response_text}`"
-        )
-        .bold()
-        .cyan()
-    );
-
-    Ok(Payload::from(response_text.into_bytes()))
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum LoopState {
-    WaitForGoal,
-    WaitForFollowups,
-    Shutdown,
-}
-
-fn log_ctrl_c() {
-    println!("{}", "[ACTION] Received CTRL+C, exiting.".bold().white());
-}
-
-fn log_listener_closed(listener: &str) {
-    println!(
-        "{}",
-        format!("[ACTION] {listener} listener closed by client.")
-            .bold()
-            .white()
-    );
-}
-
-fn log_handle_error(listener: &str, error: &impl std::fmt::Debug) {
-    eprintln!(
-        "{}",
-        format!("[ERROR] Failed to handle {listener} request: {error:?}")
-            .bold()
-            .red()
-    );
-}
-
-async fn set_active_goal(
-    active_caller_instance: &Arc<Mutex<Option<String>>>,
-    caller_instance: &str,
-) {
-    let mut active_instance = active_caller_instance.lock().await;
-    *active_instance = Some(caller_instance.to_string());
-}
-
-async fn clear_active_goal(active_caller_instance: &Arc<Mutex<Option<String>>>) {
-    let mut active_instance = active_caller_instance.lock().await;
-    *active_instance = None;
-}
-
-async fn has_active_goal(active_caller_instance: &Arc<Mutex<Option<String>>>) -> bool {
-    active_caller_instance.lock().await.is_some()
-}
-
-async fn matches_active_goal(
-    active_caller_instance: &Arc<Mutex<Option<String>>>,
-    caller_instance: &str,
-) -> bool {
-    let active_instance = active_caller_instance.lock().await;
-    match &*active_instance {
-        Some(active) => active == caller_instance,
-        None => false,
-    }
-}
-
-async fn wait_for_goal(
-    action: &mut ActionCreation,
-    active_caller_instance: &Arc<Mutex<Option<String>>>,
-) -> LoopState {
-    let feedback_publisher = &action.feedback_publisher;
-    let goal_outcome = tokio::select! {
-        _ = signal::ctrl_c() => {
-            log_ctrl_c();
-            return LoopState::Shutdown;
-        }
-        result = action.goal_service.handle_next_request({
-            let feedback_publisher = feedback_publisher;
-            let active_caller_instance = Arc::clone(active_caller_instance);
-            move |request| {
-                let feedback_publisher = feedback_publisher;
-                let active_caller_instance = Arc::clone(&active_caller_instance);
-                async move {
-                    set_active_goal(&active_caller_instance, request.message().instance_id()).await;
-                    handle_goal_request(request, feedback_publisher).await
-                }
-            }
-        }) => result,
-    };
-
-    match goal_outcome {
-        Ok(true) => LoopState::WaitForFollowups,
-        Ok(false) => {
-            log_listener_closed("Goal");
-            LoopState::Shutdown
-        }
-        Err(error) => {
-            log_handle_error("goal", &error);
-            LoopState::Shutdown
-        }
-    }
-}
-
-async fn handle_followups(
-    action: &mut ActionCreation,
-    active_caller_instance: &Arc<Mutex<Option<String>>>,
-) -> LoopState {
-    loop {
+    for percent in (20..=100).step_by(20) {
         tokio::select! {
-            _ = signal::ctrl_c() => {
-                log_ctrl_c();
-                return LoopState::Shutdown;
+            // Idempotent and resolves immediately once cancelled, so it is safe
+            // to re-arm every iteration.
+            _ = ctx.cancel_signal() => {
+                println!(
+                    "{}",
+                    format!(
+                        "[CANCEL] [{}] `{target}` cancelled at {percent}%; finishing early",
+                        current_timestamp()
+                    )
+                    .bold()
+                    .magenta()
+                );
+                // The worker decides how to react; here it completes with a
+                // cancelled result. `complete` also closes the feedback stream.
+                let _ = ctx
+                    .complete(Payload::from(
+                        format!("`{target}` cancelled at {percent}%").into_bytes(),
+                    ))
+                    .await;
+                return;
             }
-            cancel_result = action
-                .cancel_service
-                .handle_next_request({
-                    let active_caller_instance = Arc::clone(active_caller_instance);
-                    move |request| {
-                        let active_caller_instance = Arc::clone(&active_caller_instance);
-                        async move {
-                            let caller_instance = request.message().instance_id();
-                            if !matches_active_goal(&active_caller_instance, caller_instance).await {
-                                println!(
-                                    "{}",
-                                    "[CANCEL] Ignoring cancel request for inactive goal."
-                                        .bold()
-                                        .magenta()
-                                );
-                                return Ok(Payload::from_static(
-                                    b"cancel ignored: no active goal for caller",
-                                ));
-                            }
-
-                            let response = handle_cancel_request(request).await?;
-                            clear_active_goal(&active_caller_instance).await;
-                            Ok(response)
-                        }
-                    }
-                }) => {
-                    match cancel_result {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            log_listener_closed("Cancel");
-                            return LoopState::Shutdown;
-                        }
-                        Err(error) => {
-                            log_handle_error("cancel", &error);
-                            return LoopState::Shutdown;
-                        }
-                    }
+            _ = tokio::time::sleep(STEP_DELAY) => {
+                let line = format!("`{target}` progress {percent}%");
+                if let Ok(feedback) = NonEmptyPayload::try_new(Payload::from(line.clone().into_bytes())) {
+                    let _ = ctx.publish_feedback(feedback).await;
+                    println!(
+                        "{}",
+                        format!("[FEEDBACK] [{}] {line}", current_timestamp()).bold().yellow()
+                    );
                 }
-            result_result = action
-                .result_service
-                .handle_next_request({
-                    let active_caller_instance = Arc::clone(active_caller_instance);
-                    move |request| {
-                        let active_caller_instance = Arc::clone(&active_caller_instance);
-                        async move {
-                            let caller_instance = request.message().instance_id();
-                            if !matches_active_goal(&active_caller_instance, caller_instance).await {
-                                println!(
-                                    "{}",
-                                    "[RESULT] Ignoring result request for inactive goal."
-                                        .bold()
-                                        .cyan()
-                                );
-                                return Ok(Payload::from_static(
-                                    b"result ignored: no active goal for caller",
-                                ));
-                            }
-
-                            let response = handle_result_request(request).await?;
-                            clear_active_goal(&active_caller_instance).await;
-                            Ok(response)
-                        }
-                    }
-                }) => {
-                    match result_result {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            log_listener_closed("Result");
-                            return LoopState::Shutdown;
-                        }
-                        Err(error) => {
-                            log_handle_error("result", &error);
-                            return LoopState::Shutdown;
-                        }
-                    }
-                }
-        };
-
-        if !has_active_goal(active_caller_instance).await {
-            return LoopState::WaitForGoal;
+            }
         }
     }
+
+    let _ = ctx
+        .complete(Payload::from(format!("`{target}` complete").into_bytes()))
+        .await;
+    println!(
+        "{}",
+        format!("[RESULT] [{}] `{target}` complete", current_timestamp())
+            .bold()
+            .cyan()
+    );
 }
 
-async fn run_action_loop(mut action: ActionCreation) {
-    let active_caller_instance = Arc::new(Mutex::new(None::<String>));
-    let mut state = LoopState::WaitForGoal;
-
-    while state != LoopState::Shutdown {
-        state = match state {
-            LoopState::WaitForGoal => wait_for_goal(&mut action, &active_caller_instance).await,
-            LoopState::WaitForFollowups => {
-                handle_followups(&mut action, &active_caller_instance).await
+/// Accept-and-spawn loop. Accepts the next goal, registers its context (so a
+/// fast follow-up cancel/result cannot miss it), replies "accepted", and spawns
+/// an independent worker. The loop returns to accepting immediately, so a
+/// second goal never waits behind the first.
+async fn run_action_server(mut server: ActionServer) {
+    loop {
+        let recv = tokio::select! {
+            _ = signal::ctrl_c() => {
+                println!("{}", "[ACTION] Received CTRL+C, exiting.".bold().white());
+                break;
             }
-            LoopState::Shutdown => LoopState::Shutdown,
+            recv = server.recv_next_goal() => recv,
         };
+
+        let (request, responder) = match recv {
+            Ok(Some(pair)) => pair,
+            Ok(None) => {
+                println!("{}", "[ACTION] Goal service closed.".bold().white());
+                break;
+            }
+            Err(error) => {
+                eprintln!(
+                    "{}",
+                    format!("[ERROR] Failed to accept goal: {error:?}").bold().red()
+                );
+                break;
+            }
+        };
+
+        // Register before replying "accepted": the client only sends
+        // cancel/result after it sees acceptance.
+        let ctx = match server.register_goal(&request).await {
+            Ok(ctx) => ctx,
+            Err(error) => {
+                eprintln!(
+                    "{}",
+                    format!("[ERROR] Failed to register goal: {error:?}").bold().red()
+                );
+                let _ = responder.respond_error(error.to_string()).await;
+                continue;
+            }
+        };
+
+        if let Err(error) = responder.respond(Payload::from_static(b"accepted")).await {
+            eprintln!(
+                "{}",
+                format!("[ERROR] Failed to reply to goal: {error:?}").bold().red()
+            );
+            continue;
+        }
+
+        // Hand the context to a worker and immediately accept the next goal.
+        tokio::spawn(run_goal(ctx));
     }
 }
 
@@ -351,25 +168,27 @@ async fn main() {
     let core_node_name = format!("{}_core", get_random(rng()));
     let as_instance_id = format!("{}_listener", get_random(rng()));
 
-    let action = ActionMessenger::expose(
+    let server = ActionMessenger::expose(
         &receiver_handle,
         &core_node_name,
         &as_instance_id,
-        SenderTarget::node(NODE_NAME, "v1").expect("test target"),
+        SenderTarget::node(NODE_NAME, "v1").expect("valid sender target"),
         ACTION_NAME,
     )
-
     .await
     .expect("Should expose the action");
 
     println!(
         "{}",
-        format!("[ACTION] Waiting for action goals as `{as_instance_id}` and core node `{core_node_name}`... Press CTRL+C to stop.")
-            .bold()
-            .white()
+        format!(
+            "[ACTION] Serving concurrent goals as `{as_instance_id}` and core node \
+             `{core_node_name}`... Press CTRL+C to stop."
+        )
+        .bold()
+        .white()
     );
 
-    run_action_loop(action).await;
+    run_action_server(server).await;
 
     println!(
         "{}",

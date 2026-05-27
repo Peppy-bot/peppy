@@ -248,40 +248,12 @@ fn exposed_action() {
         ],
     );
 
-    // Cancel request/response structs
-    assert_contains_all(
-        &rendered,
-        &[
-            "pub struct CancelRequest",
-            "pub struct CancelResponse",
-            "pub error_message: Option<String>",
-            "impl CancelResponse",
-            "pub fn new(accepted: bool, error_message: Option<String>) -> Self",
-        ],
-    );
-
-    // Result request/response structs
-    assert_contains_all(
-        &rendered,
-        &[
-            "pub struct ResultRequest",
-            "pub struct ResultResponse",
-            "final_position: [i32; 3]",
-            "success: bool",
-            "error_msg: Option<String>",
-        ],
-    );
-
-    // ActionHandle struct
+    // ActionHandle wraps the concurrent ActionServer.
     assert_contains_all(
         &rendered,
         &[
             "pub struct ActionHandle",
-            "goal_service: peppylib::messaging::ServiceEndpoint",
-            "cancel_service: peppylib::messaging::ServiceEndpoint",
-            "result_service: peppylib::messaging::ServiceEndpoint",
-            "feedback_publisher_factory: peppylib::messaging::ActionFeedbackPublisherFactory",
-            "current_goal: Option<(String, peppylib::messaging::ActionFeedbackPublisher)>",
+            "server: peppylib::messaging::ActionServer",
         ],
     );
 
@@ -294,45 +266,54 @@ fn exposed_action() {
         ],
     );
 
-    // Handler methods
+    // The goal accept method yields a per-goal GoalContext.
     assert_contains_all(
         &rendered,
         &[
             "pub async fn handle_goal_next_request",
-            "F: Fn(GoalRequest) -> crate::Result<GoalResponse>",
-            "pub async fn handle_cancel_next_request",
-            "F: Fn(CancelRequest) -> crate::Result<CancelResponse>",
-            "pub async fn handle_result_next_request",
-            "F: Fn(ResultRequest) -> crate::Result<ResultResponse>",
+            "crate::Result<Option<GoalContext>>",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
         ],
     );
 
-    // Feedback emit method (publishes via the per-goal publisher stored on
-    // current_goal — no longer a single per-action publisher). The guard
-    // text is verbatim because user code matches against it; pin both the
-    // condition and the panic message so a refactor doesn't silently drop
-    // either.
+    // The per-goal context owns feedback, cancel signal, and result delivery.
+    // The result fields appear in `complete`'s signature.
     assert_contains_all(
         &rendered,
         &[
-            "pub async fn emit_feedback",
-            "#[allow(clippy::too_many_arguments)]",
-            "publisher.publish(payload).await",
-            "self.current_goal",
-            "emit_feedback called with no active goal",
-            "call handle_goal_next_request first",
+            "pub struct GoalContext",
+            "pub fn request(&self) -> &GoalRequest",
+            "pub fn goal_id(&self) -> &str",
+            "pub async fn cancel_signal(&self)",
+            "pub fn is_cancelled(&self) -> bool",
+            "pub async fn publish_feedback",
+            "pub async fn complete",
+            "success: bool",
+            "error_msg: Option<String>",
+            "final_position: [i32; 3]",
         ],
     );
 
-    // Helper functions
+    // The removed single-goal API must be gone.
+    for absent in [
+        "handle_cancel_next_request",
+        "handle_result_next_request",
+        "fn emit_feedback",
+        "current_goal",
+        "pub struct CancelRequest",
+        "pub struct ResultRequest",
+    ] {
+        assert_rendered!(
+            !rendered.contains(absent),
+            rendered,
+            "generated server should no longer contain `{absent}`"
+        );
+    }
+
+    // Helper functions: only the goal path remains.
     assert_contains_all(
         &rendered,
-        &[
-            "fn deserialize_goal_request",
-            "fn handle_goal_payload",
-            "fn handle_cancel_payload",
-            "fn handle_result_payload",
-        ],
+        &["fn deserialize_goal_request", "fn handle_goal_payload"],
     );
 }
 
@@ -354,36 +335,37 @@ fn expose_action_without_request_body() {
             "pub struct GoalRequest",
             "pub struct GoalResponse",
             "pub async fn handle_goal_next_request",
-            "F: Fn(GoalRequest) -> crate::Result<GoalResponse>",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
             "fn handle_goal_payload",
         ],
     );
 
-    // Result handling
+    // The per-goal context exposes result delivery (fields in `complete`) and
+    // feedback; cancel is an SDK signal.
     assert_contains_all(
         &rendered,
         &[
-            "pub struct ResultResponse",
+            "pub struct GoalContext",
+            "pub async fn complete",
             "success: bool",
             "error_msg: Option<String>",
-            "pub async fn handle_result_next_request",
-            "F: Fn(ResultRequest) -> crate::Result<ResultResponse>",
-            "fn handle_result_payload",
+            "pub async fn publish_feedback",
+            "pub async fn cancel_signal(&self)",
         ],
     );
 
-    // Cancel handling
-    assert_contains_all(
-        &rendered,
-        &[
-            "pub struct CancelResponse",
-            "pub async fn handle_cancel_next_request",
-            "F: Fn(CancelRequest) -> crate::Result<CancelResponse>",
-        ],
-    );
-
-    // Feedback emitter
-    assert_contains_all(&rendered, &["pub async fn emit_feedback"]);
+    // The removed single-goal API must be gone.
+    for absent in [
+        "handle_cancel_next_request",
+        "handle_result_next_request",
+        "fn emit_feedback",
+    ] {
+        assert_rendered!(
+            !rendered.contains(absent),
+            rendered,
+            "generated server should no longer contain `{absent}`"
+        );
+    }
 }
 
 #[test]
@@ -429,37 +411,13 @@ fn expose_action_with_feedback_only_initializes_existing_fields() {
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action, None).unwrap();
-    let rendered = render_artifacts(generator.into_artifacts())
-        .into_iter()
-        .next()
-        .expect("artifact is present");
 
-    assert_contains_all(
-        &rendered,
-        &[
-            "pub struct ActionHandle",
-            "feedback_publisher_factory: peppylib::messaging::ActionFeedbackPublisherFactory",
-            "current_goal: Option<(String, peppylib::messaging::ActionFeedbackPublisher)>",
-            "pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self>",
-            "feedback_publisher_factory: action.feedback_publisher_factory",
-            "current_goal: None",
-        ],
-    );
-
-    assert_rendered!(
-        !rendered.contains("goal_service: action.goal_service"),
-        rendered,
-        "expose method should not initialize goal_service when goal service is missing"
-    );
-    assert_rendered!(
-        !rendered.contains("cancel_service: action.cancel_service"),
-        rendered,
-        "expose method should not initialize cancel_service when goal service is missing"
-    );
-    assert_rendered!(
-        !rendered.contains("result_service: action.result_service"),
-        rendered,
-        "expose method should not initialize result_service when result service is missing"
+    // Per-goal feedback now lives on a `GoalContext`, which only exists once a
+    // goal is accepted. An action with no goal service therefore has no server
+    // API to generate.
+    assert!(
+        generator.into_artifacts().is_empty(),
+        "a feedback-only action (no goal service) should generate no server API"
     );
 }
 
@@ -498,8 +456,9 @@ fn expose_two_actions() {
         &[
             "pub async fn handle_goal_next_request",
             "pub struct GoalRequest",
-            "pub struct ResultResponse",
-            "pub async fn emit_feedback",
+            "pub struct GoalContext",
+            "pub async fn publish_feedback",
+            "pub async fn complete",
             "const ACTION_NAME: &str = \"move_arm\";",
         ],
     );
@@ -509,10 +468,10 @@ fn expose_two_actions() {
         rotate_servo,
         &[
             "pub async fn handle_goal_next_request",
-            "F: Fn(GoalRequest) -> crate::Result<GoalResponse>",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
             "pub struct GoalResponse",
-            "pub struct ResultResponse",
-            "pub async fn emit_feedback",
+            "pub struct GoalContext",
+            "pub async fn publish_feedback",
             "const ACTION_NAME: &str = \"rotate_servo_clockwise\";",
         ],
     );

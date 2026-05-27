@@ -4,71 +4,33 @@ use super::services::{
     ServiceResponseSpec, build_response_payload_tokens, build_result_expr_from_values,
     build_return_type_from_params, deserialize_fields_from_format,
 };
+use super::topics::{EmitMethodSpec, build_emit_method};
 use crate::error::Result;
 use config::encoding::FunctionParam;
 use config::node::MessageFormat;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-pub fn build_action_handle_struct(
-    has_goal: bool,
-    has_feedback: bool,
-    has_result: bool,
-) -> TokenStream {
-    let mut fields = Vec::new();
-
-    if has_goal {
-        fields.push(quote!(goal_service: peppylib::messaging::ServiceEndpoint));
-        fields.push(quote!(cancel_service: peppylib::messaging::ServiceEndpoint));
-    }
-
-    if has_result {
-        fields.push(quote!(result_service: peppylib::messaging::ServiceEndpoint));
-    }
-
-    if has_feedback {
-        fields.push(
-            quote!(feedback_publisher_factory: peppylib::messaging::ActionFeedbackPublisherFactory),
-        );
-        fields.push(
-            quote!(current_goal: Option<(String, peppylib::messaging::ActionFeedbackPublisher)>),
-        );
-    }
-
+/// The server `ActionHandle` wraps the concurrent [`peppylib::messaging::ActionServer`].
+/// It vends one `GoalContext` per accepted goal; the context owns that goal's
+/// feedback publisher, cancel signal, and result delivery, so a server can drive
+/// many goals concurrently.
+pub fn build_action_handle_struct() -> TokenStream {
     quote! {
         pub struct ActionHandle {
-            #( #fields ),*
+            server: peppylib::messaging::ActionServer,
         }
     }
 }
 
 pub fn build_action_expose_method(
-    has_goal: bool,
-    has_feedback: bool,
-    has_result: bool,
     origin: Option<&crate::generator::types::InterfaceOrigin>,
 ) -> TokenStream {
-    let mut init_fields = Vec::new();
-
-    if has_goal {
-        init_fields.push(quote!(goal_service: action.goal_service));
-        init_fields.push(quote!(cancel_service: action.cancel_service));
-    }
-
-    if has_result {
-        init_fields.push(quote!(result_service: action.result_service));
-    }
-
-    if has_feedback {
-        init_fields.push(quote!(feedback_publisher_factory: action.feedback_publisher_factory));
-        init_fields.push(quote!(current_goal: None));
-    }
-
     let target_expr = super::topics::sender_target_expression(origin);
 
     quote! {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
-            let action = peppylib::ActionMessenger::expose(
+            let server = peppylib::ActionMessenger::expose(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
@@ -77,183 +39,191 @@ pub fn build_action_expose_method(
             )
             .await?;
 
-            Ok(Self {
-                #( #init_fields ),*
-            })
+            Ok(Self { server })
         }
     }
 }
 
-/// Lifecycle role of a `handle_*_next_request` method. The non-Plain
-/// variants extract or emit per-goal feedback signals around the user
-/// handler; Plain just dispatches.
-#[derive(Clone, Copy)]
-pub enum ActionHandleRole {
-    Plain,
-    /// Unwrap the goal envelope and stash `(goal_id, publisher)` on
-    /// `self.current_goal` for subsequent `emit_feedback` calls.
-    Goal,
-    /// Publish the end-of-stream sentinel on the active goal's feedback
-    /// topic before serving the result request, then clear `current_goal`.
-    Result,
-    /// On `accepted == true` or handler error, publish end-of-stream and
-    /// clear `current_goal`. A rejection keeps the feedback stream open
-    /// since the goal continues.
-    Cancel,
-}
-
-pub fn build_action_handle_method(
-    method_name: &Ident,
-    helper_name: &Ident,
-    request_struct: &Ident,
-    response_struct: &Ident,
-    service_field: &Ident,
-    has_payload: bool,
-    role: ActionHandleRole,
-) -> TokenStream {
-    let setup = match role {
-        ActionHandleRole::Plain => quote!(),
-        ActionHandleRole::Goal => quote! {
-            type Captured = (String, peppylib::messaging::ActionFeedbackPublisher);
-            let captured: std::sync::Arc<std::sync::Mutex<Option<Captured>>> =
-                std::sync::Arc::new(std::sync::Mutex::new(None));
-            let captured_for_closure = std::sync::Arc::clone(&captured);
-            let factory = self.feedback_publisher_factory.clone();
-        },
-        ActionHandleRole::Result => quote! {
-            if let Some((_, publisher)) = self.current_goal.as_ref() {
-                let _ = publisher.publish_end().await;
-            }
-        },
-        ActionHandleRole::Cancel => quote! {
-            let publisher = self.current_goal.as_ref().map(|(_, p)| p.clone());
-            let close_decision: std::sync::Arc<std::sync::Mutex<Option<bool>>> =
-                std::sync::Arc::new(std::sync::Mutex::new(None));
-            let close_decision_for_closure = std::sync::Arc::clone(&close_decision);
-            // CancelResponse.accepted decides whether to publish end-of-stream.
-            // Inspecting it requires running the user handler ourselves rather
-            // than letting the helper serialize directly.
-            let handler_for_helper = {
-                let close_decision = std::sync::Arc::clone(&close_decision_for_closure);
-                move |request: #request_struct| -> crate::Result<#response_struct> {
-                    let response = handler(request);
-                    let should_close = match &response {
-                        Ok(r) => r.accepted,
-                        Err(_) => true,
-                    };
-                    *close_decision.lock().unwrap() = Some(should_close);
-                    response
-                }
-            };
-        },
+/// `handle_goal_next_request`: one step of the accept loop. Waits for the next
+/// goal, decodes the typed request, and runs the user's `decide` closure. On
+/// `Ok` it registers a [`GoalContext`] (inserting the routing slot before
+/// replying, so a fast cancel/result can't miss it), replies with the goal
+/// response, and returns the context. On `Err` it rejects the goal and returns
+/// `None`; it also returns `None` when the goal service has closed.
+///
+/// `has_request_data` selects whether `handle_goal_payload` takes the decoded
+/// request body; `has_response` selects the user closure's response type.
+pub fn build_action_goal_method(has_request_data: bool, has_response: bool) -> TokenStream {
+    let response_ty = if has_response {
+        quote!(GoalResponse)
+    } else {
+        quote!(())
     };
 
-    let payload_setup = match role {
-        ActionHandleRole::Goal => quote! {
-            let message = request_context.message();
-            let goal_link_id = request_context.link_id().to_string();
-            let wire = message.payload().into_inner();
-            let declared = factory.declare_from_wire(&goal_link_id, wire).await?;
-            let core_node = message.core_node().to_string();
-            let instance_id = message.instance_id().to_string();
-        },
-        _ if has_payload => quote! {
-            let message = request_context.message();
-            let payload = message.payload();
-            let core_node = message.core_node().to_string();
-            let instance_id = message.instance_id().to_string();
-        },
-        _ => quote! {
-            let message = request_context.message();
-            let core_node = message.core_node().to_string();
-            let instance_id = message.instance_id().to_string();
-        },
-    };
-
-    let handler_ref = match role {
-        ActionHandleRole::Cancel => quote!(&handler_for_helper),
-        _ => quote!(&handler),
-    };
-    let helper_call = match (role, has_payload) {
-        (ActionHandleRole::Goal, true) => quote!(#helper_name(
-            declared.user_payload.as_ref(),
-            #handler_ref,
+    // `handle_goal_payload` (built by `build_action_payload_handler`) decodes the
+    // request, calls our capture wrapper, and serializes the response.
+    let handler_call = if has_request_data {
+        quote!(handle_goal_payload(
+            &user_payload,
+            &capture,
             core_node,
-            instance_id,
-        )),
-        (ActionHandleRole::Goal, false) => quote!({
-            let _ = declared.user_payload;
-            #helper_name(#handler_ref, core_node, instance_id)
-        }),
-        (_, true) => quote!(#helper_name(
-            payload.as_ref(),
-            #handler_ref,
-            core_node,
-            instance_id,
-        )),
-        (_, false) => quote!(#helper_name(#handler_ref, core_node, instance_id)),
-    };
-
-    let post_outcome = match role {
-        ActionHandleRole::Goal => quote! {
-            if outcome.is_ok() {
-                *captured_for_closure.lock().unwrap() =
-                    Some((declared.goal_id, declared.publisher));
-            }
-        },
-        ActionHandleRole::Cancel => quote! {
-            if matches!(*close_decision_for_closure.lock().unwrap(), Some(true))
-                && let Some(p) = publisher.as_ref()
-            {
-                let _ = p.publish_end().await;
-            }
-        },
-        _ => quote!(),
-    };
-
-    let post_call = match role {
-        ActionHandleRole::Plain => quote!(),
-        ActionHandleRole::Goal => quote! {
-            if let Some(active_goal) = captured.lock().unwrap().take() {
-                self.current_goal = Some(active_goal);
-            }
-        },
-        ActionHandleRole::Result => quote! {
-            self.current_goal = None;
-        },
-        ActionHandleRole::Cancel => quote! {
-            if matches!(*close_decision.lock().unwrap(), Some(true)) {
-                self.current_goal = None;
-            }
-        },
+            instance_id
+        ))
+    } else {
+        quote!({
+            let _ = &user_payload;
+            handle_goal_payload(&capture, core_node, instance_id)
+        })
     };
 
     quote! {
-        pub async fn #method_name<F>(
+        pub async fn handle_goal_next_request<F>(
             &mut self,
-            handler: F,
-        ) -> crate::Result<bool>
+            decide: F,
+        ) -> crate::Result<Option<GoalContext>>
         where
-            F: Fn(#request_struct) -> crate::Result<#response_struct>,
+            F: Fn(&GoalRequest) -> crate::Result<#response_ty>,
         {
-            #setup
-            let result = self
-                .#service_field
-                .handle_next_request(|request_context| async move {
-                    #payload_setup
-                    let outcome: crate::Result<peppylib::Payload> = #helper_call
-                        .map_err(|error| {
-                            peppylib::PeppyError::Io(
-                                std::io::Error::other(error.to_string()),
-                            )
-                        });
-                    #post_outcome
-                    outcome
-                })
-                .await?;
-            #post_call
-            Ok(result)
+            let Some((request_context, responder)) = self.server.recv_next_goal().await? else {
+                return Ok(None);
+            };
+
+            let core_node = request_context.message().core_node().to_string();
+            let instance_id = request_context.message().instance_id().to_string();
+            let user_payload = {
+                let wire = request_context.message().payload();
+                let (_goal_id, body) = peppylib::messaging::unwrap_goal_payload(wire.as_ref())
+                    .map_err(|error| {
+                        peppylib::PeppyError::Io(std::io::Error::other(error.to_string()))
+                    })?;
+                body.to_vec()
+            };
+
+            // The capture wrapper runs the user's decision and stashes the
+            // decoded request so an accepted goal can hand it to the context.
+            let captured: std::cell::RefCell<Option<GoalRequest>> = std::cell::RefCell::new(None);
+            let capture = |request: GoalRequest| -> crate::Result<#response_ty> {
+                let outcome = decide(&request);
+                *captured.borrow_mut() = Some(request);
+                outcome
+            };
+
+            let outcome: crate::Result<peppylib::Payload> = #handler_call;
+            match outcome {
+                Ok(response_payload) => {
+                    let inner = self.server.register_goal(&request_context).await?;
+                    let _ = responder.respond(response_payload).await;
+                    let request = captured
+                        .into_inner()
+                        .expect("goal request captured by the decision closure");
+                    Ok(Some(GoalContext { inner, request }))
+                }
+                Err(error) => {
+                    let _ = responder.respond_error(error.to_string()).await;
+                    Ok(None)
+                }
+            }
         }
+    }
+}
+
+/// The per-goal `GoalContext` type and its impl. `context_methods` is the set
+/// of action-specific methods (`publish_feedback`, `complete`) appended to the
+/// always-present accessors.
+pub fn build_goal_context(context_methods: Vec<TokenStream>) -> TokenStream {
+    quote! {
+        /// Per-goal handle returned by `ActionHandle::handle_goal_next_request`.
+        /// Owns this goal's feedback stream, cancel signal, and result delivery;
+        /// move it into a spawned task to drive the goal to completion.
+        pub struct GoalContext {
+            inner: peppylib::messaging::GoalContext,
+            request: GoalRequest,
+        }
+
+        impl GoalContext {
+            /// The decoded goal request this context is driving.
+            pub fn request(&self) -> &GoalRequest {
+                &self.request
+            }
+
+            /// The client-generated id of this goal.
+            pub fn goal_id(&self) -> &str {
+                self.inner.goal_id()
+            }
+
+            /// Whether a cancel for this goal has been received.
+            pub fn is_cancelled(&self) -> bool {
+                self.inner.is_cancelled()
+            }
+
+            /// Resolves when a cancel for this goal arrives. Idempotent and safe
+            /// to await inside a `tokio::select!`.
+            pub async fn cancel_signal(&self) {
+                self.inner.cancel_signal().await
+            }
+
+            #( #context_methods )*
+        }
+    }
+}
+
+/// The `publish_feedback` method on `GoalContext`: serializes the typed feedback
+/// fields and publishes them on this goal's stream.
+pub fn build_action_publish_feedback(
+    params: &[FunctionParam],
+    encoding: Option<&MessageEncodingSpec>,
+    label: &str,
+) -> TokenStream {
+    let label_literal = Literal::string(label);
+    let method_ident = Ident::new("publish_feedback", Span::call_site());
+
+    build_emit_method(EmitMethodSpec {
+        method_name: &method_ident,
+        params,
+        encoding,
+        receiver: quote!(&self),
+        publish_body: quote! {
+            let payload = peppylib::messaging::NonEmptyPayload::try_new(payload).map_err(|_| {
+                peppylib::PeppyError::Io(std::io::Error::other(
+                    "publish_feedback produced an empty payload (codec serialized \
+                     to zero bytes); empty is reserved for the end-of-stream sentinel",
+                ))
+            })?;
+            self.inner.publish_feedback(payload).await?;
+        },
+        error_context: quote!(format!("{} {}", #label_literal, ACTION_NAME)),
+        suppress_unused: Vec::new(),
+    })
+}
+
+/// The `complete` method on `GoalContext`: serializes the typed result fields
+/// and delivers them, rendezvousing with the client's `get_result`. When the
+/// result has no fields it sends an empty payload.
+pub fn build_action_complete_method(
+    params: &[FunctionParam],
+    encoding: Option<&MessageEncodingSpec>,
+) -> TokenStream {
+    match encoding {
+        Some(_) => {
+            let method_ident = Ident::new("complete", Span::call_site());
+            build_emit_method(EmitMethodSpec {
+                method_name: &method_ident,
+                params,
+                encoding,
+                receiver: quote!(&self),
+                publish_body: quote! {
+                    self.inner.complete(payload).await?;
+                },
+                error_context: quote!(format!("complete {}", ACTION_NAME)),
+                suppress_unused: Vec::new(),
+            })
+        }
+        None => quote! {
+            pub async fn complete(&self) -> crate::Result<()> {
+                self.inner.complete(peppylib::Payload::new()).await?;
+                Ok(())
+            }
+        },
     }
 }
 
@@ -377,39 +347,4 @@ pub fn build_action_request_deserializer(
         &field_statements,
         &request_expr,
     ))
-}
-
-pub fn build_action_feedback_emit(
-    params: &[FunctionParam],
-    encoding: Option<&MessageEncodingSpec>,
-    label: &str,
-) -> TokenStream {
-    use super::topics::{EmitMethodSpec, build_emit_method};
-
-    let label_literal = Literal::string(label);
-    let method_ident = Ident::new("emit_feedback", Span::call_site());
-
-    build_emit_method(EmitMethodSpec {
-        method_name: &method_ident,
-        params,
-        encoding,
-        receiver: quote!(&self),
-        publish_body: quote! {
-            let (_, publisher) = self
-                .current_goal
-                .as_ref()
-                .ok_or_else(|| peppylib::PeppyError::Io(std::io::Error::other(
-                    "emit_feedback called with no active goal; \
-                     call handle_goal_next_request first"
-                )))?;
-            let payload = peppylib::messaging::NonEmptyPayload::try_new(payload)
-                .map_err(|_| peppylib::PeppyError::Io(std::io::Error::other(
-                    "emit_feedback produced an empty payload (codec serialized \
-                     to zero bytes); empty is reserved for publish_end"
-                )))?;
-            publisher.publish(payload).await?;
-        },
-        error_context: quote!(format!("{} {}", #label_literal, ACTION_NAME)),
-        suppress_unused: Vec::new(),
-    })
 }

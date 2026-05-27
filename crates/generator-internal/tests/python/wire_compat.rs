@@ -214,26 +214,30 @@ from peppygen.exposed_actions import perform_scan
 async def run_exposer(node_runner):
     action = await perform_scan.ActionHandle.expose(node_runner)
 
-    def goal_handler(request):
+    def decide(request):
         print(f"server received scan goal scan_id={request.data.scan_id}", flush=True)
         return perform_scan.GoalResponse(accepted=True)
 
-    await action.handle_goal_next_request(goal_handler)
+    # Accept loop: a real server keeps running so its results stay fetchable.
+    while True:
+        ctx = await action.handle_goal_next_request(decide)
+        if ctx is None:
+            break
 
-    await action.emit_feedback(7)
-    print("server emitted feedback progress=7", flush=True)
+        await ctx.publish_feedback(7)
+        print("server emitted feedback progress=7", flush=True)
 
-    def result_handler(request):
+        # Keyword arguments so this source compiles regardless of how the
+        # generated `complete` orders its positional parameters; the bug we're
+        # catching is field order on the wire, not the method signature.
         print("server preparing scan result", flush=True)
-        return perform_scan.ResultResponse(
+        await ctx.complete(
             success=True,
             status="completed",
             measurements=[1.5, 2.5, 3.5],
             duration=42.0,
         )
-
-    await action.handle_result_next_request(result_handler)
-    print("server handled scan result request", flush=True)
+        print("server handled scan result request", flush=True)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_exposer(node_runner))]

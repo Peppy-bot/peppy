@@ -1,100 +1,221 @@
-use bytes::Bytes;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle, ActionMessenger,
-    ActionWireSender, NonEmptyPayload, ServiceEndpoint,
+    ActionGoalHandle, ActionMessenger, ActionServer, ActionWireSender, GoalContext,
+    NonEmptyPayload, ServiceRequestContext, ServiceResponder,
 };
 use peppylib::types::Payload;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::iface::PySenderTarget;
-use super::services::PyServiceEndpoint;
 use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 use crate::config::PyQoSProfile;
 
 // ---------------------------------------------------------------------------
-// ActionFeedbackPublisher
+// GoalContext
 // ---------------------------------------------------------------------------
 
-/// Python wrapper for a per-goal feedback publisher used by action servers.
-/// Vended by [`PyActionFeedbackPublisherFactory::declare`] once a goal is
-/// accepted.
-#[pyclass(name = "ActionFeedbackPublisher")]
-pub struct PyActionFeedbackPublisher {
-    inner: ActionFeedbackPublisher,
+/// Python wrapper for a per-goal [`GoalContext`]. Returned by
+/// [`PyActionGoalRequest::accept`]; it owns that goal's feedback stream, cancel
+/// signal, and result delivery, so a server can drive many goals concurrently
+/// by moving one of these into each worker coroutine.
+#[pyclass(name = "GoalContext")]
+pub struct PyGoalContext {
+    inner: Arc<GoalContext>,
 }
 
 #[pymethods]
-impl PyActionFeedbackPublisher {
-    /// Publish a feedback payload. Must be non-empty: empty is reserved for
-    /// the end-of-stream sentinel emitted by [`Self::publish_end`]. An empty
-    /// `payload` raises `ValueError` at this FFI boundary so a Python caller
-    /// cannot inadvertently close the feedback stream by publishing zero
-    /// bytes.
-    fn publish<'py>(&self, py: Python<'py>, payload: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
-        let publisher = self.inner.clone();
+impl PyGoalContext {
+    /// The client-generated id of this goal.
+    #[getter]
+    fn goal_id(&self) -> &str {
+        self.inner.goal_id()
+    }
+
+    /// Envelope-stripped goal request bytes, ready for the typed decoder.
+    #[getter]
+    fn request_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, self.inner.request_bytes())
+    }
+
+    /// Whether a cancel for this goal has already been received.
+    fn is_cancelled(&self) -> bool {
+        self.inner.is_cancelled()
+    }
+
+    /// Resolves when a cancel request for this goal arrives. Idempotent and
+    /// resolves immediately if the cancel already arrived, so it is safe to
+    /// race against the worker's own coroutine (e.g. with `asyncio.wait`).
+    fn cancel_signal<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inner.cancel_signal().await;
+            Ok(())
+        })
+    }
+
+    /// Publish one feedback message on this goal's stream. Empty payloads are
+    /// rejected because the empty payload is the end-of-stream sentinel that
+    /// [`Self::complete`] emits; passing zero bytes raises `ValueError`.
+    fn publish_feedback<'py>(
+        &self,
+        py: Python<'py>,
+        payload: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
         let payload = NonEmptyPayload::try_new(Payload::from(payload)).map_err(|_| {
             PyValueError::new_err(
-                "feedback payload must be non-empty; empty is reserved for publish_end()",
+                "feedback payload must be non-empty; empty is reserved for the end-of-stream sentinel",
             )
         })?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            publisher.publish(payload).await.map_err(to_py_err)?;
+            inner.publish_feedback(payload).await.map_err(to_py_err)?;
             Ok(())
         })
     }
 
-    /// Publish the end-of-stream sentinel. Subscribers' next
-    /// `on_next_feedback` call resolves with `ActionFeedbackChannelClosed`.
-    fn publish_end<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let publisher = self.inner.clone();
+    /// Deliver the final result for this goal. Closes the feedback stream
+    /// first, then rendezvous with the client's `get_result` by `goal_id`.
+    /// Idempotent: a second call is a no-op.
+    fn complete<'py>(&self, py: Python<'py>, payload: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            publisher.publish_end().await.map_err(to_py_err)?;
+            inner
+                .complete(Payload::from(payload))
+                .await
+                .map_err(to_py_err)?;
             Ok(())
         })
     }
 }
 
 // ---------------------------------------------------------------------------
-// ActionFeedbackPublisherFactory
+// ActionGoalRequest
 // ---------------------------------------------------------------------------
 
-/// Python wrapper for the per-action feedback publisher factory. Returned as
-/// a field of [`PyActionCreation`]; the codegen calls
-/// [`Self::declare`] from inside `handle_goal_next_request` once a goal is
-/// accepted, scoping the feedback topic to that single goal cycle.
-#[pyclass(name = "ActionFeedbackPublisherFactory")]
-pub struct PyActionFeedbackPublisherFactory {
-    inner: ActionFeedbackPublisherFactory,
+/// A goal awaiting an accept/reject decision, returned by
+/// [`PyActionServer::recv_next_goal`]. Holds the request context and its
+/// responder until the server decides; [`Self::accept`] registers the routing
+/// slot and replies, [`Self::reject`] replies with an error.
+#[pyclass(name = "ActionGoalRequest")]
+pub struct PyActionGoalRequest {
+    server: Arc<Mutex<ActionServer>>,
+    state: Arc<Mutex<Option<(ServiceRequestContext, ServiceResponder)>>>,
+    payload: Vec<u8>,
+    instance_id: String,
+    core_node: String,
 }
 
 #[pymethods]
-impl PyActionFeedbackPublisherFactory {
-    /// Standard server-side entry point used by the Python codegen. Unwraps
-    /// the wire envelope, declares a per-goal publisher scoped to the
-    /// link_id the consumer targeted, and returns
-    /// `(publisher, goal_id, user_payload)`.
-    fn declare_from_wire<'py>(
+impl PyActionGoalRequest {
+    /// The raw goal envelope (length-prefixed `goal_id` + user payload). Strip
+    /// it with `actions.unwrap_goal_payload` to recover the user payload.
+    #[getter]
+    fn payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.payload)
+    }
+
+    /// Caller instance id that fired this goal.
+    #[getter]
+    fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    /// Caller core node that fired this goal.
+    #[getter]
+    fn core_node(&self) -> &str {
+        &self.core_node
+    }
+
+    /// Accept this goal. Registers its routing slot (so a fast follow-up
+    /// cancel/result cannot miss it), replies with `response_payload`, and
+    /// returns the per-goal [`GoalContext`]. Raises if already decided.
+    fn accept<'py>(
         &self,
         py: Python<'py>,
-        link_id: String,
-        wire: Vec<u8>,
+        response_payload: Vec<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let factory = self.inner.clone();
+        let server = Arc::clone(&self.server);
+        let state = Arc::clone(&self.state);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let declared = factory
-                .declare_from_wire(&link_id, Bytes::from(wire))
+            let (context, responder) = state.lock().await.take().ok_or_else(|| {
+                PyValueError::new_err("goal request already accepted or rejected")
+            })?;
+            // Register before replying accepted: the client only sends
+            // cancel/result after it sees acceptance, so the slot must exist
+            // first or a fast follow-up could miss it.
+            let goal_ctx = {
+                let server = server.lock().await;
+                server.register_goal(&context).await.map_err(to_py_err)?
+            };
+            responder
+                .respond(Payload::from(response_payload))
                 .await
                 .map_err(to_py_err)?;
-            Ok((
-                PyActionFeedbackPublisher {
-                    inner: declared.publisher,
-                },
-                declared.goal_id,
-                declared.user_payload.to_vec(),
-            ))
+            Ok(PyGoalContext {
+                inner: Arc::new(goal_ctx),
+            })
+        })
+    }
+
+    /// Reject this goal with an error message; the client's `fire_goal` fails
+    /// with a service error. Raises if already decided.
+    fn reject<'py>(&self, py: Python<'py>, reason: String) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (_context, responder) = state.lock().await.take().ok_or_else(|| {
+                PyValueError::new_err("goal request already accepted or rejected")
+            })?;
+            responder.respond_error(reason).await.map_err(to_py_err)?;
+            Ok(())
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ActionServer
+// ---------------------------------------------------------------------------
+
+/// Python wrapper for the concurrent [`ActionServer`] returned by
+/// [`PyActionMessenger::expose`]. Background pumps route cancel/result requests
+/// to the right goal by `goal_id`; the caller drives the accept loop via
+/// [`Self::recv_next_goal`].
+#[pyclass(name = "ActionServer")]
+pub struct PyActionServer {
+    inner: Arc<Mutex<ActionServer>>,
+}
+
+#[pymethods]
+impl PyActionServer {
+    /// Wait for the next goal. Returns an [`PyActionGoalRequest`] to accept or
+    /// reject, or `None` when the action's goal service has closed.
+    fn recv_next_goal<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let recv = {
+                let mut server = inner.lock().await;
+                server.recv_next_goal().await.map_err(to_py_err)?
+            };
+            let Some((context, responder)) = recv else {
+                return Ok(None);
+            };
+            let (payload, instance_id, core_node) = {
+                let message = context.message();
+                (
+                    message.payload().to_vec(),
+                    message.instance_id().to_string(),
+                    message.core_node().to_string(),
+                )
+            };
+            Ok(Some(PyActionGoalRequest {
+                server: Arc::clone(&inner),
+                state: Arc::new(Mutex::new(Some((context, responder)))),
+                payload,
+                instance_id,
+                core_node,
+            }))
         })
     }
 }
@@ -142,50 +263,6 @@ impl PyActionGoalHandle {
 }
 
 // ---------------------------------------------------------------------------
-// ActionCreation
-// ---------------------------------------------------------------------------
-
-/// Python wrapper for the server-side action components returned by `expose`.
-#[pyclass(name = "ActionCreation")]
-pub struct PyActionCreation {
-    goal_service: Arc<Mutex<ServiceEndpoint>>,
-    cancel_service: Arc<Mutex<ServiceEndpoint>>,
-    feedback_publisher_factory: ActionFeedbackPublisherFactory,
-    result_service: Arc<Mutex<ServiceEndpoint>>,
-}
-
-#[pymethods]
-impl PyActionCreation {
-    #[getter]
-    fn goal_service(&self) -> PyServiceEndpoint {
-        PyServiceEndpoint {
-            inner: Arc::clone(&self.goal_service),
-        }
-    }
-
-    #[getter]
-    fn cancel_service(&self) -> PyServiceEndpoint {
-        PyServiceEndpoint {
-            inner: Arc::clone(&self.cancel_service),
-        }
-    }
-
-    #[getter]
-    fn feedback_publisher_factory(&self) -> PyActionFeedbackPublisherFactory {
-        PyActionFeedbackPublisherFactory {
-            inner: self.feedback_publisher_factory.clone(),
-        }
-    }
-
-    #[getter]
-    fn result_service(&self) -> PyServiceEndpoint {
-        PyServiceEndpoint {
-            inner: Arc::clone(&self.result_service),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // ActionMessenger
 // ---------------------------------------------------------------------------
 
@@ -195,7 +272,9 @@ pub struct PyActionMessenger;
 
 #[pymethods]
 impl PyActionMessenger {
-    /// Expose an action server, returning the goal, cancel, result services and feedback publisher.
+    /// Expose an action server. Returns an [`PyActionServer`] whose
+    /// `recv_next_goal` drives the accept loop; background pumps route
+    /// cancel/result requests to each goal by `goal_id`.
     ///
     /// Pass `SenderTarget.node(name, tag)` for nodes or
     /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
@@ -212,10 +291,7 @@ impl PyActionMessenger {
         let handle = messenger.inner.clone();
         let as_identity = as_identity.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            // Use the low-level `expose_creation` (the raw services) rather than
-            // `expose` (the concurrent `ActionServer`): the Python bindings drive
-            // the goal/cancel/result services directly.
-            let creation = ActionMessenger::expose_creation(
+            let server = ActionMessenger::expose(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
@@ -225,11 +301,8 @@ impl PyActionMessenger {
             .await
             .map_err(to_py_err)?;
 
-            Ok(PyActionCreation {
-                goal_service: Arc::new(Mutex::new(creation.goal_service)),
-                cancel_service: Arc::new(Mutex::new(creation.cancel_service)),
-                feedback_publisher_factory: creation.feedback_publisher_factory,
-                result_service: Arc::new(Mutex::new(creation.result_service)),
+            Ok(PyActionServer {
+                inner: Arc::new(Mutex::new(server)),
             })
         })
     }
@@ -408,6 +481,16 @@ fn generate_goal_id() -> String {
     peppylib::messaging::generate_goal_id()
 }
 
+/// Decode the SDK-owned cancel acknowledgement returned by `cancel_goal`.
+/// Returns `True` if the goal was in flight when the cancel arrived, `False`
+/// otherwise. The server side ack is produced by the framework's cancel pump,
+/// not a user handler, so consumers decode it with this rather than a capnp
+/// codec.
+#[pyfunction]
+fn decode_cancel_ack(payload: Vec<u8>) -> PyResult<bool> {
+    peppylib::messaging::decode_cancel_ack(&payload).map_err(to_py_err)
+}
+
 // ---------------------------------------------------------------------------
 // Module registration
 // ---------------------------------------------------------------------------
@@ -417,12 +500,13 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let actions_module = PyModule::new(parent_module.py(), "actions")?;
     actions_module.add_class::<PyActionMessenger>()?;
     actions_module.add_class::<PyActionGoalHandle>()?;
-    actions_module.add_class::<PyActionCreation>()?;
-    actions_module.add_class::<PyActionFeedbackPublisher>()?;
-    actions_module.add_class::<PyActionFeedbackPublisherFactory>()?;
+    actions_module.add_class::<PyActionServer>()?;
+    actions_module.add_class::<PyActionGoalRequest>()?;
+    actions_module.add_class::<PyGoalContext>()?;
     actions_module.add_function(wrap_pyfunction!(wrap_goal_payload, &actions_module)?)?;
     actions_module.add_function(wrap_pyfunction!(unwrap_goal_payload, &actions_module)?)?;
     actions_module.add_function(wrap_pyfunction!(generate_goal_id, &actions_module)?)?;
+    actions_module.add_function(wrap_pyfunction!(decode_cancel_ack, &actions_module)?)?;
     parent_module.add_submodule(&actions_module)?;
     Ok(())
 }

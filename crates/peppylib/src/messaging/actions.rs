@@ -591,23 +591,47 @@ impl GoalContext {
     }
 }
 
+/// How long a completed-but-not-yet-fetched result stays routable after its
+/// [`GoalContext`] is dropped. This lets a worker drop the context as soon as
+/// it calls [`GoalContext::complete`] (e.g. at the end of an accept-loop body)
+/// while an in-flight client `get_result` can still retrieve the result.
+const RESULT_RETENTION_GRACE: Duration = Duration::from_secs(30);
+
 impl Drop for GoalContext {
     fn drop(&mut self) {
-        // Evict the slot so any later cancel/result request gets a definitive
-        // "no such goal" answer instead of routing to a finished goal.
-        self.registry.remove(&self.goal_id);
+        let was_finalized = self.finalized.swap(true, Ordering::SeqCst);
+        let runtime_available = tokio::runtime::Handle::try_current().is_ok();
 
-        // If the worker abandoned the goal without completing it, close the
-        // feedback stream so a draining client doesn't hang. Drop is sync and
-        // `publish_end` is async, so fire-and-forget on the runtime (only when
-        // one is available, to avoid panicking during runtime teardown).
-        if !self.finalized.swap(true, Ordering::SeqCst)
-            && tokio::runtime::Handle::try_current().is_ok()
-        {
-            let publisher = self.feedback.clone();
+        if !was_finalized {
+            // The worker abandoned the goal without completing it. Close the
+            // feedback stream so a draining client doesn't hang, and evict the
+            // slot so later cancel/result requests get a definitive answer.
+            // Drop is sync and `publish_end` is async, so fire-and-forget on the
+            // runtime (only when one is available, to avoid panicking during
+            // runtime teardown).
+            if runtime_available {
+                let publisher = self.feedback.clone();
+                spawn(async move {
+                    let _ = publisher.publish_end().await;
+                });
+            }
+            self.registry.remove(&self.goal_id);
+            return;
+        }
+
+        // `complete` ran. If the result was buffered but not yet fetched, keep
+        // the slot routable for a short grace so an in-flight `get_result` still
+        // resolves; otherwise (already delivered) evict immediately.
+        let buffered = matches!(&*self.slot.result.lock().unwrap(), ResultSlot::Buffered(_));
+        if buffered && runtime_available {
+            let registry = self.registry.clone();
+            let goal_id = self.goal_id.clone();
             spawn(async move {
-                let _ = publisher.publish_end().await;
+                tokio::time::sleep(RESULT_RETENTION_GRACE).await;
+                registry.remove(&goal_id);
             });
+        } else {
+            self.registry.remove(&self.goal_id);
         }
     }
 }

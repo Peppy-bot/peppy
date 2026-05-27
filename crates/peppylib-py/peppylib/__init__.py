@@ -37,6 +37,11 @@ sys.modules["peppylib._peppylib.core_node"] = _peppylib.core_node
 # Expose as attribute for `from peppylib import messaging`
 messaging = _peppylib.messaging
 
+# Expose the actions submodule at the top level so generated action servers
+# can reference `peppylib.actions.GoalContext`, `peppylib.actions.unwrap_goal_payload`,
+# and `peppylib.actions.decode_cancel_ack` without reaching through `messaging`.
+actions = _peppylib.messaging.actions
+
 # Re-export the Rust-implemented functions/types from the native module
 from ._peppylib.messaging import SenderTarget, MessengerHandle, TopicMessenger, ZenohdInstance  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.config import QoSProfile  # noqa: E402  # type: ignore[import-not-found]
@@ -84,6 +89,7 @@ __all__ = [
     "subscribe_clock",
     "synchronize",
     "messaging",
+    "actions",
     "encoding",
     "__version__",
 ]

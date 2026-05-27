@@ -1,5 +1,18 @@
+"""Concurrent action server example.
+
+Exposes a single action and serves many goals at once: the accept loop
+registers each goal, replies "accepted", and hands the goal's GoalContext to an
+independent worker coroutine before going back to accept the next goal. Each
+worker streams progress feedback on its own goal's stream while watching that
+goal's cancel signal, then delivers a result. Because every goal owns a separate
+context, two clients fire goals that progress in parallel, and cancelling one
+goal never disturbs another.
+
+Pair this with the `hello_world_action_subscribes` example and a `zenohd`
+router.
+"""
+
 import asyncio
-import enum
 import signal
 from datetime import datetime
 
@@ -11,6 +24,9 @@ NODE_NAME = "hello_node"
 NODE_TAG = "v1"
 ACTION_NAME = "hello_action"
 
+# How long each simulated work step takes between feedback messages.
+STEP_DELAY_SECS = 0.4
+
 BOLD = "\033[1m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
@@ -21,182 +37,87 @@ RED = "\033[31m"
 RESET = "\033[0m"
 
 
-class LoopState(enum.Enum):
-    WAIT_FOR_GOAL = "wait_for_goal"
-    WAIT_FOR_FOLLOWUPS = "wait_for_followups"
-    SHUTDOWN = "shutdown"
-
-
 def current_timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-async def handle_goal_request(request, feedback_publisher) -> bytes:
-    request_id = request.request_id
-    core_node = request.message.core_node
-    instance_id = request.message.instance_id
-    payload_text = request.message.payload.decode("utf-8")
+async def run_goal(ctx):
+    """Per-goal worker.
 
+    Streams progress feedback for one goal while racing the goal's cancel
+    signal, then delivers the result. The goal's payload is the resource (e.g.
+    a device) this goal targets; the framework has already stripped the wire
+    envelope, so `request_bytes` is the user payload.
+    """
+    target = bytes(ctx.request_bytes).decode("utf-8")
     print(
-        f"{BOLD}{GREEN}[GOAL] [{current_timestamp()}] Received goal `{request_id}` "
-        f"from `{instance_id}` and core node `{core_node}`{RESET}"
+        f"{BOLD}{GREEN}[GOAL] [{current_timestamp()}] accepted goal "
+        f"`{ctx.goal_id}` for `{target}`{RESET}"
     )
 
-    feedback_text = f"feedback: working on `{payload_text}`"
-    await feedback_publisher.publish(feedback_text.encode("utf-8"))
+    cancelled = asyncio.ensure_future(ctx.cancel_signal())
+    try:
+        for percent in range(20, 101, 20):
+            step = asyncio.ensure_future(asyncio.sleep(STEP_DELAY_SECS))
+            done, _ = await asyncio.wait(
+                [cancelled, step], return_when=asyncio.FIRST_COMPLETED
+            )
 
-    print(
-        f"{BOLD}{YELLOW}[FEEDBACK] [{current_timestamp()}] Published feedback "
-        f"`{feedback_text}` for goal `{request_id}`{RESET}"
-    )
+            if cancelled in done:
+                step.cancel()
+                print(
+                    f"{BOLD}{MAGENTA}[CANCEL] [{current_timestamp()}] `{target}` "
+                    f"cancelled at {percent}%; finishing early{RESET}"
+                )
+                # The worker decides how to react; here it completes with a
+                # cancelled result. `complete` also closes the feedback stream.
+                await ctx.complete(f"`{target}` cancelled at {percent}%".encode("utf-8"))
+                return
 
-    response_text = f"goal accepted: {payload_text}"
-    print(
-        f"{BOLD}{GREEN}[GOAL] [{current_timestamp()}] Responding to goal "
-        f"`{request_id}` with `{response_text}`{RESET}"
-    )
+            line = f"`{target}` progress {percent}%"
+            await ctx.publish_feedback(line.encode("utf-8"))
+            print(f"{BOLD}{YELLOW}[FEEDBACK] [{current_timestamp()}] {line}{RESET}")
 
-    return response_text.encode("utf-8")
-
-
-async def handle_cancel_request(request) -> bytes:
-    request_id = request.request_id
-    print(
-        f"{BOLD}{MAGENTA}[CANCEL] [{current_timestamp()}] Received cancel request "
-        f"for goal `{request_id}`{RESET}"
-    )
-
-    payload = request.message.payload
-    if payload:
-        payload_text = payload.decode("utf-8")
-        print(
-            f"{BOLD}{MAGENTA}[CANCEL] [{current_timestamp()}] Cancel payload "
-            f"`{payload_text}` will be ignored.{RESET}"
-        )
-
-    response_text = f"cancel acknowledged for goal `{request_id}`"
-    print(
-        f"{BOLD}{MAGENTA}[CANCEL] [{current_timestamp()}] Responding to cancel request "
-        f"with `{response_text}`{RESET}"
-    )
-
-    return response_text.encode("utf-8")
+        await ctx.complete(f"`{target}` complete".encode("utf-8"))
+        print(f"{BOLD}{CYAN}[RESULT] [{current_timestamp()}] `{target}` complete{RESET}")
+    finally:
+        cancelled.cancel()
 
 
-async def handle_result_request(request) -> bytes:
-    request_id = request.request_id
-    instance_id = request.message.instance_id
-    payload_text = request.message.payload.decode("utf-8")
+async def run_action_server(server, stop_event: asyncio.Event):
+    """Accept-and-spawn loop.
 
-    print(
-        f"{BOLD}{CYAN}[RESULT] [{current_timestamp()}] Received result request "
-        f"`{request_id}` from `{instance_id}` with payload `{payload_text}`{RESET}"
-    )
-
-    response_text = "SUCCESS!"
-    print(
-        f"{BOLD}{CYAN}[RESULT] [{current_timestamp()}] Responding to result request "
-        f"`{request_id}` with `{response_text}`{RESET}"
-    )
-
-    return response_text.encode("utf-8")
-
-
-async def wait_for_goal(action, active_caller_instance: dict, stop_event: asyncio.Event) -> LoopState:
-    async def goal_handler(request):
-        active_caller_instance["value"] = request.message.instance_id
-        return await handle_goal_request(request, action.feedback_publisher)
-
-    goal_task = asyncio.ensure_future(
-        action.goal_service.handle_next_request(goal_handler)
-    )
-    stop_task = asyncio.ensure_future(stop_event.wait())
-
-    done, pending = await asyncio.wait(
-        [goal_task, stop_task], return_when=asyncio.FIRST_COMPLETED
-    )
-    for task in pending:
-        task.cancel()
-
-    if stop_event.is_set():
-        print(f"{BOLD}{WHITE}[ACTION] Received CTRL+C, exiting.{RESET}")
-        return LoopState.SHUTDOWN
-
-    result = goal_task.result()
-    if result is True:
-        return LoopState.WAIT_FOR_FOLLOWUPS
-    elif result is False:
-        print(f"{BOLD}{WHITE}[ACTION] Goal listener closed by client.{RESET}")
-        return LoopState.SHUTDOWN
-    else:
-        print(f"{BOLD}{RED}[ERROR] Failed to handle goal request: {result}{RESET}")
-        return LoopState.SHUTDOWN
-
-
-async def handle_followups(action, active_caller_instance: dict, stop_event: asyncio.Event) -> LoopState:
-    while True:
-        async def cancel_handler(request):
-            caller_instance = request.message.instance_id
-            if active_caller_instance.get("value") != caller_instance:
-                print(f"{BOLD}{MAGENTA}[CANCEL] Ignoring cancel request for inactive goal.{RESET}")
-                return b"cancel ignored: no active goal for caller"
-            response = await handle_cancel_request(request)
-            active_caller_instance["value"] = None
-            return response
-
-        async def result_handler(request):
-            caller_instance = request.message.instance_id
-            if active_caller_instance.get("value") != caller_instance:
-                print(f"{BOLD}{CYAN}[RESULT] Ignoring result request for inactive goal.{RESET}")
-                return b"result ignored: no active goal for caller"
-            response = await handle_result_request(request)
-            active_caller_instance["value"] = None
-            return response
-
-        cancel_task = asyncio.ensure_future(
-            action.cancel_service.handle_next_request(cancel_handler)
-        )
-        result_task = asyncio.ensure_future(
-            action.result_service.handle_next_request(result_handler)
-        )
+    Accepts the next goal, registers its context (so a fast follow-up
+    cancel/result cannot miss it) and replies "accepted", then spawns an
+    independent worker. The loop returns to accepting immediately, so a second
+    goal never waits behind the first.
+    """
+    workers: list[asyncio.Task] = []
+    while not stop_event.is_set():
+        recv_task = asyncio.ensure_future(server.recv_next_goal())
         stop_task = asyncio.ensure_future(stop_event.wait())
-
         done, pending = await asyncio.wait(
-            [cancel_task, result_task, stop_task],
-            return_when=asyncio.FIRST_COMPLETED,
+            [recv_task, stop_task], return_when=asyncio.FIRST_COMPLETED
         )
         for task in pending:
             task.cancel()
 
         if stop_event.is_set():
             print(f"{BOLD}{WHITE}[ACTION] Received CTRL+C, exiting.{RESET}")
-            return LoopState.SHUTDOWN
+            break
 
-        for task in done:
-            try:
-                outcome = task.result()
-            except Exception as error:
-                print(f"{BOLD}{RED}[ERROR] Failed to handle request: {error}{RESET}")
-                return LoopState.SHUTDOWN
+        goal_request = recv_task.result()
+        if goal_request is None:
+            print(f"{BOLD}{WHITE}[ACTION] Goal service closed.{RESET}")
+            break
 
-            if outcome is False:
-                label = "Cancel" if task is cancel_task else "Result"
-                print(f"{BOLD}{WHITE}[ACTION] {label} listener closed by client.{RESET}")
-                return LoopState.SHUTDOWN
+        # accept registers the goal and replies; the returned context is owned
+        # by an independent worker coroutine.
+        ctx = await goal_request.accept(b"accepted")
+        workers.append(asyncio.ensure_future(run_goal(ctx)))
 
-        if active_caller_instance.get("value") is None:
-            return LoopState.WAIT_FOR_GOAL
-
-
-async def run_action_loop(action, stop_event: asyncio.Event):
-    active_caller_instance = {"value": None}
-    state = LoopState.WAIT_FOR_GOAL
-
-    while state != LoopState.SHUTDOWN:
-        if state == LoopState.WAIT_FOR_GOAL:
-            state = await wait_for_goal(action, active_caller_instance, stop_event)
-        elif state == LoopState.WAIT_FOR_FOLLOWUPS:
-            state = await handle_followups(action, active_caller_instance, stop_event)
+    for worker in workers:
+        worker.cancel()
 
 
 async def main():
@@ -214,15 +135,16 @@ async def main():
     core_node = f"{generate_name()}_core"
     instance_id = f"{generate_name()}_listener"
 
-    action = await ActionMessenger.expose(
+    server = await ActionMessenger.expose(
         receiver_handle,
         core_node,
         instance_id,
         SenderTarget.node(NODE_NAME, NODE_TAG),
-        ACTION_NAME,)
+        ACTION_NAME,
+    )
 
     print(
-        f"{BOLD}{WHITE}[ACTION] Waiting for action goals as `{instance_id}` "
+        f"{BOLD}{WHITE}[ACTION] Serving concurrent goals as `{instance_id}` "
         f"and core node `{core_node}`... Press CTRL+C to stop.{RESET}"
     )
 
@@ -230,7 +152,7 @@ async def main():
     stop_event = asyncio.Event()
     loop.add_signal_handler(signal.SIGINT, stop_event.set)
 
-    await run_action_loop(action, stop_event)
+    await run_action_server(server, stop_event)
 
     print(f"{BOLD}{WHITE}[ACTION] Action receiver shutting down.{RESET}")
 

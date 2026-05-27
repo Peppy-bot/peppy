@@ -108,67 +108,41 @@ async fn send_refresh_inner(
     let mut feedbacks = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
 
+    // Drain feedback until the server closes the stream on completion, then
+    // fetch the buffered result once.
     loop {
-        // Drain feedback
-        loop {
-            if tokio::time::Instant::now() >= deadline {
-                panic!("Timeout waiting for repo_refresh result");
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    let payload = msg.payload();
-                    if let Ok(feedback) = RepoRefreshFeedback::decode(payload.as_ref()) {
-                        feedbacks.push(feedback);
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
         if tokio::time::Instant::now() >= deadline {
             panic!("Timeout waiting for repo_refresh result");
         }
-
-        let poll_timeout = Duration::from_millis(200);
-        match ActionMessenger::request_result(&started.caller_handle, &action_handle, poll_timeout)
-            .await
-        {
-            Ok(msg) => {
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
                 let payload = msg.payload();
-                match RepoRefreshResult::decode(&payload) {
-                    Ok(result) => {
-                        // Drain remaining feedback
-                        loop {
-                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
-                                break;
-                            };
-                            let payload = msg.payload();
-                            if let Ok(feedback) = RepoRefreshFeedback::decode(payload.as_ref()) {
-                                feedbacks.push(feedback);
-                            }
-                        }
-                        return RefreshTestResult {
-                            goal_response,
-                            feedbacks,
-                            result,
-                        };
-                    }
-                    Err(_) => {
-                        if peppylib::encoding::is_result_pending(payload.as_ref()) {
-                            // Result not ready yet, keep polling
-                        } else {
-                            panic!("Unexpected decode error for result");
-                        }
-                    }
+                if let Ok(feedback) = RepoRefreshFeedback::decode(payload.as_ref()) {
+                    feedbacks.push(feedback);
                 }
             }
-            Err(peppylib::PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => panic!("Failed to get result: {}", err),
+            Ok(Err(_)) => break,
+            Err(_) => {}
         }
+    }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let fetch_timeout = deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .max(Duration::from_secs(1));
+    match ActionMessenger::request_result(&started.caller_handle, &action_handle, fetch_timeout)
+        .await
+    {
+        Ok(msg) => {
+            let result =
+                RepoRefreshResult::decode(&msg.payload()).expect("decode repo_refresh result");
+            RefreshTestResult {
+                goal_response,
+                feedbacks,
+                result,
+            }
+        }
+        Err(err) => panic!("Failed to get result: {}", err),
     }
 }
 

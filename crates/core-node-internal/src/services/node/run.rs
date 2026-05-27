@@ -15,7 +15,8 @@ use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
-    NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext, ServiceResponder,
+    ActionFeedbackPublisher, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext,
+    ServiceResponder,
 };
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -417,33 +418,63 @@ async fn handle_goal_request(
     let feedback_publisher = goal_ctx.feedback_publisher();
     let gate_for_task = gate.clone();
     tokio::spawn(async move {
-        let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-        let consumer_handle =
-            super::spawn_feedback_forwarder(feedback_rx, feedback_publisher, |line| {
-                NodeRunFeedback::from_stream(line.stream, &line.line).encode()
-            });
+        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
 
-        // Action-server path has no outer cancellation source; the internal
-        // per-step timeouts inside `run_node_run` remain the only way out.
-        let result = run_node_run(
+        // The node process outlives the action: once `node_run` reports the
+        // instance healthy and committed, the node keeps running and its
+        // output readers hold the feedback channel open. Awaiting a forwarder
+        // task to learn when feedback ends would therefore hang forever.
+        // Instead, drive the work future and forward feedback in the same
+        // task, and stop forwarding once the work returns.
+        let work = run_node_run(
             goal,
             runtime_config,
             action_context,
             feedback_tx,
             log_file,
             sender_instance_id,
+            // Action-server path has no outer cancellation source; the internal
+            // per-step timeouts inside `run_node_run` remain the only way out.
             CancellationToken::new(),
-        )
-        .await;
+        );
+        tokio::pin!(work);
 
-        // Drain feedback before completing so the end-of-stream sentinel that
-        // `complete` emits doesn't race ahead of the final feedback lines.
-        let _ = consumer_handle.await;
+        let mut feedback_open = true;
+        let result = loop {
+            tokio::select! {
+                biased;
+                outcome = &mut work => break outcome,
+                maybe_line = feedback_rx.recv(), if feedback_open => match maybe_line {
+                    Some(line) => publish_node_run_feedback(&feedback_publisher, line).await,
+                    None => feedback_open = false,
+                },
+            }
+        };
+
+        // `run_node_run` returns only after its internal feedback flush, so any
+        // lines still buffered here are the final ones and no more will arrive.
+        // Drain them before `complete` emits the end-of-stream sentinel so the
+        // sentinel never races ahead of the last feedback line.
+        while let Ok(line) = feedback_rx.try_recv() {
+            publish_node_run_feedback(&feedback_publisher, line).await;
+        }
+
         if let Ok(payload) = result.encode() {
             let _ = goal_ctx.complete(payload).await;
         }
         gate_for_task.finish(goal_ctx);
     });
+}
+
+/// Publishes one node_run feedback line onto the goal's feedback stream.
+///
+/// Encoding failures are intentionally dropped: a single malformed line should
+/// not abort the run, and the line is already captured verbatim in the
+/// per-instance log file.
+async fn publish_node_run_feedback(publisher: &ActionFeedbackPublisher, line: FeedbackLine) {
+    if let Ok(payload) = NodeRunFeedback::from_stream(line.stream, &line.line).encode() {
+        let _ = publisher.publish(payload).await;
+    }
 }
 
 fn encode_rejected_start_goal(reason: impl Into<String>) -> PeppyResult<Payload> {

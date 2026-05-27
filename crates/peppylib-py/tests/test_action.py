@@ -2,14 +2,23 @@
 Tests for peppylib ActionMessenger.
 
 Python equivalent of `action_messenger_communication` in
-crates/peppylib/tests/actions.rs.
+crates/peppylib/tests/actions.rs. Drives the concurrent ActionServer /
+GoalContext API: a server accepts each goal via `recv_next_goal`, then owns
+that goal's feedback stream, cancel signal, and result delivery.
 """
 
 import asyncio
 
 import pytest
 
-from peppylib import ActionMessenger, MessengerHandle, QoSProfile, SenderTarget, ZenohdInstance
+from peppylib import (
+    ActionMessenger,
+    MessengerHandle,
+    QoSProfile,
+    SenderTarget,
+    ZenohdInstance,
+    actions,
+)
 
 CORE_NODE = "test_core"
 INSTANCE_ID = "test_instance"
@@ -30,7 +39,7 @@ async def test_action_messenger_communication():
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
-        # Expose the action server
+        # Expose the action server (background cancel/result pumps spawn here).
         action = await ActionMessenger.expose(
             server_handle,
             CORE_NODE,
@@ -42,31 +51,16 @@ async def test_action_messenger_communication():
         # Allow subscriptions to propagate
         await asyncio.sleep(0.05)
 
-        # Run the server side in a spawned task. The factory's
-        # declare_from_wire absorbs the envelope unwrap + per-goal publisher
-        # declaration in one call.
-        captured_publisher: list = [None]
-
-        async def _on_goal(req):
-            (
-                publisher,
-                _goal_id,
-                _user_payload,
-            ) = await action.feedback_publisher_factory.declare_from_wire(
-                req.link_id,
-                bytes(req.message.payload),
-            )
-            captured_publisher[0] = publisher
-            return GOAL_RESPONSE_PAYLOAD
-
+        # Accept loop: a real server keeps running so its results stay
+        # fetchable while the client drains feedback and requests the result.
         async def server():
-            await action.goal_service.handle_next_request(_on_goal)
-
-            assert captured_publisher[0] is not None
-            await captured_publisher[0].publish(FEEDBACK_PAYLOAD)
-
-            # Handle the result request
-            await action.result_service.handle_next_request(lambda _req: RESULT_PAYLOAD)
+            while True:
+                goal_request = await action.recv_next_goal()
+                if goal_request is None:
+                    break
+                ctx = await goal_request.accept(GOAL_RESPONSE_PAYLOAD)
+                await ctx.publish_feedback(FEEDBACK_PAYLOAD)
+                await ctx.complete(RESULT_PAYLOAD)
 
         server_task = asyncio.create_task(server())
 
@@ -80,7 +74,8 @@ async def test_action_messenger_communication():
             INSTANCE_ID,
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
-            2.0,)
+            2.0,
+        )
 
         assert goal_handle.goal_response.payload == GOAL_RESPONSE_PAYLOAD
 
@@ -101,14 +96,19 @@ async def test_action_messenger_communication():
 
         assert result.payload == RESULT_PAYLOAD
 
-        await server_task
+        server_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await server_task
 
 
 @pytest.mark.asyncio
 async def test_cancel_goal_concurrent_with_feedback():
-    """cancel_goal must not deadlock when on_next_feedback is waiting."""
+    """cancel_goal must not deadlock when on_next_feedback is waiting.
 
-    CANCEL_RESPONSE_PAYLOAD = b"cancelled"
+    Cancellation is an SDK-driven signal now: the framework acks the cancel
+    (accepted == True while the goal is in flight) and fires the worker's
+    cancel_signal(); there is no user cancel handler.
+    """
 
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
@@ -124,14 +124,12 @@ async def test_cancel_goal_concurrent_with_feedback():
 
         await asyncio.sleep(0.05)
 
-        # Server: accept goal then handle cancel (never send feedback)
+        # Server: accept the goal then observe the cancel signal (never sends
+        # feedback). Stays alive so the SDK cancel pump can ack the client.
         async def server():
-            await action.goal_service.handle_next_request(
-                lambda _req: GOAL_RESPONSE_PAYLOAD
-            )
-            await action.cancel_service.handle_next_request(
-                lambda _req: CANCEL_RESPONSE_PAYLOAD
-            )
+            goal_request = await action.recv_next_goal()
+            ctx = await goal_request.accept(GOAL_RESPONSE_PAYLOAD)
+            await ctx.cancel_signal()
 
         server_task = asyncio.create_task(server())
 
@@ -145,7 +143,8 @@ async def test_cancel_goal_concurrent_with_feedback():
             INSTANCE_ID,
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
-            2.0,)
+            2.0,
+        )
 
         # Start waiting for feedback (will block — server never sends any).
         feedback_task = asyncio.ensure_future(goal_handle.on_next_feedback())
@@ -155,13 +154,15 @@ async def test_cancel_goal_concurrent_with_feedback():
             timeout=3.0,
         )
 
-        assert cancel_response.payload == CANCEL_RESPONSE_PAYLOAD
+        # The SDK acks the cancel with a one-byte payload decoded via
+        # decode_cancel_ack; True means the goal was in flight.
+        assert actions.decode_cancel_ack(bytes(cancel_response.payload)) is True
 
         feedback_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await feedback_task
 
-        await server_task
+        await asyncio.wait_for(server_task, timeout=2.0)
 
 
 @pytest.mark.asyncio
@@ -242,19 +243,9 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
         )
 
         async def goal_handler(action, response: bytes):
-            """Server-side: unwrap envelope, declare feedback publisher (kept), return response."""
-            captured = [None]
-
-            async def on_goal(req):
-                publisher, _goal_id, _user_payload = await action.feedback_publisher_factory.declare_from_wire(
-                    req.link_id,
-                    bytes(req.message.payload),
-                )
-                captured[0] = publisher
-                return response
-
-            await action.goal_service.handle_next_request(on_goal)
-            return captured[0]
+            """Server-side: accept the next goal and return its context."""
+            goal_request = await action.recv_next_goal()
+            return await goal_request.accept(response)
 
         native_task = asyncio.ensure_future(goal_handler(native_action, native_goal_response))
         iface_task = asyncio.ensure_future(goal_handler(iface_action, iface_goal_response))
@@ -289,5 +280,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
         )
         assert iface_goal.goal_response.payload == iface_goal_response
 
+        # Keep each context alive past the assertions (awaiting the task hands
+        # it back); the routing check is the goal_response payloads above.
         await asyncio.wait_for(native_task, timeout=2.0)
         await asyncio.wait_for(iface_task, timeout=2.0)
