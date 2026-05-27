@@ -64,19 +64,23 @@ fn normalize_git_path<E>(value: String) -> Result<String, E>
 where
     E: de::Error,
 {
-    let trimmed = value.trim().trim_start_matches('/');
-    if trimmed.is_empty() {
-        return Err(invalid_deployment_source::<E>("git path cannot be empty"));
-    }
-    let path = Path::new(trimmed);
-    if path.is_absolute()
-        || path
+    let pre_trim = value.trim();
+    // Reject absolute paths (including leading-slash form) and parent-dir
+    // components *before* stripping leading slashes — otherwise `/foo/bar`
+    // would be silently coerced to a valid relative path.
+    let original_path = Path::new(pre_trim);
+    if original_path.is_absolute()
+        || original_path
             .components()
             .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
     {
         return Err(invalid_deployment_source::<E>(
             "git path cannot be absolute or contain parent-dir components",
         ));
+    }
+    let trimmed = pre_trim.trim_start_matches('/');
+    if trimmed.is_empty() {
+        return Err(invalid_deployment_source::<E>("git path cannot be empty"));
     }
     Ok(trimmed.to_owned())
 }

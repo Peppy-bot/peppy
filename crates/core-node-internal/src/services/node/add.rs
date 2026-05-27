@@ -848,10 +848,15 @@ pub(crate) async fn run_node_add(
             let sync_git_hash = goal.git_hash.clone();
             let sync_node_stack = action_context.node_stack.clone();
             let sync_peppy_dirs = action_context.peppy_dirs.clone();
+            let sync_feedback_tx = feedback_tx.clone();
 
             let sync_result = tokio::task::spawn_blocking(move || {
                 let on_feedback = |line: &str| {
                     tracing::info!(target: "peppy::interface", "{line}");
+                    let _ = sync_feedback_tx.send(FeedbackLine {
+                        stream: FeedbackStream::Stdout,
+                        line: line.to_string(),
+                    });
                 };
                 sync::auto_sync_if_missing(
                     AutoSyncParams {

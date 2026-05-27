@@ -1028,7 +1028,30 @@ async fn validate_and_order_dependencies(
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
 
-    let binding_items: Vec<config::launcher::BindingValidationItem<'_>> = planned
+    // The root entity stays in the stack across launches (snapshot_and_clear_stack
+    // preserves it), so its instance_id participates in stack-wide uniqueness
+    // checks. Synthesize a single-instance DeploymentInstance for it — only
+    // instance_id is consulted by check_stack_wide_instance_id_uniqueness.
+    let root_instance_id_str = ctx
+        .node_stack
+        .root()
+        .read()
+        .instances()
+        .first()
+        .map(|inst| inst.instance_id().as_str().to_owned());
+    let root_instances: Vec<config::launcher::DeploymentInstance> = root_instance_id_str
+        .and_then(|id_str| config::launcher::Name::new(id_str).ok())
+        .map(|instance_id| config::launcher::DeploymentInstance {
+            instance_id,
+            arguments: Default::default(),
+            env_vars: Default::default(),
+            framework: Default::default(),
+            bindings: Default::default(),
+        })
+        .into_iter()
+        .collect();
+
+    let mut binding_items: Vec<config::launcher::BindingValidationItem<'_>> = planned
         .iter()
         .map(|p| config::launcher::BindingValidationItem {
             node_name: &p.node_name,
@@ -1038,6 +1061,15 @@ async fn validate_and_order_dependencies(
             conforms_to: p.config.interfaces.conforms_to.as_deref().unwrap_or(&[]),
         })
         .collect();
+    if !root_instances.is_empty() {
+        binding_items.push(config::launcher::BindingValidationItem {
+            node_name: root_config.manifest.name.as_str(),
+            node_tag: root_config.manifest.tag.as_str(),
+            instances: &root_instances,
+            depends_on: root_config.manifest.depends_on.as_ref(),
+            conforms_to: root_config.interfaces.conforms_to.as_deref().unwrap_or(&[]),
+        });
+    }
     let validated = config::launcher::validate_bindings(&binding_items);
     if !validated.errors.is_empty() {
         let msg = config::format_bulleted(&validated.errors);

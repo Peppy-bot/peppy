@@ -915,14 +915,18 @@ impl TestPackagesCache {
             serde_json::to_string_pretty(&self.entries).expect("failed to serialize cache entries");
         std::fs::write(nodes_repo_cache_path(peppy_dirs), content)
             .expect("failed to write nodes.json5 fixture");
-        if !self.interfaces.is_empty() {
+        let interfaces_path = core_node::interfaces_repo_cache_path(peppy_dirs);
+        if self.interfaces.is_empty() {
+            match std::fs::remove_file(&interfaces_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => panic!("failed to remove stale interfaces.json5 fixture: {e}"),
+            }
+        } else {
             let interfaces_content = serde_json::to_string_pretty(&self.interfaces)
                 .expect("failed to serialize interface cache entries");
-            std::fs::write(
-                core_node::interfaces_repo_cache_path(peppy_dirs),
-                interfaces_content,
-            )
-            .expect("failed to write interfaces.json5 fixture");
+            std::fs::write(interfaces_path, interfaces_content)
+                .expect("failed to write interfaces.json5 fixture");
         }
     }
 }
