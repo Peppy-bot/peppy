@@ -200,15 +200,9 @@ impl LanguageGenerator for PythonGenerator {
                 .and_then(|goal_service| goal_service.response_message_format.as_ref()),
         )?;
 
-        let cancel_response_schema_info = if action.goal_service.is_some() {
-            let cancel_format = cancel_action_response_format();
-            Some(self.register_schema(
-                &scoped_schema_key(origin, &format!("{}_cancel_response", action.name)),
-                &cancel_format,
-            )?)
-        } else {
-            None
-        };
+        // The cancel-ack reply is encoded by the peppylib engine (a fixed
+        // format), so the exposed server no longer needs a per-action
+        // cancel-response schema.
 
         let result_response_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_result_response", action.name)),
@@ -229,7 +223,6 @@ impl LanguageGenerator for PythonGenerator {
             action,
             goal_request_schema_info.as_ref(),
             goal_response_schema_info.as_ref(),
-            cancel_response_schema_info.as_ref(),
             result_response_schema_info.as_ref(),
             feedback_schema_info.as_ref(),
             origin,

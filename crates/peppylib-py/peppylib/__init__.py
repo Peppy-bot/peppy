@@ -41,7 +41,12 @@ messaging = _peppylib.messaging
 from ._peppylib.messaging import SenderTarget, MessengerHandle, TopicMessenger, ZenohdInstance  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.config import QoSProfile  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.messaging.services import ServiceMessenger  # noqa: E402  # type: ignore[import-not-found]
-from ._peppylib.messaging.actions import ActionMessenger  # noqa: E402  # type: ignore[import-not-found]
+from ._peppylib.messaging.actions import (  # noqa: E402  # type: ignore[import-not-found]
+    ActionMessenger,
+    ConcurrentAction,
+    PendingGoal,
+    GoalContext,
+)
 from ._peppylib.runtime import (  # noqa: E402  # type: ignore[import-not-found]
     NodeBuilder,
     StandaloneConfig,
@@ -69,6 +74,9 @@ __all__ = [
     "QoSProfile",
     "ServiceMessenger",
     "ActionMessenger",
+    "ConcurrentAction",
+    "PendingGoal",
+    "GoalContext",
     "NodeBuilder",
     "StandaloneConfig",
     "NodeRunner",

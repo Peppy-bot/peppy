@@ -4,8 +4,9 @@ use common::test_node_target;
 use config::node::QoSProfile;
 use peppylib::PeppyError;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, EmptyPayloadError, MessengerHandle,
-    NonEmptyPayload, SenderTarget,
+    ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, ConcurrentAction,
+    EmptyPayloadError, MessengerHandle, NonEmptyPayload, SenderTarget, decode_cancel_ack,
+    encode_cancel_ack,
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
@@ -355,6 +356,228 @@ fn non_empty_payload_rejects_empty_payload() {
         matches!(result, Err(EmptyPayloadError)),
         "empty payload must be rejected by NonEmptyPayload::try_new",
     );
+}
+
+/// The fixed cancel-ack encoder/decoder must round-trip both the accepted and
+/// rejected shapes. This guards the encoder peppylib's concurrent-action engine
+/// sends in reply to every cancel; cross-schema wire compatibility with the
+/// generated client reader is additionally guarded by the e2e cancel tests in
+/// generator-internal.
+#[test]
+fn cancel_ack_encode_decode_roundtrip() {
+    let accepted = encode_cancel_ack(true, None).expect("encode accepted");
+    let (is_accepted, message) = decode_cancel_ack(accepted.as_ref()).expect("decode accepted");
+    assert!(is_accepted);
+    assert_eq!(message, None);
+
+    let rejected = encode_cancel_ack(false, Some("no active goal for goal_id")).expect("encode");
+    let (is_accepted, message) = decode_cancel_ack(rejected.as_ref()).expect("decode rejected");
+    assert!(!is_accepted);
+    assert_eq!(message.as_deref(), Some("no active goal for goal_id"));
+}
+
+/// Two goals fired at one [`ConcurrentAction`] server must run concurrently
+/// with fully independent feedback streams and results: goal A's feedback never
+/// lands on goal B's stream, and each `get_result` is routed back to its own
+/// goal by `goal_id`. Each goal echoes its request payload into its feedback
+/// and result so a cross-stream leak would fail the assertions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_action_two_goals_independent() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let core_node = "test_core";
+    let instance_id = "exposer";
+    let node_name = "brain";
+    let action_name = "move_arm";
+
+    let server_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("server handle");
+    let client_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("client handle");
+
+    let mut action = ConcurrentAction::expose(
+        &server_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        true,
+    )
+    .await
+    .expect("expose should succeed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let server = tokio::spawn(async move {
+        while let Ok(Some(pending)) = action.recv_next_goal().await {
+            let request = pending.request_bytes().to_vec();
+            let Ok(ctx) = pending.accept(Payload::from_static(b"accepted")).await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                let mut feedback = b"fb:".to_vec();
+                feedback.extend_from_slice(&request);
+                let _ = ctx
+                    .publish_feedback(
+                        NonEmptyPayload::try_new(Payload::from(feedback))
+                            .expect("feedback is non-empty"),
+                    )
+                    .await;
+                let mut result = b"result:".to_vec();
+                result.extend_from_slice(&request);
+                let _ = ctx.complete(Payload::from(result)).await;
+            });
+        }
+    });
+
+    let send = |payload: &'static [u8]| {
+        ActionMessenger::send_goal(
+            &client_handle,
+            core_node,
+            instance_id,
+            test_node_target(node_name),
+            action_name,
+            Some(core_node),
+            Some(instance_id),
+            Payload::from_static(payload),
+            QoSProfile::Reliable,
+            Duration::from_secs(2),
+        )
+    };
+    let mut goal_a = send(b"A").await.expect("send goal A");
+    let mut goal_b = send(b"B").await.expect("send goal B");
+
+    assert_ne!(
+        goal_a.goal_id(),
+        goal_b.goal_id(),
+        "each goal must get a distinct goal_id",
+    );
+
+    // Feedback isolation: each handle receives only its own goal's feedback.
+    let fb_a = tokio::time::timeout(Duration::from_secs(2), goal_a.on_next_feedback())
+        .await
+        .expect("A feedback within timeout")
+        .expect("A feedback ok");
+    assert_eq!(fb_a.payload().as_ref(), b"fb:A");
+    let fb_b = tokio::time::timeout(Duration::from_secs(2), goal_b.on_next_feedback())
+        .await
+        .expect("B feedback within timeout")
+        .expect("B feedback ok");
+    assert_eq!(fb_b.payload().as_ref(), b"fb:B");
+
+    // Result routing by goal_id: each handle gets its own goal's result.
+    let res_a = ActionMessenger::request_result(&client_handle, &goal_a, Duration::from_secs(2))
+        .await
+        .expect("result A");
+    assert_eq!(res_a.payload().as_ref(), b"result:A");
+    let res_b = ActionMessenger::request_result(&client_handle, &goal_b, Duration::from_secs(2))
+        .await
+        .expect("result B");
+    assert_eq!(res_b.payload().as_ref(), b"result:B");
+
+    server.abort();
+    drop(server_handle);
+}
+
+/// A cancel must fire only the targeted goal's signal. Goal A is cancelled
+/// immediately after `fire_goal` returns — exercising the register-before-respond
+/// ordering, since the slot must already exist for the cancel to match — and
+/// reports its cancelled result, while goal B finishes normally, untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_action_cancel_targets_one_goal() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let core_node = "test_core";
+    let instance_id = "exposer";
+    let node_name = "brain";
+    let action_name = "move_arm";
+
+    let server_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("server handle");
+    let client_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("client handle");
+
+    let mut action = ConcurrentAction::expose(
+        &server_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        true,
+    )
+    .await
+    .expect("expose should succeed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let server = tokio::spawn(async move {
+        while let Ok(Some(pending)) = action.recv_next_goal().await {
+            let request = pending.request_bytes().to_vec();
+            let Ok(ctx) = pending.accept(Payload::from_static(b"accepted")).await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = ctx.cancel_signal() => {
+                        let mut result = b"cancelled:".to_vec();
+                        result.extend_from_slice(&request);
+                        let _ = ctx.complete_cancelled(Payload::from(result)).await;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(400)) => {
+                        let mut result = b"done:".to_vec();
+                        result.extend_from_slice(&request);
+                        let _ = ctx.complete(Payload::from(result)).await;
+                    }
+                }
+            });
+        }
+    });
+
+    let send = |payload: &'static [u8]| {
+        ActionMessenger::send_goal(
+            &client_handle,
+            core_node,
+            instance_id,
+            test_node_target(node_name),
+            action_name,
+            Some(core_node),
+            Some(instance_id),
+            Payload::from_static(payload),
+            QoSProfile::Reliable,
+            Duration::from_secs(2),
+        )
+    };
+    let goal_a = send(b"A").await.expect("send goal A");
+    let goal_b = send(b"B").await.expect("send goal B");
+
+    // Cancel A immediately; the slot must already be registered.
+    let cancel_ack = ActionMessenger::cancel_goal(&client_handle, &goal_a, Duration::from_secs(2))
+        .await
+        .expect("cancel A");
+    let (accepted, _message) =
+        decode_cancel_ack(cancel_ack.payload().as_ref()).expect("decode cancel ack");
+    assert!(accepted, "cancelling a live goal must be accepted");
+
+    // A reports its cancelled result; B is unaffected and finishes normally.
+    let res_a = ActionMessenger::request_result(&client_handle, &goal_a, Duration::from_secs(2))
+        .await
+        .expect("result A");
+    assert_eq!(res_a.payload().as_ref(), b"cancelled:A");
+    let res_b = ActionMessenger::request_result(&client_handle, &goal_b, Duration::from_secs(3))
+        .await
+        .expect("result B");
+    assert_eq!(res_b.payload().as_ref(), b"done:B");
+
+    server.abort();
+    drop(server_handle);
 }
 
 /// A single node exposes the *same* action name under two distinct iface

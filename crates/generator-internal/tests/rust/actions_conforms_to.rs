@@ -132,8 +132,8 @@ fn nests_conformed_actions_under_iface_name_and_tag() {
 
     let native_src = fs::read_to_string(&native_path).expect("read native");
     assert!(
-        native_src.contains("ActionMessenger::expose"),
-        "native source should call ActionMessenger::expose:\n{native_src}",
+        native_src.contains("ConcurrentAction::expose"),
+        "native source should call ConcurrentAction::expose:\n{native_src}",
     );
     assert!(
         native_src.contains("SenderTarget::node("),

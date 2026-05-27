@@ -1780,7 +1780,12 @@ async fn action_communication_no_instance_id_target() {
                 async move {
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert!(request.message().payload().is_empty());
+                    // Result requests now carry the goal_id envelope (empty body).
+                    let request_payload = request.message().payload();
+                    let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
+                        .expect("result request must carry a goal_id envelope");
+                    assert!(!goal_id.is_empty(), "result request must carry a goal_id");
+                    assert!(body.is_empty(), "result request body must be empty");
 
                     Ok(response_payload)
                 }
@@ -2013,7 +2018,12 @@ async fn action_communication_with_instance_id_target() {
                 async move {
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert!(request.message().payload().is_empty());
+                    // Result requests now carry the goal_id envelope (empty body).
+                    let request_payload = request.message().payload();
+                    let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
+                        .expect("result request must carry a goal_id envelope");
+                    assert!(!goal_id.is_empty(), "result request must carry a goal_id");
+                    assert!(body.is_empty(), "result request body must be empty");
 
                     Ok(response_payload)
                 }
@@ -2257,10 +2267,12 @@ async fn action_communication_goal_cancelled() {
 
             assert_eq!(cancel_context.message().core_node(), CALLER_CORE_NODE);
             assert_eq!(cancel_context.message().instance_id(), CALLER_INSTANCE_ID);
-            assert!(
-                cancel_context.message().payload().is_empty(),
-                "cancel service should receive empty payload"
-            );
+            // Cancel requests now carry the goal_id envelope (empty body).
+            let cancel_payload = cancel_context.message().payload();
+            let (goal_id, body) = super::unwrap_goal_payload(cancel_payload.as_ref())
+                .expect("cancel request must carry a goal_id envelope");
+            assert!(!goal_id.is_empty(), "cancel request must carry a goal_id");
+            assert!(body.is_empty(), "cancel request body must be empty");
 
             cancel_call_count.fetch_add(1, Ordering::SeqCst);
 
@@ -2512,7 +2524,12 @@ async fn single_action_communication_multiple_polls() {
             for _ in 0..client_total {
                 let handler = result_service
                     .spawn_next_request_handler(move |request| async move {
-                        assert!(request.message().payload().is_empty());
+                        // Result requests now carry the goal_id envelope (empty body).
+                        let request_payload = request.message().payload();
+                        let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
+                            .expect("result request must carry a goal_id envelope");
+                        assert!(!goal_id.is_empty(), "result request must carry a goal_id");
+                        assert!(body.is_empty(), "result request body must be empty");
 
                         Ok(Payload::from_static(b"result=done"))
                     })
