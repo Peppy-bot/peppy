@@ -584,19 +584,11 @@ pub fn cancel_action_response_format() -> MessageFormat {
 /// The goal acknowledgement is framework-owned (not declared by the action
 /// schema): every goal response is `accepted: bool` plus an optional
 /// `error_message: Optional[String]` carrying the rejection reason. The
-/// generated `GoalResponse::accepted()` / `GoalResponse::rejected(reason)`
-/// constructors produce it.
+/// generated `GoalResponse::accept()` / `GoalResponse::reject(reason)`
+/// constructors produce it. This is wire-identical to the cancel-ack format, so
+/// the two share a single definition.
 pub fn goal_action_response_format() -> MessageFormat {
-    let mut fields = IndexMap::new();
-    fields.insert(String::from("accepted"), SchemaType::Type(TypeToken::Bool));
-    fields.insert(
-        String::from("error_message"),
-        SchemaType::Primitive(PrimitiveSchema {
-            kind: TypeToken::String,
-            optional: true,
-        }),
-    );
-    MessageFormat(fields)
+    cancel_action_response_format()
 }
 
 /// Validates that generated type names for nested objects and array-of-object items

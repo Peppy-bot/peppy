@@ -94,6 +94,11 @@ impl ConcurrencyGate {
     /// admitted but couldn't be started (e.g. log-file creation failed), so a
     /// retry isn't wrongly rejected.
     pub(crate) fn clear_running(&self) {
+        self.reset();
+    }
+
+    /// Resets all gate state so the next goal can be admitted.
+    fn reset(&self) {
         let mut state = self.state.lock();
         state.running = None;
         state.running_task = None;
@@ -113,9 +118,6 @@ impl ConcurrencyGate {
     /// `GoalContext` separately; the SDK retains the result for its grace
     /// window so the client's fetch still resolves.
     pub(crate) fn finish(&self) {
-        let mut state = self.state.lock();
-        state.running = None;
-        state.running_task = None;
-        state.cancel_token = None;
+        self.reset();
     }
 }

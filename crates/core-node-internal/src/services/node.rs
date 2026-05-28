@@ -3,7 +3,7 @@ mod add_batch;
 mod archive;
 mod builder;
 pub(crate) mod cache;
-mod common;
+pub(crate) mod common;
 mod env;
 mod feedback;
 pub(crate) mod gate;

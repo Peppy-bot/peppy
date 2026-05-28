@@ -747,8 +747,8 @@ impl LanguageGenerator for RustGenerator {
             )?;
             // The goal acknowledgement is framework-owned ({accepted,
             // error_message}); any goal response declared in the action schema
-            // is ignored. The decider returns GoalResponse::accepted() /
-            // GoalResponse::rejected(reason).
+            // is ignored. The decider returns GoalResponse::accept() /
+            // GoalResponse::reject(reason).
             let goal_response_format = goal_action_response_format();
             let response_artifacts =
                 map_message_format(&format!("{label}_response"), Some(&goal_response_format))?;
@@ -804,7 +804,7 @@ impl LanguageGenerator for RustGenerator {
             }
 
             // The decider returns a framework `GoalResponse`
-            // (`accepted()` / `rejected(reason)`).
+            // (`accept()` / `reject(reason)`).
             extra_items.push(build_goal_response_constructors());
 
             // Serialization for the `GoalResponse` (reads a local `response`).
@@ -891,13 +891,11 @@ impl LanguageGenerator for RustGenerator {
 
             goal_context_methods.push(build_goal_context_complete(
                 "complete",
-                "complete",
                 &result_params,
                 encoding.as_ref(),
                 &label,
             ));
             goal_context_methods.push(build_goal_context_complete(
-                "complete_cancelled",
                 "complete_cancelled",
                 &result_params,
                 encoding.as_ref(),

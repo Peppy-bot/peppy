@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::{
     FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
@@ -16,6 +17,7 @@ use core_node_api::encoding::{
     LauncherOrigin, NodeAddGoal, NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeRunGoal,
     NodeRunLogEntry, NodeRunResult, NodeSource,
 };
+use futures::FutureExt;
 use node_stack::NodeStack;
 use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::SenderTarget;
@@ -25,6 +27,7 @@ use peppylib::{MessengerHandle, PeppyResult};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::Write;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1554,7 +1557,24 @@ async fn handle_goal_request(
             },
             daemon_use_sim_time,
         };
-        let result = process_launch(goal, ctx).await;
+        // Catch panics so a panic inside the launch sequence still releases the
+        // gate (otherwise every future `stack_launch` goal is rejected with
+        // "action already in progress" until the daemon restarts). Mirrors the
+        // panic handling in `run_node_run` / `run_node_add` / `run_node_build`.
+        let result = match AssertUnwindSafe(process_launch(goal, ctx))
+            .catch_unwind()
+            .await
+        {
+            Ok(result) => result,
+            Err(panic_payload) => {
+                let msg = format!(
+                    "stack_launch task panicked: {}",
+                    panic_message(&*panic_payload)
+                );
+                tracing::error!("{}", msg);
+                LaunchResult::failure(&log_path_clone, msg)
+            }
+        };
         if let Ok(payload) = result.encode() {
             let _ = goal_ctx.complete(payload).await;
         }
