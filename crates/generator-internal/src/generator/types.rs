@@ -585,7 +585,7 @@ pub fn cancel_action_response_format() -> MessageFormat {
 /// schema): every goal response is `accepted: bool` plus an optional
 /// `error_message: Optional[String]` carrying the rejection reason. The
 /// generated `GoalResponse::accepted()` / `GoalResponse::rejected(reason)`
-/// constructors produce it; there is no separate `GoalDecision`.
+/// constructors produce it.
 pub fn goal_action_response_format() -> MessageFormat {
     let mut fields = IndexMap::new();
     fields.insert(String::from("accepted"), SchemaType::Type(TypeToken::Bool));

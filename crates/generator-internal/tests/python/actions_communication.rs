@@ -892,10 +892,9 @@ if __name__ == "__main__":
     let main_file = user_node_consumer.join("main.py");
     fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
 
-    // --- Exposer (server) project. Reproduces the exact pattern that
-    // deadlocked pre-fix: the goal handler is `async` and `await`s
-    // `emit_feedback(...)` before returning `GoalResponse.accept()`.
-    // See the test docstring above for the full motivation and root cause.
+    // --- Exposer (server) project. The goal decider is `async` (codegen
+    // awaits it); after accepting, the worker publishes feedback through the
+    // `GoalContext` and completes. See the test docstring above.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -1827,22 +1826,20 @@ if __name__ == "__main__":
 /// Verifies the goal-completion side of the action lifecycle contract: a
 /// client can use a drain-loop pattern (`while True: await
 /// on_next_feedback_message()`) to consume every feedback message and
-/// reliably exit once the goal is complete. This works because the Python
-/// codegen for `handle_result_next_request` publishes an end-of-stream
-/// sentinel (an empty payload on the per-goal feedback publisher) before
-/// invoking the user's result handler. Without that sentinel the loop
-/// would hang forever, because the underlying mpsc receiver never
-/// surfaces an end-of-stream condition on its own.
+/// reliably exit once the goal is complete. This works because
+/// `GoalContext.complete()` publishes an end-of-stream sentinel (an empty
+/// payload on the per-goal feedback publisher) before delivering the
+/// result. Without that sentinel the loop would hang forever, because the
+/// underlying mpsc receiver never surfaces an end-of-stream condition on
+/// its own.
 ///
 /// End-to-end flow exercised here:
 ///   1. Client `fire_goal`, server accepts.
 ///   2. Server emits 3 feedback messages.
 ///   3. Client's drain-loop receives all 3 in order.
-///   4. Server calls `handle_result_next_request`. Before invoking the
-///      user's result handler, codegen publishes the end-of-stream
-///      sentinel on the per-goal feedback publisher (closing the
-///      feedback stream); then it runs the handler and returns the
-///      result.
+///   4. Server calls `ctx.complete(...)`, which publishes the end-of-stream
+///      sentinel on the per-goal feedback publisher (closing the feedback
+///      stream) and then delivers the result.
 ///   5. Client's next `on_next_feedback_message()` raises (sentinel
 ///      observed). The drain-loop catches the exception and exits.
 ///   6. Client calls `get_result` and receives the final response.

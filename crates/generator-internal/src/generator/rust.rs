@@ -725,7 +725,7 @@ impl LanguageGenerator for RustGenerator {
         // publish_feedback and complete/complete_cancelled when applicable).
         let mut goal_context_methods: Vec<TokenStream> = Vec::new();
         let mut helper_tokens: Vec<TokenStream> = Vec::new();
-        // Free items (the GoalDecision enum).
+        // Free items (the GoalResponse constructors).
         let mut extra_items: Vec<TokenStream> = Vec::new();
 
         let action_name_literal = Literal::string(&action.name);
@@ -804,7 +804,7 @@ impl LanguageGenerator for RustGenerator {
             }
 
             // The decider returns a framework `GoalResponse`
-            // (`accepted()` / `rejected(reason)`); there is no `GoalDecision`.
+            // (`accepted()` / `rejected(reason)`).
             extra_items.push(build_goal_response_constructors());
 
             // Serialization for the `GoalResponse` (reads a local `response`).

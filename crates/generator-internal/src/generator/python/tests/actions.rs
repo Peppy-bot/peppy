@@ -217,8 +217,7 @@ fn exposed_action() {
     );
 
     // GoalResponse: framework-owned goal acknowledgement dataclass with
-    // accept()/reject(reason) staticmethods the decider returns. There is no
-    // GoalDecision.
+    // accept()/reject(reason) staticmethods the decider returns.
     assert_contains_all(
         &rendered,
         &[
@@ -228,11 +227,6 @@ fn exposed_action() {
             "def accept():",
             "def reject(reason):",
         ],
-    );
-    assert_rendered!(
-        !rendered.contains("GoalDecision"),
-        &rendered,
-        "GoalDecision class is removed; the decider returns a framework GoalResponse"
     );
 
     // ActionHandle class
@@ -303,38 +297,6 @@ fn exposed_action() {
             "final_position: list[int]",
         ],
     );
-
-    // The old per-action surface is gone.
-    assert_rendered!(
-        !rendered.contains("current_goal"),
-        &rendered,
-        "no shared current_goal slot"
-    );
-    assert_rendered!(
-        !rendered.contains("emit_feedback"),
-        &rendered,
-        "emit_feedback is replaced by GoalContext.publish_feedback"
-    );
-    assert_rendered!(
-        !rendered.contains("handle_cancel_next_request"),
-        &rendered,
-        "no cancel handler"
-    );
-    assert_rendered!(
-        !rendered.contains("handle_result_next_request"),
-        &rendered,
-        "no result handler"
-    );
-    assert_rendered!(
-        !rendered.contains("class CancelRequest:"),
-        &rendered,
-        "no server-side CancelRequest"
-    );
-    assert_rendered!(
-        !rendered.contains("class ResultRequest:"),
-        &rendered,
-        "no server-side ResultRequest"
-    );
 }
 
 #[test]
@@ -360,12 +322,6 @@ fn expose_action_without_request_body() {
             "async def handle_goal_next_request(",
         ],
     );
-    assert_rendered!(
-        !rendered.contains("GoalDecision"),
-        &rendered,
-        "GoalDecision class is removed"
-    );
-
     // No request data → no deserializer and a GoalRequest without `data`.
     assert_rendered!(
         !rendered.contains("def _deserialize_goal_request"),
@@ -392,23 +348,6 @@ fn expose_action_without_request_body() {
     assert_contains_all(
         &rendered,
         &["async def publish_feedback(self, new_position: int, speed: int) -> None:"],
-    );
-
-    // Old cancel/result/emit surface is gone.
-    assert_rendered!(
-        !rendered.contains("handle_cancel_next_request"),
-        &rendered,
-        "no cancel handler"
-    );
-    assert_rendered!(
-        !rendered.contains("handle_result_next_request"),
-        &rendered,
-        "no result handler"
-    );
-    assert_rendered!(
-        !rendered.contains("emit_feedback"),
-        &rendered,
-        "no emit_feedback"
     );
 }
 

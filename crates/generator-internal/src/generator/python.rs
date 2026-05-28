@@ -200,8 +200,8 @@ impl LanguageGenerator for PythonGenerator {
         )?;
 
         // The cancel-ack reply is encoded by the peppylib engine (a fixed
-        // format), so the exposed server no longer needs a per-action
-        // cancel-response schema.
+        // format), so the exposed server needs no per-action cancel-response
+        // schema.
 
         let result_response_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_result_response", action.name)),

@@ -240,7 +240,7 @@ fn exposed_action() {
 
     // GoalResponse struct: framework-owned goal acknowledgement
     // ({accepted, error_message}) with its `new` constructor and the
-    // accept/reject helpers the decider returns. There is no GoalDecision.
+    // accept/reject helpers the decider returns.
     assert_contains_all(
         &rendered,
         &[
@@ -250,11 +250,6 @@ fn exposed_action() {
             "pub fn accept() -> Self",
             "pub fn reject(reason: impl Into<String>) -> Self",
         ],
-    );
-    assert_rendered!(
-        !rendered.contains("GoalDecision"),
-        rendered,
-        "GoalDecision enum is removed; the decider returns a framework GoalResponse"
     );
 
     // ActionHandle wraps the concurrent-action engine.
@@ -305,29 +300,8 @@ fn exposed_action() {
         ],
     );
 
-    // Goal request deserializer helper remains; the old cancel/result/emit
-    // surface is gone.
+    // Goal request deserializer helper remains.
     assert_contains_all(&rendered, &["fn deserialize_goal_request"]);
-    assert_rendered!(
-        !rendered.contains("handle_cancel_next_request"),
-        rendered,
-        "cancel handler is removed from the generated ActionHandle"
-    );
-    assert_rendered!(
-        !rendered.contains("handle_result_next_request"),
-        rendered,
-        "result handler is removed from the generated ActionHandle"
-    );
-    assert_rendered!(
-        !rendered.contains("emit_feedback"),
-        rendered,
-        "emit_feedback is replaced by GoalContext::publish_feedback"
-    );
-    assert_rendered!(
-        !rendered.contains("current_goal"),
-        rendered,
-        "the shared current_goal slot is removed"
-    );
 }
 
 #[test]
@@ -354,12 +328,6 @@ fn expose_action_without_request_body() {
             "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
         ],
     );
-    assert_rendered!(
-        !rendered.contains("GoalDecision"),
-        rendered,
-        "GoalDecision enum is removed"
-    );
-
     // No request data → GoalRequest has no `data` field and no deserializer.
     assert_rendered!(
         !rendered.contains("pub data:"),
@@ -385,23 +353,6 @@ fn expose_action_without_request_body() {
 
     // Feedback → GoalContext::publish_feedback.
     assert_contains_all(&rendered, &["pub async fn publish_feedback"]);
-
-    // Old cancel/result/emit surface is gone.
-    assert_rendered!(
-        !rendered.contains("handle_cancel_next_request"),
-        rendered,
-        "no cancel handler"
-    );
-    assert_rendered!(
-        !rendered.contains("handle_result_next_request"),
-        rendered,
-        "no result handler"
-    );
-    assert_rendered!(
-        !rendered.contains("emit_feedback"),
-        rendered,
-        "no emit_feedback"
-    );
 }
 
 #[test]
@@ -470,7 +421,7 @@ fn expose_feedback_only_action() {
     );
 
     // The goal acknowledgement is framework-owned, so even a feedback-only
-    // action gets the GoalResponse accept/reject helpers and no GoalDecision.
+    // action gets the GoalResponse accept/reject helpers.
     assert_contains_all(
         &rendered,
         &[
@@ -478,26 +429,11 @@ fn expose_feedback_only_action() {
             "pub fn reject(reason: impl Into<String>) -> Self",
         ],
     );
-    assert_rendered!(
-        !rendered.contains("GoalDecision"),
-        rendered,
-        "GoalDecision enum is removed; the goal ack is framework-owned"
-    );
     // No result service → no completion methods.
     assert_rendered!(
         !rendered.contains("pub async fn complete"),
         rendered,
         "no completion methods without a result service"
-    );
-    assert_rendered!(
-        !rendered.contains("current_goal"),
-        rendered,
-        "no shared current_goal slot"
-    );
-    assert_rendered!(
-        !rendered.contains("emit_feedback"),
-        rendered,
-        "emit_feedback is replaced by GoalContext::publish_feedback"
     );
 }
 

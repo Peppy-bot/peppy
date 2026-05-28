@@ -1625,7 +1625,7 @@ fn main() -> Result<()> {
 
     // --- Exposer (server) project. Cancel handler returns accepted=false,
     // so codegen must NOT publish the end-of-stream sentinel; subsequent
-    // emit_feedback calls must continue to reach the client.
+    // publish_feedback calls must continue to reach the client.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
