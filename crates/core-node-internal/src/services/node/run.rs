@@ -318,18 +318,19 @@ async fn handle_goal_request(
         }
     };
 
-    if let super::gate::Admission::AlreadyRunning { remaining_secs } =
-        gate.try_admit(goal.timeout_secs, false)
-    {
-        reject_goal(
-            pending,
-            encode_rejected_start_goal(format!(
-                "action already in progress (times out in {remaining_secs}s)"
-            )),
-        )
-        .await;
-        return;
-    }
+    let generation = match gate.try_admit(goal.timeout_secs, false) {
+        super::gate::Admission::Admitted { generation } => generation,
+        super::gate::Admission::AlreadyRunning { remaining_secs } => {
+            reject_goal(
+                pending,
+                encode_rejected_start_goal(format!(
+                    "action already in progress (times out in {remaining_secs}s)"
+                )),
+            )
+            .await;
+            return;
+        }
+    };
 
     // Parse runtime config to get instance_id for log file naming
     let runtime_config: RuntimeConfig = match serde_json5::from_str(&goal.runtime_config_json5) {
@@ -386,6 +387,9 @@ async fn handle_goal_request(
         .expect("node_run declares a feedback topic");
     let gate_for_task = gate.clone();
     tokio::spawn(async move {
+        // Frees the gate slot on every exit (completion or panic); a no-op if a
+        // later goal already took over.
+        let _slot = gate_for_task.into_slot_guard(generation);
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
 
         // The node process outlives the action: once `node_run` reports the
@@ -430,7 +434,6 @@ async fn handle_goal_request(
         if let Ok(payload) = result.encode() {
             let _ = goal_ctx.complete(payload).await;
         }
-        gate_for_task.finish();
     });
 }
 

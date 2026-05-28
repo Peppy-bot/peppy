@@ -172,19 +172,20 @@ impl NodeBuildGoalHandler {
         if goal.force {
             debug!("Force flag set: aborting any previous node_build task");
         }
-        if let super::gate::Admission::AlreadyRunning { remaining_secs } =
-            self.gate.try_admit(goal.timeout_secs, goal.force)
-        {
-            reject_goal(
-                pending,
-                encode_rejected_goal(format!(
-                    "action already in progress (times out in {remaining_secs}s), \
-                     use `--force` to force building the node"
-                )),
-            )
-            .await;
-            return;
-        }
+        let generation = match self.gate.try_admit(goal.timeout_secs, goal.force) {
+            super::gate::Admission::Admitted { generation } => generation,
+            super::gate::Admission::AlreadyRunning { remaining_secs } => {
+                reject_goal(
+                    pending,
+                    encode_rejected_goal(format!(
+                        "action already in progress (times out in {remaining_secs}s), \
+                         use `--force` to force building the node"
+                    )),
+                )
+                .await;
+                return;
+            }
+        };
 
         debug!(
             "Received `node_build` goal from {sender_instance_id}, target={}:{}",
@@ -296,6 +297,9 @@ impl NodeBuildGoalHandler {
         let gate_for_task = self.gate.clone();
 
         let task_handle = tokio::spawn(async move {
+            // Frees the gate slot on every exit (completion, panic, or `--force`
+            // abort); a no-op if a later `--force` goal already took over.
+            let _slot = gate_for_task.into_slot_guard(generation);
             let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
             let consumer_handle =
                 super::spawn_feedback_forwarder(feedback_rx, feedback_publisher, |line| {
@@ -334,7 +338,6 @@ impl NodeBuildGoalHandler {
             if let Ok(payload) = result.encode() {
                 let _ = goal_ctx.complete(payload).await;
             }
-            gate_for_task.finish();
         });
 
         self.gate.set_task(task_handle, cancel_token);

@@ -950,19 +950,20 @@ async fn handle_goal_request(
     if goal.force {
         debug!("Force flag set: aborting any previous node_add task");
     }
-    if let super::gate::Admission::AlreadyRunning { remaining_secs } =
-        gate.try_admit(goal.timeout_secs, goal.force)
-    {
-        reject_goal(
-            pending,
-            encode_rejected_goal(format!(
-                "action already in progress (times out in {remaining_secs}s), \
-                 use `--force` to force adding the node"
-            )),
-        )
-        .await;
-        return;
-    }
+    let generation = match gate.try_admit(goal.timeout_secs, goal.force) {
+        super::gate::Admission::Admitted { generation } => generation,
+        super::gate::Admission::AlreadyRunning { remaining_secs } => {
+            reject_goal(
+                pending,
+                encode_rejected_goal(format!(
+                    "action already in progress (times out in {remaining_secs}s), \
+                     use `--force` to force adding the node"
+                )),
+            )
+            .await;
+            return;
+        }
+    };
 
     match &goal.source {
         NodeSource::Fs(path) => debug!(
@@ -1029,6 +1030,9 @@ async fn handle_goal_request(
     let log_path_for_cancel = log_path.clone();
     let gate_for_task = gate.clone();
     let task_handle = tokio::spawn(async move {
+        // Frees the gate slot on every exit (completion, panic, or `--force`
+        // abort); a no-op if a later `--force` goal already took over.
+        let _slot = gate_for_task.into_slot_guard(generation);
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
         let consumer_handle =
             super::spawn_feedback_forwarder(feedback_rx, feedback_publisher, |line| {
@@ -1072,7 +1076,6 @@ async fn handle_goal_request(
         if let Ok(payload) = result.encode() {
             let _ = goal_ctx.complete(payload).await;
         }
-        gate_for_task.finish();
     });
 
     gate.set_task(task_handle, cancel_token);

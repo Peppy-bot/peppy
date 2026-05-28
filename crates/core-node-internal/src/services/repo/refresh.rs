@@ -100,14 +100,17 @@ impl GoalHandler for RepoRefreshGoalHandler {
             return;
         }
 
-        if let Admission::AlreadyRunning { .. } = self.gate.try_admit(300, false) {
-            reject_goal(
-                pending,
-                encode_refresh_rejected("a repo refresh operation is already in progress"),
-            )
-            .await;
-            return;
-        }
+        let generation = match self.gate.try_admit(300, false) {
+            Admission::Admitted { generation } => generation,
+            Admission::AlreadyRunning { .. } => {
+                reject_goal(
+                    pending,
+                    encode_refresh_rejected("a repo refresh operation is already in progress"),
+                )
+                .await;
+                return;
+            }
+        };
 
         let Some(goal_ctx) = accept_goal(pending, encode_refresh_accepted()).await else {
             self.gate.clear_running();
@@ -121,6 +124,9 @@ impl GoalHandler for RepoRefreshGoalHandler {
         let gate_for_task = self.gate.clone();
 
         tokio::spawn(async move {
+            // Frees the gate slot on every exit (completion or panic); a no-op
+            // if a later goal already took over.
+            let _slot = gate_for_task.into_slot_guard(generation);
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RepoRefreshFeedback>();
 
             let drain = tokio::spawn(async move {
@@ -191,7 +197,6 @@ impl GoalHandler for RepoRefreshGoalHandler {
             if let Ok(payload) = result.encode() {
                 let _ = goal_ctx.complete(payload).await;
             }
-            gate_for_task.finish();
         });
     }
 }
