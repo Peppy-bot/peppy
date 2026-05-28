@@ -12,21 +12,31 @@ With a single launch file, you or your team can recreate an entire node environm
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Start by cloning [this repository](https://github.com/Peppy-bot/launch_example):
+Start by cloning [this repository](https://github.com/Peppy-bot/launchers_hub):
 
 <Steps>
 1. Clone the repository:
    ```sh
-   git clone https://github.com/Peppy-bot/launch_example
+   git clone https://github.com/Peppy-bot/launchers_hub
    ```
 
 2. Navigate into the directory:
    ```sh
-   cd launch_example
+   cd launchers_hub
    ```
 </Steps>
 
-In the root directory, you'll find a [`peppy_launcher.json5`](https://github.com/Peppy-bot/launch_example/blob/main/peppy_launcher.json5) file. Opening it reveals the following structure:
+In the `examples/` directory, you'll find a launcher file for each language. Opening it reveals the following structure:
+
+<Tabs>
+  <TabItem label="Python">
+[`examples/python_robot.json5`](https://github.com/Peppy-bot/launchers_hub/blob/main/examples/python_robot.json5)
+  </TabItem>
+  <TabItem label="Rust">
+[`examples/rust_robot.json5`](https://github.com/Peppy-bot/launchers_hub/blob/main/examples/rust_robot.json5)
+  </TabItem>
+</Tabs>
+
  1. The file is identified by `peppy_schema: "launcher_v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node_v1"`)
  2. All deployments are defined in the `deployments` array
  3. Each deployment requires a `source` and `instances` attribute
@@ -74,12 +84,12 @@ From within the cloned repository, execute the launcher:
 <Tabs>
   <TabItem label="Python">
 ```sh
-peppy stack launch ./python/peppy_launcher.json5
+peppy stack launch ./examples/python_robot.json5
 ```
   </TabItem>
   <TabItem label="Rust">
 ```sh
-peppy stack launch ./rust/peppy_launcher.json5
+peppy stack launch ./examples/rust_robot.json5
 ```
   </TabItem>
 </Tabs>
