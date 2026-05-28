@@ -298,25 +298,20 @@ async def run_exposer(node_runner):
             f"server received goal arm_id={request.data.arm_id} desired={request.data.desired_position}",
             flush=True,
         )
-        return move_arm.GoalResponse(accepted=True)
+        return move_arm.GoalResponse.accept()
 
-    await action.handle_goal_next_request(goal_handler)
+    while True:
+        ctx = await action.handle_goal_next_request(goal_handler)
+        if ctx is None:
+            break
 
-    feedback_message = [7, 31, 43]
-    await action.emit_feedback(feedback_message)
-    print(f"server emitted feedback message {feedback_message}", flush=True)
+        feedback_message = [7, 31, 43]
+        await ctx.publish_feedback(feedback_message)
+        print(f"server emitted feedback message {feedback_message}", flush=True)
 
-    final_position = [98, 4, 26]
-    def result_handler(request):
-        print("server preparing action result", flush=True)
-        return move_arm.ResultResponse(
-            success=True,
-            error_msg=None,
-            final_position=final_position,
-        )
-
-    await action.handle_result_next_request(result_handler)
-    print(f"server handled result request. Final position sent: {final_position}", flush=True)
+        final_position = [98, 4, 26]
+        await ctx.complete(True, None, final_position)
+        print(f"server handled result request. Final position sent: {final_position}", flush=True)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_exposer(node_runner))]
@@ -628,22 +623,16 @@ async def run_exposer(node_runner):
             f"server received goal arm_id={request.data.arm_id} desired={request.data.desired_position}",
             flush=True,
         )
-        return move_arm.GoalResponse(accepted=True)
+        return move_arm.GoalResponse.accept()
 
-    await action.handle_goal_next_request(goal_handler)
-    print("server handled goal request", flush=True)
-
-    cancel_error = "goal cancelled by server"
-
-    def cancel_handler(request):
-        print("server received cancel request", flush=True)
-        return move_arm.CancelResponse(
-            accepted=False,
-            error_message=cancel_error,
-        )
-
-    await action.handle_cancel_next_request(cancel_handler)
-    print(f"server responded to cancel request error={cancel_error}", flush=True)
+    while True:
+        ctx = await action.handle_goal_next_request(goal_handler)
+        if ctx is None:
+            break
+        # Wait for a cancel for this goal, then report the cancelled result.
+        await ctx.cancel_signal()
+        print("server observed cancel for goal", flush=True)
+        await ctx.complete_cancelled(False, "goal cancelled by server", [0, 0, 0])
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_exposer(node_runner))]
@@ -773,7 +762,7 @@ if __name__ == "__main__":
     );
     assert!(
         consumer_stdout.contains("goal accepted=True")
-            && consumer_stdout.contains("cancel accepted=False error=goal cancelled by server"),
+            && consumer_stdout.contains("cancel accepted=True error=<none>"),
         "consumer did not complete the cancel flow.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr
@@ -789,40 +778,21 @@ if __name__ == "__main__":
         exposer_stderr
     );
     assert!(
-        exposer_stdout.contains("server handled goal request")
-            && exposer_stdout.contains("server received cancel request")
-            && exposer_stdout
-                .contains("server responded to cancel request error=goal cancelled by server"),
+        exposer_stdout.contains("server received goal arm_id=7 desired=[10, 20, 30]")
+            && exposer_stdout.contains("server observed cancel for goal"),
         "exposer did not handle cancel endpoint as expected.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
     );
 }
 
-/// Regression test for a Python-codegen deadlock where calling
-/// `await action.emit_feedback(...)` *inside* an async goal handler (i.e.
-/// before returning `GoalResponse(accepted=True)`) would either block
-/// forever or raise `RuntimeError("emit_feedback called with no active
-/// goal...")` depending on scheduling.
-///
-/// Why this pattern is supported on purpose: a server may want to publish
-/// an initial feedback snapshot atomically with goal acceptance so the
-/// client never observes an "accepted but no feedback yet" window. The
-/// common case is still to accept the goal first and then emit feedback
-/// from a follow-up task, but emitting from inside the handler must also
-/// work.
-///
-/// Root cause of the original deadlock: `self.current_goal` (which holds
-/// the per-goal feedback publisher) was assigned only *after* the user
-/// handler returned. Any in-handler `emit_feedback` therefore observed
-/// `current_goal is None`. The fix moves that assignment to *before*
-/// awaiting the handler.
-///
-/// Do NOT "simplify" this test by moving `emit_feedback` after the
-/// `return GoalResponse(...)` line in the exposer below: that would
-/// defeat the entire regression.
+/// Verifies that an **async goal decider** works end-to-end through the
+/// Python codegen: `handle_goal_next_request` awaits the handler when it
+/// returns an awaitable, so a server can `await` inside its accept/reject
+/// decision. After accepting, the worker publishes feedback through the
+/// `GoalContext` and completes the goal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn actions_communication_emit_feedback_from_within_goal_handler() {
+async fn actions_communication_async_goal_decider() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -901,7 +871,7 @@ async def run_consumer(node_runner):
 
     feedback = await goal.on_next_feedback_message()
     print(f"feedback message received new_position={feedback.new_position}", flush=True)
-    assert feedback.new_position == [7, 100, 200], "unexpected in-handler feedback"
+    assert feedback.new_position == [7, 100, 200], "unexpected feedback"
 
     result = await goal.get_result(5.0)
     print(
@@ -922,10 +892,9 @@ if __name__ == "__main__":
     let main_file = user_node_consumer.join("main.py");
     fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
 
-    // --- Exposer (server) project. Reproduces the exact pattern that
-    // deadlocked pre-fix: the goal handler is `async` and `await`s
-    // `emit_feedback(...)` before returning `GoalResponse(accepted=True)`.
-    // See the test docstring above for the full motivation and root cause.
+    // --- Exposer (server) project. The goal decider is `async` (codegen
+    // awaits it); after accepting, the worker publishes feedback through the
+    // `GoalContext` and completes. See the test docstring above.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -965,34 +934,27 @@ from peppygen.exposed_actions import move_arm
 async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
+    # The goal decider may be a coroutine: the codegen awaits it when it
+    # returns an awaitable. This verifies async deciders work end-to-end.
     async def goal_handler(request):
         print(
             f"server received goal arm_id={request.data.arm_id} desired={request.data.desired_position}",
             flush=True,
         )
-        # Regression check: emit feedback from inside the async goal handler,
-        # BEFORE returning the goal response. Pre-fix, `self.current_goal`
-        # (which holds the per-goal feedback publisher) was assigned only
-        # after the handler returned, so this `await` saw no active goal and
-        # the call either blocked or raised. Do NOT move this emit after the
-        # `return GoalResponse(...)` line: that defeats the regression.
-        await action.emit_feedback([request.data.arm_id, 100, 200])
-        print("server emitted in-handler feedback", flush=True)
-        return move_arm.GoalResponse(accepted=True)
+        return move_arm.GoalResponse.accept()
 
-    await action.handle_goal_next_request(goal_handler)
-    print("server returned goal response after in-handler emit", flush=True)
+    while True:
+        ctx = await action.handle_goal_next_request(goal_handler)
+        if ctx is None:
+            break
+        print("server accepted goal via async decider", flush=True)
 
-    final_position = [42, 42, 42]
-    def result_handler(_request):
-        return move_arm.ResultResponse(
-            success=True,
-            error_msg=None,
-            final_position=final_position,
-        )
+        await ctx.publish_feedback([ctx.request().data.arm_id, 100, 200])
+        print("server emitted feedback", flush=True)
 
-    await action.handle_result_next_request(result_handler)
-    print(f"server handled result request final_position={final_position}", flush=True)
+        final_position = [42, 42, 42]
+        await ctx.complete(True, None, final_position)
+        print(f"server handled result request final_position={final_position}", flush=True)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_exposer(node_runner))]
@@ -1138,34 +1100,33 @@ if __name__ == "__main__":
         exposer_stderr
     );
     assert!(
-        exposer_stdout.contains("server emitted in-handler feedback")
-            && exposer_stdout.contains("server returned goal response after in-handler emit")
+        exposer_stdout.contains("server accepted goal via async decider")
+            && exposer_stdout.contains("server emitted feedback")
             && exposer_stdout.contains("server handled result request"),
-        "exposer did not exercise the in-handler emit_feedback path.\nstdout:\n{}\nstderr:\n{}",
+        "exposer did not exercise the async-decider path.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
     );
 }
 
-/// Verifies the cancel-accept side of the action lifecycle contract: when
-/// the server's cancel handler returns `CancelResponse(accepted=True)`,
-/// the Python codegen for `handle_cancel_next_request` must publish an
-/// end-of-stream sentinel (an empty payload on the per-goal feedback
-/// publisher) so the client knows no further feedback will arrive.
+/// Verifies the cancel-honored side of the action lifecycle contract: when
+/// the server's worker observes `ctx.cancel_signal()` and reacts with
+/// `ctx.complete_cancelled(...)`, completing the goal publishes an
+/// end-of-stream sentinel on the per-goal feedback publisher so the client
+/// knows no further feedback will arrive.
 ///
 /// End-to-end flow exercised here:
 ///   1. Client `fire_goal`, server accepts.
 ///   2. Server emits one warmup feedback message; client receives it.
-///   3. Client calls `cancel_goal`; server's cancel handler returns
-///      `accepted=True`.
-///   4. As a direct consequence of accepting the cancel, the codegen
-///      publishes the end-of-stream sentinel on the per-goal feedback
-///      publisher, closing the feedback stream for this goal.
+///   3. Client calls `cancel_goal`; the framework auto-acks `accepted=True`
+///      and the worker's `cancel_signal()` resolves.
+///   4. The worker reacts with `complete_cancelled`, closing this goal's
+///      feedback stream.
 ///   5. The client's next `await goal.on_next_feedback_message()` raises
 ///      (instead of blocking forever waiting for feedback that will never
 ///      come). That raise is what this test asserts.
 ///
-/// The reject branch is covered by
+/// The ignore-cancel branch is covered by
 /// `actions_communication_cancel_reject_keeps_feedback_open`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_cancel_accept_closes_feedback_stream() {
@@ -1313,19 +1274,21 @@ async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
     def goal_handler(_request):
-        return move_arm.GoalResponse(accepted=True)
+        return move_arm.GoalResponse.accept()
 
-    await action.handle_goal_next_request(goal_handler)
-    print("server accepted goal", flush=True)
+    while True:
+        ctx = await action.handle_goal_next_request(goal_handler)
+        if ctx is None:
+            break
+        print("server accepted goal", flush=True)
 
-    await action.emit_feedback([1, 2, 3])
-    print("server emitted warmup feedback", flush=True)
+        await ctx.publish_feedback([1, 2, 3])
+        print("server emitted warmup feedback", flush=True)
 
-    def cancel_handler(_request):
-        return move_arm.CancelResponse(accepted=True, error_message=None)
-
-    await action.handle_cancel_next_request(cancel_handler)
-    print("server accepted cancel — codegen publishes end-of-stream sentinel", flush=True)
+        # Honor the cancel: completing-cancelled closes the feedback stream.
+        await ctx.cancel_signal()
+        await ctx.complete_cancelled(False, "cancelled", [0, 0, 0])
+        print("server observed cancel — completing cancelled closes the feedback stream", flush=True)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_exposer(node_runner))]
@@ -1483,38 +1446,35 @@ if __name__ == "__main__":
         exposer_stderr
     );
     assert!(
-        exposer_stdout.contains("server accepted cancel"),
-        "exposer did not exercise the cancel-accept path.\nstdout:\n{}",
+        exposer_stdout.contains("server observed cancel"),
+        "exposer did not exercise the cancel-observed path.\nstdout:\n{}",
         exposer_stdout
     );
 }
 
-/// Verifies the cancel-reject side of the action lifecycle contract: when
-/// the server's cancel handler returns `CancelResponse(accepted=False)`,
-/// the Python codegen for `handle_cancel_next_request` must NOT publish an
-/// end-of-stream sentinel. The goal stays alive, feedback keeps flowing,
-/// and the stream is closed only later by the result-handler step (which
-/// publishes the sentinel as part of normal goal completion).
+/// Verifies the cancel-ignored side of the action lifecycle contract: a
+/// worker is free to observe `ctx.cancel_signal()` and keep going. Ignoring
+/// the cancel does NOT close the feedback stream — the goal stays alive,
+/// feedback keeps flowing, and the stream is closed only when the worker
+/// finally calls `ctx.complete(...)` as part of normal goal completion.
 ///
 /// End-to-end flow exercised here:
 ///   1. Client `fire_goal`, server accepts.
 ///   2. Server emits pre-cancel feedback; client receives it.
-///   3. Client calls `cancel_goal`; server's cancel handler returns
-///      `accepted=False`.
-///   4. Because the cancel was rejected, codegen does NOT publish the
-///      end-of-stream sentinel on the per-goal feedback publisher; the
-///      feedback stream stays open and `self.current_goal` stays set.
+///   3. Client calls `cancel_goal`; the framework auto-acks `accepted=True`
+///      and the worker's `cancel_signal()` resolves.
+///   4. The worker chooses to keep going (does not complete), so the feedback
+///      stream stays open.
 ///   5. Server emits post-cancel feedback; the client still receives it.
-///      This is what proves step 4: the stream was not closed by the
-///      cancel-reject.
-///   6. Server's result handler runs and returns; this is the step that
+///      This is what proves step 4: ignoring the cancel did not close the stream.
+///   6. The worker calls `ctx.complete(...)`; this is the step that
 ///      publishes the end-of-stream sentinel, as part of normal goal
 ///      completion.
 ///   7. The client's next `await goal.on_next_feedback_message()` raises,
-///      confirming the stream is closed by the result step (not by the
-///      earlier cancel-reject).
+///      confirming the stream is closed by completion (not by the earlier
+///      cancel).
 ///
-/// The accept branch is covered by
+/// The honor-cancel branch is covered by
 /// `actions_communication_cancel_accept_closes_feedback_stream`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_cancel_reject_keeps_feedback_open() {
@@ -1672,29 +1632,26 @@ async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
     def goal_handler(_request):
-        return move_arm.GoalResponse(accepted=True)
+        return move_arm.GoalResponse.accept()
 
-    await action.handle_goal_next_request(goal_handler)
+    while True:
+        ctx = await action.handle_goal_next_request(goal_handler)
+        if ctx is None:
+            break
 
-    await action.emit_feedback([1, 1, 1])
-    print("server emitted pre-cancel feedback", flush=True)
+        await ctx.publish_feedback([1, 1, 1])
+        print("server emitted pre-cancel feedback", flush=True)
 
-    def cancel_handler(_request):
-        return move_arm.CancelResponse(accepted=False, error_message="not now")
+        # Observe the cancel but choose to keep going (ignore it). Feedback
+        # must keep flowing since the goal hasn't completed.
+        await ctx.cancel_signal()
+        print("server observed cancel but keeps going", flush=True)
 
-    await action.handle_cancel_next_request(cancel_handler)
-    print("server rejected cancel", flush=True)
+        await ctx.publish_feedback([2, 2, 2])
+        print("server emitted post-cancel feedback", flush=True)
 
-    # Cancel was rejected — codegen must keep current_goal set so this
-    # emit_feedback reaches the client.
-    await action.emit_feedback([2, 2, 2])
-    print("server emitted post-cancel feedback", flush=True)
-
-    def result_handler(_request):
-        return move_arm.ResultResponse(success=True, error_msg=None, final_position=[9, 9, 9])
-
-    await action.handle_result_next_request(result_handler)
-    print("server handled result request", flush=True)
+        await ctx.complete(True, None, [9, 9, 9])
+        print("server handled result request", flush=True)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_exposer(node_runner))]
@@ -1827,13 +1784,13 @@ if __name__ == "__main__":
         consumer_stdout
     );
     assert!(
-        consumer_stdout.contains("cancel accepted=False error=not now"),
-        "consumer did not see rejected cancel.\nstdout:\n{}",
+        consumer_stdout.contains("cancel accepted=True error=<none>"),
+        "consumer did not see the auto-acked cancel.\nstdout:\n{}",
         consumer_stdout
     );
     assert!(
         consumer_stdout.contains("post_cancel feedback new_position=[2, 2, 2]"),
-        "consumer did not receive post-cancel feedback — cancel-reject must NOT close the stream.\nstdout:\n{}",
+        "consumer did not receive post-cancel feedback — a worker that ignores the cancel keeps the stream open.\nstdout:\n{}",
         consumer_stdout
     );
     assert!(
@@ -1858,10 +1815,10 @@ if __name__ == "__main__":
     );
     assert!(
         exposer_stdout.contains("server emitted pre-cancel feedback")
-            && exposer_stdout.contains("server rejected cancel")
+            && exposer_stdout.contains("server observed cancel but keeps going")
             && exposer_stdout.contains("server emitted post-cancel feedback")
             && exposer_stdout.contains("server handled result request"),
-        "exposer did not exercise the cancel-reject path.\nstdout:\n{}",
+        "exposer did not exercise the cancel-ignored path.\nstdout:\n{}",
         exposer_stdout
     );
 }
@@ -1869,22 +1826,20 @@ if __name__ == "__main__":
 /// Verifies the goal-completion side of the action lifecycle contract: a
 /// client can use a drain-loop pattern (`while True: await
 /// on_next_feedback_message()`) to consume every feedback message and
-/// reliably exit once the goal is complete. This works because the Python
-/// codegen for `handle_result_next_request` publishes an end-of-stream
-/// sentinel (an empty payload on the per-goal feedback publisher) before
-/// invoking the user's result handler. Without that sentinel the loop
-/// would hang forever, because the underlying mpsc receiver never
-/// surfaces an end-of-stream condition on its own.
+/// reliably exit once the goal is complete. This works because
+/// `GoalContext.complete()` publishes an end-of-stream sentinel (an empty
+/// payload on the per-goal feedback publisher) before delivering the
+/// result. Without that sentinel the loop would hang forever, because the
+/// underlying mpsc receiver never surfaces an end-of-stream condition on
+/// its own.
 ///
 /// End-to-end flow exercised here:
 ///   1. Client `fire_goal`, server accepts.
 ///   2. Server emits 3 feedback messages.
 ///   3. Client's drain-loop receives all 3 in order.
-///   4. Server calls `handle_result_next_request`. Before invoking the
-///      user's result handler, codegen publishes the end-of-stream
-///      sentinel on the per-goal feedback publisher (closing the
-///      feedback stream); then it runs the handler and returns the
-///      result.
+///   4. Server calls `ctx.complete(...)`, which publishes the end-of-stream
+///      sentinel on the per-goal feedback publisher (closing the feedback
+///      stream) and then delivers the result.
 ///   5. Client's next `on_next_feedback_message()` raises (sentinel
 ///      observed). The drain-loop catches the exception and exits.
 ///   6. Client calls `get_result` and receives the final response.
@@ -2043,24 +1998,23 @@ async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
     def goal_handler(_request):
-        return move_arm.GoalResponse(accepted=True)
+        return move_arm.GoalResponse.accept()
 
-    await action.handle_goal_next_request(goal_handler)
-    print("server accepted goal", flush=True)
+    while True:
+        ctx = await action.handle_goal_next_request(goal_handler)
+        if ctx is None:
+            break
+        print("server accepted goal", flush=True)
 
-    for i in range(3):
-        pos = [i, i + 1, i + 2]
-        await action.emit_feedback(pos)
-        print(f"server emitted feedback #{i + 1} position={pos}", flush=True)
+        for i in range(3):
+            pos = [i, i + 1, i + 2]
+            await ctx.publish_feedback(pos)
+            print(f"server emitted feedback #{i + 1} position={pos}", flush=True)
 
-    final_position = [99, 99, 99]
-    def result_handler(_request):
-        return move_arm.ResultResponse(
-            success=True, error_msg=None, final_position=final_position
-        )
-
-    await action.handle_result_next_request(result_handler)
-    print(f"server handled result request final_position={final_position}", flush=True)
+        final_position = [99, 99, 99]
+        # complete publishes the end-of-stream sentinel, then delivers the result.
+        await ctx.complete(True, None, final_position)
+        print(f"server handled result request final_position={final_position}", flush=True)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_exposer(node_runner))]

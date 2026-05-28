@@ -259,33 +259,38 @@ use peppygen::Result;
 async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
-        println!(
-            "server received goal arm_id={} desired={:?}",
-            request.data.arm_id,
-            request.data.desired_position
-        );
-        Ok(move_arm::GoalResponse::new(true))
-    })
-    .await?;
+    // Spawn the accept loop so this setup fn returns and the node starts
+    // serving (health, etc.). The loop accepts goals and drives each one;
+    // the engine routes cancel/result back to the matching goal by goal_id.
+    tokio::spawn(async move {
+        loop {
+            let maybe_ctx = action
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                    println!(
+                        "server received goal arm_id={} desired={:?}",
+                        request.data.arm_id, request.data.desired_position
+                    );
+                    Ok(move_arm::GoalResponse::accept())
+                })
+                .await;
 
-    let feedback_message = [7, 31, 43];
-    action.emit_feedback(feedback_message).await?;
-    println!("server emitted feedback message {:?}", feedback_message);
+            match maybe_ctx {
+                Ok(Some(ctx)) => {
+                    let feedback_message = [7, 31, 43];
+                    let _ = ctx.publish_feedback(feedback_message).await;
+                    println!("server emitted feedback message {:?}", feedback_message);
 
-    let final_position = [98, 4, 26];
-    action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
-        println!("server preparing action result");
-        let final_pos = final_position.clone();
-        Ok(move_arm::ResultResponse::new(
-            true,
-            None,
-            final_pos,
-        ))
-    })
-    .await?;
-
-    println!("server handled result request. Final position sent: {:?}", &final_position);
+                    let final_position = [98, 4, 26];
+                    let _ = ctx.complete(true, None, final_position).await;
+                    println!(
+                        "server handled result request. Final position sent: {:?}",
+                        &final_position
+                    );
+                }
+                _ => break, // None (stream closed / rejected) or Err
+            }
+        }
+    });
 
     Ok(())
 }
@@ -573,29 +578,31 @@ use peppygen::Result;
 async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
-        println!(
-            "server received goal arm_id={} desired={:?}",
-            request.data.arm_id,
-            request.data.desired_position
-        );
-        Ok(move_arm::GoalResponse::new(true))
-    })
-    .await?;
-    println!("server handled goal request");
+    tokio::spawn(async move {
+        loop {
+            let maybe_ctx = action
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                    println!(
+                        "server received goal arm_id={} desired={:?}",
+                        request.data.arm_id, request.data.desired_position
+                    );
+                    Ok(move_arm::GoalResponse::accept())
+                })
+                .await;
 
-    let cancel_error = "goal cancelled by server";
-
-    action.handle_cancel_next_request(|_request| -> Result<move_arm::CancelResponse> {
-        println!("server received cancel request");
-        Ok(move_arm::CancelResponse::new(
-            false,
-            Some(cancel_error.to_owned()),
-        ))
-    })
-    .await?;
-
-    println!("server responded to cancel request error={}", cancel_error);
+            match maybe_ctx {
+                Ok(Some(ctx)) => {
+                    // Wait for a cancel for this goal, then report the cancelled result.
+                    ctx.cancel_signal().await;
+                    println!("server observed cancel for goal");
+                    let _ = ctx
+                        .complete_cancelled(false, Some("goal cancelled by server".to_owned()), [0, 0, 0])
+                        .await;
+                }
+                _ => break,
+            }
+        }
+    });
 
     Ok(())
 }
@@ -716,7 +723,7 @@ fn main() -> Result<()> {
     );
     assert!(
         consumer_stdout.contains("goal accepted=true")
-            && consumer_stdout.contains("cancel accepted=false error=goal cancelled by server"),
+            && consumer_stdout.contains("cancel accepted=true error=<none>"),
         "consumer did not complete the cancel flow.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr
@@ -732,10 +739,8 @@ fn main() -> Result<()> {
         exposer_stderr
     );
     assert!(
-        exposer_stdout.contains("server handled goal request")
-            && exposer_stdout.contains("server received cancel request")
-            && exposer_stdout
-                .contains("server responded to cancel request error=goal cancelled by server"),
+        exposer_stdout.contains("server received goal arm_id=7 desired=[10, 20, 30]")
+            && exposer_stdout.contains("server observed cancel for goal"),
         "exposer did not handle cancel endpoint as expected.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
@@ -746,27 +751,21 @@ fn main() -> Result<()> {
 /// client can use a drain-loop pattern (`loop { match
 /// on_next_feedback_message().await { Ok(_) => ..., Err(_) => break } }`)
 /// to consume every feedback message and reliably exit once the goal is
-/// complete. This works because the Rust codegen for
-/// `handle_result_next_request` publishes an end-of-stream sentinel (an
-/// empty payload on the per-goal feedback publisher) before invoking the
-/// user's result handler. Without that sentinel the loop would hang
-/// forever, because `mpsc::Receiver::recv()` never returns `None` on its
-/// own.
+/// complete. This works because `GoalContext::complete` publishes an
+/// end-of-stream sentinel (an empty payload on the per-goal feedback
+/// publisher) when it delivers the result. Without that sentinel the loop
+/// would hang forever, because the feedback channel never closes on its own.
 ///
 /// This is the regression test for the original "stuck on draining
 /// feedback" hang seen in `openarm01_nodes/{action_server,action_client}`,
-/// which is what motivated adding the per-goal feedback closure signal in
-/// the first place.
+/// which is what motivated the per-goal feedback closure signal.
 ///
 /// End-to-end flow exercised here:
 ///   1. Client `fire_goal`, server accepts.
 ///   2. Server emits 3 feedback messages.
 ///   3. Client's drain-loop receives all 3 in order.
-///   4. Server calls `handle_result_next_request`. Before invoking the
-///      user's result handler, codegen publishes the end-of-stream
-///      sentinel on the per-goal feedback publisher (closing the
-///      feedback stream); then it runs the handler and returns the
-///      result.
+///   4. Server calls `ctx.complete(...)`, which publishes the end-of-stream
+///      sentinel on this goal's feedback publisher and stores the result.
 ///   5. Client's next `on_next_feedback_message().await` returns `Err`
 ///      (sentinel observed). The drain-loop matches the `Err` arm and
 ///      breaks.
@@ -930,31 +929,38 @@ use peppygen::Result;
 async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
-        println!(
-            "server received goal arm_id={} desired={:?}",
-            request.data.arm_id,
-            request.data.desired_position
-        );
-        Ok(move_arm::GoalResponse::new(true))
-    })
-    .await?;
-    println!("server accepted goal");
+    tokio::spawn(async move {
+        loop {
+            let maybe_ctx = action
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                    println!(
+                        "server received goal arm_id={} desired={:?}",
+                        request.data.arm_id, request.data.desired_position
+                    );
+                    Ok(move_arm::GoalResponse::accept())
+                })
+                .await;
 
-    // Emit 3 feedback messages; the client must drain all of them before
-    // the end-of-stream signal closes the stream.
-    for i in 0..3 {
-        let pos = [i, i + 1, i + 2];
-        action.emit_feedback(pos).await?;
-        println!("server emitted feedback #{} position={:?}", i + 1, pos);
-    }
+            let ctx = match maybe_ctx {
+                Ok(Some(ctx)) => ctx,
+                _ => break,
+            };
+            println!("server accepted goal");
 
-    let final_position = [99, 99, 99];
-    action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
-        Ok(move_arm::ResultResponse::new(true, None, final_position))
-    })
-    .await?;
-    println!("server handled result request final_position={:?}", final_position);
+            // Emit 3 feedback messages; the client must drain all of them
+            // before completion closes the stream.
+            for i in 0..3 {
+                let pos = [i, i + 1, i + 2];
+                let _ = ctx.publish_feedback(pos).await;
+                println!("server emitted feedback #{} position={:?}", i + 1, pos);
+            }
+
+            let final_position = [99, 99, 99];
+            // complete publishes the end-of-stream sentinel, then delivers the result.
+            let _ = ctx.complete(true, None, final_position).await;
+            println!("server handled result request final_position={:?}", final_position);
+        }
+    });
 
     Ok(())
 }
@@ -1117,25 +1123,25 @@ fn main() -> Result<()> {
     );
 }
 
-/// Verifies the cancel-accept side of the action lifecycle contract: when
-/// the server's cancel handler returns `CancelResponse::new(true, ...)`,
-/// the Rust codegen for `handle_cancel_next_request` must publish an
-/// end-of-stream sentinel (an empty payload on the per-goal feedback
-/// publisher) so the client knows no further feedback will arrive.
+/// Verifies the cancel-honored side of the action lifecycle contract: when
+/// the server's worker observes `ctx.cancel_signal()` and reacts with
+/// `ctx.complete_cancelled(...)`, completing the goal publishes an
+/// end-of-stream sentinel on the per-goal feedback publisher so the client
+/// knows no further feedback will arrive.
 ///
 /// End-to-end flow exercised here:
 ///   1. Client `fire_goal`, server accepts.
 ///   2. Server emits one warmup feedback message; client receives it.
-///   3. Client calls `cancel_goal`; server's cancel handler returns
-///      `accepted == true`.
-///   4. As a direct consequence of accepting the cancel, the codegen
-///      publishes the end-of-stream sentinel on the per-goal feedback
-///      publisher, closing the feedback stream for this goal.
+///   3. Client calls `cancel_goal`; the framework auto-acks `accepted == true`
+///      (a live goal received the signal) and the worker's `cancel_signal()`
+///      resolves.
+///   4. The worker reacts with `complete_cancelled`, which closes this goal's
+///      feedback stream.
 ///   5. The client's next `on_next_feedback_message().await` returns
 ///      `Err` (instead of blocking forever waiting for feedback that will
 ///      never come). That `Err` is what this test asserts.
 ///
-/// The reject branch is covered by
+/// The ignore-cancel branch is covered by
 /// `actions_communication_cancel_reject_keeps_feedback_open`.
 ///
 /// Python parity is
@@ -1291,20 +1297,31 @@ use peppygen::Result;
 async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    action.handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
-        Ok(move_arm::GoalResponse::new(true))
-    })
-    .await?;
-    println!("server accepted goal");
+    tokio::spawn(async move {
+        loop {
+            let maybe_ctx = action
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
+                    Ok(move_arm::GoalResponse::accept())
+                })
+                .await;
 
-    action.emit_feedback([1, 2, 3]).await?;
-    println!("server emitted warmup feedback");
+            let ctx = match maybe_ctx {
+                Ok(Some(ctx)) => ctx,
+                _ => break,
+            };
+            println!("server accepted goal");
 
-    action.handle_cancel_next_request(|_request| -> Result<move_arm::CancelResponse> {
-        Ok(move_arm::CancelResponse::new(true, None))
-    })
-    .await?;
-    println!("server accepted cancel — codegen publishes end-of-stream sentinel");
+            let _ = ctx.publish_feedback([1, 2, 3]).await;
+            println!("server emitted warmup feedback");
+
+            // Honor the cancel: completing-cancelled closes the feedback stream.
+            ctx.cancel_signal().await;
+            let _ = ctx
+                .complete_cancelled(false, Some("cancelled".to_owned()), [0, 0, 0])
+                .await;
+            println!("server observed cancel — completing cancelled closes the feedback stream");
+        }
+    });
 
     Ok(())
 }
@@ -1452,39 +1469,36 @@ fn main() -> Result<()> {
         exposer_stderr
     );
     assert!(
-        exposer_stdout.contains("server accepted cancel"),
-        "exposer did not reach the cancel-accept path.\nstdout:\n{}\nstderr:\n{}",
+        exposer_stdout.contains("server observed cancel"),
+        "exposer did not reach the cancel-observed path.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
     );
 }
 
-/// Verifies the cancel-reject side of the action lifecycle contract: when
-/// the server's cancel handler returns `CancelResponse::new(false, ...)`,
-/// the Rust codegen for `handle_cancel_next_request` must NOT publish an
-/// end-of-stream sentinel. The goal stays alive, feedback keeps flowing,
-/// and the stream is closed only later by the result-handler step (which
-/// publishes the sentinel as part of normal goal completion).
+/// Verifies the cancel-ignored side of the action lifecycle contract: a
+/// worker is free to observe `ctx.cancel_signal()` and keep going. Ignoring
+/// the cancel does NOT close the feedback stream — the goal stays alive,
+/// feedback keeps flowing, and the stream is closed only when the worker
+/// finally calls `ctx.complete(...)` as part of normal goal completion.
 ///
 /// End-to-end flow exercised here:
 ///   1. Client `fire_goal`, server accepts.
 ///   2. Server emits pre-cancel feedback; client receives it.
-///   3. Client calls `cancel_goal`; server's cancel handler returns
-///      `accepted == false`.
-///   4. Because the cancel was rejected, codegen does NOT publish the
-///      end-of-stream sentinel on the per-goal feedback publisher; the
-///      feedback stream stays open and the active-goal state stays set.
+///   3. Client calls `cancel_goal`; the framework auto-acks `accepted == true`,
+///      and the worker's `cancel_signal()` resolves.
+///   4. The worker chooses to keep going (does not complete), so the feedback
+///      stream stays open.
 ///   5. Server emits post-cancel feedback; the client still receives it.
-///      This is what proves step 4: the stream was not closed by the
-///      cancel-reject.
-///   6. Server's result handler runs and returns; this is the step that
+///      This is what proves step 4: ignoring the cancel did not close the stream.
+///   6. The worker calls `ctx.complete(...)`; this is the step that
 ///      publishes the end-of-stream sentinel on the per-goal feedback
 ///      publisher, as part of normal goal completion.
 ///   7. The client's next `on_next_feedback_message().await` returns
-///      `Err`, confirming the stream is closed by the result step (not by
-///      the earlier cancel-reject).
+///      `Err`, confirming the stream is closed by completion (not by the
+///      earlier cancel).
 ///
-/// The accept branch is covered by
+/// The honor-cancel branch is covered by
 /// `actions_communication_cancel_accept_closes_feedback_stream`.
 ///
 /// Python parity is
@@ -1611,7 +1625,7 @@ fn main() -> Result<()> {
 
     // --- Exposer (server) project. Cancel handler returns accepted=false,
     // so codegen must NOT publish the end-of-stream sentinel; subsequent
-    // emit_feedback calls must continue to reach the client.
+    // publish_feedback calls must continue to reach the client.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -1651,31 +1665,34 @@ use peppygen::Result;
 async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    action.handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
-        Ok(move_arm::GoalResponse::new(true))
-    })
-    .await?;
+    tokio::spawn(async move {
+        loop {
+            let maybe_ctx = action
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
+                    Ok(move_arm::GoalResponse::accept())
+                })
+                .await;
 
-    action.emit_feedback([1, 1, 1]).await?;
-    println!("server emitted pre-cancel feedback");
+            let ctx = match maybe_ctx {
+                Ok(Some(ctx)) => ctx,
+                _ => break,
+            };
 
-    action.handle_cancel_next_request(|_request| -> Result<move_arm::CancelResponse> {
-        Ok(move_arm::CancelResponse::new(false, Some("not now".to_owned())))
-    })
-    .await?;
-    println!("server rejected cancel");
+            let _ = ctx.publish_feedback([1, 1, 1]).await;
+            println!("server emitted pre-cancel feedback");
 
-    // Cancel was rejected — the codegen must keep the stream open. This
-    // emit_feedback would silently no-op (or panic on no-active-goal) if
-    // the codegen incorrectly cleared current_goal on a rejected cancel.
-    action.emit_feedback([2, 2, 2]).await?;
-    println!("server emitted post-cancel feedback");
+            // Observe the cancel but choose to keep going (ignore it).
+            // Feedback must keep flowing since the goal hasn't completed.
+            ctx.cancel_signal().await;
+            println!("server observed cancel but keeps going");
 
-    action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
-        Ok(move_arm::ResultResponse::new(true, None, [9, 9, 9]))
-    })
-    .await?;
-    println!("server handled result request");
+            let _ = ctx.publish_feedback([2, 2, 2]).await;
+            println!("server emitted post-cancel feedback");
+
+            let _ = ctx.complete(true, None, [9, 9, 9]).await;
+            println!("server handled result request");
+        }
+    });
 
     Ok(())
 }
@@ -1798,13 +1815,13 @@ fn main() -> Result<()> {
         consumer_stdout
     );
     assert!(
-        consumer_stdout.contains("cancel accepted=false error=not now"),
-        "consumer did not see rejected cancel.\nstdout:\n{}",
+        consumer_stdout.contains("cancel accepted=true error=<none>"),
+        "consumer did not see the auto-acked cancel.\nstdout:\n{}",
         consumer_stdout
     );
     assert!(
         consumer_stdout.contains("post_cancel feedback new_position=[2, 2, 2]"),
-        "consumer did not receive post-cancel feedback — the rejected cancel must NOT close the stream.\nstdout:\n{}",
+        "consumer did not receive post-cancel feedback — a worker that ignores the cancel keeps the stream open.\nstdout:\n{}",
         consumer_stdout
     );
     assert!(
@@ -1829,10 +1846,10 @@ fn main() -> Result<()> {
     );
     assert!(
         exposer_stdout.contains("server emitted pre-cancel feedback")
-            && exposer_stdout.contains("server rejected cancel")
+            && exposer_stdout.contains("server observed cancel but keeps going")
             && exposer_stdout.contains("server emitted post-cancel feedback")
             && exposer_stdout.contains("server handled result request"),
-        "exposer did not exercise the cancel-reject path correctly.\nstdout:\n{}",
+        "exposer did not exercise the cancel-ignored path correctly.\nstdout:\n{}",
         exposer_stdout
     );
 }

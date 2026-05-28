@@ -66,15 +66,9 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
                 output.add_line(&format_refresh_line(&feedback), false);
             }
         },
-        |payload| match RepoRefreshResult::decode(payload) {
-            Ok(result) => Ok(Some(result)),
-            Err(err) => {
-                if peppylib::encoding::is_result_pending(payload) {
-                    Ok(None)
-                } else {
-                    Err(format!("Failed to decode repo refresh result: {err}"))
-                }
-            }
+        |payload| {
+            RepoRefreshResult::decode(payload)
+                .map_err(|err| format!("Failed to decode repo refresh result: {err}"))
         },
     )
     .await?;

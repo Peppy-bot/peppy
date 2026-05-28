@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle, ActionMessenger,
-    ActionWireSender, NonEmptyPayload, ServiceEndpoint,
+    ActionWireSender, ConcurrentAction, GoalContext, NonEmptyPayload, PendingGoal, ServiceEndpoint,
 };
 use peppylib::types::Payload;
 use pyo3::exceptions::PyValueError;
@@ -306,10 +306,12 @@ impl PyActionMessenger {
         let cancel_timeout = duration_from_secs_f64("cancel_timeout_secs", cancel_timeout_secs)?;
         let handle = messenger.inner.clone();
         let sender = goal_handle.sender.clone();
+        let goal_id = goal_handle.goal_id.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let response = ActionMessenger::cancel_with_sender(&handle, &sender, cancel_timeout)
-                .await
-                .map_err(to_py_err)?;
+            let response =
+                ActionMessenger::cancel_with_sender(&handle, &sender, &goal_id, cancel_timeout)
+                    .await
+                    .map_err(to_py_err)?;
             Ok(PyTopicMessage::from(response))
         })
     }
@@ -328,11 +330,16 @@ impl PyActionMessenger {
         let result_timeout = duration_from_secs_f64("result_timeout_secs", result_timeout_secs)?;
         let handle = messenger.inner.clone();
         let sender = goal_handle.sender.clone();
+        let goal_id = goal_handle.goal_id.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let response =
-                ActionMessenger::request_result_with_sender(&handle, &sender, result_timeout)
-                    .await
-                    .map_err(to_py_err)?;
+            let response = ActionMessenger::request_result_with_sender(
+                &handle,
+                &sender,
+                &goal_id,
+                result_timeout,
+            )
+            .await
+            .map_err(to_py_err)?;
             Ok(PyTopicMessage::from(response))
         })
     }
@@ -366,6 +373,243 @@ impl PyActionMessenger {
             .await
             .map_err(to_py_err)?;
             Ok(reachable)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConcurrentAction / PendingGoal / GoalContext (concurrent-goal engine)
+// ---------------------------------------------------------------------------
+//
+// These are thin 1:1 wrappers over the peppylib engine. All routing,
+// cancel/result correlation, the result rendezvous, the background loops, and
+// the cancel-ack encoding live in Rust (peppylib), so Python and Rust servers
+// behave identically. Only the per-action Cap'n Proto encode/decode lives in
+// the generated Python, and it crosses this boundary as plain `bytes`.
+
+/// Python wrapper for [`peppylib::messaging::ConcurrentAction`].
+#[pyclass(name = "ConcurrentAction")]
+pub struct PyConcurrentAction {
+    inner: Arc<Mutex<ConcurrentAction>>,
+}
+
+#[pymethods]
+impl PyConcurrentAction {
+    /// Expose an action server and start its concurrent engine.
+    ///
+    /// `has_feedback` must reflect whether the action declares a feedback
+    /// topic. Pass `SenderTarget.node(name, tag)` for nodes or
+    /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
+    #[staticmethod]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_action_name, has_feedback))]
+    fn expose<'py>(
+        py: Python<'py>,
+        messenger: &PyMessengerHandle,
+        as_core_node: String,
+        as_instance_id: String,
+        as_identity: PySenderTarget,
+        as_action_name: String,
+        has_feedback: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let handle = messenger.inner.clone();
+        let as_identity = as_identity.into_inner();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let action = ConcurrentAction::expose(
+                &handle,
+                &as_core_node,
+                &as_instance_id,
+                as_identity,
+                &as_action_name,
+                has_feedback,
+            )
+            .await
+            .map_err(to_py_err)?;
+            Ok(PyConcurrentAction {
+                inner: Arc::new(Mutex::new(action)),
+            })
+        })
+    }
+
+    /// Wait for the next goal request, returning a [`PyPendingGoal`] or `None`
+    /// when the goal service stream has closed.
+    fn recv_next_goal<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut action = inner.lock().await;
+            let pending = action.recv_next_goal().await.map_err(to_py_err)?;
+            Ok(pending.map(|pending| {
+                let goal_id = pending.goal_id().to_string();
+                let core_node = pending.core_node().to_string();
+                let instance_id = pending.instance_id().to_string();
+                let request_bytes = pending.request_bytes().to_vec();
+                PyPendingGoal {
+                    inner: Arc::new(Mutex::new(Some(pending))),
+                    goal_id,
+                    core_node,
+                    instance_id,
+                    request_bytes,
+                }
+            }))
+        })
+    }
+}
+
+/// Python wrapper for [`peppylib::messaging::PendingGoal`]. `accept`/`reject`
+/// consume the underlying goal, so it is held behind an `Option` and taken on
+/// first use.
+#[pyclass(name = "PendingGoal")]
+pub struct PyPendingGoal {
+    inner: Arc<Mutex<Option<PendingGoal>>>,
+    goal_id: String,
+    core_node: String,
+    instance_id: String,
+    request_bytes: Vec<u8>,
+}
+
+#[pymethods]
+impl PyPendingGoal {
+    /// The client-generated correlation id for this goal.
+    #[getter]
+    fn goal_id(&self) -> &str {
+        &self.goal_id
+    }
+
+    /// The core node of the client that sent this goal.
+    #[getter]
+    fn core_node(&self) -> &str {
+        &self.core_node
+    }
+
+    /// The instance id of the client that sent this goal.
+    #[getter]
+    fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    /// The envelope-stripped goal request payload, ready to decode.
+    #[getter]
+    fn request_bytes(&self) -> &[u8] {
+        &self.request_bytes
+    }
+
+    /// Accept the goal, replying with the encoded `GoalResponse` bytes, and
+    /// return the [`PyGoalContext`] that drives it.
+    fn accept<'py>(&self, py: Python<'py>, response: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let pending =
+                inner.lock().await.take().ok_or_else(|| {
+                    PyValueError::new_err("PendingGoal already accepted or rejected")
+                })?;
+            let ctx = pending
+                .accept(Payload::from(response))
+                .await
+                .map_err(to_py_err)?;
+            Ok(PyGoalContext {
+                inner: Arc::new(ctx),
+            })
+        })
+    }
+
+    /// Reject the goal, replying with the encoded `GoalResponse` bytes. No
+    /// context is produced.
+    fn reject<'py>(&self, py: Python<'py>, response: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let pending =
+                inner.lock().await.take().ok_or_else(|| {
+                    PyValueError::new_err("PendingGoal already accepted or rejected")
+                })?;
+            pending
+                .reject(Payload::from(response))
+                .await
+                .map_err(to_py_err)?;
+            Ok(())
+        })
+    }
+}
+
+/// Python wrapper for [`peppylib::messaging::GoalContext`]. All methods take
+/// `&self`, so it can be shared across asyncio tasks; cancellation, completion,
+/// and feedback are all handled by the Rust engine.
+#[pyclass(name = "GoalContext")]
+pub struct PyGoalContext {
+    inner: Arc<GoalContext>,
+}
+
+#[pymethods]
+impl PyGoalContext {
+    /// The client-generated correlation id for this goal.
+    #[getter]
+    fn goal_id(&self) -> &str {
+        self.inner.goal_id()
+    }
+
+    /// The envelope-stripped goal request payload.
+    #[getter]
+    fn request_bytes(&self) -> &[u8] {
+        self.inner.request_bytes()
+    }
+
+    /// Publish a feedback message on this goal's stream. Empty payloads are
+    /// rejected (reserved for the framework's end-of-stream sentinel).
+    fn publish_feedback<'py>(
+        &self,
+        py: Python<'py>,
+        payload: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let payload = NonEmptyPayload::try_new(Payload::from(payload)).map_err(|_| {
+            PyValueError::new_err(
+                "feedback payload must be non-empty; empty is reserved for end-of-stream",
+            )
+        })?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inner.publish_feedback(payload).await.map_err(to_py_err)?;
+            Ok(())
+        })
+    }
+
+    /// Resolves when a cancel request arrives for this goal.
+    fn cancel_signal<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inner.cancel_signal().await;
+            Ok(())
+        })
+    }
+
+    /// Whether a cancel has been requested for this goal.
+    fn is_cancelled(&self) -> bool {
+        self.inner.is_cancelled()
+    }
+
+    /// Deliver the final result. Idempotent: the first call wins.
+    fn complete<'py>(&self, py: Python<'py>, result: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inner
+                .complete(Payload::from(result))
+                .await
+                .map_err(to_py_err)?;
+            Ok(())
+        })
+    }
+
+    /// Deliver the final result after observing a cancel. Functionally
+    /// identical to [`complete`](Self::complete).
+    fn complete_cancelled<'py>(
+        &self,
+        py: Python<'py>,
+        result: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inner
+                .complete_cancelled(Payload::from(result))
+                .await
+                .map_err(to_py_err)?;
+            Ok(())
         })
     }
 }
@@ -410,6 +654,9 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     actions_module.add_class::<PyActionCreation>()?;
     actions_module.add_class::<PyActionFeedbackPublisher>()?;
     actions_module.add_class::<PyActionFeedbackPublisherFactory>()?;
+    actions_module.add_class::<PyConcurrentAction>()?;
+    actions_module.add_class::<PyPendingGoal>()?;
+    actions_module.add_class::<PyGoalContext>()?;
     actions_module.add_function(wrap_pyfunction!(wrap_goal_payload, &actions_module)?)?;
     actions_module.add_function(wrap_pyfunction!(unwrap_goal_payload, &actions_module)?)?;
     actions_module.add_function(wrap_pyfunction!(generate_goal_id, &actions_module)?)?;

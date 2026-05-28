@@ -8,7 +8,8 @@ mod topics;
 
 pub use actions::{
     ActionCreation, ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle,
-    ActionMessenger, DeclaredFeedback, EmptyPayloadError, NonEmptyPayload, generate_goal_id,
+    ActionMessenger, ConcurrentAction, DeclaredFeedback, EmptyPayloadError, GoalContext,
+    NonEmptyPayload, PendingGoal, decode_cancel_ack, encode_cancel_ack, generate_goal_id,
     unwrap_goal_payload, wrap_goal_payload,
 };
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
@@ -396,8 +397,8 @@ impl MessengerHandle {
 
         // Per-goal feedback uses `Important` (Block on congestion, DataHigh
         // priority) rather than `Standard`. The publisher is declared inside
-        // the goal handler — the moment a fast server's first `emit_feedback`
-        // fires, the local routing tables may not yet have the client's
+        // the goal handler — the moment a fast server's first feedback
+        // publish fires, the local routing tables may not yet have the client's
         // subscription propagated through the router. Empirically, `Standard`
         // (Drop, Data) loses the first publish in tight in-process tests;
         // `Important` is delivered reliably. The block-on-congestion semantic

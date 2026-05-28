@@ -5,11 +5,14 @@ sidebar:
   order: 3
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 Actions are for **long-running tasks** that need feedback during execution and support cancellation.
 A client sends a goal to an action node, which can provide periodic feedback while working and delivers a final result upon completion.
 
 Use actions for tasks like navigation, arm movement, or any operation that runs over time and benefits from progress updates.
-Actions are processed **serially** by a node: two requests to the same action cannot run in parallel.
+
+A node can drive **multiple goals concurrently** for the same action. Each accepted goal yields its own `GoalContext` (owning that goal's feedback stream, cancel signal, and result), so one server can route by a discriminator in the request (e.g. `arm_id`) and drive several independent resources in parallel. The framework routes each client's cancel and result requests to the right goal by `goal_id`; deciding whether to accept a second concurrent goal is up to your goal handler.
 
 ## Action lifecycle
 
@@ -107,9 +110,10 @@ The `feedback_topic` block is optional: actions that don't stream progress can o
 ### Handling goals
 
 After running `peppy node sync`, the code generator creates a module for each exposed action under `peppygen::exposed_actions`.
-Use `ActionHandle::expose` to set up the action, then handle goals, emit feedback, and respond with results.
-Each goal is handled in a separate task, but only one action can be processed at a time:
+Use `ActionHandle::expose` to set up the action, then loop accepting goals. `handle_goal_next_request` returns the next *accepted* goal as a `GoalContext`; rejected goals are answered and skipped for you, so the accept loop ends only when the goal stream closes (the node is shutting down). Spawn a worker per context so goals run concurrently; each context owns that goal's feedback, cancel signal, and result, so nothing crosses between goals:
 
+<Tabs>
+  <TabItem label="Rust">
 ```rust
 use peppygen::exposed_actions::move_arm;
 use peppygen::{NodeBuilder, Parameters, Result};
@@ -118,90 +122,231 @@ fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
         let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
+        // Spawn the accept loop so this setup closure returns and the node
+        // starts serving. The loop runs for the life of the node.
         tokio::spawn(async move {
-            // Wait for a goal request
-            action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
-                println!(
-                    "goal received from {}: arm_id={} desired={:?}",
-                    request.instance_id, request.data.arm_id, request.data.desired_position
-                );
-                Ok(move_arm::GoalResponse::new(true))
-            })
-            .await?;
-
-            // Emit feedback while working
-            action.emit_feedback([7, 31, 43]).await?;
-
-            // Handle the result request
-            action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
-                Ok(move_arm::ResultResponse::new(
-                    true,
-                    None,
-                    [98, 4, 26],
-                ))
-            })
-            .await?;
-
-            Ok::<_, peppygen::Error>(())
+            // Each call returns the next accepted goal; rejected goals are
+            // answered and skipped, so the loop ends only when the stream
+            // closes (None) or errors.
+            while let Ok(Some(ctx)) = action
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                    println!(
+                        "goal from {}: arm_id={} desired={:?}",
+                        request.instance_id, request.data.arm_id, request.data.desired_position
+                    );
+                    // The decider sets the concurrency policy: e.g. reject a
+                    // goal for a busy `arm_id`.
+                    Ok(move_arm::GoalResponse::accept())
+                })
+                .await
+            {
+                // Drive this goal concurrently with any others already running.
+                tokio::spawn(async move {
+                    // Feedback goes through this goal's context, not a shared slot.
+                    ctx.publish_feedback([7, 31, 43]).await.ok();
+                    // Deliver the result for this specific goal; the client's
+                    // get_result(handle) is routed back here by goal_id.
+                    ctx.complete(true, None, [98, 4, 26]).await.ok();
+                });
+            }
         });
 
         Ok(())
     })
 }
 ```
+  </TabItem>
+  <TabItem label="Python">
+```python
+import asyncio
 
-The `GoalRequest` contains:
-- `instance_id`: the client instance that sent the goal, read straight from the goal context. The producer is binding-agnostic; it doesn't know which slot on the client this goal is heading to.
+from peppygen import NodeBuilder
+from peppygen.exposed_actions import move_arm
+
+
+# Drive one accepted goal concurrently with any others already running. The
+# context owns this goal's feedback, cancel signal, and result.
+async def drive(ctx):
+    # Feedback goes through this goal's context, not a shared slot.
+    await ctx.publish_feedback([7, 31, 43])
+    # Deliver the result for this specific goal; the client's
+    # get_result(handle) is routed back here by goal_id.
+    await ctx.complete(True, None, [98, 4, 26])
+
+
+async def run_action(node_runner):
+    action = await move_arm.ActionHandle.expose(node_runner)
+
+    # The decider sets the concurrency policy: e.g. reject a goal for a busy
+    # arm_id. Rejected goals are answered and skipped internally.
+    def decide(request):
+        print(
+            f"goal from {request.instance_id}: arm_id={request.data.arm_id} "
+            f"desired={request.data.desired_position}",
+            flush=True,
+        )
+        return move_arm.GoalResponse.accept()
+
+    while True:
+        ctx = await action.handle_goal_next_request(decide)
+        if ctx is None:
+            break  # goal stream closed (node shutting down)
+        asyncio.create_task(drive(ctx))
+
+
+async def setup(parameters, node_runner):
+    # Spawn the accept loop so setup returns and the node starts serving.
+    return [asyncio.create_task(run_action(node_runner))]
+
+
+def main():
+    NodeBuilder().run(setup)
+
+
+if __name__ == "__main__":
+    main()
+```
+  </TabItem>
+</Tabs>
+
+The decider returns a `GoalResponse`, the framework acknowledgement (`accepted` plus an optional rejection reason):
+- `GoalResponse::accept()` (`GoalResponse.accept()` in Python) admits the goal, replies to the client, and yields a `GoalContext`.
+- `GoalResponse::reject(reason)` (`GoalResponse.reject(reason)` in Python) declines it: the client receives the response with `accepted == false` and the reason in `error_message`, no context is created, and the accept loop transparently moves on to the next goal. This is where you enforce per-resource concurrency limits.
+
+The `GoalRequest` passed to the decider contains:
+- `instance_id`: the client instance that sent the goal. The producer is binding-agnostic; it doesn't know which slot on the client this goal is heading to.
 - `core_node`: the core node of the caller.
 - `data`: the deserialized goal parameters (only present when `request_message_format` is defined).
 
+The `GoalContext` (`ctx`) is the only handle you need to drive the goal:
+- `ctx.request()`: the decoded `GoalRequest`.
+- `ctx.goal_id()`: this goal's correlation id.
+- `ctx.publish_feedback(...)`: publish a feedback message on this goal's stream.
+- `ctx.cancel_signal()` / `ctx.is_cancelled()`: observe cancellation (see below).
+- `ctx.complete(...)` / `ctx.complete_cancelled(...)`: deliver the final result.
+
 A producer exposes its action once and serves any client that fires a goal at it. Starting the producer before or after the client is equally valid.
+
+To enforce a concurrency limit (say, one in-flight goal per arm), reject a goal whose arm is already busy, and release the arm when the goal finishes. The decider and the per-goal workers share the busy set:
+
+<Tabs>
+  <TabItem label="Rust">
+```rust
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
+// Arms currently driving a goal. Shared by the decider and the workers.
+let busy: Arc<Mutex<HashSet<u16>>> = Arc::new(Mutex::new(HashSet::new()));
+
+while let Ok(Some(ctx)) = action
+    .handle_goal_next_request({
+        let busy = Arc::clone(&busy);
+        move |request| -> Result<move_arm::GoalResponse> {
+            // `HashSet::insert` returns false when the arm is already busy.
+            if busy.lock().unwrap().insert(request.data.arm_id) {
+                Ok(move_arm::GoalResponse::accept())
+            } else {
+                // The reason rides back to the client in `error_message`.
+                Ok(move_arm::GoalResponse::reject(format!(
+                    "arm {} is already moving",
+                    request.data.arm_id
+                )))
+            }
+        }
+    })
+    .await
+{
+    let busy = Arc::clone(&busy);
+    tokio::spawn(async move {
+        let arm_id = ctx.request().data.arm_id;
+        ctx.complete(true, None, [98, 4, 26]).await.ok();
+        // Release the arm so future goals for it are accepted again.
+        busy.lock().unwrap().remove(&arm_id);
+    });
+}
+```
+  </TabItem>
+  <TabItem label="Python">
+```python
+# Arms currently driving a goal. Shared by the decider and the workers;
+# asyncio is single-threaded, so a plain set is safe here.
+busy: set[int] = set()
+
+
+async def drive(ctx):
+    arm_id = ctx.request().data.arm_id
+    await ctx.complete(True, None, [98, 4, 26])
+    # Release the arm so future goals for it are accepted again.
+    busy.discard(arm_id)
+
+
+def decide(request):
+    arm_id = request.data.arm_id
+    if arm_id in busy:
+        # This arm is already moving; reject with a reason the caller can read.
+        return move_arm.GoalResponse.reject(f"arm {arm_id} is already moving")
+    busy.add(arm_id)
+    return move_arm.GoalResponse.accept()
+
+
+while True:
+    ctx = await action.handle_goal_next_request(decide)
+    if ctx is None:
+        break
+    asyncio.create_task(drive(ctx))
+```
+  </TabItem>
+</Tabs>
 
 ### Handling cancellation
 
-Between accepting a goal and delivering a result, the server can handle cancel requests inside the spawned task:
+A worker reacts to a cancel for **its** goal via `ctx.cancel_signal()`, which resolves when a cancel request arrives for that `goal_id`. Pair it with the goal's work and report the outcome with `complete_cancelled`:
 
+<Tabs>
+  <TabItem label="Rust">
 ```rust
-action.handle_cancel_next_request(|request| -> Result<move_arm::CancelResponse> {
-    println!("cancel request from {}", request.instance_id);
-    Ok(move_arm::CancelResponse::new(
-        true,                                    // accepted
-        Some("goal cancelled".to_owned()),       // error_message
-    ))
-})
-.await?;
+tokio::spawn(async move {
+    tokio::select! {
+        outcome = run_arm(ctx.request().data.arm_id) => {
+            for position in outcome.steps {
+                ctx.publish_feedback(position).await.ok();
+            }
+            ctx.complete(true, None, outcome.final_position).await.ok();
+        }
+        _ = ctx.cancel_signal() => {
+            // A cancel arrived for this goal; wind down and report it.
+            ctx.complete_cancelled(false, Some("cancelled".to_owned()), last_known_position)
+                .await
+                .ok();
+        }
+    }
+});
 ```
+  </TabItem>
+  <TabItem label="Python">
+```python
+async def drive(ctx):
+    cancel_task = asyncio.ensure_future(ctx.cancel_signal())
+    work_task = asyncio.ensure_future(run_arm(ctx.request().data.arm_id))
+    done, pending = await asyncio.wait(
+        [cancel_task, work_task], return_when=asyncio.FIRST_COMPLETED
+    )
+    for task in pending:
+        task.cancel()
 
-The `CancelResponse` contains:
-- `accepted`: whether the cancellation was accepted.
-- `error_message`: an optional message explaining the cancellation outcome.
-
-After accepting a cancellation, the server should stop processing and not respond to the result request for that goal. When the server accepts a cancel request, or its cancel handler returns an error, the framework closes the client's feedback stream automatically: any in-flight `on_next_feedback_message` call resolves with the closed-channel error, allowing clients to break out of their drain loop cleanly.
-
-### Serving goals continuously
-
-To serve multiple goals in sequence, alternate between waiting for goals and handling follow-up requests:
-
-```rust
-let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
-
-loop {
-    // Wait for a new goal
-    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
-        Ok(move_arm::GoalResponse::new(true))
-    })
-    .await?;
-
-    // Do work, emit feedback...
-    action.emit_feedback([0, 0, 0]).await?;
-
-    // Handle either cancel or result
-    action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
-        Ok(move_arm::ResultResponse::new(true, None, [10, 20, 30]))
-    })
-    .await?;
-}
+    if cancel_task in done:
+        # A cancel arrived for this goal; wind down and report it.
+        await ctx.complete_cancelled(False, "cancelled", last_known_position)
+    else:
+        outcome = work_task.result()
+        for position in outcome.steps:
+            await ctx.publish_feedback(position)
+        await ctx.complete(True, None, outcome.final_position)
 ```
+  </TabItem>
+</Tabs>
+
+Cancellation is **auto-acknowledged** by the framework: the client's `cancel()` returns `accepted = true` if a goal with that `goal_id` is in flight (the signal was delivered), or `false` otherwise. "accepted" means *delivered*, not *will stop*; a worker is free to ignore the signal and keep running. The worker decides the goal's fate: calling `complete_cancelled` (or `complete`) is what a subsequent `get_result` returns. Whichever completion runs first wins; the framework closes this goal's feedback stream on completion, so the client's `on_next_feedback_message` loop ends cleanly. A goal's cancel never affects other concurrent goals.
 
 ## Consuming an action
 
@@ -247,6 +392,8 @@ By default, the `node add` and `node sync` commands require every dependency nod
 The code generator creates a module for each consumed action under `peppygen::consumed_actions`.
 Use `fire_goal` to send a goal, then listen for feedback and request the result:
 
+<Tabs>
+  <TabItem label="Rust">
 ```rust
 use peppygen::consumed_actions::brain_move_arm;
 use peppygen::{NodeBuilder, Parameters, QoSProfile, Result};
@@ -258,7 +405,7 @@ fn main() -> Result<()> {
             arm_id: 7,
             desired_position: [10, 20, 30],
         };
-        let mut goal = brain_move_arm::fire_goal(
+        let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
             &node_runner,
             Duration::from_secs(5),       // timeout
             request,
@@ -266,45 +413,87 @@ fn main() -> Result<()> {
         )
         .await?;
 
-        println!("goal accepted={}", goal.data.accepted);
+        println!("goal accepted={}", action_handle.data.accepted);
 
         Ok(())
     })
 }
 ```
+  </TabItem>
+  <TabItem label="Python">
+```python
+import asyncio
+
+from peppygen import NodeBuilder, QoSProfile
+from peppygen.consumed_actions import brain_move_arm
+
+
+async def run(node_runner):
+    request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
+    action_handle = await brain_move_arm.ActionHandle.fire_goal(
+        node_runner,
+        request,
+        5.0,                    # timeout (seconds)
+        QoSProfile.SensorData,  # QoS for the feedback topic
+    )
+    print(f"goal accepted={action_handle.data.accepted}", flush=True)
+
+
+async def setup(parameters, node_runner):
+    return [asyncio.create_task(run(node_runner))]
+
+
+def main():
+    NodeBuilder().run(setup)
+
+
+if __name__ == "__main__":
+    main()
+```
+  </TabItem>
+</Tabs>
 
 The signature is the same for pinned and `from_any: true` slots: `fire_goal` takes no call-site targeting argument. The slot's launcher binding (or absence of one) decides which producer instance the goal addresses.
 
-The `fire_goal` function returns a `GoalResponse` containing:
-- `data.accepted`: whether the goal was accepted.
-- `action_handle`: a handle used for subsequent feedback, result, and cancel calls.
+`fire_goal` returns an `ActionHandle` whose `data` field holds the goal response (e.g. `data.accepted`). The handle is what you use for subsequent feedback, result, and cancel calls. You can fire multiple goals concurrently, and each returns its own handle, so the server can drive them in parallel.
 
 ### Receiving feedback
 
-Use `on_next_feedback_message` to receive feedback messages from the server. The idiomatic pattern is a loop that drains feedback until the server signals end-of-stream:
+Use `on_next_feedback_message` on the handle to receive feedback. The idiomatic pattern is a loop that drains feedback until the server signals end-of-stream:
 
+<Tabs>
+  <TabItem label="Rust">
 ```rust
 loop {
-    match brain_move_arm::on_next_feedback_message(&mut goal.action_handle).await {
+    match action_handle.on_next_feedback_message().await {
         Ok(feedback) => println!("new_position={:?}", feedback.new_position),
-        Err(_) => break, // server has emitted the result or accepted/errored a cancel
+        Err(_) => break, // server has completed (or cancelled) this goal
     }
 }
 ```
+  </TabItem>
+  <TabItem label="Python">
+```python
+while True:
+    try:
+        feedback = await action_handle.on_next_feedback_message()
+        print(f"new_position={feedback.new_position}", flush=True)
+    except Exception:
+        break  # server has completed (or cancelled) this goal
+```
+  </TabItem>
+</Tabs>
 
-The feedback stream is automatically closed by the server when it begins handling the result request, when it accepts a cancel request, or when its cancel handler errors. Each goal cycle has its own feedback stream, so the close signal for one goal does not affect concurrent goals from other clients. Clients can rely on the loop-until-error pattern to drain feedback before requesting the result.
+Each goal has its own feedback stream, addressed by `goal_id`, so feedback for one goal never reaches another handle, even when several goals run concurrently on the same server. The server closes a goal's stream when its worker completes the goal (`complete` or `complete_cancelled`); the in-flight `on_next_feedback_message` then resolves with the closed-channel error, so the loop-until-error pattern drains feedback cleanly before you request the result. The stream also closes if the worker abandons the goal without completing it (an early return or a panic), so a client draining feedback always terminates rather than hanging.
 
 ### Getting the result
 
-Use `get_result` to request the final result from the server:
+Use `get_result` on the handle to request the final result. The call is routed to this goal by `goal_id`, and blocks until the server's worker completes that goal:
 
+<Tabs>
+  <TabItem label="Rust">
 ```rust
-let result = brain_move_arm::get_result(
-    &node_runner,
-    &goal.action_handle,
-    Duration::from_secs(5), // timeout
-)
-.await?;
+let result = action_handle.get_result(Duration::from_secs(5)).await?;
 
 println!(
     "success={} error={:?} final_position={:?}",
@@ -313,18 +502,30 @@ println!(
     result.data.final_position
 );
 ```
+  </TabItem>
+  <TabItem label="Python">
+```python
+result = await action_handle.get_result(5.0)
+
+print(
+    f"success={result.data.success} error={result.data.error_msg} "
+    f"final_position={result.data.final_position}",
+    flush=True,
+)
+```
+  </TabItem>
+</Tabs>
+
+`get_result` is deliver-once: the first successful call consumes the goal's buffered result, and the result is retained only for a short grace period after the worker finishes, so call it promptly (the drain-feedback-until-closed loop shown above does this for you). If the worker abandons the goal without ever completing it (an early return or a panic), the framework closes the feedback stream and `get_result` returns an error instead of blocking forever.
 
 ### Cancelling a goal
 
-Use `cancel_goal` to request cancellation of an active goal:
+Use `cancel_goal` on the handle to request cancellation of that specific goal:
 
+<Tabs>
+  <TabItem label="Rust">
 ```rust
-let cancel_response = brain_move_arm::cancel_goal(
-    &node_runner,
-    &goal.action_handle,
-    Duration::from_secs(5), // timeout
-)
-.await?;
+let cancel_response = action_handle.cancel_goal(Duration::from_secs(5)).await?;
 
 println!(
     "cancel accepted={} error={}",
@@ -332,8 +533,22 @@ println!(
     cancel_response.data.error_message.as_deref().unwrap_or("<none>"),
 );
 ```
+  </TabItem>
+  <TabItem label="Python">
+```python
+cancel_response = await action_handle.cancel_goal(5.0)
 
-After a goal is cancelled, requesting the result will fail with a timeout since the server stops processing that goal.
+error = cancel_response.data.error_message
+print(
+    f"cancel accepted={cancel_response.data.accepted} "
+    f"error={error if error is not None else '<none>'}",
+    flush=True,
+)
+```
+  </TabItem>
+</Tabs>
+
+`accepted` reports whether the cancel signal was *delivered* to a live goal (the server's worker may still choose to ignore it), not whether the goal stopped. The cancel targets only this goal; other concurrent goals are unaffected. To learn the goal's final state, call `get_result`: if the worker reacted with `complete_cancelled`, `get_result` returns that cancelled result; if it ignored the cancel and finished normally, you get the normal result.
 
 ## Bindings and routing
 
@@ -444,9 +659,17 @@ The launcher validator runs these checks before the stack starts:
 6. `KEY` uniqueness within a single invocation is enforced (no two bindings on the same client may share the same `KEY`).
 7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. Bindings address producers by `instance_id`, so a duplicate would make the binding ambiguous.
 
-## Serial processing
+## Concurrent processing
 
-Actions are designed for tasks where only one goal should be active at a time.
-The server processes goals one after another: it waits for a goal, handles it (with optional feedback and cancel), delivers the result, and then waits for the next goal.
+A single action server can drive many goals at once. The accept loop only waits
+for the next goal; each accepted goal runs in its own spawned task with its own
+`GoalContext`. The framework routes every cancel and result request to the right
+goal by `goal_id`, and each goal has its own feedback stream, so goals never
+interfere with one another.
 
-If you need parallel execution of similar tasks, consider using multiple instances of the same node or restructuring the work as independent services.
+This makes the "one server, many resources" pattern natural: include a
+discriminator in the goal request (e.g. `arm_id` or `device_id`) and route to a
+per-resource worker. Your goal handler is responsible for the concurrency
+policy: accept goals to run them in parallel, or reject a goal (with
+`GoalResponse::reject(reason)`) when its target resource is already busy. A goal
+that is not accepted yields no `GoalContext` and cannot be cancelled or completed.

@@ -42,3 +42,8 @@ pub mod derive {
 mod health_capnp {
     include!(concat!(env!("OUT_DIR"), "/health_capnp.rs"));
 }
+
+#[allow(clippy::all)]
+mod action_cancel_capnp {
+    include!(concat!(env!("OUT_DIR"), "/action_cancel_capnp.rs"));
+}

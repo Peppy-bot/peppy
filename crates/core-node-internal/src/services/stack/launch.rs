@@ -1,6 +1,8 @@
 use crate::Result;
 use crate::names;
-use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
+use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use crate::services::node::common::panic_message;
+use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::{
     FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
     NodeRunActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
@@ -15,19 +17,21 @@ use core_node_api::encoding::{
     LauncherOrigin, NodeAddGoal, NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeRunGoal,
     NodeRunLogEntry, NodeRunResult, NodeSource,
 };
+use futures::FutureExt;
 use node_stack::NodeStack;
 use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
+use peppylib::messaging::{ActionFeedbackPublisher, ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
-use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
+use peppylib::{MessengerHandle, PeppyResult};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::Write;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -92,12 +96,13 @@ pub async fn listen_for_stack_launch(
     peppy_dirs: PeppyDirs,
     defaults: StackLaunchDefaults,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ActionMessenger::expose(
+    let action = ConcurrentAction::expose(
         messenger,
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::STACK_LAUNCH_ACTION,
+        true,
     )
     .await?;
 
@@ -115,6 +120,7 @@ pub async fn listen_for_stack_launch(
             timeouts,
             daemon_use_sim_time,
         },
+        gate: ConcurrencyGate::new(),
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -122,39 +128,24 @@ pub async fn listen_for_stack_launch(
     Ok(handle)
 }
 
-impl ActionResult for LaunchResult {
-    fn identifier() -> &'static str {
-        "launch_result"
-    }
-
-    fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode().map_err(Into::into)
-    }
-}
-
 #[derive(Clone)]
 struct LaunchGoalHandler {
     context: LaunchActionContext,
+    gate: ConcurrencyGate,
+}
+
+fn encode_launch_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
+    LaunchGoalResponse::rejected(reason).encode().map_err(|e| {
+        peppylib::PeppyError::InvalidServiceRequest {
+            identifier: "launch_goal".to_string(),
+            reason: format!("Failed to encode response: {}", e),
+        }
+    })
 }
 
 impl GoalHandler for LaunchGoalHandler {
-    type Result = LaunchResult;
-
-    async fn handle_goal(
-        &self,
-        context: ServiceRequestContext,
-        user_payload: bytes::Bytes,
-        feedback_publisher: ActionFeedbackPublisher,
-        state: Arc<Mutex<ActionState<LaunchResult>>>,
-    ) -> PeppyResult<Payload> {
-        handle_goal_request(
-            context,
-            user_payload,
-            feedback_publisher,
-            state,
-            self.context.clone(),
-        )
-        .await
+    async fn handle_goal(&self, pending: PendingGoal) {
+        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await
     }
 }
 
@@ -1450,70 +1441,49 @@ async fn start_node_instances(
 }
 
 async fn handle_goal_request(
-    context: ServiceRequestContext,
-    user_payload: bytes::Bytes,
-    feedback_publisher: ActionFeedbackPublisher,
-    state: Arc<Mutex<ActionState<LaunchResult>>>,
+    pending: PendingGoal,
     action_context: LaunchActionContext,
-) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
+    gate: ConcurrencyGate,
+) {
+    let sender_instance_id = pending.instance_id().to_string();
 
-    // Check if already running (but don't set Running yet — we need the goal's timeout first)
-    {
-        let state_guard = state.lock().await;
-        if matches!(*state_guard, ActionState::Running { .. }) {
-            let response = LaunchGoalResponse::rejected("action already in progress");
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "launch_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
-        }
-    }
-
-    // Decode the goal before marking as Running so we can capture the user-supplied timeouts
-    let goal = match LaunchGoal::decode(&user_payload) {
+    // Decode the goal before admission so we can capture the user-supplied timeouts.
+    let goal = match LaunchGoal::decode(pending.request_bytes()) {
         Ok(g) => g,
         Err(e) => {
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            let response = LaunchGoalResponse::rejected(format!("invalid payload: {}", e));
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "launch_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
+            reject_goal(
+                pending,
+                encode_launch_rejected(format!("invalid payload: {e}")),
+            )
+            .await;
+            return;
         }
     };
 
-    // Now mark as Running. `timeout_secs` is gate-reporting only; 0 indicates "no enforced
-    // budget" (when --max-timeout-secs is unset).
-    {
-        let mut state_guard = state.lock().await;
-        *state_guard = ActionState::Running {
-            started_at: std::time::Instant::now(),
-            timeout_secs: goal.max_timeout_secs.unwrap_or(0),
-        };
-    }
+    // `timeout_secs` is gate-reporting only; 0 indicates "no enforced budget"
+    // (when --max-timeout-secs is unset).
+    let generation = match gate.try_admit(goal.max_timeout_secs.unwrap_or(0), false) {
+        Admission::Admitted { generation } => generation,
+        Admission::AlreadyRunning { .. } => {
+            reject_goal(
+                pending,
+                encode_launch_rejected("action already in progress"),
+            )
+            .await;
+            return;
+        }
+    };
 
     debug!("Received `stack_launch` goal from {sender_instance_id}");
 
     // Create log file with timestamp-based filename
     let log_dir = action_context.peppy_dirs.logs_dir_launch();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        let error_msg = format!("Failed to create logs directory: {}", e);
+        let error_msg = format!("Failed to create logs directory: {e}");
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
-        let mut state_guard = state.lock().await;
-        *state_guard = ActionState::Rejected;
-        let response = LaunchGoalResponse::rejected(&error_msg);
-        return response
-            .encode()
-            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                identifier: "launch_goal".to_string(),
-                reason: format!("Failed to encode response: {}", e),
-            });
+        gate.clear_running();
+        reject_goal(pending, encode_launch_rejected(&error_msg)).await;
+        return;
     }
 
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
@@ -1522,26 +1492,42 @@ async fn handle_goal_request(
     let log_file = match File::create(&log_path) {
         Ok(file) => Arc::new(StdMutex::new(file)),
         Err(e) => {
-            let error_msg = format!("Failed to create log file: {}", e);
+            let error_msg = format!("Failed to create log file: {e}");
             debug!("Failed to create log file {:?}: {}", log_path, e);
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            let response = LaunchGoalResponse::rejected(&error_msg);
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "launch_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
+            gate.clear_running();
+            reject_goal(pending, encode_launch_rejected(&error_msg)).await;
+            return;
         }
     };
 
     debug!("Created log file for stack launch: {}", log_path.display());
 
-    // Process the launch operation in a separate task to not block goal response
-    let state_clone = Arc::clone(&state);
+    // `accept` registers the per-goal context before replying accepted.
+    let Some(goal_ctx) = accept_goal(
+        pending,
+        LaunchGoalResponse::accepted(&log_path)
+            .encode()
+            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                identifier: "launch_goal".to_string(),
+                reason: format!("Failed to encode response: {e}"),
+            }),
+    )
+    .await
+    else {
+        gate.clear_running();
+        return;
+    };
+
+    // Process the launch operation in a separate task to not block the loop.
+    let feedback_publisher = goal_ctx
+        .feedback_publisher()
+        .expect("stack_launch declares a feedback topic");
     let log_path_clone = log_path.clone();
+    let gate_for_task = gate.clone();
     tokio::spawn(async move {
+        // Frees the gate slot on every exit (completion or panic); a no-op if a
+        // later goal already took over.
+        let _slot = gate_for_task.into_slot_guard(generation);
         let LaunchActionContext {
             messenger,
             bound_core_node,
@@ -1575,18 +1561,29 @@ async fn handle_goal_request(
             },
             daemon_use_sim_time,
         };
-        let result = process_launch(goal, ctx).await;
-        let mut state_guard = state_clone.lock().await;
-        *state_guard = ActionState::Completed { result };
+        // Catch panics so a panic inside the launch sequence still completes the
+        // goal with a failure result, rather than leaving the client to wait out
+        // the SDK's retention window for a result that never arrives. Releasing
+        // the gate on panic is handled by `_slot` above. Mirrors the panic
+        // handling in `run_node_run` / `run_node_add` / `run_node_build`.
+        let result = match AssertUnwindSafe(process_launch(goal, ctx))
+            .catch_unwind()
+            .await
+        {
+            Ok(result) => result,
+            Err(panic_payload) => {
+                let msg = format!(
+                    "stack_launch task panicked: {}",
+                    panic_message(&*panic_payload)
+                );
+                tracing::error!("{}", msg);
+                LaunchResult::failure(&log_path_clone, msg)
+            }
+        };
+        if let Ok(payload) = result.encode() {
+            let _ = goal_ctx.complete(payload).await;
+        }
     });
-
-    let response = LaunchGoalResponse::accepted(&log_path);
-    response
-        .encode()
-        .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-            identifier: "launch_goal".to_string(),
-            reason: format!("Failed to encode response: {}", e),
-        })
 }
 
 /// Process a stack launch request.

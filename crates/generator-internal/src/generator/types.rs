@@ -579,6 +579,18 @@ pub fn cancel_action_response_format() -> MessageFormat {
     MessageFormat(fields)
 }
 
+/// Returns the hardcoded goal-action response format used by both Rust and Python generators.
+///
+/// The goal acknowledgement is framework-owned (not declared by the action
+/// schema): every goal response is `accepted: bool` plus an optional
+/// `error_message: Optional[String]` carrying the rejection reason. The
+/// generated `GoalResponse::accept()` / `GoalResponse::reject(reason)`
+/// constructors produce it. This is wire-identical to the cancel-ack format, so
+/// the two share a single definition.
+pub fn goal_action_response_format() -> MessageFormat {
+    cancel_action_response_format()
+}
+
 /// Validates that generated type names for nested objects and array-of-object items
 /// do not collide within the same message format.
 ///

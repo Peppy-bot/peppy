@@ -238,102 +238,70 @@ fn exposed_action() {
         ],
     );
 
-    // GoalResponse struct
+    // GoalResponse struct: framework-owned goal acknowledgement
+    // ({accepted, error_message}) with its `new` constructor and the
+    // accept/reject helpers the decider returns.
     assert_contains_all(
         &rendered,
         &[
             "pub struct GoalResponse",
             "impl GoalResponse",
-            "pub fn new(accepted: bool) -> Self",
-        ],
-    );
-
-    // Cancel request/response structs
-    assert_contains_all(
-        &rendered,
-        &[
-            "pub struct CancelRequest",
-            "pub struct CancelResponse",
-            "pub error_message: Option<String>",
-            "impl CancelResponse",
             "pub fn new(accepted: bool, error_message: Option<String>) -> Self",
+            "pub fn accept() -> Self",
+            "pub fn reject(reason: impl Into<String>) -> Self",
         ],
     );
 
-    // Result request/response structs
-    assert_contains_all(
-        &rendered,
-        &[
-            "pub struct ResultRequest",
-            "pub struct ResultResponse",
-            "final_position: [i32; 3]",
-            "success: bool",
-            "error_msg: Option<String>",
-        ],
-    );
-
-    // ActionHandle struct
+    // ActionHandle wraps the concurrent-action engine.
     assert_contains_all(
         &rendered,
         &[
             "pub struct ActionHandle",
-            "goal_service: peppylib::messaging::ServiceEndpoint",
-            "cancel_service: peppylib::messaging::ServiceEndpoint",
-            "result_service: peppylib::messaging::ServiceEndpoint",
-            "feedback_publisher_factory: peppylib::messaging::ActionFeedbackPublisherFactory",
-            "current_goal: Option<(String, peppylib::messaging::ActionFeedbackPublisher)>",
+            "inner: peppylib::messaging::ConcurrentAction",
         ],
     );
 
-    // expose method
+    // expose builds the engine (has_feedback = true for this action).
     assert_contains_all(
         &rendered,
         &[
             "pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self>",
-            "peppylib::ActionMessenger::expose",
+            "peppylib::messaging::ConcurrentAction::expose",
         ],
     );
 
-    // Handler methods
+    // handle_goal_next_request returns a per-goal GoalContext (or None when
+    // rejected / the stream closed).
     assert_contains_all(
         &rendered,
         &[
             "pub async fn handle_goal_next_request",
-            "F: Fn(GoalRequest) -> crate::Result<GoalResponse>",
-            "pub async fn handle_cancel_next_request",
-            "F: Fn(CancelRequest) -> crate::Result<CancelResponse>",
-            "pub async fn handle_result_next_request",
-            "F: Fn(ResultRequest) -> crate::Result<ResultResponse>",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
+            "crate::Result<Option<GoalContext>>",
+            "recv_next_goal",
         ],
     );
 
-    // Feedback emit method (publishes via the per-goal publisher stored on
-    // current_goal — no longer a single per-action publisher). The guard
-    // text is verbatim because user code matches against it; pin both the
-    // condition and the panic message so a refactor doesn't silently drop
-    // either.
+    // GoalContext: request accessor, cancel signal, feedback, completion.
     assert_contains_all(
         &rendered,
         &[
-            "pub async fn emit_feedback",
-            "#[allow(clippy::too_many_arguments)]",
-            "publisher.publish(payload).await",
-            "self.current_goal",
-            "emit_feedback called with no active goal",
-            "call handle_goal_next_request first",
+            "pub struct GoalContext",
+            "pub fn request(&self) -> &GoalRequest",
+            "pub fn goal_id(&self) -> &str",
+            "pub async fn cancel_signal(&self)",
+            "pub fn is_cancelled(&self) -> bool",
+            "pub async fn publish_feedback",
+            "pub async fn complete",
+            "pub async fn complete_cancelled",
+            "success: bool",
+            "error_msg: Option<String>",
+            "final_position: [i32; 3]",
         ],
     );
 
-    // Helper functions
-    assert_contains_all(
-        &rendered,
-        &[
-            "fn deserialize_goal_request",
-            "fn handle_goal_payload",
-            "fn handle_cancel_payload",
-            "fn handle_result_payload",
-        ],
-    );
+    // Goal request deserializer helper remains.
+    assert_contains_all(&rendered, &["fn deserialize_goal_request"]);
 }
 
 #[test]
@@ -347,43 +315,44 @@ fn expose_action_without_request_body() {
         .next()
         .expect("artifact is present");
 
-    // GoalRequest still exists (with instance_id and core_node) even without data
+    // GoalRequest still exists (with instance_id and core_node) even without
+    // data. The framework GoalResponse (+ accept/reject) is always present.
     assert_contains_all(
         &rendered,
         &[
             "pub struct GoalRequest",
             "pub struct GoalResponse",
+            "pub fn accept() -> Self",
+            "pub fn reject(reason: impl Into<String>) -> Self",
             "pub async fn handle_goal_next_request",
-            "F: Fn(GoalRequest) -> crate::Result<GoalResponse>",
-            "fn handle_goal_payload",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
         ],
     );
+    // No request data → GoalRequest has no `data` field and no deserializer.
+    assert_rendered!(
+        !rendered.contains("pub data:"),
+        rendered,
+        "GoalRequest carries no data field when there is no request body"
+    );
+    assert_rendered!(
+        !rendered.contains("deserialize_goal_request"),
+        rendered,
+        "no goal request deserializer without request data"
+    );
 
-    // Result handling
+    // Result → GoalContext completion methods.
     assert_contains_all(
         &rendered,
         &[
-            "pub struct ResultResponse",
+            "pub async fn complete",
+            "pub async fn complete_cancelled",
             "success: bool",
             "error_msg: Option<String>",
-            "pub async fn handle_result_next_request",
-            "F: Fn(ResultRequest) -> crate::Result<ResultResponse>",
-            "fn handle_result_payload",
         ],
     );
 
-    // Cancel handling
-    assert_contains_all(
-        &rendered,
-        &[
-            "pub struct CancelResponse",
-            "pub async fn handle_cancel_next_request",
-            "F: Fn(CancelRequest) -> crate::Result<CancelResponse>",
-        ],
-    );
-
-    // Feedback emitter
-    assert_contains_all(&rendered, &["pub async fn emit_feedback"]);
+    // Feedback → GoalContext::publish_feedback.
+    assert_contains_all(&rendered, &["pub async fn publish_feedback"]);
 }
 
 #[test]
@@ -411,7 +380,10 @@ fn exposed_action_rejects_reserved_message_field_name() {
 }
 
 #[test]
-fn expose_action_with_feedback_only_initializes_existing_fields() {
+fn expose_feedback_only_action() {
+    // A feedback-only action is still goal-driven: the client fires a goal, the
+    // server accepts it and publishes feedback through the GoalContext. The goal
+    // has no request/response payload and there is no completion (no result).
     let action: ExposedAction = serde_json5::from_str(
         r#"
         {
@@ -438,28 +410,30 @@ fn expose_action_with_feedback_only_initializes_existing_fields() {
         &rendered,
         &[
             "pub struct ActionHandle",
-            "feedback_publisher_factory: peppylib::messaging::ActionFeedbackPublisherFactory",
-            "current_goal: Option<(String, peppylib::messaging::ActionFeedbackPublisher)>",
+            "inner: peppylib::messaging::ConcurrentAction",
             "pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self>",
-            "feedback_publisher_factory: action.feedback_publisher_factory",
-            "current_goal: None",
+            "peppylib::messaging::ConcurrentAction::expose",
+            "pub async fn handle_goal_next_request",
+            "pub struct GoalResponse",
+            "pub struct GoalContext",
+            "pub async fn publish_feedback",
         ],
     );
 
-    assert_rendered!(
-        !rendered.contains("goal_service: action.goal_service"),
-        rendered,
-        "expose method should not initialize goal_service when goal service is missing"
+    // The goal acknowledgement is framework-owned, so even a feedback-only
+    // action gets the GoalResponse accept/reject helpers.
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub fn accept() -> Self",
+            "pub fn reject(reason: impl Into<String>) -> Self",
+        ],
     );
+    // No result service → no completion methods.
     assert_rendered!(
-        !rendered.contains("cancel_service: action.cancel_service"),
+        !rendered.contains("pub async fn complete"),
         rendered,
-        "expose method should not initialize cancel_service when goal service is missing"
-    );
-    assert_rendered!(
-        !rendered.contains("result_service: action.result_service"),
-        rendered,
-        "expose method should not initialize result_service when result service is missing"
+        "no completion methods without a result service"
     );
 }
 
@@ -498,8 +472,9 @@ fn expose_two_actions() {
         &[
             "pub async fn handle_goal_next_request",
             "pub struct GoalRequest",
-            "pub struct ResultResponse",
-            "pub async fn emit_feedback",
+            "pub struct GoalContext",
+            "pub async fn complete",
+            "pub async fn publish_feedback",
             "const ACTION_NAME: &str = \"move_arm\";",
         ],
     );
@@ -509,10 +484,10 @@ fn expose_two_actions() {
         rotate_servo,
         &[
             "pub async fn handle_goal_next_request",
-            "F: Fn(GoalRequest) -> crate::Result<GoalResponse>",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
             "pub struct GoalResponse",
-            "pub struct ResultResponse",
-            "pub async fn emit_feedback",
+            "pub async fn complete",
+            "pub async fn publish_feedback",
             "const ACTION_NAME: &str = \"rotate_servo_clockwise\";",
         ],
     );
@@ -872,24 +847,25 @@ fn consumed_action_without_response_payload() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    // ActionHandle struct without GoalResponseData (no goal response format)
+    // The goal acknowledgement is framework-owned, so GoalResponseData and the
+    // `pub data` field are always present even when the action declares no goal
+    // response format.
     assert_contains_all(
         &rendered,
         &[
             "pub struct ActionHandle",
             "messenger: peppylib::MessengerHandle",
             "inner: peppylib::messaging::ActionGoalHandle",
+            "pub data: GoalResponseData",
             "impl ActionHandle",
             "pub async fn fire_goal",
             "pub async fn get_result",
             "peppylib::ActionMessenger::send_goal",
             "peppylib::ActionMessenger::request_result",
+            "pub struct GoalResponseData",
+            "pub accepted: bool",
+            "fn deserialize_goal_response",
         ],
-    );
-    assert_rendered!(
-        !rendered.contains("GoalResponseData"),
-        rendered,
-        "expected no GoalResponseData when goal response format is absent"
     );
 }
 

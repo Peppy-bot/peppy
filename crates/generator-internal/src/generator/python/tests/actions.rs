@@ -216,28 +216,16 @@ fn exposed_action() {
         ],
     );
 
-    // GoalResponse dataclass
-    assert_contains_all(&rendered, &["class GoalResponse:"]);
-
-    // Cancel request/response dataclasses
+    // GoalResponse: framework-owned goal acknowledgement dataclass with
+    // accept()/reject(reason) staticmethods the decider returns.
     assert_contains_all(
         &rendered,
         &[
-            "class CancelRequest:",
-            "class CancelResponse:",
+            "class GoalResponse:",
+            "accepted: bool",
             "error_message: Optional[str]",
-        ],
-    );
-
-    // Result request/response dataclasses
-    assert_contains_all(
-        &rendered,
-        &[
-            "class ResultRequest:",
-            "class ResultResponse:",
-            "final_position: list[int]",
-            "success: bool",
-            "error_msg: Optional[str]",
+            "def accept():",
+            "def reject(reason):",
         ],
     );
 
@@ -256,20 +244,16 @@ fn exposed_action() {
         ],
     );
 
-    // expose @classmethod inside ActionHandle
+    // expose builds the concurrent-action engine.
     assert_contains_all(
         &rendered,
         &[
             "@classmethod",
             "async def expose(cls,",
             "node_runner: peppylib.NodeRunner) -> Self:",
-            "peppylib.ActionMessenger.expose(",
+            "peppylib.ConcurrentAction.expose(",
             "handle = cls()",
-            "handle.goal_service = action.goal_service",
-            "handle.cancel_service = action.cancel_service",
-            "handle.result_service = action.result_service",
-            "handle.feedback_publisher_factory = action.feedback_publisher_factory",
-            "handle.current_goal = None",
+            "handle._inner = inner",
             "return handle",
         ],
     );
@@ -283,86 +267,34 @@ fn exposed_action() {
         ],
     );
 
-    // _handle_goal_payload function with typed signature (module level)
+    // handle_goal_next_request: recv → decode → accept/reject → GoalContext.
     assert_contains_all(
         &rendered,
         &[
-            "async def _handle_goal_payload(payload: bytes, handler: Callable[[GoalRequest], GoalResponse], core_node: str, instance_id: str) -> bytes:",
-            "request_data = _deserialize_goal_request(payload)",
-            "request = GoalRequest(instance_id=instance_id, core_node=core_node, data=request_data)",
-            "response = handler(request)",
-            "if hasattr(response, \"__await__\"):",
-            "response = await response",
-            "return capnp_msg.to_bytes()",
+            "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalResponse]) -> \"GoalContext | None\":",
+            "pending = await self._inner.recv_next_goal()",
+            "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)",
+            "ctx = await pending.accept(response_bytes)",
+            "return GoalContext(ctx, request)",
+            "await pending.reject(response_bytes)",
         ],
     );
 
-    // handle_goal_next_request as method with self
+    // GoalContext class with per-goal methods.
     assert_contains_all(
         &rendered,
         &[
-            "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalResponse]) -> None:",
-            "async def _on_request(request_context):",
-            "outcome = await _handle_goal_payload(payload, handler, core_node, instance_id)",
-            "await self.goal_service.handle_next_request(_on_request)",
-        ],
-    );
-
-    // _handle_cancel_payload function (module level)
-    assert_contains_all(
-        &rendered,
-        &[
-            "async def _handle_cancel_payload(handler: Callable[[CancelRequest], CancelResponse], core_node: str, instance_id: str) -> bytes:",
-            "request = CancelRequest(instance_id=instance_id, core_node=core_node)",
-            "response = handler(request)",
-            "if hasattr(response, \"__await__\"):",
-            "response = await response",
-        ],
-    );
-
-    // handle_cancel_next_request as method with self.
-    // When the action has a feedback topic, the handler is wrapped so the
-    // codegen can inspect its outcome and emit publish_end on accept/error.
-    assert_contains_all(
-        &rendered,
-        &[
-            "async def handle_cancel_next_request(self, handler: Callable[[CancelRequest], CancelResponse]) -> None:",
-            "outcome = await _handle_cancel_payload(_wrapped_handler, core_node, instance_id)",
-            "await self.cancel_service.handle_next_request(_on_request)",
-        ],
-    );
-
-    // _handle_result_payload function (module level)
-    assert_contains_all(
-        &rendered,
-        &[
-            "async def _handle_result_payload(handler: Callable[[ResultRequest], ResultResponse], core_node: str, instance_id: str) -> bytes:",
-            "request = ResultRequest(instance_id=instance_id, core_node=core_node)",
-        ],
-    );
-
-    // handle_result_next_request as method with self
-    assert_contains_all(
-        &rendered,
-        &[
-            "async def handle_result_next_request(self, handler: Callable[[ResultRequest], ResultResponse]) -> None:",
-            "return await _handle_result_payload(handler, core_node, instance_id)",
-            "await self.result_service.handle_next_request(_on_request)",
-        ],
-    );
-
-    // emit_feedback as method with self. The guard text is verbatim because
-    // user code may match against it; pin both the condition and the panic
-    // message so a refactor doesn't silently drop either.
-    assert_contains_all(
-        &rendered,
-        &[
-            "async def emit_feedback(self, new_position: list[int]):",
-            "payload = capnp_msg.to_bytes()",
-            "await publisher.publish(payload)",
-            "if self.current_goal is None:",
-            "emit_feedback called with no active goal",
-            "call handle_goal_next_request first",
+            "class GoalContext:",
+            "def request(self) -> GoalRequest:",
+            "def goal_id(self) -> str:",
+            "async def cancel_signal(self) -> None:",
+            "def is_cancelled(self) -> bool:",
+            "async def publish_feedback(self, new_position: list[int]) -> None:",
+            "async def complete(self,",
+            "async def complete_cancelled(self,",
+            "success: bool",
+            "error_msg: Optional[str]",
+            "final_position: list[int]",
         ],
     );
 }
@@ -378,79 +310,44 @@ fn expose_action_without_request_body() {
         .next()
         .expect("artifact is present");
 
-    // GoalRequest still exists (with metadata) even without request data
+    // GoalRequest still exists (with metadata) even without request data. The
+    // framework GoalResponse (+ accept/reject) is always present.
     assert_contains_all(
         &rendered,
         &[
             "class GoalRequest:",
             "class GoalResponse:",
+            "def accept():",
+            "def reject(reason):",
             "async def handle_goal_next_request(",
         ],
     );
-
-    // Should NOT have _deserialize_goal_request (no request format)
+    // No request data → no deserializer and a GoalRequest without `data`.
     assert_rendered!(
         !rendered.contains("def _deserialize_goal_request"),
         &rendered,
         "expected no _deserialize_goal_request when there is no request body"
     );
-
-    // _handle_goal_payload without payload parameter
     assert_contains_all(
         &rendered,
-        &[
-            "async def _handle_goal_payload(handler: Callable[[GoalRequest], GoalResponse], core_node: str, instance_id: str) -> bytes:",
-            "request = GoalRequest(instance_id=instance_id, core_node=core_node)",
-        ],
+        &["request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)"],
     );
 
-    // handle_goal_next_request - _on_request without payload
+    // Result → GoalContext completion methods.
     assert_contains_all(
         &rendered,
         &[
-            "outcome = await _handle_goal_payload(handler, core_node, instance_id)",
-            "await self.goal_service.handle_next_request(_on_request)",
-        ],
-    );
-
-    // Result handling
-    assert_contains_all(
-        &rendered,
-        &[
-            "class ResultResponse:",
             "success: bool",
             "error_msg: Optional[str]",
-            "async def handle_result_next_request(",
+            "async def complete(self,",
+            "async def complete_cancelled(self,",
         ],
     );
 
-    // Cancel handling
+    // Feedback → GoalContext.publish_feedback.
     assert_contains_all(
         &rendered,
-        &[
-            "class CancelResponse:",
-            "async def handle_cancel_next_request(",
-            "async def _handle_cancel_payload(",
-            "await self.cancel_service.handle_next_request(_on_request)",
-        ],
-    );
-
-    // Result handler implementation
-    assert_contains_all(
-        &rendered,
-        &[
-            "async def _handle_result_payload(",
-            "await self.result_service.handle_next_request(_on_request)",
-        ],
-    );
-
-    // Feedback emitter as method with self
-    assert_contains_all(
-        &rendered,
-        &[
-            "async def emit_feedback(self, new_position: int, speed: int):",
-            "await publisher.publish(payload)",
-        ],
+        &["async def publish_feedback(self, new_position: int, speed: int) -> None:"],
     );
 }
 
@@ -472,7 +369,7 @@ fn exposed_action_feedback_emits_nested_types() {
             "class FeedbackState:",
             "position: int",
             "note: str",
-            "async def emit_feedback(self, state: FeedbackState):",
+            "async def publish_feedback(self, state: FeedbackState) -> None:",
         ],
     );
 
@@ -525,18 +422,14 @@ fn expose_two_actions() {
             "\"move_arm\"",
             "import capnp",
             "class GoalRequest:",
-            "class ResultResponse:",
+            "class GoalResponse:",
+            "class GoalContext:",
             "class ActionHandle:",
             "@classmethod",
+            "peppylib.ConcurrentAction.expose(",
             "async def handle_goal_next_request(self,",
-            "async def _handle_goal_payload(",
-            "async def _handle_cancel_payload(",
-            "async def _handle_result_payload(",
-            "await self.goal_service.handle_next_request(_on_request)",
-            "await self.cancel_service.handle_next_request(_on_request)",
-            "await self.result_service.handle_next_request(_on_request)",
-            "async def emit_feedback(self,",
-            "await publisher.publish(payload)",
+            "async def complete(self,",
+            "async def publish_feedback(self,",
         ],
     );
 
@@ -547,18 +440,13 @@ fn expose_two_actions() {
             "\"rotate_servo_clockwise\"",
             "import capnp",
             "class GoalResponse:",
-            "class ResultResponse:",
+            "class GoalContext:",
             "class ActionHandle:",
             "@classmethod",
+            "peppylib.ConcurrentAction.expose(",
             "async def handle_goal_next_request(self,",
-            "async def _handle_goal_payload(",
-            "async def _handle_cancel_payload(",
-            "async def _handle_result_payload(",
-            "await self.goal_service.handle_next_request(_on_request)",
-            "await self.cancel_service.handle_next_request(_on_request)",
-            "await self.result_service.handle_next_request(_on_request)",
-            "async def emit_feedback(self,",
-            "await publisher.publish(payload)",
+            "async def complete(self,",
+            "async def publish_feedback(self,",
         ],
     );
 }
@@ -953,12 +841,10 @@ fn consumed_action_without_response_payload() {
         ],
     );
 
-    // Should NOT have deserialization for goal_response or result_response
-    assert_rendered!(
-        !rendered.contains("def _deserialize_goal_response"),
-        &rendered,
-        "expected no _deserialize_goal_response when goal_response is None"
-    );
+    // The goal acknowledgement is framework-owned, so goal_response
+    // deserialization is always present even when the action declares none.
+    assert_contains_all(&rendered, &["def _deserialize_goal_response("]);
+    // result_response is NOT framework-owned, so it stays absent here.
     assert_rendered!(
         !rendered.contains("def _deserialize_result_response"),
         &rendered,
@@ -977,7 +863,9 @@ fn consumed_action_without_response_payload() {
     // ActionHandle class
     assert_contains_all(&rendered, &["class ActionHandle:"]);
 
-    // fire_goal should have serialization (goal_request exists) but no handle.data (no goal_response)
+    // fire_goal should have serialization (goal_request exists). The goal
+    // acknowledgement is framework-owned, so GoalResponseData and handle.data
+    // are always present even when the action declares no goal response.
     assert_contains_all(
         &rendered,
         &[
@@ -985,13 +873,11 @@ fn consumed_action_without_response_payload() {
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",
             "handle._inner = action_handle",
+            "handle.data = goal_response_data",
             "return handle",
+            "class GoalResponseData:",
+            "accepted: bool",
         ],
-    );
-    assert_rendered!(
-        !rendered.contains("handle.data"),
-        &rendered,
-        "expected no handle.data when goal_response is None"
     );
 
     // get_result should return without data

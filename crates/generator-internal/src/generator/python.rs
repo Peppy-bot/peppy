@@ -16,9 +16,9 @@ mod type_mapping;
 use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, DependencyContext, InterfaceArtifact, InterfaceKind,
-    InterfaceOrigin, LanguageGenerator, cancel_action_response_format, non_empty_message_format,
-    scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
-    validate_message_format_field_names,
+    InterfaceOrigin, LanguageGenerator, cancel_action_response_format, goal_action_response_format,
+    non_empty_message_format, scoped_schema_key, validate_fixed_length_array_items,
+    validate_generated_type_name_collisions, validate_message_format_field_names,
 };
 use crate::error::{Error, Result};
 use config::encoding::MessageFormatMapper;
@@ -192,23 +192,16 @@ impl LanguageGenerator for PythonGenerator {
                 .as_ref()
                 .and_then(|goal_service| goal_service.request_message_format.as_ref()),
         )?;
+        // The goal acknowledgement is framework-owned ({accepted, error_message}).
+        let goal_response_fmt = goal_action_response_format();
         let goal_response_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_goal_response", action.name)),
-            action
-                .goal_service
-                .as_ref()
-                .and_then(|goal_service| goal_service.response_message_format.as_ref()),
+            Some(&goal_response_fmt),
         )?;
 
-        let cancel_response_schema_info = if action.goal_service.is_some() {
-            let cancel_format = cancel_action_response_format();
-            Some(self.register_schema(
-                &scoped_schema_key(origin, &format!("{}_cancel_response", action.name)),
-                &cancel_format,
-            )?)
-        } else {
-            None
-        };
+        // The cancel-ack reply is encoded by the peppylib engine (a fixed
+        // format), so the exposed server needs no per-action cancel-response
+        // schema.
 
         let result_response_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_result_response", action.name)),
@@ -229,7 +222,6 @@ impl LanguageGenerator for PythonGenerator {
             action,
             goal_request_schema_info.as_ref(),
             goal_response_schema_info.as_ref(),
-            cancel_response_schema_info.as_ref(),
             result_response_schema_info.as_ref(),
             feedback_schema_info.as_ref(),
             origin,
@@ -339,9 +331,11 @@ impl LanguageGenerator for PythonGenerator {
             &action_schema_keys.goal_request,
             messages.goal_request.as_ref(),
         )?;
+        // The goal acknowledgement is framework-owned ({accepted, error_message}).
+        let goal_response_fmt = goal_action_response_format();
         let goal_response_schema_info = self.register_optional_schema(
             &action_schema_keys.goal_response,
-            messages.goal_response.as_ref(),
+            Some(&goal_response_fmt),
         )?;
 
         let cancel_format = cancel_action_response_format();

@@ -8,10 +8,10 @@ use core_node_api::encoding::{
     LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult, LauncherOrigin,
 };
 use git2::{Repository, Signature};
+use peppylib::ActionMessenger;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
-use peppylib::{ActionMessenger, PeppyError};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -376,28 +376,9 @@ async fn send_launch_origin_and_wait(
     let absolute_deadline = tokio::time::Instant::now() + result_timeout;
     let mut last_activity = tokio::time::Instant::now();
 
+    // Drain feedback until the server closes the stream on completion, then
+    // fetch the buffered result once.
     loop {
-        // Drain feedback so the publisher doesn't block on a full channel.
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
-                return Err("Timeout waiting for launch result".to_string());
-            }
-            if now.duration_since(last_activity) >= result_timeout {
-                return Err("Timeout waiting for launch result (idle)".to_string());
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    let payload = msg.payload();
-                    let _ = LaunchFeedback::decode(&payload);
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
             return Err("Timeout waiting for launch result".to_string());
@@ -405,25 +386,28 @@ async fn send_launch_origin_and_wait(
         if now.duration_since(last_activity) >= result_timeout {
             return Err("Timeout waiting for launch result (idle)".to_string());
         }
-        let poll_timeout = Duration::from_millis(200);
-
-        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
-            Ok(msg) => {
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
-                match LaunchResult::decode(&payload) {
-                    Ok(result) => return Ok((goal_response, result)),
-                    Err(err) => {
-                        if !peppylib::encoding::is_result_pending(payload.as_ref()) {
-                            return Err(format!("Failed to decode launch result: {err}"));
-                        }
-                    }
-                }
+                let _ = LaunchFeedback::decode(&payload);
             }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => return Err(format!("Failed to get launch result: {err}")),
+            Ok(Err(_)) => break,
+            Err(_) => {}
         }
+    }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let fetch_timeout = absolute_deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .max(Duration::from_secs(1));
+    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
+        Ok(msg) => {
+            let result = LaunchResult::decode(&msg.payload())
+                .map_err(|err| format!("Failed to decode launch result: {err}"))?;
+            Ok((goal_response, result))
+        }
+        Err(err) => Err(format!("Failed to get launch result: {err}")),
     }
 }
 

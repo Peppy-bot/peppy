@@ -16,8 +16,8 @@ pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
     CapnpSchema, ConsumedActionMessage, DependencyContext, InterfaceArtifact, InterfaceKind,
-    InterfaceOrigin, LanguageGenerator, cancel_action_response_format, non_empty_message_format,
-    scoped_schema_key,
+    InterfaceOrigin, LanguageGenerator, cancel_action_response_format, goal_action_response_format,
+    non_empty_message_format, scoped_schema_key,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
@@ -35,9 +35,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use actions::{
-    ActionHandleRole, build_action_expose_method, build_action_feedback_emit,
-    build_action_handle_method, build_action_handle_struct, build_action_payload_handler,
-    build_action_request_deserializer,
+    build_action_expose_method, build_action_handle_struct, build_action_request_deserializer,
+    build_goal_context_base_methods, build_goal_context_complete,
+    build_goal_context_publish_feedback, build_goal_context_struct,
+    build_goal_response_constructors, build_handle_goal_next_request,
 };
 use context::{GenerationContext, collect_function_params, map_message_format};
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
@@ -47,7 +48,8 @@ use serialization::{
 };
 use services::{
     ExposedServiceMethodSpec, ServiceResponseSpec, build_exposed_service_method,
-    build_request_struct_with_name_and_impl, deserialize_fields_from_format,
+    build_request_struct_with_name_and_impl, build_response_payload_tokens,
+    deserialize_fields_from_format,
 };
 use topics::{
     ConsumedTopicCallbackSpec, build_consumed_topic_callback, build_topic_emit,
@@ -717,28 +719,42 @@ impl LanguageGenerator for RustGenerator {
         let action_prefix = to_camel_case(&base_name);
 
         let mut context = GenerationContext::default();
+        // Methods on `impl ActionHandle` (expose + handle_goal_next_request).
         let mut action_handle_methods: Vec<TokenStream> = Vec::new();
+        // Methods on `impl GoalContext` (request/goal_id/cancel_signal/... plus
+        // publish_feedback and complete/complete_cancelled when applicable).
+        let mut goal_context_methods: Vec<TokenStream> = Vec::new();
         let mut helper_tokens: Vec<TokenStream> = Vec::new();
+        // Free items (the GoalResponse constructors).
+        let mut extra_items: Vec<TokenStream> = Vec::new();
 
         let action_name_literal = Literal::string(&action.name);
 
-        let has_goal = action.goal_service.is_some();
         let has_feedback = action.feedback_topic.is_some();
-        let has_result = action.result_service.is_some();
 
-        if let Some(goal) = action.goal_service.as_ref() {
+        // Every action is goal-driven in the concurrent model: clients fire a
+        // goal, the server accepts/rejects and (when accepted) drives it through
+        // a GoalContext. An absent `goal_service` simply means the goal carries
+        // no request/response payload.
+        {
+            let goal_service = action.goal_service.as_ref();
             let label = format!("{base_name}_goal");
             let schema_struct_prefix = format!("{action_prefix}Goal");
 
             let request_artifacts = map_message_format(
                 &format!("{label}_request"),
-                goal.request_message_format.as_ref(),
+                goal_service.and_then(|goal| goal.request_message_format.as_ref()),
             )?;
-            let response_artifacts = map_message_format(
-                &format!("{label}_response"),
-                goal.response_message_format.as_ref(),
-            )?;
+            // The goal acknowledgement is framework-owned ({accepted,
+            // error_message}); any goal response declared in the action schema
+            // is ignored. The decider returns GoalResponse::accept() /
+            // GoalResponse::reject(reason).
+            let goal_response_format = goal_action_response_format();
+            let response_artifacts =
+                map_message_format(&format!("{label}_response"), Some(&goal_response_format))?;
 
+            // Generates `GoalResponse` (+ `new`) when there is a response, and
+            // returns the request params used to build `GoalRequestData`.
             let goal_data_params = collect_function_params(
                 request_artifacts.as_ref(),
                 response_artifacts.as_ref(),
@@ -769,22 +785,10 @@ impl LanguageGenerator for RustGenerator {
                 &goal_data_params,
             )?;
 
-            let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
-                let response_schema_prefix = format!("{schema_struct_prefix}Response");
-                let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
-                let schema_info =
-                    self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
-                Some(ServiceResponseSpec {
-                    format: return_artifacts.message_format(),
-                    struct_ident: Ident::new("GoalResponse", Span::call_site()),
-                    builder_type: schema_info.builder_type_tokens(),
-                    include_service_instance_id: false,
-                })
-            } else {
-                None
-            };
-
-            if let Some(spec) = encoding.as_ref() {
+            // A deserializer is only needed when the goal carries request data
+            // (an empty `{}` request format yields an encoding but no
+            // `GoalRequestData` struct, so there is nothing to decode).
+            if let (Some(_), Some(spec)) = (goal_request_data_struct.as_ref(), encoding.as_ref()) {
                 let deserializer_fn = build_action_request_deserializer(
                     &Ident::new("deserialize_goal_request", Span::call_site()),
                     spec,
@@ -799,158 +803,42 @@ impl LanguageGenerator for RustGenerator {
                 helper_tokens.push(deserializer_fn);
             }
 
-            let goal_handler_fn = build_action_payload_handler(
-                &Ident::new("handle_goal_payload", Span::call_site()),
-                &Ident::new("deserialize_goal_request", Span::call_site()),
-                &Ident::new("GoalRequest", Span::call_site()),
-                goal_request_data_struct.as_ref(),
-                response_spec.as_ref(),
-                encoding.is_some(),
-            )?;
-            helper_tokens.push(goal_handler_fn);
+            // The decider returns a framework `GoalResponse`
+            // (`accept()` / `reject(reason)`).
+            extra_items.push(build_goal_response_constructors());
 
-            let goal_role = if has_feedback {
-                ActionHandleRole::Goal
-            } else {
-                ActionHandleRole::Plain
+            // Serialization for the `GoalResponse` (reads a local `response`).
+            // The goal response is framework-owned, so it is always present.
+            let return_artifacts = response_artifacts
+                .as_ref()
+                .expect("framework goal response format always yields artifacts");
+            let response_schema_prefix = format!("{schema_struct_prefix}Response");
+            let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
+            let schema_info =
+                self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
+            let spec = ServiceResponseSpec {
+                format: return_artifacts.message_format(),
+                struct_ident: Ident::new("GoalResponse", Span::call_site()),
+                builder_type: schema_info.builder_type_tokens(),
+                include_service_instance_id: false,
             };
-            let goal_method = build_action_handle_method(
-                &Ident::new("handle_goal_next_request", Span::call_site()),
-                &Ident::new("handle_goal_payload", Span::call_site()),
-                &Ident::new("GoalRequest", Span::call_site()),
-                &Ident::new("GoalResponse", Span::call_site()),
-                &Ident::new("goal_service", Span::call_site()),
-                encoding.is_some(),
-                goal_role,
-            );
-            action_handle_methods.push(goal_method);
+            let response_ident = Ident::new("response", Span::call_site());
+            let error_context = quote!(format!("{} {}", "handle_goal_next_request", ACTION_NAME));
+            let response_serialization =
+                build_response_payload_tokens(&spec, &response_ident, &error_context, None)?;
 
-            let cancel_label = format!("{base_name}_goal_cancel");
-            let cancel_schema_prefix = format!("{action_prefix}GoalCancel");
-            let cancel_response_format = cancel_action_response_format();
-            let cancel_response_artifacts =
-                map_message_format(&cancel_label, Some(&cancel_response_format))?;
-
-            context.add_metadata_struct(Ident::new("CancelRequest", Span::call_site()), None);
-
-            let _cancel_params = collect_function_params(
-                None,
-                cancel_response_artifacts.as_ref(),
-                "Cancel",
-                &mut context,
-                None,
-            )?;
-
-            let cancel_response_spec =
-                if let Some(return_artifacts) = cancel_response_artifacts.as_ref() {
-                    let schema_key = scoped_schema_key(origin, &format!("{cancel_label}_response"));
-                    let schema_info = self.register_schema(
-                        &schema_key,
-                        &format!("{cancel_schema_prefix}Response"),
-                        return_artifacts,
-                    )?;
-                    Some(ServiceResponseSpec {
-                        format: return_artifacts.message_format(),
-                        struct_ident: Ident::new("CancelResponse", Span::call_site()),
-                        builder_type: schema_info.builder_type_tokens(),
-                        include_service_instance_id: false,
-                    })
-                } else {
-                    None
-                };
-
-            let cancel_handler_fn = build_action_payload_handler(
-                &Ident::new("handle_cancel_payload", Span::call_site()),
-                &Ident::new("deserialize_cancel_request", Span::call_site()),
-                &Ident::new("CancelRequest", Span::call_site()),
-                None,
-                cancel_response_spec.as_ref(),
-                false,
-            )?;
-            helper_tokens.push(cancel_handler_fn);
-
-            let cancel_role = if has_feedback {
-                ActionHandleRole::Cancel
-            } else {
-                ActionHandleRole::Plain
-            };
-            let cancel_method = build_action_handle_method(
-                &Ident::new("handle_cancel_next_request", Span::call_site()),
-                &Ident::new("handle_cancel_payload", Span::call_site()),
-                &Ident::new("CancelRequest", Span::call_site()),
-                &Ident::new("CancelResponse", Span::call_site()),
-                &Ident::new("cancel_service", Span::call_site()),
-                false,
-                cancel_role,
-            );
-            action_handle_methods.push(cancel_method);
+            action_handle_methods.push(build_handle_goal_next_request(
+                goal_request_data_struct.is_some(),
+                response_serialization,
+            ));
         }
 
-        if let Some(result) = action.result_service.as_ref() {
-            let label = format!("{base_name}_result");
-            let schema_struct_prefix = format!("{action_prefix}Result");
+        // Every action hands out a GoalContext with these base methods.
+        goal_context_methods.push(build_goal_context_base_methods());
 
-            let response_artifacts = map_message_format(
-                &format!("{label}_response"),
-                result.response_message_format.as_ref(),
-            )?;
-
-            context.add_metadata_struct(Ident::new("ResultRequest", Span::call_site()), None);
-
-            let _result_params = collect_function_params(
-                None,
-                response_artifacts.as_ref(),
-                "Result",
-                &mut context,
-                None,
-            )?;
-
-            let result_response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
-                let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
-                let schema_info = self.register_schema(
-                    &schema_key,
-                    &format!("{schema_struct_prefix}Response"),
-                    return_artifacts,
-                )?;
-                Some(ServiceResponseSpec {
-                    format: return_artifacts.message_format(),
-                    struct_ident: Ident::new("ResultResponse", Span::call_site()),
-                    builder_type: schema_info.builder_type_tokens(),
-                    include_service_instance_id: false,
-                })
-            } else {
-                None
-            };
-
-            let result_handler_fn = build_action_payload_handler(
-                &Ident::new("handle_result_payload", Span::call_site()),
-                &Ident::new("deserialize_result_request", Span::call_site()),
-                &Ident::new("ResultRequest", Span::call_site()),
-                None,
-                result_response_spec.as_ref(),
-                false,
-            )?;
-            helper_tokens.push(result_handler_fn);
-
-            let result_role = if has_feedback {
-                ActionHandleRole::Result
-            } else {
-                ActionHandleRole::Plain
-            };
-            let result_method = build_action_handle_method(
-                &Ident::new("handle_result_next_request", Span::call_site()),
-                &Ident::new("handle_result_payload", Span::call_site()),
-                &Ident::new("ResultRequest", Span::call_site()),
-                &Ident::new("ResultResponse", Span::call_site()),
-                &Ident::new("result_service", Span::call_site()),
-                false,
-                result_role,
-            );
-            action_handle_methods.push(result_method);
-        }
-
+        // Feedback → `GoalContext::publish_feedback`.
         if let Some(feedback) = action.feedback_topic.as_ref() {
-            let label = format!("emit_feedback {}", &action.name);
+            let label = format!("publish_feedback {}", &action.name);
             let struct_prefix = format!("{action_prefix}Feedback");
             let feedback_schema_name = format!("{base_name}_feedback");
             let format_artifacts =
@@ -969,24 +857,74 @@ impl LanguageGenerator for RustGenerator {
                 &params,
             )?;
 
-            let method_tokens = build_action_feedback_emit(&params, encoding.as_ref(), &label);
-            action_handle_methods.push(method_tokens);
+            goal_context_methods.push(build_goal_context_publish_feedback(
+                &params,
+                encoding.as_ref(),
+                &label,
+            ));
+        }
+
+        // Result → `GoalContext::complete` / `complete_cancelled`.
+        if let Some(result) = action.result_service.as_ref() {
+            let label = format!("{base_name}_result");
+            let schema_struct_prefix = format!("{action_prefix}Result");
+
+            let response_artifacts = map_message_format(
+                &format!("{label}_response"),
+                result.response_message_format.as_ref(),
+            )?;
+
+            // The result-response fields become `complete(fields…)` parameters.
+            let result_params = collect_function_params(
+                response_artifacts.as_ref(),
+                None,
+                &schema_struct_prefix,
+                &mut context,
+                None,
+            )?;
+            let encoding = self.prepare_message_encoding(
+                &scoped_schema_key(origin, &format!("{label}_response")),
+                &schema_struct_prefix,
+                response_artifacts.as_ref(),
+                &result_params,
+            )?;
+
+            goal_context_methods.push(build_goal_context_complete(
+                "complete",
+                &result_params,
+                encoding.as_ref(),
+                &label,
+            ));
+            goal_context_methods.push(build_goal_context_complete(
+                "complete_cancelled",
+                &result_params,
+                encoding.as_ref(),
+                &label,
+            ));
         }
 
         if action_handle_methods.is_empty() {
             return Ok(());
         }
 
-        let action_handle_struct = build_action_handle_struct(has_goal, has_feedback, has_result);
-        let expose_method = build_action_expose_method(has_goal, has_feedback, has_result, origin);
+        let action_handle_struct = build_action_handle_struct();
+        let goal_context_struct = build_goal_context_struct();
+        let expose_method = build_action_expose_method(has_feedback, origin);
 
         let mut items = vec![quote!(const ACTION_NAME: &str = #action_name_literal;)];
         items.extend(context.into_tokens());
+        items.extend(extra_items);
         items.push(action_handle_struct);
+        items.push(goal_context_struct);
         items.push(quote! {
             impl ActionHandle {
                 #expose_method
                 #( #action_handle_methods )*
+            }
+        });
+        items.push(quote! {
+            impl GoalContext {
+                #( #goal_context_methods )*
             }
         });
         items.extend(helper_tokens);
@@ -1485,7 +1423,9 @@ impl LanguageGenerator for RustGenerator {
         };
 
         let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
-        let goal_response_format = non_empty_message_format(messages.goal_response.as_ref());
+        // The goal acknowledgement is framework-owned ({accepted, error_message}).
+        let goal_response_fmt = goal_action_response_format();
+        let goal_response_format = Some(&goal_response_fmt);
         let feedback_format = non_empty_message_format(messages.feedback.as_ref());
         let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
