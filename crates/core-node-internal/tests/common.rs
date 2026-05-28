@@ -370,9 +370,9 @@ async fn send_node_run_and_wait_internal(
             Ok(Ok(msg)) => {
                 last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
-                if let Ok(feedback) = NodeRunFeedback::decode(payload.as_ref())
-                    && let Some(tx) = feedback_tx
-                {
+                let feedback = NodeRunFeedback::decode(payload.as_ref())
+                    .expect("failed to decode NodeRunFeedback");
+                if let Some(tx) = feedback_tx {
                     let _ = tx.send(feedback);
                 }
             }
@@ -381,9 +381,7 @@ async fn send_node_run_and_wait_internal(
         }
     }
 
-    let fetch_timeout = absolute_deadline
-        .saturating_duration_since(tokio::time::Instant::now())
-        .max(Duration::from_secs(1));
+    let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
     match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
         Ok(msg) => {
             let result = NodeRunResult::decode(&msg.payload())
@@ -516,9 +514,9 @@ async fn send_node_add_and_wait_internal<'a>(
             Ok(Ok(msg)) => {
                 last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
-                if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref())
-                    && let Some(tx) = feedback_tx
-                {
+                let feedback = NodeAddFeedback::decode(payload.as_ref())
+                    .expect("failed to decode NodeAddFeedback");
+                if let Some(tx) = feedback_tx {
                     let _ = tx.send(feedback);
                 }
             }
@@ -527,9 +525,7 @@ async fn send_node_add_and_wait_internal<'a>(
         }
     }
 
-    let fetch_timeout = absolute_deadline
-        .saturating_duration_since(tokio::time::Instant::now())
-        .max(Duration::from_secs(1));
+    let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
     match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
         Ok(msg) => NodeAddResult::decode(&msg.payload())
             .map_err(|err| format!("Failed to decode result: {}", err)),
@@ -601,9 +597,9 @@ pub async fn send_node_build_and_wait(
         match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
             Ok(Ok(msg)) => {
                 last_activity = tokio::time::Instant::now();
-                if let Some(tx) = feedback_tx
-                    && let Ok(feedback) = NodeBuildFeedback::decode(msg.payload().as_ref())
-                {
+                let feedback = NodeBuildFeedback::decode(msg.payload().as_ref())
+                    .expect("failed to decode NodeBuildFeedback");
+                if let Some(tx) = feedback_tx {
                     let _ = tx.send(feedback);
                 }
             }
@@ -612,9 +608,7 @@ pub async fn send_node_build_and_wait(
         }
     }
 
-    let fetch_timeout = absolute_deadline
-        .saturating_duration_since(tokio::time::Instant::now())
-        .max(Duration::from_secs(1));
+    let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
     match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
         Ok(msg) => NodeBuildResult::decode(&msg.payload())
             .map_err(|err| format!("Failed to decode build result: {}", err)),

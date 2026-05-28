@@ -160,10 +160,11 @@ impl FeedbackSync {
     /// Waits until all read lines have been published, or until `timeout` elapses.
     /// Returns `true` if all lines were flushed, `false` on timeout.
     async fn flush_with_timeout(&self, timeout: Duration) -> bool {
-        let target = self.read_count.load(Ordering::Relaxed);
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            if self.published_count.load(Ordering::Relaxed) >= target {
+            if self.published_count.load(Ordering::Relaxed)
+                >= self.read_count.load(Ordering::Relaxed)
+            {
                 return true;
             }
             let now = tokio::time::Instant::now();
@@ -174,7 +175,9 @@ impl FeedbackSync {
             let notified = self.notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if self.published_count.load(Ordering::Relaxed) >= target {
+            if self.published_count.load(Ordering::Relaxed)
+                >= self.read_count.load(Ordering::Relaxed)
+            {
                 return true;
             }
             match tokio::time::timeout(remaining, notified).await {
@@ -342,6 +345,29 @@ async fn handle_goal_request(
             return;
         }
     };
+
+    // Trust boundary: the runtime config travels in-band on the goal and is
+    // re-exported as `PEPPY_RUNTIME_CONFIG` into the child, so a mismatch
+    // would silently spawn a process under the wrong identity or bound to the
+    // wrong daemon. Reject before allocating a log file or accepting the goal.
+    if runtime_config.node_name.as_str() != goal.node_name
+        || runtime_config.node_tag.as_str() != goal.tag
+        || runtime_config.bound_core_node.as_str() != action_context.core_node_name
+    {
+        let error_msg = format!(
+            "runtime_config identity mismatch: goal requested `{}:{}` on core node `{}`, \
+             but runtime_config is `{}:{}` bound to `{}`",
+            goal.node_name,
+            goal.tag,
+            action_context.core_node_name,
+            runtime_config.node_name.as_str(),
+            runtime_config.node_tag.as_str(),
+            runtime_config.bound_core_node.as_str(),
+        );
+        gate.clear_running();
+        reject_goal(pending, encode_rejected_start_goal(error_msg)).await;
+        return;
+    }
 
     let instance_id_str = runtime_config.node_instance.instance_id.as_str();
 
