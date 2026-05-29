@@ -8,11 +8,11 @@ import asyncio
 
 import pytest
 
-from peppylib import MessengerHandle, ServiceMessenger, ZenohdInstance
+from peppylib import MessengerHandle, SenderTarget, ServiceMessenger, ZenohdInstance
 from peppylib.config import SHUTDOWN_SERVICE
 from peppylib.services import ShutdownService
 
-from common import TEST_INSTANCE_ID, TEST_NODE_NAME
+from common import TEST_INSTANCE_ID, TEST_NODE_NAME, TEST_NODE_TAG
 
 TEST_CORE_NODE_NAME = "test_core_node"
 CALLER_INSTANCE_ID = "caller_instance"
@@ -29,7 +29,7 @@ async def test_shutdown_node():
             messenger,
             TEST_CORE_NODE_NAME,
             TEST_INSTANCE_ID,
-            TEST_NODE_NAME,
+            SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
         )
 
         # Allow the service to fully establish its listeners
@@ -42,13 +42,12 @@ async def test_shutdown_node():
             messenger,
             TEST_CORE_NODE_NAME,
             CALLER_INSTANCE_ID,
-            TEST_NODE_NAME,
+            SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
             SHUTDOWN_SERVICE,
             TEST_CORE_NODE_NAME,
             TEST_INSTANCE_ID,
             request_payload,
-            2.0,
-        )
+            2.0,)
 
         # Verify the response echoes back the payload
         assert response.payload == request_payload

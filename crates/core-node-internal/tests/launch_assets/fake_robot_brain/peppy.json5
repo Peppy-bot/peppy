@@ -3,7 +3,7 @@
   manifest: {
     // This is a brain that can plug to any controller
     name: "fake_robot_brain",
-    tag: "0.1.0",
+    tag: "v1",
     labels: [
       "brain"
     ],
@@ -11,13 +11,13 @@
       nodes: [
         {
           name: "fake_uvc_camera",
-          tag: "0.1.0",
-          local_id: "fake_uvc_camera"
+          tag: "v1",
+          link_id: "front_camera"
         },
         {
           name: "fake_openarm01_controller",
-          tag: "0.1.0",
-          local_id: "fake_openarm01_controller"
+          tag: "v1",
+          link_id: "robot_controller"
         },
       ]
     },
@@ -28,7 +28,7 @@
       emits: [],
       consumes: [
         {
-          local_node_id: "fake_uvc_camera",
+          link_id: "front_camera",
           name: "video_stream",
         }
       ],
@@ -37,7 +37,7 @@
       exposes: [],
       consumes: [
         {
-          local_node_id: "fake_uvc_camera",
+          link_id: "front_camera",
           name: "video_stream_info",
         }
       ],
@@ -47,11 +47,11 @@
       exposes: [],
       consumes: [
         {
-          local_node_id: "fake_openarm01_controller",
+          link_id: "robot_controller",
           name: "move_right_arm",
         },
         {
-          local_node_id: "fake_openarm01_controller",
+          link_id: "robot_controller",
           name: "move_left_arm",
         }
       ],

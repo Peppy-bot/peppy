@@ -1,3 +1,4 @@
+use super::iface::PySenderTarget;
 use super::{PyMessengerHandle, to_py_err};
 use crate::config::PyQoSProfile;
 use peppylib::messaging::{Subscription, TopicMessenger};
@@ -11,7 +12,6 @@ use tokio::sync::Mutex;
 #[pyclass(name = "TopicMessage", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyTopicMessage {
-    pub(crate) key_expr: String,
     pub(crate) payload: Vec<u8>,
     pub(crate) instance_id: String,
     pub(crate) core_node: String,
@@ -19,11 +19,6 @@ pub struct PyTopicMessage {
 
 #[pymethods]
 impl PyTopicMessage {
-    #[getter]
-    fn key_expr(&self) -> &str {
-        &self.key_expr
-    }
-
     #[getter]
     fn payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.payload)
@@ -43,7 +38,6 @@ impl PyTopicMessage {
 impl From<Message> for PyTopicMessage {
     fn from(msg: Message) -> Self {
         Self {
-            key_expr: msg.key_expr().to_string(),
             payload: msg.payload().to_vec(),
             instance_id: msg.instance_id().to_string(),
             core_node: msg.core_node().to_string(),
@@ -78,31 +72,43 @@ pub struct PyTopicMessenger;
 
 #[pymethods]
 impl PyTopicMessenger {
-    /// Subscribe to a topic.
+    /// Subscribe to a topic. Pass `SenderTarget.node(name, tag)` or
+    /// `SenderTarget.interface(name, tag)` to match the publisher's target,
+    /// or `None` to match any publisher. `is_from_any` marks the slot as
+    /// `from_any: true` (gates the messenger's per-`(name, tag)`
+    /// reservation). `from_instance_id` pins a single producer instance;
+    /// `None` wildcards.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, to_topic, target_core_node, target_instance_id, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_core_node, from_instance_id, qos, is_from_any=false))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
-        to_node_name: String,
+        from_target: Option<PySenderTarget>,
         to_topic: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        from_core_node: Option<String>,
+        from_instance_id: Option<String>,
         qos: PyQoSProfile,
+        is_from_any: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
+        let from_target = from_target.map(|t| t.into_inner());
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let filter = match from_instance_id {
+                Some(id) => peppylib::messaging::ConsumerFilter::Pin(id),
+                None => peppylib::messaging::ConsumerFilter::Any,
+            };
             let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
-                &to_node_name,
+                from_target,
+                is_from_any,
                 &to_topic,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                from_core_node.as_deref(),
+                &filter,
                 qos.into(),
             )
             .await
@@ -116,7 +122,7 @@ impl PyTopicMessenger {
 
     /// Consume a topic from any node (external/unlinked topics).
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_topic, target_core_node, target_instance_id, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_topic, from_core_node, from_instance_id, qos))]
     #[allow(clippy::too_many_arguments)]
     fn consume_external<'py>(
         py: Python<'py>,
@@ -124,8 +130,8 @@ impl PyTopicMessenger {
         as_core_node: String,
         as_instance_id: String,
         to_topic: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        from_core_node: Option<String>,
+        from_instance_id: Option<String>,
         qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
@@ -135,8 +141,8 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &to_topic,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                from_core_node.as_deref(),
+                from_instance_id.as_deref(),
                 qos.into(),
             )
             .await
@@ -148,26 +154,29 @@ impl PyTopicMessenger {
         })
     }
 
-    /// Emit (publish) a message to a topic.
+    /// Emit (publish) a message to a topic. Pass `SenderTarget.node(name, tag)`
+    /// or `SenderTarget.interface(name, tag)`.
     #[staticmethod]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, payload))]
     #[allow(clippy::too_many_arguments)]
     fn emit<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
-        as_node_name: String,
+        as_target: PySenderTarget,
         as_topic_name: String,
         qos: PyQoSProfile,
         payload: Vec<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
+        let as_target = as_target.into_inner();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             TopicMessenger::emit(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
-                &as_node_name,
+                as_target,
                 &as_topic_name,
                 qos.into(),
                 Payload::from(payload),

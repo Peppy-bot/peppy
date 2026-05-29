@@ -2,10 +2,11 @@ use crate::Result;
 use crate::names;
 use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::{
-    process_refresh, read_or_create_repos, write_cache, write_launcher_cache,
+    process_refresh, read_or_create_repos, write_cache, write_interface_cache, write_launcher_cache,
 };
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -23,7 +24,7 @@ pub async fn listen_for_repo_remove(
         messenger,
         core_node_name,
         instance_id,
-        node_name,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::REPO_REMOVE,
     )
     .await?;
@@ -54,9 +55,10 @@ async fn handle_repo_remove_request(
         match tokio::task::spawn_blocking(move || {
             let _guard = crate::services::repo::refresh_lock().lock();
             match process_refresh(&dirs, &mut |_| {}) {
-                Ok((discovered, launchers, _excluded)) => {
-                    write_cache(&dirs, &discovered)?;
-                    write_launcher_cache(&dirs, &launchers)
+                Ok(refreshed) => {
+                    write_cache(&dirs, &refreshed.nodes)?;
+                    write_launcher_cache(&dirs, &refreshed.launchers)?;
+                    write_interface_cache(&dirs, &refreshed.interfaces)
                 }
                 Err(e) => Err(e),
             }

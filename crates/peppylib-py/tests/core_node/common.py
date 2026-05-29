@@ -14,18 +14,22 @@ import pytest
 from peppylib import (
     MessengerHandle,
     NodeRunner,
+    SenderTarget,
     ServiceMessenger,
     StandaloneConfig,
     ZenohdInstance,
 )
 
 CORE_NODE = "standalone-core"
+# Mirrors `core_node_api::names::CORE_NODE_TAG` — the core node always uses
+# this tag on the wire, so reachability probes and stub listeners must too.
+CORE_NODE_TAG = "core"
 CLIENT_INSTANCE = "test_caller"
 SERVER_INSTANCE = "test_server"
 
 _PEPPY_CONFIG = """{
     peppy_schema: "node_v1",
-    manifest: { name: "test_node", tag: "0.1.0" },
+    manifest: { name: "test_node", tag: "v1" },
     execution: { language: "rust", run_cmd: ["./target/debug/test_node"] },
 }"""
 
@@ -45,11 +49,10 @@ async def wait_until_reachable(messenger, service_name: str) -> None:
             messenger,
             CORE_NODE,
             CLIENT_INSTANCE,
-            CORE_NODE,
+            SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
             service_name,
             CORE_NODE,
-            None,
-        ):
+            None,):
             return
         if asyncio.get_event_loop().time() >= deadline:
             pytest.fail(f"{service_name} stub did not become reachable within 5s")
@@ -91,7 +94,7 @@ async def spawn_stub_listener(server_handle, service_name: str, response_bytes: 
         server_handle,
         CORE_NODE,
         SERVER_INSTANCE,
-        CORE_NODE,
+        SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
         service_name,
     )
     return asyncio.ensure_future(

@@ -16,7 +16,7 @@ pub struct ConsumedTopicCallbackSpec<'a> {
     pub encoding: &'a MessageEncodingSpec,
     pub topic: &'a ConsumedTopic,
     pub struct_prefix: &'a str,
-    pub dependency_node_name: &'a str,
+    pub dependency: &'a crate::generator::types::DependencyContext,
 }
 
 /// Specification for building an emit-style method (topic emit or action feedback emit).
@@ -111,10 +111,12 @@ pub fn build_topic_emit(
     encoding: Option<&MessageEncodingSpec>,
     topic: &EmittedTopic,
     label: &str,
+    origin: Option<&crate::generator::types::InterfaceOrigin>,
 ) -> TokenStream {
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
     let label_literal = Literal::string(label);
+    let target_expr = sender_target_expression(origin);
 
     build_emit_method(EmitMethodSpec {
         method_name: method_ident,
@@ -124,15 +126,15 @@ pub fn build_topic_emit(
         publish_body: quote! {
             let qos = #qos_tokens;
             let as_topic = #topic_literal;
-            let as_node_name = node_runner.processor().node_name();
             let as_instance_id = node_runner.processor().bound_instance_id();
             let with_core_node = node_runner.processor().bound_core_node();
+            let as_target = #target_expr;
 
             peppylib::TopicMessenger::emit(
                 node_runner.messenger(),
                 with_core_node,
                 as_instance_id,
-                as_node_name,
+                as_target,
                 as_topic,
                 qos,
                 payload,
@@ -142,6 +144,28 @@ pub fn build_topic_emit(
         error_context: quote!(String::from(#label_literal)),
         suppress_unused: vec![quote!(let _ = node_runner;)],
     })
+}
+
+/// Returns the `SenderTarget` constructor expression to splice into a
+/// generated emit call. When `origin` is `Some` (the topic is declared via
+/// `interfaces.conforms_to`), emit as `SenderTarget::interface(name, tag)`.
+/// Otherwise emit as `SenderTarget::node(node_name, node_tag)` using the
+/// runtime's own identity. Both forms are fallible because segment validation
+/// runs at construction.
+pub fn sender_target_expression(
+    origin: Option<&crate::generator::types::InterfaceOrigin>,
+) -> TokenStream {
+    match origin {
+        Some(o) => {
+            let name = Literal::string(&o.iface_name);
+            let tag = Literal::string(&o.iface_tag);
+            quote!(peppylib::messaging::SenderTarget::interface(#name, #tag)?)
+        }
+        None => quote!(peppylib::messaging::SenderTarget::node(
+            node_runner.processor().node_name(),
+            node_runner.processor().node_tag(),
+        )?),
+    }
 }
 
 pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<TokenStream> {
@@ -154,10 +178,10 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
         encoding,
         topic,
         struct_prefix,
-        dependency_node_name,
+        dependency,
     } = spec;
     let topic_literal = Literal::string(topic.name());
-    let node_name_literal = Literal::string(dependency_node_name);
+    let node_name_literal = Literal::string(&dependency.producer_name);
     let helper_fn_tokens = build_topic_deserialize_helper(
         helper_fn_ident,
         args_struct_ident,
@@ -167,11 +191,14 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
         struct_prefix,
     )?;
 
+    let from_target_expr = consumed_from_target_expression(dependency);
+    let consumer_filter_expr = consumed_consumer_filter_expression(dependency);
+    let is_from_any_lit = is_from_any_literal(dependency);
+
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
-            target_core_node: Option<&str>,
-            target_instance_id: Option<&str>,
+            from_core_node: Option<&str>,
         ) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let node_name = #node_name_literal;
@@ -182,10 +209,11 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
-                    node_name,
+                    #from_target_expr,
+                    #is_from_any_lit,
                     topic_name,
-                    target_core_node,
-                    target_instance_id,
+                    from_core_node,
+                    #consumer_filter_expr,
                     qos,
                 );
                 let mut subscription = subscription_future.await.map_err(|source| {
@@ -211,6 +239,101 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
 
         #helper_fn_tokens
     })
+}
+
+/// Returns the `Option<SenderTarget>` expression spliced into a generated
+/// `TopicMessenger::subscribe` call to pin the consumer on a specific producer.
+/// When the dependency emits via `conforms_to`, the consumer matches on
+/// `Interface(name, tag)`; otherwise on `Node(node_name, node_tag)`.
+pub fn consumed_from_target_expression(
+    dependency: &crate::generator::types::DependencyContext,
+) -> TokenStream {
+    let target = consumed_to_target_expression(dependency);
+    quote!(Some(#target))
+}
+
+/// Returns the `&ConsumerFilter` expression spliced into a generated
+/// [`peppylib::TopicMessenger::subscribe`] call at the consumer-filter slot.
+/// Calls `Processor::consumer_filter(<manifest link_id>)` when the
+/// dependency carries a `link_id` (pinned or `from_any: true`); falls
+/// back to a `&ConsumerFilter::Any` reference for synthetic test
+/// fixtures that don't model a manifest dep. The validator pre-resolves
+/// the consumer's launcher / CLI binding map into per-slot
+/// [`config::runtime::SlotBinding`] entries, and the runtime processor
+/// expands those into [`peppylib::messaging::ConsumerFilter`]s — see the
+/// resolver in `peppylib::messaging::filter`.
+pub fn consumed_consumer_filter_expression(
+    dependency: &crate::generator::types::DependencyContext,
+) -> TokenStream {
+    match dependency.wire_link_id() {
+        Some(link_id) => {
+            let literal = Literal::string(link_id);
+            quote!(node_runner.processor().consumer_filter(#literal))
+        }
+        None => quote!(&peppylib::messaging::ConsumerFilter::Any),
+    }
+}
+
+/// Returns the `Option<&str>` expression spliced into a generated
+/// [`peppylib::ServiceMessenger::poll`] /
+/// [`peppylib::ActionMessenger::send_goal`] call at the
+/// `target_instance_id` slot. When `dependency.wire_link_id()` is
+/// `Some(link_id)` — i.e., any real manifest dep, whether pinned or
+/// `from_any` — the emitted expression calls
+/// `consumer_filter(link_id).pinned_target()`, so a `from_any` slot
+/// bound to a single producer still resolves at runtime to that
+/// producer's `instance_id`; other variants (multi-pin, wildcards) give
+/// `None` and the call site falls back to wildcard discovery. Synthetic
+/// test fixtures with no manifest dep skip the lookup and emit
+/// `Option::<&str>::None` directly.
+pub fn consumed_pinned_target_expression(
+    dependency: &crate::generator::types::DependencyContext,
+) -> TokenStream {
+    match dependency.wire_link_id() {
+        Some(link_id) => {
+            let literal = Literal::string(link_id);
+            quote!(node_runner.processor().consumer_filter(#literal).pinned_target())
+        }
+        None => quote!(Option::<&str>::None),
+    }
+}
+
+/// `bool` literal for the `is_from_any` argument of
+/// [`peppylib::TopicMessenger::subscribe`]. `true` for `from_any: true`
+/// deps, `false` for pinned deps (and the test-fixture wildcard
+/// variant, which has no manifest dep and so should not reserve a
+/// `from_any` slot).
+pub fn is_from_any_literal(dependency: &crate::generator::types::DependencyContext) -> TokenStream {
+    let is_from_any = matches!(
+        dependency.link_id,
+        crate::generator::types::WireLinkId::Wildcard { link_id: Some(_) }
+    );
+    if is_from_any {
+        quote!(true)
+    } else {
+        quote!(false)
+    }
+}
+
+/// Returns the `SenderTarget` expression spliced into a generated
+/// `ServiceMessenger::poll` / `ActionMessenger::send_goal` call. Same producer
+/// matching rules as [`consumed_from_target_expression`] but without the
+/// `Option` wrapper since these APIs require a target.
+pub fn consumed_to_target_expression(
+    dependency: &crate::generator::types::DependencyContext,
+) -> TokenStream {
+    match &dependency.origin {
+        Some(origin) => {
+            let name = Literal::string(&origin.iface_name);
+            let tag = Literal::string(&origin.iface_tag);
+            quote!(peppylib::messaging::SenderTarget::interface(#name, #tag)?)
+        }
+        None => {
+            let node_name = Literal::string(&dependency.producer_name);
+            let node_tag = Literal::string(&dependency.producer_tag);
+            quote!(peppylib::messaging::SenderTarget::node(#node_name, #node_tag)?)
+        }
+    }
 }
 
 pub struct ExternalConsumedTopicCallbackSpec<'a> {
@@ -250,8 +373,8 @@ pub fn build_external_consumed_topic_callback(
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
-            target_core_node: Option<&str>,
-            target_instance_id: Option<&str>,
+            from_core_node: Option<&str>,
+            from_instance_id: Option<&str>,
         ) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let qos = peppylib::config::QoSProfile::Standard;
@@ -262,8 +385,8 @@ pub fn build_external_consumed_topic_callback(
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     topic_name,
-                    target_core_node,
-                    target_instance_id,
+                    from_core_node,
+                    from_instance_id,
                     qos,
                 );
                 let mut subscription = subscription_future.await.map_err(|source| {

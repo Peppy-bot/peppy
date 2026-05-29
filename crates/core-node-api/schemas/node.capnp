@@ -38,24 +38,17 @@ struct NodeAddGoal {
         http @3 :Text;
         # Reference a node by `name:tag` — the daemon looks it up in
         # `~/.peppy/cache/nodes.json5` and resolves transitive
-        # dependencies as an atomic batch. Carries the dep-variant
-        # overrides inline so they're unrepresentable on non-repo
-        # sources.
-        repoNode @9 :NodeAddRepoNodeSource;
+        # dependencies as an atomic batch.
+        repoNode @8 :NodeAddRepoNodeSource;
     }
     # Optional SHA256 checksum for HTTP sources
-    httpSha256 @7 :Text;
+    httpSha256 @6 :Text;
     # Environment variables to apply when executing build_cmd (e.g. PATH)
     envVars @4 :List(EnvVar);
     # Timeout in seconds for the add operation (used to report remaining time when busy)
     timeoutSecs @5 :UInt64;
-    # Optional variant source for the *root* node — when set, the main
-    # source points to the root node and this identifies which variant
-    # to resolve and build.
-    # Fs = variant name (lookup in manifest), Git/Http = direct source.
-    variant @6 :NodeAddVariantSource;
     # When true, cancel any in-progress add action and start a new one
-    force @8 :Bool;
+    force @7 :Bool;
 }
 
 struct NodeAddRepoNodeSource {
@@ -63,18 +56,6 @@ struct NodeAddRepoNodeSource {
     name @0 :Text;
     # Node tag as it appears in `nodes.json5`
     tag @1 :Text;
-    # Dep-level variant overrides applied when resolving transitive
-    # dependencies. Empty for "use defaults for every dep".
-    depVariantOverrides @2 :List(DepVariantOverride);
-}
-
-struct DepVariantOverride {
-    # Dep node name
-    name @0 :Text;
-    # Dep node tag
-    tag @1 :Text;
-    # Variant name to use when resolving this dep
-    variant @2 :Text;
 }
 
 struct EnvVar {
@@ -89,19 +70,6 @@ struct NodeAddGitSource {
     repoPath @1 :Text;
     # Optional git ref (tag/branch/commit) to checkout before reading repoPath
     repoRef @2 :Text;
-}
-
-struct NodeAddVariantSource {
-    source :union {
-        # Variant name (lookup in root manifest)
-        fs @0 :Text;
-        # Direct git source for the variant
-        git @1 :NodeAddGitSource;
-        # Direct HTTP URL for the variant
-        http @2 :Text;
-    }
-    # Optional SHA256 checksum for HTTP variant sources
-    httpSha256 @3 :Text;
 }
 
 struct NodeAddGoalResponse {
@@ -306,6 +274,12 @@ struct NodeInstanceInfo {
     instanceId @0 :Text;
     # Per-instance state: "starting" or "running"
     state @1 :Text;
+    # JSON-encoded `BTreeMap<String, SlotBinding>` mirroring
+    # `RuntimeConfig.node_instance.slot_bindings`. Empty string when the
+    # node has no `depends_on` slots. Surfacing this lets the launcher /
+    # CLI cross-check newly-staged binding plans against what running
+    # consumers have already claimed.
+    slotBindingsJson @2 :Text;
 }
 
 # Node info lookup result.
@@ -336,9 +310,6 @@ struct NodeInfoResponse {
             addLogPath @5 :Text;
             # Per-instance run log paths, aligned with `instances` (same order).
             runLogPaths @6 :List(Text);
-            # Variant label selected at `node add` time. Empty string when
-            # no variant applies (non-variant add paths).
-            variantName @7 :Text;
         }
     }
 }

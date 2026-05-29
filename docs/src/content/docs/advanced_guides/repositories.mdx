@@ -2,19 +2,19 @@
 title: Repositories
 description: Manage where peppy discovers nodes
 sidebar:
-  order: 7
+  order: 8
 ---
 
 Repositories tell peppy where to look for nodes and launchers. When you run `peppy repo refresh`, peppy walks every configured repository and indexes:
 
-- **Nodes**, identified by filename — every `peppy.json5` file is treated as a node config.
-- **Launchers**, identified by content — every `.json5` file whose body declares `peppy_schema: "launcher_v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
+- **Nodes**, identified by filename: every `peppy.json5` file is treated as a node config.
+- **Launchers**, identified by content: every `.json5` file whose body declares `peppy_schema: "launcher_v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
 
 Out of the box, three repositories are configured:
 
-- **`nodes_hub`** (`https://github.com/Peppy-bot/nodes_hub`, tracked on `main`) — a curated collection of ready-to-use nodes.
-- **`launchers_hub`** (`https://github.com/Peppy-bot/launchers_hub`, tracked on `main`) — community launch files that compose nodes from the hubs.
-- **`openarm01_nodes`** (`https://github.com/Peppy-bot/openarm01_nodes`, tracked on `main`) — nodes specific to the OpenArm01 robot.
+- **`nodes_hub`** (`https://github.com/Peppy-bot/nodes_hub`, tracked on `main`): a curated collection of ready-to-use nodes.
+- **`launchers_hub`** (`https://github.com/Peppy-bot/launchers_hub`, tracked on `main`): community launch files that compose nodes from the hubs.
+- **`openarm01_nodes`** (`https://github.com/Peppy-bot/openarm01_nodes`, tracked on `main`): nodes specific to the OpenArm01 robot.
 
 Add your own local directory with `peppy repo add /path/to/my/nodes` so peppy can discover nodes you create locally.
 
@@ -56,7 +56,7 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 peppy repo init
 ```
 
-Syncs `repositories.json5` with the bundled default template. If the file does not yet exist it is created verbatim; otherwise any missing default entries are appended without touching your existing entries. Use this after upgrading peppy to pick up new defaults (for example when `launchers_hub` was added) without having to restart the daemon. The command operates directly on the local config file — no daemon connection is required.
+Syncs `repositories.json5` with the bundled default template. If the file does not yet exist it is created verbatim; otherwise any missing default entries are appended without touching your existing entries. Use this after upgrading peppy to pick up new defaults (for example when `launchers_hub` was added) without having to restart the daemon. The command operates directly on the local config file; no daemon connection is required.
 
 ### List repositories
 
@@ -64,7 +64,7 @@ Syncs `repositories.json5` with the bundled default template. If the file does n
 peppy repo list
 ```
 
-Shows all discovered nodes grouped by the repository that provides them. Each group is headed by the repository's display label (path for `fs`, `url (ref: r)` for `git`) followed by the node count and source kind, then lists each node's name, tag, path, and available variants. Duplicate nodes (same `name:tag` provided by multiple repositories) are flagged so you can see which repository currently wins resolution.
+Shows all discovered nodes grouped by the repository that provides them. Each group is headed by the repository's display label (path for `fs`, `url (ref: r)` for `git`) followed by the node count and source kind, then lists each node's name, tag, and path. Duplicate nodes (same `name:tag` provided by multiple repositories) are flagged so you can see which repository currently wins resolution.
 
 ### Refresh the index
 
@@ -136,24 +136,23 @@ peppy repo exclude /home/user/projects/private-nodes
 
 ## Using a repository-indexed node
 
-Once a node appears in `peppy repo list`, you can add it by its `name:tag` without supplying a path or URL — peppy resolves the source through the cached index at `~/.peppy/cache/nodes.json5`:
+Once a node appears in `peppy repo list`, you can add it by its `name:tag` without supplying a path or URL; peppy resolves the source through the cached index at `~/.peppy/cache/nodes.json5`:
 
 ```sh
-peppy node add uvc_camera:0.1.0
+peppy node add uvc_camera:v1
 ```
 
-This is the shortest form of `peppy node add`. It works for any node provided by any repository listed in `repositories.json5`, including the default [nodes_hub](https://github.com/Peppy-bot/nodes_hub) community repository. When several repositories provide the same `name:tag`, the [resolution rule from `repo refresh`](#refresh-the-index) applies — the repository with the lower `id` wins.
+This is the shortest form of `peppy node add`. It works for any node provided by any repository listed in `repositories.json5`, including the default [nodes_hub](https://github.com/Peppy-bot/nodes_hub) community repository. When several repositories provide the same `name:tag`, the [resolution rule from `repo refresh`](#refresh-the-index) applies: the repository with the lower `id` wins.
 
-Two constraints apply to this source shape:
+One constraint applies to this source shape:
 
 - `--ref` is rejected. The git ref (if any) is pinned once in `repositories.json5` when you register the repo, not per-add.
-- Dependency-level variant overrides with [`--variant <dep_name>:<dep_tag>@<variant_name>`](/advanced_guides/variants/#overriding-a-dependencys-variant) are only valid when the source is a `name:tag` reference. With a local path or a direct git/http URL, use the per-node `--variant` at the source level instead.
 
 If the node you want to add lives in a repository that is **not** in `repositories.json5`, keep using the full git URL or HTTP archive form shown in [Sharing nodes](/guides/sharing_nodes/).
 
 ## Syncing against repositories
 
-`peppy node sync` regenerates a node's interface code (peppygen) from its `peppy.json5`. By default, every dependency the node declares must already be in the [node stack](/guides/node_stack/) — otherwise the sync fails with an "X does not exist in the stack" error.
+`peppy node sync` regenerates a node's interface code (peppygen) from its `peppy.json5`. By default, every dependency the node declares must already be in the [node stack](/guides/node_stack/), otherwise the sync fails with an "X does not exist in the stack" error.
 
 Pass `-r` (or `--include-repositories`) to let peppy fall back to the repository cache when a dependency is missing from the stack:
 
@@ -163,8 +162,8 @@ peppy node sync -r
 
 The lookup order is:
 
-1. **Node stack** — wins whenever the dependency is already in the stack. Stack-resolved deps are listed under `Synchronized from node stack:` in the command output.
-2. **Repository cache** (`~/.peppy/cache/nodes.json5`) — consulted only when the stack does not have the dependency. Repo-resolved deps are listed under `Synchronized from repositories:`, each tagged with its source kind (`fs`, `git`, or `http`).
+1. **Node stack**: wins whenever the dependency is already in the stack. Stack-resolved deps are listed under `Synchronized from node stack:` in the command output.
+2. **Repository cache** (`~/.peppy/cache/nodes.json5`): consulted only when the stack does not have the dependency. Repo-resolved deps are listed under `Synchronized from repositories:`, each tagged with its source kind (`fs`, `git`, or `http`).
 
 Repository-resolved git dependencies reuse the same persistent checkout cache as `peppy node add`, so the same repository is never cloned more than once during a single sync run.
 
@@ -174,16 +173,16 @@ Example output when both layers contribute:
 Syncing node from /workspace/my_robot_brain via daemon 'core-node-...'
 Synced node interfaces at /workspace/my_robot_brain
 Synchronized from node stack:
-  - already_added_dep:0.1.0
+  - already_added_dep:v1
 Synchronized from repositories:
-  - uvc_camera:0.1.0 (git)
-  - lidar_sensor:1.0.0 (fs)
+  - uvc_camera:v1 (git)
+  - lidar_sensor:v1 (fs)
 ```
 
 A dependency that is missing from **both** the node stack and every configured repository is a hard failure:
 
 ```text
-dep `gps_module:2.0.0` not found in node stack or repository cache; run `peppy repo refresh`
+dep `gps_module:v2` not found in node stack or repository cache; run `peppy repo refresh`
 ```
 
 ### Tip: register your local workspace as a repository

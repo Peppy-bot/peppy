@@ -1,6 +1,15 @@
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
+use peppylib::messaging::SenderTarget;
 use std::sync::Arc;
+
+pub const TEST_NODE_TAG: &str = "v1";
+
+/// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
+/// invalid names — tests use known-good values only.
+pub fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
+}
 
 pub fn setup() -> (
     tokio::runtime::Runtime,

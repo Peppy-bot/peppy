@@ -2,7 +2,7 @@ use crate::Result;
 use crate::names;
 use config::node::QoSProfile;
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
-use peppylib::messaging::{ServiceRequestContext, Subscription, TopicPublisher};
+use peppylib::messaging::{SenderTarget, ServiceRequestContext, Subscription, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger, TopicMessenger};
 use std::sync::Arc;
@@ -71,7 +71,7 @@ pub async fn listen_for_clock(
         messenger,
         core_node_node,
         instance_id,
-        node_name,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::CLOCK,
     )
     .await?;
@@ -159,7 +159,8 @@ pub async fn publish_clock(
         &messenger,
         core_node_name,
         instance_id,
-        node_name,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        None,
         names::CLOCK,
         QoSProfile::SensorData,
     )
@@ -222,10 +223,11 @@ pub async fn subscribe_external_clock(
         &messenger,
         core_node_name,
         instance_id,
-        node_name,
+        Some(SenderTarget::node(node_name, names::CORE_NODE_TAG)?),
+        false,
         names::CLOCK,
         Some(core_node_name),
-        None,
+        &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
     .await?;

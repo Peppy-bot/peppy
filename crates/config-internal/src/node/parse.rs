@@ -1,12 +1,58 @@
-use super::types::{Execution, NodeConfig, ParsedNodeConfig, RawNodeConfig, VariantConfig};
+use super::types::{Execution, Manifest, NodeConfig};
 use crate::{
-    consts::NODE_CONFIG_FILE,
     error::{ParsingError, Result},
     parsing::read_non_empty_file,
 };
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::Path;
 
-/// Validates execution constraints shared by both full node configs and variant configs.
+/// Validates `manifest.depends_on`:
+///
+/// - Rejects duplicate `link_id`s across the combined nodes/interfaces set.
+///   `link_id` is the shared identity for both: consumed topics/services/actions
+///   resolve their producer by `link_id` alone, so a collision either silently
+///   overwrites a resolution or binds to the wrong producer.
+/// - Rejects more than one entry with `from_any: true` for the same
+///   `(name, tag)` pair. `from_any` marks a dependency as a wildcard producer;
+///   two wildcards for the same `(name, tag)` would be ambiguous at resolution.
+fn validate_depends_on(manifest: &Manifest) -> Result<()> {
+    let Some(depends_on) = &manifest.depends_on else {
+        return Ok(());
+    };
+    let mut seen_link_ids: HashSet<&str> = HashSet::new();
+    let mut seen_from_any: HashSet<(&str, &str)> = HashSet::new();
+    let nodes = depends_on.nodes.iter().map(|n| {
+        (
+            n.link_id.as_str(),
+            n.name.as_str(),
+            n.tag.as_str(),
+            n.from_any,
+        )
+    });
+    let interfaces = depends_on.interfaces.iter().map(|i| {
+        (
+            i.link_id.as_str(),
+            i.name.as_str(),
+            i.tag.as_str(),
+            i.from_any,
+        )
+    });
+    for (link_id, name, tag, from_any) in nodes.chain(interfaces) {
+        if !seen_link_ids.insert(link_id) {
+            return Err(ParsingError::DuplicateLinkId(link_id.to_owned()).into());
+        }
+        if from_any && !seen_from_any.insert((name, tag)) {
+            return Err(ParsingError::ConflictingFromAny {
+                name: name.to_owned(),
+                tag: tag.to_owned(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Validates execution constraints.
 fn validate_execution(execution: &Execution) -> Result<()> {
     if let Some(cmds) = &execution.run_cmd
         && cmds.is_empty()
@@ -42,150 +88,28 @@ fn validate_execution(execution: &Execution) -> Result<()> {
 pub struct NodeConfigParser;
 
 impl NodeConfigParser {
-    pub fn from_path(file: impl AsRef<Path>) -> Result<ParsedNodeConfig> {
+    pub fn from_path(file: impl AsRef<Path>) -> Result<NodeConfig> {
         let path = file.as_ref();
         let content = read_non_empty_file(path)?;
         Self::from_content(&content)
     }
 
     /// Takes a JSON5 content as parameter
-    pub fn from_content(content: &str) -> Result<ParsedNodeConfig> {
+    pub fn from_content(content: &str) -> Result<NodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        let config: RawNodeConfig = crate::error::deserialize_json5_with_path(content)?;
-
-        let has_default = config.has_default_variant();
-        match (&config.execution, has_default) {
-            (Some(_), true) => return Err(ParsingError::ExecutionWithDefaultVariant.into()),
-            (None, true) => { /* execution comes from default variant */ }
-            (Some(raw_exec), false) => {
-                let execution = raw_exec.clone().into_execution()?;
-                validate_execution(&execution)?;
-            }
-            (None, false) => return Err(ParsingError::MissingExecution.into()),
-        }
-
-        Ok(ParsedNodeConfig(config))
-    }
-}
-
-/// Parser for variant node configs where `manifest` and `interfaces` are optional.
-pub struct VariantConfigParser;
-
-impl VariantConfigParser {
-    pub fn from_path(file: impl AsRef<Path>) -> Result<VariantConfig> {
-        let path = file.as_ref();
-        let content = read_non_empty_file(path)?;
-        Self::from_content(&content)
-    }
-
-    pub fn from_content(content: &str) -> Result<VariantConfig> {
-        let config: VariantConfig = crate::error::deserialize_json5_with_path(content)?;
+        let config: NodeConfig = crate::error::deserialize_json5_with_path(content)?;
         validate_execution(&config.execution)?;
+        validate_depends_on(&config.manifest)?;
         Ok(config)
     }
 }
 
-/// Walks up from `start_dir` looking for an ancestor directory containing a
-/// valid root `peppy.json5` whose manifest declares at least one variant.
+/// Loads a `peppy.json5` at `path` and returns a fully resolved [`NodeConfig`].
 ///
-/// Returns `Ok(Some(path))` when found, `Ok(None)` when the filesystem root is
-/// reached without finding a match, or `Err` when an ancestor config file
-/// contains invalid syntax (other than the benign "missing field `manifest`"
-/// that identifies another variant config).
-///
-/// Shared between:
-/// - the CLI (`peppy node add .` invoked from inside a variant subdirectory)
-/// - `peppylib` standalone mode (variant `peppy.json5` inherits `manifest`
-///   and `interfaces` from the parent root — see [`load_standalone_node_config`]).
-pub fn find_root_node_dir(start_dir: &Path) -> Result<Option<PathBuf>> {
-    let mut dir = match start_dir.parent() {
-        Some(d) => d,
-        None => return Ok(None),
-    };
-    loop {
-        let candidate = dir.join(NODE_CONFIG_FILE);
-        if candidate.is_file() {
-            match NodeConfigParser::from_path(&candidate) {
-                Ok(cfg) if cfg.has_variants() => return Ok(Some(dir.to_path_buf())),
-                Ok(_) => {} // Ancestor is a root but has no variants — keep walking.
-                Err(crate::error::Error::Parsing(ref e)) if e.is_missing_manifest() => {}
-                Err(other) => return Err(other),
-            }
-        }
-        dir = match dir.parent() {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-    }
-}
-
-/// Loads a `peppy.json5` at `path` and returns a fully resolved [`NodeConfig`],
-/// transparently handling the variant case.
-///
-/// - If the file contains a `manifest` section, it is parsed as a full root
-///   node config via [`NodeConfigParser`] and returned as-is.
-/// - If the file is missing `manifest` (i.e. it's a **variant** config), it is
-///   parsed via [`VariantConfigParser`] and the parent root config is located
-///   via [`find_root_node_dir`]. The root's manifest + interfaces are merged
-///   with the variant's execution via [`ParsedNodeConfig::merge_variant`].
-///
-/// This mirrors what the CLI does when resolving a variant source for
-/// `peppy node add`, but without git/http handling — standalone mode always
-/// operates on local files.
-///
-/// Used by `peppylib`'s standalone mode so that Rust and Python nodes can
-/// `cargo run` / `python -m` from inside a variant directory without the CLI
-/// having to pre-resolve the config.
+/// Used by `peppylib`'s standalone mode so Rust and Python nodes can
+/// `cargo run` / `python -m` directly from a node directory.
 pub fn load_standalone_node_config(path: impl AsRef<Path>) -> Result<NodeConfig> {
-    let path = path.as_ref();
-    let content = read_non_empty_file(path)?;
-
-    match NodeConfigParser::from_content(&content) {
-        Ok(parsed) => parsed.into_resolved(),
-        Err(crate::error::Error::Parsing(ref e)) if e.is_missing_manifest() => {
-            let variant = VariantConfigParser::from_content(&content)?;
-            merge_variant_with_parent(path, variant)
-        }
-        Err(other) => Err(other),
-    }
-}
-
-/// Locates the parent root config via [`find_root_node_dir`] and merges it
-/// with the caller-provided variant config.
-fn merge_variant_with_parent(
-    variant_config_path: &Path,
-    variant: VariantConfig,
-) -> Result<NodeConfig> {
-    // Canonicalize first so that `.parent()` reliably returns a non-empty
-    // directory even when the caller passed a bare file name like
-    // `peppy.json5` (standalone mode in peppylib does exactly this).
-    let canonical = std::fs::canonicalize(variant_config_path).map_err(|e| {
-        ParsingError::CannotRead(format!(
-            "failed to resolve variant config path '{}': {}",
-            variant_config_path.display(),
-            e
-        ))
-    })?;
-    let variant_dir = canonical.parent().ok_or_else(|| {
-        ParsingError::CannotParseConfig(format!(
-            "variant config path '{}' has no parent directory",
-            canonical.display()
-        ))
-    })?;
-
-    let root_dir = find_root_node_dir(variant_dir)?.ok_or_else(|| {
-        ParsingError::CannotParseConfig(format!(
-            "no root `{}` with a `manifest.variants` section was found in any parent directory of '{}'",
-            NODE_CONFIG_FILE,
-            variant_dir.display()
-        ))
-    })?;
-
-    let root_config = NodeConfigParser::from_path(root_dir.join(NODE_CONFIG_FILE))?;
-    root_config
-        .merge_variant(variant, &variant_dir.display().to_string())
-        .map(|merged| merged.config)
-        .map_err(|msg| ParsingError::CannotParseConfig(msg).into())
+    NodeConfigParser::from_path(path)
 }
 
 #[cfg(test)]
@@ -195,12 +119,9 @@ mod tests {
     use tempfile::NamedTempFile;
 
     /// Test helper: borrows the `ContainerConfig` from a parsed config.
-    fn container(config: &ParsedNodeConfig) -> &ContainerConfig {
+    fn container(config: &NodeConfig) -> &ContainerConfig {
         config
-            .0
             .execution
-            .as_ref()
-            .expect("expected execution")
             .container
             .as_ref()
             .expect("expected container")
@@ -212,7 +133,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "test_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -220,20 +141,13 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.0.manifest.name.as_str(), "test_node");
-        assert_eq!(config.0.manifest.tag, "0.1.0");
+        assert_eq!(config.manifest.name.as_str(), "test_node");
+        assert_eq!(config.manifest.tag, "v1");
         assert_eq!(
-            config
-                .0
-                .execution
-                .as_ref()
-                .unwrap()
-                .run_cmd
-                .as_ref()
-                .unwrap(),
+            config.execution.run_cmd.as_ref().unwrap(),
             &vec!["./target/release/test_node"]
         );
-        assert!(config.0.execution.as_ref().unwrap().parameters.is_empty());
+        assert!(config.execution.parameters.is_empty());
     }
 
     #[test]
@@ -242,7 +156,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "camera_driver",
-                tag: "2.1.0",
+                tag: "v21",
             },
             interfaces: {
                 topics: {
@@ -257,24 +171,17 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.0.manifest.name.as_str(), "camera_driver");
-        assert_eq!(config.0.manifest.tag, "2.1.0");
+        assert_eq!(config.manifest.name.as_str(), "camera_driver");
+        assert_eq!(config.manifest.tag, "v21");
         assert_eq!(
-            config.0.execution.as_ref().unwrap().language,
-            Some(crate::node::PeppygenLanguage::Rust)
+            config.execution.language,
+            crate::node::PeppygenLanguage::Rust
         );
         assert_eq!(
-            config
-                .0
-                .execution
-                .as_ref()
-                .unwrap()
-                .run_cmd
-                .as_ref()
-                .unwrap(),
+            config.execution.run_cmd.as_ref().unwrap(),
             &vec!["./target/release/camera_driver"]
         );
-        assert!(config.0.interfaces.topics.is_some());
+        assert!(config.interfaces.topics.is_some());
     }
 
     #[test]
@@ -296,7 +203,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            Error::Parsing(ParsingError::CannotRead(_))
+            Error::Parsing(ParsingError::CannotRead(_, _))
         ));
     }
 
@@ -317,7 +224,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -327,7 +234,7 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert!(config.0.execution.as_ref().unwrap().run_cmd.is_none());
+        assert!(config.execution.run_cmd.is_none());
         assert_eq!(container(&config).def_file, "apptainer.def");
     }
 
@@ -337,7 +244,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bad_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -360,7 +267,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bare_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -374,12 +281,328 @@ mod tests {
     }
 
     #[test]
+    fn test_duplicate_link_id_within_nodes_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_node",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "alpha", tag: "v1", link_id: "shared" },
+                        { name: "beta",  tag: "v1", link_id: "shared" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+            ),
+            "expected DuplicateLinkId(\"shared\"), got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_duplicate_link_id_across_nodes_and_interfaces_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_node",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "alpha", tag: "v1", link_id: "shared" },
+                    ],
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "shared" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+            ),
+            "expected DuplicateLinkId(\"shared\") across nodes+interfaces, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_unique_link_ids_parse_ok() {
+        // Same (name, tag) repeated under distinct link_ids must parse.
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "openarm01_backbone",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "torso_camera" },
+                    ],
+                },
+            },
+            interfaces: {
+                topics: {
+                    consumes: [
+                        { link_id: "wrist_left_camera",  name: "video_stream" },
+                        { link_id: "wrist_right_camera", name: "video_stream" },
+                        { link_id: "torso_camera",       name: "video_stream" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                build_cmd: ["cargo", "build", "--release"],
+                run_cmd: ["./target/release/backbone"],
+            },
+        }"#;
+        let config =
+            NodeConfigParser::from_content(json5).expect("distinct link_ids should parse cleanly");
+        let deps = config
+            .manifest
+            .depends_on
+            .expect("depends_on should be set");
+        assert_eq!(deps.nodes.len(), 3);
+    }
+
+    #[test]
+    fn test_from_any_defaults_to_false() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "default_node",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "alpha", tag: "v1", link_id: "a" },
+                    ],
+                    interfaces: [
+                        { name: "beta", tag: "v1", link_id: "b" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        let deps = config.manifest.depends_on.unwrap();
+        assert!(!deps.nodes[0].from_any);
+        assert!(!deps.interfaces[0].from_any);
+    }
+
+    #[test]
+    fn test_from_any_explicit_true_parses() {
+        // A single `from_any: true` node entry alongside three plain
+        // interface entries with the same (name, tag).
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "openarm01_backbone",
+                tag: "v1",
+                depends_on: {
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "torso_camera" },
+                    ],
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "extra_camera", from_any: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        let deps = config.manifest.depends_on.unwrap();
+        assert_eq!(deps.nodes.len(), 1);
+        assert!(deps.nodes[0].from_any);
+        assert_eq!(deps.interfaces.len(), 3);
+        assert!(deps.interfaces.iter().all(|i| !i.from_any));
+    }
+
+    #[test]
+    fn test_from_any_explicit_true_on_interface_with_node_duplicate() {
+        // The wildcard is on an interface entry; a plain node entry shares
+        // (name, tag).
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "openarm01_backbone",
+                tag: "v1",
+                depends_on: {
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
+                        { name: "depth_camera", tag: "v1", link_id: "torso_camera", from_any: true },
+                    ],
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "extra_camera" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        let deps = config.manifest.depends_on.unwrap();
+        assert!(!deps.nodes[0].from_any);
+        let from_any_count = deps.interfaces.iter().filter(|i| i.from_any).count();
+        assert_eq!(from_any_count, 1);
+    }
+
+    #[test]
+    fn test_conflicting_from_any_two_nodes_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_from_any_node",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
+                        { name: "depth_camera", tag: "v1", link_id: "b", from_any: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::ConflictingFromAny { name, tag })
+                    if name == "depth_camera" && tag == "v1"
+            ),
+            "expected ConflictingFromAny for (depth_camera, v1), got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_conflicting_from_any_two_interfaces_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_from_any_iface",
+                tag: "v1",
+                depends_on: {
+                    nodes: [],
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
+                        { name: "depth_camera", tag: "v1", link_id: "b", from_any: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::ConflictingFromAny { name, tag })
+                    if name == "depth_camera" && tag == "v1"
+            ),
+            "expected ConflictingFromAny for (depth_camera, v1), got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_conflicting_from_any_across_node_and_interface_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "dup_from_any_mixed",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
+                    ],
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "b", from_any: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::ConflictingFromAny { name, tag })
+                    if name == "depth_camera" && tag == "v1"
+            ),
+            "expected ConflictingFromAny across nodes+interfaces, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_from_any_true_allowed_for_distinct_name_tag_pairs() {
+        // Different (name, tag) pairs may each carry their own from_any=true.
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "distinct_from_any",
+                tag: "v1",
+                depends_on: {
+                    nodes: [
+                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
+                        { name: "imu_sensor",   tag: "v1", link_id: "b", from_any: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5)
+            .expect("distinct (name, tag) pairs each with from_any=true should parse");
+        let deps = config.manifest.depends_on.unwrap();
+        assert!(deps.nodes.iter().all(|n| n.from_any));
+    }
+
+    #[test]
     fn test_empty_run_cmd() {
         let json5 = r#"{
             peppy_schema: "node_v1",
             manifest: {
                 name: "empty_cmd_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -422,7 +645,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bad_mount_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -452,7 +675,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bad_mount_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -479,7 +702,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "good_mount_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -503,7 +726,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "no_mount_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -526,7 +749,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "camera_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -553,7 +776,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "camera_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -583,7 +806,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bad_ref_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -614,7 +837,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "bad_type_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -647,7 +870,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "dynamic_mount_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -674,7 +897,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -695,7 +918,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -729,7 +952,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "container_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -758,86 +981,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_config_with_default_variant_no_execution() {
-        let json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "uvc_camera",
-                tag: "0.1.0",
-                variants: [
-                    { name: "default", source: { local: "./variants/default" } },
-                    { name: "mujoco", source: { local: "./variants/mujoco" } },
-                ],
-            },
-            interfaces: {
-                topics: {
-                    emits: [{ name: "image" }],
-                },
-            },
-        }"#;
-        let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.0.manifest.name.as_str(), "uvc_camera");
-        assert!(config.0.execution.is_none());
-        assert!(config.has_default_variant());
-    }
-
-    #[test]
-    fn test_parse_config_with_default_variant_and_execution_rejected() {
-        let json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "uvc_camera",
-                tag: "0.1.0",
-                variants: [
-                    { name: "default", source: { local: "./variants/default" } },
-                ],
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["./target/release/uvc_camera"],
-            },
-        }"#;
-        let result = NodeConfigParser::from_content(json5);
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::ExecutionWithDefaultVariant)
-        ));
-    }
-
-    #[test]
-    fn test_parse_config_with_default_variant_and_execution_without_language_rejected() {
-        let json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "uvc_camera",
-                tag: "0.1.0",
-                variants: [
-                    { name: "default", source: { local: "./variants/linux" } },
-                ],
-            },
-            execution: {
-                container: {
-                    def_file: "apptainer.def",
-                },
-                parameters: {
-                    device_path: "string",
-                },
-            },
-        }"#;
-        let result = NodeConfigParser::from_content(json5);
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::ExecutionWithDefaultVariant)
-        ));
-    }
-
-    #[test]
     fn test_parse_config_execution_without_language_rejected() {
         let json5 = r#"{
             peppy_schema: "node_v1",
             manifest: {
                 name: "test_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 run_cmd: ["./bin"],
@@ -851,52 +1000,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_config_no_execution_no_default_variant_rejected() {
-        let json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "uvc_camera",
-                tag: "0.1.0",
-                variants: [
-                    { name: "mujoco", source: { local: "./variants/mujoco" } },
-                ],
-            },
-        }"#;
-        let result = NodeConfigParser::from_content(json5);
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::MissingExecution)
-        ));
-    }
-
-    #[test]
-    fn test_parse_config_no_execution_with_default_variant_accepted() {
-        let json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "uvc_camera",
-                tag: "0.1.0",
-                variants: [
-                    { name: "default", source: { local: "./variants/my_default_variant" } },
-                ],
-            },
-        }"#;
-        let result = NodeConfigParser::from_content(json5);
-        assert!(
-            result.is_ok(),
-            "expected parsing to succeed when a 'default' variant is present, but got: {:?}",
-            result.unwrap_err()
-        );
-    }
-
-    #[test]
     fn test_node_error_message_includes_field_path() {
         // run_cmd should be an array, not a map
         let json5 = r#"{
             peppy_schema: "node_v1",
             manifest: {
                 name: "test_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -914,78 +1024,17 @@ mod tests {
     }
 
     #[test]
-    fn test_variant_error_message_includes_field_path() {
-        // run_cmd should be an array, not a string
+    fn load_standalone_returns_resolved_config() {
+        let tmp = NamedTempFile::new().unwrap();
         let json5 = r#"{
             peppy_schema: "node_v1",
-            execution: {
-                language: "rust",
-                run_cmd: "not_an_array",
-            },
-        }"#;
-        let result = VariantConfigParser::from_content(json5);
-        let Error::Parsing(ParsingError::CannotParseConfig(msg)) = result.unwrap_err() else {
-            panic!("expected CannotParseConfig error");
-        };
-        assert!(
-            msg.contains("execution.run_cmd"),
-            "error should include field path, got: {msg}"
-        );
-    }
-
-    // -- load_standalone_node_config tests -----------------------------------
-
-    use tempfile::TempDir;
-
-    const ROOT_CONFIG_WITH_LOCAL_VARIANT: &str = r#"{
-        peppy_schema: "node_v1",
-        manifest: {
-            name: "uvc_camera",
-            tag: "0.1.0",
-            variants: [
-                { name: "mock", source: { local: "variants/mock" } },
-            ],
-        },
-        execution: {
-            language: "rust",
-            run_cmd: ["./target/debug/uvc_camera"],
-        },
-    }"#;
-
-    const VARIANT_CONFIG_NO_MANIFEST: &str = r#"{
-        peppy_schema: "node_v1",
-        execution: {
-            language: "rust",
-            run_cmd: ["./target/debug/mock"],
-        },
-    }"#;
-
-    /// Writes a `peppy.json5` root + a `variants/mock/peppy.json5` variant
-    /// into `temp` and returns the path to the variant file.
-    fn write_root_and_variant(temp: &TempDir, root: &str, variant: &str) -> std::path::PathBuf {
-        let root_path = temp.path().join(NODE_CONFIG_FILE);
-        std::fs::write(&root_path, root).expect("root config should be written");
-
-        let variant_dir = temp.path().join("variants").join("mock");
-        std::fs::create_dir_all(&variant_dir).expect("variant dir should be created");
-        let variant_path = variant_dir.join(NODE_CONFIG_FILE);
-        std::fs::write(&variant_path, variant).expect("variant config should be written");
-        variant_path
-    }
-
-    #[test]
-    fn load_standalone_root_config_passes_through() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join(NODE_CONFIG_FILE);
-        let root = r#"{
-            peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
+            manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
-        std::fs::write(&path, root).unwrap();
+        std::fs::write(tmp.path(), json5).unwrap();
 
         let node_config =
-            load_standalone_node_config(&path).expect("root config should load cleanly");
+            load_standalone_node_config(tmp.path()).expect("config should load cleanly");
         assert_eq!(node_config.manifest.name.as_str(), "my_node");
         assert_eq!(
             node_config.execution.run_cmd.as_deref(),
@@ -993,169 +1042,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn load_standalone_variant_no_manifest_no_interfaces() {
-        let temp = TempDir::new().unwrap();
-        let variant_path = write_root_and_variant(
-            &temp,
-            ROOT_CONFIG_WITH_LOCAL_VARIANT,
-            VARIANT_CONFIG_NO_MANIFEST,
-        );
-
-        let merged =
-            load_standalone_node_config(&variant_path).expect("variant should merge with parent");
-
-        // Manifest comes from the root.
-        assert_eq!(merged.manifest.name.as_str(), "uvc_camera");
-        assert_eq!(merged.manifest.tag, "0.1.0");
-        // Execution comes from the variant.
-        assert_eq!(
-            merged.execution.run_cmd.as_deref(),
-            Some(["./target/debug/mock".to_string()].as_slice())
-        );
-    }
-
-    #[test]
-    fn load_standalone_variant_missing_only_interfaces_is_fine() {
-        // Variant omits interfaces (which is what the user's uvc_camera
-        // variants do). Same as the primary case — just double-checks the
-        // absence of `interfaces` alone isn't a problem.
-        let temp = TempDir::new().unwrap();
-        let variant = r#"{
-            peppy_schema: "node_v1",
-            execution: { language: "rust", run_cmd: ["./mock"] },
-        }"#;
-        let variant_path = write_root_and_variant(&temp, ROOT_CONFIG_WITH_LOCAL_VARIANT, variant);
-
-        let merged = load_standalone_node_config(&variant_path)
-            .expect("variant without interfaces should merge");
-        assert_eq!(merged.manifest.name.as_str(), "uvc_camera");
-    }
-
-    #[test]
-    fn load_standalone_variant_parent_not_found() {
-        let temp = TempDir::new().unwrap();
-        // Put an orphan variant config without any ancestor peppy.json5.
-        let orphan_dir = temp.path().join("orphan");
-        std::fs::create_dir_all(&orphan_dir).unwrap();
-        let variant_path = orphan_dir.join(NODE_CONFIG_FILE);
-        std::fs::write(&variant_path, VARIANT_CONFIG_NO_MANIFEST).unwrap();
-
-        let err = load_standalone_node_config(&variant_path)
-            .expect_err("orphan variant should fail to resolve parent");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("no root") && msg.contains("manifest"),
-            "error should explain parent was not found, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn load_standalone_variant_parent_has_no_variants() {
-        // Parent peppy.json5 exists and is a valid root, but its manifest has
-        // no `variants` list — `find_root_node_dir` treats it as a non-root
-        // ancestor and keeps walking, eventually failing.
-        let temp = TempDir::new().unwrap();
-        let root_path = temp.path().join(NODE_CONFIG_FILE);
-        let root_without_variants = r#"{
-            peppy_schema: "node_v1",
-            manifest: { name: "solo_node", tag: "0.1.0" },
-            execution: { language: "rust", run_cmd: ["./solo"] },
-        }"#;
-        std::fs::write(&root_path, root_without_variants).unwrap();
-
-        let variant_dir = temp.path().join("variants").join("mock");
-        std::fs::create_dir_all(&variant_dir).unwrap();
-        let variant_path = variant_dir.join(NODE_CONFIG_FILE);
-        std::fs::write(&variant_path, VARIANT_CONFIG_NO_MANIFEST).unwrap();
-
-        let err = load_standalone_node_config(&variant_path)
-            .expect_err("parent without a variants list should fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("no root") && msg.contains("variants"),
-            "error should mention that no root with variants was found, got: {msg}"
-        );
-    }
-
-    /// Regression guard for the bare-filename bug that caused
-    /// `cargo run` from inside a variant directory to fail with
-    /// "no root with manifest.variants was found" even though the parent
-    /// existed. The CLI passes [`NODE_CONFIG_FILE`] (a bare filename with no
-    /// directory component) as the config path. `Path::parent()` on such a
-    /// path returns `Some("")` — an empty relative path — and walking up
-    /// from an empty path starts at `/` instead of the variant's real
-    /// location. The fix is `fs::canonicalize()` inside
-    /// [`merge_variant_with_parent`], which produces an absolute path whose
-    /// `.parent()` is the real directory.
-    ///
-    /// We can't exercise the cwd-dependent path directly in a unit test
-    /// without mutating `std::env::current_dir`, which would race against
-    /// other tests in this crate that read cwd implicitly (e.g. `capnpc`
-    /// invocations in `encoding` tests). The bug is instead covered
-    /// end-to-end by running the real `mock_rust` / `mock_python` variants —
-    /// this assertion is just a lightweight canary confirming that the
-    /// underlying platform behavior hasn't changed.
-    #[test]
-    fn bare_filename_has_empty_parent_sentinel() {
-        let bare = Path::new(NODE_CONFIG_FILE);
-        assert_eq!(
-            bare.parent(),
-            Some(Path::new("")),
-            "Path::parent() on a bare filename must still return an empty path — \
-             if this ever changes, merge_variant_with_parent can drop the \
-             canonicalize() call"
-        );
-    }
-
-    #[test]
-    fn load_standalone_variant_deep_nesting() {
-        // Root is 3 levels above the variant dir. Walk-up must still find it.
-        let temp = TempDir::new().unwrap();
-        let root_path = temp.path().join(NODE_CONFIG_FILE);
-        let root = r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "deep_node",
-                tag: "0.1.0",
-                variants: [
-                    { name: "mock", source: { local: "a/b/variants/mock" } },
-                ],
-            },
-            execution: { language: "rust", run_cmd: ["./deep"] },
-        }"#;
-        std::fs::write(&root_path, root).unwrap();
-
-        let variant_dir = temp
-            .path()
-            .join("a")
-            .join("b")
-            .join("variants")
-            .join("mock");
-        std::fs::create_dir_all(&variant_dir).unwrap();
-        let variant_path = variant_dir.join(NODE_CONFIG_FILE);
-        std::fs::write(&variant_path, VARIANT_CONFIG_NO_MANIFEST).unwrap();
-
-        let merged = load_standalone_node_config(&variant_path)
-            .expect("deeply nested variant should still resolve its root");
-        assert_eq!(merged.manifest.name.as_str(), "deep_node");
-    }
-
     /// Future-proofing test: when a new field is added to [`NodeConfig`], this
     /// exhaustive destructuring will fail to compile, forcing the author to
-    /// think about how the merge should treat it.  Catches the class of bug
-    /// where `manifest`/`interfaces` were required on `NodeConfig` but a
-    /// variant legitimately omitted them (the bug this file fixes).
+    /// think about how it should be handled.
     #[test]
-    fn load_standalone_variant_merged_covers_all_node_config_fields() {
-        let temp = TempDir::new().unwrap();
-        let variant_path = write_root_and_variant(
-            &temp,
-            ROOT_CONFIG_WITH_LOCAL_VARIANT,
-            VARIANT_CONFIG_NO_MANIFEST,
-        );
+    fn node_config_field_set_is_complete() {
+        let tmp = NamedTempFile::new().unwrap();
+        let json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: { name: "my_node", tag: "v1" },
+            execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
+        }"#;
+        std::fs::write(tmp.path(), json5).unwrap();
 
-        let merged = load_standalone_node_config(&variant_path).unwrap();
+        let merged = load_standalone_node_config(tmp.path()).unwrap();
 
         // Exhaustive destructuring — add-a-field will fail compilation here.
         let NodeConfig {
@@ -1165,17 +1065,13 @@ mod tests {
             execution,
         } = merged;
 
-        // peppy_schema comes from the variant (which matches the root).
-        assert_eq!(peppy_schema, crate::launcher::PeppySchema::NodeV1);
-        // manifest is inherited from the root.
-        assert_eq!(manifest.name.as_str(), "uvc_camera");
-        assert_eq!(manifest.tag, "0.1.0");
-        // interfaces inherited from the root (empty in this fixture).
+        assert_eq!(peppy_schema, crate::schema::PeppySchema::NodeV1);
+        assert_eq!(manifest.name.as_str(), "my_node");
+        assert_eq!(manifest.tag, "v1");
         assert_eq!(interfaces, crate::node::Interfaces::default());
-        // execution comes from the variant.
         assert_eq!(
             execution.run_cmd.as_deref(),
-            Some(["./target/debug/mock".to_string()].as_slice())
+            Some(["./target/debug/my_node".to_string()].as_slice())
         );
     }
 }

@@ -1,71 +1,87 @@
-use crate::{common::AnyType, error::ParsingError};
+use crate::{
+    common::AnyType,
+    consts::DEFAULT_LINK_ID_SENTINEL,
+    error::{ParsingError, StructuredError},
+    internal::interface::validate_named_items,
+    schema::PeppySchema,
+};
 use serde::{
     Deserialize, Serialize,
-    de::{self, Deserializer},
+    de::{self, Deserializer, MapAccess, Visitor},
 };
 use std::{
     collections::{BTreeMap, HashSet},
     convert::TryFrom,
-    fmt,
 };
 
 pub use crate::source::{
     DeploymentGitSource, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
-    DeploymentUrlSource, VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
+    DeploymentUrlSource,
 };
 
-/// Schema identifier embedded at the root of node and launcher `.json5`
-/// documents. The variant tells the daemon which document shape it is reading
-/// so the strict deserializer can reject mixed-up files (e.g. a launcher that
-/// claims to be a node config). Node files are always named `peppy.json5`;
-/// launcher files conventionally use `peppy_launcher.json5` for standalone
-/// projects but may use any `.json5` filename when discovered through a
-/// repository.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PeppySchema {
-    NodeV1,
-    LauncherV1,
+#[derive(Debug, Clone, Serialize)]
+pub struct PeppyLauncher {
+    pub peppy_schema: PeppySchema,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deployments: Vec<Deployment>,
 }
 
-impl fmt::Display for PeppySchema {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            PeppySchema::NodeV1 => "node_v1",
-            PeppySchema::LauncherV1 => "launcher_v1",
-        };
-        f.write_str(s)
-    }
-}
-
-impl PeppySchema {
-    /// Deserialize a `peppy_schema` field and reject any value other
-    /// than `expected`. Used as the core of the per-document-shape
-    /// `#[serde(deserialize_with = ...)]` guards.
-    pub(crate) fn deserialize_expecting<'de, D>(
-        deserializer: D,
-        expected: Self,
-    ) -> Result<Self, D::Error>
+/// Custom deserialization for [`PeppyLauncher`] that, after the default
+/// shape parse, cross-checks every `bindings` value against the
+/// set of `instance_id`s declared across all deployments. A binding that
+/// points at an unknown instance is rejected with a structured
+/// [`StructuredError::UnknownInstanceId`] so callers see a path-aware
+/// message instead of a generic serde error.
+impl<'de> Deserialize<'de> for PeppyLauncher {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let schema = Self::deserialize(deserializer)?;
-        if schema != expected {
-            return Err(de::Error::custom(format!(
-                "expected peppy_schema '{expected}', got '{schema}'"
-            )));
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawPeppyLauncher {
+            #[serde(deserialize_with = "deserialize_launcher_v1_schema")]
+            peppy_schema: PeppySchema,
+            #[serde(default)]
+            deployments: Vec<Deployment>,
         }
-        Ok(schema)
-    }
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PeppyLauncher {
-    #[serde(deserialize_with = "deserialize_launcher_v1_schema")]
-    pub peppy_schema: PeppySchema,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deployments: Vec<Deployment>,
+        let raw = RawPeppyLauncher::deserialize(deserializer)?;
+
+        let known_ids: HashSet<&str> = raw
+            .deployments
+            .iter()
+            .flat_map(|d| d.instances.iter())
+            .map(|i| i.instance_id.as_str())
+            .collect();
+
+        for deployment in &raw.deployments {
+            for instance in &deployment.instances {
+                for (binding, target) in &instance.bindings {
+                    if binding == DEFAULT_LINK_ID_SENTINEL {
+                        let err = StructuredError::BindingSentinelKey {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            binding: binding.clone(),
+                        };
+                        return Err(de::Error::custom(err.json5_message()));
+                    }
+                    if !known_ids.contains(target.as_str()) {
+                        let err = StructuredError::UnknownInstanceId {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            binding: binding.clone(),
+                            instance_id: target.clone(),
+                        };
+                        return Err(de::Error::custom(err.json5_message()));
+                    }
+                }
+            }
+        }
+
+        Ok(PeppyLauncher {
+            peppy_schema: raw.peppy_schema,
+            deployments: raw.deployments,
+        })
+    }
 }
 
 /// Reject any `peppy_schema` value other than `launcher_v1` so a node
@@ -96,6 +112,73 @@ pub struct DeploymentInstance {
     pub env_vars: BTreeMap<String, String>,
     #[serde(default)]
     pub framework: FrameworkOverrides,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_bindings",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub bindings: BTreeMap<String, String>,
+}
+
+/// Each key is a `link_id` literal declared by the deployed node's
+/// `depends_on.{nodes,interfaces}` and each value points at the producer
+/// `instance_id` defined elsewhere in the launcher. Keys and values are
+/// validated for non-emptiness and intra-collection duplicates via
+/// [`validate_named_items`]; the reserved producer-default sentinel
+/// ([`DEFAULT_LINK_ID_SENTINEL`]) is rejected as a key here so the
+/// launcher cannot redundantly "bind" to the default. The value's
+/// existence as an `instance_id` is checked later at the
+/// [`PeppyLauncher`] level once all deployments have been parsed; the
+/// key's existence in the deployed node's `depends_on` and the producer
+/// identity are checked at launch time, when both the launcher and the
+/// node manifests are loaded.
+fn deserialize_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // Capture entries as a Vec to preserve duplicate keys: a direct
+    // BTreeMap::deserialize would silently overwrite, hiding the
+    // duplicate from `validate_named_items`. The sentinel-key check
+    // lives in `PeppyLauncher::deserialize` where the owning
+    // `instance_id` is in scope and can be attached to the structured
+    // error.
+    let entries = deserializer.deserialize_map(BindingEntriesVisitor)?;
+    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), "binding")
+        .map_err(de::Error::custom)?;
+    // Duplicate binding values are intentionally permitted: a single
+    // producer may serve multiple `link_id` slots on the same consumer
+    // (or across consumers), which the launch-time wiring materializes
+    // as a producer with multiple `link_ids` advertised in parallel.
+    // Only non-emptiness is enforced here.
+    for (key, value) in &entries {
+        if value.trim().is_empty() {
+            return Err(de::Error::custom(format!(
+                "binding target for key `{key}` cannot be empty"
+            )));
+        }
+    }
+    Ok(entries.into_iter().collect())
+}
+
+struct BindingEntriesVisitor;
+
+impl<'de> Visitor<'de> for BindingEntriesVisitor {
+    type Value = Vec<(String, String)>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a map of binding link_id -> instance_id strings")
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries = Vec::with_capacity(access.size_hint().unwrap_or(0));
+        while let Some((key, value)) = access.next_entry::<String, String>()? {
+            entries.push((key, value));
+        }
+        Ok(entries)
+    }
 }
 
 /// Per-instance framework knobs. Distinct from `arguments`: those are
@@ -317,6 +400,139 @@ mod tests {
         assert_eq!(reparsed.framework.use_sim_time, Some(true));
     }
 
+    /// A binding's value pointing at an `instance_id` defined in a sibling
+    /// deployment must resolve; the bindings on the consumer instance
+    /// round-trip with the exact keys/values that were written.
+    #[test]
+    fn bindings_resolve_against_siblings() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {
+                    source: { local: "./left" },
+                    instances: [{ instance_id: "cam_wrist_left", arguments: {} }]
+                },
+                {
+                    source: { local: "./right" },
+                    instances: [{ instance_id: "cam_wrist_right", arguments: {} }]
+                },
+                {
+                    source: { local: "./torso" },
+                    instances: [{ instance_id: "cam_torso", arguments: {} }]
+                },
+                {
+                    source: { local: "./backbone" },
+                    instances: [{
+                        instance_id: "backbone",
+                        bindings: {
+                            wrist_left_camera: "cam_wrist_left",
+                            wrist_right_camera: "cam_wrist_right",
+                            torso_camera: "cam_torso",
+                        }
+                    }]
+                }
+            ]
+        }"#;
+        let launcher: PeppyLauncher = serde_json5::from_str(json5).expect("launcher should parse");
+        let backbone = &launcher.deployments[3].instances[0];
+        assert_eq!(backbone.instance_id, "backbone");
+        assert_eq!(backbone.bindings.len(), 3);
+        assert_eq!(
+            backbone.bindings.get("torso_camera").map(String::as_str),
+            Some("cam_torso")
+        );
+    }
+
+    #[test]
+    fn bindings_default_to_empty_when_omitted() {
+        let instance: DeploymentInstance =
+            serde_json5::from_str("{ instance_id: \"camera_front\" }").unwrap();
+        assert!(instance.bindings.is_empty());
+    }
+
+    /// A binding value that doesn't match any `instance_id` declared across
+    /// the launcher must surface as a structured `UnknownInstanceId` error,
+    /// not a generic serde message.
+    #[test]
+    fn bindings_reject_unknown_instance_id() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {
+                    source: { local: "./backbone" },
+                    instances: [{
+                        instance_id: "backbone",
+                        bindings: {
+                            torso_camera: "does_not_exist"
+                        }
+                    }]
+                }
+            ]
+        }"#;
+        let err = serde_json5::from_str::<PeppyLauncher>(json5)
+            .expect_err("unknown instance_id must be rejected");
+        let parsing_err = ParsingError::from(err);
+        let ParsingError::UnknownInstanceId {
+            owner_instance_id,
+            binding,
+            instance_id,
+        } = parsing_err
+        else {
+            panic!("expected UnknownInstanceId, got {parsing_err:?}");
+        };
+        assert_eq!(owner_instance_id, "backbone");
+        assert_eq!(binding, "torso_camera");
+        assert_eq!(instance_id, "does_not_exist");
+    }
+
+    #[test]
+    fn bindings_reject_empty_key() {
+        let json5 = r#"{
+            instance_id: "backbone",
+            bindings: { "": "cam_torso" }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("empty binding key must be rejected");
+        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn bindings_reject_empty_value() {
+        let json5 = r#"{
+            instance_id: "backbone",
+            bindings: { torso_camera: "" }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("empty binding value must be rejected");
+        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+    }
+
+    /// Two binding keys may point at the same producer `instance_id`:
+    /// that is the "one producer serves multiple `link_id` slots" case
+    /// the wiring step materializes as a producer with multiple
+    /// concurrent `link_ids` on the wire. Duplicates on the value side
+    /// are therefore intentionally permitted.
+    #[test]
+    fn bindings_accept_duplicate_values() {
+        let json5 = r#"{
+            instance_id: "backbone",
+            bindings: {
+                a: "cam_torso",
+                b: "cam_torso"
+            }
+        }"#;
+        let instance: DeploymentInstance =
+            serde_json5::from_str(json5).expect("duplicate binding targets should now be accepted");
+        assert_eq!(
+            instance.bindings.get("a").map(String::as_str),
+            Some("cam_torso")
+        );
+        assert_eq!(
+            instance.bindings.get("b").map(String::as_str),
+            Some("cam_torso")
+        );
+    }
+
     /// The launcher rejects unknown framework keys so a typo (e.g.
     /// `use_simulation_time`) does not silently fall through to wall mode.
     #[test]
@@ -326,5 +542,56 @@ mod tests {
         )
         .expect_err("unknown framework key should be rejected");
         assert!(err.to_string().contains("unknown_knob"));
+    }
+
+    /// The reserved producer-default segment cannot appear as a binding
+    /// key. Using it would be a redundant no-op (the producer already
+    /// publishes under that segment when no binding is declared) and
+    /// likely indicates a misuse. The check runs at the launcher level
+    /// (rather than per-instance) so the structured error can carry the
+    /// owning `instance_id`.
+    #[test]
+    fn bindings_reject_underscore_key() {
+        let json5 = r#"{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {
+                    source: { local: "./backbone" },
+                    instances: [{
+                        instance_id: "backbone",
+                        bindings: { "_": "backbone" }
+                    }]
+                }
+            ]
+        }"#;
+        let err = serde_json5::from_str::<PeppyLauncher>(json5)
+            .expect_err("`_` binding key must be rejected");
+        let parsing_err = ParsingError::from(err);
+        let ParsingError::BindingSentinelKey {
+            owner_instance_id,
+            binding,
+        } = &parsing_err
+        else {
+            panic!("expected BindingSentinelKey, got {parsing_err:?}");
+        };
+        assert_eq!(owner_instance_id, "backbone");
+        assert_eq!(binding, "_");
+    }
+
+    /// Duplicate binding keys must be rejected. The raw map deserializer
+    /// must surface them before the BTreeMap collapses duplicates.
+    #[test]
+    fn bindings_reject_duplicate_keys() {
+        let json5 = r#"{
+            instance_id: "backbone",
+            bindings: { "main": "prod_a", "main": "prod_b" }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("duplicate binding key must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate") && msg.contains("main"),
+            "unexpected error: {msg}"
+        );
     }
 }

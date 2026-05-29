@@ -19,7 +19,7 @@ async fn listen_for_ping_roundtrip_succeed() {
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
-        &started.core_node_name,
+        common::core_node_target(&started.core_node_name),
         names::PING,
         Some(&started.core_node_name),
         None,

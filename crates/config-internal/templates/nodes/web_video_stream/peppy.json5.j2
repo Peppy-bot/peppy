@@ -2,13 +2,13 @@
   peppy_schema: "node_v1",
   manifest: {
     name: "{{ node_name }}",
-    tag: "0.1.0",
+    tag: "v1",
     depends_on: {
       nodes: [
         {
           name: "{{ uvc_camera_node_name }}",
-          tag: "0.1.0",
-          local_id: "uvc_camera"
+          tag: "v1",
+          link_id: "uvc_camera"
         },
       ]
     },
@@ -17,7 +17,7 @@
     topics: {
       consumes: [
         {
-          local_node_id: "uvc_camera",
+          link_id: "uvc_camera",
           name: "video_stream"
         }
       ],

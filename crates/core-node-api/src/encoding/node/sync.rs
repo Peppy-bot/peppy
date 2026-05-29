@@ -195,16 +195,16 @@ mod tests {
     #[test]
     fn node_sync_response_roundtrip_carries_provenance() {
         let original = NodeSyncResponse::success_with_provenance(
-            vec!["foo:0.1.0".to_owned(), "bar:1.0.0".to_owned()],
+            vec!["foo:v1".to_owned(), "bar:v1".to_owned()],
             vec![
                 RepoResolvedEntry {
                     name: "baz".to_owned(),
-                    tag: "0.2.0".to_owned(),
+                    tag: "v2".to_owned(),
                     source_kind: RepoSourceKind::Git,
                 },
                 RepoResolvedEntry {
                     name: "qux".to_owned(),
-                    tag: "0.3.0".to_owned(),
+                    tag: "v3".to_owned(),
                     source_kind: RepoSourceKind::Fs,
                 },
             ],

@@ -4,7 +4,9 @@ use super::identifiers::sanitize_rust_identifier;
 use super::serialization::{
     MessageEncodingSpec, NameGenerator, build_serialize_payload, generate_field_assignment,
 };
+use super::topics::sender_target_expression;
 use crate::error::{Error, Result};
+use crate::generator::types::InterfaceOrigin;
 use config::encoding::FunctionParam;
 use config::node::MessageFormat;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -34,6 +36,10 @@ pub struct ExposedServiceMethodSpec<'a> {
     pub request_data_struct: Option<&'a Ident>,
     pub response_spec: Option<&'a ServiceResponseSpec<'a>>,
     pub use_service_name_const: bool,
+    /// `Some(o)` when the service is conformed via `interfaces.conforms_to`;
+    /// `None` for native services. Drives the `iface_name`/`iface_tag` segments
+    /// spliced into the generated `ServiceMessenger::listen` call.
+    pub origin: Option<&'a InterfaceOrigin>,
 }
 
 pub fn build_exposed_service_method(
@@ -55,7 +61,9 @@ pub fn build_exposed_service_method(
         request_data_struct,
         response_spec,
         use_service_name_const,
+        origin,
     } = *spec;
+    let target_expr = sender_target_expression(origin);
 
     let handler_fn_name = handler_fn_name_override.cloned().unwrap_or_else(|| {
         Ident::new(
@@ -341,7 +349,7 @@ pub fn build_exposed_service_method(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
-                    node_runner.processor().node_name(),
+                    #target_expr,
                     #service_name_ref,
                 )
                 .await?;
@@ -385,14 +393,13 @@ pub fn build_exposed_service_method(
                 F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
             {
                 #service_instance_env_stmt
-                let node_name = node_runner.node_name();
                 #service_name_binding
 
                 let mut service = peppylib::ServiceMessenger::listen(
                     node_runner.messenger(),
                     node_runner.core_node(),
                     service_instance_id.as_str(),
-                    node_name,
+                    #target_expr,
                     service_name,
                 )
                 .await?;

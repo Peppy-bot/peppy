@@ -18,6 +18,11 @@ use super::builder::StandaloneConfig;
 pub struct Processor {
     runtime_config: RuntimeConfig,
     validated_arguments: NodeArguments,
+    /// Pre-resolved per-`link_id` [`crate::messaging::ConsumerFilter`].
+    /// Computed once at startup from the daemon-supplied `slot_bindings`
+    /// plus the manifest's `depends_on`; cached so subscribe / poll /
+    /// send_goal call sites return a borrowed reference cheaply.
+    consumer_filters: BTreeMap<String, crate::messaging::ConsumerFilter>,
 }
 
 impl Processor {
@@ -52,9 +57,12 @@ impl Processor {
             &node_config.execution.parameters,
         )?;
 
+        let consumer_filters = build_consumer_filters(&runtime_config, &node_config);
+
         Ok(Self {
             runtime_config,
             validated_arguments,
+            consumer_filters,
         })
     }
 
@@ -71,9 +79,6 @@ impl Processor {
         peppy_config: impl AsRef<Path>,
         config: &StandaloneConfig,
     ) -> Result<Self> {
-        // Load the node config, transparently merging with the parent when
-        // `peppy_config` points at a variant subdirectory (variants omit the
-        // `manifest` section and inherit it from their parent).
         let node_config: NodeConfig = load_standalone_node_config(peppy_config.as_ref())?;
 
         let arguments: BTreeMap<String, AnyType> = match &config.parameters {
@@ -108,18 +113,18 @@ impl Processor {
         let runtime_config = RuntimeConfig::new(
             &messaging_host,
             messaging_port,
-            NodeInstanceConfig {
-                instance_id: instance_id_name,
-                arguments: BTreeMap::new(),
-                framework: Default::default(),
-            },
+            NodeInstanceConfig::new(instance_id_name),
             &node_name,
+            node_config.manifest.tag.as_str(),
             "standalone-core",
         )?;
+
+        let consumer_filters = build_consumer_filters(&runtime_config, &node_config);
 
         Ok(Self {
             runtime_config,
             validated_arguments,
+            consumer_filters,
         })
     }
 
@@ -163,6 +168,10 @@ impl Processor {
         self.runtime_config.node_name.as_str()
     }
 
+    pub fn node_tag(&self) -> &str {
+        self.runtime_config.node_tag.as_str()
+    }
+
     pub fn messaging_host(&self) -> &str {
         &self.runtime_config.messaging_host
     }
@@ -177,6 +186,65 @@ impl Processor {
     pub fn use_sim_time(&self) -> bool {
         self.runtime_config.node_instance.framework.use_sim_time
     }
+
+    /// Resolved [`crate::messaging::ConsumerFilter`] for the consumer
+    /// slot declared at `link_id`. The filter is computed once at
+    /// startup from the daemon-supplied `slot_bindings` plus the
+    /// manifest's `depends_on` (so the pinned-claims-from_any
+    /// precedence rule is applied a single time) and cached on the
+    /// processor for the lifetime of the node.
+    ///
+    /// Generated subscribe / poll / send_goal call sites splice
+    /// `node_runner.processor().consumer_filter(<link_id>)` at the
+    /// consumer-filter argument slot.
+    pub fn consumer_filter(&self, link_id: &str) -> &crate::messaging::ConsumerFilter {
+        const ANY: crate::messaging::ConsumerFilter = crate::messaging::ConsumerFilter::Any;
+        self.consumer_filters.get(link_id).unwrap_or(&ANY)
+    }
+
+    /// Convenience for service / action call sites: returns the single
+    /// producer `instance_id` this slot pins (`ConsumerFilter::Pin`)
+    /// as an owned `String`, or `None` for every other variant. The
+    /// owned form crosses the PyO3 boundary cleanly; native Rust call
+    /// sites can either use this or
+    /// [`Self::consumer_filter`]`.pinned_target()` (the latter borrows
+    /// from the cached filter).
+    pub fn pinned_target_for(&self, link_id: &str) -> Option<String> {
+        self.consumer_filter(link_id)
+            .pinned_target()
+            .map(str::to_owned)
+    }
+}
+
+/// Pre-resolve a [`ConsumerFilter`] for every `link_id` declared in
+/// the consumer manifest's `depends_on`. Called once during
+/// [`Processor::new_daemon`] / [`Processor::new_standalone`] so the
+/// per-link_id accessor is a borrow into a stable cache.
+fn build_consumer_filters(
+    runtime_config: &RuntimeConfig,
+    node_config: &NodeConfig,
+) -> BTreeMap<String, crate::messaging::ConsumerFilter> {
+    let depends_on = node_config.manifest.depends_on.as_ref();
+    let mut out = BTreeMap::new();
+    if let Some(deps) = depends_on {
+        for dep in &deps.nodes {
+            let filter = crate::messaging::resolve_consumer_filter(
+                dep.link_id.as_str(),
+                &runtime_config.node_instance.slot_bindings,
+                depends_on,
+            );
+            out.insert(dep.link_id.clone(), filter);
+        }
+        for dep in &deps.interfaces {
+            let filter = crate::messaging::resolve_consumer_filter(
+                dep.link_id.as_str(),
+                &runtime_config.node_instance.slot_bindings,
+                depends_on,
+            );
+            out.insert(dep.link_id.clone(), filter);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -205,7 +273,7 @@ mod tests {
             peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -245,6 +313,7 @@ mod tests {
                 }
             },
             node_name: "$NODE_NAME",
+            node_tag: "v1",
             bound_core_node: "$CORE_NODE"
         }"#;
 
@@ -305,8 +374,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "test_node", tag: "0.1.0" },
-
+            manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -324,6 +392,7 @@ mod tests {
                 arguments: { value: 42 }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#;
 
@@ -358,8 +427,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "test_node", tag: "0.1.0" },
-
+            manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -378,6 +446,7 @@ mod tests {
                 arguments: { value: 42, extra_param: "unexpected" }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#
         .to_string();
@@ -413,8 +482,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "test_node", tag: "0.1.0" },
-
+            manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -433,6 +501,7 @@ mod tests {
                 arguments: { value: "not_an_integer" }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#
         .to_string();
@@ -468,8 +537,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "test_node", tag: "0.1.0" },
-
+            manifest: { name: "test_node", tag: "v1" },
             execution: {
                 language: "rust",
                 parameters: {
@@ -498,6 +566,7 @@ mod tests {
                 arguments: { config: { enabled: "yes", threshold: 0.5 } }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#
         .to_string();
@@ -533,8 +602,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "test_node", tag: "0.1.0" },
-
+            manifest: { name: "test_node", tag: "v1" },
             execution: {
                 language: "rust",
                 parameters: {
@@ -562,6 +630,7 @@ mod tests {
                 arguments: { tags: ["valid", 123, "also_valid"] }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#
         .to_string();
@@ -598,8 +667,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "test_node", tag: "0.1.0" },
-
+            manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -614,6 +682,7 @@ mod tests {
                 arguments: { value: 42 }
             },
             node_name: "test_node",
+            node_tag: "v1",
             bound_core_node: "core-1234"
         }"#;
 
@@ -646,8 +715,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
-
+            manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -671,8 +739,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
-
+            manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -699,8 +766,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
-
+            manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -731,8 +797,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
-
+            manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -759,8 +824,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
-
+            manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -791,8 +855,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
-
+            manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool", name: "string" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -819,89 +882,6 @@ mod tests {
     }
 
     #[test]
-    fn standalone_loads_variant_config_with_parent() {
-        // The user's repro case: `cargo run` inside a variant subdirectory.
-        // The variant's peppy.json5 omits `manifest` and `interfaces`; the
-        // root sibling declares the variant via `variants[].source.local`.
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-
-        let root_path = temp_dir.path().join("peppy.json5");
-        std::fs::write(
-            &root_path,
-            r#"{
-                peppy_schema: "node_v1",
-                manifest: {
-                    name: "uvc_camera",
-                    tag: "0.1.0",
-                    variants: [
-                        { name: "mock", source: { local: "variants/mock" } },
-                    ],
-                },
-                execution: {
-                    language: "rust",
-                    run_cmd: ["./target/debug/uvc_camera"],
-                },
-            }"#,
-        )
-        .expect("root config should be written");
-
-        let variant_dir = temp_dir.path().join("variants").join("mock");
-        std::fs::create_dir_all(&variant_dir).expect("variant dir should be created");
-        let variant_config_path = variant_dir.join("peppy.json5");
-        std::fs::write(
-            &variant_config_path,
-            r#"{
-                peppy_schema: "node_v1",
-                execution: {
-                    language: "rust",
-                    parameters: { exposure: "f32" },
-                    run_cmd: ["./target/debug/mock"],
-                },
-            }"#,
-        )
-        .expect("variant config should be written");
-
-        let config =
-            StandaloneConfig::new().with_parameters_json(serde_json::json!({ "exposure": 0.5 }));
-        let processor = Processor::new_standalone(&variant_config_path, &config)
-            .expect("standalone variant should merge with parent root");
-
-        // Node name inherited from the root manifest.
-        assert_eq!(processor.node_name(), "uvc_camera");
-        // Variant's parameter schema reached validation.
-        let args_json = serde_json::to_value(processor.input_arguments()).unwrap();
-        assert_eq!(args_json.get("exposure"), Some(&serde_json::json!(0.5)));
-    }
-
-    #[test]
-    fn standalone_variant_missing_parent_gives_clear_error() {
-        // A variant-style peppy.json5 with no ancestor should fail with an
-        // error message that clearly points at the missing parent.
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let orphan_dir = temp_dir.path().join("orphan");
-        std::fs::create_dir_all(&orphan_dir).expect("orphan dir should be created");
-        let orphan_config = orphan_dir.join("peppy.json5");
-        std::fs::write(
-            &orphan_config,
-            r#"{
-                peppy_schema: "node_v1",
-                execution: { language: "rust", run_cmd: ["./orphan"] },
-            }"#,
-        )
-        .expect("orphan config should be written");
-
-        let config = StandaloneConfig::new();
-        let Err(err) = Processor::new_standalone(&orphan_config, &config) else {
-            panic!("orphan variant should fail");
-        };
-        let msg = err.to_string();
-        assert!(
-            msg.contains("no root") && msg.contains("manifest"),
-            "error should explain a parent peppy.json5 with a manifest was not found, got: {msg}"
-        );
-    }
-
-    #[test]
     fn standalone_mode_fills_defaults_for_omitted_parameters() {
         // Partial config: user omits `frame_rate`, runtime fills it from $default.
         let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -909,8 +889,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
-
+            manifest: { name: "my_node", tag: "v1" },
             execution: {
                 language: "rust",
                 parameters: {
@@ -942,8 +921,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
-
+            manifest: { name: "my_node", tag: "v1" },
             execution: {
                 language: "rust",
                 parameters: {
@@ -979,8 +957,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "my_node", tag: "0.1.0" },
-
+            manifest: { name: "my_node", tag: "v1" },
             execution: {
                 language: "rust",
                 parameters: {

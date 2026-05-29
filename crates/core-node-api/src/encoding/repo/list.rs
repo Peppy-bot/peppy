@@ -33,8 +33,6 @@ pub struct RepoListNodeEntry {
     pub source_type: RepoSourceKind,
     /// Absolute path (fs) or relative path within repo (git)
     pub path: String,
-    /// Variant names declared by this node (empty if none).
-    pub variants: Vec<String>,
     /// `true` when another repository with higher priority already provides
     /// this `(name, tag)` pair.
     pub duplicate: bool,
@@ -85,15 +83,9 @@ impl RepoListResponse {
                 entry.set_node_tag(&node.node_tag);
                 entry.set_source_type(node.source_type.as_str());
                 entry.set_path(&node.path);
-                entry.reborrow().set_duplicate(node.duplicate);
-                entry.reborrow().set_repo_id(node.repo_id);
-                entry.reborrow().set_repo_label(&node.repo_label);
-                let variant_count =
-                    capnp_list_len(node.variants.len(), "RepoListNodeEntry.variants")?;
-                let mut variants_builder = entry.init_variants(variant_count);
-                for (j, v) in node.variants.iter().enumerate() {
-                    variants_builder.set(j as u32, v);
-                }
+                entry.set_duplicate(node.duplicate);
+                entry.set_repo_id(node.repo_id);
+                entry.set_repo_label(&node.repo_label);
             }
         }
         encode_message(&builder)
@@ -106,11 +98,6 @@ impl RepoListResponse {
         let mut nodes = Vec::with_capacity(nodes_reader.len() as usize);
         for i in 0..nodes_reader.len() {
             let entry = nodes_reader.get(i);
-            let variants_reader = entry.get_variants()?;
-            let mut variants = Vec::with_capacity(variants_reader.len() as usize);
-            for j in 0..variants_reader.len() {
-                variants.push(variants_reader.get(j)?.to_str()?.to_owned());
-            }
             let source_type_str = entry.get_source_type()?.to_str()?;
             let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
                 crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
@@ -120,7 +107,6 @@ impl RepoListResponse {
                 node_tag: entry.get_node_tag()?.to_str()?.to_owned(),
                 source_type,
                 path: entry.get_path()?.to_str()?.to_owned(),
-                variants,
                 duplicate: entry.get_duplicate(),
                 repo_id: entry.get_repo_id(),
                 repo_label: entry.get_repo_label()?.to_str()?.to_owned(),

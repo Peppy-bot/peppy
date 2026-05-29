@@ -75,9 +75,6 @@ fn print_nodes(nodes: &[&RepoListNodeEntry]) {
 
     for node in nodes {
         let mut suffix = String::new();
-        if !node.variants.is_empty() {
-            suffix.push_str(&format!("  [variants: {}]", node.variants.join(", ")));
-        }
         if node.duplicate {
             if is_tty {
                 suffix.push_str("  \x1b[38;5;208m(duplicate)\x1b[0m");

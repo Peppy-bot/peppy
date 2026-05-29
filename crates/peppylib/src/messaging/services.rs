@@ -1,80 +1,101 @@
-use super::{
-    BROADCAST_MARKER, MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD,
-    encode_service_handler_error, format_instance_segment, is_service_probe_payload,
-};
+use super::discovery::discover_producer;
+use super::{MessengerHandle, PROBE_TIMEOUT, generate_short_id};
 use crate::error::{Error, Result};
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
 use pmi::{
-    Message as PmiMessage, Messenger, MessengerBackend, PublisherQoS, Subscription, TopicMessage,
+    Messenger, ResponseToken, SenderTarget, ServiceKind, ServiceQueryKind, ServiceQueryable,
+    ServiceWireReceiver, ServiceWireSender, TopicMessage,
 };
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::Arc, time::Instant};
 use tokio::{sync::Mutex, time::Duration};
-use tracing::error;
+use tracing::{error, warn};
 
-/// Runs a service handler and converts any error into a protocol-level error payload.
-async fn run_handler<F, Fut>(handler: F, context: ServiceRequestContext) -> Payload
+/// Outcome of running a user service handler — either a payload to surface
+/// to the caller as a normal response, or a UTF-8 reason that the
+/// framework wraps as `Error::ServiceError`. Splitting the outcome at this
+/// layer lets the producer reply with the right `ServiceReplyKind` on the
+/// attachment instead of smuggling a sentinel through the payload.
+enum HandlerOutcome {
+    Response(Payload),
+    HandlerError(String),
+}
+
+async fn run_handler<F, Fut>(handler: F, context: ServiceRequestContext) -> HandlerOutcome
 where
     F: FnOnce(ServiceRequestContext) -> Fut,
     Fut: std::future::Future<Output = Result<Payload>>,
 {
     match handler(context).await {
-        Ok(payload) => payload,
+        Ok(payload) => HandlerOutcome::Response(payload),
         Err(err) => {
             let reason = err.to_string();
             error!(%reason, "service handler returned error");
-            encode_service_handler_error(&reason)
+            HandlerOutcome::HandlerError(reason)
         }
+    }
+}
+
+async fn deliver_outcome(responder: ServiceResponder, outcome: HandlerOutcome) -> Result<()> {
+    match outcome {
+        HandlerOutcome::Response(payload) => responder.respond(payload).await,
+        HandlerOutcome::HandlerError(reason) => responder.respond_error(reason).await,
     }
 }
 
 pub struct ServiceMessenger;
 
+/// Server-side endpoint for a single service. Wraps the per-link-id queryable
+/// fan-in produced by [`pmi::MessengerBackend::listen_service`]: each inbound
+/// request carries its own [`ResponseToken`], so responding no longer needs
+/// the central messenger mutex.
+///
+/// `_messenger` is kept solely to anchor the underlying Zenoh session's
+/// lifetime — the queryable's inbound callback (and the flume sender feeding
+/// `queryable.rx`) lives in the session's queryable registry, so once every
+/// strong reference to the messenger drops the session disappears and the
+/// channel closes mid-flight.
 pub struct ServiceEndpoint {
-    messenger: Arc<Mutex<Messenger>>,
-    /// Subscriptions to service requests. Four patterns are needed to match:
-    /// - [0] Requests targeting this specific core node and instance
-    /// - [1] Requests targeting this specific core node with broadcast instance
-    /// - [2] Broadcast requests (any core node) targeting this specific instance
-    /// - [3] Full broadcast requests (any core node, any instance)
-    subscriptions: [Subscription; 4],
-    bound_core_node: String,
-    service_root: String,
-    instance_id: String,
+    queryable: ServiceQueryable,
+    _messenger: Arc<Mutex<Messenger>>,
 }
 
 impl ServiceEndpoint {
-    pub(crate) fn new(
-        messenger: Arc<Mutex<Messenger>>,
-        subscriptions: [Subscription; 4],
-        bound_core_node: String,
-        service_root: String,
-        instance_id: String,
-    ) -> Self {
+    pub(crate) fn new(messenger: Arc<Mutex<Messenger>>, queryable: ServiceQueryable) -> Self {
         Self {
-            messenger,
-            subscriptions,
-            bound_core_node,
-            service_root,
-            instance_id,
+            queryable,
+            _messenger: messenger,
         }
     }
 }
 
-/// Handle returned by [`ServiceEndpoint::recv_next_request`] that must be used to send the
-/// response back to the caller.
+/// Handle returned by [`ServiceEndpoint::recv_next_request`] that must be used
+/// to send the response back to the caller. Wraps the inbound query's
+/// [`ResponseToken`] — `respond` issues a single reply on it.
 pub struct ServiceResponder {
-    messenger: Arc<Mutex<Messenger>>,
-    response_topic: String,
+    token: ResponseToken,
 }
 
 impl ServiceResponder {
-    /// Send the response payload for this request.
+    /// Send the regular response payload for this request. The reply
+    /// carries `ServiceReplyKind::Response` on the attachment; the
+    /// payload bytes are opaque to the framework and round-trip
+    /// unchanged — including the legacy byte-prefix patterns that the
+    /// previous protocol used as sentinels.
     pub async fn respond(self, payload: Payload) -> Result<()> {
-        let message = PmiMessage::new(&self.response_topic, payload.into_inner());
-        let mut messenger = self.messenger.lock().await;
-        messenger
-            .publish(message, PublisherQoS::Standard)
+        self.token
+            .respond_response(payload.into_inner().into())
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
+
+    /// Send a handler-error reply. `reason` rides in the reply payload
+    /// as UTF-8 and the attachment is marked
+    /// `ServiceReplyKind::HandlerError`; the caller's `poll` surfaces
+    /// the reason as `Error::ServiceError { reason, .. }`.
+    pub async fn respond_error(self, reason: String) -> Result<()> {
+        self.token
+            .respond_handler_error(reason)
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
@@ -84,30 +105,44 @@ impl ServiceEndpoint {
     /// Waits for the next service request, auto-handles probes, sends ACK, and returns the
     /// request context together with a [`ServiceResponder`] that must be used to send the reply.
     ///
-    /// Returns `Ok(None)` when the subscription stream has closed.
+    /// Returns `Ok(None)` when the subscription stream has closed. ACK send
+    /// failures (e.g. the caller dropped its reply stream before we replied)
+    /// are logged and the request is silently dropped so a single misbehaving
+    /// client cannot tear down the listener.
     pub async fn recv_next_request(
         &mut self,
     ) -> Result<Option<(ServiceRequestContext, ServiceResponder)>> {
-        match self.next_request().await {
-            Ok((context, response_topic)) => {
-                self.publish_ack(&response_topic).await?;
-                Ok(Some((
-                    context,
-                    ServiceResponder {
-                        messenger: Arc::clone(&self.messenger),
-                        response_topic,
-                    },
-                )))
+        loop {
+            match self.next_request().await {
+                Ok((context, token)) => {
+                    // ACK reply before invoking the user handler. The caller's
+                    // poll loop uses this to distinguish ServiceUnreachable
+                    // (no ACK at all) from ServiceTimeout (ACK but no handler
+                    // response within the timeout). The ACK kind lives on
+                    // the reply attachment — the user payload is never
+                    // touched.
+                    if let Err(err) = token.respond_ack().await {
+                        warn!(
+                            %err,
+                            request_id = %context.request_id(),
+                            "failed to send service ACK; dropping request and continuing"
+                        );
+                        continue;
+                    }
+                    return Ok(Some((context, ServiceResponder { token })));
+                }
+                Err(Error::ServiceRequestStreamClosed) => return Ok(None),
+                Err(err) => return Err(err),
             }
-            Err(Error::ServiceRequestStreamClosed) => Ok(None),
-            Err(err) => Err(err),
         }
     }
 
     /// Handles a single incoming request using the provided callback.
     ///
-    /// Returns `Ok(true)` after successfully processing a request, or `Ok(false)` when the
-    /// subscription stream has closed.
+    /// Returns `Ok(true)` after attempting to process a request (even if
+    /// sending the response failed — that failure is logged and swallowed so
+    /// a single bad client cannot bubble out as a hard error), or `Ok(false)`
+    /// when the subscription stream has closed.
     pub async fn handle_next_request<F, Fut>(&mut self, handler: F) -> Result<bool>
     where
         F: FnOnce(ServiceRequestContext) -> Fut,
@@ -116,22 +151,36 @@ impl ServiceEndpoint {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(false);
         };
-        responder
-            .respond(run_handler(handler, context).await)
-            .await?;
+        let request_id = context.request_id().to_string();
+        let outcome = run_handler(handler, context).await;
+        if let Err(err) = deliver_outcome(responder, outcome).await {
+            warn!(
+                %err,
+                %request_id,
+                "failed to send service response; dropping request"
+            );
+        }
         Ok(true)
     }
 
-    /// Handles requests until the subscription stream ends.
+    /// Handles requests until the subscription stream ends. Response send
+    /// failures for individual requests are logged and skipped so the loop
+    /// keeps serving subsequent callers.
     pub async fn handle_requests<F, Fut>(&mut self, mut handler: F) -> Result<()>
     where
         F: FnMut(ServiceRequestContext) -> Fut,
         Fut: std::future::Future<Output = Result<Payload>>,
     {
         while let Some((context, responder)) = self.recv_next_request().await? {
-            responder
-                .respond(run_handler(&mut handler, context).await)
-                .await?;
+            let request_id = context.request_id().to_string();
+            let outcome = run_handler(&mut handler, context).await;
+            if let Err(err) = deliver_outcome(responder, outcome).await {
+                warn!(
+                    %err,
+                    %request_id,
+                    "failed to send service response; dropping request"
+                );
+            }
         }
         Ok(())
     }
@@ -149,207 +198,74 @@ impl ServiceEndpoint {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(None);
         };
-        let task =
-            spawn(async move { responder.respond(run_handler(handler, context).await).await });
+        let task = spawn(async move {
+            let outcome = run_handler(handler, context).await;
+            deliver_outcome(responder, outcome).await
+        });
         Ok(Some(task))
     }
 
-    async fn next_request(&mut self) -> Result<(ServiceRequestContext, String)> {
+    async fn next_request(&mut self) -> Result<(ServiceRequestContext, ResponseToken)> {
         loop {
-            // Destructure to get separate mutable references for tokio::select!
-            let [sub0, sub1, sub2, sub3] = &mut self.subscriptions;
-
-            // Use tokio::select! to receive from any of the 4 subscription patterns
-            let request = tokio::select! {
-                msg = sub0.rx.recv() => msg,
-                msg = sub1.rx.recv() => msg,
-                msg = sub2.rx.recv() => msg,
-                msg = sub3.rx.recv() => msg,
-            };
-
-            match request {
-                Some(request) => {
-                    match self.build_request_context(request) {
-                        Ok((context, response_topic)) => {
-                            // Auto-handle probes: respond immediately without invoking
-                            // the user handler, so is_reachable() checks are transparent.
-                            if is_service_probe_payload(context.message().payload().as_ref()) {
-                                let _ = self.publish_response(response_topic, Payload::new()).await;
-                                continue;
+            match self.queryable.rx.recv_async().await {
+                Ok(incoming) => {
+                    match incoming.kind {
+                        ServiceQueryKind::Probe => {
+                            // Auto-handle probes: reply with `Response` kind
+                            // and an empty payload, never invoking the user
+                            // handler. **Critical**: probes do NOT get an
+                            // ACK — the consumer's poll loop pins the
+                            // responder's identity off the first non-Ack
+                            // reply, so an Ack-kind probe reply would
+                            // deadlock the wildcard discover-then-pin flow.
+                            if let Err(err) = incoming
+                                .token
+                                .respond_response(bytes::Bytes::new().into())
+                                .await
+                            {
+                                warn!(%err, "failed to publish probe response");
                             }
-                            return Ok((context, response_topic));
-                        }
-                        Err(Error::InvalidServiceRequest { .. }) => {
-                            // Skip messages that do not match this service endpoint.
                             continue;
                         }
-                        Err(err) => return Err(err),
+                        ServiceQueryKind::UserRequest => {
+                            let topic_message = TopicMessage::from_parts(
+                                incoming.caller_core,
+                                incoming.caller_inst,
+                                incoming.payload,
+                            );
+
+                            let request_id = generate_short_id("request");
+                            let context = ServiceRequestContext::new(
+                                topic_message,
+                                request_id,
+                                incoming.link_id,
+                            );
+                            return Ok((context, incoming.token));
+                        }
                     }
                 }
-                None => return Err(Error::ServiceRequestStreamClosed),
+                Err(_) => return Err(Error::ServiceRequestStreamClosed),
             }
         }
-    }
-
-    fn build_request_context(
-        &self,
-        request: TopicMessage,
-    ) -> Result<(ServiceRequestContext, String)> {
-        // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
-        let identifier = request.key_expr().to_string();
-        let mut parts = identifier.split('/').filter(|segment| !segment.is_empty());
-
-        // Parse target_core_node (first segment)
-        let target_core_node_segment =
-            parts.next().ok_or_else(|| Error::InvalidServiceRequest {
-                identifier: identifier.clone(),
-                reason: "missing target core node segment in request".to_string(),
-            })?;
-
-        // Parse caller_core_node (second segment)
-        let caller_core_node_segment =
-            parts.next().ok_or_else(|| Error::InvalidServiceRequest {
-                identifier: identifier.clone(),
-                reason: "missing caller core node segment in request".to_string(),
-            })?;
-
-        // Parse target_instance (third segment)
-        let target_instance_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
-            identifier: identifier.clone(),
-            reason: "missing target instance segment in request".to_string(),
-        })?;
-
-        // Parse caller_instance (fourth segment)
-        let caller_instance_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
-            identifier: identifier.clone(),
-            reason: "missing caller instance segment in request".to_string(),
-        })?;
-        let response_target_instance_segment = format_instance_segment(self.instance_id.as_str())
-            .unwrap_or_else(|| BROADCAST_MARKER.to_string());
-
-        // Parse and validate service root segments
-        let expected_root_segments: Vec<_> = self
-            .service_root
-            .split('/')
-            .filter(|segment| !segment.is_empty())
-            .collect();
-
-        for expected_segment in expected_root_segments {
-            let Some(segment) = parts.next() else {
-                let reason = "request is missing expected service path segments".to_string();
-                error!(%identifier, %reason, "service received invalid request");
-                return Err(Error::InvalidServiceRequest {
-                    identifier: identifier.clone(),
-                    reason,
-                });
-            };
-
-            if segment != expected_segment {
-                let reason = format!(
-                    "request path does not match service root; expected segment `{expected_segment}`, got `{segment}`"
-                );
-                error!(%identifier, %reason, "service received invalid request");
-                return Err(Error::InvalidServiceRequest {
-                    identifier: identifier.clone(),
-                    reason,
-                });
-            }
-        }
-
-        // Parse request marker
-        let request_marker = parts.next().unwrap_or_default();
-        if request_marker != "request" {
-            let reason = "missing request marker segment".to_string();
-            error!(%identifier, %reason, "service received invalid request");
-            return Err(Error::InvalidServiceRequest {
-                identifier: identifier.clone(),
-                reason,
-            });
-        }
-
-        // Parse request_id
-        let request_id = match parts.next().filter(|segment| !segment.is_empty()) {
-            Some(id) => id.to_string(),
-            None => {
-                error!(%identifier, "service received request without request id segment");
-                return Err(Error::InvalidServiceRequest {
-                    identifier,
-                    reason: "missing request id segment".to_string(),
-                });
-            }
-        };
-
-        if parts.next().is_some() {
-            let reason = "request contains unexpected trailing segments".to_string();
-            error!(%identifier, %reason, "service received invalid request");
-            return Err(Error::InvalidServiceRequest { identifier, reason });
-        }
-
-        // Construct message_identifier preserving the original target values from the request
-        // This ensures all listeners receiving a broadcast see the same key_expr
-        let message_identifier = format!(
-            "{}/{}/{}/{}/{}/request/{request_id}",
-            target_core_node_segment,
-            caller_core_node_segment,
-            target_instance_segment,
-            caller_instance_segment,
-            self.service_root
-        );
-
-        // Response topic format: caller_core_node/responder_core_node/caller_instance/responder_instance/service_root/response/request_id
-        // This ensures core_node() returns responder's core node (position 1) and instance_id() returns responder's instance (position 3)
-        let response_topic = format!(
-            "{}/{}/{}/{}/{}/response/{request_id}",
-            caller_core_node_segment,
-            self.bound_core_node,
-            caller_instance_segment,
-            response_target_instance_segment,
-            self.service_root
-        );
-
-        let message = TopicMessage::new(&message_identifier, request.into_payload())?;
-        let context = ServiceRequestContext::new(message, request_id);
-
-        Ok((context, response_topic))
-    }
-
-    async fn publish_ack(&self, response_topic: &str) -> Result<()> {
-        Self::publish_response_with_messenger(
-            Arc::clone(&self.messenger),
-            response_topic.to_string(),
-            Payload::from_static(SERVICE_ACK_PAYLOAD),
-        )
-        .await
-    }
-
-    async fn publish_response(&self, topic: String, payload: Payload) -> Result<()> {
-        Self::publish_response_with_messenger(Arc::clone(&self.messenger), topic, payload).await
-    }
-
-    async fn publish_response_with_messenger(
-        messenger: Arc<Mutex<Messenger>>,
-        topic: String,
-        payload: Payload,
-    ) -> Result<()> {
-        let response = PmiMessage::new(&topic, payload.into_inner());
-        let mut messenger = messenger.lock().await;
-        messenger
-            .publish(response, PublisherQoS::Standard)
-            .await
-            .map_err(Error::PeppyMessagingInterface)
     }
 }
 
 pub struct ServiceRequestContext {
     message: Message,
     request_id: String,
+    /// Producer-side link_id that received this request — whichever bound
+    /// link_id's queryable yielded the inbound query. Surfaced so action
+    /// goal handlers can scope per-goal feedback under the link_id the
+    /// consumer actually targeted.
+    link_id: String,
 }
 
 impl ServiceRequestContext {
-    pub fn new(message: TopicMessage, request_id: String) -> Self {
+    pub fn new(message: TopicMessage, request_id: String, link_id: String) -> Self {
         Self {
             message: Message(message),
             request_id,
+            link_id,
         }
     }
 
@@ -360,85 +276,177 @@ impl ServiceRequestContext {
     pub fn request_id(&self) -> &str {
         &self.request_id
     }
+
+    pub fn link_id(&self) -> &str {
+        &self.link_id
+    }
 }
 
 impl fmt::Debug for ServiceRequestContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ServiceRequestContext")
-            .field("message_key", &self.message.key_expr())
+            .field("core_node", &self.message.core_node())
             .field("instance_id", &self.message.instance_id())
             .field("request_id", &self.request_id)
+            .field("link_id", &self.link_id)
             .finish()
     }
 }
 
 impl ServiceMessenger {
-    /// Listening as a service is a 2 way stream, so the process that exposes the service needs to provide its instance_id
+    /// Listen as a service. The producer declares one queryable under the
+    /// reserved default `_` link_id segment; consumers pin a specific
+    /// producer by `target_instance_id` derived from the consumer's
+    /// binding map.
+    ///
+    /// `as_identity` must match the [`SenderTarget`] callers will use in
+    /// [`Self::poll`].
     pub async fn listen(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
-        as_node_name: &str,
+        as_identity: SenderTarget,
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
-        messenger
-            .expose_service(as_core_node, as_instance_id, as_node_name, as_service_name)
-            .await
+        let recv = ServiceWireReceiver::new(
+            as_core_node,
+            as_instance_id,
+            as_identity,
+            as_service_name,
+            ServiceKind::Service,
+        )?;
+        messenger.expose_service(&recv).await
     }
 
-    /// If `target_instance_id` is `None`, this call returns with the first service instance that it hits
+    /// Poll a service. The link_id wire slot is always emitted as `*`;
+    /// producers advertise under the reserved `_` segment and Zenoh's
+    /// matcher unifies the two.
+    ///
+    /// When either `target_core_node` or `target_instance_id` is `None`
+    /// (wildcard / from_any), this performs a discover-then-pin sequence:
+    /// a lightweight probe is sent to identify a single responding
+    /// producer's `(core_node, instance_id)`, then the real request is
+    /// delivered pinned to that producer. The probe is filtered
+    /// server-side before the user handler runs, so non-winning producers
+    /// never see the request. This costs one extra round-trip; fully
+    /// pinned callers (both `target_*` `Some`) skip discovery and pay no
+    /// overhead.
+    ///
+    /// `to_target` must match the [`SenderTarget`] the responder used in
+    /// [`Self::listen`].
     #[allow(clippy::too_many_arguments)]
     pub async fn poll(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
-        target_node_name: &str,
-        target_service_name: &str,
+        to_target: SenderTarget,
+        to_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
+        let response_timeout: Option<Duration> = response_timeout.into();
+
+        let started_at = Instant::now();
+        let (resolved_core, resolved_inst) =
+            if target_instance_id.is_none() || target_core_node.is_none() {
+                let probe_sender = ServiceWireSender::new(
+                    bound_core_node,
+                    as_instance_id,
+                    target_core_node,
+                    target_instance_id,
+                    to_target.clone(),
+                    to_service_name,
+                    ServiceKind::Service,
+                )?;
+                // Discovery is capped at PROBE_TIMEOUT or the caller's response
+                // budget, whichever is shorter; this preserves the user contract
+                // that a tight `response_timeout` fails fast against unreachable
+                // targets.
+                let discovery_timeout = response_timeout
+                    .map(|t| t.min(PROBE_TIMEOUT))
+                    .unwrap_or(PROBE_TIMEOUT);
+                let (core, inst) =
+                    discover_producer(messenger, &probe_sender, discovery_timeout).await?;
+                (Some(core), Some(inst))
+            } else {
+                (
+                    target_core_node.map(str::to_string),
+                    target_instance_id.map(str::to_string),
+                )
+            };
+
+        // Discovery counts against the caller's single end-to-end budget;
+        // pass only the remaining slice to `poll_service` so a tight
+        // `response_timeout` can't be silently doubled by a slow probe.
+        let elapsed = started_at.elapsed();
+        let remaining_budget = match response_timeout {
+            Some(total) => {
+                let remaining = total.saturating_sub(elapsed);
+                if remaining.is_zero() {
+                    return Err(Error::ServiceTimeout {
+                        instance_id: resolved_inst.clone(),
+                        service_name: to_service_name.to_string(),
+                    });
+                }
+                Some(remaining)
+            }
+            None => None,
+        };
+
+        let sender = ServiceWireSender::new(
+            bound_core_node,
+            as_instance_id,
+            resolved_core.as_deref(),
+            resolved_inst.as_deref(),
+            to_target,
+            to_service_name,
+            ServiceKind::Service,
+        )?;
         messenger
             .poll_service(
-                "service",
-                bound_core_node,
-                as_instance_id,
-                target_node_name,
-                target_service_name,
-                target_core_node,
-                target_instance_id,
+                &sender,
                 request_payload,
-                response_timeout,
+                ServiceQueryKind::UserRequest,
+                remaining_budget,
             )
             .await
     }
 
-    /// Sends a lightweight probe to check whether a service is listening.
+    /// Sends a lightweight probe to check whether a service is listening at
+    /// the targeted producer. The probe is handled transparently by the
+    /// service's request loop; the user handler is never invoked. Returns
+    /// `true` if the service responds within [`PROBE_TIMEOUT`], `false` if
+    /// unreachable.
     ///
-    /// The probe is handled transparently by the service's request loop — the user
-    /// handler is never invoked. Returns `true` if the service responds within
-    /// [`PROBE_TIMEOUT`], `false` if unreachable.
-    #[allow(clippy::too_many_arguments)]
+    /// Bypasses `Self::poll`'s discover-then-pin sequence because a probe
+    /// IS the discovery step; routing through `poll` would issue two probes
+    /// back to back. Calls the raw messenger path directly with the same
+    /// wire-sender shape `poll` builds.
     pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
-        target_node_name: &str,
-        target_service_name: &str,
+        to_target: SenderTarget,
+        to_service_name: &str,
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
     ) -> Result<bool> {
+        let sender = ServiceWireSender::new(
+            bound_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
+            to_target,
+            to_service_name,
+            ServiceKind::Service,
+        )?;
         match messenger
             .poll_service(
-                "service",
-                bound_core_node,
-                as_instance_id,
-                target_node_name,
-                target_service_name,
-                target_core_node,
-                target_instance_id,
-                Payload::from_static(SERVICE_PROBE_PAYLOAD),
+                &sender,
+                Payload::new(),
+                ServiceQueryKind::Probe,
                 PROBE_TIMEOUT,
             )
             .await

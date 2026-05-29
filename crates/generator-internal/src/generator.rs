@@ -1,5 +1,6 @@
 pub mod common;
 pub(crate) mod naming;
+pub(crate) mod scaffold_tree;
 #[cfg(test)]
 #[macro_use]
 mod test_helpers;
@@ -8,6 +9,7 @@ pub mod rust;
 pub mod types;
 
 use crate::error::{Error, Result};
+use config::node::{EmittedTopic, ExposedAction, ExposedService};
 use config::{
     consts::{NODE_CONFIG_FILE, PeppyDirs},
     node::{NodeConfigParser, PeppygenLanguage},
@@ -62,9 +64,7 @@ pub fn generate_peppygen_lib(
         return Err(Error::NodeNotFound(node_config_path.display().to_string()));
     }
 
-    let node_config = NodeConfigParser::from_path(&node_config_path)
-        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?
-        .into_resolved()?;
+    let node_config = NodeConfigParser::from_path(&node_config_path)?;
 
     let mut interfaces = collect_exposed_interfaces(&node_config, consumed_interfaces.len());
     // Add the consumed interfaces with resolved message formats
@@ -127,7 +127,10 @@ fn collect_exposed_interfaces(
             .topics
             .as_ref()
             .and_then(|topics| topics.emits.as_deref()),
-        InterfaceVariant::EmittedTopic,
+        |topic: EmittedTopic| InterfaceVariant::EmittedTopic {
+            topic,
+            origin: None,
+        },
     );
     push_interfaces(
         &mut interfaces,
@@ -136,7 +139,10 @@ fn collect_exposed_interfaces(
             .services
             .as_ref()
             .and_then(|services| services.exposes.as_deref()),
-        InterfaceVariant::ExposedService,
+        |service: ExposedService| InterfaceVariant::ExposedService {
+            service,
+            origin: None,
+        },
     );
     push_interfaces(
         &mut interfaces,
@@ -145,7 +151,10 @@ fn collect_exposed_interfaces(
             .actions
             .as_ref()
             .and_then(|actions| actions.exposes.as_deref()),
-        InterfaceVariant::ExposedAction,
+        |action: ExposedAction| InterfaceVariant::ExposedAction {
+            action,
+            origin: None,
+        },
     );
 
     interfaces
@@ -342,7 +351,7 @@ mod tests {
         let existing_content = r#"
             [package]
             name = "existing_node"
-            version = "1.0.0"
+            version = "0.1.0"
             edition = "2021"
 
             [dependencies]
@@ -469,7 +478,7 @@ mod tests {
         // Write a canonical peppy.json5 at the default location
         let canonical_config = r#"{
           peppy_schema: "node_v1",
-          manifest: { name: "canonical_node", tag: "0.1.0" },
+          manifest: { name: "canonical_node", tag: "v1" },
           execution: { language: "rust", run_cmd: ["./target/release/canonical_node"] }
         }"#;
         fs::write(node_dir.join(NODE_CONFIG_FILE), canonical_config).unwrap();
@@ -477,7 +486,7 @@ mod tests {
         // Write a different config at a custom path
         let custom_config = r#"{
           peppy_schema: "node_v1",
-          manifest: { name: "custom_node", tag: "0.2.0" },
+          manifest: { name: "custom_node", tag: "v2" },
           execution: { language: "rust", run_cmd: ["./target/release/custom_node"] }
         }"#;
         let custom_path = temp_dir.path().join("custom_peppy.json5");

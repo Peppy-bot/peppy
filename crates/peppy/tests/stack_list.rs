@@ -19,9 +19,7 @@ fn make_consumer_depend_on_provider(
     let topic_name = "stack_list_topic";
 
     let mut provider_cfg = NodeConfigParser::from_path(provider_peppy_json5)
-        .expect("provider peppy.json5 should read")
-        .into_resolved()
-        .expect("should resolve");
+        .expect("provider peppy.json5 should read");
 
     provider_cfg.execution.build_cmd = None;
 
@@ -47,23 +45,23 @@ fn make_consumer_depend_on_provider(
     );
 
     let mut consumer_cfg = NodeConfigParser::from_path(consumer_peppy_json5)
-        .expect("consumer peppy.json5 should read")
-        .into_resolved()
-        .expect("should resolve");
+        .expect("consumer peppy.json5 should read");
 
     consumer_cfg.execution.build_cmd = None;
 
     consumer_cfg.manifest.depends_on = Some(DependsOn {
         nodes: vec![NodeDependency {
             name: ConfigName::new(provider_name).expect("valid provider name"),
-            tag: "0.1.0".to_string(),
-            local_id: provider_name.to_string(),
+            tag: "v1".to_string(),
+            link_id: provider_name.to_string(),
+            from_any: false,
         }],
+        interfaces: vec![],
     });
 
     consumer_cfg.interfaces.topics = Some(TopicInterfaces {
         consumes: Some(vec![ConsumedTopic::Linked(LinkedConsumedTopic {
-            local_node_id: provider_name.to_string(),
+            link_id: provider_name.to_string(),
             name: topic_name.to_string(),
         })]),
         ..Default::default()
@@ -160,12 +158,12 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(provider_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -179,12 +177,12 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(consumer_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -199,8 +197,8 @@ async fn node_list_command_succeeds() {
         .await
         .expect("node list command should succeed");
 
-    let provider_label = format!("{provider_name}:0.1.0");
-    let consumer_label = format!("{consumer_name}:0.1.0");
+    let provider_label = format!("{provider_name}:v1");
+    let consumer_label = format!("{consumer_name}:v1");
 
     // [INFO] prefixes are a side-effect of the tracing formatter; the table
     // output must not include them.
@@ -211,7 +209,6 @@ async fn node_list_command_succeeds() {
     assert!(
         output.contains("NODE")
             && output.contains("STAGE")
-            && output.contains("VARIANT")
             && output.contains("INSTANCES")
             && output.contains("PATH"),
         "table headers missing:\n{output}"
@@ -224,10 +221,6 @@ async fn node_list_command_succeeds() {
     assert!(
         provider_line.contains("Ready"),
         "provider row should be in Ready stage:\n{output}"
-    );
-    assert!(
-        provider_line.contains("default"),
-        "provider row should report the default variant:\n{output}"
     );
     // No instances were started, so the INSTANCES column must render as "0".
     assert!(
@@ -242,10 +235,6 @@ async fn node_list_command_succeeds() {
     assert!(
         consumer_line.contains("Ready"),
         "consumer row should be in Ready stage:\n{output}"
-    );
-    assert!(
-        consumer_line.contains("default"),
-        "consumer row should report the default variant:\n{output}"
     );
 
     assert!(
@@ -335,12 +324,12 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Add {
             source: Some(provider_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -353,12 +342,12 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Add {
             source: Some(consumer_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -388,8 +377,8 @@ async fn node_list_command_with_dot_representation_succeeds() {
     );
 
     // Verify the DOT graph contains both nodes.
-    let provider_label_fragment = format!("{provider_name}:0.1.0\\n[Ready] (0 instances)");
-    let consumer_label_fragment = format!("{consumer_name}:0.1.0\\n[Ready] (0 instances)");
+    let provider_label_fragment = format!("{provider_name}:v1\\n[Ready] (0 instances)");
+    let consumer_label_fragment = format!("{consumer_name}:v1\\n[Ready] (0 instances)");
     assert!(
         dot_graph.contains(&provider_label_fragment),
         "DOT graph should contain provider label fragment '{}'. DOT:\n{}",

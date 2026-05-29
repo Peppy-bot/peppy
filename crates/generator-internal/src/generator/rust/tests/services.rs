@@ -41,7 +41,7 @@ const EXPOSED_SERVICE_EXAMPLE3: &str = r#"
 
 pub(super) const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
 {
-  local_node_id: "uvc_camera",
+  link_id: "uvc_camera",
   name: "enable_camera",
 }
 "#;
@@ -73,7 +73,7 @@ const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
-    local_node_id: "uvc_camera",
+    link_id: "uvc_camera",
     name: "get_camera_info",
 }
 "#;
@@ -94,7 +94,7 @@ fn expose_service() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_service(&service).unwrap();
+    generator.add_exposed_service(&service, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -159,7 +159,7 @@ fn expose_service_without_request_body() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_service(&service).unwrap();
+    generator.add_exposed_service(&service, None).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -201,8 +201,8 @@ fn expose_two_services() {
     let service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_service(&service1).unwrap();
-    generator.add_exposed_service(&service2).unwrap();
+    generator.add_exposed_service(&service1, None).unwrap();
+    generator.add_exposed_service(&service2, None).unwrap();
 
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -232,7 +232,12 @@ fn consumed_service() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &request_format,
+            &response_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -265,15 +270,22 @@ fn consumed_service() {
     // Request struct
     assert_contains_all(&rendered, &["pub struct Request", "pub enable: bool"]);
 
-    // Poll function signature
+    // Poll function signature. The fixture's `DependencyContext::native`
+    // defaults to `WireLinkId::wildcard()` (no manifest link_id), so the
+    // binding lookup splices `None` and the user-facing
+    // `target_instance_id` parameter is gone. `target_core_node` is never
+    // exposed in the generated API.
     assert_contains_all(
         &rendered,
-        &[
-            "pub async fn poll(",
-            "target_core_node: Option<&str>",
-            "target_instance_id: Option<&str>",
-            "-> crate::Result<Response>",
-        ],
+        &["pub async fn poll(", "-> crate::Result<Response>"],
+    );
+    assert!(
+        !rendered.contains("target_instance_id: Option<&str>"),
+        "target_instance_id should no longer appear as a generated parameter; got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("target_core_node"),
+        "target_core_node should not appear in the generated API; got: {rendered}"
     );
 
     // Request serialization and messenger integration
@@ -303,10 +315,20 @@ fn consumed_two_services_same_node() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_service(&service1, &request_format1, &response_format1, "uvc_camera")
+        .add_consumed_service(
+            &service1,
+            &request_format1,
+            &response_format1,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_service(&service2, &empty_format, &response_format2, "uvc_camera")
+        .add_consumed_service(
+            &service2,
+            &empty_format,
+            &response_format2,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -336,7 +358,7 @@ fn consumed_two_services_same_node() {
 fn consumed_service_without_response_payload() {
     let service = r#"
         {
-            local_node_id: "uvc_camera",
+            link_id: "uvc_camera",
             name: "get_camera_info",
         }
         "#;
@@ -345,7 +367,12 @@ fn consumed_service_without_response_payload() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_service(&service, &empty_format, &empty_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &empty_format,
+            &empty_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .expect("generator should allow services without response format");
 
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -370,7 +397,12 @@ fn consumed_service_rejects_optional_scalar_response_field() {
 
     let mut generator = RustGenerator::new();
     let err = generator
-        .add_consumed_service(&service, &empty_format, &response_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &empty_format,
+            &response_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap_err();
 
     match err {
@@ -396,7 +428,7 @@ fn clippy_single_exposed_service_without_request_body() {
     let consumed_action1: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          local_node_id: "brain",
+          link_id: "brain",
           name: "move_arm",
         }
         "#,
@@ -405,7 +437,7 @@ fn clippy_single_exposed_service_without_request_body() {
     let consumed_action2: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          local_node_id: "controller",
+          link_id: "controller",
           name: "rotate_servo_clockwise",
         }
         "#,
@@ -422,12 +454,22 @@ fn clippy_single_exposed_service_without_request_body() {
     };
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_exposed_service(&exposed_service).unwrap();
     generator
-        .add_consumed_action(&consumed_action1, &action_messages, "brain")
+        .add_exposed_service(&exposed_service, None)
         .unwrap();
     generator
-        .add_consumed_action(&consumed_action2, &action_messages, "controller")
+        .add_consumed_action(
+            &consumed_action1,
+            &action_messages,
+            &crate::DependencyContext::native("brain", "v1"),
+        )
+        .unwrap();
+    generator
+        .add_consumed_action(
+            &consumed_action2,
+            &action_messages,
+            &crate::DependencyContext::native("controller", "v1"),
+        )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -482,14 +524,18 @@ fn compile_lib_with_exposed_and_consumed_services() {
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_exposed_service(&exposed_service1).unwrap();
-    generator.add_exposed_service(&exposed_service2).unwrap();
+    generator
+        .add_exposed_service(&exposed_service1, None)
+        .unwrap();
+    generator
+        .add_exposed_service(&exposed_service2, None)
+        .unwrap();
     generator
         .add_consumed_service(
             &consumed_service1,
             &consumed_service_request1,
             &consumed_service_response1,
-            "uvc_camera",
+            &crate::DependencyContext::native("uvc_camera", "v1"),
         )
         .unwrap();
     generator
@@ -497,7 +543,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &consumed_service2,
             &empty_format,
             &consumed_service_response2,
-            "uvc_camera",
+            &crate::DependencyContext::native("uvc_camera", "v1"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -565,7 +611,7 @@ fn clippy_consumed_service_empty_request_format() {
     let consumed_service: ConsumedService = serde_json5::from_str(
         r#"
         {
-          local_node_id: "sensor",
+          link_id: "sensor",
           name: "get_status",
         }
         "#,
@@ -576,7 +622,12 @@ fn clippy_consumed_service_empty_request_format() {
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
-        .add_consumed_service(&consumed_service, &empty_format, &response_format, "sensor")
+        .add_consumed_service(
+            &consumed_service,
+            &empty_format,
+            &response_format,
+            &crate::DependencyContext::native("sensor", "v1"),
+        )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -599,7 +650,7 @@ fn clippy_consumed_service_empty_response_format() {
     let consumed_service: ConsumedService = serde_json5::from_str(
         r#"
         {
-          local_node_id: "sensor",
+          link_id: "sensor",
           name: "trigger_action",
         }
         "#,
@@ -610,7 +661,12 @@ fn clippy_consumed_service_empty_response_format() {
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
-        .add_consumed_service(&consumed_service, &request_format, &empty_format, "sensor")
+        .add_consumed_service(
+            &consumed_service,
+            &request_format,
+            &empty_format,
+            &crate::DependencyContext::native("sensor", "v1"),
+        )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator

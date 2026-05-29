@@ -1,7 +1,7 @@
 use crate::helpers::{
-    STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
-    init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs, wait_for_child,
-    wait_for_health_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output,
+    init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
+    wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -47,7 +47,7 @@ const EMITTED_TOPIC_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 {
-  local_node_id: "uvc_camera",
+  link_id: "uvc_camera",
   name: "video_stream",
 }
 "#;
@@ -86,7 +86,11 @@ async fn topics_communication() {
     let (mut generator, receiver_dir, user_node_receiver, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_proj2, STUB_NODE_CONFIG);
     generator
-        .add_consumed_topic(&consumed_topic, subscribed_format, "uvc_camera")
+        .add_consumed_topic(
+            &consumed_topic,
+            subscribed_format,
+            &generator::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_receiver, &receiver_dir);
     generator
@@ -101,12 +105,9 @@ async fn topics_communication() {
     let receiver_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(receiver_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(receiver_instance_id).unwrap()),
         RECEIVER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -124,7 +125,7 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        let (instance_id, frame) = on_next_message_received(&node_runner, None, None).await?;
+        let (instance_id, frame) = on_next_message_received(&node_runner, None).await?;
         println!(
             "got {}x{} frame encoded as {} from {}",
             frame.width, frame.height, frame.encoding, &instance_id
@@ -145,7 +146,7 @@ fn main() -> Result<()> {
     let emitter_parameters: config::ParameterSchema =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
     generator.set_parameters(emitter_parameters.clone());
-    generator.add_emitted_topic(&emitted_topic).unwrap();
+    generator.add_emitted_topic(&emitted_topic, None).unwrap();
     let output_config = copy_config_to_output(&user_node_emitter, &emitter_dir);
     generator
         .build(&emitter_dir, &test_peppy_dirs(), Default::default())
@@ -170,11 +171,11 @@ fn main() -> Result<()> {
         &router_host,
         router_port,
         NodeInstanceConfig {
-            instance_id: Name::new(emitter_instance_id).unwrap(),
             arguments: serde_json5::from_str(r#"{ frequency: 10.0 }"#).unwrap(),
-            framework: Default::default(),
+            ..NodeInstanceConfig::new(Name::new(emitter_instance_id).unwrap())
         },
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the receiver
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -263,6 +264,7 @@ fn main() -> Result<()> {
         receiver_instance_id,
         &mut receiver_child,
         &user_node_receiver,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -271,6 +273,7 @@ fn main() -> Result<()> {
         emitter_instance_id,
         &mut emitter_child,
         &user_node_emitter,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 

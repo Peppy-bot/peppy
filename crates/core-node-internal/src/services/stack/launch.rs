@@ -1,6 +1,8 @@
 use crate::Result;
 use crate::names;
-use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
+use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use crate::services::node::common::panic_message;
+use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::{
     FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
     NodeRunActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
@@ -8,25 +10,28 @@ use crate::services::node::{
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
-use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, VariantSource};
+use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     LauncherOrigin, NodeAddGoal, NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeRunGoal,
     NodeRunLogEntry, NodeRunResult, NodeSource,
 };
+use futures::FutureExt;
 use node_stack::NodeStack;
 use parking_lot::Mutex as StdMutex;
-use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
+use peppylib::messaging::SenderTarget;
+use peppylib::messaging::{ActionFeedbackPublisher, ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
-use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
+use peppylib::{MessengerHandle, PeppyResult};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::Write;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -91,12 +96,13 @@ pub async fn listen_for_stack_launch(
     peppy_dirs: PeppyDirs,
     defaults: StackLaunchDefaults,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ActionMessenger::expose(
+    let action = ConcurrentAction::expose(
         messenger,
         core_node_name,
         instance_id,
-        node_name,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::STACK_LAUNCH_ACTION,
+        true,
     )
     .await?;
 
@@ -114,6 +120,7 @@ pub async fn listen_for_stack_launch(
             timeouts,
             daemon_use_sim_time,
         },
+        gate: ConcurrencyGate::new(),
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -121,39 +128,24 @@ pub async fn listen_for_stack_launch(
     Ok(handle)
 }
 
-impl ActionResult for LaunchResult {
-    fn identifier() -> &'static str {
-        "launch_result"
-    }
-
-    fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode().map_err(Into::into)
-    }
-}
-
 #[derive(Clone)]
 struct LaunchGoalHandler {
     context: LaunchActionContext,
+    gate: ConcurrencyGate,
+}
+
+fn encode_launch_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
+    LaunchGoalResponse::rejected(reason).encode().map_err(|e| {
+        peppylib::PeppyError::InvalidServiceRequest {
+            identifier: "launch_goal".to_string(),
+            reason: format!("Failed to encode response: {}", e),
+        }
+    })
 }
 
 impl GoalHandler for LaunchGoalHandler {
-    type Result = LaunchResult;
-
-    async fn handle_goal(
-        &self,
-        context: ServiceRequestContext,
-        user_payload: bytes::Bytes,
-        feedback_publisher: ActionFeedbackPublisher,
-        state: Arc<Mutex<ActionState<LaunchResult>>>,
-    ) -> PeppyResult<Payload> {
-        handle_goal_request(
-            context,
-            user_payload,
-            feedback_publisher,
-            state,
-            self.context.clone(),
-        )
-        .await
+    async fn handle_goal(&self, pending: PendingGoal) {
+        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await
     }
 }
 
@@ -211,24 +203,17 @@ impl NodeKey {
 struct PlannedDeployment {
     deployment: Deployment,
     source: NodeSource,
-    variant: Option<NodeSource>,
     node_name: String,
     node_tag: String,
     config: config::node::NodeConfig,
 }
 
 fn deployment_label(deployment: &Deployment) -> String {
-    let base = match &deployment.source {
+    match &deployment.source {
         DeploymentSource::Local(spec) => format!("local:{}", spec.local.display()),
         DeploymentSource::Git(spec) => format!("git:{}@{}:{}", spec.repo, spec.ref_, spec.path),
         DeploymentSource::Url(spec) => format!("url:{}", spec.url),
         DeploymentSource::Repo(spec) => format!("repo:{}:{}", spec.name, spec.tag),
-    };
-    match deployment.source.variant() {
-        Some(VariantSource::Name(v)) => format!("{base} [variant:{name}]", name = v.name),
-        Some(VariantSource::Git(v)) => format!("{base} [variant:git:{}]", v.repo),
-        Some(VariantSource::Url(v)) => format!("{base} [variant:url:{}]", v.url),
-        None => base,
     }
 }
 
@@ -242,7 +227,7 @@ fn node_source_from_deployment_source(
     deployment: &Deployment,
     nodes_directory: &std::path::Path,
     peppy_dirs: &PeppyDirs,
-) -> std::result::Result<(NodeSource, Option<NodeSource>), String> {
+) -> std::result::Result<NodeSource, String> {
     let source = match &deployment.source {
         DeploymentSource::Local(spec) => {
             let resolved = if spec.local.is_absolute() {
@@ -273,37 +258,7 @@ fn node_source_from_deployment_source(
         )?,
     };
 
-    let variant = deployment
-        .source
-        .variant()
-        .map(variant_source_to_node_source)
-        .transpose()?;
-
-    Ok((source, variant))
-}
-
-fn variant_source_to_node_source(
-    variant: &VariantSource,
-) -> std::result::Result<NodeSource, String> {
-    match variant {
-        VariantSource::Name(v) => Ok(NodeSource::Fs(std::path::PathBuf::from(&v.name))),
-        VariantSource::Git(v) => {
-            let repo_url = git_url_from_repo(&v.repo)?;
-            Ok(NodeSource::Git {
-                repo_url,
-                repo_path: v.path.clone().unwrap_or_default(),
-                repo_ref: v.ref_.clone(),
-            })
-        }
-        VariantSource::Url(v) => {
-            let url = url::Url::parse(&v.url)
-                .map_err(|e| format!("invalid variant HTTP URL `{}`: {e}", v.url))?;
-            Ok(NodeSource::Http {
-                url,
-                sha256: v.sha256.clone(),
-            })
-        }
-    }
+    Ok(source)
 }
 
 /// Marker git_hash used for stack-launch operations.
@@ -924,7 +879,7 @@ async fn resolve_deployments(
             continue;
         }
 
-        let (source, variant) =
+        let source =
             match node_source_from_deployment_source(&deployment, nodes_directory, &ctx.peppy_dirs)
             {
                 Ok(result) => result,
@@ -986,7 +941,6 @@ async fn resolve_deployments(
         planned.push(PlannedDeployment {
             deployment,
             source,
-            variant,
             node_name,
             node_tag,
             config,
@@ -994,7 +948,7 @@ async fn resolve_deployments(
     }
 
     if !planning_errors.is_empty() {
-        let msg = planning_errors.join("\n");
+        let msg = config::format_bulleted(&planning_errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
@@ -1002,12 +956,22 @@ async fn resolve_deployments(
     Ok(planned)
 }
 
+/// Output of [`validate_and_order_dependencies`]: a topological order
+/// of deployments to spawn, plus the resolved per-instance
+/// [`config::runtime::SlotBinding`] map produced by the launcher's
+/// binding validator. The map is keyed by `consumer_instance_id`; each
+/// inner map is keyed by the consumer's manifest `link_id`.
+type ResolvedSlotBindings = std::collections::BTreeMap<
+    String,
+    std::collections::BTreeMap<String, config::runtime::SlotBinding>,
+>;
+
 /// Step 3: Validate dependencies and compute a stable topological order.
 async fn validate_and_order_dependencies(
     ctx: &ProcessLaunchContext,
     planned: &[PlannedDeployment],
     root_config: &config::node::NodeConfig,
-) -> std::result::Result<Vec<NodeKey>, LaunchResult> {
+) -> std::result::Result<(Vec<NodeKey>, ResolvedSlotBindings), LaunchResult> {
     publish_stdout(
         ctx,
         "Validating dependencies",
@@ -1038,7 +1002,7 @@ async fn validate_and_order_dependencies(
     let dependency_errors: Vec<String> = planned
         .iter()
         .flat_map(|item| {
-            node_stack::validate_dependency_specs(
+            config::node::validate_dependency_specs(
                 &item.config.manifest,
                 &item.config.interfaces,
                 &item.node_name,
@@ -1050,17 +1014,71 @@ async fn validate_and_order_dependencies(
         .collect();
 
     if !dependency_errors.is_empty() {
-        let msg = dependency_errors.join("\n");
+        let msg = config::format_bulleted(&dependency_errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
+
+    // The root entity stays in the stack across launches (snapshot_and_clear_stack
+    // preserves it), so its instance_id must participate in stack-wide uniqueness
+    // checks. Synthesize a single-instance DeploymentInstance for it, but pass
+    // `depends_on: None` / empty `conforms_to` in the binding item below so the
+    // per-instance binding rules treat the root as inert and only
+    // check_stack_wide_instance_id_uniqueness (which reads name/tag/instance_id)
+    // acts on it. Forwarding the root's real depends_on would make Rule 1 emit
+    // BindingMissingForPinnedDep, because the synthesized instance has no bindings.
+    let root_instance_id_str = ctx
+        .node_stack
+        .root()
+        .read()
+        .instances()
+        .first()
+        .map(|inst| inst.instance_id().as_str().to_owned());
+    let root_instances: Vec<config::launcher::DeploymentInstance> = root_instance_id_str
+        .and_then(|id_str| config::launcher::Name::new(id_str).ok())
+        .map(|instance_id| config::launcher::DeploymentInstance {
+            instance_id,
+            arguments: Default::default(),
+            env_vars: Default::default(),
+            framework: Default::default(),
+            bindings: Default::default(),
+        })
+        .into_iter()
+        .collect();
+
+    let mut binding_items: Vec<config::launcher::BindingValidationItem<'_>> = planned
+        .iter()
+        .map(|p| config::launcher::BindingValidationItem {
+            node_name: &p.node_name,
+            node_tag: &p.node_tag,
+            instances: &p.deployment.instances,
+            depends_on: p.config.manifest.depends_on.as_ref(),
+            conforms_to: p.config.interfaces.conforms_to.as_deref().unwrap_or(&[]),
+        })
+        .collect();
+    if !root_instances.is_empty() {
+        binding_items.push(config::launcher::BindingValidationItem {
+            node_name: root_config.manifest.name.as_str(),
+            node_tag: root_config.manifest.tag.as_str(),
+            instances: &root_instances,
+            depends_on: None,
+            conforms_to: &[],
+        });
+    }
+    let validated = config::launcher::validate_bindings(&binding_items);
+    if !validated.errors.is_empty() {
+        let msg = config::format_bulleted(&validated.errors);
+        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return Err(LaunchResult::failure(&ctx.log_path, msg));
+    }
+    let resolved_slot_bindings = validated.slot_bindings;
 
     // Build the dependency graph for topological ordering.
     let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
     for item in planned {
         let dependant_key = NodeKey::new(&item.node_name, &item.node_tag);
         let mut deps = HashSet::new();
-        for spec in node_stack::collect_dependency_specs(&item.config) {
+        for spec in config::node::collect_dependency_specs(&item.config) {
             let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag);
             if dep_key != root_key && planned_keys.contains(&dep_key) {
                 deps.insert(dep_key);
@@ -1086,7 +1104,7 @@ async fn validate_and_order_dependencies(
     )
     .await;
 
-    Ok(ordered)
+    Ok((ordered, resolved_slot_bindings))
 }
 
 /// Perform a stable topological sort.
@@ -1236,11 +1254,6 @@ async fn add_nodes_to_stack(
             NodeAddGoal::for_internal_execution(item.source.clone(), STACK_LAUNCH_GIT_HASH)
                 .with_env_vars(ctx.env_vars.clone());
 
-        let node_add_goal = match item.variant {
-            Some(ref variant) => node_add_goal.with_variant_source(variant.clone()),
-            None => node_add_goal,
-        };
-
         let (result, log_path) = add_node_directly(ctx, node_add_goal).await;
 
         let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
@@ -1302,6 +1315,10 @@ async fn start_node_instances(
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     backup_stack: &NodeStack,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
+    resolved_slot_bindings: &std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, config::runtime::SlotBinding>,
+    >,
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
 
@@ -1326,16 +1343,22 @@ async fn start_node_instances(
             )
             .await;
 
+            let slot_bindings = resolved_slot_bindings
+                .get(instance.instance_id.as_str())
+                .cloned()
+                .unwrap_or_default();
             let node_instance = config::runtime::NodeInstanceConfig {
-                instance_id: instance.instance_id.clone(),
                 arguments: instance.arguments.clone(),
                 framework: resolve_framework(&instance.framework, ctx.daemon_use_sim_time),
+                slot_bindings,
+                ..config::runtime::NodeInstanceConfig::new(instance.instance_id.clone())
             };
             let runtime_config = match RuntimeConfig::new(
                 messaging_host.as_str(),
                 messaging_port,
                 node_instance,
                 item.node_name.as_str(),
+                item.node_tag.as_str(),
                 ctx.bound_core_node.as_str(),
             ) {
                 Ok(cfg) => cfg,
@@ -1418,70 +1441,49 @@ async fn start_node_instances(
 }
 
 async fn handle_goal_request(
-    context: ServiceRequestContext,
-    user_payload: bytes::Bytes,
-    feedback_publisher: ActionFeedbackPublisher,
-    state: Arc<Mutex<ActionState<LaunchResult>>>,
+    pending: PendingGoal,
     action_context: LaunchActionContext,
-) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
+    gate: ConcurrencyGate,
+) {
+    let sender_instance_id = pending.instance_id().to_string();
 
-    // Check if already running (but don't set Running yet — we need the goal's timeout first)
-    {
-        let state_guard = state.lock().await;
-        if matches!(*state_guard, ActionState::Running { .. }) {
-            let response = LaunchGoalResponse::rejected("action already in progress");
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "launch_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
-        }
-    }
-
-    // Decode the goal before marking as Running so we can capture the user-supplied timeouts
-    let goal = match LaunchGoal::decode(&user_payload) {
+    // Decode the goal before admission so we can capture the user-supplied timeouts.
+    let goal = match LaunchGoal::decode(pending.request_bytes()) {
         Ok(g) => g,
         Err(e) => {
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            let response = LaunchGoalResponse::rejected(format!("invalid payload: {}", e));
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "launch_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
+            reject_goal(
+                pending,
+                encode_launch_rejected(format!("invalid payload: {e}")),
+            )
+            .await;
+            return;
         }
     };
 
-    // Now mark as Running. `timeout_secs` is gate-reporting only; 0 indicates "no enforced
-    // budget" (when --max-timeout-secs is unset).
-    {
-        let mut state_guard = state.lock().await;
-        *state_guard = ActionState::Running {
-            started_at: std::time::Instant::now(),
-            timeout_secs: goal.max_timeout_secs.unwrap_or(0),
-        };
-    }
+    // `timeout_secs` is gate-reporting only; 0 indicates "no enforced budget"
+    // (when --max-timeout-secs is unset).
+    let generation = match gate.try_admit(goal.max_timeout_secs.unwrap_or(0), false) {
+        Admission::Admitted { generation } => generation,
+        Admission::AlreadyRunning { .. } => {
+            reject_goal(
+                pending,
+                encode_launch_rejected("action already in progress"),
+            )
+            .await;
+            return;
+        }
+    };
 
     debug!("Received `stack_launch` goal from {sender_instance_id}");
 
     // Create log file with timestamp-based filename
     let log_dir = action_context.peppy_dirs.logs_dir_launch();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        let error_msg = format!("Failed to create logs directory: {}", e);
+        let error_msg = format!("Failed to create logs directory: {e}");
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
-        let mut state_guard = state.lock().await;
-        *state_guard = ActionState::Rejected;
-        let response = LaunchGoalResponse::rejected(&error_msg);
-        return response
-            .encode()
-            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                identifier: "launch_goal".to_string(),
-                reason: format!("Failed to encode response: {}", e),
-            });
+        gate.clear_running();
+        reject_goal(pending, encode_launch_rejected(&error_msg)).await;
+        return;
     }
 
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
@@ -1490,26 +1492,42 @@ async fn handle_goal_request(
     let log_file = match File::create(&log_path) {
         Ok(file) => Arc::new(StdMutex::new(file)),
         Err(e) => {
-            let error_msg = format!("Failed to create log file: {}", e);
+            let error_msg = format!("Failed to create log file: {e}");
             debug!("Failed to create log file {:?}: {}", log_path, e);
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            let response = LaunchGoalResponse::rejected(&error_msg);
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "launch_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
+            gate.clear_running();
+            reject_goal(pending, encode_launch_rejected(&error_msg)).await;
+            return;
         }
     };
 
     debug!("Created log file for stack launch: {}", log_path.display());
 
-    // Process the launch operation in a separate task to not block goal response
-    let state_clone = Arc::clone(&state);
+    // `accept` registers the per-goal context before replying accepted.
+    let Some(goal_ctx) = accept_goal(
+        pending,
+        LaunchGoalResponse::accepted(&log_path)
+            .encode()
+            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                identifier: "launch_goal".to_string(),
+                reason: format!("Failed to encode response: {e}"),
+            }),
+    )
+    .await
+    else {
+        gate.clear_running();
+        return;
+    };
+
+    // Process the launch operation in a separate task to not block the loop.
+    let feedback_publisher = goal_ctx
+        .feedback_publisher()
+        .expect("stack_launch declares a feedback topic");
     let log_path_clone = log_path.clone();
+    let gate_for_task = gate.clone();
     tokio::spawn(async move {
+        // Frees the gate slot on every exit (completion or panic); a no-op if a
+        // later goal already took over.
+        let _slot = gate_for_task.into_slot_guard(generation);
         let LaunchActionContext {
             messenger,
             bound_core_node,
@@ -1543,18 +1561,29 @@ async fn handle_goal_request(
             },
             daemon_use_sim_time,
         };
-        let result = process_launch(goal, ctx).await;
-        let mut state_guard = state_clone.lock().await;
-        *state_guard = ActionState::Completed { result };
+        // Catch panics so a panic inside the launch sequence still completes the
+        // goal with a failure result, rather than leaving the client to wait out
+        // the SDK's retention window for a result that never arrives. Releasing
+        // the gate on panic is handled by `_slot` above. Mirrors the panic
+        // handling in `run_node_run` / `run_node_add` / `run_node_build`.
+        let result = match AssertUnwindSafe(process_launch(goal, ctx))
+            .catch_unwind()
+            .await
+        {
+            Ok(result) => result,
+            Err(panic_payload) => {
+                let msg = format!(
+                    "stack_launch task panicked: {}",
+                    panic_message(&*panic_payload)
+                );
+                tracing::error!("{}", msg);
+                LaunchResult::failure(&log_path_clone, msg)
+            }
+        };
+        if let Ok(payload) = result.encode() {
+            let _ = goal_ctx.complete(payload).await;
+        }
     });
-
-    let response = LaunchGoalResponse::accepted(&log_path);
-    response
-        .encode()
-        .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-            identifier: "launch_goal".to_string(),
-            reason: format!("Failed to encode response: {}", e),
-        })
 }
 
 /// Process a stack launch request.
@@ -1581,10 +1610,11 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 
     // Step 3: Validate dependencies and compute topological order
     let root_config = ctx.node_stack.root().read().config().clone();
-    let ordered = match validate_and_order_dependencies(&ctx, &planned, &root_config).await {
-        Ok(result) => result,
-        Err(launch_result) => return launch_result,
-    };
+    let (ordered, resolved_slot_bindings) =
+        match validate_and_order_dependencies(&ctx, &planned, &root_config).await {
+            Ok(result) => result,
+            Err(launch_result) => return launch_result,
+        };
 
     // Step 4: Snapshot and clear stack (the snapshot helps in case an `build_cmd` or `run_cmd` fails on one of the nodes)
     let backup_stack = match snapshot_and_clear_stack(&ctx).await {
@@ -1622,6 +1652,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
                 &planned_by_key,
                 &backup_stack,
                 &mut run_log_paths,
+                &resolved_slot_bindings,
             )
             .await,
         )
@@ -1661,7 +1692,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// Builds a phase future that signals `cleanup_ran` iff it observes the
+    /// Builds a phase future that signals `cleanup_ran` if it observes the
     /// cancel token — simulating `run_node_run`'s `abort_started` branch.
     /// If instead the outer runner drops this future, the flag stays false
     /// and the test fails, matching the real-world orphan bug.

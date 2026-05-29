@@ -8,6 +8,7 @@ use crate::{
     error::{Error, Result},
     generator::{
         naming::{sanitize_component, unique_module_name},
+        scaffold_tree::{ModuleTree, build_module_tree},
         types::{CapnpSchema, InterfaceArtifact, ModuleCategory},
     },
 };
@@ -59,8 +60,9 @@ pub fn add_artifacts_to_lib(
     for category in ModuleCategory::ALL {
         let category_dir = prepare_category_dir(&src_dir, category)?;
         let category_file = category_module_path(&src_dir, category);
-        let nodes = grouped.remove(&category).unwrap_or_default();
-        write_category_modules(&category_dir, &category_file, nodes, category)?;
+        let entries = grouped.remove(&category).unwrap_or_default();
+        let tree = build_module_tree(entries);
+        write_module_tree(&category_dir, &category_file, &tree, category)?;
     }
 
     Ok(())
@@ -340,18 +342,12 @@ fn generate_lib_structure(to_path: impl AsRef<Path>, peppylib_path: &str) -> Res
 
 fn group_artifacts_by_category(
     artifacts: Vec<InterfaceArtifact>,
-) -> BTreeMap<ModuleCategory, BTreeMap<String, Vec<InterfaceArtifact>>> {
-    let mut grouped: BTreeMap<ModuleCategory, BTreeMap<String, Vec<InterfaceArtifact>>> =
-        BTreeMap::new();
+) -> BTreeMap<ModuleCategory, Vec<InterfaceArtifact>> {
+    let mut grouped: BTreeMap<ModuleCategory, Vec<InterfaceArtifact>> = BTreeMap::new();
 
     for artifact in artifacts {
         let category = ModuleCategory::from_kind(artifact.kind);
-        grouped
-            .entry(category)
-            .or_default()
-            .entry(artifact.node_name.clone())
-            .or_default()
-            .push(artifact);
+        grouped.entry(category).or_default().push(artifact);
     }
 
     grouped
@@ -376,48 +372,59 @@ fn category_module_path(src_dir: &Path, category: ModuleCategory) -> PathBuf {
     src_dir.join(format!("{}.rs", category.dir_name()))
 }
 
-fn write_category_modules(
+/// Walks the module tree, writing a `.rs` file per leaf and a `mod.rs` (or
+/// the category file at the root) listing the modules at each level.
+///
+/// `category_dir` is the on-disk directory under `src/` for this category
+/// (e.g. `src/emitted_topics`). `category_file` is its companion sibling
+/// `src/emitted_topics.rs` that declares `pub mod <subdir>;` for each top
+/// child.
+fn write_module_tree(
     category_dir: &Path,
     category_file: &Path,
-    nodes: BTreeMap<String, Vec<InterfaceArtifact>>,
+    tree: &ModuleTree,
     category: ModuleCategory,
 ) -> Result<()> {
-    let mut modules = Vec::new();
+    let listing = write_tree_node(category_dir, tree, category)?;
+    fs::write(category_file, listing)?;
+    Ok(())
+}
+
+/// Recursive worker. Returns the rendered `pub mod ...;` listing for the
+/// current directory; the caller writes it as `mod.rs` (or as the category
+/// `.rs` companion file at the root). Dedupes sibling segments via
+/// [`unique_module_name`] independently at each level so a leaf `video_stream`
+/// can coexist with a child directory of the same name (e.g. when a native
+/// topic shares its name with a conformed-interface tag — extremely unlikely,
+/// but cheap to handle).
+fn write_tree_node(dir: &Path, tree: &ModuleTree, category: ModuleCategory) -> Result<String> {
+    fs::create_dir_all(dir)?;
+    let mut listing = String::new();
     let mut counts: HashMap<String, usize> = HashMap::new();
 
-    for (original_name, artifacts) in nodes {
-        let module_name =
-            unique_module_name(&original_name, &mut counts, sanitize_rust_module_name);
-        write_node_module(
-            category_dir,
-            &module_name,
-            &original_name,
-            artifacts,
-            category,
-        )?;
-        modules.push((module_name, original_name));
-    }
-
-    write_category_module_file(category_file, &modules)?;
-    Ok(())
-}
-
-fn write_category_module_file(category_file: &Path, modules: &[(String, String)]) -> Result<()> {
-    let mut mod_section = String::new();
-    for (module, original) in modules {
-        if !original.is_empty() {
-            mod_section.push_str(&format!("// Node: {original}\n"));
+    // Order: leaves first, then sub-directories. `BTreeMap` already gives us
+    // deterministic alphabetical ordering inside each bucket.
+    for (raw_leaf, artifacts) in &tree.leaves {
+        let module_name = unique_module_name(raw_leaf, &mut counts, sanitize_rust_module_name);
+        write_leaf_module(dir, &module_name, raw_leaf, artifacts.clone(), category)?;
+        if !raw_leaf.is_empty() && raw_leaf != &module_name {
+            listing.push_str(&format!("// {raw_leaf}\n"));
         }
-        mod_section.push_str(&format!("pub mod {module};\n"));
+        listing.push_str(&format!("pub mod {module_name};\n"));
     }
 
-    let content = mod_section;
+    for (raw_segment, child) in &tree.children {
+        let module_name = unique_module_name(raw_segment, &mut counts, sanitize_rust_module_name);
+        let child_dir = dir.join(&module_name);
+        let child_listing = write_tree_node(&child_dir, child, category)?;
+        fs::write(child_dir.join("mod.rs"), child_listing)?;
+        listing.push_str(&format!("pub mod {module_name};\n"));
+    }
 
-    fs::write(category_file, content)?;
-    Ok(())
+    Ok(listing)
 }
 
-fn write_node_module(
+fn write_leaf_module(
     base_dir: &Path,
     module_name: &str,
     original_name: &str,

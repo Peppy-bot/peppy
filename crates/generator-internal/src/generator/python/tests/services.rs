@@ -41,7 +41,7 @@ const EXPOSED_SERVICE_EXAMPLE3: &str = r#"
 
 pub(super) const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
 {
-  local_node_id: "uvc_camera",
+  link_id: "uvc_camera",
   name: "enable_camera",
 }
 "#;
@@ -77,7 +77,7 @@ const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR_AND_BYTES: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
-    local_node_id: "uvc_camera",
+    link_id: "uvc_camera",
     name: "get_camera_info",
 }
 "#;
@@ -99,7 +99,7 @@ fn expose_service() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_service(&service).unwrap();
+    generator.add_exposed_service(&service, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -199,7 +199,7 @@ fn expose_service_without_request_body() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_service(&service).unwrap();
+    generator.add_exposed_service(&service, None).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -261,8 +261,8 @@ fn expose_two_services() {
     let service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_service(&service1).unwrap();
-    generator.add_exposed_service(&service2).unwrap();
+    generator.add_exposed_service(&service1, None).unwrap();
+    generator.add_exposed_service(&service2, None).unwrap();
 
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -327,7 +327,12 @@ fn consumed_service() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &request_format,
+            &response_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -383,7 +388,12 @@ fn consumed_service() {
         ],
     );
 
-    // Poll function signature with typed params and return type
+    // Poll function signature with typed params and return type. The
+    // fixture's `DependencyContext::native` defaults to
+    // `WireLinkId::wildcard()` (no manifest link_id), so the binding
+    // lookup splices `None` and the user-facing `target_instance_id`
+    // parameter is gone. `target_core_node` is never exposed in the
+    // user-facing generated API.
     assert_contains_all(
         &rendered,
         &[
@@ -391,10 +401,16 @@ fn consumed_service() {
             "node_runner: peppylib.NodeRunner",
             "request: Request",
             "timeout: float",
-            "target_core_node: Optional[str] = None",
-            "target_instance_id: Optional[str] = None",
             ") -> Response:",
         ],
+    );
+    assert!(
+        !rendered.contains("target_instance_id: Optional[str] = None"),
+        "target_instance_id should no longer appear as a generated parameter; got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("target_core_node"),
+        "target_core_node should not appear in the generated API; got:\n{rendered}"
     );
 
     // Request serialization
@@ -422,7 +438,12 @@ fn consumed_service_optional_scalar_and_bytes_use_has_checks() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &request_format,
+            &response_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
@@ -458,10 +479,20 @@ fn consumed_two_services_same_node() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_service(&service1, &request_format1, &response_format1, "uvc_camera")
+        .add_consumed_service(
+            &service1,
+            &request_format1,
+            &response_format1,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_service(&service2, &empty_format, &response_format2, "uvc_camera")
+        .add_consumed_service(
+            &service2,
+            &empty_format,
+            &response_format2,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -520,7 +551,7 @@ fn consumed_service_without_response_payload() {
     let service: ConsumedService = serde_json5::from_str(
         r#"
         {
-            local_node_id: "uvc_camera",
+            link_id: "uvc_camera",
             name: "get_camera_info",
         }
         "#,
@@ -530,7 +561,12 @@ fn consumed_service_without_response_payload() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_service(&service, &empty_format, &empty_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &empty_format,
+            &empty_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .expect("generator should allow services without response format");
 
     let artifacts = render_artifacts(generator.into_artifacts());

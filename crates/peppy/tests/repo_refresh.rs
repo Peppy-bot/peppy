@@ -29,7 +29,7 @@ fn repo_refresh_succeeds_after_adding_fs_repo() {
         node_dir.path().join("peppy.json5"),
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "test_node", tag: "0.1.0" },
+            manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["sleep", "1"] }
         }"#,
     )

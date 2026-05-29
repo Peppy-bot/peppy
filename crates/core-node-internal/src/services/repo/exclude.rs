@@ -1,9 +1,12 @@
 use crate::Result;
 use crate::names;
-use crate::services::repo::refresh::{process_refresh, write_cache, write_launcher_cache};
+use crate::services::repo::refresh::{
+    process_refresh, write_cache, write_interface_cache, write_launcher_cache,
+};
 use crate::services::repo::{json_entry_identity, normalize_repo_entries, repo_source_to_json};
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -24,7 +27,7 @@ pub async fn listen_for_repo_exclude(
         messenger,
         core_node_name,
         instance_id,
-        node_name,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::REPO_EXCLUDE,
     )
     .await?;
@@ -57,9 +60,10 @@ async fn handle_repo_exclude_request(
         match tokio::task::spawn_blocking(move || {
             let _guard = crate::services::repo::refresh_lock().lock();
             match process_refresh(&dirs, &mut |_| {}) {
-                Ok((discovered, launchers, _excluded)) => {
-                    write_cache(&dirs, &discovered)?;
-                    write_launcher_cache(&dirs, &launchers)
+                Ok(refreshed) => {
+                    write_cache(&dirs, &refreshed.nodes)?;
+                    write_launcher_cache(&dirs, &refreshed.launchers)?;
+                    write_interface_cache(&dirs, &refreshed.interfaces)
                 }
                 Err(e) => Err(e),
             }

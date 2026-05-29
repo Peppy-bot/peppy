@@ -8,16 +8,23 @@ use peppylib::{subscribe_clock, synchronize};
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
-use super::common::{CORE_NODE, SERVER_INSTANCE, start_router_and_runner, wait_until_reachable};
+use super::common::{
+    CORE_NODE, SERVER_INSTANCE, start_router_and_runner, test_node_target, wait_until_reachable,
+};
 
 /// Spins up a single-shot `clock` service listener that returns `response`
 /// verbatim. The handler decodes the inbound `ClockRequest` to assert wire
 /// shape, even though it ignores the value.
 async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockResponse) {
-    let mut endpoint =
-        ServiceMessenger::listen(&server, CORE_NODE, SERVER_INSTANCE, CORE_NODE, names::CLOCK)
-            .await
-            .expect("listen should succeed");
+    let mut endpoint = ServiceMessenger::listen(
+        &server,
+        CORE_NODE,
+        SERVER_INSTANCE,
+        test_node_target(CORE_NODE),
+        names::CLOCK,
+    )
+    .await
+    .expect("listen should succeed");
 
     tokio::spawn(async move {
         endpoint
@@ -82,7 +89,7 @@ async fn subscribe_clock_yields_typed_ticks() {
         &server,
         CORE_NODE,
         SERVER_INSTANCE,
-        CORE_NODE,
+        test_node_target(CORE_NODE),
         names::CLOCK,
         QoSProfile::SensorData,
         canned.encode().expect("encode tick"),

@@ -66,15 +66,9 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
                 output.add_line(&format_refresh_line(&feedback), false);
             }
         },
-        |payload| match RepoRefreshResult::decode(payload) {
-            Ok(result) => Ok(Some(result)),
-            Err(err) => {
-                if peppylib::encoding::is_result_pending(payload) {
-                    Ok(None)
-                } else {
-                    Err(format!("Failed to decode repo refresh result: {err}"))
-                }
-            }
+        |payload| {
+            RepoRefreshResult::decode(payload)
+                .map_err(|err| format!("Failed to decode repo refresh result: {err}"))
         },
     )
     .await?;
@@ -91,30 +85,39 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
     }
 
     info!(
-        "Repository refresh complete. {} node(s), {} launcher(s) found.",
-        result.total_nodes_found, result.total_launchers_found
+        "Repository refresh complete. {} node(s), {} launcher(s), {} interface(s) found.",
+        result.total_nodes_found, result.total_launchers_found, result.total_interfaces_found
     );
     Ok(())
 }
 
 fn format_refresh_line(feedback: &RepoRefreshFeedback) -> String {
-    if !feedback.status_message.is_empty() {
-        feedback.status_message.clone()
-    } else if feedback.excluded {
-        format!("Excluded {} ({})", feedback.path, feedback.source_type)
-    } else if feedback.variants.is_empty() {
-        format!(
-            "Found {}:{} ({}, {})",
-            feedback.node_name, feedback.node_tag, feedback.source_type, feedback.path
-        )
-    } else {
-        format!(
-            "Found {}:{} ({}, {}) [variants: {}]",
-            feedback.node_name,
-            feedback.node_tag,
-            feedback.source_type,
-            feedback.path,
-            feedback.variants.join(", ")
-        )
+    match feedback {
+        RepoRefreshFeedback::Progress { message } => message.clone(),
+        RepoRefreshFeedback::Excluded {
+            source_type,
+            identity,
+        } => format!("Excluded {} ({})", identity, source_type),
+        RepoRefreshFeedback::Discovered {
+            kind,
+            item_name,
+            item_tag,
+            source_type,
+            path,
+            ..
+        } if item_tag.is_empty() => {
+            format!("Found {} {} ({}, {})", kind, item_name, source_type, path)
+        }
+        RepoRefreshFeedback::Discovered {
+            kind,
+            item_name,
+            item_tag,
+            source_type,
+            path,
+            ..
+        } => format!(
+            "Found {} {}:{} ({}, {})",
+            kind, item_name, item_tag, source_type, path
+        ),
     }
 }

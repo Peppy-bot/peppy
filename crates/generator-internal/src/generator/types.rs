@@ -29,27 +29,219 @@ pub struct ConsumedActionMessage {
     pub result_response: Option<MessageFormat>,
 }
 
+/// Identifies the `conforms_to` interface a producer artifact was pulled from.
+///
+/// `None` on a producer variant means the artifact is the node's own (native)
+/// declaration; `Some` means it was contributed by a [`PeppyInterface`] pulled
+/// via `interfaces.conforms_to`. The pair `(iface_name, iface_tag)` drives both
+/// the generated module nesting (`emitted_topics::{iface_name}::{iface_tag}::{topic}`)
+/// and the two extra Zenoh segments on the wire path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceOrigin {
+    pub iface_name: String,
+    pub iface_tag: String,
+}
+
+impl InterfaceOrigin {
+    /// Module path for an artifact contributed by this origin:
+    /// `[iface_name, sanitized_tag, leaf_name]`.
+    pub fn module_path_for(&self, leaf_name: &str) -> Vec<String> {
+        vec![
+            self.iface_name.clone(),
+            crate::generator::naming::sanitize_iface_tag(&self.iface_tag),
+            leaf_name.to_string(),
+        ]
+    }
+
+    /// Namespaces `local` with `iface_name` + sanitized tag so a leaf name
+    /// shared across conformed origins produces distinct schema keys.
+    pub fn scoped_schema_key(&self, local: &str) -> String {
+        format!(
+            "{}_{}_{}",
+            self.iface_name,
+            crate::generator::naming::sanitize_iface_tag(&self.iface_tag),
+            local
+        )
+    }
+}
+
+/// Builds a schema key scoped to `origin` when `Some`, falling back to the
+/// raw `local` key when the artifact is the node's own (native) declaration.
+pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> String {
+    match origin {
+        Some(o) => o.scoped_schema_key(local),
+        None => local.to_string(),
+    }
+}
+
+/// What the generator should splice into the consumer's subscribe / poll /
+/// send_goal call for the `(from_link_id, from_instance_id)` pair.
+///
+/// In the harmonized wire model the consumer never pins by `link_id` (producers
+/// always advertise the `_` sentinel); instead it pins by `from_instance_id`
+/// looked up at runtime from `Processor::binding_for(<link_id>)`. The codegen
+/// still needs the manifest `link_id` even for `from_any: true` deps so the
+/// binding lookup can resolve them.
+#[derive(Debug, Clone)]
+pub enum WireLinkId {
+    /// Pinned dep: `depends_on` declared `link_id` and `from_any: false`.
+    /// The launcher / CLI validators require a matching binding (or fire a
+    /// warning); the codegen splices `binding_for(link_id)` for the pin.
+    Pinned(String),
+    /// Wildcard dep. `link_id: Some` carries the manifest link_id for
+    /// `from_any: true` deps so an optional binding can still pin them;
+    /// `link_id: None` is reserved for synthetic generator-test fixtures
+    /// that don't model a manifest dep.
+    Wildcard { link_id: Option<String> },
+}
+
+impl WireLinkId {
+    /// `Pinned(link_id)` when `from_any` is false, `Wildcard { link_id:
+    /// Some(link_id) }` when true. The link_id is kept either way so the
+    /// runtime binding lookup can resolve `from_any: true` deps too.
+    pub fn from_link_id(link_id: impl Into<String>, from_any: bool) -> Self {
+        let link_id = link_id.into();
+        if from_any {
+            Self::Wildcard {
+                link_id: Some(link_id),
+            }
+        } else {
+            Self::Pinned(link_id)
+        }
+    }
+
+    /// Wildcard with no manifest link_id. Used by generator-test fixtures
+    /// that exercise the codegen without modeling a consumer dep.
+    pub fn wildcard() -> Self {
+        Self::Wildcard { link_id: None }
+    }
+
+    /// The manifest link_id literal, present for `Pinned` and for `Wildcard`
+    /// deps that came from a real `depends_on` entry. `None` only for the
+    /// test-fixture sentinel.
+    pub fn link_id(&self) -> Option<&str> {
+        match self {
+            Self::Pinned(s) => Some(s.as_str()),
+            Self::Wildcard { link_id } => link_id.as_deref(),
+        }
+    }
+}
+
+/// Identifies a dependency a consumer pulls from. `producer_name` +
+/// `producer_tag` pin the labelled producer for codegen: a real node for
+/// `depends_on.nodes`, or the interface's `(name, tag)` when the consumer
+/// pulls in via `depends_on.interfaces` (there's no producer node in that
+/// case, but the labels still need a stable identity). `origin` is `Some`
+/// when the consumed artifact carries the `interface`-shaped wire
+/// discriminator (either because the producer node `conforms_to` an
+/// interface or because the dependency itself is an interface contract).
+///
+/// `link_id` carries the wire-slot intent: `Pinned(s)` for a specific
+/// consumer link_id, `Wildcard` when `from_any: true` or when no link_id is
+/// declared (the test-fixture default).
+///
+/// [`SenderTarget::Interface`]: pmi::SenderTarget::Interface
+/// [`SenderTarget::Node`]: pmi::SenderTarget::Node
+#[derive(Debug, Clone)]
+pub struct DependencyContext {
+    pub producer_name: String,
+    pub producer_tag: String,
+    pub origin: Option<InterfaceOrigin>,
+    pub link_id: WireLinkId,
+}
+
+impl DependencyContext {
+    /// Build a context for a node dependency that emits natively (no
+    /// `conforms_to`). Defaults `link_id` to [`WireLinkId::Wildcard`]; use
+    /// [`Self::with_link_id`] to pin a value.
+    pub fn native(node_name: impl Into<String>, node_tag: impl Into<String>) -> Self {
+        Self {
+            producer_name: node_name.into(),
+            producer_tag: node_tag.into(),
+            origin: None,
+            link_id: WireLinkId::wildcard(),
+        }
+    }
+
+    /// Build a context for a node dependency that emits via a
+    /// `conforms_to` interface.
+    pub fn conformed(
+        node_name: impl Into<String>,
+        node_tag: impl Into<String>,
+        origin: InterfaceOrigin,
+    ) -> Self {
+        Self {
+            producer_name: node_name.into(),
+            producer_tag: node_tag.into(),
+            origin: Some(origin),
+            link_id: WireLinkId::wildcard(),
+        }
+    }
+
+    /// Build a context for a `depends_on.interfaces` dependency. There is
+    /// no producer node here; `producer_name` / `producer_tag` carry the
+    /// interface's `(name, tag)` so codegen labels stay readable, and
+    /// `origin` is set to the same `(name, tag)` so consumer-side codegen
+    /// reuses the existing `SenderTarget::Interface` path.
+    pub fn interface(iface_name: impl Into<String>, iface_tag: impl Into<String>) -> Self {
+        let iface_name = iface_name.into();
+        let iface_tag = iface_tag.into();
+        Self {
+            producer_name: iface_name.clone(),
+            producer_tag: iface_tag.clone(),
+            origin: Some(InterfaceOrigin {
+                iface_name,
+                iface_tag,
+            }),
+            link_id: WireLinkId::wildcard(),
+        }
+    }
+
+    /// Set the wire-slot binding. Generator code reads `link_id.link_id()`
+    /// to splice the binding lookup at the `from_instance_id` slot.
+    pub fn with_link_id(mut self, link_id: WireLinkId) -> Self {
+        self.link_id = link_id;
+        self
+    }
+
+    /// Returns the manifest link_id literal, when known. Used by codegen
+    /// to splice `processor().binding_for(<link_id>)` at the consumer's
+    /// `from_instance_id` wire slot.
+    pub fn wire_link_id(&self) -> Option<&str> {
+        self.link_id.link_id()
+    }
+}
+
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
 #[derive(Debug, Clone)]
 pub enum InterfaceVariant {
-    EmittedTopic(EmittedTopic),
-    ExposedService(ExposedService),
-    ExposedAction(ExposedAction),
+    EmittedTopic {
+        topic: EmittedTopic,
+        origin: Option<InterfaceOrigin>,
+    },
+    ExposedService {
+        service: ExposedService,
+        origin: Option<InterfaceOrigin>,
+    },
+    ExposedAction {
+        action: ExposedAction,
+        origin: Option<InterfaceOrigin>,
+    },
     ConsumedTopic {
         topic: ConsumedTopic,
         message_format: MessageFormat,
-        dependency_node_name: String,
+        dependency: DependencyContext,
     },
     ConsumedService {
         service: ConsumedService,
         request_format: MessageFormat,
         response_format: MessageFormat,
-        dependency_node_name: String,
+        dependency: DependencyContext,
     },
     ConsumedAction {
         action: ConsumedAction,
         messages: ConsumedActionMessage,
-        dependency_node_name: String,
+        dependency: DependencyContext,
     },
     ExternalConsumedTopic {
         name: String,
@@ -77,8 +269,14 @@ impl DeploymentInterface {
     }
 }
 
+#[derive(Clone)]
 pub struct InterfaceArtifact {
-    pub node_name: String,
+    /// Module path under the category dir, leaf-last. Native artifacts have a
+    /// single segment (the topic/service/action name); artifacts pulled in via
+    /// `interfaces.conforms_to` have three segments
+    /// (`[iface_name, iface_tag, leaf_name]`) so they nest as
+    /// `emitted_topics/{iface_name}/{iface_tag}/{leaf_name}.rs`.
+    pub module_path: Vec<String>,
     pub kind: InterfaceKind,
     pub code_output: String,
 }
@@ -86,23 +284,88 @@ pub struct InterfaceArtifact {
 impl InterfaceArtifact {
     pub fn from_kind(node_name: &str, kind: InterfaceKind, code_output: String) -> Self {
         Self {
-            node_name: node_name.to_string(),
+            module_path: vec![node_name.to_string()],
             kind,
             code_output,
         }
+    }
+
+    /// Creates an artifact whose generated module nests under
+    /// `{iface_name}/{iface_tag}/{leaf_name}` — used for symbols pulled in via
+    /// `interfaces.conforms_to`.
+    pub fn from_kind_nested(
+        module_path: Vec<String>,
+        kind: InterfaceKind,
+        code_output: String,
+    ) -> Self {
+        debug_assert!(
+            !module_path.is_empty(),
+            "from_kind_nested called with empty module_path; leaf_name() would panic",
+        );
+        Self {
+            module_path,
+            kind,
+            code_output,
+        }
+    }
+
+    /// Builds an artifact for `leaf_name`, nesting under
+    /// `{iface_name}/{iface_tag}/{leaf_name}` when contributed via
+    /// `interfaces.conforms_to`, or a single-segment `[leaf_name]` for the
+    /// node's own (native) declarations.
+    pub fn for_leaf(
+        origin: Option<&InterfaceOrigin>,
+        leaf_name: &str,
+        kind: InterfaceKind,
+        code_output: String,
+    ) -> Self {
+        let module_path = match origin {
+            Some(o) => o.module_path_for(leaf_name),
+            None => vec![leaf_name.to_string()],
+        };
+        Self {
+            module_path,
+            kind,
+            code_output,
+        }
+    }
+
+    /// Returns the leaf segment (the topic/service/action name). Panics on an
+    /// empty `module_path`, which would be a generator bug.
+    pub fn leaf_name(&self) -> &str {
+        self.module_path
+            .last()
+            .map(String::as_str)
+            .expect("InterfaceArtifact::module_path must not be empty")
     }
 }
 
 /// Collects deployment interfaces and produces generated artifacts when finalized.
 pub trait LanguageGenerator {
-    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()>;
-    fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()>;
-    fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()>;
+    /// `origin` is `Some` when the topic was contributed via a
+    /// `conforms_to` interface (nests the artifact under
+    /// `{iface_name}/{iface_tag}/{leaf}`) and `None` for the node's own
+    /// native declarations.
+    fn add_emitted_topic(
+        &mut self,
+        topic: &EmittedTopic,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()>;
+    fn add_exposed_service(
+        &mut self,
+        service: &ExposedService,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()>;
+    fn add_exposed_action(
+        &mut self,
+        action: &ExposedAction,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()>;
     fn add_consumed_topic(
         &mut self,
         topic: &ConsumedTopic,
         arguments: MessageFormat,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()>;
     fn add_external_consumed_topic(
         &mut self,
@@ -114,13 +377,13 @@ pub trait LanguageGenerator {
         service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()>;
     fn add_consumed_action(
         &mut self,
         action: &ConsumedAction,
         messages: &ConsumedActionMessage,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
     fn build(
@@ -134,30 +397,31 @@ pub trait LanguageGenerator {
 impl DeploymentInterface {
     pub fn register_with<B: LanguageGenerator + ?Sized>(&self, backend: &mut B) -> Result<()> {
         match self.interface() {
-            InterfaceVariant::EmittedTopic(topic) => backend.add_emitted_topic(topic),
-            InterfaceVariant::ExposedService(service) => backend.add_exposed_service(service),
-            InterfaceVariant::ExposedAction(action) => backend.add_exposed_action(action),
+            InterfaceVariant::EmittedTopic { topic, origin } => {
+                backend.add_emitted_topic(topic, origin.as_ref())
+            }
+            InterfaceVariant::ExposedService { service, origin } => {
+                backend.add_exposed_service(service, origin.as_ref())
+            }
+            InterfaceVariant::ExposedAction { action, origin } => {
+                backend.add_exposed_action(action, origin.as_ref())
+            }
             InterfaceVariant::ConsumedTopic {
                 topic,
                 message_format,
-                dependency_node_name,
-            } => backend.add_consumed_topic(topic, message_format.clone(), dependency_node_name),
+                dependency,
+            } => backend.add_consumed_topic(topic, message_format.clone(), dependency),
             InterfaceVariant::ConsumedService {
                 service,
                 request_format,
                 response_format,
-                dependency_node_name,
-            } => backend.add_consumed_service(
-                service,
-                request_format,
-                response_format,
-                dependency_node_name,
-            ),
+                dependency,
+            } => backend.add_consumed_service(service, request_format, response_format, dependency),
             InterfaceVariant::ConsumedAction {
                 action,
                 messages,
-                dependency_node_name,
-            } => backend.add_consumed_action(action, messages, dependency_node_name),
+                dependency,
+            } => backend.add_consumed_action(action, messages, dependency),
             InterfaceVariant::ExternalConsumedTopic {
                 name,
                 message_format,
@@ -299,10 +563,16 @@ pub fn validate_message_format_field_names(format: &MessageFormat, context: &str
     validate_field_map(format.0.iter(), "", normalized_context)
 }
 
-/// Returns the hardcoded cancel-action response format used by both Rust and Python generators.
+/// Returns the hardcoded goal-action response format used by both Rust and Python generators.
 ///
-/// The format contains `accepted: bool` and `error_message: Optional[String]`.
-pub fn cancel_action_response_format() -> MessageFormat {
+/// The goal acknowledgement is framework-owned (not declared by the action
+/// schema): every goal response is `accepted: bool` plus an optional
+/// `error_message: Optional[String]` carrying the rejection reason. The
+/// generated `GoalResponse::accept()` / `GoalResponse::reject(reason)`
+/// constructors produce it. Distinct from the cancel-ack format (which now
+/// carries a typed `state` instead), so `fire_goal`'s accept/reject wire is
+/// unchanged.
+pub fn goal_action_response_format() -> MessageFormat {
     let mut fields = IndexMap::new();
     fields.insert(String::from("accepted"), SchemaType::Type(TypeToken::Bool));
     fields.insert(
@@ -602,16 +872,25 @@ mod tests {
 #[derive(Clone)]
 pub struct CapnpSchema {
     file_stem: String,
+    struct_module: String,
     schema: String,
 }
 
 impl CapnpSchema {
-    pub fn new(file_stem: String, schema: String) -> Self {
-        Self { file_stem, schema }
+    pub fn new(file_stem: String, struct_module: String, schema: String) -> Self {
+        Self {
+            file_stem,
+            struct_module,
+            schema,
+        }
     }
 
     pub fn file_stem(&self) -> &str {
         &self.file_stem
+    }
+
+    pub fn struct_module(&self) -> &str {
+        &self.struct_module
     }
 
     pub fn schema(&self) -> &str {

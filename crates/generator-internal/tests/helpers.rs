@@ -5,11 +5,13 @@ use config::consts::{
 };
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::{fs, thread, time::Duration};
 use tempfile::TempDir;
@@ -23,13 +25,20 @@ pub fn test_peppy_dirs() -> PeppyDirs {
     PeppyDirs::default()
 }
 
+pub const TEST_NODE_TAG: &str = "v1";
+
+/// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
+/// invalid names — tests use known-good values only.
+pub fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
+}
+
 pub const STUB_NODE_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: {
     name: "generated_node",
-    tag: "0.1.0"
+    tag: "v1"
   },
-
   execution: {
     language: "rust",
     run_cmd: ["./target/release/generated_node"]
@@ -137,6 +146,188 @@ pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std:
     }
 
     command.spawn().expect("failed to spawn cargo run")
+}
+
+/// Wraps a spawned child whose stdout/stderr are piped, draining them
+/// from background threads into shared buffers. This lets a test
+/// inspect stdout while the child is still running — for example, to
+/// wait for a specific line to appear before sending shutdown — without
+/// blocking on the pipe. Existing helpers that take a plain
+/// `&mut std::process::Child` keep working against the exposed `child`
+/// field.
+pub struct CapturedChild {
+    pub child: std::process::Child,
+    stdout: Arc<Mutex<Vec<u8>>>,
+    stderr: Arc<Mutex<Vec<u8>>>,
+    stdout_drainer: Option<thread::JoinHandle<()>>,
+    stderr_drainer: Option<thread::JoinHandle<()>>,
+}
+
+impl CapturedChild {
+    pub fn new(mut child: std::process::Child) -> Self {
+        let stdout = Arc::new(Mutex::new(Vec::new()));
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+
+        let stdout_drainer = child.stdout.take().map(|pipe| {
+            let buf = Arc::clone(&stdout);
+            thread::spawn(move || drain_pipe(pipe, buf))
+        });
+        let stderr_drainer = child.stderr.take().map(|pipe| {
+            let buf = Arc::clone(&stderr);
+            thread::spawn(move || drain_pipe(pipe, buf))
+        });
+
+        Self {
+            child,
+            stdout,
+            stderr,
+            stdout_drainer,
+            stderr_drainer,
+        }
+    }
+
+    /// Kills the child, reaps its exit status, and joins both drainer
+    /// threads so the captured buffers reflect every byte the child wrote
+    /// before its pipes closed. Idempotent against already-exited children
+    /// (`kill` on a dead pid is a no-op error we ignore) so callers can
+    /// invoke this from both the timeout and post-exit paths.
+    fn reap_and_join(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(handle) = self.stdout_drainer.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.stderr_drainer.take() {
+            let _ = handle.join();
+        }
+    }
+
+    /// Blocks until captured stdout contains `pattern` (as a substring).
+    /// Panics if the child exits first or if `timeout` elapses.
+    pub fn wait_for_stdout_contains(
+        &mut self,
+        pattern: &str,
+        timeout: Duration,
+        dir: &std::path::Path,
+    ) {
+        let start = Instant::now();
+        let needle = pattern.as_bytes();
+        loop {
+            if stdout_contains(&self.stdout, needle) {
+                return;
+            }
+
+            if let Some(status) = self
+                .child
+                .try_wait()
+                .expect("failed to poll process status for generated project")
+            {
+                self.reap_and_join();
+                let stdout = lossy_snapshot(&self.stdout);
+                let stderr = lossy_snapshot(&self.stderr);
+                panic!(
+                    "process exited before stdout contained {:?} (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
+                    pattern,
+                    status.code(),
+                    dir.display(),
+                    stdout,
+                    stderr,
+                );
+            }
+
+            if start.elapsed() > timeout {
+                self.reap_and_join();
+                let stdout = lossy_snapshot(&self.stdout);
+                let stderr = lossy_snapshot(&self.stderr);
+                panic!(
+                    "timed out after {:?} waiting for stdout to contain {:?} for project at {}\nstdout so far:\n{}\nstderr so far:\n{}",
+                    timeout,
+                    pattern,
+                    dir.display(),
+                    stdout,
+                    stderr,
+                );
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Waits for the child to exit and returns the captured output.
+    /// Mirrors [`wait_for_child`] but pulls from the background buffers
+    /// instead of reading the pipes directly (the drainer threads now
+    /// own them).
+    pub fn wait(
+        mut self,
+        timeout: Option<Duration>,
+        dir: &std::path::Path,
+    ) -> std::process::Output {
+        let start = Instant::now();
+        loop {
+            if let Some(limit) = timeout
+                && start.elapsed() > limit
+            {
+                self.reap_and_join();
+                panic!(
+                    "process timed out after {:?} for project at {}\nstdout:\n{}\nstderr:\n{}",
+                    limit,
+                    dir.display(),
+                    lossy_snapshot(&self.stdout),
+                    lossy_snapshot(&self.stderr),
+                );
+            }
+
+            if let Some(status) = self
+                .child
+                .try_wait()
+                .expect("failed to poll process status for generated project")
+            {
+                // Joining the drainer handles guarantees the buffers
+                // contain every byte the child wrote before its pipes
+                // closed; a fixed sleep here would race against slow
+                // drainers under load.
+                if let Some(handle) = self.stdout_drainer.take() {
+                    let _ = handle.join();
+                }
+                if let Some(handle) = self.stderr_drainer.take() {
+                    let _ = handle.join();
+                }
+                let stdout = std::mem::take(&mut *self.stdout.lock().unwrap());
+                let stderr = std::mem::take(&mut *self.stderr.lock().unwrap());
+                return std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                };
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+fn drain_pipe<R: Read + Send + 'static>(mut pipe: R, buf: Arc<Mutex<Vec<u8>>>) {
+    let mut chunk = [0u8; 4096];
+    while let Ok(n) = pipe.read(&mut chunk) {
+        if n == 0 {
+            break;
+        }
+        if let Ok(mut guard) = buf.lock() {
+            guard.extend_from_slice(&chunk[..n]);
+        }
+    }
+}
+
+fn stdout_contains(buf: &Arc<Mutex<Vec<u8>>>, needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let guard = buf.lock().unwrap();
+    guard.windows(needle.len()).any(|w| w == needle)
+}
+
+fn lossy_snapshot(buf: &Arc<Mutex<Vec<u8>>>) -> String {
+    String::from_utf8_lossy(&buf.lock().unwrap()).into_owned()
 }
 
 pub fn wait_for_child(
@@ -329,15 +520,37 @@ pub struct WaitContext<'a> {
     pub target_core_node: Option<&'a str>,
 }
 
+/// Default deadline for the wait-family helpers. Long enough for slow CI
+/// (zenoh discovery + queryable propagation can take a couple of seconds
+/// on a cold session); short enough that a true hang (e.g. a probed
+/// endpoint that will never come up) fails loudly with a clear panic
+/// instead of stalling the whole test binary. Each helper accepts an
+/// explicit `timeout` so call sites can opt into something larger or
+/// smaller — pass [`DEFAULT_WAIT_TIMEOUT`] when no value is meaningful.
+pub const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub async fn wait_for_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
-    target_node_name: &str,
-    target_service_name: &str,
+    to_node_name: &str,
+    to_service_name: &str,
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
+    timeout: Duration,
 ) {
+    let start = Instant::now();
     loop {
+        if start.elapsed() > timeout {
+            panic!(
+                "timed out after {:?} waiting for service `{}` (node={}, instance={:?}) to become reachable for project at {}",
+                timeout,
+                to_service_name,
+                to_node_name,
+                target_instance_id,
+                dir.display(),
+            );
+        }
+
         if let Some(status) = child
             .try_wait()
             .expect("failed to poll process status for generated project")
@@ -347,7 +560,7 @@ pub async fn wait_for_service_reachable_or_exit(
             let stderr = String::from_utf8_lossy(&output.stderr);
             panic!(
                 "process exited before `{}` became reachable (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
-                target_service_name,
+                to_service_name,
                 status.code(),
                 dir.display(),
                 stdout,
@@ -359,17 +572,18 @@ pub async fn wait_for_service_reachable_or_exit(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
-            target_node_name,
-            target_service_name,
+            test_node_target(to_node_name),
+            to_service_name,
             ctx.target_core_node,
             target_instance_id,
         )
+
         .await
         .unwrap_or_else(|err| {
             panic!(
                 "failed to check reachability for service `{}` (node={}, instance={:?}) for project at {}: {}",
-                target_service_name,
-                target_node_name,
+                to_service_name,
+                to_node_name,
                 target_instance_id,
                 dir.display(),
                 err
@@ -386,13 +600,26 @@ pub async fn wait_for_service_reachable_or_exit(
 
 pub async fn wait_for_action_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
-    target_node_name: &str,
-    target_service_name: &str,
+    to_node_name: &str,
+    to_action_name: &str,
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
+    timeout: Duration,
 ) {
+    let start = Instant::now();
     loop {
+        if start.elapsed() > timeout {
+            panic!(
+                "timed out after {:?} waiting for action `{}` (node={}, instance={:?}) to become reachable for project at {}",
+                timeout,
+                to_action_name,
+                to_node_name,
+                target_instance_id,
+                dir.display(),
+            );
+        }
+
         if let Some(status) = child
             .try_wait()
             .expect("failed to poll process status for generated project")
@@ -402,7 +629,7 @@ pub async fn wait_for_action_service_reachable_or_exit(
             let stderr = String::from_utf8_lossy(&output.stderr);
             panic!(
                 "process exited before action `{}` became reachable (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
-                target_service_name,
+                to_action_name,
                 status.code(),
                 dir.display(),
                 stdout,
@@ -414,17 +641,18 @@ pub async fn wait_for_action_service_reachable_or_exit(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
-            target_node_name,
-            target_service_name,
+            test_node_target(to_node_name),
+            to_action_name,
             ctx.target_core_node,
             target_instance_id,
         )
+
         .await
         .unwrap_or_else(|err| {
             panic!(
                 "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
-                target_service_name,
-                target_node_name,
+                to_action_name,
+                to_node_name,
                 target_instance_id,
                 dir.display(),
                 err
@@ -441,36 +669,40 @@ pub async fn wait_for_action_service_reachable_or_exit(
 
 pub async fn wait_for_shutdown_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
-    target_node_name: &str,
+    to_node_name: &str,
     target_instance_id: &str,
     child: &mut std::process::Child,
     dir: &std::path::Path,
+    timeout: Duration,
 ) {
     wait_for_service_reachable_or_exit(
         ctx,
-        target_node_name,
+        to_node_name,
         SHUTDOWN_SERVICE,
         Some(target_instance_id),
         child,
         dir,
+        timeout,
     )
     .await;
 }
 
 pub async fn wait_for_health_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
-    target_node_name: &str,
+    to_node_name: &str,
     target_instance_id: &str,
     child: &mut std::process::Child,
     dir: &std::path::Path,
+    timeout: Duration,
 ) {
     wait_for_service_reachable_or_exit(
         ctx,
-        target_node_name,
+        to_node_name,
         NODE_HEALTH_SERVICE,
         Some(target_instance_id),
         child,
         dir,
+        timeout,
     )
     .await;
 }
@@ -479,7 +711,7 @@ pub async fn send_shutdown(
     messenger: &MessengerHandle,
     bound_core_node: &str,
     sender_instance_id: &str,
-    target_node_name: &str,
+    to_node_name: &str,
     target_core_node: Option<&str>,
     target_instance_id: &str,
     timeout: Duration,
@@ -489,7 +721,7 @@ pub async fn send_shutdown(
         messenger,
         bound_core_node,
         sender_instance_id,
-        target_node_name,
+        test_node_target(to_node_name),
         SHUTDOWN_SERVICE,
         target_core_node,
         Some(target_instance_id),
@@ -500,7 +732,7 @@ pub async fn send_shutdown(
     .unwrap_or_else(|err| {
         panic!(
             "failed to send shutdown to node={} instance={} (project core node={}): {}",
-            target_node_name, target_instance_id, bound_core_node, err
+            to_node_name, target_instance_id, bound_core_node, err
         )
     });
 }
@@ -511,7 +743,7 @@ pub async fn try_send_shutdown(
     messenger: &MessengerHandle,
     bound_core_node: &str,
     sender_instance_id: &str,
-    target_node_name: &str,
+    to_node_name: &str,
     target_core_node: Option<&str>,
     target_instance_id: &str,
     timeout: Duration,
@@ -521,7 +753,7 @@ pub async fn try_send_shutdown(
         messenger,
         bound_core_node,
         sender_instance_id,
-        target_node_name,
+        test_node_target(to_node_name),
         SHUTDOWN_SERVICE,
         target_core_node,
         Some(target_instance_id),
@@ -538,8 +770,7 @@ pub async fn try_send_shutdown(
 pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: { name: "generated_node",
-    tag: "0.1.0" },
-
+    tag: "v1" },
   execution: { language: "python",
     run_cmd: ["uv", "run", "python", "main.py"]
   }

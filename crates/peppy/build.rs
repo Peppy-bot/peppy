@@ -11,50 +11,45 @@ fn main() {
 }
 
 fn embed_git_hash() {
-    // Get the git repository root directory
-    let git_root = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .and_then(|output| {
-            if output.status.success() {
-                String::from_utf8(output.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map(|s| PathBuf::from(s.trim()));
+    // Resolve the per-worktree git dir and the shared common git dir.
+    // For submodules and linked worktrees, `<worktree>/.git` is a file
+    // (gitlink), so naively joining `.git/HEAD` under the worktree root
+    // points at a non-existent path — cargo would treat that missing
+    // rerun-if-changed entry as stale and recompile on every build.
+    let git_dir = run_git(&["rev-parse", "--absolute-git-dir"]);
+    let git_common_dir = run_git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]);
 
-    // Get the git hash
-    let git_hash = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|output| {
-            if output.status.success() {
-                String::from_utf8(output.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    // Embed the git hash into the binary via environment variable
+    let git_hash = run_git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=PEPPY_GIT_HASH={}", git_hash);
 
-    // Tell cargo to rerun this if git HEAD changes.
-    // We must use absolute paths because cargo resolves relative paths from the
-    // crate's Cargo.toml directory, not the workspace root where .git/ lives.
-    if let Some(root) = git_root {
-        let git_dir = root.join(".git");
-        println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
-        // The reflog is updated on every commit, merge, rebase, or checkout.
-        // Unlike loose ref files under refs/heads/, the reflog is never
-        // removed by `git pack-refs`, avoiding spurious rebuilds.
-        let reflog = git_dir.join("logs/HEAD");
+    if let Some(dir) = git_dir {
+        let head = PathBuf::from(&dir).join("HEAD");
+        if head.exists() {
+            println!("cargo:rerun-if-changed={}", head.display());
+        }
+    }
+    // The reflog is updated on every commit, merge, rebase, or checkout.
+    // Unlike loose ref files under refs/heads/, the reflog is never
+    // removed by `git pack-refs`, avoiding spurious rebuilds. It lives in
+    // the common git dir, which is shared across linked worktrees.
+    if let Some(common) = git_common_dir {
+        let reflog = PathBuf::from(common).join("logs/HEAD");
         if reflog.exists() {
             println!("cargo:rerun-if-changed={}", reflog.display());
         }
+    }
+}
+
+fn run_git(args: &[&str]) -> Option<String> {
+    let output = Command::new("git").args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(output.stdout).ok()?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }

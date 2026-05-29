@@ -12,7 +12,9 @@ use peppylib::stack_list;
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
-use super::common::{CORE_NODE, SERVER_INSTANCE, start_router_and_runner, wait_until_reachable};
+use super::common::{
+    CORE_NODE, SERVER_INSTANCE, start_router_and_runner, test_node_target, wait_until_reachable,
+};
 
 /// Spins up a single-shot `STACK_LIST` listener that returns `graph` serialized
 /// as JSON, and `dot_graph` only when the inbound request asked for it.
@@ -22,7 +24,7 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
         &server,
         CORE_NODE,
         SERVER_INSTANCE,
-        CORE_NODE,
+        test_node_target(CORE_NODE),
         names::STACK_LIST,
     )
     .await
@@ -68,7 +70,7 @@ async fn setup_stub(
 async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
     let brain = SerializedNode {
         name: "brain".to_string(),
-        tag: "0.1.0".to_string(),
+        tag: "v1".to_string(),
         config_path: "/tmp/brain.json5".to_string(),
         artifact_path: None,
         stage: Some(NodeStage::Ready),
@@ -76,16 +78,14 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
         }],
-        variant_name: Some("default".to_string()),
     };
     let sensor = SerializedNode {
         name: "sensor".to_string(),
-        tag: "0.1.0".to_string(),
+        tag: "v1".to_string(),
         config_path: "/tmp/sensor.json5".to_string(),
         artifact_path: None,
         stage: Some(NodeStage::Added),
         instances: vec![],
-        variant_name: None,
     };
     let graph = SerializedNodeGraph {
         nodes: vec![brain.clone(), sensor.clone()],
@@ -119,7 +119,7 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
 async fn stack_list_returns_none_dot_graph_when_not_requested() {
     let brain = SerializedNode {
         name: "brain".to_string(),
-        tag: "0.1.0".to_string(),
+        tag: "v1".to_string(),
         config_path: "/tmp/brain.json5".to_string(),
         artifact_path: None,
         stage: Some(NodeStage::Ready),
@@ -127,16 +127,14 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
         }],
-        variant_name: Some("default".to_string()),
     };
     let sensor = SerializedNode {
         name: "sensor".to_string(),
-        tag: "0.1.0".to_string(),
+        tag: "v1".to_string(),
         config_path: "/tmp/sensor.json5".to_string(),
         artifact_path: None,
         stage: Some(NodeStage::Added),
         instances: vec![],
-        variant_name: None,
     };
     let graph = SerializedNodeGraph {
         nodes: vec![brain.clone(), sensor.clone()],

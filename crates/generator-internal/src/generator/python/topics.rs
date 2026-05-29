@@ -2,6 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
+use super::services::{consumed_from_instance_id_python_expr, sender_target_python_expr};
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
@@ -10,16 +11,19 @@ pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
 }
 
-/// Emits the shared `_PKG_DIR` constant and related imports needed by capnp schema loaders.
-/// Call this once before emitting any loaders via [`emit_capnp_loader_fn`].
+/// Emits the imports needed by capnp schema loaders. Call this once before
+/// emitting any loaders via [`emit_capnp_loader_fn`].
+///
+/// Schemas are resolved via `importlib.resources.files("peppygen")` so the
+/// lookup is independent of where the calling file lives in the package
+/// tree — native artifacts at `peppygen/{category}/{leaf}.py` and conformed
+/// ones nested under `peppygen/{category}/{iface}/{tag}/{leaf}.py` share
+/// the same loader body.
 pub(crate) fn emit_capnp_preamble(builder: &mut PythonCodeBuilder) {
     builder.add_import("import capnp");
     builder.add_import("import types");
     builder.add_import("from functools import lru_cache");
-    builder.add_import("from pathlib import Path");
-    builder.blank_line();
-    builder.line("_PKG_DIR = Path(__file__).resolve().parent.parent");
-    builder.blank_line();
+    builder.add_import("from importlib.resources import files");
 }
 
 /// Emits a single `@lru_cache` loader function for a capnp schema.
@@ -33,7 +37,7 @@ pub(crate) fn emit_capnp_loader_fn(
     builder.line(&format!("def {loader_fn_name}() -> types.ModuleType:"));
     builder.indent();
     builder.line(&format!(
-        "return capnp.load(str(_PKG_DIR / \"capnp/{}.capnp\"))",
+        "return capnp.load(str(files(\"peppygen\") / \"capnp\" / \"{}.capnp\"))",
         schema_info.file_stem
     ));
     builder.dedent();
@@ -54,6 +58,7 @@ pub(crate) fn emit_capnp_schema_loader(
 pub fn build_emitted_topic(
     topic: &EmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
+    origin: Option<&crate::generator::types::InterfaceOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
@@ -108,12 +113,14 @@ pub fn build_emitted_topic(
         builder.line("payload = b\"\"");
     }
 
+    let target_expr =
+        sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
     builder.line("await peppylib.TopicMessenger.emit(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
-    builder.line("node_runner.node_name(),");
+    builder.line(&format!("{target_expr},"));
     builder.line("TOPIC_NAME,");
     builder.line("qos,");
     builder.line("payload,");
@@ -129,14 +136,9 @@ pub fn build_consumed_topic(
     topic: &ConsumedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
-    dependency_node_name: &str,
+    dependency: &crate::generator::types::DependencyContext,
 ) -> Result<String> {
-    build_consumed_topic_inner(
-        topic.name(),
-        arguments,
-        schema_info,
-        Some(dependency_node_name),
-    )
+    build_consumed_topic_inner(topic.name(), arguments, schema_info, Some(dependency))
 }
 
 pub fn build_external_consumed_topic(
@@ -151,7 +153,7 @@ fn build_consumed_topic_inner(
     topic_name: &str,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
-    dependency_node_name: Option<&str>,
+    dependency: Option<&crate::generator::types::DependencyContext>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
@@ -159,7 +161,7 @@ fn build_consumed_topic_inner(
     // Collect fields from the message format
     let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
 
-    // Always need Optional for the function parameters (target_core_node, target_instance_id),
+    // Always need Optional for the function parameters (from_core_node, from_instance_id),
     // plus any Optional fields in the dataclasses.
     // Tuple is used for the return type of on_next_message_received.
     builder.add_import("from typing import Optional, Tuple");
@@ -191,21 +193,42 @@ fn build_consumed_topic_inner(
     // Generate on_next_message_received function
     builder.add_import("import peppylib");
     builder.blank_line();
-    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
+    if dependency.is_some() {
+        builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None) -> Tuple[str, Message]:");
+    } else {
+        builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None, from_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
+    }
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
-    if let Some(node_name) = dependency_node_name {
-        builder.line(&format!("node_name = \"{}\"", node_name));
+    if let Some(dep) = dependency {
         builder.line("subscription = await peppylib.TopicMessenger.subscribe(");
         builder.indent();
         builder.line("node_runner.messenger(),");
         builder.line("node_runner.bound_core_node(),");
         builder.line("node_runner.bound_instance_id(),");
-        builder.line("node_name,");
+        let from_target = sender_target_python_expr(
+            dep.origin.as_ref(),
+            &format!("{:?}", dep.producer_name),
+            &format!("{:?}", dep.producer_tag),
+        );
+        builder.line(&format!("{from_target},"));
         builder.line("topic_name,");
-        builder.line("target_core_node,");
-        builder.line("target_instance_id,");
+        builder.line("from_core_node,");
+        let from_instance_id = consumed_from_instance_id_python_expr(dep);
+        builder.line(&format!("{from_instance_id},"));
         builder.line("peppylib.QoSProfile.Standard,");
+        // `is_from_any: true` for `from_any: true` slots — gates the
+        // messenger's per-`(name, tag)` reservation. Pinned slots
+        // (and the test-fixture wildcard with no manifest dep) pass
+        // `false`.
+        let is_from_any = matches!(
+            dep.link_id,
+            crate::generator::types::WireLinkId::Wildcard { link_id: Some(_) }
+        );
+        builder.line(&format!(
+            "is_from_any={},",
+            if is_from_any { "True" } else { "False" }
+        ));
         builder.dedent();
         builder.line(")");
     } else {
@@ -215,8 +238,8 @@ fn build_consumed_topic_inner(
         builder.line("node_runner.bound_core_node(),");
         builder.line("node_runner.bound_instance_id(),");
         builder.line("topic_name,");
-        builder.line("target_core_node,");
-        builder.line("target_instance_id,");
+        builder.line("from_core_node,");
+        builder.line("from_instance_id,");
         builder.line("peppylib.QoSProfile.Standard,");
         builder.dedent();
         builder.line(")");

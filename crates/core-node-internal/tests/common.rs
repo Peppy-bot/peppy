@@ -14,9 +14,9 @@ use core_node_api::encoding::{
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
-use peppylib::messaging::{MessengerHandle, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, ResultStatus, SenderTarget, TopicMessenger};
 use peppylib::runtime::{TaskHandle, spawn};
-use peppylib::{ActionMessenger, PeppyError, ServiceMessenger};
+use peppylib::{ActionMessenger, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -26,17 +26,22 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
-/// Returns `Ok(())` if the payload is a "result pending" sentinel, or `Err` with a
-/// decode-failure message otherwise.
-fn check_pending_or_decode_error(
-    payload: &[u8],
-    err: impl std::fmt::Display,
-) -> Result<(), String> {
-    if peppylib::encoding::is_result_pending(payload) {
-        Ok(())
-    } else {
-        Err(format!("Failed to decode result: {}", err))
-    }
+/// Default tag used by tests when building a [`SenderTarget`]. Matches the
+/// `manifest.tag` value the integration test fixtures emit.
+pub const TEST_NODE_TAG: &str = "v1";
+
+/// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
+/// invalid names — tests use known-good values only.
+pub fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
+}
+
+/// Builds a node-shaped [`SenderTarget`] tagged with [`names::CORE_NODE_TAG`].
+/// Use this when the test caller is addressing one of the daemon's own services
+/// (clock, info, ping, node_add, …) — the daemon's listeners pin their tag to
+/// `CORE_NODE_TAG`, not the `v1` used for ordinary test nodes.
+pub fn core_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, names::CORE_NODE_TAG).expect("core node target")
 }
 
 /// A wrapper around `TaskHandle` that aborts the task when dropped.
@@ -55,8 +60,8 @@ impl<T> Drop for AbortOnDrop<T> {
 pub async fn wait_until_service_reachable(
     messenger: &MessengerHandle,
     bound_core_node: &str,
-    target_node_name: &str,
-    target_service_name: &str,
+    to_node_name: &str,
+    to_service_name: &str,
     target_core_node: &str,
     target_instance_id: &str,
     timeout: Duration,
@@ -68,8 +73,8 @@ pub async fn wait_until_service_reachable(
             messenger,
             bound_core_node,
             "ready_probe",
-            target_node_name,
-            target_service_name,
+            test_node_target(to_node_name),
+            to_service_name,
             Some(target_core_node),
             Some(target_instance_id),
         )
@@ -79,7 +84,7 @@ pub async fn wait_until_service_reachable(
         }
         if std::time::Instant::now() >= deadline {
             panic!(
-                "service {target_node_name}/{target_service_name} on \
+                "service {to_node_name}/{to_service_name} on \
                  {target_core_node}/{target_instance_id} did not become \
                  reachable within {timeout:?}"
             );
@@ -102,7 +107,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
-        &started.core_node_name,
+        core_node_target(&started.core_node_name),
         names::CLOCK,
         Some(&started.core_node_name),
         None,
@@ -146,10 +151,11 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         &started.caller_handle,
         caller_core_node,
         caller_instance_id,
-        &started.core_node_name,
+        Some(core_node_target(&started.core_node_name)),
+        false,
         names::CLOCK,
         Some(&started.core_node_name),
-        None,
+        &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
     .await
@@ -241,6 +247,7 @@ pub fn build_runtime_config_json5(
     port: u16,
     core_node_name: &str,
     node_name: &str,
+    node_tag: &str,
     instance_id: &str,
     arguments: std::collections::BTreeMap<String, config::AnyType>,
 ) -> String {
@@ -248,11 +255,13 @@ pub fn build_runtime_config_json5(
         host,
         port,
         config::runtime::NodeInstanceConfig {
-            instance_id: config::launcher::Name::new(instance_id).expect("valid instance id"),
             arguments,
-            framework: Default::default(),
+            ..config::runtime::NodeInstanceConfig::new(
+                config::launcher::Name::new(instance_id).expect("valid instance id"),
+            )
         },
         node_name,
+        node_tag,
         core_node_name,
     )
     .expect("runtime config should be valid");
@@ -264,6 +273,7 @@ pub fn build_runtime_config_json5(
 pub fn default_runtime_config_json5(
     core_node_name: &str,
     node_name: &str,
+    node_tag: &str,
     instance_id: &str,
 ) -> String {
     build_runtime_config_json5(
@@ -271,6 +281,7 @@ pub fn default_runtime_config_json5(
         config::consts::DEFAULT_MESSAGING_PORT,
         core_node_name,
         node_name,
+        node_tag,
         instance_id,
         Default::default(),
     )
@@ -316,20 +327,15 @@ async fn send_node_run_and_wait_internal(
         timeouts.result.as_secs(),
     )
     .with_env_vars(env_vars);
-    let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
-        ("*", "*")
-    } else {
-        (core_node_name, CALLER_INSTANCE_ID)
-    };
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode goal: {}", e))?;
 
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
-        caller_core_node,
-        caller_instance_id,
         core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_target(core_node_name),
         names::NODE_RUN_ACTION,
         Some(core_node_name),
         None,
@@ -349,32 +355,9 @@ async fn send_node_run_and_wait_internal(
     let mut last_activity = tokio::time::Instant::now();
     let feedback_tx = feedback_tx.as_ref();
 
+    // Drain feedback until the server closes the stream on completion, honoring
+    // the idle / max-timeout budgets, then fetch the buffered result once.
     loop {
-        // Drain feedback so the publisher doesn't block on a full channel.
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
-                return Err("Timeout waiting for node_run result".to_string());
-            }
-            if now.duration_since(last_activity) >= timeouts.result {
-                return Err("Timeout waiting for node_run result (idle)".to_string());
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    let payload = msg.payload();
-                    if let Ok(feedback) = NodeRunFeedback::decode(payload.as_ref())
-                        && let Some(tx) = feedback_tx
-                    {
-                        let _ = tx.send(feedback);
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
             return Err("Timeout waiting for node_run result".to_string());
@@ -382,41 +365,36 @@ async fn send_node_run_and_wait_internal(
         if now.duration_since(last_activity) >= timeouts.result {
             return Err("Timeout waiting for node_run result (idle)".to_string());
         }
-        let poll_timeout = Duration::from_millis(200);
-
-        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
-            Ok(msg) => {
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
-                match NodeRunResult::decode(&payload) {
-                    Ok(result) => {
-                        // Drain any remaining feedback that may have arrived while polling for the
-                        // result so callers can reliably assert on stdout/stderr markers.
-                        loop {
-                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
-                                break;
-                            };
-                            let payload = msg.payload();
-                            if let Ok(feedback) = NodeRunFeedback::decode(payload.as_ref())
-                                && let Some(tx) = feedback_tx
-                            {
-                                let _ = tx.send(feedback);
-                            }
-                        }
-                        return Ok(NodeRunTestResponse {
-                            goal_response,
-                            result,
-                        });
-                    }
-                    Err(err) => {
-                        check_pending_or_decode_error(payload.as_ref(), err)?;
-                    }
+                let feedback = NodeRunFeedback::decode(payload.as_ref())
+                    .expect("failed to decode NodeRunFeedback");
+                if let Some(tx) = feedback_tx {
+                    let _ = tx.send(feedback);
                 }
             }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => return Err(format!("Failed to get result: {}", err)),
+            Ok(Err(_)) => break,
+            Err(_) => {}
         }
+    }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
+    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                let result = NodeRunResult::decode(reply.body.as_ref())
+                    .map_err(|err| format!("Failed to decode result: {}", err))?;
+                Ok(NodeRunTestResponse {
+                    goal_response,
+                    result,
+                })
+            }
+            other => Err(format!("action did not complete with a result: {other:?}")),
+        },
+        Err(err) => Err(format!("Failed to get result: {}", err)),
     }
 }
 
@@ -425,8 +403,6 @@ async fn send_node_add_and_wait_internal<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
-    variant: Option<NodeSource>,
-    dep_variant_overrides: Vec<core_node_api::encoding::DepVariantOverride>,
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
@@ -435,18 +411,7 @@ async fn send_node_add_and_wait_internal<'a>(
 ) -> Result<NodeAddResult, String> {
     let source = source.into();
 
-    // Dep-variant overrides are only representable on RepoNode sources.
-    // If a test supplies them with any other source kind, that is a bug in
-    // the test — fail loudly instead of silently dropping them and
-    // running down the wrong code path.
-    if !dep_variant_overrides.is_empty() && !matches!(source, NodeAddSource::RepoNode { .. }) {
-        return Err(format!(
-            "dep_variant_overrides only allowed with RepoNode sources, got {:?}",
-            source
-        ));
-    }
-
-    let mut goal = match &source {
+    let goal = match &source {
         NodeAddSource::Path(path) => {
             // For directory sources, ensure the git hash file exists. Archive sources must
             // already contain the expected git hash within the bundle.
@@ -469,10 +434,6 @@ async fn send_node_add_and_wait_internal<'a>(
                         )
                     })?;
                 }
-
-                // git.hash verification always targets the root source path
-                // (alongside the peppy.json5 with the manifest), so no
-                // provisioning is needed in variant directories.
             }
             NodeAddGoal::new(path, TEST_GIT_HASH, result_timeout.as_secs())
         }
@@ -494,37 +455,23 @@ async fn send_node_add_and_wait_internal<'a>(
             result_timeout.as_secs(),
         ),
         NodeAddSource::RepoNode { name, tag } => {
-            let mut src = NodeSource::repo_node(*name, *tag)
+            let src = NodeSource::repo_node(*name, *tag)
                 .map_err(|e| format!("invalid repo-node source in test: {e}"))?;
-            if !dep_variant_overrides.is_empty() {
-                src = src
-                    .with_dep_variant_overrides(dep_variant_overrides.clone())
-                    .map_err(|e| format!("invalid dep-variant override in test: {e}"))?;
-            }
             NodeAddGoal::from_source(src, TEST_GIT_HASH, result_timeout.as_secs())
         }
     }
     .with_env_vars(env_vars)
     .with_force(force);
 
-    if let Some(v) = variant {
-        goal = goal.with_variant_source(v);
-    }
-
-    let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
-        ("*", "*")
-    } else {
-        (core_node_name, CALLER_INSTANCE_ID)
-    };
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode goal: {}", e))?;
 
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
-        caller_core_node,
-        caller_instance_id,
         core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_target(core_node_name),
         names::NODE_ADD_ACTION,
         Some(core_node_name),
         None,
@@ -555,32 +502,9 @@ async fn send_node_add_and_wait_internal<'a>(
     let mut last_activity = tokio::time::Instant::now();
     let feedback_tx = feedback_tx.as_ref();
 
+    // Drain feedback until the server closes the stream on completion, then
+    // fetch the buffered result once.
     loop {
-        // Drain feedback so the publisher doesn't block on a full channel.
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
-                return Err("Timeout waiting for node_add result".to_string());
-            }
-            if now.duration_since(last_activity) >= result_timeout {
-                return Err("Timeout waiting for node_add result (idle)".to_string());
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    let payload = msg.payload();
-                    if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref())
-                        && let Some(tx) = feedback_tx
-                    {
-                        let _ = tx.send(feedback);
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
             return Err("Timeout waiting for node_add result".to_string());
@@ -588,38 +512,32 @@ async fn send_node_add_and_wait_internal<'a>(
         if now.duration_since(last_activity) >= result_timeout {
             return Err("Timeout waiting for node_add result (idle)".to_string());
         }
-        let poll_timeout = Duration::from_millis(200);
-
-        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
-            Ok(msg) => {
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
-                match NodeAddResult::decode(&payload) {
-                    Ok(result) => {
-                        // Drain any remaining feedback that may have arrived while polling for the
-                        // result so callers can reliably assert on stdout/stderr markers.
-                        loop {
-                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
-                                break;
-                            };
-                            let payload = msg.payload();
-                            if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref())
-                                && let Some(tx) = feedback_tx
-                            {
-                                let _ = tx.send(feedback);
-                            }
-                        }
-                        return Ok(result);
-                    }
-                    Err(err) => {
-                        check_pending_or_decode_error(payload.as_ref(), err)?;
-                    }
+                let feedback = NodeAddFeedback::decode(payload.as_ref())
+                    .expect("failed to decode NodeAddFeedback");
+                if let Some(tx) = feedback_tx {
+                    let _ = tx.send(feedback);
                 }
             }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => return Err(format!("Failed to get result: {}", err)),
+            Ok(Err(_)) => break,
+            Err(_) => {}
         }
+    }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
+    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                NodeAddResult::decode(reply.body.as_ref())
+                    .map_err(|err| format!("Failed to decode result: {}", err))
+            }
+            other => Err(format!("action did not complete with a result: {other:?}")),
+        },
+        Err(err) => Err(format!("Failed to get result: {}", err)),
     }
 }
 
@@ -640,16 +558,11 @@ pub async fn send_node_build_and_wait(
         .encode()
         .map_err(|e| format!("Failed to encode build goal: {}", e))?;
 
-    let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
-        ("*", "*")
-    } else {
-        (core_node_name, CALLER_INSTANCE_ID)
-    };
     let mut action_handle = ActionMessenger::send_goal(
         messenger,
-        caller_core_node,
-        caller_instance_id,
         core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_target(core_node_name),
         names::NODE_BUILD_ACTION,
         Some(core_node_name),
         None,
@@ -678,30 +591,9 @@ pub async fn send_node_build_and_wait(
     let absolute_deadline = tokio::time::Instant::now() + result_timeout;
     let mut last_activity = tokio::time::Instant::now();
 
+    // Drain feedback until the server closes the stream on completion, then
+    // fetch the buffered result once.
     loop {
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
-                return Err("Timeout waiting for node_build result".to_string());
-            }
-            if now.duration_since(last_activity) >= result_timeout {
-                return Err("Timeout waiting for node_build result (idle)".to_string());
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    if let Some(tx) = feedback_tx
-                        && let Ok(feedback) = NodeBuildFeedback::decode(msg.payload().as_ref())
-                    {
-                        let _ = tx.send(feedback);
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
             return Err("Timeout waiting for node_build result".to_string());
@@ -709,46 +601,36 @@ pub async fn send_node_build_and_wait(
         if now.duration_since(last_activity) >= result_timeout {
             return Err("Timeout waiting for node_build result (idle)".to_string());
         }
-        let poll_timeout = Duration::from_millis(200);
-
-        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
-            Ok(msg) => {
-                let payload = msg.payload();
-                match NodeBuildResult::decode(&payload) {
-                    Ok(result) => {
-                        // Drain any remaining feedback that may have arrived while polling for the
-                        // result so callers can reliably assert on stdout/stderr markers.
-                        loop {
-                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
-                                break;
-                            };
-                            let payload = msg.payload();
-                            if let Ok(feedback) = NodeBuildFeedback::decode(payload.as_ref())
-                                && let Some(tx) = feedback_tx
-                            {
-                                let _ = tx.send(feedback);
-                            }
-                        }
-                        return Ok(result);
-                    }
-                    Err(err) => {
-                        check_pending_or_decode_error(payload.as_ref(), err)?;
-                    }
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
+                let feedback = NodeBuildFeedback::decode(msg.payload().as_ref())
+                    .expect("failed to decode NodeBuildFeedback");
+                if let Some(tx) = feedback_tx {
+                    let _ = tx.send(feedback);
                 }
             }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => return Err(format!("Failed to get build result: {}", err)),
+            Ok(Err(_)) => break,
+            Err(_) => {}
         }
+    }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
+    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                NodeBuildResult::decode(reply.body.as_ref())
+                    .map_err(|err| format!("Failed to decode build result: {}", err))
+            }
+            other => Err(format!("action did not complete with a result: {other:?}")),
+        },
+        Err(err) => Err(format!("Failed to get build result: {}", err)),
     }
 }
 
 /// Helper function to send a node_add goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
-///
-/// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
-/// can match feedback topics with "*" segments.
 pub async fn send_node_add_and_wait<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -761,8 +643,6 @@ pub async fn send_node_add_and_wait<'a>(
         messenger,
         core_node_name,
         source,
-        None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -785,8 +665,6 @@ pub async fn send_node_add_and_wait_with_env<'a>(
         messenger,
         core_node_name,
         source,
-        None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -796,63 +674,14 @@ pub async fn send_node_add_and_wait_with_env<'a>(
     .await
 }
 
-pub async fn send_node_add_and_wait_with_variant<'a>(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
-    source: impl Into<NodeAddSource<'a>>,
-    variant: &str,
-    goal_timeout: Duration,
-    result_timeout: Duration,
-    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-) -> Result<NodeAddResult, String> {
-    send_node_add_and_wait_internal(
-        messenger,
-        core_node_name,
-        source,
-        Some(NodeSource::Fs(PathBuf::from(variant))),
-        Vec::new(),
-        goal_timeout,
-        result_timeout,
-        feedback_tx,
-        Vec::new(),
-        false,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-pub async fn send_node_add_and_wait_with_dep_overrides<'a>(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
-    source: impl Into<NodeAddSource<'a>>,
-    variant: Option<&str>,
-    dep_overrides: Vec<core_node_api::encoding::DepVariantOverride>,
-    goal_timeout: Duration,
-    result_timeout: Duration,
-    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-) -> Result<NodeAddResult, String> {
-    send_node_add_and_wait_internal(
-        messenger,
-        core_node_name,
-        source,
-        variant.map(|v| NodeSource::Fs(PathBuf::from(v))),
-        dep_overrides,
-        goal_timeout,
-        result_timeout,
-        feedback_tx,
-        Vec::new(),
-        false,
-    )
-    .await
-}
-
-/// Builder for a `nodes.json5` cache fixture. Tests call
-/// [`TestPackagesCache::fs_entry`] / `git_entry` / `http_entry` to declare
-/// discovered nodes and then [`TestPackagesCache::write`] to serialize
-/// the file under `peppy_dirs.cache_dir()/nodes.json5`.
+/// Builder for `nodes.json5` and `interfaces.json5` cache fixtures. Tests call
+/// [`TestPackagesCache::fs_entry`] / `git_entry` / `interface_git_entry` to
+/// declare discovered items, then [`TestPackagesCache::write`] to serialize
+/// the files under `peppy_dirs.cache_dir()`.
 #[derive(Default)]
 pub struct TestPackagesCache {
     entries: Vec<serde_json::Value>,
+    interfaces: Vec<serde_json::Value>,
 }
 
 impl TestPackagesCache {
@@ -860,36 +689,26 @@ impl TestPackagesCache {
         Self::default()
     }
 
-    pub fn fs_entry(
-        mut self,
-        name: &str,
-        tag: &str,
-        absolute_path: impl AsRef<Path>,
-        variants: &[&str],
-    ) -> Self {
+    /// `absolute_path` is the directory containing `peppy.json5`. The
+    /// cache stores the manifest file path (path-points-at-file
+    /// convention), so we join `NODE_CONFIG_FILE` here.
+    pub fn fs_entry(mut self, name: &str, tag: &str, absolute_path: impl AsRef<Path>) -> Self {
+        let manifest_path = absolute_path.as_ref().join(NODE_CONFIG_FILE);
         let mut m = serde_json::Map::new();
         m.insert("node_name".into(), serde_json::Value::String(name.into()));
         m.insert("node_tag".into(), serde_json::Value::String(tag.into()));
         m.insert("source_type".into(), serde_json::Value::String("fs".into()));
         m.insert(
             "path".into(),
-            serde_json::Value::String(absolute_path.as_ref().to_string_lossy().into_owned()),
+            serde_json::Value::String(manifest_path.to_string_lossy().into_owned()),
         );
-        if !variants.is_empty() {
-            m.insert(
-                "variants".into(),
-                serde_json::Value::Array(
-                    variants
-                        .iter()
-                        .map(|v| serde_json::Value::String((*v).into()))
-                        .collect(),
-                ),
-            );
-        }
         self.entries.push(serde_json::Value::Object(m));
         self
     }
 
+    /// `path_in_repo` is the directory containing `peppy.json5` within
+    /// the checked-out repo. We join `NODE_CONFIG_FILE` so the cache
+    /// records the manifest file path.
     pub fn git_entry(
         mut self,
         name: &str,
@@ -897,8 +716,8 @@ impl TestPackagesCache {
         repo_url: &str,
         resolved_ref: &str,
         path_in_repo: &str,
-        variants: &[&str],
     ) -> Self {
+        let manifest_path = Path::new(path_in_repo).join(NODE_CONFIG_FILE);
         let mut m = serde_json::Map::new();
         m.insert("node_name".into(), serde_json::Value::String(name.into()));
         m.insert("node_tag".into(), serde_json::Value::String(tag.into()));
@@ -916,20 +735,78 @@ impl TestPackagesCache {
         );
         m.insert(
             "path".into(),
+            serde_json::Value::String(manifest_path.to_string_lossy().into_owned()),
+        );
+        self.entries.push(serde_json::Value::Object(m));
+        self
+    }
+
+    /// Adds an `interfaces.json5` entry for a git-sourced interface. `body`
+    /// is the on-disk interface JSON5 (assumed already committed at
+    /// `path_in_repo` inside `repo_url`); its sha256 is computed here so
+    /// the cache fingerprint matches what `ensure_checkout` will read.
+    pub fn interface_git_entry(
+        mut self,
+        name: &str,
+        tag: &str,
+        repo_url: &str,
+        resolved_ref: &str,
+        path_in_repo: &str,
+        body: &str,
+    ) -> Self {
+        let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
+        let mut m = serde_json::Map::new();
+        m.insert(
+            "interface_name".into(),
+            serde_json::Value::String(name.into()),
+        );
+        m.insert("tag".into(), serde_json::Value::String(tag.into()));
+        m.insert("sha256".into(), serde_json::Value::String(sha));
+        m.insert(
+            "source_type".into(),
+            serde_json::Value::String("git".into()),
+        );
+        m.insert(
+            "source_uri".into(),
+            serde_json::Value::String(repo_url.into()),
+        );
+        m.insert(
+            "resolved_ref".into(),
+            serde_json::Value::String(resolved_ref.into()),
+        );
+        m.insert(
+            "path".into(),
             serde_json::Value::String(path_in_repo.into()),
         );
-        if !variants.is_empty() {
-            m.insert(
-                "variants".into(),
-                serde_json::Value::Array(
-                    variants
-                        .iter()
-                        .map(|v| serde_json::Value::String((*v).into()))
-                        .collect(),
-                ),
-            );
-        }
-        self.entries.push(serde_json::Value::Object(m));
+        self.interfaces.push(serde_json::Value::Object(m));
+        self
+    }
+
+    /// Adds an `interfaces.json5` entry for a filesystem-sourced interface.
+    /// `body` is the on-disk interface JSON5 (assumed already written at
+    /// `absolute_path`); its sha256 is computed here so the cache
+    /// fingerprint matches what `resolve_interface_doc` reads back.
+    pub fn interface_fs_entry(
+        mut self,
+        name: &str,
+        tag: &str,
+        absolute_path: impl AsRef<Path>,
+        body: &str,
+    ) -> Self {
+        let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
+        let mut m = serde_json::Map::new();
+        m.insert(
+            "interface_name".into(),
+            serde_json::Value::String(name.into()),
+        );
+        m.insert("tag".into(), serde_json::Value::String(tag.into()));
+        m.insert("sha256".into(), serde_json::Value::String(sha));
+        m.insert("source_type".into(), serde_json::Value::String("fs".into()));
+        m.insert(
+            "path".into(),
+            serde_json::Value::String(absolute_path.as_ref().to_string_lossy().into_owned()),
+        );
+        self.interfaces.push(serde_json::Value::Object(m));
         self
     }
 
@@ -940,6 +817,19 @@ impl TestPackagesCache {
             serde_json::to_string_pretty(&self.entries).expect("failed to serialize cache entries");
         std::fs::write(nodes_repo_cache_path(peppy_dirs), content)
             .expect("failed to write nodes.json5 fixture");
+        let interfaces_path = core_node::interfaces_repo_cache_path(peppy_dirs);
+        if self.interfaces.is_empty() {
+            match std::fs::remove_file(&interfaces_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => panic!("failed to remove stale interfaces.json5 fixture: {e}"),
+            }
+        } else {
+            let interfaces_content = serde_json::to_string_pretty(&self.interfaces)
+                .expect("failed to serialize interface cache entries");
+            std::fs::write(interfaces_path, interfaces_content)
+                .expect("failed to write interfaces.json5 fixture");
+        }
     }
 }
 
@@ -988,8 +878,6 @@ pub async fn send_node_add_then_build<'a>(
         messenger,
         core_node_name,
         source,
-        None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         None,
@@ -1037,8 +925,6 @@ pub async fn send_node_add_and_wait_with_force<'a>(
         messenger,
         core_node_name,
         source,
-        None,
-        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -1050,9 +936,6 @@ pub async fn send_node_add_and_wait_with_force<'a>(
 
 /// Helper function to send a node_run goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
-///
-/// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
-/// can match feedback topics with "*" segments.
 pub async fn send_node_run_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -1103,7 +986,7 @@ pub async fn send_node_run_and_wait_with_env(
 /// Each call creates a completely new node with its own peppygen generation
 /// and cargo build, ensuring isolation between tests.
 pub fn create_test_node() -> PathBuf {
-    init_test_node_project("example_node", "0.1.0", true)
+    init_test_node_project("example_node", "v1", true)
 }
 
 /// Creates a fresh test node in a new temp directory.
@@ -1519,6 +1402,7 @@ async fn spawn_real_running_instance_inner(
         node_stack::StartContext {
             instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &started.peppy_dirs,
@@ -1544,7 +1428,7 @@ async fn spawn_real_running_instance_inner(
             &shutdown_handle,
             &started.core_node_name,
             instance_id.as_str(),
-            name,
+            test_node_target(name),
         )
         .await
         .expect("failed to start shutdown listener for test instance");

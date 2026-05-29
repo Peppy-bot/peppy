@@ -9,58 +9,32 @@ import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 One of PeppyOS's key features is the ability to share nodes with other people.
 As an example, we'll try to pull the `uvc_camera` node from [this repo](https://github.com/Peppy-bot/nodes_hub.git) in a separate shell.
 
-Because `nodes_hub` ships as one of the default [repositories](/advanced_guides/repositories/), `uvc_camera` is already in the index — so you can add it by `name:tag` without referring to the git URL at all:
+Because `nodes_hub` ships as one of the default [repositories](/advanced_guides/repositories/), `uvc_camera` is already in the index, so you can add it by `name:tag` without referring to the git URL at all:
 
-<Tabs>
-  <TabItem label="Python">
 ```sh
-peppy node add --variant mock-python uvc_camera:0.1.0
+peppy node add uvc_camera:v1
 ```
-  </TabItem>
-  <TabItem label="Rust">
-```sh
-peppy node add --variant mock-rust uvc_camera:0.1.0
-```
-  </TabItem>
-</Tabs>
 
 ### Adding a node from an unindexed repository
 
 If the node lives in a repository that isn't registered in your `repositories.json5`, you can still add it directly by URL:
 
-<Tabs>
-  <TabItem label="Python">
 ```sh
-peppy node add --variant mock-python https://github.com/some-user/custom_nodes.git/uvc_camera
+peppy node add https://github.com/some-user/custom_nodes.git/uvc_camera
 ```
 or
 ```sh
-peppy node add --variant mock-python --ref main https://github.com/some-user/custom_nodes.git/uvc_camera
-```  
-  </TabItem>
-  <TabItem label="Rust">
-```sh
-peppy node add --variant mock-rust https://github.com/some-user/custom_nodes.git/uvc_camera
+peppy node add --ref main https://github.com/some-user/custom_nodes.git/uvc_camera
 ```
-or
-```sh
-peppy node add --variant mock-rust --ref main https://github.com/some-user/custom_nodes.git/uvc_camera
-```
-  </TabItem>
-</Tabs>
 
 :::note
-When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node run uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`. `--ref` is only accepted with a full git URL — for `name:tag` sources the ref is pinned once in `repositories.json5` when the repo is registered.
-:::
-
-:::note
-[Variants](/advanced_guides/variants.mdx) (`--variant`) are a special kind of node, but for the moment you can imagine this is a regular node we're dealing with
+When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node run uvc_camera:v1` corresponds to the tag found in `peppy.json5`. `--ref` is only accepted with a full git URL; for `name:tag` sources the ref is pinned once in `repositories.json5` when the repo is registered.
 :::
 
 
 Now that this node is added, we can start it:
 ```sh
-peppy node run uvc_camera:0.1.0 device_path=/dev/video0 video.camera_encoding="mjpeg" video.topic_encoding="rgb8" video.frame_rate=25 video.resolution.width=1280 video.resolution.height=720
+peppy node run uvc_camera:v1 device_path=/dev/video0 video.camera_encoding="mjpeg" video.topic_encoding="rgb8" video.frame_rate=25 video.resolution.width=1280 video.resolution.height=720
 ```
 
 and inspect its logs:
@@ -92,7 +66,7 @@ peppy node add https://github.com/Peppy-bot/example_nodes.git/rust/fake_video_re
 
 Start the node:
 ```sh
-peppy node run fake_video_reconstruction:0.1.0 video_duration_seconds=5
+peppy node run fake_video_reconstruction:v1 video_duration_seconds=5
 ```
 
 If we look at the logs of the started `fake_video_reconstruction` node:
@@ -107,11 +81,11 @@ If we look at the logs of the started `fake_video_reconstruction` node:
 [2026-01-26T15:35:37.222] [stdout] Video saved to: /var/folders/kb/36lp35_92z5_jg6gfqhvkm600000gn/T/.tmpCJoXVL/reconstructed_video.mp4
 ```
 
-We can see the video has been saved to a temporary folder. Go ahead and open it—you'll find the reconstructed video of the robot.
+We can see the video has been saved to a temporary folder. Go ahead and open it; you'll find the reconstructed video of the robot.
 In the same way, you can share your own nodes by hosting them in a Git repository and connect them to remote nodes.
 A node can also be pulled in the same way if it's in a `.tar.zst` archive.
 
 :::tip
-When you're iterating on a node that depends on a hub node — and you don't want to `peppy node add` the hub node first just to regenerate peppygen — run `peppy node sync -r` instead. The `--include-repositories` flag lets the daemon resolve missing dependencies through the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) directly.
+When you're iterating on a node that depends on a hub node, and you don't want to `peppy node add` the hub node first just to regenerate peppygen, run `peppy node sync -r` instead. The `--include-repositories` flag lets the daemon resolve missing dependencies through the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) directly.
 :::
 

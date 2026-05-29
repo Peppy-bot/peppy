@@ -1,8 +1,8 @@
 use crate::helpers::{
-    STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output, init_python_project_venv,
-    init_python_user_node, init_test_env, send_shutdown, spawn_python_run, test_peppy_dirs,
-    try_send_shutdown, wait_for_child, wait_for_health_service_reachable_or_exit,
-    wait_for_service_reachable_or_exit,
+    CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
+    copy_config_to_output, init_python_project_venv, init_python_user_node, init_test_env,
+    send_shutdown, spawn_python_run, test_peppy_dirs, try_send_shutdown, wait_for_child,
+    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -42,7 +42,7 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 
 const CONSUMED_SERVICE_EXAMPLE: &str = r#"
 {
-  local_node_id: "uvc_camera",
+  link_id: "uvc_camera",
   name: "enable_camera",
 }
 "#;
@@ -77,7 +77,7 @@ const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 
 const CONSUMED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 {
-  local_node_id: "uvc_camera",
+  link_id: "uvc_camera",
   name: "get_system_status",
 }
 "#;
@@ -111,7 +111,7 @@ async fn services_communication_no_target_instance_id() {
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            "uvc_camera",
+            &generator::DependencyContext::native("uvc_camera", "v1"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -127,12 +127,9 @@ async fn services_communication_no_target_instance_id() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -149,7 +146,7 @@ from peppygen.consumed_services import uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)
-    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0, None, None)
+    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0)
     error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
     print(
         f"enable_camera result: service_id={response.instance_id} enabled={response.data.enabled} error={error_msg}",
@@ -174,7 +171,9 @@ if __name__ == "__main__":
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service).unwrap();
+    generator
+        .add_exposed_service(&exposed_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -188,12 +187,9 @@ if __name__ == "__main__":
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         UVC_CAMERA_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -277,20 +273,39 @@ if __name__ == "__main__":
         Some(exposer_instance_id),
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
-    let mut consumer_child = spawn_python_run(
+    // Verify broadcast reachability before spawning the consumer.
+    // The targeted probe above confirms the exposer individually, but the
+    // broadcast subscription pattern may not be fully propagated in the
+    // Zenoh routing table yet. This probe exercises the broadcast path,
+    // ensuring the exposer's broadcast subscription is active before the
+    // consumer sends its broadcast poll (instance_id=None).
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        "enable_camera",
+        None,
+        &mut exposer_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    let mut consumer = CapturedChild::new(spawn_python_run(
         &user_node_consumer,
         &[(RUNTIME_CONFIG_VAR_NAME, &user_node_consumer_config_str)],
-    );
+    ));
 
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
         consumer_instance_id,
-        &mut consumer_child,
+        &mut consumer.child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -299,8 +314,22 @@ if __name__ == "__main__":
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
+
+    // Consumer's poll runs as a background task created in `setup`. Wait
+    // for the result line to appear in its stdout before sending shutdown,
+    // otherwise the event loop can stop mid-poll and the print is lost.
+    let expected_consumer_log = format!(
+        "enable_camera result: service_id={} enabled=True error=handled",
+        exposer_instance_id
+    );
+    consumer.wait_for_stdout_contains(
+        &expected_consumer_log,
+        Duration::from_secs(10),
+        &user_node_consumer,
+    );
 
     // The consumer may have already exited after completing the request.
     try_send_shutdown(
@@ -324,11 +353,7 @@ if __name__ == "__main__":
     )
     .await;
 
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
+    let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
     let exposer_output = wait_for_child(
         &mut exposer_child,
         Some(Duration::from_secs(10)),
@@ -344,10 +369,9 @@ if __name__ == "__main__":
         consumer_stdout,
         consumer_stderr
     );
-    let expected_consumer_log = format!(
-        "enable_camera result: service_id={} enabled=True error=handled",
-        exposer_instance_id
-    );
+    // `wait_for_stdout_contains` above already proved the line was printed,
+    // but we re-assert here so the failure points at the right location if
+    // the captured-output flow ever regresses.
     assert!(
         consumer_stdout.contains(&expected_consumer_log),
         "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
@@ -401,7 +425,7 @@ async fn services_communication_exposed_service_without_request_body() {
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            "uvc_camera",
+            &generator::DependencyContext::native("uvc_camera", "v1"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -417,12 +441,9 @@ async fn services_communication_exposed_service_without_request_body() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -438,7 +459,7 @@ from peppygen import NodeBuilder
 from peppygen.consumed_services import uvc_camera_get_system_status
 
 async def poll_service(node_runner):
-    response = await uvc_camera_get_system_status.poll(node_runner, 5.0, None, None)
+    response = await uvc_camera_get_system_status.poll(node_runner, 5.0)
     print(
         f"get_system_status result: service_id={response.instance_id} healthy={response.data.healthy}",
         flush=True,
@@ -463,7 +484,9 @@ if __name__ == "__main__":
         serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service).unwrap();
+    generator
+        .add_exposed_service(&exposed_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
         .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
@@ -477,12 +500,9 @@ if __name__ == "__main__":
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         UVC_CAMERA_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -548,6 +568,7 @@ if __name__ == "__main__":
         Some(exposer_instance_id),
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -564,20 +585,22 @@ if __name__ == "__main__":
         None,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
-    let mut consumer_child = spawn_python_run(
+    let mut consumer = CapturedChild::new(spawn_python_run(
         &user_node_consumer,
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
+    ));
 
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
         consumer_instance_id,
-        &mut consumer_child,
+        &mut consumer.child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -586,8 +609,22 @@ if __name__ == "__main__":
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
+
+    // Consumer's poll runs as a background task created in `setup`. Wait
+    // for the result line to appear in its stdout before sending shutdown,
+    // otherwise the event loop can stop mid-poll and the print is lost.
+    let expected_consumer_log = format!(
+        "get_system_status result: service_id={} healthy=True",
+        exposer_instance_id
+    );
+    consumer.wait_for_stdout_contains(
+        &expected_consumer_log,
+        Duration::from_secs(10),
+        &user_node_consumer,
+    );
 
     send_shutdown(
         &messenger,
@@ -610,11 +647,7 @@ if __name__ == "__main__":
     )
     .await;
 
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
+    let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
     let exposer_output = wait_for_child(
         &mut exposer_child,
         Some(Duration::from_secs(10)),
@@ -630,10 +663,9 @@ if __name__ == "__main__":
         consumer_stdout,
         consumer_stderr
     );
-    let expected_consumer_log = format!(
-        "get_system_status result: service_id={} healthy=True",
-        exposer_instance_id
-    );
+    // `wait_for_stdout_contains` above already proved the line was printed,
+    // but we re-assert here so the failure points at the right location if
+    // the captured-output flow ever regresses.
     assert!(
         consumer_stdout.contains(&expected_consumer_log),
         "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
@@ -666,7 +698,7 @@ if __name__ == "__main__":
 
 /// If there are multiple services of the same name and the consumer does not specify an instance_id, it's the first service that responds that connects with the consumer
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_multiple_exposed_instances_same_service_not_target_instance_id() {
+async fn services_communication_multiple_exposed_instances_same_service_no_target_instance_id() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -688,7 +720,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            "uvc_camera",
+            &generator::DependencyContext::native("uvc_camera", "v1"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -704,12 +736,9 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(consumer_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -726,7 +755,7 @@ from peppygen.consumed_services import uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)
-    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0, None, None)
+    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0)
     error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
     print(
         f"enable_camera result: enabled={response.data.enabled} error={error_msg}",
@@ -751,7 +780,9 @@ if __name__ == "__main__":
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer1, user_node_exposer1, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer1, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service).unwrap();
+    generator
+        .add_exposed_service(&exposed_service, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
     generator
         .build(&output_dir_exposer1, &test_peppy_dirs(), Default::default())
@@ -765,12 +796,9 @@ if __name__ == "__main__":
     let exposer1_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer1_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer1_instance_id).unwrap()),
         UVC_CAMERA_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -816,7 +844,9 @@ if __name__ == "__main__":
     let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer2, user_node_exposer2, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer2, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_service(&exposed_service2).unwrap();
+    generator
+        .add_exposed_service(&exposed_service2, None)
+        .unwrap();
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator
         .build(&output_dir_exposer2, &test_peppy_dirs(), Default::default())
@@ -830,12 +860,9 @@ if __name__ == "__main__":
     let exposer2_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstanceConfig {
-            instance_id: Name::new(exposer2_instance_id).unwrap(),
-            arguments: Default::default(),
-            framework: Default::default(),
-        },
+        NodeInstanceConfig::new(Name::new(exposer2_instance_id).unwrap()),
         UVC_CAMERA_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -914,6 +941,7 @@ if __name__ == "__main__":
         Some(exposer1_instance_id),
         &mut exposer1_child,
         &user_node_exposer1,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
     wait_for_service_reachable_or_exit(
@@ -923,6 +951,7 @@ if __name__ == "__main__":
         Some(exposer2_instance_id),
         &mut exposer2_child,
         &user_node_exposer2,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
@@ -939,38 +968,49 @@ if __name__ == "__main__":
         None,
         &mut exposer1_child,
         &user_node_exposer1,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
-    let mut consumer_child = spawn_python_run(
+    let mut consumer = CapturedChild::new(spawn_python_run(
         &user_node_consumer,
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
+    ));
 
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
         consumer_instance_id,
-        &mut consumer_child,
+        &mut consumer.child,
         &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        UVC_CAMERA_NODE_NAME,
-        exposer1_instance_id,
-        &mut exposer1_child,
-        &user_node_exposer1,
-    )
-    .await;
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        UVC_CAMERA_NODE_NAME,
-        exposer2_instance_id,
-        &mut exposer2_child,
-        &user_node_exposer2,
-    )
-    .await;
+    // Do NOT wait for health on the exposers here. Under discover-then-pin
+    // only the winning exposer's `handle_next_request` returns and lets
+    // `setup` complete; the loser stays parked on its queryable, so
+    // `run_post_setup_services` (which registers the health endpoint) never
+    // runs there. Probing health on the loser would now panic with a
+    // wait-timeout (post-`DEFAULT_WAIT_TIMEOUT` addition) instead of
+    // hanging, but it's still the wrong question to ask. The pre-setup
+    // shutdown queryable is up on both exposers, so the `send_shutdown`
+    // calls below land cleanly. The `wait_for_stdout_contains` below
+    // guarantees the winner already produced the response that the
+    // consumer's poll observed.
+
+    // Consumer's poll runs as a background task created in `setup`. Wait
+    // for the result line to appear in its stdout before sending shutdown,
+    // otherwise the event loop can stop mid-poll and the print is lost.
+    // Either exposer can win the discover-then-pin race (probes are
+    // auto-handled before the user handler runs, so exposer2's in-handler
+    // sleep doesn't bias the probe response); the test asserts the loser
+    // didn't run its handler, regardless of which exposer won.
+    let response_prefix = "enable_camera result: enabled=True error=handled";
+    consumer.wait_for_stdout_contains(
+        response_prefix,
+        Duration::from_secs(10),
+        &user_node_consumer,
+    );
 
     send_shutdown(
         &messenger,
@@ -1003,11 +1043,7 @@ if __name__ == "__main__":
     )
     .await;
 
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
+    let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
     let exposer_output1 = wait_for_child(
         &mut exposer1_child,
         Some(Duration::from_secs(10)),
@@ -1034,32 +1070,61 @@ if __name__ == "__main__":
     let exposer2_stdout = String::from_utf8_lossy(&exposer_output2.stdout).into_owned();
     let exposer2_stderr = String::from_utf8_lossy(&exposer_output2.stderr).into_owned();
 
-    // Both exposers should have received the request
+    // Under discover-then-pin, the consumer sends a lightweight probe and
+    // pins to whichever producer responds first; the real request is
+    // delivered only to that producer's handler. The loser must NOT run its
+    // handler — that's the load-bearing safety guarantee of the wildcard
+    // flow. Either exposer can win the probe race; identify the winner by
+    // the response marker the consumer printed (exposer1 emits
+    // `error=handled`, exposer2 emits `error=handled_by_exposer2`).
     let expected_request_log = format!(
         "received enable_camera request for {}: True",
         consumer_instance_id
     );
+    let consumer_saw_exposer2 = consumer_stdout.contains("error=handled_by_exposer2");
+    let consumer_saw_exposer1 = consumer_stdout
+        .lines()
+        .any(|line| line.trim_end() == "enable_camera result: enabled=True error=handled");
     assert!(
-        exposer1_stdout.contains(&expected_request_log)
-            && exposer1_stdout.contains("enable_camera handler finished"),
-        "exposer1 did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
-        exposer1_stdout,
-        exposer1_stderr
-    );
-    // exposer2 intentionally sleeps before responding; shutdown may land
-    // before the handler finishes, so only assert request receipt.
-    assert!(
-        exposer2_stdout.contains(&expected_request_log),
-        "exposer2 did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
-        exposer2_stdout,
-        exposer2_stderr
-    );
-
-    // Consumer should have received a response from exposer1 (the faster responder)
-    assert!(
-        consumer_stdout.contains("enable_camera result: enabled=True error=handled"),
-        "consumer should have received response from exposer1 (the faster responder), not exposer2.\nstdout:\n{}\nstderr:\n{}",
+        consumer_saw_exposer1 ^ consumer_saw_exposer2,
+        "consumer must have received exactly one response.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr
+    );
+
+    let (winner_stdout, winner_stderr, loser_stdout, loser_stderr, winner_label, loser_label) =
+        if consumer_saw_exposer1 {
+            (
+                &exposer1_stdout,
+                &exposer1_stderr,
+                &exposer2_stdout,
+                &exposer2_stderr,
+                "exposer1",
+                "exposer2",
+            )
+        } else {
+            (
+                &exposer2_stdout,
+                &exposer2_stderr,
+                &exposer1_stdout,
+                &exposer1_stderr,
+                "exposer2",
+                "exposer1",
+            )
+        };
+
+    assert!(
+        winner_stdout.contains(&expected_request_log),
+        "{} won the discover-then-pin race but did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
+        winner_label,
+        winner_stdout,
+        winner_stderr
+    );
+    assert!(
+        !loser_stdout.contains(&expected_request_log),
+        "{} must NOT process the enable_camera request — discover-then-pin pins the consumer to the first responder before the real request is sent.\nstdout:\n{}\nstderr:\n{}",
+        loser_label,
+        loser_stdout,
+        loser_stderr
     );
 }

@@ -6,6 +6,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use core_node_api::names;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use pmi::{ZenohAdapter, ZenohdInstance};
@@ -15,6 +17,13 @@ pub(crate) const CORE_NODE: &str = "standalone-core";
 pub(crate) const CLIENT_INSTANCE: &str = "test_caller";
 pub(crate) const SERVER_INSTANCE: &str = "test_server";
 
+/// Builds a node-shaped [`SenderTarget`] pointing at the core node. The core
+/// node uses [`names::CORE_NODE_TAG`] for its tag (not a manifest version), so
+/// these tests must mirror that tag to actually route through the wire.
+pub(crate) fn test_node_target(name: &str) -> SenderTarget {
+    SenderTarget::node(name, names::CORE_NODE_TAG).expect("test node target")
+}
+
 /// Writes a minimal `peppy.json5` into `dir` suitable for
 /// `Processor::new_standalone`.
 pub(crate) fn write_standalone_peppy_config(dir: &TempDir) -> PathBuf {
@@ -23,7 +32,7 @@ pub(crate) fn write_standalone_peppy_config(dir: &TempDir) -> PathBuf {
         &path,
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "test_node", tag: "0.1.0" },
+            manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/test_node"] },
         }"#,
     )
@@ -41,7 +50,7 @@ pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name:
             client,
             CORE_NODE,
             CLIENT_INSTANCE,
-            CORE_NODE,
+            test_node_target(CORE_NODE),
             service_name,
             Some(CORE_NODE),
             None,

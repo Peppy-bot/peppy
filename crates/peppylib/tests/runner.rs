@@ -1,3 +1,6 @@
+mod common;
+
+use common::test_node_target;
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
@@ -107,7 +110,7 @@ async fn daemon_runner_succeed() {
       peppy_schema: "node_v1",
       manifest: {
         name: "test_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       execution: {
         language: "rust",
@@ -127,12 +130,14 @@ async fn daemon_runner_succeed() {
         &router_host,
         router_port,
         NodeInstanceConfig {
-            instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
-            framework: Default::default(),
+            ..NodeInstanceConfig::new(
+                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
+            )
         },
         TEST_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .expect("runtime config should build");
@@ -172,7 +177,7 @@ async fn daemon_runner_succeed() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
+            test_node_target(TEST_NODE_NAME),
             SHUTDOWN_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -197,7 +202,7 @@ async fn daemon_runner_succeed() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
+        test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -213,7 +218,7 @@ async fn daemon_runner_succeed() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
+        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -252,7 +257,7 @@ async fn standalone_runner_succeed() {
       peppy_schema: "node_v1",
       manifest: {
         name: "test_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       execution: {
         language: "rust",
@@ -311,7 +316,7 @@ async fn node_ready_but_not_healthy() {
       peppy_schema: "node_v1",
       manifest: {
         name: "test_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       execution: {
         language: "rust",
@@ -331,12 +336,14 @@ async fn node_ready_but_not_healthy() {
         &router_host,
         router_port,
         NodeInstanceConfig {
-            instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
-            framework: Default::default(),
+            ..NodeInstanceConfig::new(
+                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
+            )
         },
         TEST_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .expect("runtime config should build");
@@ -377,7 +384,7 @@ async fn node_ready_but_not_healthy() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
+            test_node_target(TEST_NODE_NAME),
             NODE_READY_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -400,7 +407,7 @@ async fn node_ready_but_not_healthy() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
+        test_node_target(TEST_NODE_NAME),
         NODE_READY_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -422,7 +429,7 @@ async fn node_ready_but_not_healthy() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
+            test_node_target(TEST_NODE_NAME),
             SHUTDOWN_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -445,7 +452,7 @@ async fn node_ready_but_not_healthy() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
+            test_node_target(TEST_NODE_NAME),
             NODE_HEALTH_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -462,7 +469,7 @@ async fn node_ready_but_not_healthy() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
+        test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -493,7 +500,7 @@ async fn node_ready_but_not_healthy() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
+            test_node_target(TEST_NODE_NAME),
             NODE_HEALTH_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -515,7 +522,7 @@ async fn node_ready_but_not_healthy() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
+        test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -531,7 +538,7 @@ async fn node_ready_but_not_healthy() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
+        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -564,7 +571,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
       peppy_schema: "node_v1",
       manifest: {
         name: "test_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       execution: {
         language: "rust",
@@ -584,12 +591,14 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         &router_host,
         router_port,
         NodeInstanceConfig {
-            instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
-            framework: Default::default(),
+            ..NodeInstanceConfig::new(
+                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
+            )
         },
         TEST_NODE_NAME,
+        "v1",
         TEST_CORE_NODE,
     )
     .expect("runtime config should build");
@@ -636,7 +645,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
             &messenger,
             TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
+            test_node_target(TEST_NODE_NAME),
             SHUTDOWN_SERVICE,
             Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
@@ -660,7 +669,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        TEST_NODE_NAME,
+        test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
         Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
@@ -699,7 +708,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
       peppy_schema: "node_v1",
       manifest: {
         name: "test_node",
-        tag: "0.1.0",
+        tag: "v1",
       },
       execution: {
         language: "rust",

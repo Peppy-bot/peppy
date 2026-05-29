@@ -168,7 +168,7 @@ mod tests {
         } else {
             let entries = deps
                 .iter()
-                .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}", local_id: "{n}" }}"#))
+                .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}", link_id: "{n}" }}"#))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("depends_on: {{ nodes: [{entries}] }},")
@@ -178,18 +178,16 @@ mod tests {
                 peppy_schema: "node_v1",
                 manifest: {{
                     name: "{name}",
-                    tag: "0.1.0",
+                    tag: "v1",
                     {depends_on}
                 }},
+                interfaces: {{}},
                 execution: {{ language: "rust", run_cmd: ["./bin"] }}
             }}"#
         );
         let path = dir.join(config::consts::NODE_CONFIG_FILE);
         std::fs::write(&path, json5).unwrap();
-        NodeConfigParser::from_path(&path)
-            .unwrap()
-            .into_resolved()
-            .unwrap()
+        NodeConfigParser::from_path(&path).unwrap()
     }
 
     fn key_of(info: &VirtualNodeInfo) -> NodeKey {
@@ -228,8 +226,8 @@ mod tests {
         let b_dir = tmp.path().join("b");
         let c_dir = tmp.path().join("c");
         let a = write_node(&a_dir, "a", &[]);
-        let b = write_node(&b_dir, "b", &[("a", "0.1.0")]);
-        let c = write_node(&c_dir, "c", &[("b", "0.1.0")]);
+        let b = write_node(&b_dir, "b", &[("a", "v1")]);
+        let c = write_node(&c_dir, "c", &[("b", "v1")]);
 
         let tree = VirtualDeptree::build(vec![
             (c_dir.clone(), c),
@@ -252,13 +250,9 @@ mod tests {
     fn build_diamond_orders_root_first_leaf_last() {
         let tmp = TempDir::new().unwrap();
         let a = write_node(&tmp.path().join("a"), "a", &[]);
-        let b = write_node(&tmp.path().join("b"), "b", &[("a", "0.1.0")]);
-        let c = write_node(&tmp.path().join("c"), "c", &[("a", "0.1.0")]);
-        let d = write_node(
-            &tmp.path().join("d"),
-            "d",
-            &[("b", "0.1.0"), ("c", "0.1.0")],
-        );
+        let b = write_node(&tmp.path().join("b"), "b", &[("a", "v1")]);
+        let c = write_node(&tmp.path().join("c"), "c", &[("a", "v1")]);
+        let d = write_node(&tmp.path().join("d"), "d", &[("b", "v1"), ("c", "v1")]);
 
         let tree = VirtualDeptree::build(vec![
             (tmp.path().join("d"), d),
@@ -283,8 +277,8 @@ mod tests {
     #[test]
     fn build_detects_two_node_cycle() {
         let tmp = TempDir::new().unwrap();
-        let a = write_node(&tmp.path().join("a"), "a", &[("b", "0.1.0")]);
-        let b = write_node(&tmp.path().join("b"), "b", &[("a", "0.1.0")]);
+        let a = write_node(&tmp.path().join("a"), "a", &[("b", "v1")]);
+        let b = write_node(&tmp.path().join("b"), "b", &[("a", "v1")]);
 
         let result =
             VirtualDeptree::build(vec![(tmp.path().join("a"), a), (tmp.path().join("b"), b)]);
@@ -298,7 +292,7 @@ mod tests {
     fn build_ignores_external_dep() {
         let tmp = TempDir::new().unwrap();
         let a_dir = tmp.path().join("a");
-        let a = write_node(&a_dir, "a", &[("external_x", "9.9.9")]);
+        let a = write_node(&a_dir, "a", &[("external_x", "v999")]);
 
         let tree = VirtualDeptree::build(vec![(a_dir, a)]).unwrap();
         assert_eq!(tree.len(), 1);
@@ -324,7 +318,7 @@ mod tests {
                 second,
             }) => {
                 assert_eq!(name, "shared");
-                assert_eq!(tag, "0.1.0");
+                assert_eq!(tag, "v1");
                 assert_eq!(first, first_dir);
                 assert_eq!(second, second_dir);
             }

@@ -2,6 +2,7 @@ mod common;
 
 use common::{
     CALLER_INSTANCE_ID, TEST_CORE_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
+    test_node_target,
 };
 use peppylib::{
     messaging::{MessengerHandle, ServiceMessenger},
@@ -21,7 +22,7 @@ async fn ready_node() {
         &server_handle,
         TEST_CORE_NODE_NAME,
         TEST_INSTANCE_ID,
-        TEST_NODE_NAME,
+        test_node_target(TEST_NODE_NAME),
     )
     .await
     .expect("failed to start ready service");
@@ -36,7 +37,7 @@ async fn ready_node() {
     // - specific core node + broadcast instance
     // - broadcast core node + specific instance
     // - full broadcast (core node + instance)
-    let target_combinations = [
+    let to_combinations = [
         (
             Some(client.core_node_name.as_str()),
             Some(client.instance_id.as_str()),
@@ -46,12 +47,12 @@ async fn ready_node() {
         (None, None),
     ];
 
-    for (target_core_node, target_instance_id) in target_combinations {
+    for (target_core_node, target_instance_id) in to_combinations {
         let response = ServiceMessenger::poll(
             &client.caller_handle,
             &client.core_node_name,
             CALLER_INSTANCE_ID,
-            TEST_NODE_NAME,
+            test_node_target(TEST_NODE_NAME),
             peppylib::messaging::NODE_READY_SERVICE,
             target_core_node,
             target_instance_id,

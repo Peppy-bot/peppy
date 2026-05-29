@@ -21,12 +21,13 @@ The manifest defines a node's identity:
 | Field | Description |
 |-------|-------------|
 | `name` | A validated identifier (ASCII letters, digits, `_`, `-`) |
-| `tag` | A version or variant identifier (e.g., `donut`, `v1.0.0`) |
+| `tag` | A short contract identifier (e.g., `v1`, `donut`). Must start with an ASCII letter; allowed chars are letters, digits, `_`, `-`. Dots are forbidden. |
 | `labels` | Optional metadata labels |
-| `variants` | Optional list of alternative node implementations |
-| `depends_on` | Optional dependency declarations on other nodes |
+| `depends_on` | Optional dependency declarations on other nodes (`depends_on.nodes`) or interface contracts (`depends_on.interfaces`); see [Interface conformance](/advanced_guides/interface_conformance) |
 
 A node is uniquely identified by its `name:tag` combination.
+
+Tags are **not** semver. Bumping a tag always means "incompatible with the previous one": there is no notion of a backward-compatible patch or minor release. Pick a label that identifies the contract (`v1`, `v2`, `donut`), not a version number.
 
 ### Execution
 
@@ -102,7 +103,7 @@ The **Core Node** is a special node that serves as the root of the node stack an
 - **System Coordination**: Acting as the central coordinator for the local PeppyOS runtime
 
 Each PeppyOS runtime has exactly one core node that manages its local DAG of nodes. 
-In a distributed deployment, multiple runtimes — each with their own core node — can run on separate machines. 
+In a distributed deployment, multiple runtimes (each with their own core node) can run on separate machines. 
 The core nodes operate independently, managing their local node stacks without a centralized controller. 
 Nodes communicate across runtimes through the shared messaging layer, enabling a fully decentralized system where each core node is responsible only for its own set of nodes.
 

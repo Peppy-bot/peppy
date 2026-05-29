@@ -184,6 +184,7 @@ pub async fn spawn_running_instance(
         StartContext {
             instance_id: &instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &harness.peppy_dirs,

@@ -1,5 +1,8 @@
+mod common;
+
+use common::test_node_target;
 use config::node::QoSProfile;
-use peppylib::messaging::{MessengerHandle, TopicMessenger};
+use peppylib::messaging::{ConsumerFilter, MessengerHandle, TopicMessenger};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::time::Duration;
@@ -29,10 +32,11 @@ async fn topic_messenger_communication() {
         &receiver_handle,
         core_node,
         instance_id,
-        node_name,
+        Some(test_node_target(node_name)),
+        true, // from_any pattern
         topic_name,
         None, // Accept messages from any core node
-        None, // Accept messages from any instance
+        &ConsumerFilter::Any,
         QoSProfile::Reliable,
     )
     .await
@@ -46,7 +50,7 @@ async fn topic_messenger_communication() {
         &sender_handle,
         core_node,
         instance_id,
-        node_name,
+        test_node_target(node_name),
         topic_name,
         QoSProfile::Reliable,
         payload.clone(),

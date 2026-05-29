@@ -107,25 +107,24 @@ pub fn format_stack_list(nodes: &[SerializedNode], edges: &[SerializedEdge]) -> 
 
 /// Column headers kept in one place so widths stay consistent between the
 /// separator and data rows.
-const HEADERS: [&str; 5] = ["NODE", "STAGE", "VARIANT", "INSTANCES", "PATH"];
+const HEADERS: [&str; 4] = ["NODE", "STAGE", "INSTANCES", "PATH"];
 
 fn render_nodes_table(out: &mut String, nodes: &[SerializedNode]) {
     use std::fmt::Write as _;
 
-    let rows: Vec<[String; 5]> = nodes
+    let rows: Vec<[String; 4]> = nodes
         .iter()
         .map(|n| {
             [
                 n.label(),
                 n.stage_label().to_string(),
-                variant_label(n).to_string(),
                 format_instances_compact(n),
                 display_path(n),
             ]
         })
         .collect();
 
-    let mut widths: [usize; 5] = HEADERS.map(|h| h.len());
+    let mut widths: [usize; 4] = HEADERS.map(|h| h.len());
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
             if cell.len() > widths[i] {
@@ -135,7 +134,7 @@ fn render_nodes_table(out: &mut String, nodes: &[SerializedNode]) {
     }
 
     write_border(out, &widths, '┌', '┬', '┐');
-    let header_row: [String; 5] = HEADERS.map(|h| h.to_string());
+    let header_row: [String; 4] = HEADERS.map(|h| h.to_string());
     write_row(out, &header_row, &widths);
     write_border(out, &widths, '├', '┼', '┤');
     for row in &rows {
@@ -145,7 +144,7 @@ fn render_nodes_table(out: &mut String, nodes: &[SerializedNode]) {
     let _ = writeln!(out);
 }
 
-fn write_border(out: &mut String, widths: &[usize; 5], left: char, sep: char, right: char) {
+fn write_border(out: &mut String, widths: &[usize; 4], left: char, sep: char, right: char) {
     use std::fmt::Write as _;
     let _ = write!(out, "{}", left);
     for (i, w) in widths.iter().enumerate() {
@@ -157,17 +156,13 @@ fn write_border(out: &mut String, widths: &[usize; 5], left: char, sep: char, ri
     let _ = writeln!(out);
 }
 
-fn write_row(out: &mut String, cells: &[String; 5], widths: &[usize; 5]) {
+fn write_row(out: &mut String, cells: &[String; 4], widths: &[usize; 4]) {
     use std::fmt::Write as _;
     let _ = write!(out, "│");
     for (cell, w) in cells.iter().zip(widths.iter()) {
         let _ = write!(out, " {:<width$} │", cell, width = w);
     }
     let _ = writeln!(out);
-}
-
-fn variant_label(node: &SerializedNode) -> &str {
-    node.variant_name.as_deref().unwrap_or("default")
 }
 
 /// Compact per-node instance summary. Detailed per-instance info is
@@ -211,7 +206,6 @@ mod tests {
         name: &str,
         tag: &str,
         stage: NodeStage,
-        variant: Option<&str>,
         instances: Vec<(&str, InstanceState)>,
     ) -> SerializedNode {
         SerializedNode {
@@ -227,19 +221,17 @@ mod tests {
                     state,
                 })
                 .collect(),
-            variant_name: variant.map(str::to_owned),
         }
     }
 
     #[test]
     fn table_renders_headers_and_rows() {
         let nodes = vec![
-            node("sensor", "0.1.0", NodeStage::Added, Some("default"), vec![]),
+            node("sensor", "v1", NodeStage::Added, vec![]),
             node(
                 "brain",
-                "0.1.0",
+                "v1",
                 NodeStage::Ready,
-                Some("macos"),
                 vec![("i1", InstanceState::Running)],
             ),
         ];
@@ -248,9 +240,8 @@ mod tests {
         for header in HEADERS {
             assert!(out.contains(header), "missing header {}:\n{}", header, out);
         }
-        assert!(out.contains("sensor:0.1.0"), "missing sensor row:\n{}", out);
-        assert!(out.contains("brain:0.1.0"), "missing brain row:\n{}", out);
-        assert!(out.contains("macos"), "variant column missing:\n{}", out);
+        assert!(out.contains("sensor:v1"), "missing sensor row:\n{}", out);
+        assert!(out.contains("brain:v1"), "missing brain row:\n{}", out);
         assert!(
             out.contains("1 running"),
             "instances column missing:\n{}",
@@ -265,23 +256,11 @@ mod tests {
     }
 
     #[test]
-    fn variant_falls_back_to_default_when_none() {
-        let nodes = vec![node("sensor", "0.1.0", NodeStage::Added, None, vec![])];
-        let out = format_stack_list(&nodes, &[]);
-        assert!(
-            out.contains("default"),
-            "variant should render as 'default' when None:\n{}",
-            out
-        );
-    }
-
-    #[test]
     fn mixed_running_and_starting_instances_render_with_breakdown() {
         let nodes = vec![node(
             "brain",
-            "0.1.0",
+            "v1",
             NodeStage::Ready,
-            Some("default"),
             vec![
                 ("r1", InstanceState::Running),
                 ("s1", InstanceState::Starting),
@@ -309,15 +288,15 @@ mod tests {
 
     #[test]
     fn edges_render_as_arrows() {
-        let from = node("brain", "0.1.0", NodeStage::Ready, None, vec![]);
-        let to = node("sensor", "0.1.0", NodeStage::Ready, None, vec![]);
+        let from = node("brain", "v1", NodeStage::Ready, vec![]);
+        let to = node("sensor", "v1", NodeStage::Ready, vec![]);
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),
         }];
         let out = format_stack_list(&[from, to], &edges);
         assert!(
-            out.contains("brain:0.1.0 -> sensor:0.1.0"),
+            out.contains("brain:v1 -> sensor:v1"),
             "edge line missing:\n{}",
             out
         );

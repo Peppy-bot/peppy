@@ -119,7 +119,7 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bo
     if with_container {
         let apptainer_def = ApptainerRustDef {
             node_name,
-            tag: "0.1.0",
+            tag: "v1",
             base_image: config::consts::DEFAULT_RUST_BASE_IMAGE,
         };
         std::fs::write(node_dir.join("apptainer.def"), apptainer_def.render()?)?;
@@ -179,7 +179,7 @@ if __name__ == "__main__":
     if with_container {
         let apptainer_def = ApptainerPythonDef {
             node_name,
-            tag: "0.1.0",
+            tag: "v1",
             base_image: config::consts::DEFAULT_PYTHON_BASE_IMAGE,
         };
         std::fs::write(node_dir.join("apptainer.def"), apptainer_def.render()?)?;

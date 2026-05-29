@@ -1,6 +1,6 @@
 import asyncio
 
-from peppylib import MessengerHandle, TopicMessenger
+from peppylib import MessengerHandle, SenderTarget, TopicMessenger
 from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT, QoSProfile
 
@@ -11,6 +11,7 @@ async def main():
 
     # Those properties are found in the peppy_launcher.json5 `deployments` array
     node_name = "hello_node"
+    node_tag = "v1"
     core_node = f"{generate_name()}_core"
     instance_id = f"{generate_name()}_emitter"
 
@@ -33,7 +34,7 @@ async def main():
         sender_handle,
         core_node,
         instance_id,
-        node_name,
+        SenderTarget.node(node_name, node_tag),
         topic_name,
         qos,
         payload,

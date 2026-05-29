@@ -3,13 +3,22 @@
 mod adapters;
 mod error;
 mod types;
+mod wire;
 #[cfg(feature = "zenoh")]
 mod zenohd;
 
 pub use error::Error as PeppyMessagingInterfaceError;
+#[cfg(feature = "zenoh")]
+pub use types::ZenohResponseToken;
 pub use types::{
-    Message, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher, PublisherQoS,
-    SubscriberQoS, Subscription, TopicMessage,
+    IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
+    MockResponseToken, Payload, PayloadSlices, PublisherQoS, ReplyStream, ResponseToken,
+    ServiceQueryable, ServiceReply, SubscriberQoS, Subscription, TopicMessage,
+};
+pub use wire::{
+    ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, InterfaceIdentifier, NodeIdentifier,
+    Segment, SegmentError, SenderTarget, SenderTargetError, ServiceKind, ServiceQueryKind,
+    ServiceReplyKind, ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 
 pub use adapters::mock::{MockAdapter, MockInstance};

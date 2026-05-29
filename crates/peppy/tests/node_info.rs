@@ -83,12 +83,12 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
             command: NodeCommands::Add {
                 source: Some(dep_dir.path().display().to_string()),
                 git_ref: None,
-                variant: Vec::new(),
                 sync: false,
                 build: false,
                 run: false,
                 args: Vec::new(),
                 instance_id: None,
+                binds: Vec::new(),
                 idle_timeout: DEFAULTS.idle_secs,
                 max_timeout: DEFAULTS.max_secs,
                 force: true,
@@ -106,12 +106,12 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
         command: NodeCommands::Add {
             source: Some(node_dir.path().display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: false,
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: DEFAULTS.idle_secs,
             max_timeout: DEFAULTS.max_secs,
             force: true,
@@ -164,7 +164,7 @@ fn fetch_info(
 #[test]
 fn node_info_shows_dependencies_from_consumed_interfaces() {
     const NODE_NAME: &str = "consumer_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let peppy_json5 = r#"{
             peppy_schema: "node_v1",
@@ -173,29 +173,29 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
                 tag: "{NODE_TAG}",
                 depends_on: {
                     nodes: [
-                        { name: "camera_node", tag: "0.1.0", local_id: "camera_node" },
-                        { name: "lidar_node", tag: "0.1.0", local_id: "lidar_node" },
-                        { name: "config_node", tag: "0.1.0", local_id: "config_node" },
-                        { name: "navigation_node", tag: "0.1.0", local_id: "navigation_node" }
+                        { name: "camera_node", tag: "v1", link_id: "camera_node" },
+                        { name: "lidar_node", tag: "v1", link_id: "lidar_node" },
+                        { name: "config_node", tag: "v1", link_id: "config_node" },
+                        { name: "navigation_node", tag: "v1", link_id: "navigation_node" }
                     ]
                 }
             },
             interfaces: {
                 topics: {
                     consumes: [
-                        { local_node_id: "camera_node", name: "video_stream" },
-                        { local_node_id: "lidar_node", name: "point_cloud" },
-                        { local_node_id: "camera_node", name: "depth_stream" }
+                        { link_id: "camera_node", name: "video_stream" },
+                        { link_id: "lidar_node", name: "point_cloud" },
+                        { link_id: "camera_node", name: "depth_stream" }
                     ]
                 },
                 services: {
                     consumes: [
-                        { local_node_id: "config_node", name: "get_config" }
+                        { link_id: "config_node", name: "get_config" }
                     ]
                 },
                 actions: {
                     consumes: [
-                        { local_node_id: "navigation_node", name: "go_to_pose" }
+                        { link_id: "navigation_node", name: "go_to_pose" }
                     ]
                 }
             },
@@ -212,7 +212,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     // `consumer_node` consumes, so the add resolves cleanly.
     let camera_node = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "camera_node", tag: "0.1.0" },
+            manifest: { name: "camera_node", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [
@@ -225,7 +225,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
         }"#;
     let lidar_node = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "lidar_node", tag: "0.1.0" },
+            manifest: { name: "lidar_node", tag: "v1" },
             interfaces: {
                 topics: { emits: [{ name: "point_cloud" }] }
             },
@@ -233,7 +233,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
         }"#;
     let config_node = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "config_node", tag: "0.1.0" },
+            manifest: { name: "config_node", tag: "v1" },
             interfaces: {
                 services: { exposes: [{ name: "get_config" }] }
             },
@@ -241,7 +241,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
         }"#;
     let navigation_node = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "navigation_node", tag: "0.1.0" },
+            manifest: { name: "navigation_node", tag: "v1" },
             interfaces: {
                 actions: { exposes: [{ name: "go_to_pose" }] }
             },
@@ -292,20 +292,20 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
         .expect("consumed actions should exist");
     assert_eq!(actions.len(), 1, "should have 1 consumed action");
 
-    // Extract dependencies (unique local_node_id values) - mirrors what
+    // Extract dependencies (unique link_id values) - mirrors what
     // `format_node_info` does when rendering the "Dependencies" section.
     let mut dependencies: BTreeSet<&str> = BTreeSet::new();
     for topic in topics {
         if let config::node::ConsumedTopic::Linked(linked) = topic {
-            dependencies.insert(&linked.local_node_id);
+            dependencies.insert(&linked.link_id);
         }
     }
     for service in services {
-        dependencies.insert(&service.local_node_id);
+        dependencies.insert(&service.link_id);
     }
     for action in actions {
-        if !action.local_node_id.is_empty() {
-            dependencies.insert(&action.local_node_id);
+        if !action.link_id.is_empty() {
+            dependencies.insert(&action.link_id);
         }
     }
 
@@ -325,7 +325,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
 #[test]
 fn node_info_no_dependencies_when_no_consumes() {
     const NODE_NAME: &str = "standalone_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let peppy_json5 = r#"{
             peppy_schema: "node_v1",
@@ -421,7 +421,7 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
 
     let response = rt
         .block_on(poll_node_info(
-            &NodeInfoRequest::new("ghost_node", "9.9.9"),
+            &NodeInfoRequest::new("ghost_node", "v999"),
             &caller_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -432,7 +432,7 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
 
     assert!(
         matches!(response, NodeInfoResponse::NotInStack),
-        "expected NotInStack for ghost_node:9.9.9, got: {response:?}"
+        "expected NotInStack for ghost_node:v999, got: {response:?}"
     );
 
     let logs = log_capture.logs();

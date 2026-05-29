@@ -11,10 +11,7 @@ use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName
 use peppy::context::AppContext;
 
 fn add_emitted_topic(peppy_json5: &Path) {
-    let mut cfg = NodeConfigParser::from_path(peppy_json5)
-        .expect("peppy.json5 should read")
-        .into_resolved()
-        .expect("should resolve");
+    let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
 
     let topic_ifaces = cfg.interfaces.topics.get_or_insert_with(Default::default);
     let topics = topic_ifaces.emits.get_or_insert_with(Vec::new);
@@ -407,7 +404,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
         camera_dir.path().join("peppy.json5"),
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "uvc_camera", tag: "0.1.0" },
+            manifest: { name: "uvc_camera", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [
@@ -432,9 +429,11 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     std::fs::create_dir_all(peppy_dirs.cache_dir()).expect("create cache dir");
     let packages_json = serde_json::json!([{
         "node_name": "uvc_camera",
-        "node_tag": "0.1.0",
+        "node_tag": "v1",
         "source_type": "fs",
-        "path": camera_dir.path().to_string_lossy(),
+        // `path` now points at the manifest file itself; the daemon's
+        // materialize step derives the directory via `.parent()`.
+        "path": camera_dir.path().join("peppy.json5").to_string_lossy(),
     }]);
     std::fs::write(
         nodes_repo_cache_path(&peppy_dirs),
@@ -451,13 +450,13 @@ async fn node_sync_with_include_repositories_prints_provenance() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
-                depends_on: { nodes: [{ name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }] }
+                tag: "v1",
+                depends_on: { nodes: [{ name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }] }
             },
             interfaces: {
                 topics: {
                     emits: [],
-                    consumes: [{ local_node_id: "uvc_camera", name: "video_stream" }],
+                    consumes: [{ link_id: "uvc_camera", name: "video_stream" }],
                 },
                 services: { exposes: [] },
                 actions: { exposes: [] },
@@ -487,7 +486,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
         logs
     );
     assert!(
-        logs.contains("uvc_camera:0.1.0 (fs)"),
+        logs.contains("uvc_camera:v1 (fs)"),
         "verbose output should list the repo-resolved dep with its source kind. Logs:\n{}",
         logs
     );

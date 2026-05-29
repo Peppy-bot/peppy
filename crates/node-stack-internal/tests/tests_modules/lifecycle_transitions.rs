@@ -20,7 +20,7 @@ fn sensor_config() -> config::node::NodeConfig {
             peppy_schema: "node_v1",
             manifest: {
                 name: "sensor",
-                tag: "1.0.0",
+                tag: "v1",
             },
             interfaces: {
                 topics: {
@@ -47,7 +47,7 @@ fn push_config_creates_entity_in_added_stage() {
         .push_config(sensor_config(), false, &config_path)
         .expect("push_config should succeed");
 
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack.find("sensor", "v1").expect("entity should exist");
     let guard = handle.read();
 
     if let NodeStage::Added { config_path: cp } = guard.stage() {
@@ -193,6 +193,7 @@ async fn stop_instance_skips_starting_instances() {
         node_stack::StartContext {
             instance_id: &id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &harness.peppy_dirs,
@@ -237,7 +238,7 @@ async fn push_config_resets_existing_entity_to_added() {
         .push_config(sensor_config(), false, &config_path_v2)
         .expect("second push_config should succeed");
 
-    let handle_after = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle_after = stack.find("sensor", "v1").expect("entity should exist");
     let guard = handle_after.read();
     match guard.stage() {
         NodeStage::Added { config_path: cp } => {
@@ -259,7 +260,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     let producer_a: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "producer_a", tag: "1.0.0" },
+            manifest: { name: "producer_a", tag: "v1" },
             interfaces: { services: { exposes: [ { name: "reset_sensor" } ] } },
             execution: { language: "rust", run_cmd: ["producer_a"] }
         }"#,
@@ -269,7 +270,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     let producer_b: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "producer_b", tag: "1.0.0" },
+            manifest: { name: "producer_b", tag: "v1" },
             interfaces: { services: { exposes: [ { name: "reset_sensor" } ] } },
             execution: { language: "rust", run_cmd: ["producer_b"] }
         }"#,
@@ -277,30 +278,30 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     .expect("valid producer_b config");
 
     let consumer_pointing_at = |producer_name: &str| -> config::node::NodeConfig {
-        let local_id = format!("p_{}", producer_name);
+        let link_id = format!("p_{}", producer_name);
         serde_json5::from_str(
             &r#"{
                 peppy_schema: "node_v1",
                 manifest: {
                     name: "consumer",
-                    tag: "1.0.0",
+                    tag: "v1",
                     depends_on: {
                         nodes: [
-                            { name: "PRODUCER", tag: "1.0.0", local_id: "LOCAL_ID" }
+                            { name: "PRODUCER", tag: "v1", link_id: "LINK_ID" }
                         ]
                     },
                 },
                 interfaces: {
                     services: {
                         consumes: [
-                            { local_node_id: "LOCAL_ID", name: "reset_sensor" }
+                            { link_id: "LINK_ID", name: "reset_sensor" }
                         ]
                     }
                 },
                 execution: { language: "rust", run_cmd: ["consumer"] }
             }"#
             .replace("PRODUCER", producer_name)
-            .replace("LOCAL_ID", &local_id),
+            .replace("LINK_ID", &link_id),
         )
         .expect("valid consumer config")
     };
@@ -321,7 +322,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
 
     // Initially the consumer depends on producer_a.
     let deps_a: Vec<String> = stack
-        .dependencies_of("consumer", "1.0.0")
+        .dependencies_of("consumer", "v1")
         .iter()
         .map(|h| h.read().config().manifest.name.as_str().to_owned())
         .collect();
@@ -338,7 +339,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
         .expect("second consumer push");
 
     let deps_b: Vec<String> = stack
-        .dependencies_of("consumer", "1.0.0")
+        .dependencies_of("consumer", "v1")
         .iter()
         .map(|h| h.read().config().manifest.name.as_str().to_owned())
         .collect();
@@ -374,7 +375,7 @@ async fn push_config_rejects_replacement_with_live_instances() {
             node_tag,
         } => {
             assert_eq!(node_name, "sensor");
-            assert_eq!(node_tag, "1.0.0");
+            assert_eq!(node_tag, "v1");
         }
         other => panic!(
             "expected CannotOverwriteNodeWithLiveInstances, got {:?}",
@@ -409,7 +410,7 @@ async fn concurrent_builds_are_rejected_immediately() {
         )
         .expect("push_config should succeed");
 
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack.find("sensor", "v1").expect("entity should exist");
 
     // Working directory with some content to archive.
     let working_dir = tempfile::tempdir().expect("tempdir working_dir");
@@ -507,7 +508,7 @@ async fn concurrent_builds_are_rejected_immediately() {
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
 
     // The on-disk archive exists exactly once.
-    let archive = peppy_dirs.built_nodes_dir().join("sensor_1.0.0.tar.zst");
+    let archive = peppy_dirs.built_nodes_dir().join("sensor_v1.tar.zst");
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 }
 
@@ -530,7 +531,7 @@ fn sensor_config_with_build_cmd(build_cmd_shell: &str) -> config::node::NodeConf
             peppy_schema: "node_v1",
             manifest: {{
                 name: "sensor",
-                tag: "1.0.0",
+                tag: "v1",
             }},
             interfaces: {{
                 topics: {{
@@ -592,7 +593,7 @@ async fn build_runs_add_cmd_for_process_node() {
         )
         .expect("push_config should succeed");
 
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack.find("sensor", "v1").expect("entity should exist");
     let h = build_harness();
 
     NodeEntity::build(
@@ -614,7 +615,7 @@ async fn build_runs_add_cmd_for_process_node() {
     drop(guard);
 
     // The archive exists and contains the marker file produced by build_cmd.
-    let archive = h.peppy_dirs.built_nodes_dir().join("sensor_1.0.0.tar.zst");
+    let archive = h.peppy_dirs.built_nodes_dir().join("sensor_v1.tar.zst");
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 
     // Decode the archive and look for the marker.
@@ -652,7 +653,7 @@ fn long_running_sensor_config() -> config::node::NodeConfig {
             peppy_schema: "node_v1",
             manifest: {
                 name: "sensor",
-                tag: "1.0.0",
+                tag: "v1",
             },
             interfaces: {
                 topics: {
@@ -696,7 +697,7 @@ async fn prepare_and_spawn_rejects_when_not_built() {
     stack
         .push_config(sensor_config(), false, PathBuf::from("/tmp/sensor"))
         .expect("push_config should succeed");
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack.find("sensor", "v1").expect("entity should exist");
     let (instance_id, h) = start_harness("test-inst-1");
 
     let err = NodeEntity::prepare_and_spawn(
@@ -704,6 +705,7 @@ async fn prepare_and_spawn_rejects_when_not_built() {
         node_stack::StartContext {
             instance_id: &instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
@@ -737,6 +739,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
         node_stack::StartContext {
             instance_id: &instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
@@ -807,6 +810,7 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
         node_stack::StartContext {
             instance_id: &instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
@@ -885,6 +889,7 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
         node_stack::StartContext {
             instance_id: &instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
@@ -969,6 +974,7 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
         node_stack::StartContext {
             instance_id: &instance_id,
             runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
@@ -999,6 +1005,13 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
         other => panic!("expected Ready, got {:?}", other),
     }
 }
+
+// Producer-side link_id collision tests were removed: in the harmonized
+// wire model the producer always advertises under the `_` link_id sentinel
+// and consumers pin by `from_instance_id` derived from the binding map, so
+// there is no producer-side link_id to collide on. Duplicate-instance_id
+// detection is still covered by
+// `prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_present`.
 
 // ===========================================================================
 // Backwards / sideways transition rejection (exhaustive)
@@ -1037,6 +1050,7 @@ mod backwards_transitions_are_rejected {
                 Name::new("inst").unwrap(),
                 Some(1),
                 InstanceState::Running,
+                std::collections::BTreeMap::new(),
             )],
         }
     }
@@ -1138,7 +1152,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
     stack
         .push_config(blocking_config, false, &config_path_v2)
         .expect("rebuild push_config should succeed");
-    let handle_after_push = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle_after_push = stack.find("sensor", "v1").expect("entity should exist");
     let captured_generation = handle_after_push.read().generation();
 
     // Kick off the rebuild in a task. It will sit in `Building` until we
@@ -1186,7 +1200,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
     let restored = stack.restore_snapshot_if_matches(
         RestoreTarget {
             name: "sensor",
-            tag: "1.0.0",
+            tag: "v1",
             expected_handle: &handle_after_push,
             expected_generation: captured_generation,
         },
@@ -1194,7 +1208,6 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
             config: v1_config,
             config_path: config_path_v1.clone(),
             artifact_path: Some(artifact_v1.clone()),
-            variant_name: None,
         },
     );
     assert!(
@@ -1212,7 +1225,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
         "build task should fail its Phase 3 commit after the restore drifted the generation, got Ok"
     );
 
-    let handle_final = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle_final = stack.find("sensor", "v1").expect("entity should exist");
     let guard = handle_final.read();
     match guard.stage() {
         NodeStage::Ready {
@@ -1256,7 +1269,7 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
     stack
         .push_config(blocking_config, false, &config_path_v1)
         .expect("initial push_config should succeed");
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let handle = stack.find("sensor", "v1").expect("entity should exist");
     let stale_generation = handle.read().generation();
     let stale_config = handle.read().config().clone();
 
@@ -1308,7 +1321,7 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
     let restored = stack.restore_snapshot_if_matches(
         RestoreTarget {
             name: "sensor",
-            tag: "1.0.0",
+            tag: "v1",
             expected_handle: &handle,
             expected_generation: stale_generation,
         },
@@ -1316,7 +1329,6 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
             config: stale_config,
             config_path: config_path_v1.clone(),
             artifact_path: Some(PathBuf::from("/tmp/sensor-v1.sif")),
-            variant_name: None,
         },
     );
     assert!(

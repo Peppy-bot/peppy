@@ -43,19 +43,33 @@ struct RepoRefreshGoalResponse {
 }
 
 struct RepoRefreshFeedback {
-    nodeName @0 :Text;
-    nodeTag @1 :Text;
-    # "fs", "git", or "url"
-    sourceType @2 :Text;
-    # Absolute path (fs) or relative path within repo (git)
-    path @3 :Text;
-    # Variant names declared by this node (empty if none)
-    variants @4 :List(Text);
-    # True when this feedback represents an excluded repository
-    excluded @5 :Bool;
-    # Non-empty when this feedback is a progress/status update (e.g.
-    # "Cloning <url>"). When non-empty, the other fields are meaningless.
-    statusMessage @6 :Text;
+    payload :union {
+        # A discovered node, launcher, or interface manifest.
+        discovered :group {
+            # Kind of item being reported: "node", "launcher", or "interface".
+            kind @0 :Text;
+            # Name of the discovered item.
+            itemName @1 :Text;
+            # Tag of the discovered item. Empty for launchers (which have no tag).
+            itemTag @2 :Text;
+            # "fs", "git", or "url"
+            sourceType @3 :Text;
+            # Absolute path (fs) or relative path within repo (git). Points
+            # at the manifest file itself.
+            path @4 :Text;
+            # SHA-256 of the manifest file bytes.
+            sha256 @5 :Text;
+        }
+        # A repository that was skipped (e.g. listed in excluded_repositories.json5).
+        excluded :group {
+            # "fs", "git", or "url"
+            sourceType @6 :Text;
+            # Repository identity (URL or fs path).
+            identity @7 :Text;
+        }
+        # A free-form status update emitted during the scan (e.g. "Cloning <url>").
+        progress @8 :Text;
+    }
 }
 
 struct RepoRefreshResult {
@@ -63,6 +77,7 @@ struct RepoRefreshResult {
     errorMessage @1 :Text;
     totalNodesFound @2 :UInt32;
     totalLaunchersFound @3 :UInt32;
+    totalInterfacesFound @4 :UInt32;
 }
 
 # ── Repo List (request-response) ────────────────────────────────
@@ -78,14 +93,12 @@ struct RepoListNodeEntry {
     sourceType @2 :Text;
     # Absolute path (fs) or relative path within repo (git)
     path @3 :Text;
-    # Variant names declared by this node (empty if none)
-    variants @4 :List(Text);
     # True when another repo with higher priority already provides this node
-    duplicate @5 :Bool;
+    duplicate @4 :Bool;
     # Id of the owning repository (from repositories.json5)
-    repoId @6 :UInt32;
+    repoId @5 :UInt32;
     # Display label of the owning repository (path for fs, "url (ref: r)" for git)
-    repoLabel @7 :Text;
+    repoLabel @6 :Text;
 }
 
 struct RepoListResponse {

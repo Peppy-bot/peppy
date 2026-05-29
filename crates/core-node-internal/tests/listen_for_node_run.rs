@@ -32,7 +32,7 @@ fn create_node_config_dir(peppy_json5: &str) -> TempDir {
 async fn listen_for_node_run_success() {
     // These must match the values used in create_test_node()
     const TARGET_NODE_NAME: &str = "runnable_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
     let started_core_node = start_core_node_with_real_messenger().await;
@@ -75,6 +75,7 @@ async fn listen_for_node_run_success() {
         messaging_port,
         &started_core_node.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
         Default::default(),
     );
@@ -125,6 +126,7 @@ async fn listen_for_node_run_success() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_timeout() {
     const TARGET_NODE_NAME: &str = "runnable_node";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
     // Use a short health timeout so the test doesn't take too long
@@ -136,7 +138,7 @@ async fn listen_for_node_run_timeout() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -173,7 +175,7 @@ async fn listen_for_node_run_timeout() {
             &ready_handle,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start ready service"),
@@ -186,6 +188,7 @@ async fn listen_for_node_run_timeout() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -195,7 +198,7 @@ async fn listen_for_node_run_timeout() {
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
-        "0.1.0",
+        TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
@@ -239,6 +242,7 @@ async fn listen_for_node_run_timeout() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_not_found() {
     const TARGET_NODE_NAME: &str = "nonexistent_node";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "nonexistent_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -250,6 +254,7 @@ async fn listen_for_node_run_not_found() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -259,7 +264,7 @@ async fn listen_for_node_run_not_found() {
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
-        "0.1.0",
+        TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
@@ -295,7 +300,7 @@ async fn listen_for_node_run_not_found() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_streams_stdout_and_stderr() {
     const TARGET_NODE_NAME: &str = "stream_output_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "stream_output_instance";
     const STDOUT_MARKER: &str = "peppy_start_stdout_marker";
     const STDERR_MARKER: &str = "peppy_start_stderr_marker";
@@ -342,7 +347,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node ready service should start"),
@@ -352,7 +357,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node health service should start"),
@@ -364,6 +369,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -413,7 +419,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_writes_log_file() {
     const TARGET_NODE_NAME: &str = "log_file_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "log_file_instance";
     const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
     const STDERR_MARKER: &str = "peppy_logfile_stderr_marker";
@@ -460,7 +466,7 @@ async fn listen_for_node_run_writes_log_file() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node ready service should start"),
@@ -470,7 +476,7 @@ async fn listen_for_node_run_writes_log_file() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node health service should start"),
@@ -482,6 +488,7 @@ async fn listen_for_node_run_writes_log_file() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -535,14 +542,16 @@ async fn listen_for_node_run_writes_log_file() {
     // Check that stdout marker is present with correct prefix
     assert!(
         log_content.contains(&format!("[stdout] {}", STDOUT_MARKER)),
-        "log file should contain stdout marker with [stdout] prefix, got:\n{}",
+        "log file should contain stdout marker with [stdout] prefix, got:
+{}",
         log_content
     );
 
     // Check that stderr marker is present with correct prefix
     assert!(
         log_content.contains(&format!("[stderr] {}", STDERR_MARKER)),
-        "log file should contain stderr marker with [stderr] prefix, got:\n{}",
+        "log file should contain stderr marker with [stderr] prefix, got:
+{}",
         log_content
     );
 }
@@ -550,7 +559,7 @@ async fn listen_for_node_run_writes_log_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_reports_all_missing_parameters() {
     const TARGET_NODE_NAME: &str = "params_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "params_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -602,6 +611,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -672,7 +682,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided() {
     const TARGET_NODE_NAME: &str = "partial_params_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "partial_params_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -743,6 +753,7 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
         config::consts::DEFAULT_MESSAGING_PORT,
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
         arguments,
     );
@@ -820,10 +831,10 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     use peppylib::ActionMessenger;
 
     const FIRST_NODE_NAME: &str = "abandoned_start_node";
-    const FIRST_NODE_TAG: &str = "0.1.0";
+    const FIRST_NODE_TAG: &str = "v1";
     const FIRST_INSTANCE_ID: &str = "abandoned_start_instance";
     const SECOND_NODE_NAME: &str = "second_start_node";
-    const SECOND_NODE_TAG: &str = "0.1.0";
+    const SECOND_NODE_TAG: &str = "v1";
     const SECOND_INSTANCE_ID: &str = "second_start_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -902,7 +913,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &node_messenger,
             &started.core_node_name,
             FIRST_INSTANCE_ID,
-            FIRST_NODE_NAME,
+            common::test_node_target(FIRST_NODE_NAME),
         )
         .await
         .expect("first ready service should start"),
@@ -912,7 +923,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &node_messenger,
             &started.core_node_name,
             FIRST_INSTANCE_ID,
-            FIRST_NODE_NAME,
+            common::test_node_target(FIRST_NODE_NAME),
         )
         .await
         .expect("first health service should start"),
@@ -923,7 +934,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &node_messenger,
             &started.core_node_name,
             SECOND_INSTANCE_ID,
-            SECOND_NODE_NAME,
+            common::test_node_target(SECOND_NODE_NAME),
         )
         .await
         .expect("second ready service should start"),
@@ -933,7 +944,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             &node_messenger,
             &started.core_node_name,
             SECOND_INSTANCE_ID,
-            SECOND_NODE_NAME,
+            common::test_node_target(SECOND_NODE_NAME),
         )
         .await
         .expect("second health service should start"),
@@ -946,6 +957,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     let first_runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         FIRST_NODE_NAME,
+        FIRST_NODE_TAG,
         FIRST_INSTANCE_ID,
     );
 
@@ -962,7 +974,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         &started.caller_handle,
         &started.core_node_name,
         common::CALLER_INSTANCE_ID,
-        &started.core_node_name,
+        common::core_node_target(&started.core_node_name),
         core_node::names::NODE_RUN_ACTION,
         Some(&started.core_node_name),
         None,
@@ -992,6 +1004,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     let second_runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         SECOND_NODE_NAME,
+        SECOND_NODE_TAG,
         SECOND_INSTANCE_ID,
     );
 
@@ -1035,7 +1048,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_uses_env_overrides_for_path() {
     const TARGET_NODE_NAME: &str = "env_path_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "env_path_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -1077,7 +1090,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
             &instance_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start ready service"),
@@ -1087,7 +1100,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
             &instance_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start health service"),
@@ -1098,6 +1111,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1134,8 +1148,13 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
     // Create a temp bin directory with a `printout` script.
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
     let printout_path = bin_dir.path().join("printout");
-    std::fs::write(&printout_path, "#!/bin/sh\nsleep \"${1:-3}\"\n")
-        .expect("failed to write printout script");
+    std::fs::write(
+        &printout_path,
+        "#!/bin/sh
+sleep \"${1:-3}\"
+",
+    )
+    .expect("failed to write printout script");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1178,7 +1197,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_injects_runtime_env_vars() {
     const TARGET_NODE_NAME: &str = "runtime_env_start_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "runtime_env_start_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -1224,7 +1243,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
             &instance_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start ready service"),
@@ -1234,7 +1253,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
             &instance_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start health service"),
@@ -1245,6 +1264,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1275,7 +1295,7 @@ async fn listen_for_node_run_with_container_success() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "container_start_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "container_start_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -1353,7 +1373,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node ready service should start"),
@@ -1363,7 +1383,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node health service should start"),
@@ -1376,6 +1396,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1443,31 +1464,36 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("Executing apptainer run"),
-        "log file should contain the apptainer run command, got:\n{}",
+        "log file should contain the apptainer run command, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("Received env var hello_from_peppy"),
-        "log file should contain the env var output from the runscript, got:\n{}",
+        "log file should contain the env var output from the runscript, got:
+{}",
         log_content
     );
 
     // Verify that mount_paths are logged as bind mounts
     assert!(
         log_content.contains("bind_mounts:"),
-        "log file should contain bind_mounts info, got:\n{}",
+        "log file should contain bind_mounts info, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains(&mount_dir_str),
-        "log file should contain the mount directory path, got:\n{}",
+        "log file should contain the mount directory path, got:
+{}",
         log_content
     );
 
     // Verify the mount path was accessible inside the container
     assert!(
         log_content.contains("Mount path verified: mount_content"),
-        "log file should confirm mount path was accessible in container, got:\n{}",
+        "log file should confirm mount path was accessible in container, got:
+{}",
         log_content
     );
 }
@@ -1484,7 +1510,7 @@ async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns(
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "container_mount_create_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "container_mount_create_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -1560,7 +1586,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node ready service should start"),
@@ -1570,7 +1596,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node health service should start"),
@@ -1581,6 +1607,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1619,12 +1646,14 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         std::fs::read_to_string(log_path).expect("should be able to read instance start log");
     assert!(
         log_content.contains("auto-created missing bind mount source:"),
-        "feedback log should contain the auto-create warning, got:\n{}",
+        "feedback log should contain the auto-create warning, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains(&mount_dir_str),
-        "feedback log warning should reference the offending path {:?}, got:\n{}",
+        "feedback log warning should reference the offending path {:?}, got:
+{}",
         mount_dir_str,
         log_content
     );
@@ -1645,7 +1674,7 @@ async fn listen_for_node_run_container_failure_includes_stderr_in_error() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "failing_container_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "failing_container_instance";
     const STDERR_MARKER: &str = "peppy_container_fatal_error_marker";
 
@@ -1712,6 +1741,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1755,12 +1785,14 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("Executing apptainer run"),
-        "log file should contain the apptainer run command, got:\n{}",
+        "log file should contain the apptainer run command, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains(STDERR_MARKER),
-        "log file should contain the stderr marker from the container process, got:\n{}",
+        "log file should contain the stderr marker from the container process, got:
+{}",
         log_content
     );
 }
@@ -1768,7 +1800,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_logs_error_on_spawn_failure() {
     const TARGET_NODE_NAME: &str = "spawn_failure_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "spawn_failure_instance";
 
     let started = start_core_node_with_mock_messenger().await;
@@ -1810,6 +1842,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -1860,17 +1893,20 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     );
     assert!(
         log_content.contains("[error]"),
-        "log file should contain an [error] entry, got:\n{}",
+        "log file should contain an [error] entry, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("Failed to start node"),
-        "log file should contain the failure message, got:\n{}",
+        "log file should contain the failure message, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("nonexistent_binary_peppy_test_xyz"),
-        "log file should contain the command that failed, got:\n{}",
+        "log file should contain the command that failed, got:
+{}",
         log_content
     );
 }
@@ -1878,7 +1914,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_remove_node_on_unhealthy_node() {
     const TARGET_NODE_NAME: &str = "health_monitor_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "health_monitor_instance";
 
     // Use fast health monitor settings so the test completes quickly:
@@ -1930,7 +1966,7 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node ready service should start"),
@@ -1940,7 +1976,7 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
             &node_messenger,
             &started.core_node_name,
             TARGET_INSTANCE_ID,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("node health service should start"),
@@ -1952,6 +1988,7 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
     );
 
@@ -2030,17 +2067,20 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
         std::fs::read_to_string(&stack_log_path).expect("should be able to read stack log");
     assert!(
         log_content.contains(TARGET_INSTANCE_ID),
-        "stack log should mention the instance id, got:\n{}",
+        "stack log should mention the instance id, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains("health checks"),
-        "stack log should mention health checks, got:\n{}",
+        "stack log should mention health checks, got:
+{}",
         log_content
     );
     assert!(
         log_content.contains(TARGET_NODE_NAME),
-        "stack log should mention the node name, got:\n{}",
+        "stack log should mention the node name, got:
+{}",
         log_content
     );
 }

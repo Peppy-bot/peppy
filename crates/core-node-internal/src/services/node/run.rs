@@ -1,4 +1,4 @@
-use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
+use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use super::gate::ConcurrencyGate;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
@@ -13,11 +13,12 @@ use node_stack::{self, NodeStack};
 use parking_lot::Mutex as StdMutex;
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext,
+    ActionFeedbackPublisher, ConcurrentAction, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, PendingGoal,
 };
 use peppylib::types::Payload;
-use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::panic::AssertUnwindSafe;
@@ -25,7 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::process::Child;
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -75,12 +76,13 @@ pub async fn listen_for_node_run(
     node_stack: Arc<NodeStack>,
     config: NodeRunServiceConfig,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ActionMessenger::expose(
+    let action = ConcurrentAction::expose(
         messenger,
         core_node_name,
         instance_id,
-        node_name,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::NODE_RUN_ACTION,
+        true,
     )
     .await?;
 
@@ -105,16 +107,6 @@ pub async fn listen_for_node_run(
     Ok(handle)
 }
 
-impl ActionResult for NodeRunResult {
-    fn identifier() -> &'static str {
-        "node_run_result"
-    }
-
-    fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode().map_err(Into::into)
-    }
-}
-
 #[derive(Clone)]
 struct NodeRunGoalHandler {
     context: NodeRunActionContext,
@@ -122,24 +114,8 @@ struct NodeRunGoalHandler {
 }
 
 impl GoalHandler for NodeRunGoalHandler {
-    type Result = NodeRunResult;
-
-    async fn handle_goal(
-        &self,
-        context: ServiceRequestContext,
-        user_payload: bytes::Bytes,
-        feedback_publisher: ActionFeedbackPublisher,
-        state: Arc<Mutex<ActionState<NodeRunResult>>>,
-    ) -> PeppyResult<Payload> {
-        handle_goal_request(
-            context,
-            user_payload,
-            feedback_publisher,
-            state,
-            self.context.clone(),
-            self.gate.clone(),
-        )
-        .await
+    async fn handle_goal(&self, pending: PendingGoal) {
+        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await
     }
 }
 
@@ -184,10 +160,11 @@ impl FeedbackSync {
     /// Waits until all read lines have been published, or until `timeout` elapses.
     /// Returns `true` if all lines were flushed, `false` on timeout.
     async fn flush_with_timeout(&self, timeout: Duration) -> bool {
-        let target = self.read_count.load(Ordering::Relaxed);
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            if self.published_count.load(Ordering::Relaxed) >= target {
+            if self.published_count.load(Ordering::Relaxed)
+                >= self.read_count.load(Ordering::Relaxed)
+            {
                 return true;
             }
             let now = tokio::time::Instant::now();
@@ -198,7 +175,9 @@ impl FeedbackSync {
             let notified = self.notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if self.published_count.load(Ordering::Relaxed) >= target {
+            if self.published_count.load(Ordering::Relaxed)
+                >= self.read_count.load(Ordering::Relaxed)
+            {
                 return true;
             }
             match tokio::time::timeout(remaining, notified).await {
@@ -324,43 +303,71 @@ pub(crate) async fn run_node_run(
 }
 
 async fn handle_goal_request(
-    context: ServiceRequestContext,
-    user_payload: bytes::Bytes,
-    feedback_publisher: ActionFeedbackPublisher,
-    state: Arc<Mutex<ActionState<NodeRunResult>>>,
+    pending: PendingGoal,
     action_context: NodeRunActionContext,
     gate: ConcurrencyGate,
-) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id().to_string();
+) {
+    let sender_instance_id = pending.instance_id().to_string();
 
-    let goal = match NodeRunGoal::decode(&user_payload) {
+    let goal = match NodeRunGoal::decode(pending.request_bytes()) {
         Ok(goal) => goal,
         Err(e) => {
-            return encode_rejected_start_goal(format!("invalid payload: {}", e));
+            reject_goal(
+                pending,
+                encode_rejected_start_goal(format!("invalid payload: {e}")),
+            )
+            .await;
+            return;
         }
     };
 
-    {
-        let mut state_guard = state.lock().await;
-        if let super::gate::Admission::AlreadyRunning { remaining_secs } =
-            gate.try_admit(&mut state_guard, goal.timeout_secs, false)
-        {
-            return encode_rejected_start_goal(format!(
-                "action already in progress (times out in {remaining_secs}s)"
-            ));
+    let generation = match gate.try_admit(goal.timeout_secs, false) {
+        super::gate::Admission::Admitted { generation } => generation,
+        super::gate::Admission::AlreadyRunning { remaining_secs } => {
+            reject_goal(
+                pending,
+                encode_rejected_start_goal(format!(
+                    "action already in progress (times out in {remaining_secs}s)"
+                )),
+            )
+            .await;
+            return;
         }
-    }
+    };
 
     // Parse runtime config to get instance_id for log file naming
     let runtime_config: RuntimeConfig = match serde_json5::from_str(&goal.runtime_config_json5) {
         Ok(config) => config,
         Err(e) => {
-            let error_msg = format!("Failed to parse PEPPY_RUNTIME_CONFIG: {}", e);
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            return encode_rejected_start_goal(error_msg);
+            let error_msg = format!("Failed to parse PEPPY_RUNTIME_CONFIG: {e}");
+            gate.clear_running();
+            reject_goal(pending, encode_rejected_start_goal(error_msg)).await;
+            return;
         }
     };
+
+    // Trust boundary: the runtime config travels in-band on the goal and is
+    // re-exported as `PEPPY_RUNTIME_CONFIG` into the child, so a mismatch
+    // would silently spawn a process under the wrong identity or bound to the
+    // wrong daemon. Reject before allocating a log file or accepting the goal.
+    if runtime_config.node_name.as_str() != goal.node_name
+        || runtime_config.node_tag.as_str() != goal.tag
+        || runtime_config.bound_core_node.as_str() != action_context.core_node_name
+    {
+        let error_msg = format!(
+            "runtime_config identity mismatch: goal requested `{}:{}` on core node `{}`, \
+             but runtime_config is `{}:{}` bound to `{}`",
+            goal.node_name,
+            goal.tag,
+            action_context.core_node_name,
+            runtime_config.node_name.as_str(),
+            runtime_config.node_tag.as_str(),
+            runtime_config.bound_core_node.as_str(),
+        );
+        gate.clear_running();
+        reject_goal(pending, encode_rejected_start_goal(error_msg)).await;
+        return;
+    }
 
     let instance_id_str = runtime_config.node_instance.instance_id.as_str();
 
@@ -379,46 +386,92 @@ async fn handle_goal_request(
         Ok(result) => result,
         Err(error_msg) => {
             debug!("{}", error_msg);
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            return encode_rejected_start_goal(error_msg);
+            gate.clear_running();
+            reject_goal(pending, encode_rejected_start_goal(error_msg)).await;
+            return;
         }
     };
 
     debug!("Created log file for node run: {}", log_path.display());
 
-    // Panics are caught via catch_unwind so the state always transitions to
-    // Completed — without this, a panic silently aborts the task and leaves
-    // the state stuck on Running, causing clients to time out.
-    let state_clone = Arc::clone(&state);
-    tokio::spawn(async move {
-        let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-        let _consumer_handle =
-            super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
-                NodeRunFeedback::from_stream(line.stream, &line.line).encode()
-            });
+    // `accept` registers the per-goal context before replying accepted.
+    let Some(goal_ctx) = accept_goal(
+        pending,
+        super::encode_response_or_err(
+            "node_run_goal",
+            NodeRunGoalResponse::accepted(&log_path).encode(),
+        ),
+    )
+    .await
+    else {
+        gate.clear_running();
+        return;
+    };
 
-        // Action-server path has no outer cancellation source; the internal
-        // per-step timeouts inside `run_node_run` remain the only way out.
-        let result = run_node_run(
+    let feedback_publisher = goal_ctx
+        .feedback_publisher()
+        .expect("node_run declares a feedback topic");
+    let gate_for_task = gate.clone();
+    tokio::spawn(async move {
+        // Frees the gate slot on every exit (completion or panic); a no-op if a
+        // later goal already took over.
+        let _slot = gate_for_task.into_slot_guard(generation);
+        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+
+        // The node process outlives the action: once `node_run` reports the
+        // instance healthy and committed, the node keeps running and its
+        // output readers hold the feedback channel open. Awaiting a forwarder
+        // task to learn when feedback ends would therefore hang forever.
+        // Instead, drive the work future and forward feedback in the same
+        // task, and stop forwarding once the work returns.
+        let work = run_node_run(
             goal,
             runtime_config,
             action_context,
             feedback_tx,
             log_file,
             sender_instance_id,
+            // Action-server path has no outer cancellation source; the internal
+            // per-step timeouts inside `run_node_run` remain the only way out.
             CancellationToken::new(),
-        )
-        .await;
+        );
+        tokio::pin!(work);
 
-        let mut state_guard = state_clone.lock().await;
-        *state_guard = ActionState::Completed { result };
+        let mut feedback_open = true;
+        let result = loop {
+            tokio::select! {
+                biased;
+                outcome = &mut work => break outcome,
+                maybe_line = feedback_rx.recv(), if feedback_open => match maybe_line {
+                    Some(line) => publish_node_run_feedback(&feedback_publisher, line).await,
+                    None => feedback_open = false,
+                },
+            }
+        };
+
+        // `run_node_run` returns only after its internal feedback flush, so any
+        // lines still buffered here are the final ones and no more will arrive.
+        // Drain them before `complete` emits the end-of-stream sentinel so the
+        // sentinel never races ahead of the last feedback line.
+        while let Ok(line) = feedback_rx.try_recv() {
+            publish_node_run_feedback(&feedback_publisher, line).await;
+        }
+
+        if let Ok(payload) = result.encode() {
+            let _ = goal_ctx.complete(payload).await;
+        }
     });
+}
 
-    super::encode_response_or_err(
-        "node_run_goal",
-        NodeRunGoalResponse::accepted(&log_path).encode(),
-    )
+/// Publishes one node_run feedback line onto the goal's feedback stream.
+///
+/// Encoding failures are intentionally dropped: a single malformed line should
+/// not abort the run, and the line is already captured verbatim in the
+/// per-instance log file.
+async fn publish_node_run_feedback(publisher: &ActionFeedbackPublisher, line: FeedbackLine) {
+    if let Ok(payload) = NodeRunFeedback::from_stream(line.stream, &line.line).encode() {
+        let _ = publisher.publish(payload).await;
+    }
 }
 
 fn encode_rejected_start_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
@@ -468,18 +521,45 @@ async fn process_node_run(
     let entity_handle = match ctx.action.node_stack.find(&node_name, &tag) {
         Some(entity) => entity,
         None => {
-            let msg = format!("Node '{}:{}' not found in node stack", node_name, tag);
+            let msg = format!(
+                "Node '{}:{}' not found in node stack. \
+                 Run `peppy node list` to see currently-loaded nodes, or `peppy node add {}:{}` to add it \
+                 (the daemon does not persist added nodes across restarts).",
+                node_name, tag, node_name, tag
+            );
             write_error_to_log(&ctx.log_file, &msg);
             return NodeRunResult::failure(msg);
         }
     };
 
+    // Stack-wide `instance_id` uniqueness (spec rule 7): reject if the
+    // candidate id is already tracked by a *different* `(node_name,
+    // node_tag)` anywhere in the stack. The validator catches this at
+    // plan time (`peppy node run` / launcher); this is the daemon's
+    // defensive backstop at the trust boundary. Same-entity collisions
+    // are caught by `prepare_and_spawn` under its write lock.
+    if let Some((existing_name, existing_tag)) = ctx
+        .action
+        .node_stack
+        .find_entity_label_for_instance_id_any_state(&instance_id)
+        && (existing_name != node_name || existing_tag != tag)
+    {
+        let msg = format!(
+            "Instance ID `{}` is already tracked by `{}`:{}; instance_ids must be unique across the entire stack",
+            instance_id.as_str(),
+            existing_name,
+            existing_tag,
+        );
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeRunResult::failure(msg);
+    }
+
     let node_config = {
         let guard = entity_handle.read();
         if guard.artifact_path().is_none() {
             let msg = format!(
-                "Node '{}:{}' has not been built yet (still in Added stage)",
-                node_name, tag
+                "Node '{}:{}' is added but not built, run `peppy node build {}:{}` first.",
+                node_name, tag, node_name, tag
             );
             drop(guard);
             write_error_to_log(&ctx.log_file, &msg);
@@ -605,6 +685,7 @@ async fn process_node_run(
     let start_ctx = node_stack::StartContext {
         instance_id: &instance_id,
         runtime_config_json5: &runtime_config_json5,
+        slot_bindings: runtime_config.node_instance.slot_bindings.clone(),
         env_vars: &env_vars,
         mount_paths_resolved: &resolved_mount_paths,
         peppy_dirs: &ctx.action.peppy_dirs,
@@ -641,7 +722,8 @@ async fn process_node_run(
         messenger: &ctx.action.messenger,
         core_node_name: &ctx.action.core_node_name,
         caller_instance_id: &ctx.action.caller_instance_id,
-        target_node_name: runtime_config.node_name.as_str(),
+        to_node_name: runtime_config.node_name.as_str(),
+        to_node_tag: runtime_config.node_tag.as_str(),
         target_core_node: runtime_config.bound_core_node.as_str(),
         target_instance_id: instance_id_str,
     };
@@ -742,7 +824,7 @@ async fn process_node_run(
                         messenger: ctx.action.messenger.clone(),
                         core_node_name: ctx.action.core_node_name.clone(),
                         caller_instance_id: ctx.action.caller_instance_id.clone(),
-                        target_node_name: runtime_config.node_name.as_str().to_owned(),
+                        to_node_name: runtime_config.node_name.as_str().to_owned(),
                         target_core_node: runtime_config.bound_core_node.as_str().to_owned(),
                         target_instance_id: instance_id.clone(),
                         node_tag: tag.clone(),
@@ -880,7 +962,8 @@ struct NodeSignalTarget<'a> {
     messenger: &'a MessengerHandle,
     core_node_name: &'a str,
     caller_instance_id: &'a str,
-    target_node_name: &'a str,
+    to_node_name: &'a str,
+    to_node_tag: &'a str,
     target_core_node: &'a str,
     target_instance_id: &'a str,
 }
@@ -929,7 +1012,7 @@ async fn perform_health_check(
             target.messenger,
             target.core_node_name,
             target.caller_instance_id,
-            target.target_node_name,
+            SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             NODE_HEALTH_SERVICE,
             Some(target.target_core_node),
             Some(target.target_instance_id),
@@ -995,7 +1078,7 @@ async fn wait_for_ready_signal(
             target.messenger,
             target.core_node_name,
             target.caller_instance_id,
-            target.target_node_name,
+            SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             NODE_READY_SERVICE,
             Some(target.target_core_node),
             Some(target.target_instance_id),
@@ -1017,7 +1100,7 @@ struct HealthMonitorParams {
     messenger: MessengerHandle,
     core_node_name: String,
     caller_instance_id: String,
-    target_node_name: String,
+    to_node_name: String,
     target_core_node: String,
     target_instance_id: Name,
     node_tag: String,
@@ -1055,8 +1138,8 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
         loop {
             tokio::time::sleep(p.interval).await;
 
-            // If the instance was removed externally (e.g. user ran `node stop`),
-            // our job is done.
+            // If the monitored instance (`p.target_instance_id`) was removed
+            // externally (e.g. user ran `node stop`), our job is done.
             if p.node_stack
                 .find_by_instance_id(&p.target_instance_id)
                 .is_none()
@@ -1072,10 +1155,10 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 &p.messenger,
                 &p.core_node_name,
                 &p.caller_instance_id,
-                &p.target_node_name,
+                SenderTarget::node_from_validated(&p.to_node_name, &p.node_tag),
                 NODE_HEALTH_SERVICE,
                 Some(&p.target_core_node),
-                Some(&instance_id_str),
+                Some(p.target_instance_id.as_str()),
                 request_payload.clone(),
                 p.timeout,
             )
@@ -1110,7 +1193,7 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                             &format!(
                                 "Removed instance '{}' of node '{}:{}': \
                                  failed {} consecutive health checks",
-                                instance_id_str, p.target_node_name, p.node_tag, p.max_failures,
+                                instance_id_str, p.to_node_name, p.node_tag, p.max_failures,
                             ),
                         );
 

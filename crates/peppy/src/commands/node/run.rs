@@ -1,10 +1,12 @@
 use config::AnyType;
-use config::launcher::Name;
-use config::runtime::{NodeInstanceConfig, RuntimeConfig};
+use config::launcher::{BindingValidationItem, DeploymentInstance, Name, validate_bindings};
+use config::node::ConformsToItem;
+use config::runtime::{NodeInstanceConfig, RuntimeConfig, SlotBinding};
 use core_node_api::NodeStage;
+use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
-    NodeRunResult,
+    NodeRunResult, StackListRequest,
 };
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
@@ -13,7 +15,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
@@ -22,7 +24,7 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
-use peppylib::core_node::transport::{poll_node_info, send_node_run};
+use peppylib::core_node::transport::{poll_node_info, poll_stack_list, send_node_run};
 /// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
 /// Matches `node info`'s request timeout — this is a metadata lookup,
 /// not a long-running action, so it must fail fast if the daemon is down
@@ -46,6 +48,21 @@ enum BuildDecision {
     /// finishes instead of trying to start a second build (the daemon
     /// rejects concurrent builds).
     Wait,
+}
+
+/// Build a `DeploymentInstance` that carries only an `instance_id`.
+/// `arguments`, `env_vars`, `framework`, and `bindings` are all left at
+/// their default-empty values. Used by [`validate_binds_against_stack`]
+/// to feed running-stack instances into the launcher's binding validator
+/// without fabricating per-instance data the validator does not consult.
+fn empty_deployment_instance(instance_id: Name) -> DeploymentInstance {
+    DeploymentInstance {
+        instance_id,
+        arguments: BTreeMap::new(),
+        env_vars: BTreeMap::new(),
+        framework: config::launcher::FrameworkOverrides::default(),
+        bindings: BTreeMap::new(),
+    }
 }
 
 /// Pure helper: compute the remaining `max_secs` budget given how many
@@ -261,8 +278,285 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
-/// Shared logic for running a node instance.
-/// Used by both `run_node` and `add_node` (when --run is set).
+/// Collapse the clap-parsed `Vec<(KEY, VALUE)>` into a `BTreeMap`,
+/// rejecting duplicate `KEY`s. Each `KEY` must be unique per invocation
+/// (rule 6) — pinned `KEY`s match a declared link_id, free-form `KEY`s
+/// label a `from_any` binding, and either way two bindings on the same
+/// key would clobber.
+fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
+    let mut map = BTreeMap::new();
+    for (key, value) in binds {
+        if map.insert(key.clone(), value.clone()).is_some() {
+            return Err(Error::ExecutionFailed(format!(
+                "duplicate binding key `{key}` on instance `{instance_id}` (each --bind KEY must be distinct)"
+            )));
+        }
+    }
+    Ok(map)
+}
+
+/// Pre-flight bind validation. Snapshots the running stack via
+/// `stack_list` + `node_info`, feeds it together with the consumer
+/// being launched into the launcher's `validate_bindings`, and returns
+/// the resolved per-slot `SlotBinding` map for the consumer instance.
+/// Every rule violation is a hard error; there is no warning path.
+///
+/// The snapshot is split into two flavors of [`BindingValidationItem`]:
+///
+/// - **Inert items** — one per already-running `(name, tag)` group. They
+///   carry real `instances` (so stack-wide `instance_id` uniqueness can
+///   fire) and real `conforms_to` (so the new instance can still match
+///   them as a producer / interface-conformant target), but their
+///   `depends_on` is `None`. Their declared slots were already validated
+///   when each instance was first spawned, so re-running per-instance
+///   rules against them — with the empty `bindings` we synthesize here
+///   — would emit spurious `BindingMissingForPinnedDep` errors for
+///   pins the running invocation actually satisfied.
+/// - **One live item** — for the synthesized new instance, carrying the
+///   target's real `depends_on` + `conforms_to`. This is the only item
+///   whose pinned slots are checked by Rule 1.
+///
+/// Returns `Ok(None)` on transient transport failures so the call site
+/// can swallow them and continue — an unreachable daemon should fail
+/// the actual `node_run` invocation, not the pre-flight.
+async fn validate_binds_against_stack(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    target_name: &str,
+    target_tag: &str,
+    target_instance_id: &str,
+    binds: &BTreeMap<String, String>,
+) -> Result<Option<BTreeMap<String, SlotBinding>>> {
+    let stack_response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_name,
+        NODE_INFO_PREFLIGHT_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("failed to list stack: {e}")))?;
+
+    let graph: SerializedNodeGraph = serde_json::from_str(&stack_response.graph_json)
+        .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))?;
+
+    /// Inert snapshot entry for an already-running `(name, tag)` group.
+    /// Note the missing `depends_on` field: by construction these items
+    /// are deliberately decoupled from per-instance binding rules — see
+    /// the function-level doc above.
+    struct StackNode {
+        name: String,
+        tag: String,
+        instances: Vec<DeploymentInstance>,
+        conforms_to: Vec<ConformsToItem>,
+    }
+
+    let stack_nodes: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|n| !matches!(n.stage, Some(NodeStage::Root)))
+        .collect();
+
+    let info_futures = stack_nodes.iter().map(|node| async move {
+        let info = poll_node_info(
+            &NodeInfoRequest::new(node.name.clone(), node.tag.clone()),
+            messenger,
+            core_node_name,
+            CALLER_INSTANCE_ID,
+            core_node_name,
+            NODE_INFO_PREFLIGHT_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            Error::ExecutionFailed(format!(
+                "failed to fetch info for stack node '{}:{}': {e}",
+                node.name, node.tag
+            ))
+        })?;
+        Ok::<_, Error>(info)
+    });
+    let infos = futures::future::try_join_all(info_futures).await?;
+
+    // `(depends_on, conforms_to)` for the target node, harvested from
+    // the snapshot if the target is already in the stack so we can
+    // avoid a second `node_info` round-trip. Falls back to `None` /
+    // empty when the target hasn't been added yet (also covers transient
+    // misses below).
+    let mut target_depends_on: Option<config::node::DependsOn> = None;
+    let mut target_conforms_to: Vec<ConformsToItem> = Vec::new();
+    let mut target_seen_in_stack = false;
+
+    let mut snapshot: Vec<StackNode> = Vec::with_capacity(stack_nodes.len());
+    for (node, info_response) in stack_nodes.iter().zip(infos) {
+        let info = match info_response {
+            NodeInfoResponse::Found(info) => info,
+            NodeInfoResponse::NotInStack => continue,
+        };
+        // Harvest the target's manifest/interfaces from its snapshot
+        // entry so we don't need a second `node_info` call below.
+        if node.name == target_name && node.tag == target_tag {
+            target_depends_on = info.config.manifest.depends_on.clone();
+            target_conforms_to = info
+                .config
+                .interfaces
+                .conforms_to
+                .clone()
+                .unwrap_or_default();
+            target_seen_in_stack = true;
+        }
+        // The validator only reads `instance_id` and `bindings` for
+        // inert items (`bindings` is unused under `depends_on: None`,
+        // but kept empty to satisfy the type). `arguments`, `env_vars`,
+        // and `framework` are not consulted; default-initialize them
+        // rather than fabricating data the validator would ignore.
+        let instances: Vec<DeploymentInstance> = node
+            .instances
+            .iter()
+            .filter(|inst| inst.state == core_node_api::InstanceState::Running)
+            .filter_map(|inst| {
+                Name::new(inst.instance_id.clone())
+                    .ok()
+                    .map(empty_deployment_instance)
+            })
+            .collect();
+        snapshot.push(StackNode {
+            name: node.name.clone(),
+            tag: node.tag.clone(),
+            instances,
+            conforms_to: info.config.interfaces.conforms_to.unwrap_or_default(),
+        });
+    }
+
+    // Target wasn't in the stack snapshot (e.g., the user is launching
+    // the only instance of a freshly-added node). Fall back to a direct
+    // `node_info` lookup so the validator can still resolve dead-key /
+    // missing-binding rules against the target's declared manifest.
+    if !target_seen_in_stack {
+        let info_response = poll_node_info(
+            &NodeInfoRequest::new(target_name.to_owned(), target_tag.to_owned()),
+            messenger,
+            core_node_name,
+            CALLER_INSTANCE_ID,
+            core_node_name,
+            NODE_INFO_PREFLIGHT_TIMEOUT,
+        )
+        .await
+        .ok()
+        .and_then(|r| match r {
+            NodeInfoResponse::Found(info) => Some(info),
+            NodeInfoResponse::NotInStack => None,
+        });
+        if let Some(info) = info_response {
+            target_depends_on = info.config.manifest.depends_on;
+            target_conforms_to = info.config.interfaces.conforms_to.unwrap_or_default();
+        }
+    }
+
+    // The one live item: the synthesized new instance with the target's
+    // real `depends_on` + `conforms_to`. Lives in its own group so it
+    // never inherits the inert `depends_on: None` of an existing target
+    // group.
+    let synthetic_instances = vec![DeploymentInstance {
+        bindings: binds.clone(),
+        ..empty_deployment_instance(
+            Name::new(target_instance_id.to_owned()).map_err(|e| Error::PeppyConfig(e.into()))?,
+        )
+    }];
+
+    let mut items: Vec<BindingValidationItem<'_>> = snapshot
+        .iter()
+        .map(|s| BindingValidationItem {
+            node_name: &s.name,
+            node_tag: &s.tag,
+            instances: &s.instances,
+            depends_on: None,
+            conforms_to: &s.conforms_to,
+        })
+        .collect();
+    items.push(BindingValidationItem {
+        node_name: target_name,
+        node_tag: target_tag,
+        instances: &synthetic_instances,
+        depends_on: target_depends_on.as_ref(),
+        conforms_to: &target_conforms_to,
+    });
+
+    let mut validated = validate_bindings(&items);
+    if !validated.errors.is_empty() {
+        let msg = config::format_bulleted(&validated.errors);
+        return Err(Error::ExecutionFailed(msg));
+    }
+    Ok(Some(
+        validated
+            .slot_bindings
+            .remove(target_instance_id)
+            .unwrap_or_default(),
+    ))
+}
+
+/// Validate the supplied `--bind` pairs against the running stack, resolve
+/// them to per-slot `SlotBinding`s, then spawn the instance. This is the
+/// single entry point shared between `peppy node run` and `peppy node add
+/// --run`: both surfaces must accept `--bind` and enforce the same binding
+/// rules, so there is exactly one code path responsible for materializing
+/// the instance_id, running `validate_bindings`, and calling
+/// [`run_instance_async`].
+///
+/// `instance_id` is materialized up-front so the synthetic
+/// `DeploymentInstance` fed to the validator and the actual spawn refer to
+/// the same id; mismatching them would point validator errors at a
+/// different instance than the one that ends up running.
+#[allow(clippy::too_many_arguments)]
+pub async fn validate_and_run_instance(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    tag: &str,
+    args: &[(String, String)],
+    instance_id: Option<String>,
+    binds: &[(String, String)],
+    timeouts: &TimeoutConfig,
+) -> Result<String> {
+    let prelaunch_instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
+    let binds_map = binds_to_map(binds, &prelaunch_instance_id)?;
+    let slot_bindings = match validate_binds_against_stack(
+        messenger,
+        core_node_name,
+        node_name,
+        tag,
+        &prelaunch_instance_id,
+        &binds_map,
+    )
+    .await
+    {
+        Ok(Some(slot_bindings)) => slot_bindings,
+        Ok(None) => BTreeMap::new(),
+        Err(e @ Error::ExecutionFailed(_)) => return Err(e),
+        Err(e) => {
+            debug!("skipping bind validation for {}:{}: {}", node_name, tag, e);
+            BTreeMap::new()
+        }
+    };
+
+    run_instance_async(
+        messenger,
+        core_node_name,
+        node_name,
+        tag,
+        args,
+        Some(prelaunch_instance_id),
+        slot_bindings,
+        timeouts,
+    )
+    .await
+}
+
+/// Spawn a node instance with already-resolved `slot_bindings`. Callers must
+/// have validated `binds` via [`validate_and_run_instance`] first — invoking
+/// this directly bypasses every binding rule and exists only as the lower
+/// half of the validate-then-spawn split.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
     core_node_name: &str,
@@ -270,6 +564,7 @@ pub async fn run_instance_async(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
+    slot_bindings: BTreeMap<String, SlotBinding>,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     // Generate or use provided instance_id
@@ -294,17 +589,18 @@ pub async fn run_instance_async(
         ),
     };
 
-    // Create the runtime config with the parsed arguments
     let runtime_config = RuntimeConfig::new(
         messaging_host.as_str(),
         messaging_port,
         NodeInstanceConfig {
-            instance_id: Name::new(instance_id.clone())
-                .map_err(|e| Error::PeppyConfig(e.into()))?,
             arguments,
-            framework: Default::default(),
+            slot_bindings,
+            ..NodeInstanceConfig::new(
+                Name::new(instance_id.clone()).map_err(|e| Error::PeppyConfig(e.into()))?,
+            )
         },
         node_name,
+        tag,
         core_node_name,
     )
     .map_err(Error::PeppyConfig)?;
@@ -351,12 +647,14 @@ pub async fn run_instance_async(
     Ok(instance_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_node(
     ctx: &Arc<AppContext>,
     node_name: String,
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
+    binds: Vec<(String, String)>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -366,17 +664,20 @@ pub fn run_node(
         tag,
         args,
         instance_id,
+        binds,
         timeouts,
         build,
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_node_async(
     ctx: &Arc<AppContext>,
     node_name: String,
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
+    binds: Vec<(String, String)>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -448,13 +749,14 @@ async fn run_node_async(
         }
     }
 
-    run_instance_async(
+    validate_and_run_instance(
         conn.messenger,
         &conn.core_node_name,
         &node_name,
         &tag,
         &args,
         instance_id,
+        &binds,
         &remaining_timeouts(&timeouts, start, "run")?,
     )
     .await?;

@@ -4,14 +4,53 @@ use super::deserialization;
 use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use crate::error::Result;
-use crate::generator::types::non_empty_message_format;
+use crate::generator::types::{InterfaceOrigin, non_empty_message_format};
 use config::node::{ConsumedService, ExposedService, MessageFormat};
+
+/// Returns the Python expression for the `SenderTarget` to splice into a
+/// generated `listen` / `poll` / `subscribe` / `emit` call:
+///   - non-`conforms_to` artifact → `peppylib.SenderTarget.node(<node_name_expr>, <node_tag_expr>)`
+///   - `interfaces.conforms_to`   → `peppylib.SenderTarget.interface("<name>", "<tag>")`
+///
+/// Consumer-side wildcard (`None`) is passed directly at the call site that
+/// needs it; this helper covers only the producer-known origin cases.
+pub(crate) fn sender_target_python_expr(
+    origin: Option<&InterfaceOrigin>,
+    node_name_expr: &str,
+    node_tag_expr: &str,
+) -> String {
+    match origin {
+        Some(o) => format!(
+            "peppylib.SenderTarget.interface({:?}, {:?})",
+            o.iface_name, o.iface_tag
+        ),
+        None => format!("peppylib.SenderTarget.node({node_name_expr}, {node_tag_expr})"),
+    }
+}
+
+/// Returns the Python expression for the consumer's
+/// `target_instance_id` argument at a consumed service / action call
+/// site. Calls `node_runner.pinned_target_for(<link_id>)` when the
+/// dependency carries a manifest link_id; `None` for synthetic test
+/// fixtures that don't model a manifest dep. Pinned slots resolve to
+/// the bound producer's `instance_id`; `from_any` slots (bound or not)
+/// resolve to `None` and fall back to wildcard discover-then-pin at
+/// the call site.
+pub(crate) fn consumed_from_instance_id_python_expr(
+    dependency: &crate::generator::types::DependencyContext,
+) -> String {
+    match dependency.wire_link_id() {
+        Some(link_id) => format!("node_runner.pinned_target_for({link_id:?})"),
+        None => "None".to_string(),
+    }
+}
 
 /// Generates Python code for an exposed (handler) service.
 pub fn build_exposed_service(
     service: &ExposedService,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
+    origin: Option<&InterfaceOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
@@ -142,12 +181,14 @@ pub fn build_exposed_service(
         "async def handle_next_request(node_runner: peppylib.NodeRunner, handler: {handler_type}) -> None:"
     ));
     builder.indent();
+    let target_expr =
+        sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
-    builder.line("node_runner.node_name(),");
+    builder.line(&format!("{target_expr},"));
     builder.line("SERVICE_NAME,");
     builder.dedent();
     builder.line(")");
@@ -182,14 +223,14 @@ pub fn build_consumed_service(
     response_arguments: &MessageFormat,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
-    dependency_node_name: &str,
+    dependency: &crate::generator::types::DependencyContext,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
     let request_format = non_empty_message_format(Some(request_arguments));
     let response_format = non_empty_message_format(Some(response_arguments));
 
-    // Capnp schema loaders
+    // Capnp schema loaders.
     if request_schema_info.is_some() || response_schema_info.is_some() {
         emit_capnp_preamble(&mut builder);
     }
@@ -201,7 +242,7 @@ pub fn build_consumed_service(
     }
 
     // Constants
-    builder.line(&format!("NODE_NAME = \"{}\"", dependency_node_name));
+    builder.line(&format!("NODE_NAME = \"{}\"", dependency.producer_name));
     builder.line(&format!("SERVICE_NAME = \"{}\"", service.name));
     builder.blank_line();
 
@@ -239,8 +280,6 @@ pub fn build_consumed_service(
 
     // poll async function
     builder.add_import("import peppylib");
-    // Always needed: poll() signature uses Optional[str] for target_core_node/target_instance_id
-    builder.add_import("from typing import Optional");
     builder.blank_line();
 
     let has_request = request_format.is_some();
@@ -253,12 +292,10 @@ pub fn build_consumed_service(
 
     let signature = if has_request {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float){return_type}:"
         )
     } else {
-        format!(
-            "async def poll(node_runner: peppylib.NodeRunner, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
-        )
+        format!("async def poll(node_runner: peppylib.NodeRunner, timeout: float){return_type}:")
     };
     builder.line(&signature);
     builder.indent();
@@ -283,20 +320,25 @@ pub fn build_consumed_service(
         builder.line("request_payload = b\"\"");
     }
 
-    // Call peppylib.ServiceMessenger.poll
     if has_response {
         builder.line("response_message = await peppylib.ServiceMessenger.poll(");
     } else {
         builder.line("await peppylib.ServiceMessenger.poll(");
     }
+    let target_expr = sender_target_python_expr(
+        dependency.origin.as_ref(),
+        "NODE_NAME",
+        &format!("{:?}", dependency.producer_tag),
+    );
+    let target_instance_id_expr = consumed_from_instance_id_python_expr(dependency);
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
-    builder.line("NODE_NAME,");
+    builder.line(&format!("{target_expr},"));
     builder.line("SERVICE_NAME,");
-    builder.line("target_core_node,");
-    builder.line("target_instance_id,");
+    builder.line("None,");
+    builder.line(&format!("{target_instance_id_expr},"));
     builder.line("request_payload,");
     builder.line("timeout,");
     builder.dedent();

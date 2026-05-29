@@ -15,7 +15,7 @@ use std::time::Duration;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_remove_success() {
     const TARGET_NODE_NAME: &str = "removable_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -97,7 +97,7 @@ async fn listen_for_node_remove_success() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_remove_node_name_not_found_fails() {
     const MISSING_NODE_NAME: &str = "missing_node";
-    const MISSING_NODE_TAG: &str = "0.1.0";
+    const MISSING_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -136,7 +136,7 @@ async fn listen_for_node_remove_node_name_not_found_fails() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_remove_stop_running_instances_first() {
     const TARGET_NODE_NAME: &str = "running_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "running_instance";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -193,7 +193,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         &shutdown_handle,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
-        TARGET_NODE_NAME,
+        common::test_node_target(TARGET_NODE_NAME),
     )
     .await
     .expect("failed to start shutdown service");
@@ -234,7 +234,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instances_exist() {
     const TARGET_NODE_NAME: &str = "running_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "running_instance";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -291,7 +291,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         &shutdown_handle,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
-        TARGET_NODE_NAME,
+        common::test_node_target(TARGET_NODE_NAME),
     )
     .await
     .expect("failed to start shutdown service");
