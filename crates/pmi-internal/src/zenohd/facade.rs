@@ -1,4 +1,5 @@
 use super::super::error::{Error, Result};
+use std::fs::File;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -35,24 +36,16 @@ pub struct ZenohEndpoint {
 }
 
 /// Checks whether a child process has exited prematurely.
-/// Returns the process back if still alive, or an error with stderr output if it exited.
-fn check_process_alive(mut child: Child) -> std::result::Result<Child, Error> {
+/// Returns the process back if still alive, or an error carrying the tail of
+/// the router log if it exited. zenohd's stdout/stderr are redirected to
+/// `log_path`, so the diagnostic comes from the file rather than from a pipe.
+fn check_process_alive(mut child: Child, log_path: &Path) -> std::result::Result<Child, Error> {
     match child.try_wait() {
-        Ok(Some(status)) => {
-            let output = child.wait_with_output().map_err(|e| {
-                Error::BackendError(format!("Failed to capture zenohd output: {}", e))
-            })?;
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(Error::BackendError(format!(
-                "zenohd exited unexpectedly with status: {}{}",
-                status,
-                if stderr.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!(" – {}", stderr.trim())
-                }
-            )))
-        }
+        Ok(Some(status)) => Err(Error::BackendError(format!(
+            "zenohd exited unexpectedly with status: {}{}",
+            status,
+            zenohd_log_excerpt(log_path),
+        ))),
         Ok(None) => Ok(child),
         Err(e) => Err(Error::BackendError(format!(
             "Failed to check zenohd status: {}",
@@ -61,11 +54,37 @@ fn check_process_alive(mut child: Child) -> std::result::Result<Child, Error> {
     }
 }
 
+/// Builds a short suffix describing why zenohd exited by reading the tail of
+/// its redirected log file. Used only on the error path; falls back to the log
+/// path when the file is empty or unreadable.
+fn zenohd_log_excerpt(log_path: &Path) -> String {
+    match std::fs::read_to_string(log_path) {
+        Ok(contents) if !contents.trim().is_empty() => {
+            let tail = contents
+                .lines()
+                .rev()
+                .take(20)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(" – last zenohd log lines:\n{tail}")
+        }
+        _ => format!(" (see zenohd log at {})", log_path.display()),
+    }
+}
+
 /// The Zenoh daemon binary facade. Zenohd is not accessible via the Rust API (or in a very limited fashion).
 /// This facade allows calling the binary in the background.
 pub struct ZenohdFacade {
     zenohd_path: Option<String>,
     pub zenohd_config_path: PathBuf,
+    /// File that receives zenohd's stdout+stderr. These streams must be drained
+    /// for the process's lifetime; an unread pipe deadlocks the router once its
+    /// buffer fills (a zenohd thread blocks in `write` and stops servicing
+    /// sockets). A file sink is bounded by disk and never blocks.
+    zenohd_log_path: PathBuf,
     pub router_process: Option<Child>,
     pub zenoh_endpoint: ZenohEndpoint,
 }
@@ -75,9 +94,17 @@ impl ZenohdFacade {
     pub fn new(zenohd_config_path: impl AsRef<Path>) -> Result<Self> {
         let zenohd_path = ZenohdFacade::get_zenohd_binary();
         let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&zenohd_config_path)?;
+        let zenohd_config_path = zenohd_config_path.as_ref().to_path_buf();
+        // Keep the log next to the generated config (same directory), one file
+        // per router port.
+        let zenohd_log_path = zenohd_config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("zenohd_{}.log", zenoh_endpoint.port));
         Ok(Self {
             zenohd_path,
-            zenohd_config_path: zenohd_config_path.as_ref().to_path_buf(),
+            zenohd_config_path,
+            zenohd_log_path,
             router_process: None,
             zenoh_endpoint,
         })
@@ -199,12 +226,30 @@ impl ZenohdFacade {
             )));
         }
 
+        // Redirect stdout+stderr to a log file instead of unread pipes: a full
+        // pipe buffer blocks a zenohd thread in `write` and deadlocks the whole
+        // router. Pin the log level too, so a verbose inherited `RUST_LOG`
+        // can't flood the file (override with `PEPPY_ZENOHD_LOG`).
+        let log_file = File::create(&self.zenohd_log_path).map_err(|e| {
+            Error::BackendError(format!(
+                "Failed to create zenohd log file {}: {}",
+                self.zenohd_log_path.display(),
+                e
+            ))
+        })?;
+        let stderr_file = log_file
+            .try_clone()
+            .map_err(|e| Error::BackendError(format!("Failed to set up zenohd log file: {}", e)))?;
+        let zenohd_log_level =
+            env::var("PEPPY_ZENOHD_LOG").unwrap_or_else(|_| "zenoh=warn".to_string());
+
         let mut child = Command::new(zenohd_path)
             .env("ZENOH_CONFIG", self.zenohd_config_path.as_os_str())
+            .env("RUST_LOG", zenohd_log_level)
             .arg("-c")
             .arg(&self.zenohd_config_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(stderr_file))
             .spawn()
             .map_err(|e| Error::BackendError(format!("Failed to start zenohd: {}", e)))?;
 
@@ -220,7 +265,7 @@ impl ZenohdFacade {
             let max_backoff = std::time::Duration::from_millis(500);
 
             loop {
-                child = check_process_alive(child)?;
+                child = check_process_alive(child, &self.zenohd_log_path)?;
 
                 match TcpStream::connect(&connect_addr) {
                     Ok(_) => break,
@@ -238,12 +283,13 @@ impl ZenohdFacade {
                 }
             }
         } else {
-            child = check_process_alive(child)?;
+            child = check_process_alive(child, &self.zenohd_log_path)?;
         }
 
         tracing::info!(
-            "Zenoh router started, with config {}",
-            self.zenohd_config_path.to_str().unwrap()
+            "Zenoh router started (config {}, logs {})",
+            self.zenohd_config_path.display(),
+            self.zenohd_log_path.display()
         );
 
         // Store the child process handle
@@ -316,6 +362,16 @@ mod tests {
         assert_eq!(facade.zenoh_endpoint.host, expected_host);
         assert_eq!(facade.zenoh_endpoint.port, expected_port);
         assert_eq!(facade.zenoh_endpoint.protocol, ZenohNetProtocol::Tcp);
+
+        // The log file sits next to the config, named per router port.
+        assert_eq!(
+            facade.zenohd_log_path,
+            config_file
+                .path()
+                .parent()
+                .unwrap()
+                .join(format!("zenohd_{expected_port}.log"))
+        );
     }
 
     #[test]
@@ -350,5 +406,24 @@ mod tests {
 
         // Process should remain None
         assert!(facade.router_process.is_none());
+    }
+
+    #[test]
+    fn test_zenohd_log_excerpt() {
+        use std::io::Write;
+        use tempfile::Builder;
+
+        // Missing file: fall back to pointing at the path.
+        let missing = Path::new("/nonexistent/zenohd_0.log");
+        assert!(zenohd_log_excerpt(missing).contains("see zenohd log"));
+
+        // Present file: include the tail of its contents.
+        let mut log = Builder::new()
+            .suffix(".log")
+            .tempfile()
+            .expect("Failed to create temp log");
+        writeln!(log, "starting up\nerror: address already in use").expect("write");
+        let excerpt = zenohd_log_excerpt(log.path());
+        assert!(excerpt.contains("address already in use"));
     }
 }
