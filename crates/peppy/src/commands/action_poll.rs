@@ -1,4 +1,4 @@
-use peppylib::messaging::ActionGoalHandle;
+use peppylib::messaging::{ActionGoalHandle, ResultStatus};
 use peppylib::{ActionMessenger, MessengerHandle};
 use tracing::info;
 
@@ -144,11 +144,28 @@ pub(crate) async fn poll_action_to_completion<R>(
         .saturating_duration_since(tokio::time::Instant::now())
         .max(Duration::from_secs(1));
     match ActionMessenger::request_result(messenger, action_handle, result_timeout).await {
-        Ok(msg) => match decode_result(&msg.payload()) {
-            Ok(result) => Ok(result),
-            Err(err) => {
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                match decode_result(reply.body.as_ref()) {
+                    Ok(result) => Ok(result),
+                    Err(err) => {
+                        scrolling_output.clear();
+                        Err(Error::ExecutionFailed(err))
+                    }
+                }
+            }
+            ResultStatus::Abandoned => {
                 scrolling_output.clear();
-                Err(Error::ExecutionFailed(err))
+                Err(Error::ExecutionFailed(
+                    "the action goal was abandoned by its worker before producing a result"
+                        .to_string(),
+                ))
+            }
+            ResultStatus::Expired => {
+                scrolling_output.clear();
+                Err(Error::ExecutionFailed(
+                    "the action result expired before it could be fetched".to_string(),
+                ))
             }
         },
         Err(err) => {

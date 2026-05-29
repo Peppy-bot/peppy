@@ -334,13 +334,13 @@ pub(crate) fn consumed_service_response_schema_key(
     )
 }
 
-/// The five cap'n proto schema keys a consumed action needs (one per wire
-/// message type). Bundled so callers don't have to re-derive the
-/// `(producer, action)` tuple for each kind.
+/// The cap'n proto schema keys a consumed action needs (one per wire message
+/// type that carries a user-defined payload). Bundled so callers don't have to
+/// re-derive the `(producer, action)` tuple for each kind. The cancel reply has
+/// no per-action schema — it is the framework cancel-ack decoded by peppylib.
 pub(crate) struct ConsumedActionSchemaKeys {
     pub goal_request: String,
     pub goal_response: String,
-    pub cancel_response: String,
     pub feedback: String,
     pub result_response: String,
 }
@@ -361,7 +361,6 @@ pub(crate) fn consumed_action_schema_keys(
     ConsumedActionSchemaKeys {
         goal_request: format!("{prefix}_fire_goal"),
         goal_response: format!("{prefix}_fire_goal_response"),
-        cancel_response: format!("{prefix}_cancel_goal_response"),
         feedback: format!("{prefix}_feedback"),
         result_response: format!("{prefix}_get_result_response"),
     }

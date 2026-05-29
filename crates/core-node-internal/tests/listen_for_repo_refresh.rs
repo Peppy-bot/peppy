@@ -14,6 +14,7 @@ use core_node_api::encoding::{
 };
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
+use peppylib::messaging::ResultStatus;
 use std::path::Path;
 use std::time::Duration;
 
@@ -133,15 +134,18 @@ async fn send_refresh_inner(
     match ActionMessenger::request_result(&started.caller_handle, &action_handle, fetch_timeout)
         .await
     {
-        Ok(msg) => {
-            let result =
-                RepoRefreshResult::decode(&msg.payload()).expect("decode repo_refresh result");
-            RefreshTestResult {
-                goal_response,
-                feedbacks,
-                result,
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                let result = RepoRefreshResult::decode(reply.body.as_ref())
+                    .expect("decode repo_refresh result");
+                RefreshTestResult {
+                    goal_response,
+                    feedbacks,
+                    result,
+                }
             }
-        }
+            other => panic!("repo_refresh did not complete with a result: {other:?}"),
+        },
         Err(err) => panic!("Failed to get result: {}", err),
     }
 }

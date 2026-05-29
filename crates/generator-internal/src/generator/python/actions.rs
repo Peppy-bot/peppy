@@ -7,8 +7,7 @@ use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_pream
 use super::type_mapping::{collect_fields_from_format, uses_optional};
 use crate::error::Result;
 use crate::generator::types::{
-    ConsumedActionMessage, InterfaceOrigin, cancel_action_response_format,
-    goal_action_response_format, non_empty_message_format,
+    ConsumedActionMessage, InterfaceOrigin, goal_action_response_format, non_empty_message_format,
 };
 use config::node::{ConsumedAction, ExposedAction};
 
@@ -412,33 +411,57 @@ pub fn build_consumed_action(
         emit_format_as_dataclass(&mut builder, "GoalResponseData", fmt)?;
     }
 
-    // CancelResponseData + CancelResponse
-    let cancel_format = cancel_action_response_format();
-    emit_format_as_dataclass(&mut builder, "CancelResponseData", &cancel_format)?;
+    // CancelState enum + CancelResponse. The cancel reply is the framework
+    // cancel-ack, decoded Rust-side (`cancel_goal` returns a typed reply); Python
+    // just maps the typed `state` tag. No per-action cancel payload schema.
+    builder.add_import("from enum import IntEnum");
+    builder.line("class CancelState(IntEnum):");
+    builder.indent();
+    builder.line("SIGNALLED = 0");
+    builder.line("ALREADY_TERMINAL = 1");
+    builder.line("UNKNOWN = 2");
+    builder.dedent();
+    builder.blank_line();
     builder.dataclass(
         "CancelResponse",
         &[
             ("core_node", "str"),
             ("instance_id", "str"),
-            ("data", "CancelResponseData"),
+            ("state", "CancelState"),
         ],
     );
 
-    // ResultResponseData + ResultResponse
+    // ResultStatus enum + ResultResponseData + ResultResponse. The result reply
+    // is framed by the engine as a status tag + body, stripped Rust-side; Python
+    // maps the typed status and decodes the body only for Completed/Cancelled.
+    builder.line("class ResultStatus(IntEnum):");
+    builder.indent();
+    builder.line("COMPLETED = 0");
+    builder.line("CANCELLED = 1");
+    builder.line("ABANDONED = 2");
+    builder.line("EXPIRED = 3");
+    builder.dedent();
+    builder.blank_line();
     if let Some(fmt) = result_response_format {
         emit_format_as_dataclass(&mut builder, "ResultResponseData", fmt)?;
+        builder.add_import("from typing import Optional");
         builder.dataclass(
             "ResultResponse",
             &[
                 ("core_node", "str"),
                 ("instance_id", "str"),
-                ("data", "ResultResponseData"),
+                ("status", "ResultStatus"),
+                ("data", "Optional[ResultResponseData]"),
             ],
         );
     } else {
         builder.dataclass(
             "ResultResponse",
-            &[("core_node", "str"), ("instance_id", "str")],
+            &[
+                ("core_node", "str"),
+                ("instance_id", "str"),
+                ("status", "ResultStatus"),
+            ],
         );
     }
 
@@ -461,19 +484,6 @@ pub fn build_consumed_action(
             "GoalResponseData",
             &format!("{loader_fn_name}()"),
             "_deserialize_goal_response",
-        );
-    }
-
-    // _deserialize_cancel_response
-    if let Some(info) = schema_info.cancel_response {
-        let loader_fn_name = capnp_loader_fn_name(info);
-        deserialization::build_deserialize_fn(
-            &mut builder,
-            info,
-            &cancel_format,
-            "CancelResponseData",
-            &format!("{loader_fn_name}()"),
-            "_deserialize_cancel_response",
         );
     }
 
@@ -586,7 +596,7 @@ pub fn build_consumed_action(
     // cancel_goal method
     builder.line("async def cancel_goal(self, timeout: float) -> CancelResponse:");
     builder.indent();
-    builder.line("response = await peppylib.ActionMessenger.cancel_goal(");
+    builder.line("reply = await peppylib.ActionMessenger.cancel_goal(");
     builder.indent();
     builder.line("self._messenger,");
     builder.line("self._inner,");
@@ -594,9 +604,7 @@ pub fn build_consumed_action(
     builder.dedent();
     builder.line(")");
 
-    builder.line("payload = response.payload");
-    builder.line("cancel_response_data = _deserialize_cancel_response(payload)");
-    builder.line("return CancelResponse(core_node=response.core_node, instance_id=response.instance_id, data=cancel_response_data)");
+    builder.line("return CancelResponse(core_node=reply.core_node, instance_id=reply.instance_id, state=CancelState(reply.state))");
 
     builder.dedent();
     builder.blank_line();
@@ -619,7 +627,7 @@ pub fn build_consumed_action(
     // get_result method
     builder.line("async def get_result(self, timeout: float) -> ResultResponse:");
     builder.indent();
-    builder.line("response = await peppylib.ActionMessenger.request_result(");
+    builder.line("reply = await peppylib.ActionMessenger.request_result(");
     builder.indent();
     builder.line("self._messenger,");
     builder.line("self._inner,");
@@ -627,13 +635,17 @@ pub fn build_consumed_action(
     builder.dedent();
     builder.line(")");
 
+    builder.line("status = ResultStatus(reply.status)");
     if has_result_response {
-        builder.line("payload = response.payload");
-        builder.line("result_response_data = _deserialize_result_response(payload)");
-        builder.line("return ResultResponse(core_node=response.core_node, instance_id=response.instance_id, data=result_response_data)");
+        builder.line("data = None");
+        builder.line("if status in (ResultStatus.COMPLETED, ResultStatus.CANCELLED):");
+        builder.indent();
+        builder.line("data = _deserialize_result_response(reply.body)");
+        builder.dedent();
+        builder.line("return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status, data=data)");
     } else {
         builder.line(
-            "return ResultResponse(core_node=response.core_node, instance_id=response.instance_id)",
+            "return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status)",
         );
     }
 

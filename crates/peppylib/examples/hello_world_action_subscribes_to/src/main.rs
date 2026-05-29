@@ -1,8 +1,8 @@
 use colored::Colorize;
 use config::{consts::DEFAULT_MESSAGING_PORT, node::QoSProfile};
 use names_generator2::get_random;
-use peppylib::messaging::ActionGoalHandle;
-use peppylib::{ActionMessenger, MessengerHandle, Payload, PeppyError};
+use peppylib::messaging::{ActionGoalHandle, ResultStatus, decode_cancel_ack};
+use peppylib::{ActionMessenger, MessengerHandle, Payload};
 use rand::rng;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
@@ -108,15 +108,14 @@ async fn main() {
             .bold()
             .cyan()
     );
-    let result_payload =
+    let result =
         ActionMessenger::request_result(&sender_handle, &goal_handle, GOAL_TIMEOUT)
             .await
             .expect("Action result should be available");
-    let result_bytes = result_payload.payload();
-    let result_text = String::from_utf8_lossy(result_bytes.as_ref());
+    let result_text = String::from_utf8_lossy(result.body.as_ref());
     println!(
         "{}",
-        format!("[RESULT] Received result: `{result_text}`")
+        format!("[RESULT] Received {:?} result: `{result_text}`", result.status)
             .bold()
             .cyan()
     );
@@ -159,43 +158,43 @@ async fn main() {
         ActionMessenger::cancel_goal(&sender_handle, &goal_handle, CANCEL_TIMEOUT)
             .await
             .expect("Cancel request should succeed");
-    let cancel_bytes = cancel_response.payload();
-    let cancel_text = String::from_utf8_lossy(cancel_bytes.as_ref());
+    let cancel_state =
+        decode_cancel_ack(cancel_response.payload().as_ref()).expect("decode cancel state");
     println!(
         "{}",
-        format!("[CANCEL] Received cancel response: `{cancel_text}`")
+        format!("[CANCEL] Received cancel state: `{cancel_state:?}`")
             .bold()
             .magenta()
     );
 
     println!(
         "{}",
-        "[RESULT] Attempting to request result after cancellation..."
+        "[RESULT] Requesting the result after cancellation..."
             .bold()
             .cyan()
     );
 
-    match ActionMessenger::request_result(&sender_handle, &goal_handle, GOAL_TIMEOUT).await {
-        Ok(result_payload) => {
-            let result_bytes = result_payload.payload();
-            let result_text = String::from_utf8_lossy(result_bytes.as_ref());
-            panic!(
-                "Received result `{result_text}` even though the goal was cancelled. \
-                 The action should stop responding to this goal."
-            );
-        }
-        Err(PeppyError::ActionResultTimeout { .. })
-        | Err(PeppyError::ActionResultUnreachable { .. }) => {
-            println!(
-                "{}",
-                "[RESULT] No result returned after cancellation, as expected."
-                    .bold()
-                    .cyan()
-            );
-        }
-        Err(error) => {
-            panic!("Unexpected error after cancelling goal: {error:?}");
-        }
+    // After a cancel, `get_result` still resolves to a definitive typed outcome
+    // (the worker here observes the cancel and reports `Cancelled`) rather than
+    // erroring or hanging.
+    let result = ActionMessenger::request_result(&sender_handle, &goal_handle, GOAL_TIMEOUT)
+        .await
+        .expect("cancelled goal still resolves to a typed outcome");
+    let result_text = String::from_utf8_lossy(result.body.as_ref());
+    match result.status {
+        ResultStatus::Cancelled => println!(
+            "{}",
+            format!("[RESULT] Goal was cancelled, result: `{result_text}`")
+                .bold()
+                .cyan()
+        ),
+        ResultStatus::Abandoned => println!(
+            "{}",
+            "[RESULT] Goal was abandoned after the cancel."
+                .bold()
+                .cyan()
+        ),
+        other => panic!("Unexpected outcome after cancelling goal: {other:?}"),
     }
 
     println!(

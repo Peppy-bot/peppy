@@ -566,25 +566,34 @@ fn consumed_action() {
         ],
     );
 
-    // CancelResponseData and CancelResponse structs
+    // CancelResponse struct carries a generated typed CancelState enum.
     assert_contains_all(
         &rendered,
         &[
-            "pub struct CancelResponseData",
-            "pub error_message: Option<String>",
+            "pub enum CancelState",
+            "Signalled",
+            "AlreadyTerminal",
+            "Unknown",
             "pub struct CancelResponse",
+            "pub state: CancelState",
         ],
     );
 
-    // ResultResponseData and ResultResponse structs
+    // ResultResponseData, the ResultOutcome enum, and the ResultResponse struct.
     assert_contains_all(
         &rendered,
         &[
             "pub struct ResultResponseData",
             "pub final_position: [i32; 3]",
+            "pub enum ResultOutcome",
+            "Completed(ResultResponseData)",
+            "Cancelled(ResultResponseData)",
+            "Abandoned",
+            "Expired",
             "pub struct ResultResponse",
             "pub core_node: String",
             "pub instance_id: String",
+            "pub outcome: ResultOutcome",
         ],
     );
 

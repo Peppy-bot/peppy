@@ -514,25 +514,35 @@ fn consumed_action() {
     // GoalResponseData dataclass (no GoalResponse wrapper — data lives on ActionHandle)
     assert_contains_all(&rendered, &["class GoalResponseData:", "accepted: bool"]);
 
-    // CancelResponseData and CancelResponse dataclasses
+    // CancelState enum + CancelResponse dataclass (no per-action cancel data).
     assert_contains_all(
         &rendered,
         &[
-            "class CancelResponseData:",
-            "error_message: Optional[str]",
+            "class CancelState(IntEnum):",
+            "SIGNALLED = 0",
+            "ALREADY_TERMINAL = 1",
+            "UNKNOWN = 2",
             "class CancelResponse:",
+            "state: CancelState",
         ],
     );
 
-    // ResultResponseData and ResultResponse dataclasses
+    // ResultStatus enum, ResultResponseData, and ResultResponse dataclasses.
     assert_contains_all(
         &rendered,
         &[
+            "class ResultStatus(IntEnum):",
+            "COMPLETED = 0",
+            "CANCELLED = 1",
+            "ABANDONED = 2",
+            "EXPIRED = 3",
             "class ResultResponseData:",
             "final_position: list[int]",
             "class ResultResponse:",
             "core_node: str",
             "instance_id: str",
+            "status: ResultStatus",
+            "data: Optional[ResultResponseData]",
         ],
     );
 
@@ -542,19 +552,22 @@ fn consumed_action() {
         &["class FeedbackMessage:", "new_position: list[int]"],
     );
 
-    // Deserialization functions
+    // Deserialization functions. The cancel reply is decoded by peppylib, so
+    // there is no generated `_deserialize_cancel_response`.
     assert_contains_all(
         &rendered,
         &[
             "def _deserialize_goal_response(payload: bytes) -> GoalResponseData:",
             "return GoalResponseData(",
-            "def _deserialize_cancel_response(payload: bytes) -> CancelResponseData:",
-            "return CancelResponseData(",
             "def _deserialize_feedback_payload(payload: bytes) -> FeedbackMessage:",
             "return FeedbackMessage(",
             "def _deserialize_result_response(payload: bytes) -> ResultResponseData:",
             "return ResultResponseData(",
         ],
+    );
+    assert!(
+        !rendered.contains("_deserialize_cancel_response"),
+        "cancel reply is decoded by peppylib; no generated cancel deserializer expected"
     );
 
     // Imports
@@ -606,7 +619,7 @@ fn consumed_action() {
         "target_core_node should not appear in the generated API; got:\n{rendered}"
     );
 
-    // cancel_goal as self method with deserialization
+    // cancel_goal as self method, mapping the typed cancel reply's state tag.
     assert_contains_all(
         &rendered,
         &[
@@ -614,7 +627,7 @@ fn consumed_action() {
             "peppylib.ActionMessenger.cancel_goal(",
             "self._messenger,",
             "self._inner,",
-            "cancel_response_data = _deserialize_cancel_response(payload)",
+            "state=CancelState(reply.state)",
             "return CancelResponse(",
         ],
     );
@@ -629,7 +642,7 @@ fn consumed_action() {
         ],
     );
 
-    // get_result as self method with deserialization
+    // get_result as self method, mapping the typed result reply's status + body.
     assert_contains_all(
         &rendered,
         &[
@@ -637,7 +650,8 @@ fn consumed_action() {
             "peppylib.ActionMessenger.request_result(",
             "self._messenger,",
             "self._inner,",
-            "result_response_data = _deserialize_result_response(payload)",
+            "status = ResultStatus(reply.status)",
+            "data = _deserialize_result_response(reply.body)",
             "return ResultResponse(",
         ],
     );
@@ -734,7 +748,6 @@ fn consumed_two_actions_same_node() {
         move_arm,
         &[
             "def _deserialize_goal_response(",
-            "def _deserialize_cancel_response(",
             "def _deserialize_feedback_payload(",
             "def _deserialize_result_response(",
             "request: GoalRequest",
@@ -775,7 +788,6 @@ fn consumed_two_actions_same_node() {
         rotate_servo,
         &[
             "def _deserialize_goal_response(",
-            "def _deserialize_cancel_response(",
             "def _deserialize_feedback_payload(",
             "def _deserialize_result_response(",
             "feedback_qos: peppylib.QoSProfile",
@@ -851,13 +863,11 @@ fn consumed_action_without_response_payload() {
         "expected no _deserialize_result_response when result_response is None"
     );
 
-    // Should still have cancel and feedback deserialization
-    assert_contains_all(
-        &rendered,
-        &[
-            "def _deserialize_cancel_response(",
-            "def _deserialize_feedback_payload(",
-        ],
+    // Should still have feedback deserialization (cancel is decoded by peppylib).
+    assert_contains_all(&rendered, &["def _deserialize_feedback_payload("]);
+    assert!(
+        !rendered.contains("_deserialize_cancel_response"),
+        "cancel reply is decoded by peppylib; no generated cancel deserializer expected"
     );
 
     // ActionHandle class
@@ -880,10 +890,13 @@ fn consumed_action_without_response_payload() {
         ],
     );
 
-    // get_result should return without data
+    // get_result returns the typed status and no data (empty result format).
     assert_contains_all(
         &rendered,
-        &["return ResultResponse(core_node=response.core_node, instance_id=response.instance_id)"],
+        &[
+            "status = ResultStatus(reply.status)",
+            "return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status)",
+        ],
     );
 }
 
@@ -939,9 +952,11 @@ fn consumed_action_without_feedback() {
         "expected no _deserialize_feedback_payload when feedback is None"
     );
 
-    // Should still have cancel deserialization (always present) and capnp preamble
-    assert_contains_all(
-        rendered,
-        &["import capnp", "def _deserialize_cancel_response("],
+    // Still has the capnp preamble (for the goal/result schemas). The cancel
+    // reply is decoded by peppylib, so no generated cancel deserializer.
+    assert_contains_all(rendered, &["import capnp"]);
+    assert!(
+        !rendered.contains("_deserialize_cancel_response"),
+        "cancel reply is decoded by peppylib; no generated cancel deserializer expected"
     );
 }

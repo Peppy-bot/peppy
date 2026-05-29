@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 
 use crate::error::Error;
 use crate::messaging::{
-    ActionMessenger, ConsumerFilter, MessengerHandle, SenderTarget, ServiceMessenger,
+    ActionMessenger, ConsumerFilter, MessengerHandle, ResultStatus, SenderTarget, ServiceMessenger,
     TopicMessenger,
 };
 
@@ -1787,7 +1787,12 @@ async fn action_communication_no_instance_id_target() {
                     assert!(!goal_id.is_empty(), "result request must carry a goal_id");
                     assert!(body.is_empty(), "result request body must be empty");
 
-                    Ok(response_payload)
+                    // This test drives the result service directly, so it frames
+                    // the reply with the engine's result-outcome envelope itself.
+                    Ok(super::wrap_result_outcome(
+                        ResultStatus::Completed,
+                        response_payload.as_ref(),
+                    ))
                 }
             });
 
@@ -1882,9 +1887,10 @@ async fn action_communication_no_instance_id_target() {
         .await
         .expect("caller should receive result");
 
-        assert_eq!(result_response.payload(), result_payload);
-        assert_eq!(result_response.core_node(), LISTENER_CORE_NODE);
-        assert_eq!(result_response.instance_id(), LISTENER_INSTANCE_ID);
+        assert_eq!(result_response.status, ResultStatus::Completed);
+        assert_eq!(result_response.body, result_payload);
+        assert_eq!(result_response.core_node, LISTENER_CORE_NODE);
+        assert_eq!(result_response.instance_id, LISTENER_INSTANCE_ID);
     }
 
     server_task
@@ -2025,7 +2031,12 @@ async fn action_communication_with_instance_id_target() {
                     assert!(!goal_id.is_empty(), "result request must carry a goal_id");
                     assert!(body.is_empty(), "result request body must be empty");
 
-                    Ok(response_payload)
+                    // This test drives the result service directly, so it frames
+                    // the reply with the engine's result-outcome envelope itself.
+                    Ok(super::wrap_result_outcome(
+                        ResultStatus::Completed,
+                        response_payload.as_ref(),
+                    ))
                 }
             });
 
@@ -2120,9 +2131,10 @@ async fn action_communication_with_instance_id_target() {
         .await
         .expect("caller should receive result");
 
-        assert_eq!(result_response.payload(), result_payload);
-        assert_eq!(result_response.core_node(), LISTENER_CORE_NODE2);
-        assert_eq!(result_response.instance_id(), LISTENER_INSTANCE_ID2);
+        assert_eq!(result_response.status, ResultStatus::Completed);
+        assert_eq!(result_response.body, result_payload);
+        assert_eq!(result_response.core_node, LISTENER_CORE_NODE2);
+        assert_eq!(result_response.instance_id, LISTENER_INSTANCE_ID2);
     }
 
     server_task1
@@ -2531,7 +2543,11 @@ async fn single_action_communication_multiple_polls() {
                         assert!(!goal_id.is_empty(), "result request must carry a goal_id");
                         assert!(body.is_empty(), "result request body must be empty");
 
-                        Ok(Payload::from_static(b"result=done"))
+                        // Driven directly: frame the reply like the engine does.
+                        Ok(super::wrap_result_outcome(
+                            ResultStatus::Completed,
+                            b"result=done",
+                        ))
                     })
                     .await
                     .expect("action should spawn result handler")
@@ -2620,8 +2636,9 @@ async fn single_action_communication_multiple_polls() {
             .await
             .expect("caller should receive result response");
 
+            assert_eq!(result_response.status, ResultStatus::Completed);
             assert_eq!(
-                result_response.payload(),
+                result_response.body,
                 Payload::from_static(b"result=done"),
                 "result response should match expected payload for `{}`",
                 case.client_id

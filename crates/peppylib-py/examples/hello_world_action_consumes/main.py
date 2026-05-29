@@ -85,11 +85,12 @@ async def main():
 
     # --- Request result ---
     print(f"{BOLD}{CYAN}[RESULT] Requesting result payload...{RESET}")
-    result_payload = await ActionMessenger.request_result(
+    result = await ActionMessenger.request_result(
         sender_handle, goal_handle, GOAL_TIMEOUT
     )
-    result_text = result_payload.payload.decode("utf-8")
-    print(f"{BOLD}{CYAN}[RESULT] Received result: `{result_text}`{RESET}")
+    # `status` is the ResultStatus tag: 0=Completed, 1=Cancelled, 2=Abandoned, 3=Expired.
+    result_text = result.body.decode("utf-8")
+    print(f"{BOLD}{CYAN}[RESULT] Received status {result.status} result: `{result_text}`{RESET}")
 
     # --- Send cancellable goal ---
     print("Waiting before sending cancellable goal...")
@@ -117,31 +118,23 @@ async def main():
     print("Waiting before issuing cancel request...")
     await asyncio.sleep(2)
 
-    cancel_response = await ActionMessenger.cancel_goal(
+    cancel_reply = await ActionMessenger.cancel_goal(
         sender_handle, goal_handle, CANCEL_TIMEOUT
     )
-    cancel_text = cancel_response.payload.decode("utf-8")
-    print(f"{BOLD}{MAGENTA}[CANCEL] Received cancel response: `{cancel_text}`{RESET}")
+    # `state` is the CancelState tag: 0=Signalled, 1=AlreadyTerminal, 2=Unknown.
+    print(f"{BOLD}{MAGENTA}[CANCEL] Received cancel state: `{cancel_reply.state}`{RESET}")
 
-    # --- Attempt result after cancellation (should fail) ---
-    print(f"{BOLD}{CYAN}[RESULT] Attempting to request result after cancellation...{RESET}")
-    try:
-        result_payload = await ActionMessenger.request_result(
-            sender_handle, goal_handle, GOAL_TIMEOUT
-        )
-        result_text = result_payload.payload.decode("utf-8")
-        raise AssertionError(
-            f"Received result `{result_text}` even though the goal was cancelled. "
-            "The action should stop responding to this goal."
-        )
-    except (TimeoutError, ConnectionError):
-        print(f"{BOLD}{CYAN}[RESULT] No result returned after cancellation, as expected.{RESET}")
-    except AssertionError:
-        raise
-    except Exception as error:
-        raise RuntimeError(
-            f"Unexpected error after cancelling goal: {error}"
-        ) from error
+    # --- Result after cancellation ---
+    # `get_result` still resolves to a definitive typed outcome (the worker here
+    # observes the cancel and reports status 1=Cancelled) rather than hanging.
+    print(f"{BOLD}{CYAN}[RESULT] Requesting the result after cancellation...{RESET}")
+    result = await ActionMessenger.request_result(
+        sender_handle, goal_handle, GOAL_TIMEOUT
+    )
+    result_text = result.body.decode("utf-8")
+    print(
+        f"{BOLD}{CYAN}[RESULT] Goal resolved with status {result.status}: `{result_text}`{RESET}"
+    )
 
     print(
         f"{BOLD}{WHITE}Action sender finished exercising goal, feedback, result, and cancel flows.{RESET}"

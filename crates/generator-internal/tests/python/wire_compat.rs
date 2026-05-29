@@ -336,6 +336,7 @@ async def consume_action(node_runner, done):
     print(f"feedback message received progress={feedback.progress}", flush=True)
 
     result = await goal.get_result(5.0)
+    assert result.status == producer_perform_scan.ResultStatus.COMPLETED, f"unexpected status {result.status}"
     print(
         f"result success={result.data.success} status={result.data.status} "
         f"measurements={result.data.measurements} duration={result.data.duration}",

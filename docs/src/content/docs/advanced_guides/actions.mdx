@@ -346,7 +346,7 @@ async def drive(ctx):
   </TabItem>
 </Tabs>
 
-Cancellation is **auto-acknowledged** by the framework: the client's `cancel()` returns `accepted = true` if a goal with that `goal_id` is in flight (the signal was delivered), or `false` otherwise. "accepted" means *delivered*, not *will stop*; a worker is free to ignore the signal and keep running. The worker decides the goal's fate: calling `complete_cancelled` (or `complete`) is what a subsequent `get_result` returns. Whichever completion runs first wins; the framework closes this goal's feedback stream on completion, so the client's `on_next_feedback_message` loop ends cleanly. A goal's cancel never affects other concurrent goals.
+Cancellation is **auto-acknowledged** by the framework: the client's `cancel_goal` returns a typed `CancelState`: `Signalled` when a goal with that `goal_id` is in flight (the signal was delivered), `AlreadyTerminal` when it had already finished, or `Unknown`. `Signalled` means *delivered*, not *will stop*; a worker is free to ignore the signal and keep running. The worker decides the goal's fate: calling `complete_cancelled` (or `complete`) is what a subsequent `get_result` returns. Whichever completion runs first wins; the framework closes this goal's feedback stream on completion, so the client's `on_next_feedback_message` loop ends cleanly. A goal's cancel never affects other concurrent goals.
 
 ## Consuming an action
 
@@ -488,67 +488,97 @@ Each goal has its own feedback stream, addressed by `goal_id`, so feedback for o
 
 ### Getting the result
 
-Use `get_result` on the handle to request the final result. The call is routed to this goal by `goal_id`, and blocks until the server's worker completes that goal:
+Use `get_result` on the handle to request the final result. The call is routed to this goal by `goal_id` and **parks until the goal reaches a definitive terminal state**, then returns a typed outcome:
 
 <Tabs>
   <TabItem label="Rust">
 ```rust
 let result = action_handle.get_result(Duration::from_secs(5)).await?;
 
-println!(
-    "success={} error={:?} final_position={:?}",
-    result.data.success,
-    result.data.error_msg.as_deref(),
-    result.data.final_position
-);
+match result.outcome {
+    brain_move_arm::ResultOutcome::Completed(data) => println!(
+        "completed: success={} error={:?} final_position={:?}",
+        data.success,
+        data.error_msg.as_deref(),
+        data.final_position,
+    ),
+    brain_move_arm::ResultOutcome::Cancelled(data) => {
+        println!("cancelled at {:?}", data.final_position)
+    }
+    brain_move_arm::ResultOutcome::Abandoned => {
+        println!("the worker abandoned the goal without producing a result")
+    }
+    brain_move_arm::ResultOutcome::Expired => {
+        println!("the result expired before it was fetched")
+    }
+}
 ```
   </TabItem>
   <TabItem label="Python">
 ```python
 result = await action_handle.get_result(5.0)
 
-print(
-    f"success={result.data.success} error={result.data.error_msg} "
-    f"final_position={result.data.final_position}",
-    flush=True,
-)
+if result.status == brain_move_arm.ResultStatus.COMPLETED:
+    print(
+        f"completed: success={result.data.success} error={result.data.error_msg} "
+        f"final_position={result.data.final_position}",
+        flush=True,
+    )
+elif result.status == brain_move_arm.ResultStatus.CANCELLED:
+    print(f"cancelled at {result.data.final_position}", flush=True)
+elif result.status == brain_move_arm.ResultStatus.ABANDONED:
+    print("the worker abandoned the goal without producing a result", flush=True)
+elif result.status == brain_move_arm.ResultStatus.EXPIRED:
+    print("the result expired before it was fetched", flush=True)
 ```
   </TabItem>
 </Tabs>
 
-`get_result` is deliver-once: the first successful call consumes the goal's buffered result, and the result is retained only for a short grace period after the worker finishes, so call it promptly (the drain-feedback-until-closed loop shown above does this for you). If the worker abandons the goal without ever completing it (an early return or a panic), the framework closes the feedback stream and `get_result` returns an error instead of blocking forever.
+A poll on a still-running goal **parks** until the goal reaches a terminal state, then returns a typed outcome, so you can call `get_result` whenever you like; a forwarding/relaying node does not have to time its poll to the worker's lifecycle. The returned outcome (a Rust `ResultOutcome` enum, or `result.status` plus optional `result.data` in Python) tells you exactly what happened:
+
+- **`Completed`** / **`Cancelled`**: the worker delivered a result via `complete` / `complete_cancelled`; the payload is in `data`.
+- **`Abandoned`**: the worker dropped the goal without ever delivering a result (an early return or a panic).
+- **`Expired`**: the goal finished, but its result was retained only for a bounded window (30&nbsp;s by default) that has since elapsed, or the result was already evicted.
+
+A terminal result stays fetchable for that retention window, and you can fetch it more than once within it, which makes relaying it reliable. If the poll outlives the caller's own `timeout`, you get a normal timeout error like any other request.
 
 ### Cancelling a goal
 
-Use `cancel_goal` on the handle to request cancellation of that specific goal:
+Use `cancel_goal` on the handle to request cancellation of that specific goal. It returns a typed `CancelState`:
 
 <Tabs>
   <TabItem label="Rust">
 ```rust
 let cancel_response = action_handle.cancel_goal(Duration::from_secs(5)).await?;
 
-println!(
-    "cancel accepted={} error={}",
-    cancel_response.data.accepted,
-    cancel_response.data.error_message.as_deref().unwrap_or("<none>"),
-);
+match cancel_response.state {
+    brain_move_arm::CancelState::Signalled => println!("cancel delivered to a live goal"),
+    brain_move_arm::CancelState::AlreadyTerminal => println!("goal had already finished"),
+    brain_move_arm::CancelState::Unknown => println!("no goal with that id is known"),
+}
 ```
   </TabItem>
   <TabItem label="Python">
 ```python
 cancel_response = await action_handle.cancel_goal(5.0)
 
-error = cancel_response.data.error_message
-print(
-    f"cancel accepted={cancel_response.data.accepted} "
-    f"error={error if error is not None else '<none>'}",
-    flush=True,
-)
+if cancel_response.state == brain_move_arm.CancelState.SIGNALLED:
+    print("cancel delivered to a live goal", flush=True)
+elif cancel_response.state == brain_move_arm.CancelState.ALREADY_TERMINAL:
+    print("goal had already finished", flush=True)
+elif cancel_response.state == brain_move_arm.CancelState.UNKNOWN:
+    print("no goal with that id is known", flush=True)
 ```
   </TabItem>
 </Tabs>
 
-`accepted` reports whether the cancel signal was *delivered* to a live goal (the server's worker may still choose to ignore it), not whether the goal stopped. The cancel targets only this goal; other concurrent goals are unaffected. To learn the goal's final state, call `get_result`: if the worker reacted with `complete_cancelled`, `get_result` returns that cancelled result; if it ignored the cancel and finished normally, you get the normal result.
+The `CancelState` reports what the cancel found:
+
+- **`Signalled`**: a live goal received the cancel signal. *Delivered*, not necessarily *will stop*: the worker may ignore it.
+- **`AlreadyTerminal`**: the goal had already reached a terminal state, so there was nothing to cancel (best-effort; observable only while the result is still retained).
+- **`Unknown`**: no goal with that `goal_id` is known (it never existed, or was evicted long ago).
+
+The cancel targets only this goal; other concurrent goals are unaffected. To learn the goal's final state, call `get_result`: if the worker reacted with `complete_cancelled` you get a `Cancelled` outcome; if it ignored the cancel and finished normally you get `Completed`.
 
 ## Bindings and routing
 

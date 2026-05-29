@@ -16,9 +16,9 @@ mod type_mapping;
 use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, DependencyContext, InterfaceArtifact, InterfaceKind,
-    InterfaceOrigin, LanguageGenerator, cancel_action_response_format, goal_action_response_format,
-    non_empty_message_format, scoped_schema_key, validate_fixed_length_array_items,
-    validate_generated_type_name_collisions, validate_message_format_field_names,
+    InterfaceOrigin, LanguageGenerator, goal_action_response_format, non_empty_message_format,
+    scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
+    validate_message_format_field_names,
 };
 use crate::error::{Error, Result};
 use config::encoding::MessageFormatMapper;
@@ -338,10 +338,9 @@ impl LanguageGenerator for PythonGenerator {
             Some(&goal_response_fmt),
         )?;
 
-        let cancel_format = cancel_action_response_format();
-        let cancel_response_schema_info =
-            Some(self.register_schema(&action_schema_keys.cancel_response, &cancel_format)?);
-
+        // The cancel reply is the framework-owned cancel-ack, decoded Rust-side
+        // by the peppylib binding (`cancel_goal` returns a typed reply), so the
+        // generated client needs no per-action cancel payload schema.
         let feedback_schema_info = self
             .register_optional_schema(&action_schema_keys.feedback, messages.feedback.as_ref())?;
         let result_response_schema_info = self.register_optional_schema(
@@ -355,7 +354,7 @@ impl LanguageGenerator for PythonGenerator {
             actions::ConsumedActionSchemaInfo {
                 goal_request: goal_request_schema_info.as_ref(),
                 goal_response: goal_response_schema_info.as_ref(),
-                cancel_response: cancel_response_schema_info.as_ref(),
+                cancel_response: None,
                 feedback: feedback_schema_info.as_ref(),
                 result_response: result_response_schema_info.as_ref(),
             },
