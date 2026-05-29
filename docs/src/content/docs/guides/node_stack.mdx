@@ -128,13 +128,22 @@ You should see something like:
 $ peppy stack list
 Node stack
 
-┌────────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────────────┐
-│ NODE                                   │ STAGE │ INSTANCES │ PATH                                                      │
-├────────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────────────┤
-│ core-node-funny-chatterjee-6386:v0.8.0 │ Root  │ 1 running │ /home/ubuntu/.peppy/bin                                   │
-│ hello_world:v1                      │ Ready │ 1 running │ /home/ubuntu/.peppy/built_nodes/hello_world_v1.tar.zst │
-└────────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────┐
+│ NODE                                   │ STAGE │ INSTANCES │ PATH                                                   │
+├────────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────┤
+│ core-node-funny-chatterjee-6386:v0.8.0 │ Root  │ 1 running │ /home/ubuntu/.peppy/bin                                │
+│ hello_world:v1                         │ Ready │ 1 running │ /home/ubuntu/.peppy/built_nodes/hello_world_v1.tar.zst │
+└────────────────────────────────────────┴───────┴───────────┴────────────────────────────────────────────────────────┘
 
+Instance bindings
+
+┌────────────────────────────────────────┬─────────────────────────────────┬──────────┐
+│ NODE                                   │ INSTANCE                        │ BINDINGS │
+├────────────────────────────────────────┼─────────────────────────────────┼──────────┤
+│ core-node-funny-chatterjee-6386:v0.8.0 │ core-node-funny-chatterjee-6386 │ (none)   │
+├────────────────────────────────────────┼─────────────────────────────────┼──────────┤
+│ hello_world:v1                         │ suspicious-swanson-5880         │ (none)   │
+└────────────────────────────────────────┴─────────────────────────────────┴──────────┘
 
 Dependencies
   (none)
@@ -148,6 +157,8 @@ The `STAGE` column reports each node's **stage**, its artifact-level lifecycle:
 - **`Root`**: the synthetic core-node entity. Always present, and always reports exactly one running instance (the daemon itself).
 
 The `INSTANCES` column aggregates per-instance state (`starting`, `running`) for the node, independently of its stage. To see individual instance IDs, use [`peppy node info`](#inspecting-a-node-with-peppy-node-info).
+
+Below the node table, the **`Instance bindings`** table expands the stack one level further: one row per instance, grouped by node, alongside the slot **bindings** that instance resolved when it started. A binding ties one of the consumer's `depends_on` slots — identified by its `link_id` — to the producer instance(s) that feed it, rendered as `link_id -> producer`. A `from_any` slot left unbound resolves to `link_id -> (any)` (it accepts every producer of that slot), and an instance whose node declares no `depends_on` shows `(none)`. Only nodes that currently have at least one instance appear in this table. See [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for how slots are declared and how `--bind` pins them. In the listing above neither node declares a dependency, so every binding cell is `(none)`.
 
 ## Inspecting a node with `peppy node info`
 
@@ -226,6 +237,13 @@ Node stack
 │ core-node-funny-chatterjee-6386:v0.8.0 │ Root  │ 1 running │ /home/ubuntu/.peppy/bin │
 └────────────────────────────────────────┴───────┴───────────┴─────────────────────────┘
 
+Instance bindings
+
+┌────────────────────────────────────────┬─────────────────────────────────┬──────────┐
+│ NODE                                   │ INSTANCE                        │ BINDINGS │
+├────────────────────────────────────────┼─────────────────────────────────┼──────────┤
+│ core-node-funny-chatterjee-6386:v0.8.0 │ core-node-funny-chatterjee-6386 │ (none)   │
+└────────────────────────────────────────┴─────────────────────────────────┴──────────┘
 
 Dependencies
   (none)

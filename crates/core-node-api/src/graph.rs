@@ -5,9 +5,11 @@
 //! Consumer: any caller that parses `graph_json` (peppylib wrappers, the
 //! peppy CLI, tests).
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
+use config::runtime::SlotBinding;
 use serde::{Deserialize, Serialize};
 
 /// Per-instance lifecycle state. Wire representation is the lowercase variant
@@ -114,6 +116,15 @@ impl std::error::Error for UnknownNodeStage {}
 pub struct SerializedInstance {
     pub instance_id: String,
     pub state: InstanceState,
+    /// Validator-resolved per-slot bindings for this instance, keyed by the
+    /// consumer manifest's `depends_on` link id. Mirrors
+    /// [`config::runtime::NodeInstanceConfig::slot_bindings`] and the
+    /// `TrackedNodeInstance` this is produced from. Empty for instances whose
+    /// manifest declares no `depends_on` slots. Defaulted on decode so
+    /// `graph_json` payloads from producers that predate this field still
+    /// parse.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub slot_bindings: BTreeMap<String, SlotBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +252,7 @@ mod tests {
                 .map(|(id, st)| SerializedInstance {
                     instance_id: (*id).into(),
                     state: *st,
+                    slot_bindings: BTreeMap::new(),
                 })
                 .collect(),
         }
@@ -365,6 +377,54 @@ mod tests {
             graph.running_instance_ids_by_node("foo", "v2"),
             Ok(vec!["foo_v2_r1", "foo_v2_r2"])
         );
+    }
+
+    #[test]
+    fn slot_bindings_round_trip_through_json() {
+        let mut bindings = BTreeMap::new();
+        bindings.insert(
+            "arm".to_string(),
+            SlotBinding::Pinned {
+                producer_instance_id: "arm-1".to_string(),
+            },
+        );
+        bindings.insert(
+            "sensors".to_string(),
+            SlotBinding::FromAnyBound {
+                producer_instance_ids: vec!["cam-1".to_string(), "cam-2".to_string()],
+            },
+        );
+        let instance = SerializedInstance {
+            instance_id: "i1".to_string(),
+            state: InstanceState::Running,
+            slot_bindings: bindings,
+        };
+
+        let json = serde_json::to_string(&instance).expect("serialize");
+        let decoded: SerializedInstance = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, instance);
+    }
+
+    #[test]
+    fn instance_without_slot_bindings_omits_field_and_decodes_legacy_payload() {
+        // No bindings -> `skip_serializing_if` keeps the field out of the wire
+        // form, so it stays byte-compatible with pre-bindings payloads.
+        let instance = SerializedInstance {
+            instance_id: "i1".to_string(),
+            state: InstanceState::Running,
+            slot_bindings: BTreeMap::new(),
+        };
+        let json = serde_json::to_string(&instance).expect("serialize");
+        assert!(
+            !json.contains("slot_bindings"),
+            "empty bindings must be omitted from the wire form: {json}"
+        );
+
+        // A legacy payload that predates the field still decodes (default empty).
+        let legacy = r#"{"instance_id":"i1","state":"running"}"#;
+        let decoded: SerializedInstance = serde_json::from_str(legacy).expect("decode legacy");
+        assert_eq!(decoded, instance);
+        assert!(decoded.slot_bindings.is_empty());
     }
 
     #[test]

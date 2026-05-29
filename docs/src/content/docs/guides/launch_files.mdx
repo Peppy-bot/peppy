@@ -115,21 +115,38 @@ Verify that the node stack was configured correctly:
 $ peppy stack list
 Node stack
 
-┌─────────────────────────────────────────┬───────┬────────────┬──────────────────────────────────────────────────────────────────────────┐
-│ NODE                                    │ STAGE │ INSTANCES  │ PATH                                                                     │
-├─────────────────────────────────────────┼───────┼────────────┼──────────────────────────────────────────────────────────────────────────┤
-│ core-node-adoring-wiles-7286:v0.8.0     │ Root  │ 1 running  │ /Users/tuatini/workspace/peppy                                           │
-│ fake_openarm01_controller:v1         │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_openarm01_controller_v1.tar.zst │
-│ fake_robot_brain:v1                  │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_robot_brain_v1.tar.zst          │
-│ fake_uvc_camera:v1                   │ Ready │ 2 running  │ /Users/tuatini/.peppy/built_nodes/fake_uvc_camera_v1.tar.zst           │
-│ fake_video_reconstruction:v1         │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_video_reconstruction_v1.tar.zst │
-└─────────────────────────────────────────┴───────┴────────────┴──────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────────────────────┐
+│ NODE                                │ STAGE │ INSTANCES │ PATH                                                                   │
+├─────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────────────────────┤
+│ core-node-adoring-wiles-7286:v0.8.0 │ Root  │ 1 running │ /Users/tuatini/workspace/peppy                                         │
+│ fake_openarm01_controller:v1        │ Ready │ 1 running │ /Users/tuatini/.peppy/built_nodes/fake_openarm01_controller_v1.tar.zst │
+│ fake_robot_brain:v1                 │ Ready │ 1 running │ /Users/tuatini/.peppy/built_nodes/fake_robot_brain_v1.tar.zst          │
+│ fake_uvc_camera:v1                  │ Ready │ 2 running │ /Users/tuatini/.peppy/built_nodes/fake_uvc_camera_v1.tar.zst           │
+│ fake_video_reconstruction:v1        │ Ready │ 1 running │ /Users/tuatini/.peppy/built_nodes/fake_video_reconstruction_v1.tar.zst │
+└─────────────────────────────────────┴───────┴───────────┴────────────────────────────────────────────────────────────────────────┘
 
+Instance bindings
+
+┌─────────────────────────────────────┬──────────────────────────────┬────────────────────────────────────┐
+│ NODE                                │ INSTANCE                     │ BINDINGS                           │
+├─────────────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+│ core-node-adoring-wiles-7286:v0.8.0 │ core-node-adoring-wiles-7286 │ (none)                             │
+├─────────────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+│ fake_openarm01_controller:v1        │ vibrant-keller-2310          │ (none)                             │
+├─────────────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+│ fake_robot_brain:v1                 │ zealous-bohr-5512            │ fake_openarm01_controller -> (any) │
+│                                     │                              │ fake_uvc_camera -> (any)           │
+├─────────────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+│ fake_uvc_camera:v1                  │ mystic-galois-7701           │ (none)                             │
+│                                     │ brave-noether-3098           │ (none)                             │
+├─────────────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+│ fake_video_reconstruction:v1        │ gallant-curie-4417           │ fake_uvc_camera -> (any)           │
+└─────────────────────────────────────┴──────────────────────────────┴────────────────────────────────────┘
 
 Dependencies
-  - fake_robot_brain:v1 -> fake_openarm01_controller:v1
-  - fake_robot_brain:v1 -> fake_uvc_camera:v1
-  - fake_video_reconstruction:v1 -> fake_uvc_camera:v1
+  fake_robot_brain:v1 -> fake_openarm01_controller:v1
+  fake_robot_brain:v1 -> fake_uvc_camera:v1
+  fake_video_reconstruction:v1 -> fake_uvc_camera:v1
 ```
 
-The output confirms that all nodes have been added to the stack along with their dependency relationships.
+The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A slot rendered as `(any)` is a `from_any` dependency left without an explicit `--bind`, so it accepts every matching producer instance; binding it would replace `(any)` with the chosen producer instance id.

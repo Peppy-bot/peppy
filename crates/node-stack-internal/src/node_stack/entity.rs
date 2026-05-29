@@ -40,6 +40,7 @@ impl From<&NodeEntity> for SerializedNode {
                 .map(|i| SerializedInstance {
                     instance_id: i.instance_id().as_str().to_string(),
                     state: i.state(),
+                    slot_bindings: i.slot_bindings().clone(),
                 })
                 .collect(),
         }
@@ -1138,5 +1139,64 @@ impl TrackedNodeInstance {
         self.pid = pid;
         self.instance_dir = Some(instance_dir);
         self.runtime_config_path = Some(runtime_config_path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::runtime::SlotBinding;
+    use std::collections::BTreeMap;
+
+    fn sensor_config() -> NodeConfig {
+        serde_json5::from_str::<NodeConfig>(
+            r#"{
+                peppy_schema: "node_v1",
+                manifest: { name: "sensor", tag: "v1" },
+                interfaces: {},
+                execution: { language: "rust", run_cmd: ["sensor"] }
+            }"#,
+        )
+        .expect("valid sensor config")
+    }
+
+    /// Guards the one line that places resolved bindings onto the `graph_json`
+    /// wire: `From<&NodeEntity>` must copy each instance's `slot_bindings`
+    /// through to its `SerializedInstance`. Reverting that line to an empty map
+    /// makes this fail.
+    #[test]
+    fn serialized_node_carries_per_instance_slot_bindings() {
+        let mut bindings = BTreeMap::new();
+        bindings.insert(
+            "arm".to_string(),
+            SlotBinding::Pinned {
+                producer_instance_id: "arm-1".to_string(),
+            },
+        );
+        let bound = TrackedNodeInstance::new(
+            Name::new("sensor-1").unwrap(),
+            Some(42),
+            InstanceState::Running,
+            bindings.clone(),
+        );
+        // A second, bindless instance must round-trip as an empty map.
+        let unbound = TrackedNodeInstance::new(
+            Name::new("sensor-2").unwrap(),
+            Some(43),
+            InstanceState::Running,
+            BTreeMap::new(),
+        );
+        let entity = NodeEntity::from_snapshot(
+            sensor_config(),
+            PathBuf::from("/tmp/sensor/peppy.json5"),
+            Some(PathBuf::from("/tmp/sensor.sif")),
+            vec![bound, unbound],
+        );
+
+        let serialized = SerializedNode::from(&entity);
+        assert_eq!(serialized.instances.len(), 2);
+        assert_eq!(serialized.instances[0].instance_id, "sensor-1");
+        assert_eq!(serialized.instances[0].slot_bindings, bindings);
+        assert!(serialized.instances[1].slot_bindings.is_empty());
     }
 }

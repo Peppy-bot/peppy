@@ -22,3 +22,6 @@ capnpc = "0.25"
 
 [dev-dependencies]
 tempfile = "3.10"
+# Matches the codec the daemon uses for `graph_json` on the wire, so the
+# graph round-trip tests exercise the real serialization path.
+serde_json = "1.0"
