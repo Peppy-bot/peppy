@@ -413,9 +413,10 @@ async fn handle_goal_request(
         .expect("node_run declares a feedback topic");
     let gate_for_task = gate.clone();
     tokio::spawn(async move {
-        // Frees the gate slot on every exit (completion or panic); a no-op if a
-        // later goal already took over.
-        let _slot = gate_for_task.into_slot_guard(generation);
+        // Frees the gate slot on every exit: explicitly before completion on the
+        // normal path (via `release_then_complete` below), or on unwind for a
+        // panic. A no-op if a later goal already took over.
+        let slot = gate_for_task.into_slot_guard(generation);
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
 
         // The node process outlives the action: once `node_run` reports the
@@ -458,7 +459,7 @@ async fn handle_goal_request(
         }
 
         if let Ok(payload) = result.encode() {
-            let _ = goal_ctx.complete(payload).await;
+            slot.release_then_complete(&goal_ctx, payload).await;
         }
     });
 }

@@ -1030,9 +1030,10 @@ async fn handle_goal_request(
     let log_path_for_cancel = log_path.clone();
     let gate_for_task = gate.clone();
     let task_handle = tokio::spawn(async move {
-        // Frees the gate slot on every exit (completion, panic, or `--force`
-        // abort); a no-op if a later `--force` goal already took over.
-        let _slot = gate_for_task.into_slot_guard(generation);
+        // Frees the gate slot on every exit: explicitly before completion on the
+        // normal path (via `release_then_complete` below), or on unwind for a
+        // panic / `--force` abort. A no-op if a later `--force` goal took over.
+        let slot = gate_for_task.into_slot_guard(generation);
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
         let consumer_handle =
             super::spawn_feedback_forwarder(feedback_rx, feedback_publisher, |line| {
@@ -1074,7 +1075,7 @@ async fn handle_goal_request(
         // sentinel never races ahead of the last feedback line.
         let _ = consumer_handle.await;
         if let Ok(payload) = result.encode() {
-            let _ = goal_ctx.complete(payload).await;
+            slot.release_then_complete(&goal_ctx, payload).await;
         }
     });
 

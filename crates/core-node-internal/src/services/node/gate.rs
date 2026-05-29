@@ -34,6 +34,8 @@
 //! task's release is thus a safe no-op.
 
 use parking_lot::Mutex;
+use peppylib::messaging::GoalContext;
+use peppylib::types::Payload;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
@@ -182,10 +184,13 @@ impl ConcurrencyGate {
 /// slot so the next goal can be admitted — but only while the gate is still on
 /// the guard's generation.
 ///
-/// Held by the work task for its whole lifetime, it fires on every exit path —
-/// normal completion, an early return, a panic unwinding the task, or a
-/// `--force` `JoinHandle::abort` dropping the future — so the gate is never left
-/// stuck "in progress" (the failure mode every future goal would then hit with
+/// On the normal path the work task releases it explicitly just before
+/// completing the goal, via [`release_then_complete`](Self::release_then_complete):
+/// completion is what lets the client observe the goal as done, so the slot must
+/// already be free by then. As an RAII guard it also fires on every *other* exit
+/// path — an early return, a panic unwinding the task, or a `--force`
+/// `JoinHandle::abort` dropping the future — so the gate is never left stuck
+/// "in progress" (the failure mode every future goal would then hit with
 /// "action already in progress" until the daemon restarts). When a later
 /// `--force` goal has already taken over, bumping the generation, the drop is a
 /// safe no-op and cannot clobber the new owner's slot — the single-goal
@@ -193,10 +198,32 @@ impl ConcurrencyGate {
 ///
 /// The work task completes and drops its `GoalContext` separately; the SDK
 /// retains the result for its grace window so the client's fetch still resolves.
-#[must_use = "the guard must be held for the task's lifetime; dropping it immediately frees the gate"]
+#[must_use = "the guard frees the gate when dropped; release it via release_then_complete or hold it for the task's lifetime"]
 pub(crate) struct GoalSlotGuard {
     gate: ConcurrencyGate,
     generation: u64,
+}
+
+impl GoalSlotGuard {
+    /// Releases this slot, then completes the goal — in that order, which is the
+    /// whole point of bundling them. [`GoalContext::complete`] closes the goal's
+    /// feedback stream and publishes its fetchable result, so a client draining
+    /// feedback learns the goal is done and can fire its next single-goal action
+    /// the instant `complete` returns. Were the slot still held then, that next
+    /// action would be rejected with `"action already in progress"` for the
+    /// window until this task unwound to the guard's end-of-scope drop — a race
+    /// the client can win because `complete` notifies it (in-process) before the
+    /// task winds down. Releasing first closes the window.
+    ///
+    /// The release is generation-checked like any guard drop, so it stays a safe
+    /// no-op when a later `--force` goal has already taken over.
+    pub(crate) async fn release_then_complete(self, goal_ctx: &GoalContext, payload: Payload) {
+        // Explicit drop: without it `self` would live until the end of this
+        // function — i.e. until after `complete` — which is exactly the ordering
+        // this method exists to avoid.
+        drop(self);
+        let _ = goal_ctx.complete(payload).await;
+    }
 }
 
 impl Drop for GoalSlotGuard {

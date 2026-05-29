@@ -161,7 +161,7 @@ From: tuatini/peppy-python-uv-base
 
 %labels
     Name my_node
-    Version 0.1.0
+    Version v1
 
 %environment
     export PATH="/opt/my_node/.venv/bin:$PATH"
@@ -187,7 +187,7 @@ From: tuatini/peppy-rust-cargo-base
 
 %labels
     Name my_node
-    Version 0.1.0
+    Version v1
 
 %files
     . /opt/my_node
@@ -478,7 +478,7 @@ You can speed things up by baking those slow steps into a custom Docker image an
 
     %labels
         Name my_node
-        Version 0.1.0
+        Version v1
 
     %environment
         export PATH="/root/.local/bin:/opt/my_node/.venv/bin:$PATH"
@@ -503,7 +503,7 @@ You can speed things up by baking those slow steps into a custom Docker image an
 
     %labels
         Name my_node
-        Version 0.1.0
+        Version v1
 
     %environment
         export PATH="/root/.cargo/bin:$PATH"

@@ -1525,9 +1525,10 @@ async fn handle_goal_request(
     let log_path_clone = log_path.clone();
     let gate_for_task = gate.clone();
     tokio::spawn(async move {
-        // Frees the gate slot on every exit (completion or panic); a no-op if a
-        // later goal already took over.
-        let _slot = gate_for_task.into_slot_guard(generation);
+        // Frees the gate slot on every exit: explicitly before completion on the
+        // normal path (via `release_then_complete` below), or on unwind for a
+        // panic. A no-op if a later goal already took over.
+        let slot = gate_for_task.into_slot_guard(generation);
         let LaunchActionContext {
             messenger,
             bound_core_node,
@@ -1564,7 +1565,7 @@ async fn handle_goal_request(
         // Catch panics so a panic inside the launch sequence still completes the
         // goal with a failure result, rather than leaving the client to wait out
         // the SDK's retention window for a result that never arrives. Releasing
-        // the gate on panic is handled by `_slot` above. Mirrors the panic
+        // the gate on panic is handled by `slot` above. Mirrors the panic
         // handling in `run_node_run` / `run_node_add` / `run_node_build`.
         let result = match AssertUnwindSafe(process_launch(goal, ctx))
             .catch_unwind()
@@ -1581,7 +1582,7 @@ async fn handle_goal_request(
             }
         };
         if let Ok(payload) = result.encode() {
-            let _ = goal_ctx.complete(payload).await;
+            slot.release_then_complete(&goal_ctx, payload).await;
         }
     });
 }

@@ -586,8 +586,8 @@ Routing for actions uses the same consumer-side model as topics and services. A 
 
 Each slot in `depends_on` is either:
 
-- **Pinned** (the default, when `from_any` is absent or `false`): the slot must be bound. The code generator splices the bound producer's `instance_id` into the generated `fire_goal` as the call's `target_instance_id`, and the goal, cancel, result, and feedback channels all address that one producer. The validator rejects a pinned-unbound slot before the stack starts.
-- **`from_any: true`** (bound or unbound): the generator emits `None` for `target_instance_id` and the call site falls back to wildcard discovery. A probe goes out to every matching producer; the first responder is pinned for the rest of the goal cycle, so the same producer handles the goal, cancel, result, and feedback. The bindings (if any) constrain which producers discovery may consider.
+- **Pinned** (the default, when `from_any` is absent or `false`): the slot must be bound. The generated `fire_goal` resolves the bound producer's `instance_id` from the binding, and the goal, cancel, result, and feedback channels all address that one producer. The validator rejects a pinned-unbound slot before the stack starts.
+- **`from_any: true`**: when the slot is bound, the generated `fire_goal` resolves the binding and addresses the bound producer's `instance_id` directly, exactly like a pinned slot. When the slot is left unbound, the call falls back to wildcard discovery: a probe goes out to every matching producer and the first responder is pinned for the rest of the goal cycle, so the same producer handles the goal, cancel, result, and feedback. Bindings constrain which producers discovery may consider.
 
 In a launcher / stack config:
 

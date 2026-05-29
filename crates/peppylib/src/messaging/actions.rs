@@ -1475,9 +1475,7 @@ impl Drop for GoalContext {
         let feedback = self.feedback.clone();
         self.runtime.spawn(async move {
             let transitioned = transition_terminal(&slot, GoalOutcome::Abandoned, grace).await;
-            if transitioned
-                && let Some(publisher) = feedback
-            {
+            if transitioned && let Some(publisher) = feedback {
                 let _ = publisher.publish_end().await;
             }
         });
