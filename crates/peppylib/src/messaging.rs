@@ -8,9 +8,10 @@ mod topics;
 
 pub use actions::{
     ActionCreation, ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle,
-    ActionMessenger, ConcurrentAction, DeclaredFeedback, EmptyPayloadError, GoalContext,
-    NonEmptyPayload, PendingGoal, decode_cancel_ack, encode_cancel_ack, generate_goal_id,
-    unwrap_goal_payload, wrap_goal_payload,
+    ActionMessenger, ActionResultReply, CancelState, ConcurrentAction, DeclaredFeedback,
+    EmptyPayloadError, GoalContext, NonEmptyPayload, PendingGoal, ResultStatus, decode_cancel_ack,
+    encode_cancel_ack, generate_goal_id, unwrap_goal_payload, unwrap_result_outcome,
+    wrap_goal_payload, wrap_result_outcome,
 };
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};

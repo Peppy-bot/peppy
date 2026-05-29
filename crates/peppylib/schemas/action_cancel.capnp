@@ -6,15 +6,12 @@
 # signal; it does not produce this payload), so the bytes are encoded here in
 # peppylib once and reused for both Rust and Python servers.
 #
-# Field layout MUST stay positionally wire-compatible with the codegen's
-# per-action `CancelResponse`, whose single source of truth is
-# generator-internal `cancel_action_response_format()`:
-#     accepted @0 :Bool, error_message @1 :Text (optional).
-# Cap'n Proto's wire format is positional (no schema id / field names are
-# serialized), so identical field order + types is sufficient for the
-# generated client's reader to decode it. A round-trip test pins this.
+# The single `state` field carries the CancelState tag
+#     state @0 :UInt8 (CancelState: 0=Signalled, 1=AlreadyTerminal, 2=Unknown).
+# Both Rust and Python generated clients decode this via peppylib
+# (`decode_cancel_ack`), so there is no separate per-action cancel schema to
+# keep positionally compatible. A round-trip test pins encode/decode.
 
 struct ActionCancelResponse {
-    accepted @0 :Bool;
-    errorMessage @1 :Text;
+    state @0 :UInt8;
 }

@@ -8,7 +8,7 @@ use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
 use pmi::{ActionWireReceiver, ActionWireSender, PublisherQoS, SenderTarget, ServiceQueryKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -78,6 +78,78 @@ pub fn unwrap_goal_payload(wire: &[u8]) -> Result<(&str, &[u8])> {
     let goal_id = std::str::from_utf8(&wire[1..body_start])
         .map_err(|err| envelope_error(format!("goal_id is not valid UTF-8: {err}")))?;
     Ok((goal_id, &wire[body_start..]))
+}
+
+const RESULT_OUTCOME_ENVELOPE: &str = "action_result_outcome_envelope";
+
+/// The terminal status of a goal, carried as a 1-byte tag prefixing the result
+/// reply. Mirrors the engine-level framing of [`wrap_goal_payload`] (no capnp):
+/// the body that follows is the worker's raw result payload for
+/// [`Completed`](ResultStatus::Completed) / [`Cancelled`](ResultStatus::Cancelled)
+/// and empty for [`Abandoned`](ResultStatus::Abandoned) / [`Expired`](ResultStatus::Expired).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ResultStatus {
+    /// The worker delivered a result via `complete`.
+    Completed = 0,
+    /// The worker delivered a result via `complete_cancelled` after a cancel.
+    Cancelled = 1,
+    /// The worker abandoned the goal: its context dropped without delivering a
+    /// result (early return, panic, or simply dropped).
+    Abandoned = 2,
+    /// The goal reached a terminal state, but its result was retained only for a
+    /// bounded window that has since elapsed (or the result was already evicted).
+    Expired = 3,
+}
+
+impl ResultStatus {
+    fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0 => Some(Self::Completed),
+            1 => Some(Self::Cancelled),
+            2 => Some(Self::Abandoned),
+            3 => Some(Self::Expired),
+            _ => None,
+        }
+    }
+}
+
+/// Frame a result reply as `[status:u8][body]`. `body` is the worker's raw
+/// result payload, empty for [`ResultStatus::Abandoned`] / [`ResultStatus::Expired`].
+/// Symmetric counterpart of [`unwrap_result_outcome`].
+pub fn wrap_result_outcome(status: ResultStatus, body: &[u8]) -> Payload {
+    let mut buf = BytesMut::with_capacity(1 + body.len());
+    buf.put_u8(status as u8);
+    buf.extend_from_slice(body);
+    Payload::from(buf.freeze())
+}
+
+/// Decode a result-outcome envelope produced by [`wrap_result_outcome`] into its
+/// [`ResultStatus`] and body bytes. Errors on an empty wire or an unknown tag.
+pub fn unwrap_result_outcome(wire: &[u8]) -> Result<(ResultStatus, &[u8])> {
+    let tag = *wire.first().ok_or_else(|| Error::InternalEncodingError {
+        identifier: RESULT_OUTCOME_ENVELOPE.to_string(),
+        reason: "wire payload is empty".to_string(),
+    })?;
+    let status = ResultStatus::from_tag(tag).ok_or_else(|| Error::InternalEncodingError {
+        identifier: RESULT_OUTCOME_ENVELOPE.to_string(),
+        reason: format!("unknown result status tag {tag}"),
+    })?;
+    Ok((status, &wire[1..]))
+}
+
+/// The typed reply from [`ActionMessenger::request_result`]. The engine frames
+/// every result reply as a [`ResultStatus`] tag plus the worker's raw result
+/// body; this is the stripped, decoded form. `body` is the raw user result
+/// payload for [`ResultStatus::Completed`] / [`ResultStatus::Cancelled`] and
+/// empty for [`ResultStatus::Abandoned`] / [`ResultStatus::Expired`]. Stripping
+/// here (in the messenger, mirroring how `send_goal` owns the goal envelope)
+/// keeps the framing out of generated code, so Rust and Python decode identically.
+pub struct ActionResultReply {
+    pub status: ResultStatus,
+    pub body: Payload,
+    pub instance_id: String,
+    pub core_node: String,
 }
 
 /// Whether a goal_id is safe to splice into the feedback topic key
@@ -487,7 +559,7 @@ impl ActionMessenger {
         messenger_handle: &MessengerHandle,
         action_handle: &ActionGoalHandle,
         result_timeout: Duration,
-    ) -> Result<Message> {
+    ) -> Result<ActionResultReply> {
         Self::request_result_with_sender(
             messenger_handle,
             &action_handle.sender,
@@ -500,15 +572,19 @@ impl ActionMessenger {
     /// Like [`request_result`](Self::request_result) but takes a cloned sender
     /// and `goal_id` directly. Mirrors [`cancel_with_sender`](Self::cancel_with_sender);
     /// the `goal_id` rides in the result request payload for server-side routing.
+    ///
+    /// Strips the engine's `[status:u8][body]` result-outcome envelope into a
+    /// typed [`ActionResultReply`], so callers (Rust generated code, the Python
+    /// binding, and direct callers) never re-parse the framing.
     pub async fn request_result_with_sender(
         messenger_handle: &MessengerHandle,
         sender: &ActionWireSender,
         goal_id: &str,
         result_timeout: Duration,
-    ) -> Result<Message> {
+    ) -> Result<ActionResultReply> {
         let action_name = sender.to_action_name().to_string();
         let payload = wrap_goal_payload(goal_id, &[])?;
-        messenger_handle
+        let message = messenger_handle
             .poll_service(
                 &sender.result_service(),
                 payload,
@@ -516,7 +592,19 @@ impl ActionMessenger {
                 result_timeout,
             )
             .await
-            .map_err(|err| Self::map_result_error(err, &action_name))
+            .map_err(|err| Self::map_result_error(err, &action_name))?;
+        let instance_id = message.instance_id().to_string();
+        let core_node = message.core_node().to_string();
+        let wire = message.payload().into_inner();
+        let (status, _) = unwrap_result_outcome(wire.as_ref())?;
+        // `wire` is non-empty (unwrap_result_outcome guarantees it), so slicing
+        // off the 1-byte tag is a zero-copy view of the same `Bytes`.
+        Ok(ActionResultReply {
+            status,
+            body: Payload::from(wire.slice(1..)),
+            instance_id,
+            core_node,
+        })
     }
 
     fn map_result_error(err: Error, action_name: &str) -> Error {
@@ -538,70 +626,253 @@ impl ActionMessenger {
 // Concurrent-action engine
 // ---------------------------------------------------------------------------
 
-/// Encode the fixed cancel-ack response (`accepted`, optional `error_message`)
-/// the concurrent-action engine sends in reply to a cancel request. The worker
-/// reacts to the cancel *signal*; it never produces this payload, so the bytes
-/// are encoded here once and reused for both Rust and Python servers.
+/// The outcome of a cancel request, carried in the cancel reply
+/// (`ActionCancelResponse.state`). Replaces the old `accepted` / `error_message`
+/// pair: the typed state subsumes both. There is no "no active goal" variant —
+/// an unknown `goal_id` is [`Unknown`](CancelState::Unknown), and a goal that
+/// already finished is [`AlreadyTerminal`](CancelState::AlreadyTerminal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CancelState {
+    /// A live (pending) goal received the cancel signal.
+    Signalled = 0,
+    /// The goal had already reached a terminal state; there was nothing to
+    /// cancel. Best-effort: only observable within the result-retention window.
+    AlreadyTerminal = 1,
+    /// No goal with that `goal_id` is known (never existed, or long evicted).
+    Unknown = 2,
+}
+
+impl CancelState {
+    fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0 => Some(Self::Signalled),
+            1 => Some(Self::AlreadyTerminal),
+            2 => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
+/// Encode the fixed cancel-ack response the concurrent-action engine sends in
+/// reply to a cancel request. The worker reacts to the cancel *signal*; it never
+/// produces this payload, so the bytes are encoded here once and reused for both
+/// Rust and Python servers.
 ///
-/// The layout is positionally wire-compatible with the codegen's per-action
-/// `CancelResponse` reader — see `schemas/action_cancel.capnp` and
+/// The single `state` field is positionally wire-compatible with the codegen's
+/// per-action `CancelResponse` reader — see `schemas/action_cancel.capnp` and
 /// `cancel_action_response_format()` in generator-internal.
-pub fn encode_cancel_ack(accepted: bool, error_message: Option<&str>) -> Result<Payload> {
+pub fn encode_cancel_ack(state: CancelState) -> Result<Payload> {
     let mut builder = ::capnp::message::Builder::new_default();
     {
         let mut root =
             builder.init_root::<crate::action_cancel_capnp::action_cancel_response::Builder>();
-        root.set_accepted(accepted);
-        if let Some(message) = error_message {
-            root.set_error_message(message);
-        }
+        root.set_state(state as u8);
     }
     crate::encoding::encode_message(&builder)
 }
 
-/// Decode a cancel-ack produced by [`encode_cancel_ack`] into
-/// `(accepted, error_message)`. Used by tests and any caller that needs to read
-/// the framework's cancel reply without the generated per-action type.
-pub fn decode_cancel_ack(payload: &[u8]) -> Result<(bool, Option<String>)> {
+/// Decode a cancel-ack produced by [`encode_cancel_ack`] into its
+/// [`CancelState`]. Used by tests and any caller that needs to read the
+/// framework's cancel reply without the generated per-action type.
+pub fn decode_cancel_ack(payload: &[u8]) -> Result<CancelState> {
     let reader = crate::encoding::decode_message(payload)?;
     let root = reader
         .get_root::<crate::action_cancel_capnp::action_cancel_response::Reader>()
         .map_err(|e| Error::Deserialization(e.to_string()))?;
-    let accepted = root.get_accepted();
-    let error_message = if root.has_error_message() {
-        Some(
-            root.get_error_message()
-                .map_err(|e| Error::Deserialization(e.to_string()))?
-                .to_string()
-                .map_err(|e| Error::Deserialization(e.to_string()))?,
-        )
-    } else {
-        None
-    };
-    Ok((accepted, error_message))
+    let tag = root.get_state();
+    CancelState::from_tag(tag)
+        .ok_or_else(|| Error::Deserialization(format!("unknown cancel state tag {tag}")))
 }
 
-/// Rendezvous between a goal's [`GoalContext::complete`] and the result service
-/// loop. Either side may arrive first: the result request parks its responder
-/// here when the goal is still running; `complete` stores the value for a
-/// result request that has not arrived yet. The first such poll fetches the
-/// value and evicts the slot (deliver-once); if no poll arrives, the slot is
-/// evicted after a grace window when the [`GoalContext`] drops.
-enum ResultRendezvous {
-    Empty,
-    ValueReady(Payload),
-    ResponderWaiting(ServiceResponder),
+/// The terminal outcome of a goal, owned by the engine and decoupled from the
+/// worker's [`GoalContext`]. Stored in a slot's [`GoalState::Terminal`] and
+/// encoded onto the result reply by [`encode_result_outcome`].
+#[derive(Clone)]
+enum GoalOutcome {
+    /// `complete` delivered this result payload (raw user capnp, may be empty).
+    Completed(Payload),
+    /// `complete_cancelled` delivered this result payload after a cancel.
+    Cancelled(Payload),
+    /// The context was dropped without delivering (early return, panic, drop).
+    Abandoned,
 }
 
-/// Per-goal routing state held in the registry for the life of the goal.
+impl GoalOutcome {
+    fn status(&self) -> ResultStatus {
+        match self {
+            GoalOutcome::Completed(_) => ResultStatus::Completed,
+            GoalOutcome::Cancelled(_) => ResultStatus::Cancelled,
+            GoalOutcome::Abandoned => ResultStatus::Abandoned,
+        }
+    }
+
+    fn body(&self) -> &[u8] {
+        match self {
+            GoalOutcome::Completed(payload) | GoalOutcome::Cancelled(payload) => payload.as_ref(),
+            GoalOutcome::Abandoned => &[],
+        }
+    }
+}
+
+/// Encode a goal outcome as the `[status:u8][body]` result reply.
+fn encode_result_outcome(outcome: &GoalOutcome) -> Payload {
+    wrap_result_outcome(outcome.status(), outcome.body())
+}
+
+/// Lifecycle state of a goal's result, owned by the engine. A goal is `Pending`
+/// from accept until it reaches a terminal outcome; result polls park their
+/// responders in `Pending` and are drained on the transition to `Terminal`.
+enum GoalState {
+    /// The worker is running. `waiters` is a `Vec` — not a single slot — because
+    /// a relay may poll twice and several clients may race one `goal_id`.
+    Pending { waiters: Vec<ServiceResponder> },
+    /// Terminal: the result stays fetchable until `evict_at`, after which the
+    /// retention sweeper removes the slot and records a tombstone so late polls
+    /// resolve to [`ResultStatus::Expired`].
+    Terminal {
+        outcome: GoalOutcome,
+        evict_at: Instant,
+    },
+}
+
+/// Per-goal routing state held in the registry from accept until the retention
+/// sweeper evicts the terminal slot. Cheaply cloneable (all shared state is
+/// behind `Arc`), so the loops clone it out from under the `std` registry lock
+/// and then work on it without holding that lock across `.await`.
+#[derive(Clone)]
 struct GoalSlot {
     cancel: CancellationToken,
-    result: Arc<TokioMutex<ResultRendezvous>>,
+    state: Arc<TokioMutex<GoalState>>,
+    /// Fast `is-terminal?` probe and the race guard that makes the first of
+    /// `complete` / `complete_cancelled` / abandon win.
+    terminal: Arc<AtomicBool>,
 }
 
-/// `goal_id` → live goal. Guarded by a `std` mutex so the cancel/result loops
-/// and [`GoalContext`] drop can touch it without holding a lock across `.await`.
+/// `goal_id` → live or recently-terminal goal. Guarded by a `std` mutex so the
+/// cancel/result loops, `accept`, and the sweeper touch it without holding a
+/// lock across `.await`.
 type GoalRegistry = Arc<StdMutex<HashMap<String, GoalSlot>>>;
+
+/// A result poll that arrived for a `goal_id` not yet in the registry (it beat
+/// `accept`). Held until `accept` adopts it into the new slot or its `deadline`
+/// passes (the sweeper drops it; the client then falls back to its own timeout).
+struct PendingWaiter {
+    responder: ServiceResponder,
+    deadline: Instant,
+}
+
+/// `goal_id` → result polls parked before the goal was registered. Guarded by a
+/// `std` mutex. Lock discipline: `pending_waiters` may be acquired while nothing
+/// is held, and the registry may be acquired *while holding* it (the only nested
+/// ordering); conversely the registry lock is always released before acquiring
+/// `pending_waiters`, so there is no lock cycle.
+type PendingWaiters = Arc<StdMutex<HashMap<String, Vec<PendingWaiter>>>>;
+
+/// Upper bound on total parked-before-accept responders, guarding against a
+/// flood of polls for never-registered goal_ids amplifying memory. On overflow
+/// the responder is dropped (the client falls back to its own timeout).
+const PENDING_WAITERS_CAP: usize = 1024;
+
+/// How long a parked-before-accept poll stays parked before the sweeper drops
+/// it. The client's own timeout governs when it gives up; this only bounds
+/// server-side responder retention for polls that are never adopted.
+const PENDING_WAITER_MAX_PARK: Duration = Duration::from_secs(30);
+
+/// How often the retention sweeper runs. Independent of the per-goal retention
+/// grace: the grace sets each slot's `evict_at`; the sweeper only needs to run
+/// often enough to evict promptly. Cheap (a small map scan under a `std` lock).
+const SWEEP_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Maximum number of evicted-goal tombstones retained. Bounds memory; a poll
+/// for a goal_id that has aged out of this set parks and falls back to its
+/// timeout, exactly as a never-existed goal_id would.
+const EXPIRED_TOMBSTONE_CAP: usize = 4096;
+
+/// Bounded, status-only record of goal_ids whose terminal result has been
+/// evicted by the retention sweeper. A result poll for one resolves to
+/// [`ResultStatus::Expired`] (and a cancel to [`CancelState::AlreadyTerminal`])
+/// immediately, rather than parking. Oldest entries fall out once the cap is hit.
+struct ExpiredTombstones {
+    order: VecDeque<String>,
+    set: HashSet<String>,
+    cap: usize,
+}
+
+impl ExpiredTombstones {
+    fn new(cap: usize) -> Self {
+        Self {
+            order: VecDeque::new(),
+            set: HashSet::new(),
+            cap,
+        }
+    }
+
+    fn insert(&mut self, goal_id: String) {
+        if self.set.contains(&goal_id) {
+            return;
+        }
+        while self.order.len() >= self.cap {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
+            } else {
+                break;
+            }
+        }
+        self.set.insert(goal_id.clone());
+        self.order.push_back(goal_id);
+    }
+
+    fn contains(&self, goal_id: &str) -> bool {
+        self.set.contains(goal_id)
+    }
+}
+
+/// Shared, lock-guarded [`ExpiredTombstones`].
+type Tombstones = Arc<StdMutex<ExpiredTombstones>>;
+
+/// Flip a goal's slot from `Pending` to `Terminal`, waking every parked result
+/// poll exactly once with the encoded outcome. Returns `true` iff *this* call
+/// performed the transition, so the caller closes the feedback stream once.
+///
+/// The first of `complete` / `complete_cancelled` / abandon to flip `terminal`
+/// wins; later calls are no-ops. Park (in `run_result_loop`) and drain here
+/// serialize on the same per-slot `TokioMutex`, so no wakeup is ever lost.
+/// `ServiceResponder::respond` is by-value, so each parked responder is consumed
+/// exactly once.
+async fn transition_terminal(slot: &GoalSlot, outcome: GoalOutcome, retention: Duration) -> bool {
+    if slot.terminal.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    let reply = encode_result_outcome(&outcome);
+    let waiters = {
+        let mut guard = slot.state.lock().await;
+        match std::mem::replace(
+            &mut *guard,
+            GoalState::Terminal {
+                outcome,
+                evict_at: Instant::now() + retention,
+            },
+        ) {
+            GoalState::Pending { waiters } => waiters,
+            // Unreachable: the `terminal` swap above gates any second transition.
+            GoalState::Terminal { .. } => Vec::new(),
+        }
+    };
+    for responder in waiters {
+        let _ = responder.respond(reply.clone()).await;
+    }
+    true
+}
+
+/// What `run_result_loop` does after releasing every `std` lock.
+enum ResultAct {
+    /// Reply to this poll now with the given framed payload.
+    ReplyNow(ServiceResponder, Payload),
+    /// The poll was parked (in a slot or in `PendingWaiters`) or dropped; nothing
+    /// to reply now.
+    Done,
+}
 
 /// Extract the `goal_id` carried by a cancel/result request payload (the same
 /// length-prefixed envelope goals use, with an empty body).
@@ -611,11 +882,14 @@ fn goal_id_from_request(payload: &Payload) -> Result<String> {
 }
 
 /// Background loop: routes each incoming cancel request to the matching live
-/// goal's [`CancellationToken`] and replies with a cancel-ack whose `accepted`
-/// reflects whether a goal with that `goal_id` was in flight.
+/// goal's [`CancellationToken`] and replies with a typed [`CancelState`]. There
+/// is no "no active goal" reply: a live goal is `Signalled`, an
+/// already-finished goal (still routable, or recently evicted) is
+/// `AlreadyTerminal`, and anything else is `Unknown`.
 async fn run_cancel_loop(
     mut cancel_service: ServiceEndpoint,
     registry: GoalRegistry,
+    tombstones: Tombstones,
     stop: CancellationToken,
 ) {
     loop {
@@ -632,27 +906,34 @@ async fn run_cancel_loop(
             }
         };
 
-        let ack = match goal_id_from_request(&context.message().payload()) {
-            Ok(goal_id) => {
-                // Clone the token out under the lock, then fire + respond
-                // without holding the registry lock across the network reply.
-                let token = registry
-                    .lock()
-                    .unwrap()
-                    .get(&goal_id)
-                    .map(|s| s.cancel.clone());
-                match token {
-                    Some(token) => {
-                        token.cancel();
-                        encode_cancel_ack(true, None)
-                    }
-                    None => encode_cancel_ack(false, Some("no active goal for goal_id")),
-                }
+        let goal_id = match goal_id_from_request(&context.message().payload()) {
+            Ok(goal_id) => goal_id,
+            Err(_) => {
+                let _ = responder
+                    .respond_error("malformed cancel request payload".to_string())
+                    .await;
+                continue;
             }
-            Err(_) => encode_cancel_ack(false, Some("malformed cancel request payload")),
         };
 
-        match ack {
+        // Clone the token + terminal flag out under the lock, then fire + respond
+        // without holding the registry lock across the network reply.
+        let found = registry
+            .lock()
+            .unwrap()
+            .get(&goal_id)
+            .map(|s| (s.cancel.clone(), s.terminal.load(Ordering::SeqCst)));
+        let state = match found {
+            Some((token, false)) => {
+                token.cancel();
+                CancelState::Signalled
+            }
+            Some((_, true)) => CancelState::AlreadyTerminal,
+            None if tombstones.lock().unwrap().contains(&goal_id) => CancelState::AlreadyTerminal,
+            None => CancelState::Unknown,
+        };
+
+        match encode_cancel_ack(state) {
             Ok(payload) => {
                 let _ = responder.respond(payload).await;
             }
@@ -663,13 +944,38 @@ async fn run_cancel_loop(
     }
 }
 
-/// Background loop: routes each incoming result request to the matching live
-/// goal. If the goal has completed it replies immediately (and keeps the value
-/// for late polls); otherwise it parks the responder until
-/// [`GoalContext::complete`] delivers the result.
+/// Decide what to do with a result poll against an existing slot: reply with the
+/// terminal outcome (or `Expired` if it is past its retention window but the
+/// sweeper has not run yet), or park the responder in `Pending`. Holds only the
+/// per-slot `TokioMutex`; the caller must release every `std` lock first.
+async fn act_on_slot(slot: &GoalSlot, responder: ServiceResponder) -> ResultAct {
+    let mut guard = slot.state.lock().await;
+    match &mut *guard {
+        GoalState::Terminal { outcome, evict_at } if *evict_at > Instant::now() => {
+            ResultAct::ReplyNow(responder, encode_result_outcome(outcome))
+        }
+        GoalState::Terminal { .. } => {
+            ResultAct::ReplyNow(responder, wrap_result_outcome(ResultStatus::Expired, &[]))
+        }
+        GoalState::Pending { waiters } => {
+            waiters.push(responder);
+            ResultAct::Done
+        }
+    }
+}
+
+/// Background loop: routes each incoming result request to the matching goal.
+/// A `Pending` goal parks the responder until it reaches a terminal state; a
+/// `Terminal` goal replies inline with its typed outcome; a poll that arrived
+/// before `accept` parks in `PendingWaiters` to be adopted at registration; a
+/// poll for an evicted goal replies `Expired`. There is no "no active goal"
+/// reply — a poll always parks for a definitive answer or resolves to a typed
+/// terminal outcome.
 async fn run_result_loop(
     mut result_service: ServiceEndpoint,
     registry: GoalRegistry,
+    pending_waiters: PendingWaiters,
+    tombstones: Tombstones,
     stop: CancellationToken,
 ) {
     loop {
@@ -696,40 +1002,98 @@ async fn run_result_loop(
             }
         };
 
-        let rendezvous = registry
-            .lock()
-            .unwrap()
-            .get(&goal_id)
-            .map(|s| s.result.clone());
-        let Some(rendezvous) = rendezvous else {
-            // The goal finished (and its context dropped) or never existed.
-            let _ = responder
-                .respond_error("no active goal for goal_id".to_string())
-                .await;
-            continue;
-        };
+        // Clone the slot out under the std lock (dropped at the `;`); never hold
+        // the registry lock across `.await`.
+        let slot = registry.lock().unwrap().get(&goal_id).cloned();
 
-        // Either respond now (value already available) or park the responder.
-        // The guard is dropped before any `.await` on the reply.
-        let ready = {
-            let mut guard = rendezvous.lock().await;
-            match &mut *guard {
-                ResultRendezvous::ValueReady(value) => Some((responder, value.clone())),
-                slot => {
-                    // Empty → park; a superseded parked responder is dropped
-                    // (its reply stream closes cleanly).
-                    *slot = ResultRendezvous::ResponderWaiting(responder);
-                    None
+        let act = match slot {
+            Some(slot) => act_on_slot(&slot, responder).await,
+            None => {
+                // No slot: the poll beat `accept`, is for an evicted goal
+                // (tombstone), or for a never-existed goal_id. Decide while
+                // holding `pending_waiters`, re-reading the registry under it so
+                // a concurrent `accept` that just inserted the slot (and whose
+                // adoption pass therefore missed this poll) cannot orphan it.
+                let pending = pending_waiters.lock().unwrap();
+                let slot_now = registry.lock().unwrap().get(&goal_id).cloned();
+                if let Some(slot) = slot_now {
+                    drop(pending);
+                    act_on_slot(&slot, responder).await
+                } else if tombstones.lock().unwrap().contains(&goal_id) {
+                    ResultAct::ReplyNow(responder, wrap_result_outcome(ResultStatus::Expired, &[]))
+                } else {
+                    let mut pending = pending;
+                    let total: usize = pending.values().map(Vec::len).sum();
+                    if total >= PENDING_WAITERS_CAP {
+                        // Overflow: drop the responder; the client falls back to
+                        // its own timeout.
+                        ResultAct::Done
+                    } else {
+                        pending
+                            .entry(goal_id.clone())
+                            .or_default()
+                            .push(PendingWaiter {
+                                responder,
+                                deadline: Instant::now() + PENDING_WAITER_MAX_PARK,
+                            });
+                        ResultAct::Done
+                    }
                 }
             }
         };
-        if let Some((responder, value)) = ready {
-            // Deliver-once: drop the slot so the goal_id can't be matched
-            // again. This is also what lets a completed goal's context be
-            // dropped immediately after `complete` without losing the result.
-            registry.lock().unwrap().remove(&goal_id);
-            let _ = responder.respond(value).await;
+
+        if let ResultAct::ReplyNow(responder, payload) = act {
+            let _ = responder.respond(payload).await;
         }
+    }
+}
+
+/// Background loop: evicts terminal slots past their retention window (recording
+/// a tombstone so late polls still resolve to `Expired`) and drops parked
+/// polls whose deadline has passed.
+async fn run_retention_sweeper(
+    registry: GoalRegistry,
+    pending_waiters: PendingWaiters,
+    tombstones: Tombstones,
+    stop: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            _ = stop.cancelled() => return,
+            _ = tokio::time::sleep(SWEEP_INTERVAL) => {}
+        }
+        let now = Instant::now();
+
+        // Evict terminal slots past their window, tombstoning each. `try_lock`
+        // skips a slot whose per-slot mutex is momentarily held (e.g. mid
+        // transition or being read by a poll); it is rechecked next tick.
+        let mut expired_ids = Vec::new();
+        registry
+            .lock()
+            .unwrap()
+            .retain(|goal_id, slot| match slot.state.try_lock() {
+                Ok(guard) => match &*guard {
+                    GoalState::Terminal { evict_at, .. } if *evict_at <= now => {
+                        expired_ids.push(goal_id.clone());
+                        false
+                    }
+                    _ => true,
+                },
+                Err(_) => true,
+            });
+        if !expired_ids.is_empty() {
+            let mut tomb = tombstones.lock().unwrap();
+            for goal_id in expired_ids {
+                tomb.insert(goal_id);
+            }
+        }
+
+        // Drop parked-before-accept polls whose deadline has passed (their
+        // responders close, so the client falls back to its own timeout).
+        pending_waiters.lock().unwrap().retain(|_, waiters| {
+            waiters.retain(|w| w.deadline > now);
+            !waiters.is_empty()
+        });
     }
 }
 
@@ -745,11 +1109,13 @@ pub struct ConcurrentAction {
     goal_service: ServiceEndpoint,
     factory: ActionFeedbackPublisherFactory,
     registry: GoalRegistry,
+    pending_waiters: PendingWaiters,
     has_feedback: bool,
     result_retention_grace: Duration,
     stop: CancellationToken,
     cancel_loop: TaskHandle<()>,
     result_loop: TaskHandle<()>,
+    sweeper_loop: TaskHandle<()>,
 }
 
 impl ConcurrentAction {
@@ -786,26 +1152,40 @@ impl ConcurrentAction {
             result_service,
         } = creation;
         let registry: GoalRegistry = Arc::new(StdMutex::new(HashMap::new()));
+        let pending_waiters: PendingWaiters = Arc::new(StdMutex::new(HashMap::new()));
+        let tombstones: Tombstones =
+            Arc::new(StdMutex::new(ExpiredTombstones::new(EXPIRED_TOMBSTONE_CAP)));
         let stop = CancellationToken::new();
         let cancel_loop = spawn(run_cancel_loop(
             cancel_service,
             Arc::clone(&registry),
+            Arc::clone(&tombstones),
             stop.clone(),
         ));
         let result_loop = spawn(run_result_loop(
             result_service,
             Arc::clone(&registry),
+            Arc::clone(&pending_waiters),
+            Arc::clone(&tombstones),
+            stop.clone(),
+        ));
+        let sweeper_loop = spawn(run_retention_sweeper(
+            Arc::clone(&registry),
+            Arc::clone(&pending_waiters),
+            tombstones,
             stop.clone(),
         ));
         Self {
             goal_service,
             factory: feedback_publisher_factory,
             registry,
+            pending_waiters,
             has_feedback,
             result_retention_grace: RESULT_RETENTION_GRACE,
             stop,
             cancel_loop,
             result_loop,
+            sweeper_loop,
         }
     }
 
@@ -856,6 +1236,7 @@ impl ConcurrentAction {
             responder,
             feedback,
             registry: Arc::clone(&self.registry),
+            pending_waiters: Arc::clone(&self.pending_waiters),
             result_retention_grace: self.result_retention_grace,
         }))
     }
@@ -866,6 +1247,7 @@ impl Drop for ConcurrentAction {
         self.stop.cancel();
         self.cancel_loop.abort();
         self.result_loop.abort();
+        self.sweeper_loop.abort();
     }
 }
 
@@ -883,6 +1265,7 @@ pub struct PendingGoal {
     responder: ServiceResponder,
     feedback: Option<ActionFeedbackPublisher>,
     registry: GoalRegistry,
+    pending_waiters: PendingWaiters,
 }
 
 impl PendingGoal {
@@ -912,18 +1295,34 @@ impl PendingGoal {
     /// cancel/result request the client fires immediately after `fire_goal`
     /// returns always finds the goal.
     pub async fn accept(self, response: Payload) -> Result<GoalContext> {
-        let cancel = CancellationToken::new();
-        let result = Arc::new(TokioMutex::new(ResultRendezvous::Empty));
-        self.registry.lock().unwrap().insert(
-            self.goal_id.clone(),
-            GoalSlot {
-                cancel: cancel.clone(),
-                result: Arc::clone(&result),
-            },
-        );
+        let state = Arc::new(TokioMutex::new(GoalState::Pending {
+            waiters: Vec::new(),
+        }));
+        let slot = GoalSlot {
+            cancel: CancellationToken::new(),
+            state: Arc::clone(&state),
+            terminal: Arc::new(AtomicBool::new(false)),
+        };
+        self.registry
+            .lock()
+            .unwrap()
+            .insert(self.goal_id.clone(), slot.clone());
+
+        // Adopt any result polls that parked before this slot existed. The
+        // registry insert above is visible to a concurrent `run_result_loop`
+        // before this drain, and that loop re-reads the registry under the
+        // `pending_waiters` lock — so an early poll either parked here (and we
+        // adopt it now) or sees the slot and parks in it directly. Never orphaned.
+        let adopted = self.pending_waiters.lock().unwrap().remove(&self.goal_id);
+        if let Some(adopted) = adopted
+            && let GoalState::Pending { waiters } = &mut *state.lock().await
+        {
+            waiters.extend(adopted.into_iter().map(|p| p.responder));
+        }
 
         if let Err(err) = self.responder.respond(response).await {
             // Reply failed (client gone): don't leak the just-registered slot.
+            // Any adopted waiters are dropped with it (their polls close cleanly).
             self.registry.lock().unwrap().remove(&self.goal_id);
             return Err(err);
         }
@@ -931,11 +1330,8 @@ impl PendingGoal {
         Ok(GoalContext {
             goal_id: self.goal_id,
             request_bytes: self.request_bytes,
-            cancel,
-            result,
+            slot,
             feedback: self.feedback,
-            registry: self.registry,
-            completed: AtomicBool::new(false),
             result_retention_grace: self.result_retention_grace,
             // `accept` is always awaited on the runtime, so a handle is
             // available here; `Drop` reuses it to spawn cleanup from any thread.
@@ -952,23 +1348,23 @@ impl PendingGoal {
 }
 
 /// The per-goal handle owned by user code for the life of an accepted goal.
-/// Carries the decoded request bytes, the per-goal feedback publisher, the
-/// cancel signal, and the result-delivery channel. Cheaply movable into a
-/// spawned task.
+/// Carries the decoded request bytes, the per-goal feedback publisher, and the
+/// shared goal slot (cancel signal + result-delivery state). Cheaply movable
+/// into a spawned task.
 pub struct GoalContext {
     goal_id: String,
     request_bytes: Bytes,
-    cancel: CancellationToken,
-    result: Arc<TokioMutex<ResultRendezvous>>,
+    /// The shared slot this context drives. `complete` / `complete_cancelled` /
+    /// `Drop` transition it to a terminal state; the engine's retention sweeper
+    /// owns its eventual eviction, so this context never touches the registry.
+    slot: GoalSlot,
     feedback: Option<ActionFeedbackPublisher>,
-    registry: GoalRegistry,
-    completed: AtomicBool,
-    /// How long to keep a completed-but-unfetched result routable after this
-    /// context drops; propagated from the [`ConcurrentAction`].
+    /// How long a terminal result stays routable, measured from the terminal
+    /// transition; propagated from the [`ConcurrentAction`].
     result_retention_grace: Duration,
     /// Runtime handle captured at accept time so `Drop` can schedule its async
-    /// cleanup (closing the feedback stream, grace-evicting the slot) even when
-    /// the context is dropped off the runtime. This is the case in the
+    /// cleanup (marking the goal abandoned, closing the feedback stream) even
+    /// when the context is dropped off the runtime. This is the case in the
     /// peppylib-py binding, where Python's GC drops the wrapping object on the
     /// interpreter thread, so capturing the handle keeps cleanup identical
     /// across Rust and Python rather than silently degrading off-runtime.
@@ -1009,101 +1405,82 @@ impl GoalContext {
     /// goal's work in a `select!` and react by calling
     /// [`complete_cancelled`](Self::complete_cancelled).
     pub async fn cancel_signal(&self) {
-        self.cancel.cancelled().await;
+        self.slot.cancel.cancelled().await;
     }
 
     /// Whether a cancel has been requested for this goal.
     pub fn is_cancelled(&self) -> bool {
-        self.cancel.is_cancelled()
+        self.slot.cancel.is_cancelled()
     }
 
-    /// Deliver the final result for this goal. Idempotent: the first call wins,
+    /// Deliver the final result for this goal. Idempotent: the first terminal
+    /// transition (`complete` / `complete_cancelled` / abandon-on-drop) wins;
     /// later calls are no-ops.
     pub async fn complete(&self, result: Payload) -> Result<()> {
-        self.deliver(result).await
+        self.deliver(GoalOutcome::Completed(result)).await
     }
 
-    /// Deliver the final result after observing a cancel. Functionally
-    /// identical to [`complete`](Self::complete); the distinct name documents
-    /// intent at the call site.
+    /// Deliver the final result after observing a cancel. Records the outcome as
+    /// [`ResultStatus::Cancelled`] (distinct from `complete`); otherwise
+    /// identical and equally idempotent.
     pub async fn complete_cancelled(&self, result: Payload) -> Result<()> {
-        self.deliver(result).await
+        self.deliver(GoalOutcome::Cancelled(result)).await
     }
 
-    async fn deliver(&self, result: Payload) -> Result<()> {
-        if self.completed.swap(true, Ordering::SeqCst) {
-            return Ok(());
-        }
-
-        // Store the value so a result request that has not arrived yet finds
-        // it; if one is already parked, answer it now and drop the slot.
-        let parked = {
-            let mut guard = self.result.lock().await;
-            match std::mem::replace(&mut *guard, ResultRendezvous::ValueReady(result.clone())) {
-                ResultRendezvous::ResponderWaiting(responder) => Some(responder),
-                _ => None,
+    async fn deliver(&self, outcome: GoalOutcome) -> Result<()> {
+        // Transition the slot to terminal, waking any parked result polls with
+        // the typed outcome. The slot stays routable until the retention sweeper
+        // evicts it, so a late `get_result` still finds the result.
+        let transitioned =
+            transition_terminal(&self.slot, outcome, self.result_retention_grace).await;
+        if transitioned {
+            // First terminal transition wins: close this goal's feedback stream
+            // so the client's drain loop ends. Gated so the sentinel is emitted
+            // exactly once even if `complete` races an abandon-on-drop.
+            if let Some(publisher) = &self.feedback {
+                let _ = publisher.publish_end().await;
             }
-        };
-        if let Some(responder) = parked {
-            // Delivered to a waiting request → the slot is done.
-            self.registry.lock().unwrap().remove(&self.goal_id);
-            let _ = responder.respond(result).await;
-        }
-
-        // Close this goal's feedback stream so the client's drain loop ends.
-        if let Some(publisher) = &self.feedback {
-            let _ = publisher.publish_end().await;
         }
         Ok(())
     }
 }
 
-/// How long a completed-but-unfetched result stays routable after its
-/// [`GoalContext`] is dropped. This lets a worker `complete` and drop the
-/// context immediately (e.g. at the end of a spawned task) while a slightly
-/// late client `get_result` can still retrieve the result, without letting an
-/// unfetched slot linger for the life of the server.
+/// How long a terminal result stays routable after its goal reaches a terminal
+/// state, measured from the terminal transition (not from context drop). Part
+/// of the protocol contract: a `get_result` within this window resolves to the
+/// typed outcome; after it the retention sweeper evicts the slot and a late poll
+/// resolves to [`ResultStatus::Expired`]. Overridable per-server via
+/// [`ConcurrentAction::with_result_retention_grace`].
 const RESULT_RETENTION_GRACE: Duration = Duration::from_secs(30);
 
 impl Drop for GoalContext {
     fn drop(&mut self) {
-        if !self.completed.load(Ordering::SeqCst) {
-            // The goal was abandoned without a result (early return, a panic in
-            // the worker, or the context simply dropped). Evict the slot so
-            // later cancel/result requests get a definitive answer, and close
-            // this goal's feedback stream so a client draining feedback breaks
-            // out of its loop instead of hanging forever. Any result request
-            // currently parked in the slot is dropped with it, cleanly closing
-            // that poll. `publish_end` is async, so fire-and-forget on the
-            // captured runtime handle (works even when dropped off-runtime).
-            self.registry.lock().unwrap().remove(&self.goal_id);
-            if let Some(publisher) = &self.feedback {
-                let publisher = publisher.clone();
-                self.runtime.spawn(async move {
-                    let _ = publisher.publish_end().await;
-                });
-            }
+        // If the goal already reached a terminal state (`complete` ran), there is
+        // nothing to do: the sweeper evicts the terminal slot after its window.
+        if self.slot.terminal.load(Ordering::SeqCst) {
             return;
         }
-
-        // The goal completed. `deliver` removes the slot as soon as a result
-        // request is answered (deliver-once), so if the slot is already gone a
-        // poll has fetched the result and there is nothing to clean up. If the
-        // slot is still present the result is buffered but unfetched: a worker
-        // may `complete` and drop the context in the same breath before the
-        // client calls `get_result`, so keep the value routable for a grace
-        // window, then evict it. Without this, a completed goal whose result is
-        // never fetched would leak its slot for the life of the server.
-        let still_buffered = self.registry.lock().unwrap().contains_key(&self.goal_id);
-        if still_buffered {
-            let registry = Arc::clone(&self.registry);
-            let goal_id = self.goal_id.clone();
-            let grace = self.result_retention_grace;
-            self.runtime.spawn(async move {
-                tokio::time::sleep(grace).await;
-                registry.lock().unwrap().remove(&goal_id);
-            });
-        }
+        // Otherwise the goal was abandoned: the context dropped without
+        // delivering (early return, a panic in the worker, or simply dropped).
+        // Transition the slot to Terminal{Abandoned}, waking any parked polls
+        // with a typed `Abandoned` status, and close the feedback stream so a
+        // client draining feedback breaks out instead of hanging forever.
+        // `transition_terminal` / `publish_end` are async, so run them on the
+        // captured runtime handle (works even when `Drop` runs off-runtime, e.g.
+        // via Python's GC). The slot is NOT removed here — the sweeper owns
+        // eviction — so a poll that arrives between this spawn and its execution
+        // still sees `Pending`, parks, and is woken by the transition.
+        let slot = self.slot.clone();
+        let grace = self.result_retention_grace;
+        let feedback = self.feedback.clone();
+        self.runtime.spawn(async move {
+            let transitioned = transition_terminal(&slot, GoalOutcome::Abandoned, grace).await;
+            if transitioned
+                && let Some(publisher) = feedback
+            {
+                let _ = publisher.publish_end().await;
+            }
+        });
     }
 }
 
@@ -1145,6 +1522,50 @@ mod envelope_tests {
         let (goal_id, body) = unwrap_goal_payload(wire.as_ref()).expect("unwrap should succeed");
         assert_eq!(goal_id, "goal-xyz");
         assert!(body.is_empty());
+    }
+
+    #[test]
+    fn result_outcome_roundtrips_each_status() {
+        for status in [
+            ResultStatus::Completed,
+            ResultStatus::Cancelled,
+            ResultStatus::Abandoned,
+            ResultStatus::Expired,
+        ] {
+            let wire = wrap_result_outcome(status, b"payload");
+            let (decoded, body) = unwrap_result_outcome(wire.as_ref()).expect("unwrap outcome");
+            assert_eq!(decoded, status);
+            assert_eq!(body, b"payload");
+        }
+    }
+
+    #[test]
+    fn result_outcome_with_empty_body() {
+        let wire = wrap_result_outcome(ResultStatus::Abandoned, b"");
+        let (status, body) = unwrap_result_outcome(wire.as_ref()).expect("unwrap outcome");
+        assert_eq!(status, ResultStatus::Abandoned);
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn unwrap_result_outcome_rejects_empty_wire() {
+        match unwrap_result_outcome(&[]) {
+            Err(Error::InternalEncodingError { identifier, .. }) => {
+                assert_eq!(identifier, "action_result_outcome_envelope");
+            }
+            other => panic!("expected InternalEncodingError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unwrap_result_outcome_rejects_unknown_tag() {
+        match unwrap_result_outcome(&[0xFF, 1, 2, 3]) {
+            Err(Error::InternalEncodingError { identifier, reason }) => {
+                assert_eq!(identifier, "action_result_outcome_envelope");
+                assert!(reason.contains("unknown result status tag"));
+            }
+            other => panic!("expected InternalEncodingError, got {other:?}"),
+        }
     }
 
     #[test]

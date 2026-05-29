@@ -2,10 +2,12 @@ use bytes::Bytes;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle, ActionMessenger,
     ActionWireSender, ConcurrentAction, GoalContext, NonEmptyPayload, PendingGoal, ServiceEndpoint,
+    decode_cancel_ack,
 };
 use peppylib::types::Payload;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -96,6 +98,82 @@ impl PyActionFeedbackPublisherFactory {
                 declared.user_payload.to_vec(),
             ))
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ActionResultReply
+// ---------------------------------------------------------------------------
+
+/// Python wrapper for the typed result reply returned by
+/// `ActionMessenger.request_result`. The engine's `[status:u8][body]`
+/// result-outcome envelope is stripped Rust-side, so Python reads the typed
+/// `status` and the raw result `body` directly (no re-parsing of the framing).
+#[pyclass(name = "ActionResultReply")]
+pub struct PyActionResultReply {
+    status: u8,
+    body: Vec<u8>,
+    instance_id: String,
+    core_node: String,
+}
+
+#[pymethods]
+impl PyActionResultReply {
+    /// The terminal [`peppylib::messaging::ResultStatus`] as its `u8` tag
+    /// (0=Completed, 1=Cancelled, 2=Abandoned, 3=Expired).
+    #[getter]
+    fn status(&self) -> u8 {
+        self.status
+    }
+
+    /// The raw user result payload. Empty for Abandoned / Expired.
+    #[getter]
+    fn body<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.body)
+    }
+
+    #[getter]
+    fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    #[getter]
+    fn core_node(&self) -> &str {
+        &self.core_node
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ActionCancelReply
+// ---------------------------------------------------------------------------
+
+/// Python wrapper for the typed cancel reply returned by
+/// `ActionMessenger.cancel_goal`. The framework cancel-ack is decoded Rust-side
+/// (mirroring `request_result`), so Python reads the typed `state` tag directly.
+#[pyclass(name = "ActionCancelReply")]
+pub struct PyActionCancelReply {
+    state: u8,
+    instance_id: String,
+    core_node: String,
+}
+
+#[pymethods]
+impl PyActionCancelReply {
+    /// The [`peppylib::messaging::CancelState`] as its `u8` tag
+    /// (0=Signalled, 1=AlreadyTerminal, 2=Unknown).
+    #[getter]
+    fn state(&self) -> u8 {
+        self.state
+    }
+
+    #[getter]
+    fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    #[getter]
+    fn core_node(&self) -> &str {
+        &self.core_node
     }
 }
 
@@ -312,7 +390,16 @@ impl PyActionMessenger {
                 ActionMessenger::cancel_with_sender(&handle, &sender, &goal_id, cancel_timeout)
                     .await
                     .map_err(to_py_err)?;
-            Ok(PyTopicMessage::from(response))
+            let instance_id = response.instance_id().to_string();
+            let core_node = response.core_node().to_string();
+            // Decode the framework cancel-ack Rust-side (mirroring request_result),
+            // so Python reads a typed `state` tag without re-parsing the capnp.
+            let state = decode_cancel_ack(response.payload().as_ref()).map_err(to_py_err)?;
+            Ok(PyActionCancelReply {
+                state: state as u8,
+                instance_id,
+                core_node,
+            })
         })
     }
 
@@ -332,7 +419,7 @@ impl PyActionMessenger {
         let sender = goal_handle.sender.clone();
         let goal_id = goal_handle.goal_id.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let response = ActionMessenger::request_result_with_sender(
+            let reply = ActionMessenger::request_result_with_sender(
                 &handle,
                 &sender,
                 &goal_id,
@@ -340,7 +427,12 @@ impl PyActionMessenger {
             )
             .await
             .map_err(to_py_err)?;
-            Ok(PyTopicMessage::from(response))
+            Ok(PyActionResultReply {
+                status: reply.status as u8,
+                body: reply.body.to_vec(),
+                instance_id: reply.instance_id,
+                core_node: reply.core_node,
+            })
         })
     }
 
@@ -650,6 +742,8 @@ fn generate_goal_id() -> String {
 pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let actions_module = PyModule::new(parent_module.py(), "actions")?;
     actions_module.add_class::<PyActionMessenger>()?;
+    actions_module.add_class::<PyActionResultReply>()?;
+    actions_module.add_class::<PyActionCancelReply>()?;
     actions_module.add_class::<PyActionGoalHandle>()?;
     actions_module.add_class::<PyActionCreation>()?;
     actions_module.add_class::<PyActionFeedbackPublisher>()?;

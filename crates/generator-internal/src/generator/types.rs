@@ -563,10 +563,16 @@ pub fn validate_message_format_field_names(format: &MessageFormat, context: &str
     validate_field_map(format.0.iter(), "", normalized_context)
 }
 
-/// Returns the hardcoded cancel-action response format used by both Rust and Python generators.
+/// Returns the hardcoded goal-action response format used by both Rust and Python generators.
 ///
-/// The format contains `accepted: bool` and `error_message: Optional[String]`.
-pub fn cancel_action_response_format() -> MessageFormat {
+/// The goal acknowledgement is framework-owned (not declared by the action
+/// schema): every goal response is `accepted: bool` plus an optional
+/// `error_message: Optional[String]` carrying the rejection reason. The
+/// generated `GoalResponse::accept()` / `GoalResponse::reject(reason)`
+/// constructors produce it. Distinct from the cancel-ack format (which now
+/// carries a typed `state` instead), so `fire_goal`'s accept/reject wire is
+/// unchanged.
+pub fn goal_action_response_format() -> MessageFormat {
     let mut fields = IndexMap::new();
     fields.insert(String::from("accepted"), SchemaType::Type(TypeToken::Bool));
     fields.insert(
@@ -577,18 +583,6 @@ pub fn cancel_action_response_format() -> MessageFormat {
         }),
     );
     MessageFormat(fields)
-}
-
-/// Returns the hardcoded goal-action response format used by both Rust and Python generators.
-///
-/// The goal acknowledgement is framework-owned (not declared by the action
-/// schema): every goal response is `accepted: bool` plus an optional
-/// `error_message: Optional[String]` carrying the rejection reason. The
-/// generated `GoalResponse::accept()` / `GoalResponse::reject(reason)`
-/// constructors produce it. This is wire-identical to the cancel-ack format, so
-/// the two share a single definition.
-pub fn goal_action_response_format() -> MessageFormat {
-    cancel_action_response_format()
 }
 
 /// Validates that generated type names for nested objects and array-of-object items

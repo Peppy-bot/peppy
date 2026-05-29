@@ -16,8 +16,8 @@ pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
     CapnpSchema, ConsumedActionMessage, DependencyContext, InterfaceArtifact, InterfaceKind,
-    InterfaceOrigin, LanguageGenerator, cancel_action_response_format, goal_action_response_format,
-    non_empty_message_format, scoped_schema_key,
+    InterfaceOrigin, LanguageGenerator, goal_action_response_format, non_empty_message_format,
+    scoped_schema_key,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
@@ -320,93 +320,202 @@ impl RustGenerator {
         Ok((method_tokens, helper_items, has_goal_response_data))
     }
 
-    /// Builds a consumed action response method (cancel_goal or get_result).
+    /// Builds the consumed action `get_result` method and its supporting types.
     ///
-    /// Both follow the same structure: register response artifacts, build a deserializer,
-    /// and generate a method that calls the appropriate ActionMessenger function.
-    fn build_consumed_action_response_method(
+    /// `get_result` returns a typed [`ResultResponse`] carrying a `ResultOutcome`
+    /// enum (Completed/Cancelled with the decoded result data, or the empty
+    /// Abandoned/Expired terminal states). The engine frames the reply as a
+    /// [`peppylib::messaging::ResultStatus`] tag plus the raw body, stripped by
+    /// `ActionMessenger::request_result` into a typed reply, so this only needs
+    /// to decode the body for the data-bearing variants.
+    fn build_consumed_action_get_result_method(
         &mut self,
         context: &mut GenerationContext,
-        spec: ConsumedActionResponseMethodSpec<'_>,
+        action_struct_name: &str,
+        result_artifacts: Option<CapnpSchemaArtifacts>,
+        result_schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
-        let response_data_ident = Ident::new(spec.data_struct_name, Span::call_site());
-        let response_ident = Ident::new(spec.response_struct_name, Span::call_site());
-        let method_name_ident = Ident::new(spec.method_name, Span::call_site());
-        let deserializer_ident = Ident::new(spec.deserializer_name, Span::call_site());
-
+        let data_ident = Ident::new("ResultResponseData", Span::call_site());
+        let response_ident = Ident::new("ResultResponse", Span::call_site());
+        let outcome_ident = Ident::new("ResultOutcome", Span::call_site());
         let mut helper_items = Vec::new();
-        let method_tokens = if let Some(response_artifacts) = spec.response_artifacts {
-            let _response_params = collect_function_params(
+
+        let response_struct = quote! {
+            #[derive(Debug, Clone)]
+            #[allow(dead_code)]
+            pub struct #response_ident {
+                pub instance_id: String,
+                pub core_node: String,
+                pub outcome: #outcome_ident,
+            }
+        };
+
+        let method_tokens = if let Some(result_artifacts) = result_artifacts {
+            // Defines `ResultResponseData` (+ ctor) in the context.
+            let _params = collect_function_params(
                 None,
-                Some(&response_artifacts),
-                &format!("{}{}", spec.action_struct_name, spec.response_struct_name),
+                Some(&result_artifacts),
+                &format!("{action_struct_name}ResultResponse"),
                 context,
-                Some(&response_data_ident),
+                Some(&data_ident),
             )?;
 
-            context.add_metadata_struct(response_ident.clone(), Some(&response_data_ident));
-
-            let response_schema_key = format!("{}_response", spec.schema_key);
             let response_schema = self.register_schema(
-                &response_schema_key,
-                spec.schema_message_prefix,
-                &response_artifacts,
+                result_schema_key,
+                "ResultResponseMessage",
+                &result_artifacts,
             )?;
             let reader_type = response_schema.reader_type_tokens();
-
-            let response_format = response_artifacts.message_format();
-            let data_label = spec.data_struct_name;
-            let response_label = spec.response_struct_name;
+            let response_format = result_artifacts.message_format();
             let context_expr = quote!(format!(
                 "{} {} {}",
-                TARGET_NODE_NAME, TARGET_ACTION_NAME, #response_label
+                TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse"
             ));
-            let (response_statements, response_inits, _) =
-                deserialize_format_fields(response_format, data_label, &context_expr)?;
-
-            let deserialize_helper = build_deserialize_fn(
-                &deserializer_ident,
+            let (statements, inits, _) =
+                deserialize_format_fields(response_format, "ResultResponseData", &context_expr)?;
+            helper_items.push(build_deserialize_fn(
+                &Ident::new("deserialize_result_response", Span::call_site()),
                 &reader_type,
                 &context_expr,
-                &quote!(#response_data_ident),
-                &response_statements,
-                &quote!(#response_data_ident { #( #response_inits ),* }),
-            );
-            helper_items.push(deserialize_helper);
+                &quote!(#data_ident),
+                &statements,
+                &quote!(#data_ident { #( #inits ),* }),
+            ));
 
-            let messenger_call = &spec.messenger_call;
+            helper_items.push(quote! {
+                #[derive(Debug, Clone)]
+                #[allow(dead_code)]
+                pub enum #outcome_ident {
+                    Completed(#data_ident),
+                    Cancelled(#data_ident),
+                    Abandoned,
+                    Expired,
+                }
+            });
+            helper_items.push(response_struct);
+
             quote! {
-                pub async fn #method_name_ident(
+                pub async fn get_result(
                     &self,
                     timeout: std::time::Duration,
                 ) -> crate::Result<#response_ident> {
-                    let response = #messenger_call.await?;
-
-                    let payload = response.payload();
-                    let response_data = #deserializer_ident(payload.as_ref())?;
+                    let reply = peppylib::ActionMessenger::request_result(
+                        &self.messenger,
+                        &self.inner,
+                        timeout,
+                    )
+                    .await?;
+                    let outcome = match reply.status {
+                        peppylib::messaging::ResultStatus::Completed => {
+                            #outcome_ident::Completed(deserialize_result_response(reply.body.as_ref())?)
+                        }
+                        peppylib::messaging::ResultStatus::Cancelled => {
+                            #outcome_ident::Cancelled(deserialize_result_response(reply.body.as_ref())?)
+                        }
+                        peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
+                        peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
+                    };
                     Ok(#response_ident {
-                        instance_id: response.instance_id().to_string(),
-                        core_node: response.core_node().to_string(),
-                        data: response_data,
+                        instance_id: reply.instance_id,
+                        core_node: reply.core_node,
+                        outcome,
                     })
                 }
             }
         } else {
-            context.add_metadata_struct(response_ident.clone(), None);
+            helper_items.push(quote! {
+                #[derive(Debug, Clone)]
+                #[allow(dead_code)]
+                pub enum #outcome_ident {
+                    Completed,
+                    Cancelled,
+                    Abandoned,
+                    Expired,
+                }
+            });
+            helper_items.push(response_struct);
 
-            let messenger_call = &spec.messenger_call;
             quote! {
-                pub async fn #method_name_ident(
+                pub async fn get_result(
                     &self,
                     timeout: std::time::Duration,
                 ) -> crate::Result<#response_ident> {
-                    let response = #messenger_call.await?;
-
+                    let reply = peppylib::ActionMessenger::request_result(
+                        &self.messenger,
+                        &self.inner,
+                        timeout,
+                    )
+                    .await?;
+                    let outcome = match reply.status {
+                        peppylib::messaging::ResultStatus::Completed => #outcome_ident::Completed,
+                        peppylib::messaging::ResultStatus::Cancelled => #outcome_ident::Cancelled,
+                        peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
+                        peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
+                    };
                     Ok(#response_ident {
-                        instance_id: response.instance_id().to_string(),
-                        core_node: response.core_node().to_string(),
+                        instance_id: reply.instance_id,
+                        core_node: reply.core_node,
+                        outcome,
                     })
                 }
+            }
+        };
+
+        Ok((method_tokens, helper_items))
+    }
+
+    /// Builds the consumed action `cancel_goal` method, its `CancelResponse`
+    /// type, and a per-action `CancelState` enum. The cancel reply is the
+    /// framework-owned cancel-ack, decoded via `peppylib::messaging::decode_cancel_ack`
+    /// (there is no per-action cancel payload schema); the engine's `CancelState`
+    /// is then mapped onto a generated enum so user code never has to name a
+    /// `peppylib` type (the user crate only depends on the generated `peppygen`).
+    fn build_consumed_action_cancel_method(
+        &mut self,
+        context: &mut GenerationContext,
+    ) -> Result<(TokenStream, Vec<TokenStream>)> {
+        let response_ident = Ident::new("CancelResponse", Span::call_site());
+        let state_ident = Ident::new("CancelState", Span::call_site());
+        context.add_struct(
+            response_ident.clone(),
+            vec![
+                (Ident::new("instance_id", Span::call_site()), quote!(String)),
+                (Ident::new("core_node", Span::call_site()), quote!(String)),
+                (Ident::new("state", Span::call_site()), quote!(#state_ident)),
+            ],
+        );
+
+        let helper_items = vec![quote! {
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            #[allow(dead_code)]
+            pub enum #state_ident {
+                Signalled,
+                AlreadyTerminal,
+                Unknown,
+            }
+        }];
+
+        let method_tokens = quote! {
+            pub async fn cancel_goal(
+                &self,
+                timeout: std::time::Duration,
+            ) -> crate::Result<#response_ident> {
+                let response = peppylib::ActionMessenger::cancel_goal(
+                    &self.messenger,
+                    &self.inner,
+                    timeout,
+                )
+                .await?;
+                let state = match peppylib::messaging::decode_cancel_ack(response.payload().as_ref())? {
+                    peppylib::messaging::CancelState::Signalled => #state_ident::Signalled,
+                    peppylib::messaging::CancelState::AlreadyTerminal => #state_ident::AlreadyTerminal,
+                    peppylib::messaging::CancelState::Unknown => #state_ident::Unknown,
+                };
+                Ok(#response_ident {
+                    instance_id: response.instance_id().to_string(),
+                    core_node: response.core_node().to_string(),
+                    state,
+                })
             }
         };
 
@@ -495,20 +604,6 @@ impl RustGenerator {
 
         Ok((method_tokens, vec![helper_tokens]))
     }
-}
-
-/// Describes the parameterizable parts of a consumed action response method
-/// (cancel_goal or get_result).
-struct ConsumedActionResponseMethodSpec<'a> {
-    action_struct_name: &'a str,
-    method_name: &'a str,
-    response_struct_name: &'a str,
-    data_struct_name: &'a str,
-    deserializer_name: &'a str,
-    schema_message_prefix: &'a str,
-    schema_key: &'a str,
-    response_artifacts: Option<CapnpSchemaArtifacts>,
-    messenger_call: TokenStream,
 }
 
 struct SchemaInfo {
@@ -1441,38 +1536,8 @@ impl LanguageGenerator for RustGenerator {
         methods.push(goal_method);
         helper_items.append(&mut goal_helpers);
 
-        let cancel_response_format = cancel_action_response_format();
-        let cancel_artifacts = map_message_format(
-            &action_schema_keys.cancel_response,
-            Some(&cancel_response_format),
-        )?
-        .expect("cancel response format should yield artifacts");
-        let (cancel_method, mut cancel_helpers) = self.build_consumed_action_response_method(
-            &mut context,
-            ConsumedActionResponseMethodSpec {
-                action_struct_name: &action_struct_name,
-                method_name: "cancel_goal",
-                response_struct_name: "CancelResponse",
-                data_struct_name: "CancelResponseData",
-                deserializer_name: "deserialize_cancel_response",
-                schema_message_prefix: "CancelResponseMessage",
-                // The `build_consumed_action_response_method` adds `_response`
-                // to the `schema_key` it receives, so pass the cancel base
-                // (`_cancel_goal`) here.
-                schema_key: action_schema_keys
-                    .cancel_response
-                    .strip_suffix("_response")
-                    .unwrap_or(&action_schema_keys.cancel_response),
-                response_artifacts: Some(cancel_artifacts),
-                messenger_call: quote! {
-                    peppylib::ActionMessenger::cancel_goal(
-                        &self.messenger,
-                        &self.inner,
-                        timeout,
-                    )
-                },
-            },
-        )?;
+        let (cancel_method, mut cancel_helpers) =
+            self.build_consumed_action_cancel_method(&mut context)?;
         methods.push(cancel_method);
         helper_items.append(&mut cancel_helpers);
 
@@ -1490,30 +1555,11 @@ impl LanguageGenerator for RustGenerator {
 
         let result_artifacts =
             map_message_format(&action_schema_keys.result_response, result_response_format)?;
-        let (result_method, mut result_helpers) = self.build_consumed_action_response_method(
+        let (result_method, mut result_helpers) = self.build_consumed_action_get_result_method(
             &mut context,
-            ConsumedActionResponseMethodSpec {
-                action_struct_name: &action_struct_name,
-                method_name: "get_result",
-                response_struct_name: "ResultResponse",
-                data_struct_name: "ResultResponseData",
-                deserializer_name: "deserialize_result_response",
-                schema_message_prefix: "ResultResponseMessage",
-                // `build_consumed_action_response_method` appends `_response`
-                // to the schema_key it receives.
-                schema_key: action_schema_keys
-                    .result_response
-                    .strip_suffix("_response")
-                    .unwrap_or(&action_schema_keys.result_response),
-                response_artifacts: result_artifacts,
-                messenger_call: quote! {
-                    peppylib::ActionMessenger::request_result(
-                        &self.messenger,
-                        &self.inner,
-                        timeout,
-                    )
-                },
-            },
+            &action_struct_name,
+            result_artifacts,
+            &action_schema_keys.result_response,
         )?;
         methods.push(result_method);
         helper_items.append(&mut result_helpers);

@@ -235,6 +235,7 @@ async def run_consumer(node_runner):
     print(f"feedback message received new_position={feedback.new_position}", flush=True)
 
     result = await goal.get_result(5.0)
+    assert result.status == brain_move_arm.ResultStatus.COMPLETED, f"unexpected status {result.status}"
     print(
         f"result success={result.data.success} error={result.data.error_msg} final_position={result.data.final_position}",
         flush=True,
@@ -559,9 +560,9 @@ async def run_consumer(node_runner):
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
     cancel_response = await goal.cancel_goal(5.0)
-    error_msg = cancel_response.data.error_message if cancel_response.data.error_message is not None else "<none>"
+    accepted = cancel_response.state == brain_move_arm.CancelState.SIGNALLED
     print(
-        f"cancel accepted={cancel_response.data.accepted} error={error_msg}",
+        f"cancel accepted={accepted} error=<none>",
         flush=True,
     )
     await move_arm_cancel_flow_done.handle_next_request(node_runner, lambda _request: None)
@@ -874,6 +875,7 @@ async def run_consumer(node_runner):
     assert feedback.new_position == [7, 100, 200], "unexpected feedback"
 
     result = await goal.get_result(5.0)
+    assert result.status == brain_move_arm.ResultStatus.COMPLETED, f"unexpected status {result.status}"
     print(
         f"result success={result.data.success} final_position={result.data.final_position}",
         flush=True,
@@ -1210,7 +1212,8 @@ async def run_consumer(node_runner):
     print(f"warmup feedback new_position={warmup.new_position}", flush=True)
 
     cancel_response = await goal.cancel_goal(5.0)
-    print(f"cancel accepted={cancel_response.data.accepted}", flush=True)
+    accepted = cancel_response.state == brain_move_arm.CancelState.SIGNALLED
+    print(f"cancel accepted={accepted}", flush=True)
 
     # Cancel was accepted — codegen publishes end-of-stream sentinel.
     try:
@@ -1558,9 +1561,9 @@ async def run_consumer(node_runner):
     print(f"pre_cancel feedback new_position={pre_cancel.new_position}", flush=True)
 
     cancel_response = await goal.cancel_goal(5.0)
-    err = cancel_response.data.error_message if cancel_response.data.error_message else "<none>"
+    accepted = cancel_response.state == brain_move_arm.CancelState.SIGNALLED
     print(
-        f"cancel accepted={cancel_response.data.accepted} error={err}",
+        f"cancel accepted={accepted} error=<none>",
         flush=True,
     )
 
@@ -1569,6 +1572,7 @@ async def run_consumer(node_runner):
     print(f"post_cancel feedback new_position={post_cancel.new_position}", flush=True)
 
     result = await goal.get_result(5.0)
+    assert result.status == brain_move_arm.ResultStatus.COMPLETED, f"unexpected status {result.status}"
     print(f"result success={result.data.success}", flush=True)
 
     try:
@@ -1938,6 +1942,7 @@ async def run_consumer(node_runner):
             break
 
     result = await goal.get_result(5.0)
+    assert result.status == brain_move_arm.ResultStatus.COMPLETED, f"unexpected status {result.status}"
     print(
         f"result success={result.data.success} final_position={result.data.final_position}",
         flush=True,

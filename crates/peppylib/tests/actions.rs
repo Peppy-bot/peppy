@@ -4,9 +4,9 @@ use common::test_node_target;
 use config::node::QoSProfile;
 use peppylib::PeppyError;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, ConcurrentAction,
-    EmptyPayloadError, MessengerHandle, NonEmptyPayload, SenderTarget, decode_cancel_ack,
-    encode_cancel_ack,
+    ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, CancelState, ConcurrentAction,
+    EmptyPayloadError, MessengerHandle, NonEmptyPayload, ResultStatus, SenderTarget,
+    decode_cancel_ack, encode_cancel_ack, wrap_result_outcome,
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
@@ -91,12 +91,14 @@ async fn action_messenger_communication() {
             .await
             .expect("feedback publish should succeed");
 
-        // Handle the result request
+        // Handle the result request. This test drives the result service
+        // directly (not through `ConcurrentAction`), so it must frame the reply
+        // with the engine's result-outcome envelope itself.
         action
             .result_service
             .handle_next_request(|_req| {
                 let r = res;
-                async move { Ok(r) }
+                async move { Ok(wrap_result_outcome(ResultStatus::Completed, r.as_ref())) }
             })
             .await
             .expect("result handler should succeed");
@@ -136,7 +138,8 @@ async fn action_messenger_communication() {
             .await
             .expect("request_result should succeed");
 
-    assert_eq!(result.payload(), &result_payload);
+    assert_eq!(result.status, ResultStatus::Completed);
+    assert_eq!(result.body, result_payload);
 
     server.await.expect("server task should not panic");
 }
@@ -358,22 +361,21 @@ fn non_empty_payload_rejects_empty_payload() {
     );
 }
 
-/// The fixed cancel-ack encoder/decoder must round-trip both the accepted and
-/// rejected shapes. This guards the encoder peppylib's concurrent-action engine
-/// sends in reply to every cancel; cross-schema wire compatibility with the
-/// generated client reader is additionally guarded by the e2e cancel tests in
-/// generator-internal.
+/// The fixed cancel-ack encoder/decoder must round-trip every [`CancelState`].
+/// This guards the encoder peppylib's concurrent-action engine sends in reply to
+/// every cancel; both Rust and Python generated clients decode it via this same
+/// `decode_cancel_ack`, so there is no separate per-action wire to keep in sync.
 #[test]
 fn cancel_ack_encode_decode_roundtrip() {
-    let accepted = encode_cancel_ack(true, None).expect("encode accepted");
-    let (is_accepted, message) = decode_cancel_ack(accepted.as_ref()).expect("decode accepted");
-    assert!(is_accepted);
-    assert_eq!(message, None);
-
-    let rejected = encode_cancel_ack(false, Some("no active goal for goal_id")).expect("encode");
-    let (is_accepted, message) = decode_cancel_ack(rejected.as_ref()).expect("decode rejected");
-    assert!(!is_accepted);
-    assert_eq!(message.as_deref(), Some("no active goal for goal_id"));
+    for state in [
+        CancelState::Signalled,
+        CancelState::AlreadyTerminal,
+        CancelState::Unknown,
+    ] {
+        let encoded = encode_cancel_ack(state).expect("encode cancel state");
+        let decoded = decode_cancel_ack(encoded.as_ref()).expect("decode cancel state");
+        assert_eq!(decoded, state);
+    }
 }
 
 /// Two goals fired at one [`ConcurrentAction`] server must run concurrently
@@ -473,11 +475,13 @@ async fn concurrent_action_two_goals_independent() {
     let res_a = ActionMessenger::request_result(&client_handle, &goal_a, Duration::from_secs(2))
         .await
         .expect("result A");
-    assert_eq!(res_a.payload().as_ref(), b"result:A");
+    assert_eq!(res_a.status, ResultStatus::Completed);
+    assert_eq!(res_a.body.as_ref(), b"result:A");
     let res_b = ActionMessenger::request_result(&client_handle, &goal_b, Duration::from_secs(2))
         .await
         .expect("result B");
-    assert_eq!(res_b.payload().as_ref(), b"result:B");
+    assert_eq!(res_b.status, ResultStatus::Completed);
+    assert_eq!(res_b.body.as_ref(), b"result:B");
 
     server.abort();
     drop(server_handle);
@@ -562,19 +566,24 @@ async fn concurrent_action_cancel_targets_one_goal() {
     let cancel_ack = ActionMessenger::cancel_goal(&client_handle, &goal_a, Duration::from_secs(2))
         .await
         .expect("cancel A");
-    let (accepted, _message) =
-        decode_cancel_ack(cancel_ack.payload().as_ref()).expect("decode cancel ack");
-    assert!(accepted, "cancelling a live goal must be accepted");
+    let state = decode_cancel_ack(cancel_ack.payload().as_ref()).expect("decode cancel ack");
+    assert_eq!(
+        state,
+        CancelState::Signalled,
+        "cancelling a live goal must signal it"
+    );
 
     // A reports its cancelled result; B is unaffected and finishes normally.
     let res_a = ActionMessenger::request_result(&client_handle, &goal_a, Duration::from_secs(2))
         .await
         .expect("result A");
-    assert_eq!(res_a.payload().as_ref(), b"cancelled:A");
+    assert_eq!(res_a.status, ResultStatus::Cancelled);
+    assert_eq!(res_a.body.as_ref(), b"cancelled:A");
     let res_b = ActionMessenger::request_result(&client_handle, &goal_b, Duration::from_secs(3))
         .await
         .expect("result B");
-    assert_eq!(res_b.payload().as_ref(), b"done:B");
+    assert_eq!(res_b.status, ResultStatus::Completed);
+    assert_eq!(res_b.body.as_ref(), b"done:B");
 
     server.abort();
     drop(server_handle);
@@ -659,7 +668,8 @@ async fn concurrent_action_reject_then_accept() {
     let res_b = ActionMessenger::request_result(&client_handle, &goal_b, Duration::from_secs(2))
         .await
         .expect("result B");
-    assert_eq!(res_b.payload().as_ref(), b"result:B");
+    assert_eq!(res_b.status, ResultStatus::Completed);
+    assert_eq!(res_b.body.as_ref(), b"result:B");
 
     server.abort();
     drop(server_handle);
@@ -667,11 +677,13 @@ async fn concurrent_action_reject_then_accept() {
 
 /// Dropping a `GoalContext` without completing the goal (the worker returned
 /// early, panicked, or otherwise abandoned it) must close the goal's feedback
-/// stream and evict its slot. A client draining feedback then breaks out with
-/// `ActionFeedbackChannelClosed` instead of hanging forever, and a later
-/// `get_result` gets a definitive "no active goal" error rather than parking.
+/// stream and transition the goal to a typed `Abandoned` terminal state. A
+/// client draining feedback breaks out with `ActionFeedbackChannelClosed`
+/// instead of hanging, and a prompt `get_result` resolves to
+/// `ResultStatus::Abandoned` (parking first if it raced the transition) — never
+/// a bare "no active goal" error, never a hang.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_action_abandoned_goal_closes_feedback() {
+async fn concurrent_action_abandoned_goal_yields_typed_abandoned() {
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -736,26 +748,26 @@ async fn concurrent_action_abandoned_goal_closes_feedback() {
         other => panic!("expected ActionFeedbackChannelClosed, got {other:?}"),
     }
 
-    // The slot was evicted on abandon, so a result request gets a definitive
-    // error instead of parking forever.
-    let result =
-        ActionMessenger::request_result(&client_handle, &goal, Duration::from_secs(2)).await;
+    // The goal was abandoned, so the result resolves to a typed `Abandoned`
+    // outcome (empty body) instead of erroring or hanging.
+    let result = ActionMessenger::request_result(&client_handle, &goal, Duration::from_secs(2))
+        .await
+        .expect("abandoned goal must resolve to a typed outcome, not error");
+    assert_eq!(result.status, ResultStatus::Abandoned);
     assert!(
-        result.is_err(),
-        "result request for an abandoned goal must error, got {result:?}",
+        result.body.as_ref().is_empty(),
+        "abandoned outcome carries no result body"
     );
 
     server.abort();
     drop(server_handle);
 }
 
-/// A completed goal's result must survive the worker dropping its context (so a
-/// slightly late `get_result` still resolves), but a result that is never
-/// fetched must be evicted after the retention grace rather than leaking its
-/// registry slot for the life of the server. Uses a short grace so the
-/// eviction half is fast and deterministic.
+/// A `get_result` issued before the worker completes must PARK and then resolve
+/// to the typed outcome — never error with "no active goal". This is the core
+/// of the fix: a prompt poll on a live goal waits for a definitive answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_action_completed_result_evicted_after_grace() {
+async fn concurrent_action_result_parks_until_complete() {
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -765,7 +777,169 @@ async fn concurrent_action_completed_result_evicted_after_grace() {
     let instance_id = "exposer";
     let node_name = "brain";
     let action_name = "move_arm";
-    let grace = Duration::from_millis(200);
+
+    let server_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("server handle");
+    let client_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("client handle");
+
+    let mut action = ConcurrentAction::expose(
+        &server_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        false,
+    )
+    .await
+    .expect("expose should succeed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Accept, wait, then complete — so the client's prompt poll parks first.
+    let server = tokio::spawn(async move {
+        while let Ok(Some(pending)) = action.recv_next_goal().await {
+            let request = pending.request_bytes().to_vec();
+            let Ok(ctx) = pending.accept(Payload::from_static(b"accepted")).await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let mut result = b"result:".to_vec();
+                result.extend_from_slice(&request);
+                let _ = ctx.complete(Payload::from(result)).await;
+            });
+        }
+    });
+
+    let goal = ActionMessenger::send_goal(
+        &client_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        Some(core_node),
+        Some(instance_id),
+        Payload::from_static(b"A"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("send goal");
+
+    // Polled immediately, well before the 300ms completion: must park, then
+    // resolve to the completed result.
+    let res = ActionMessenger::request_result(&client_handle, &goal, Duration::from_secs(3))
+        .await
+        .expect("a prompt poll on a live goal must resolve, not error");
+    assert_eq!(res.status, ResultStatus::Completed);
+    assert_eq!(res.body.as_ref(), b"result:A");
+
+    server.abort();
+    drop(server_handle);
+}
+
+/// Several concurrent `get_result` polls for the same goal must all resolve once
+/// the goal completes — the slot parks a `Vec` of responders, not just one, so a
+/// relay that retries its poll never loses an earlier waiter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_action_multiple_polls_one_goal_all_resolve() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let core_node = "test_core";
+    let instance_id = "exposer";
+    let node_name = "brain";
+    let action_name = "move_arm";
+
+    let server_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("server handle");
+    let client_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("client handle");
+
+    let mut action = ConcurrentAction::expose(
+        &server_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        false,
+    )
+    .await
+    .expect("expose should succeed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let server = tokio::spawn(async move {
+        while let Ok(Some(pending)) = action.recv_next_goal().await {
+            let Ok(ctx) = pending.accept(Payload::from_static(b"accepted")).await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let _ = ctx.complete(Payload::from_static(b"result:A")).await;
+            });
+        }
+    });
+
+    let goal = ActionMessenger::send_goal(
+        &client_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        Some(core_node),
+        Some(instance_id),
+        Payload::from_static(b"A"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("send goal");
+
+    // Three polls issued concurrently, all before completion: each parks in the
+    // slot's waiter Vec and all must resolve to the same completed result.
+    let timeout = Duration::from_secs(3);
+    let (r1, r2, r3) = tokio::join!(
+        ActionMessenger::request_result(&client_handle, &goal, timeout),
+        ActionMessenger::request_result(&client_handle, &goal, timeout),
+        ActionMessenger::request_result(&client_handle, &goal, timeout),
+    );
+    for res in [
+        r1.expect("poll 1 resolves"),
+        r2.expect("poll 2 resolves"),
+        r3.expect("poll 3 resolves"),
+    ] {
+        assert_eq!(res.status, ResultStatus::Completed);
+        assert_eq!(res.body.as_ref(), b"result:A");
+    }
+
+    server.abort();
+    drop(server_handle);
+}
+
+/// A completed goal's result survives the worker dropping its context (a
+/// slightly late `get_result` still resolves to the typed result) and can be
+/// fetched more than once within the retention window (relay-retry safe — there
+/// is no deliver-once). A result never fetched within the window is evicted and
+/// a later poll resolves to a typed `Expired` outcome — never a bare error,
+/// never a leaked slot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_action_completed_result_expires_after_grace() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let core_node = "test_core";
+    let instance_id = "exposer";
+    let node_name = "brain";
+    let action_name = "move_arm";
+    let grace = Duration::from_millis(500);
 
     let server_handle = MessengerHandle::from_host_port(&host, port)
         .await
@@ -816,24 +990,106 @@ async fn concurrent_action_completed_result_evicted_after_grace() {
         )
     };
 
-    // Fetched within the grace: the result survives the context drop.
+    // Fetched within the grace: the result survives the context drop, and a
+    // second fetch within the window returns the same result (no deliver-once).
     let goal_fast = send(b"A").await.expect("send goal A");
     let res = ActionMessenger::request_result(&client_handle, &goal_fast, Duration::from_secs(2))
         .await
         .expect("result A within grace");
-    assert_eq!(res.payload().as_ref(), b"result:A");
+    assert_eq!(res.status, ResultStatus::Completed);
+    assert_eq!(res.body.as_ref(), b"result:A");
+    let res_again =
+        ActionMessenger::request_result(&client_handle, &goal_fast, Duration::from_secs(2))
+            .await
+            .expect("second result A within grace");
+    assert_eq!(res_again.status, ResultStatus::Completed);
+    assert_eq!(res_again.body.as_ref(), b"result:A");
 
     // Never fetched in time: after well over the grace window the slot is
-    // evicted, so the result request gets a definitive error instead of the
-    // slot leaking forever.
+    // evicted and a late poll resolves to a typed `Expired` outcome.
     let goal_slow = send(b"B").await.expect("send goal B");
     tokio::time::sleep(grace * 5).await;
-    let evicted =
-        ActionMessenger::request_result(&client_handle, &goal_slow, Duration::from_secs(2)).await;
-    assert!(
-        evicted.is_err(),
-        "an unfetched result must be evicted after the grace, got {evicted:?}",
-    );
+    let expired =
+        ActionMessenger::request_result(&client_handle, &goal_slow, Duration::from_secs(2))
+            .await
+            .expect("a late poll must resolve to a typed outcome, not error");
+    assert_eq!(expired.status, ResultStatus::Expired);
+
+    server.abort();
+    drop(server_handle);
+}
+
+/// Cancelling a goal that has already reached a terminal state returns the typed
+/// `AlreadyTerminal` (not a bare "no active goal") while its result is retained.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_action_cancel_after_terminal_is_already_terminal() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let core_node = "test_core";
+    let instance_id = "exposer";
+    let node_name = "brain";
+    let action_name = "move_arm";
+
+    let server_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("server handle");
+    let client_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("client handle");
+
+    // Default retention grace (long) so the terminal slot is still present when
+    // the cancel arrives.
+    let mut action = ConcurrentAction::expose(
+        &server_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        false,
+    )
+    .await
+    .expect("expose should succeed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let server = tokio::spawn(async move {
+        while let Ok(Some(pending)) = action.recv_next_goal().await {
+            let Ok(ctx) = pending.accept(Payload::from_static(b"accepted")).await else {
+                continue;
+            };
+            let _ = ctx.complete(Payload::from_static(b"done")).await;
+        }
+    });
+
+    let goal = ActionMessenger::send_goal(
+        &client_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        Some(core_node),
+        Some(instance_id),
+        Payload::from_static(b"A"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("send goal");
+
+    // Drive the goal to a terminal state first.
+    let res = ActionMessenger::request_result(&client_handle, &goal, Duration::from_secs(2))
+        .await
+        .expect("result");
+    assert_eq!(res.status, ResultStatus::Completed);
+
+    // Now cancel the already-finished goal: typed AlreadyTerminal, not an error.
+    let ack = ActionMessenger::cancel_goal(&client_handle, &goal, Duration::from_secs(2))
+        .await
+        .expect("cancel a terminal goal still gets a reply");
+    let state = decode_cancel_ack(ack.payload().as_ref()).expect("decode cancel ack");
+    assert_eq!(state, CancelState::AlreadyTerminal);
 
     server.abort();
     drop(server_handle);

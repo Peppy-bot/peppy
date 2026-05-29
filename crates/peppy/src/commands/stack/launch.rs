@@ -8,6 +8,7 @@ use core_node_api::encoding::{
     LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, resolve_launcher_path,
 };
 use peppylib::ActionMessenger;
+use peppylib::messaging::ResultStatus;
 use tracing::info;
 
 use crate::commands::node::caller_env_overrides;
@@ -329,8 +330,28 @@ async fn launch_async(
         None => Duration::from_secs(30),
     };
     match ActionMessenger::request_result(conn.messenger, &action_handle, result_timeout).await {
-        Ok(msg) => {
-            let result = LaunchResult::decode(&msg.payload()).map_err(|err| {
+        Ok(reply) => {
+            let body = match reply.status {
+                ResultStatus::Completed | ResultStatus::Cancelled => reply.body,
+                ResultStatus::Abandoned => {
+                    if let Some(output) = scrolling_output.as_mut() {
+                        output.clear();
+                    }
+                    return Err(Error::ExecutionFailed(
+                        "the launch goal was abandoned by its worker before producing a result"
+                            .to_string(),
+                    ));
+                }
+                ResultStatus::Expired => {
+                    if let Some(output) = scrolling_output.as_mut() {
+                        output.clear();
+                    }
+                    return Err(Error::ExecutionFailed(
+                        "the launch result expired before it could be fetched".to_string(),
+                    ));
+                }
+            };
+            let result = LaunchResult::decode(body.as_ref()).map_err(|err| {
                 Error::ExecutionFailed(format!("Failed to decode launch result: {}", err))
             })?;
 

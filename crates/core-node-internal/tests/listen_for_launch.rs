@@ -9,7 +9,7 @@ use core_node_api::encoding::{
 };
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
-use peppylib::messaging::MessengerHandle;
+use peppylib::messaging::{MessengerHandle, ResultStatus};
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use std::fs;
@@ -402,11 +402,14 @@ async fn send_launch_origin_and_wait(
         .saturating_duration_since(tokio::time::Instant::now())
         .max(Duration::from_secs(1));
     match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
-        Ok(msg) => {
-            let result = LaunchResult::decode(&msg.payload())
-                .map_err(|err| format!("Failed to decode launch result: {err}"))?;
-            Ok((goal_response, result))
-        }
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                let result = LaunchResult::decode(reply.body.as_ref())
+                    .map_err(|err| format!("Failed to decode launch result: {err}"))?;
+                Ok((goal_response, result))
+            }
+            other => Err(format!("launch did not complete with a result: {other:?}")),
+        },
         Err(err) => Err(format!("Failed to get launch result: {err}")),
     }
 }

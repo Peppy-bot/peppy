@@ -9,7 +9,18 @@ import asyncio
 
 import pytest
 
-from peppylib import ActionMessenger, MessengerHandle, QoSProfile, SenderTarget, ZenohdInstance
+from peppylib import (
+    ActionMessenger,
+    ConcurrentAction,
+    MessengerHandle,
+    QoSProfile,
+    SenderTarget,
+    ZenohdInstance,
+)
+
+# Wire tags returned by the typed action replies (see peppylib::messaging).
+RESULT_STATUS_COMPLETED = 0
+CANCEL_STATE_SIGNALLED = 0
 
 CORE_NODE = "test_core"
 INSTANCE_ID = "test_instance"
@@ -24,49 +35,35 @@ RESULT_PAYLOAD = b"action result"
 
 @pytest.mark.asyncio
 async def test_action_messenger_communication():
-    """Full action lifecycle: goal, feedback, result."""
+    """Full action lifecycle: goal, feedback, result — driven via ConcurrentAction.
+
+    Using the engine (rather than the raw services) means the result reply is
+    framed with the typed result-outcome envelope, so the client gets back a
+    typed `status` plus the raw result `body`.
+    """
 
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
-        # Expose the action server
-        action = await ActionMessenger.expose(
+        action = await ConcurrentAction.expose(
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
+            True,  # has_feedback
         )
 
         # Allow subscriptions to propagate
         await asyncio.sleep(0.05)
 
-        # Run the server side in a spawned task. The factory's
-        # declare_from_wire absorbs the envelope unwrap + per-goal publisher
-        # declaration in one call.
-        captured_publisher: list = [None]
-
-        async def _on_goal(req):
-            (
-                publisher,
-                _goal_id,
-                _user_payload,
-            ) = await action.feedback_publisher_factory.declare_from_wire(
-                req.link_id,
-                bytes(req.message.payload),
-            )
-            captured_publisher[0] = publisher
-            return GOAL_RESPONSE_PAYLOAD
-
         async def server():
-            await action.goal_service.handle_next_request(_on_goal)
-
-            assert captured_publisher[0] is not None
-            await captured_publisher[0].publish(FEEDBACK_PAYLOAD)
-
-            # Handle the result request
-            await action.result_service.handle_next_request(lambda _req: RESULT_PAYLOAD)
+            pending = await action.recv_next_goal()
+            assert pending is not None
+            ctx = await pending.accept(GOAL_RESPONSE_PAYLOAD)
+            await ctx.publish_feedback(FEEDBACK_PAYLOAD)
+            await ctx.complete(RESULT_PAYLOAD)
 
         server_task = asyncio.create_task(server())
 
@@ -92,14 +89,15 @@ async def test_action_messenger_communication():
 
         assert feedback.payload == FEEDBACK_PAYLOAD
 
-        # Client: request result
+        # Client: request result — typed status + raw body.
         result = await ActionMessenger.request_result(
             client_handle,
             goal_handle,
             2.0,
         )
 
-        assert result.payload == RESULT_PAYLOAD
+        assert result.status == RESULT_STATUS_COMPLETED
+        assert result.body == RESULT_PAYLOAD
 
         await server_task
 
@@ -108,30 +106,29 @@ async def test_action_messenger_communication():
 async def test_cancel_goal_concurrent_with_feedback():
     """cancel_goal must not deadlock when on_next_feedback is waiting."""
 
-    CANCEL_RESPONSE_PAYLOAD = b"cancelled"
-
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
-        action = await ActionMessenger.expose(
+        action = await ConcurrentAction.expose(
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
+            True,  # has_feedback
         )
 
         await asyncio.sleep(0.05)
 
-        # Server: accept goal then handle cancel (never send feedback)
+        # Server: accept the goal and hold it open — never publish feedback and
+        # never complete — so the client's on_next_feedback stays pending while
+        # we fire a cancel concurrently.
         async def server():
-            await action.goal_service.handle_next_request(
-                lambda _req: GOAL_RESPONSE_PAYLOAD
-            )
-            await action.cancel_service.handle_next_request(
-                lambda _req: CANCEL_RESPONSE_PAYLOAD
-            )
+            pending = await action.recv_next_goal()
+            assert pending is not None
+            _ctx = await pending.accept(GOAL_RESPONSE_PAYLOAD)
+            await asyncio.sleep(3600)
 
         server_task = asyncio.create_task(server())
 
@@ -150,18 +147,22 @@ async def test_cancel_goal_concurrent_with_feedback():
         # Start waiting for feedback (will block — server never sends any).
         feedback_task = asyncio.ensure_future(goal_handle.on_next_feedback())
 
-        cancel_response = await asyncio.wait_for(
+        # The cancel of a live goal must resolve promptly to the typed Signalled
+        # state, without deadlocking against the pending feedback wait.
+        cancel_reply = await asyncio.wait_for(
             ActionMessenger.cancel_goal(client_handle, goal_handle, 2.0),
             timeout=3.0,
         )
 
-        assert cancel_response.payload == CANCEL_RESPONSE_PAYLOAD
+        assert cancel_reply.state == CANCEL_STATE_SIGNALLED
 
         feedback_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await feedback_task
 
-        await server_task
+        server_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await server_task
 
 
 @pytest.mark.asyncio

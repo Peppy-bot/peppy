@@ -14,7 +14,7 @@ use core_node_api::encoding::{
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
-use peppylib::messaging::{MessengerHandle, SenderTarget, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, ResultStatus, SenderTarget, TopicMessenger};
 use peppylib::runtime::{TaskHandle, spawn};
 use peppylib::{ActionMessenger, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
@@ -383,14 +383,17 @@ async fn send_node_run_and_wait_internal(
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
     match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
-        Ok(msg) => {
-            let result = NodeRunResult::decode(&msg.payload())
-                .map_err(|err| format!("Failed to decode result: {}", err))?;
-            Ok(NodeRunTestResponse {
-                goal_response,
-                result,
-            })
-        }
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                let result = NodeRunResult::decode(reply.body.as_ref())
+                    .map_err(|err| format!("Failed to decode result: {}", err))?;
+                Ok(NodeRunTestResponse {
+                    goal_response,
+                    result,
+                })
+            }
+            other => Err(format!("action did not complete with a result: {other:?}")),
+        },
         Err(err) => Err(format!("Failed to get result: {}", err)),
     }
 }
@@ -527,8 +530,13 @@ async fn send_node_add_and_wait_internal<'a>(
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
     match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
-        Ok(msg) => NodeAddResult::decode(&msg.payload())
-            .map_err(|err| format!("Failed to decode result: {}", err)),
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                NodeAddResult::decode(reply.body.as_ref())
+                    .map_err(|err| format!("Failed to decode result: {}", err))
+            }
+            other => Err(format!("action did not complete with a result: {other:?}")),
+        },
         Err(err) => Err(format!("Failed to get result: {}", err)),
     }
 }
@@ -610,8 +618,13 @@ pub async fn send_node_build_and_wait(
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
     match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
-        Ok(msg) => NodeBuildResult::decode(&msg.payload())
-            .map_err(|err| format!("Failed to decode build result: {}", err)),
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                NodeBuildResult::decode(reply.body.as_ref())
+                    .map_err(|err| format!("Failed to decode build result: {}", err))
+            }
+            other => Err(format!("action did not complete with a result: {other:?}")),
+        },
         Err(err) => Err(format!("Failed to get build result: {}", err)),
     }
 }

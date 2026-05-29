@@ -200,12 +200,15 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     println!("feedback message received new_position={:?}", feedback.new_position);
 
     let result = action_handle.get_result(Duration::from_secs(5)).await?;
-    println!(
-        "result success={} error={:?} final_position={:?}",
-        result.data.success,
-        result.data.error_msg.as_deref(),
-        result.data.final_position
-    );
+    match result.outcome {
+        brain_move_arm::ResultOutcome::Completed(data) => println!(
+            "result success={} error={:?} final_position={:?}",
+            data.success,
+            data.error_msg.as_deref(),
+            data.final_position
+        ),
+        other => panic!("expected Completed outcome, got {other:?}"),
+    }
 
     Ok(())
 }
@@ -519,12 +522,11 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     println!("goal accepted={}", action_handle.data.accepted);
 
     let cancel_response = action_handle.cancel_goal(Duration::from_secs(5)).await?;
-    let error_msg = cancel_response.data.error_message.as_deref().unwrap_or("<none>");
-    println!(
-        "cancel accepted={} error={}",
-        cancel_response.data.accepted,
-        error_msg
+    let accepted = matches!(
+        cancel_response.state,
+        brain_move_arm::CancelState::Signalled
     );
+    println!("cancel accepted={} error=<none>", accepted);
 
     Ok(())
 }
@@ -871,11 +873,14 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     }
 
     let result = action_handle.get_result(Duration::from_secs(5)).await?;
-    println!(
-        "result success={} final_position={:?}",
-        result.data.success,
-        result.data.final_position
-    );
+    match result.outcome {
+        brain_move_arm::ResultOutcome::Completed(data) => println!(
+            "result success={} final_position={:?}",
+            data.success,
+            data.final_position
+        ),
+        other => panic!("expected Completed outcome, got {other:?}"),
+    }
 
     Ok(())
 }
@@ -1232,7 +1237,11 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     println!("warmup feedback new_position={:?}", warmup.new_position);
 
     let cancel_response = action_handle.cancel_goal(Duration::from_secs(5)).await?;
-    println!("cancel accepted={}", cancel_response.data.accepted);
+    let accepted = matches!(
+        cancel_response.state,
+        brain_move_arm::CancelState::Signalled
+    );
+    println!("cancel accepted={}", accepted);
 
     // After cancel-accept, the server's codegen publishes the end-of-stream
     // sentinel. The next on_next_feedback_message must error.
@@ -1587,11 +1596,11 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     println!("pre_cancel feedback new_position={:?}", pre_cancel.new_position);
 
     let cancel_response = action_handle.cancel_goal(Duration::from_secs(5)).await?;
-    let error_msg = cancel_response.data.error_message.as_deref().unwrap_or("<none>");
-    println!(
-        "cancel accepted={} error={}",
-        cancel_response.data.accepted, error_msg
+    let accepted = matches!(
+        cancel_response.state,
+        brain_move_arm::CancelState::Signalled
     );
+    println!("cancel accepted={} error=<none>", accepted);
 
     // CRITICAL: feedback after cancel-reject must still arrive — the goal
     // continues running and the stream stays open.
@@ -1599,7 +1608,12 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     println!("post_cancel feedback new_position={:?}", post_cancel.new_position);
 
     let result = action_handle.get_result(Duration::from_secs(5)).await?;
-    println!("result success={}", result.data.success);
+    match result.outcome {
+        brain_move_arm::ResultOutcome::Completed(data) => {
+            println!("result success={}", data.success)
+        }
+        other => panic!("expected Completed outcome, got {other:?}"),
+    }
 
     // Now the result-handler step has closed the stream.
     match action_handle.on_next_feedback_message().await {
