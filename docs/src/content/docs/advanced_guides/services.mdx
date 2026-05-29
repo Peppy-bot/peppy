@@ -235,8 +235,8 @@ Routing for services is the same consumer-side model used by topics. A binding `
 
 Each slot in `depends_on` is either:
 
-- **Pinned** (the default, when `from_any` is absent or `false`): the slot must be bound. The code generator splices the bound producer's `instance_id` into the generated `poll` as the call's `target_instance_id`, so the wire request goes directly to that one producer. The validator rejects a pinned-unbound slot before the stack starts.
-- **`from_any: true`** (bound or unbound): the generator emits `None` for `target_instance_id` and the call site falls back to wildcard discovery. The framework runs a probe to every producer matching the slot's `(name, tag)`, pins the first responder, and delivers the real request only to that producer. The bindings (if any) constrain which producers the wildcard discovery may consider.
+- **Pinned** (the default, when `from_any` is absent or `false`): the slot must be bound. The generated `poll` resolves the bound producer's `instance_id` from the binding and sends the wire request directly to that one producer. The validator rejects a pinned-unbound slot before the stack starts.
+- **`from_any: true`**: when the slot is bound, the generated `poll` resolves the binding and addresses the bound producer's `instance_id` directly, exactly like a pinned slot. When the slot is left unbound, the call falls back to wildcard discovery: the framework runs a probe to every producer matching the slot's `(name, tag)`, pins the first responder, and delivers the real request only to that producer. Bindings constrain which producers the wildcard discovery may consider.
 
 In a launcher / stack config:
 
