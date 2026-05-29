@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use config::node::Name;
+use config::{ConfigError, ParsingError};
 use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::core_node_config;
@@ -14,7 +15,7 @@ async fn add_instance_creates_new_entity() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 topics: {
@@ -42,16 +43,13 @@ async fn add_instance_creates_new_entity() {
     fixtures::push_built(&stack, &harness, config).await;
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
-    assert!(
-        stack.contains("sensor", "1.0.0"),
-        "entity should be findable"
-    );
+    assert!(stack.contains("sensor", "v1"), "entity should be findable");
 
     // Spawn an instance
-    let _guard = fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", None).await;
+    let _guard = fixtures::start_instance_in_stack(&stack, &harness, "sensor", "v1", None).await;
     let instance_id = _guard.instance_id.clone();
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     let entity_guard = entity.read();
     assert_eq!(
         entity_guard.instances().len(),
@@ -108,7 +106,7 @@ async fn add_instance_to_existing_entity() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 topics: {
@@ -146,14 +144,14 @@ async fn add_instance_to_existing_entity() {
         &stack,
         &harness,
         "sensor",
-        "1.0.0",
+        "v1",
         Some(&Name::new("first").expect("valid name")),
     )
     .await;
     let first_id = _g1.instance_id.clone();
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         1,
@@ -165,7 +163,7 @@ async fn add_instance_to_existing_entity() {
         &stack,
         &harness,
         "sensor",
-        "1.0.0",
+        "v1",
         Some(&Name::new("second").expect("valid name")),
     )
     .await;
@@ -173,7 +171,7 @@ async fn add_instance_to_existing_entity() {
 
     assert_eq!(stack.len(), 2, "stack should still have root + one entity");
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     let entity_guard = entity.read();
     assert_eq!(
         entity_guard.instances().len(),
@@ -203,7 +201,7 @@ async fn add_instance_with_specific_id() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 topics: {
@@ -232,8 +230,7 @@ async fn add_instance_with_specific_id() {
 
     // Then spawn an instance with the specific ID
     let _guard =
-        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", Some(&custom_id))
-            .await;
+        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "v1", Some(&custom_id)).await;
     let returned_id = _guard.instance_id.clone();
 
     assert_eq!(
@@ -241,7 +238,7 @@ async fn add_instance_with_specific_id() {
         "returned ID should match the provided one"
     );
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     assert_eq!(
         entity.read().instances()[0].instance_id(),
         &custom_id,
@@ -256,7 +253,7 @@ async fn remove_instance_from_entity_with_multiple_instances() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 topics: {
@@ -293,14 +290,12 @@ async fn remove_instance_from_entity_with_multiple_instances() {
 
     // Spawn instances
     let _g1 =
-        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", Some(&first_id))
-            .await;
+        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "v1", Some(&first_id)).await;
     let _g2 =
-        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", Some(&second_id))
-            .await;
+        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "v1", Some(&second_id)).await;
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         2,
@@ -308,12 +303,12 @@ async fn remove_instance_from_entity_with_multiple_instances() {
     );
 
     // Remove first instance
-    let removed = fixtures::stop_instance_in_stack(&stack, "sensor", "1.0.0", &first_id);
+    let removed = fixtures::stop_instance_in_stack(&stack, "sensor", "v1", &first_id);
     assert!(removed, "instance should be removed");
 
     // Entity should still exist with one instance
     assert_eq!(stack.len(), 2, "entity should still exist");
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     let entity_guard = entity.read();
     assert_eq!(
         entity_guard.instances().len(),
@@ -334,7 +329,7 @@ async fn remove_last_instance_keeps_entity_in_graph() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 services: {
@@ -358,10 +353,10 @@ async fn remove_last_instance_keeps_entity_in_graph() {
     // Push config + build and spawn instance
     fixtures::push_built(&stack, &harness, config).await;
     let _guard =
-        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", Some(&instance_id))
+        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "v1", Some(&instance_id))
             .await;
     assert_eq!(stack.len(), 2, "stack should have root + one entity");
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         1,
@@ -369,13 +364,13 @@ async fn remove_last_instance_keeps_entity_in_graph() {
     );
 
     // Remove the only instance
-    let removed = fixtures::stop_instance_in_stack(&stack, "sensor", "1.0.0", &instance_id);
+    let removed = fixtures::stop_instance_in_stack(&stack, "sensor", "v1", &instance_id);
     assert!(removed, "instance should be removed");
 
     // Entity stays in the graph with 0 instances; dependency edges are preserved
     assert_eq!(stack.len(), 2, "stack should still have root + entity");
     let entity = stack
-        .find("sensor", "1.0.0")
+        .find("sensor", "v1")
         .expect("entity should still exist");
     assert_eq!(
         entity.read().instances().len(),
@@ -391,7 +386,7 @@ async fn remove_nonexistent_instance_returns_false() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 services: {
@@ -418,19 +413,19 @@ async fn remove_nonexistent_instance_returns_false() {
     // Push config + build and spawn instance
     fixtures::push_built(&stack, &harness, config).await;
     let _guard =
-        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", Some(&instance_id))
+        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "v1", Some(&instance_id))
             .await;
 
     // Try to remove non-existent instance
-    let removed = fixtures::stop_instance_in_stack(&stack, "sensor", "1.0.0", &fake_id);
+    let removed = fixtures::stop_instance_in_stack(&stack, "sensor", "v1", &fake_id);
     assert!(!removed, "should return false for non-existent instance");
 
     // Try to remove from non-existent entity
-    let removed = fixtures::stop_instance_in_stack(&stack, "nonexistent", "1.0.0", &instance_id);
+    let removed = fixtures::stop_instance_in_stack(&stack, "nonexistent", "v1", &instance_id);
     assert!(!removed, "should return false for non-existent entity");
 
     // Original instance should still be there
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         1,
@@ -445,7 +440,7 @@ fn reset_clears_all_except_core_node() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor1",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 services: {
@@ -469,7 +464,7 @@ fn reset_clears_all_except_core_node() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor2",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 services: {
@@ -511,15 +506,15 @@ fn reset_clears_all_except_core_node() {
 
     assert_eq!(stack.len(), 1, "stack should only have root after reset");
     assert!(
-        stack.contains("core", "1.0.0"),
+        stack.contains("core", "v1"),
         "root should still exist after reset"
     );
     assert!(
-        stack.find("sensor1", "1.0.0").is_none(),
+        stack.find("sensor1", "v1").is_none(),
         "sensor1 should not exist"
     );
     assert!(
-        stack.find("sensor2", "1.0.0").is_none(),
+        stack.find("sensor2", "v1").is_none(),
         "sensor2 should not exist"
     );
 }
@@ -531,7 +526,7 @@ async fn spawning_multiple_instances_on_same_entity() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 services: {
@@ -559,7 +554,7 @@ async fn spawning_multiple_instances_on_same_entity() {
         "stack should have the core node + one entity"
     );
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         0,
@@ -571,12 +566,12 @@ async fn spawning_multiple_instances_on_same_entity() {
         &stack,
         &harness,
         "sensor",
-        "1.0.0",
+        "v1",
         Some(&Name::new("first").expect("valid name")),
     )
     .await;
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         1,
@@ -588,7 +583,7 @@ async fn spawning_multiple_instances_on_same_entity() {
         &stack,
         &harness,
         "sensor",
-        "1.0.0",
+        "v1",
         Some(&Name::new("second").expect("valid name")),
     )
     .await;
@@ -598,7 +593,7 @@ async fn spawning_multiple_instances_on_same_entity() {
         "stack should still have the core node + one entity"
     );
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     assert_eq!(
         entity.read().instances().len(),
         2,
@@ -614,7 +609,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 topics: {
@@ -640,7 +635,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 topics: {
@@ -686,7 +681,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
     assert_eq!(stack.len(), 2, "stack should still have core node + sensor");
 
     // Entity should still exist (no instances since push_config doesn't create them)
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     let entity_guard = entity.read();
     assert_eq!(
         entity_guard.instances().len(),
@@ -720,7 +715,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 services: {
@@ -745,7 +740,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "2.0.0",
+              tag: "v2",
             },
             interfaces: {
                 services: {
@@ -781,12 +776,8 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
     );
 
     // Both entities should exist (with no instances since push_config doesn't create them)
-    let entity_v1 = stack
-        .find("sensor", "1.0.0")
-        .expect("v1 entity should exist");
-    let entity_v2 = stack
-        .find("sensor", "2.0.0")
-        .expect("v2 entity should exist");
+    let entity_v1 = stack.find("sensor", "v1").expect("v1 entity should exist");
+    let entity_v2 = stack.find("sensor", "v2").expect("v2 entity should exist");
 
     assert_eq!(
         entity_v1.read().instances().len(),
@@ -813,7 +804,7 @@ fn root_returns_the_core_node() {
     );
     assert_eq!(
         root_guard.config().manifest.tag,
-        "1.0.0",
+        "v1",
         "root should have correct tag"
     );
     assert_eq!(
@@ -829,7 +820,7 @@ fn cannot_modify_root_node() {
     let _root_instance_id = stack.root().read().instances()[0].instance_id().clone();
 
     // Try to remove the root's config — must error with CannotModifyRootNode.
-    let result = stack.remove_config("core", "1.0.0");
+    let result = stack.remove_config("core", "v1");
     assert!(
         result.is_err(),
         "should not be able to remove root node via remove_config"
@@ -858,7 +849,7 @@ fn node_stack_wires_dependencies_for_dependants() {
             peppy_schema: "node_v1",
             manifest: {
               name: "lidar",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 services: {
@@ -880,10 +871,10 @@ fn node_stack_wires_dependencies_for_dependants() {
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                  { name: "lidar", tag: "v1", link_id: "lidar" }
                 ]
               },
             },
@@ -891,7 +882,7 @@ fn node_stack_wires_dependencies_for_dependants() {
                 services: {
                     consumes: [
                         {
-                          local_node_id: "lidar",
+                          link_id: "lidar",
                           name: "reset_sensor"
                         }
                     ]
@@ -913,7 +904,7 @@ fn node_stack_wires_dependencies_for_dependants() {
         .push_config(dependent, false, PathBuf::from("/tmp"))
         .expect("dependent dependency is present");
 
-    let deps = stack.dependencies_of("brain", "1.0.0");
+    let deps = stack.dependencies_of("brain", "v1");
     assert!(
         deps.iter()
             .any(|entity| { entity.read().config().manifest.name.as_str() == "lidar" }),
@@ -929,10 +920,10 @@ fn dependency_fails_when_node_name_mismatches() {
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "uvc_camera", tag: "1.0.0", local_id: "uvc_camera" }
+                  { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                 ]
               },
             },
@@ -956,7 +947,7 @@ fn dependency_fails_when_node_name_mismatches() {
             peppy_schema: "node_v1",
             manifest: {
               name: "lidar",
-              tag: "1.0.0",
+              tag: "v1",
             },
             execution: {
               language: "rust",
@@ -976,16 +967,16 @@ fn dependency_fails_when_node_name_mismatches() {
 
     // Adding brain should fail because it expects "uvc_camera", not "lidar"
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
-    let Err(NodeStackError::MissingDependency {
+    let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingDependency {
         dependency,
         dependency_tag,
         ..
-    }) = result
+    }))) = result
     else {
         panic!("expected MissingDependency error, got {:?}", result);
     };
     assert_eq!(dependency, "uvc_camera");
-    assert_eq!(dependency_tag, "1.0.0");
+    assert_eq!(dependency_tag, "v1");
     assert_eq!(
         stack.len(),
         2,
@@ -995,16 +986,16 @@ fn dependency_fails_when_node_name_mismatches() {
 
 #[test]
 fn dependency_fails_when_node_tag_mismatches() {
-    // Dependent expects tag "1.0.0" but we add tag "2.0.0" instead
+    // Dependent expects tag "v1" but we add tag "v2" instead
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                  { name: "lidar", tag: "v1", link_id: "lidar" }
                 ]
               },
             },
@@ -1021,7 +1012,7 @@ fn dependency_fails_when_node_tag_mismatches() {
             peppy_schema: "node_v1",
             manifest: {
               name: "lidar",
-              tag: "2.0.0",
+              tag: "v2",
             },
             execution: {
               language: "rust",
@@ -1033,24 +1024,24 @@ fn dependency_fails_when_node_tag_mismatches() {
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
-    // Add lidar with tag "2.0.0" (NOT the expected tag "1.0.0")
+    // Add lidar with tag "v2" (NOT the expected tag "v1")
     stack
         .push_config(wrong_tag_dependency, false, PathBuf::from("/tmp"))
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + lidar");
 
-    // Adding brain should fail because it expects lidar with tag "1.0.0", not "2.0.0"
+    // Adding brain should fail because it expects lidar with tag "v1", not "v2"
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
-    let Err(NodeStackError::MissingDependency {
+    let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingDependency {
         dependency,
         dependency_tag,
         ..
-    }) = result
+    }))) = result
     else {
         panic!("expected MissingDependency error, got {:?}", result);
     };
     assert_eq!(dependency, "lidar");
-    assert_eq!(dependency_tag, "1.0.0");
+    assert_eq!(dependency_tag, "v1");
     assert_eq!(
         stack.len(),
         2,
@@ -1065,7 +1056,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             peppy_schema: "node_v1",
             manifest: {
               name: "lidar",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 services: {
@@ -1087,10 +1078,10 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                  { name: "lidar", tag: "v1", link_id: "lidar" }
                 ]
               },
             },
@@ -1098,7 +1089,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
                 services: {
                     consumes: [
                         {
-                          local_node_id: "lidar",
+                          link_id: "lidar",
                           name: "reset_sensor"
                         }
                     ]
@@ -1117,7 +1108,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             peppy_schema: "node_v1",
             manifest: {
               name: "lidar",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 services: {
@@ -1155,7 +1146,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
         );
     };
     assert_eq!(node_name, "lidar");
-    assert_eq!(node_tag, "1.0.0");
+    assert_eq!(node_tag, "v1");
 
     assert_eq!(
         stack.len(),
@@ -1163,14 +1154,14 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
         "stack should still have core node + lidar + brain"
     );
 
-    let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
+    let entity = stack.find("lidar", "v1").expect("entity should exist");
     assert_eq!(
         entity.read().config_path(),
         PathBuf::from("/tmp/lidar_v1").as_path(),
         "entity should still point to the original snapshot config path"
     );
 
-    let dependents = stack.dependents_of("lidar", "1.0.0");
+    let dependents = stack.dependents_of("lidar", "v1");
     assert!(
         dependents
             .iter()
@@ -1186,7 +1177,7 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             execution: {
               language: "rust",
@@ -1201,7 +1192,7 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
             peppy_schema: "node_v1",
             manifest: {
               name: "sensor",
-              tag: "1.0.0",
+              tag: "v1",
             },
             execution: {
               language: "rust",
@@ -1218,7 +1209,7 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + sensor");
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     assert_eq!(
         entity.read().config().execution.run_cmd.as_ref().unwrap(),
         &vec!["./old_binary"],
@@ -1231,7 +1222,7 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
         .expect("should update config without error");
     assert_eq!(stack.len(), 2, "stack should still have core node + sensor");
 
-    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity = stack.find("sensor", "v1").expect("entity should exist");
     let entity_guard = entity.read();
     assert_eq!(
         entity_guard.config().execution.run_cmd.as_ref().unwrap(),
@@ -1252,7 +1243,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
             peppy_schema: "node_v1",
             manifest: {
               name: "lidar",
-              tag: "1.0.0",
+              tag: "v1",
             },
             execution: {
               language: "rust",
@@ -1267,10 +1258,10 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                  { name: "lidar", tag: "v1", link_id: "lidar" }
                 ]
               },
             },
@@ -1288,7 +1279,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
             peppy_schema: "node_v1",
             manifest: {
               name: "lidar",
-              tag: "1.0.0",
+              tag: "v1",
             },
             execution: {
               language: "rust",
@@ -1312,7 +1303,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
         .push_config(dependency_v1_updated, false, PathBuf::from("/tmp/lidar"))
         .expect("non-breaking config update should succeed even with dependents");
 
-    let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
+    let entity = stack.find("lidar", "v1").expect("entity should exist");
     assert_eq!(
         entity.read().config().execution.run_cmd.as_ref().unwrap(),
         &vec!["./new_lidar"],
@@ -1320,7 +1311,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
     );
 
     // Dependency wiring should still be intact
-    let dependents = stack.dependents_of("lidar", "1.0.0");
+    let dependents = stack.dependents_of("lidar", "v1");
     assert!(
         dependents
             .iter()

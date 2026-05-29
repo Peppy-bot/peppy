@@ -58,7 +58,7 @@ async fn poll_node_info(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     const TARGET_NODE_NAME: &str = "fs_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "fs_instance";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -69,7 +69,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "fs_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -82,9 +82,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     // pipeline for an info-only test, and `real_build_and_spawn_instance`
     // takes it from there.
     let config = config::node::NodeConfigParser::from_path(node_dir.path().join("peppy.json5"))
-        .expect("parse config")
-        .into_resolved()
-        .expect("resolve config");
+        .expect("parse config");
     node_stack
         .push_config(config, false, node_dir.path())
         .expect("push_config should succeed");
@@ -159,7 +157,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_has_instance_ids() {
     const TARGET_NODE_NAME: &str = "instance_ids_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID_1: &str = "instance_one";
     const TARGET_INSTANCE_ID_2: &str = "instance_two";
 
@@ -170,7 +168,7 @@ async fn node_info_has_instance_ids() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "instance_ids_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -204,7 +202,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_1,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_ready service (instance 1)"),
@@ -214,7 +212,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_1,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_health service (instance 1)"),
@@ -224,7 +222,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_2,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_ready service (instance 2)"),
@@ -234,7 +232,7 @@ async fn node_info_has_instance_ids() {
             &node_handle,
             &started_core_node.core_node_name,
             TARGET_INSTANCE_ID_2,
-            TARGET_NODE_NAME,
+            common::test_node_target(TARGET_NODE_NAME),
         )
         .await
         .expect("failed to start node_health service (instance 2)"),
@@ -245,6 +243,7 @@ async fn node_info_has_instance_ids() {
     let runtime_config_json5_1 = common::default_runtime_config_json5(
         &started_core_node.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID_1,
     );
     let start_response_1 = send_node_run_and_wait(
@@ -270,6 +269,7 @@ async fn node_info_has_instance_ids() {
     let runtime_config_json5_2 = common::default_runtime_config_json5(
         &started_core_node.core_node_name,
         TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
         TARGET_INSTANCE_ID_2,
     );
     let start_response_2 = send_node_run_and_wait(
@@ -331,7 +331,7 @@ async fn node_info_has_instance_ids() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_reports_not_in_stack_and_recovers() {
     const TARGET_NODE_NAME: &str = "fs_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
@@ -339,7 +339,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
     // successful response channel. No error log, no transport fault.
     let response = poll_node_info_raw(
         &started_core_node,
-        &NodeInfoRequest::new("ghost_node", "9.9.9"),
+        &NodeInfoRequest::new("ghost_node", "v999"),
         Duration::from_secs(2),
     )
     .await
@@ -357,7 +357,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "fs_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -366,9 +366,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
         }"#;
     write_peppy_json5(node_dir.path(), peppy_json5);
     let config = config::node::NodeConfigParser::from_path(node_dir.path().join("peppy.json5"))
-        .expect("parse config")
-        .into_resolved()
-        .expect("resolve config");
+        .expect("parse config");
     started_core_node
         .node_stack
         .push_config(config, false, node_dir.path())

@@ -8,10 +8,10 @@ use core_node_api::encoding::{
     LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult, LauncherOrigin,
 };
 use git2::{Repository, Signature};
-use peppylib::messaging::MessengerHandle;
+use peppylib::ActionMessenger;
+use peppylib::messaging::{MessengerHandle, ResultStatus};
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
-use peppylib::{ActionMessenger, PeppyError};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -46,7 +46,7 @@ const LAUNCHER_EXAMPLE1: &str = r#"
       source: {
         repo: "${UVC_CAMERA_REPO}",
         path: "uvc_camera",
-        ref: "0.1.0"
+        ref: "v1"
       },
       instances: [
         {
@@ -92,7 +92,10 @@ const LAUNCHER_EXAMPLE1: &str = r#"
       instances: [
         {
           instance_id: "main_robot_brain",
-          arguments: {}
+          arguments: {},
+          bindings: {
+            front_camera: "camera_front",
+          },
         }
       ]
     },
@@ -164,7 +167,7 @@ fn write_node_config_with_options(
 
     let expects_topics = if expects_uvc_camera {
         r#"consumes: [
-                  { local_node_id: "uvc_camera", name: "camera_stream" }
+                  { link_id: "front_camera", name: "camera_stream" }
                 ],"#
     } else {
         ""
@@ -186,7 +189,7 @@ fn write_node_config_with_options(
     let depends_on = if expects_uvc_camera {
         r#"depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", link_id: "front_camera" }
                     ]
                 },"#
     } else {
@@ -349,7 +352,7 @@ async fn send_launch_origin_and_wait(
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,
-        core_node_name,
+        common::core_node_target(core_node_name),
         names::STACK_LAUNCH_ACTION,
         None,
         None,
@@ -373,28 +376,9 @@ async fn send_launch_origin_and_wait(
     let absolute_deadline = tokio::time::Instant::now() + result_timeout;
     let mut last_activity = tokio::time::Instant::now();
 
+    // Drain feedback until the server closes the stream on completion, then
+    // fetch the buffered result once.
     loop {
-        // Drain feedback so the publisher doesn't block on a full channel.
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
-                return Err("Timeout waiting for launch result".to_string());
-            }
-            if now.duration_since(last_activity) >= result_timeout {
-                return Err("Timeout waiting for launch result (idle)".to_string());
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    let payload = msg.payload();
-                    let _ = LaunchFeedback::decode(&payload);
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
             return Err("Timeout waiting for launch result".to_string());
@@ -402,25 +386,31 @@ async fn send_launch_origin_and_wait(
         if now.duration_since(last_activity) >= result_timeout {
             return Err("Timeout waiting for launch result (idle)".to_string());
         }
-        let poll_timeout = Duration::from_millis(200);
-
-        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
-            Ok(msg) => {
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
-                match LaunchResult::decode(&payload) {
-                    Ok(result) => return Ok((goal_response, result)),
-                    Err(err) => {
-                        if !peppylib::encoding::is_result_pending(payload.as_ref()) {
-                            return Err(format!("Failed to decode launch result: {err}"));
-                        }
-                    }
-                }
+                let _ = LaunchFeedback::decode(&payload);
             }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => return Err(format!("Failed to get launch result: {err}")),
+            Ok(Err(_)) => break,
+            Err(_) => {}
         }
+    }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let fetch_timeout = absolute_deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .max(Duration::from_secs(1));
+    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                let result = LaunchResult::decode(reply.body.as_ref())
+                    .map_err(|err| format!("Failed to decode launch result: {err}"))?;
+                Ok((goal_response, result))
+            }
+            other => Err(format!("launch did not complete with a result: {other:?}")),
+        },
+        Err(err) => Err(format!("Failed to get launch result: {err}")),
     }
 }
 
@@ -429,7 +419,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     const FAKE_UVC_CAMERA: &str = "fake_uvc_camera";
     const FAKE_ROBOT_BRAIN: &str = "fake_robot_brain";
     const FAKE_OPENARM01_CONTROLLER: &str = "fake_openarm01_controller";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -461,7 +451,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_front",
-            FAKE_UVC_CAMERA,
+            common::test_node_target(FAKE_UVC_CAMERA),
         )
         .await
         .expect("ready service should start"),
@@ -471,7 +461,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_front",
-            FAKE_UVC_CAMERA,
+            common::test_node_target(FAKE_UVC_CAMERA),
         )
         .await
         .expect("health service should start"),
@@ -481,7 +471,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_rear",
-            FAKE_UVC_CAMERA,
+            common::test_node_target(FAKE_UVC_CAMERA),
         )
         .await
         .expect("ready service should start"),
@@ -491,7 +481,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_rear",
-            FAKE_UVC_CAMERA,
+            common::test_node_target(FAKE_UVC_CAMERA),
         )
         .await
         .expect("health service should start"),
@@ -501,7 +491,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_brain",
-            FAKE_ROBOT_BRAIN,
+            common::test_node_target(FAKE_ROBOT_BRAIN),
         )
         .await
         .expect("ready service should start"),
@@ -511,7 +501,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_brain",
-            FAKE_ROBOT_BRAIN,
+            common::test_node_target(FAKE_ROBOT_BRAIN),
         )
         .await
         .expect("health service should start"),
@@ -521,7 +511,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_nervous_system",
-            FAKE_OPENARM01_CONTROLLER,
+            common::test_node_target(FAKE_OPENARM01_CONTROLLER),
         )
         .await
         .expect("ready service should start"),
@@ -531,7 +521,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_nervous_system",
-            FAKE_OPENARM01_CONTROLLER,
+            common::test_node_target(FAKE_OPENARM01_CONTROLLER),
         )
         .await
         .expect("health service should start"),
@@ -593,7 +583,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
 async fn listen_for_launch_configuration_succeed() {
     const UVC_NODE_NAME: &str = "uvc_camera";
     const ROBOT_NODE_NAME: &str = "robot_brain";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -618,7 +608,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_front",
-            UVC_NODE_NAME,
+            common::test_node_target(UVC_NODE_NAME),
         )
         .await
         .expect("ready service should start"),
@@ -628,7 +618,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_front",
-            UVC_NODE_NAME,
+            common::test_node_target(UVC_NODE_NAME),
         )
         .await
         .expect("health service should start"),
@@ -638,7 +628,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_rear",
-            UVC_NODE_NAME,
+            common::test_node_target(UVC_NODE_NAME),
         )
         .await
         .expect("ready service should start"),
@@ -648,7 +638,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "camera_rear",
-            UVC_NODE_NAME,
+            common::test_node_target(UVC_NODE_NAME),
         )
         .await
         .expect("health service should start"),
@@ -658,7 +648,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "main_robot_brain",
-            ROBOT_NODE_NAME,
+            common::test_node_target(ROBOT_NODE_NAME),
         )
         .await
         .expect("ready service should start"),
@@ -668,7 +658,7 @@ async fn listen_for_launch_configuration_succeed() {
             &node_messenger,
             &started_core_node.core_node_name,
             "main_robot_brain",
-            ROBOT_NODE_NAME,
+            common::test_node_target(ROBOT_NODE_NAME),
         )
         .await
         .expect("health service should start"),
@@ -836,7 +826,7 @@ async fn listen_for_launch_configuration_succeed() {
 async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
     const BRAIN_NODE: &str = "repo_brain";
     const ARM_NODE: &str = "repo_arm";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -868,8 +858,8 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
     // Map both nodes into the user-repo cache. This is what the
     // `{ name, tag }` launcher shape resolves against.
     TestPackagesCache::new()
-        .fs_entry(BRAIN_NODE, NODE_TAG, &brain_dir, &[])
-        .fs_entry(ARM_NODE, NODE_TAG, &arm_dir, &[])
+        .fs_entry(BRAIN_NODE, NODE_TAG, &brain_dir)
+        .fs_entry(ARM_NODE, NODE_TAG, &arm_dir)
         .write(&peppy_dirs);
 
     let _ready_brain = AbortOnDrop(
@@ -877,7 +867,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_brain",
-            BRAIN_NODE,
+            common::test_node_target(BRAIN_NODE),
         )
         .await
         .expect("ready service should start"),
@@ -887,7 +877,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_brain",
-            BRAIN_NODE,
+            common::test_node_target(BRAIN_NODE),
         )
         .await
         .expect("health service should start"),
@@ -897,7 +887,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_arm",
-            ARM_NODE,
+            common::test_node_target(ARM_NODE),
         )
         .await
         .expect("ready service should start"),
@@ -907,7 +897,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
             &node_messenger,
             &started_core_node.core_node_name,
             "the_arm",
-            ARM_NODE,
+            common::test_node_target(ARM_NODE),
         )
         .await
         .expect("health service should start"),
@@ -979,7 +969,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
 async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_error_and_does_not_mutate_stack()
  {
     const EXISTING_NODE: &str = "existing_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -995,9 +985,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1026,7 +1014,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
     const EXISTING_NODE: &str = "existing_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -1042,9 +1030,7 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1076,7 +1062,7 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_config_missing_required_deployment_does_not_apply_partial_plan() {
     const EXISTING_NODE: &str = "existing_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -1092,9 +1078,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1136,7 +1120,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
 async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rejected() {
     const UVC_NODE_NAME: &str = "uvc_camera";
     const ROBOT_NODE_NAME: &str = "robot_brain";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -1173,9 +1157,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1214,7 +1196,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_launch_config_second_request_replaces_existing_stack() {
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -1246,7 +1228,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_core_node.core_node_name,
             "a1",
-            "node_a",
+            common::test_node_target("node_a"),
         )
         .await
         .expect("ready should start"),
@@ -1256,7 +1238,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_core_node.core_node_name,
             "a1",
-            "node_a",
+            common::test_node_target("node_a"),
         )
         .await
         .expect("health should start"),
@@ -1266,7 +1248,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_core_node.core_node_name,
             "b1",
-            "node_b",
+            common::test_node_target("node_b"),
         )
         .await
         .expect("ready should start"),
@@ -1276,7 +1258,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_core_node.core_node_name,
             "b1",
-            "node_b",
+            common::test_node_target("node_b"),
         )
         .await
         .expect("health should start"),
@@ -1328,7 +1310,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healthy() {
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     // Use a short health timeout so the test doesn't take too long.
     let started_core_node = start_core_node_with_health_timeout(Duration::from_secs(2)).await;
@@ -1347,9 +1329,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1373,7 +1353,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
             &node_messenger,
             &started_core_node.core_node_name,
             "b1",
-            "node_b",
+            common::test_node_target("node_b"),
         )
         .await
         .expect("ready should start"),
@@ -1413,7 +1393,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores_stack() {
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
@@ -1431,9 +1411,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1476,7 +1454,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
         .error_message
         .expect("error_message should be set on build_cmd failure");
     assert!(
-        error_message.contains("failing_node:0.1.0"),
+        error_message.contains("failing_node:v1"),
         "error message should contain the node name:tag, got: {error_message}"
     );
 
@@ -1493,7 +1471,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     const NODE_NAME: &str = "failing_start_node";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
     const INSTANCE_ID: &str = "fs1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -1512,9 +1490,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse")
-        .into_resolved()
-        .expect("test config has execution");
+        .expect("existing node config should parse");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1632,7 +1608,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
     // `. "$HOME/.cargo/env"`), but that only affects their shell, not the daemon. We model this by
     // passing a PATH override in the goal on the second attempt.
     const NODE_NAME: &str = "node_b";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
     const INSTANCE_ID: &str = "b1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -1673,8 +1649,13 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
     // Create a temp bin directory with a `printout` script that sleeps
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
     let printout_path = bin_dir.path().join("printout");
-    std::fs::write(&printout_path, "#!/bin/sh\nsleep \"${1:-60}\"\n")
-        .expect("failed to write printout script");
+    std::fs::write(
+        &printout_path,
+        "#!/bin/sh
+sleep \"${1:-60}\"
+",
+    )
+    .expect("failed to write printout script");
 
     // Make it executable
     #[cfg(unix)]
@@ -1696,7 +1677,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
             &node_messenger,
             &started_core_node.core_node_name,
             INSTANCE_ID,
-            NODE_NAME,
+            common::test_node_target(NODE_NAME),
         )
         .await
         .expect("ready service should start"),
@@ -1706,7 +1687,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
             &node_messenger,
             &started_core_node.core_node_name,
             INSTANCE_ID,
-            NODE_NAME,
+            common::test_node_target(NODE_NAME),
         )
         .await
         .expect("health service should start"),
@@ -1746,7 +1727,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_resolves_launcher_from_repository_cache() {
     const ROBOT_NODE_NAME: &str = "robot_brain_repo";
-    const NODE_TAG: &str = "0.1.0";
+    const NODE_TAG: &str = "v1";
     const LAUNCHER_NAME: &str = "robot_brain_demo";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -1771,7 +1752,7 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
             &node_messenger,
             &started_core_node.core_node_name,
             "main_robot_brain",
-            ROBOT_NODE_NAME,
+            common::test_node_target(ROBOT_NODE_NAME),
         )
         .await
         .expect("ready service should start"),
@@ -1781,7 +1762,7 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
             &node_messenger,
             &started_core_node.core_node_name,
             "main_robot_brain",
-            ROBOT_NODE_NAME,
+            common::test_node_target(ROBOT_NODE_NAME),
         )
         .await
         .expect("health service should start"),

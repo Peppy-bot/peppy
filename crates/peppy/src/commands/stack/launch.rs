@@ -7,7 +7,8 @@ use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, resolve_launcher_path,
 };
-use peppylib::{ActionMessenger, PeppyError};
+use peppylib::ActionMessenger;
+use peppylib::messaging::ResultStatus;
 use tracing::info;
 
 use crate::commands::node::caller_env_overrides;
@@ -27,7 +28,6 @@ const CLI_MAX_TIMEOUT_FLOOR: Duration = Duration::from_secs(7200);
 // than a generic CLI-side "daemon hung" message.
 const DAEMON_RESPONSE_GRACE: Duration = Duration::from_secs(60);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
-const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 
 // CLI wall-clock fallback ceiling. `None` means idle-only (daemon-side contract honored).
 // When the user opts into `--max-timeout-secs`, add DAEMON_RESPONSE_GRACE and enforce
@@ -277,61 +277,25 @@ async fn launch_async(
     let mut scrolling_output: Option<ScrollingOutput> = None;
     let mut current_scrolling_step: Option<LaunchFeedbackStep> = None;
 
+    // Drain feedback until the server closes the stream on completion,
+    // honoring the idle / max-timeout budgets.
     loop {
-        // Drain feedback so the subscriber channel doesn't fill up and block publication.
-        loop {
-            let now = tokio::time::Instant::now();
-            if let Some(deadline) = absolute_deadline
-                && now >= deadline
-            {
-                if let Some(output) = scrolling_output.as_mut() {
-                    output.clear();
-                }
-                return Err(Error::ExecutionFailed(format!(
-                    "Launch timed out: max timeout exceeded. Log file: {}",
-                    goal_response.log_path.display()
-                )));
-            }
-            if now.duration_since(last_activity) >= cli_idle_timeout {
-                if let Some(output) = scrolling_output.as_mut() {
-                    output.clear();
-                }
-                return Err(Error::ExecutionFailed(format!(
-                    "Launch timed out: no output received for {}s. Log file: {}",
-                    cli_idle_timeout.as_secs(),
-                    goal_response.log_path.display()
-                )));
-            }
-
-            match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback())
-                .await
-            {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    let payload = msg.payload();
-                    if let Ok(feedback) = LaunchFeedback::decode(&payload) {
-                        handle_feedback(
-                            &feedback,
-                            &mut scrolling_output,
-                            &mut current_scrolling_step,
-                        );
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
         let now = tokio::time::Instant::now();
         if let Some(deadline) = absolute_deadline
             && now >= deadline
         {
+            if let Some(output) = scrolling_output.as_mut() {
+                output.clear();
+            }
             return Err(Error::ExecutionFailed(format!(
                 "Launch timed out: max timeout exceeded. Log file: {}",
                 goal_response.log_path.display()
             )));
         }
         if now.duration_since(last_activity) >= cli_idle_timeout {
+            if let Some(output) = scrolling_output.as_mut() {
+                output.clear();
+            }
             return Err(Error::ExecutionFailed(format!(
                 "Launch timed out: no output received for {}s. Log file: {}",
                 cli_idle_timeout.as_secs(),
@@ -339,73 +303,91 @@ async fn launch_async(
             )));
         }
 
-        match ActionMessenger::request_result(conn.messenger, &action_handle, RESULT_POLL_TIMEOUT)
-            .await
-        {
-            Ok(msg) => {
+        match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
-                match LaunchResult::decode(&payload) {
-                    Ok(result) => {
-                        // Drain any remaining feedback so output is stable on completion.
-                        loop {
-                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
-                                break;
-                            };
-                            let payload = msg.payload();
-                            if let Ok(feedback) = LaunchFeedback::decode(&payload) {
-                                handle_feedback(
-                                    &feedback,
-                                    &mut scrolling_output,
-                                    &mut current_scrolling_step,
-                                );
-                            }
-                        }
-
-                        // Clear the scrolling output now that we're done
-                        if let Some(output) = scrolling_output.as_mut() {
-                            output.clear();
-                        }
-
-                        display_node_log_files(
-                            &result.node_add_logs,
-                            &result.node_build_logs,
-                            &result.node_run_logs,
-                        );
-
-                        if !result.success {
-                            let error_msg = result
-                                .error_message
-                                .unwrap_or_else(|| "unknown error".to_string());
-                            return Err(Error::ExecutionFailed(format!(
-                                "Launch failed: {}. Log file: {}",
-                                error_msg,
-                                result.log_path.display()
-                            )));
-                        }
-
-                        info!("Launch configuration applied successfully");
-                        return Ok(());
-                    }
-                    Err(err) => {
-                        if !peppylib::encoding::is_result_pending(payload.as_ref()) {
-                            return Err(Error::ExecutionFailed(format!(
-                                "Failed to decode launch result: {}",
-                                err
-                            )));
-                        }
-                    }
+                if let Ok(feedback) = LaunchFeedback::decode(&payload) {
+                    handle_feedback(
+                        &feedback,
+                        &mut scrolling_output,
+                        &mut current_scrolling_step,
+                    );
                 }
             }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => {
+            Ok(Err(_)) => break, // end-of-stream: the goal has completed
+            Err(_) => {}         // drain slice elapsed; re-check timeouts and keep draining
+        }
+    }
+
+    // The goal has completed; fetch its (server-buffered) result once. Give it
+    // the remaining max budget so it resolves promptly.
+    let now = tokio::time::Instant::now();
+    let result_timeout = match absolute_deadline {
+        Some(deadline) => deadline
+            .saturating_duration_since(now)
+            .max(Duration::from_secs(1)),
+        None => Duration::from_secs(30),
+    };
+    match ActionMessenger::request_result(conn.messenger, &action_handle, result_timeout).await {
+        Ok(reply) => {
+            let body = match reply.status {
+                ResultStatus::Completed | ResultStatus::Cancelled => reply.body,
+                ResultStatus::Abandoned => {
+                    if let Some(output) = scrolling_output.as_mut() {
+                        output.clear();
+                    }
+                    return Err(Error::ExecutionFailed(
+                        "the launch goal was abandoned by its worker before producing a result"
+                            .to_string(),
+                    ));
+                }
+                ResultStatus::Expired => {
+                    if let Some(output) = scrolling_output.as_mut() {
+                        output.clear();
+                    }
+                    return Err(Error::ExecutionFailed(
+                        "the launch result expired before it could be fetched".to_string(),
+                    ));
+                }
+            };
+            let result = LaunchResult::decode(body.as_ref()).map_err(|err| {
+                Error::ExecutionFailed(format!("Failed to decode launch result: {}", err))
+            })?;
+
+            if let Some(output) = scrolling_output.as_mut() {
+                output.clear();
+            }
+
+            display_node_log_files(
+                &result.node_add_logs,
+                &result.node_build_logs,
+                &result.node_run_logs,
+            );
+
+            if !result.success {
+                let error_msg = result
+                    .error_message
+                    .unwrap_or_else(|| "unknown error".to_string());
                 return Err(Error::ExecutionFailed(format!(
-                    "Failed to get launch result: {}",
-                    err
+                    "Launch failed: {}. Log file: {}",
+                    error_msg,
+                    result.log_path.display()
                 )));
             }
-        }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+            info!("Launch configuration applied successfully");
+            Ok(())
+        }
+        Err(err) => {
+            if let Some(output) = scrolling_output.as_mut() {
+                output.clear();
+            }
+            Err(Error::ExecutionFailed(format!(
+                "Failed to get launch result: {}",
+                err
+            )))
+        }
     }
 }
 

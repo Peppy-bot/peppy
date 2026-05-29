@@ -11,9 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from peppylib import ServiceMessenger
+from peppylib import SenderTarget, ServiceMessenger
 
 TEST_NODE_NAME = "test_node"
+TEST_NODE_TAG = "v1"
 TEST_INSTANCE_ID = "test_instance"
 TEST_FREQUENCY_HZ = 10.0
 
@@ -21,7 +22,7 @@ PEPPY_CONFIG = """{
   peppy_schema: "node_v1",
   manifest: {
     name: "test_node",
-    tag: "0.1.0",
+    tag: "v1",
   },
   execution: {
     language: "python",
@@ -51,12 +52,14 @@ def create_runtime_config(
     core_node: str,
     instance_id: str,
     arguments: dict,
+    node_tag: str = TEST_NODE_TAG,
 ) -> None:
     """Write a runtime config JSON file."""
     config = {
         "messaging_host": host,
         "messaging_port": port,
         "node_name": node_name,
+        "node_tag": node_tag,
         "bound_core_node": core_node,
         "node_instance": {
             "instance_id": instance_id,
@@ -89,11 +92,10 @@ async def wait_for_service(
             messenger,
             bound_core_node,
             as_instance_id,
-            target_node_name,
+            SenderTarget.node(target_node_name, TEST_NODE_TAG),
             service_name,
             target_core_node,
-            target_instance_id,
-        ):
+            target_instance_id,):
             return
 
         if asyncio.get_event_loop().time() >= deadline:

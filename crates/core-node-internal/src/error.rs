@@ -13,6 +13,9 @@ pub enum Error {
     PeppyMessagingInterface(#[from] pmi::PeppyMessagingInterfaceError),
 
     #[error(transparent)]
+    InvalidSenderTarget(#[from] pmi::SenderTargetError),
+
+    #[error(transparent)]
     Peppylib(#[from] PeppyError),
 
     #[error(transparent)]

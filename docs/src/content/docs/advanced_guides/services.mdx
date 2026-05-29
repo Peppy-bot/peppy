@@ -20,7 +20,7 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
   peppy_schema: "node_v1",
   manifest: {
     name: "uvc_camera",
-    tag: "0.1.0",
+    tag: "v1",
   },
   interfaces: {
     services: {
@@ -39,7 +39,7 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
           },
         },
         {
-          // A service without a request body — the caller just needs the response.
+          // A service without a request body; the caller just needs the response.
           name: "get_camera_info",
           response_message_format: {
             card_type: "string",
@@ -96,8 +96,8 @@ fn main() -> Result<()> {
 ```
 
 The `request` argument contains:
-- `instance_id` — the instance that sent the request.
-- `data` — the deserialized request payload (only present when a `request_message_format` is defined).
+- `instance_id`: the consumer instance that sent the request, read straight from the request context. The producer is binding-agnostic; it doesn't know which slot on the consumer this call is heading to.
+- `data`: the deserialized request payload (only present when a `request_message_format` is defined).
 
 `handle_next_request` processes a single request and returns.
 To serve requests continuously, call it in a loop inside a spawned task:
@@ -134,20 +134,22 @@ tokio::spawn(async move {
 });
 ```
 
+A producer exposes its service exactly once and serves any consumer that calls it. Starting the producer before any consumer (or after them) is equally valid.
+
 ## Consuming a service
 
 A node that calls a service declares what it consumes under `interfaces.services.consumes`.
-Dependencies are declared in `manifest.depends_on` and referenced by `local_node_id` in the interface:
+Dependencies are declared in `manifest.depends_on` and referenced by `link_id` in the interface:
 
 ```json5
 {
   peppy_schema: "node_v1",
   manifest: {
     name: "robot_brain",
-    tag: "0.1.0",
+    tag: "v1",
     depends_on: {
       nodes: [
-        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
+        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
       ]
     },
   },
@@ -155,7 +157,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
     services: {
       consumes: [
         {
-          local_node_id: "uvc_camera",  // References depends_on.nodes[].local_id
+          link_id: "uvc_camera",  // References depends_on.nodes[].link_id
           name: "enable_camera",        // Service name on that node
         },
       ],
@@ -173,7 +175,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
 By default, the `node add` and `node sync` commands require the target node to already be in the node stack so the proper interfaces can be generated.
 If the target node is missing, you will see an error like:
 ```
-Error: `robot_brain:0.1.0` depends on `uvc_camera:0.1.0`, but it does not exist in the stack
+Error: `robot_brain:v1` depends on `uvc_camera:v1`, but it does not exist in the stack
 ```
 Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back to the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) for dependencies that aren't in the stack.
 :::
@@ -181,7 +183,7 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 ### Calling a service
 
 The code generator creates a module for each consumed service under `peppygen::consumed_services`.
-Use `poll` to send a request and wait for a response:
+Use `poll` to send a request and wait for a response. The signature is the same for pinned and `from_any: true` slots: there is no call-site targeting argument; the slot's binding (or lack of one) determines which producer handles the call.
 
 ```rust
 use peppygen::consumed_services::uvc_camera_enable_camera;
@@ -194,8 +196,6 @@ fn main() -> Result<()> {
         let response = uvc_camera_enable_camera::poll(
             &node_runner,
             Duration::from_secs(5), // timeout
-            None,                   // target_core_node (None = any)
-            None,                   // target_instance_id (None = any)
             request,
         )
         .await?;
@@ -212,18 +212,11 @@ fn main() -> Result<()> {
 }
 ```
 
-The `poll` function takes:
-- `node_runner` — the node runner reference.
-- `timeout` — maximum time to wait for a response.
-- `target_core_node` — optionally target a specific core node, or `None` for any.
-- `target_instance_id` — optionally target a specific instance, or `None` for any.
-- `request` — the request payload.
-
 The response contains:
-- `instance_id` — the instance that handled the request.
-- `data` — the deserialized response payload.
+- `instance_id`: the producer instance that handled the request, read from the response context.
+- `data`: the deserialized response payload.
 
-For a service without a request body, `poll` does not take a request argument:
+For a service without a request body, `poll` simply takes no request:
 
 ```rust
 use peppygen::consumed_services::uvc_camera_get_camera_info;
@@ -231,38 +224,120 @@ use peppygen::consumed_services::uvc_camera_get_camera_info;
 let response = uvc_camera_get_camera_info::poll(
     &node_runner,
     Duration::from_secs(5),
-    None,
-    None,
 ).await?;
 
 println!("Camera: {} {}", response.data.card_type, response.data.size);
 ```
 
-## Instance targeting
+## Bindings and routing
 
-When multiple instances of the same node are running, you can control which instance handles your service request:
+Routing for services is the same consumer-side model used by topics. A binding `KEY: VALUE` creates a private channel from producer instance `VALUE` to one of the consumer's declared slots; the producer itself doesn't know or care about bindings.
 
-- **`None`** (default) — the request is sent to all instances and the first response wins.
-- **`Some("instance_id")`** — the request is sent to a specific instance.
+Each slot in `depends_on` is either:
 
-```rust
-// Target a specific instance
-let response = uvc_camera_enable_camera::poll(
-    &node_runner,
-    Duration::from_secs(5),
-    None,
-    Some("my-camera-instance"),
-    request,
-)
-.await?;
+- **Pinned** (the default, when `from_any` is absent or `false`): the slot must be bound. The code generator splices the bound producer's `instance_id` into the generated `poll` as the call's `target_instance_id`, so the wire request goes directly to that one producer. The validator rejects a pinned-unbound slot before the stack starts.
+- **`from_any: true`** (bound or unbound): the generator emits `None` for `target_instance_id` and the call site falls back to wildcard discovery. The framework runs a probe to every producer matching the slot's `(name, tag)`, pins the first responder, and delivers the real request only to that producer. The bindings (if any) constrain which producers the wildcard discovery may consider.
+
+In a launcher / stack config:
+
+```json5
+{
+  source: { local: "./consumer" },
+  instances: [{
+    instance_id: "my_consumer",
+    bindings: { uvc_camera: "my-camera-instance" },
+  }],
+}
 ```
+
+or, when launching a single node during development:
+
+```sh
+peppy node run --bind uvc_camera@my-camera-instance .
+```
+
+### Per-call precedence
+
+When several sibling slots of the same `(name, tag)` exist on a consumer (say a pinned `wrist_left_camera` and a `from_any` `extra_cam` for `(depth_camera, v1)`), the framework applies the same precedence rule that routes topics:
+
+1. If pinned slots' bindings name the producer the call resolves to → the producer's call lands on that pinned slot.
+2. Otherwise, if a `from_any` slot exists for the producer's `(name, tag)` and is either explicitly bound to that producer or unbound (wildcard fallback) → the call lands on the `from_any` slot.
+3. Otherwise the slot has no matching binding and the call cannot be resolved.
+
+### Worked example: `openarm01_backbone`
+
+A consumer that wires two specific depth cameras to dedicated wrist slots and lets a third slot reach any other depth camera:
+
+```json5
+// openarm01_backbone/peppy.json5
+{
+  manifest: {
+    name: "openarm01_backbone",
+    tag: "v1",
+    depends_on: {
+      interfaces: [
+        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
+        { name: "depth_camera", tag: "v1", link_id: "extra_cam", from_any: true },
+      ],
+    },
+  },
+  // ...
+}
+```
+
+```json5
+// peppy_launcher.json5
+{
+  deployments: [
+    { source: { name: "depth_camera:v1" }, instances: [
+      { instance_id: "left_cam" },
+      { instance_id: "right_cam" },
+      { instance_id: "ceiling_cam" },
+    ]},
+    { source: { name: "openarm01_backbone:v1" }, instances: [
+      { instance_id: "backbone_inst_1", bindings: {
+        wrist_left_camera: "left_cam",
+        wrist_right_camera: "right_cam",
+      }},
+    ]},
+  ],
+}
+```
+
+Four contract statements follow from this manifest:
+
+1. `wrist_left_camera_<service>::poll(...)` reaches `left_cam` (pinned-bound).
+2. `wrist_right_camera_<service>::poll(...)` reaches `right_cam` (pinned-bound).
+3. `extra_cam_<service>::poll(...)` reaches `ceiling_cam` via the unbound `from_any` wildcard (the discover-then-pin probe lands there because the pinned slots already claim the other producers).
+4. If `extra_cam` had been bound (e.g. `extra_cam: "ceiling_cam"`), discovery would be restricted to the bound set instead of every unclaimed producer.
+
+### Why discover-then-pin?
+
+The underlying Zenoh transport broadcasts a wildcard service query to every matching producer (`QueryTarget::All`). Without discovery, every producer's user handler would run, even though the consumer only ever consumes the first reply. For idempotent reads that wastes work; for state-changing services it can cause real-world side effects on producers the consumer never intended to reach. The discover-then-pin step uses a probe payload that is auto-handled by the framework before the user handler is invoked, so non-winning producers stay idle.
+
+The cost is one additional round-trip on wildcard calls (typically a few milliseconds). Consumers whose slot is **pinned by a binding** skip discovery entirely and pay no overhead. If a tighter `response_timeout` is passed, discovery is capped at that budget rather than the framework's default probe timeout, so tight-budget failure modes still surface quickly.
+
+If the discovered producer dies between the probe and the real request, the call surfaces `ServiceUnreachable` and the caller can retry; the next attempt will re-discover and pin to a different producer if one is available.
+
+### Validator rules
+
+The launcher validator runs these checks before the stack starts:
+
+1. **Pinned-unbound is a hard error.** Every pinned slot in `depends_on` must have a binding whose `KEY` equals the slot's `link_id`.
+2. A `KEY` that matches a pinned slot's `link_id` binds that slot to `VALUE`.
+3. **Free-form `KEY`s are allowed for `from_any` slots.** A binding whose `KEY` doesn't match a pinned `link_id` is accepted as long as some `from_any` slot exists for `VALUE`'s `(name, tag)`; multiple such bindings on the same `from_any` slot accumulate.
+4. A `KEY` that matches neither a pinned `link_id` nor a `from_any` slot for `VALUE`'s `(name, tag)` is a dead key and is rejected.
+5. A pinned binding whose target `instance_id` deploys a different node than the slot expects is a target mismatch and is rejected.
+6. `KEY` uniqueness within a single invocation is enforced (no two bindings on the same consumer may share the same `KEY`).
+7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. Bindings address producers by `instance_id`, so a duplicate would make the binding ambiguous.
 
 ## Error handling
 
 Service calls can fail with three error types:
-- **ServiceUnreachable** — no instance is listening for that service.
-- **ServiceTimeout** — no response was received within the timeout.
-- **ServiceError** — the handler returned an error, which is propagated back to the caller.
+- **ServiceUnreachable**: no instance is listening for that service.
+- **ServiceTimeout**: no response was received within the timeout.
+- **ServiceError**: the handler returned an error, which is propagated back to the caller.
 
 If the service handler returns an `Err`, the error is forwarded to the caller rather than silently timing out.
 This means a failing handler does not block the service from continuing to accept new requests.

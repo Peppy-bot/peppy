@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from peppylib import MessengerHandle, ServiceMessenger, ZenohdInstance
+from peppylib import MessengerHandle, SenderTarget, ServiceMessenger, ZenohdInstance
 from peppylib.config import (
     NODE_CONFIG_FILE,
     NODE_HEALTH_SERVICE,
@@ -33,6 +33,7 @@ from common import (
     TEST_FREQUENCY_HZ,
     TEST_INSTANCE_ID,
     TEST_NODE_NAME,
+    TEST_NODE_TAG,
     create_codegen_fingerprint,
     create_runtime_config,
     wait_for_service,
@@ -121,13 +122,12 @@ async def test_daemon_runner_succeed(monkeypatch):
                 messenger,
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
-                TEST_NODE_NAME,
+                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 NODE_HEALTH_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"health",
-                2.0,
-            )
+                2.0,)
             assert health_response is not None
 
             # Send shutdown
@@ -135,13 +135,12 @@ async def test_daemon_runner_succeed(monkeypatch):
                 messenger,
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
-                TEST_NODE_NAME,
+                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 SHUTDOWN_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"shutdown",
-                2.0,
-            )
+                2.0,)
             # Wait for runner to exit
             runner_thread.join(timeout=10.0)
 
@@ -466,13 +465,12 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 messenger,
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
-                TEST_NODE_NAME,
+                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 NODE_READY_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"ready",
-                2.0,
-            )
+                2.0,)
             assert ready_response.payload == b"ready"
             assert ready_response.instance_id == TEST_INSTANCE_ID
 
@@ -489,11 +487,10 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 messenger,
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
-                TEST_NODE_NAME,
+                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 NODE_HEALTH_SERVICE,
                 TEST_CORE_NODE,
-                TEST_INSTANCE_ID,
-            )
+                TEST_INSTANCE_ID,)
             assert not health_reachable, (
                 "Health service should not be reachable while setup is blocked"
             )
@@ -504,13 +501,12 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                     messenger,
                     TEST_CORE_NODE,
                     SHUTDOWN_SENDER_INSTANCE_ID,
-                    TEST_NODE_NAME,
+                    SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                     NODE_HEALTH_SERVICE,
                     TEST_CORE_NODE,
                     TEST_INSTANCE_ID,
                     b"health",
-                    0.2,
-                )
+                    0.2,)
 
             # Unblock setup
             setup_continue.set()
@@ -528,13 +524,12 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 messenger,
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
-                TEST_NODE_NAME,
+                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 NODE_HEALTH_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"health",
-                2.0,
-            )
+                2.0,)
             assert health_response is not None
 
             # Send shutdown
@@ -542,13 +537,12 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 messenger,
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
-                TEST_NODE_NAME,
+                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 SHUTDOWN_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"shutdown",
-                2.0,
-            )
+                2.0,)
             # Wait for runner to exit
             runner_thread.join(timeout=10.0)
 
@@ -622,13 +616,12 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
                 messenger,
                 TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
-                TEST_NODE_NAME,
+                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 SHUTDOWN_SERVICE,
                 TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"shutdown",
-                2.0,
-            )
+                2.0,)
 
             # Wait for runner to exit
             runner_thread.join(timeout=10.0)

@@ -18,7 +18,7 @@ Subscribe to the [Atom feed](/changelog.xml) for updates.
 {releases.map((release, index) => (
   <details open={index === 0}>
     <summary>
-      <strong><a href={`/releases/${releaseSlugFromVersion(release.data.version)}/`}>v{release.data.version} (Alpha)</a></strong> — <em>{release.data.description}</em>
+      <strong><a href={`/releases/${releaseSlugFromVersion(release.data.version)}/`}>v{release.data.version} (Alpha)</a></strong>: <em>{release.data.description}</em>
     </summary>
     <HtmlContent html={release.body ?? ''} />
   </details>

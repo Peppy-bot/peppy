@@ -16,8 +16,8 @@ pub use clock::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
 pub use node::builder::FeedbackStream;
 pub use node::{
-    add::DepVariantOverride, add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse,
-    add::NodeAddResult, add::NodeSource, builder::NodeBuildFeedback, builder::NodeBuildGoal,
+    add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse, add::NodeAddResult,
+    add::NodeSource, builder::NodeBuildFeedback, builder::NodeBuildGoal,
     builder::NodeBuildGoalResponse, builder::NodeBuildResult, info::NodeInfo,
     info::NodeInfoRequest, info::NodeInfoResponse, info::NodeInstanceInfo, init::NodeInitRequest,
     init::NodeInitResponse, remove::NodeRemoveRequest, remove::NodeRemoveResponse,
@@ -27,8 +27,8 @@ pub use node::{
 };
 pub use ping::{PingRequest, PingResponse};
 pub use repo::{
-    RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoListNodeEntry,
-    RepoListRequest, RepoListResponse, RepoRefreshFeedback, RepoRefreshGoal,
+    RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoItemKind,
+    RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoRefreshFeedback, RepoRefreshGoal,
     RepoRefreshGoalResponse, RepoRefreshResult, RepoRemoveRequest, RepoRemoveResponse, RepoSource,
     RepoSourceKind,
 };
@@ -55,9 +55,8 @@ pub(crate) fn optional_text(s: &str) -> Option<String> {
 }
 
 /// Decode a non-empty filesystem-path text field into a `PathBuf`.
-/// Relative paths are accepted because some uses of `Fs` overload it
-/// to carry a bare variant name rather than a path; sites that name a
-/// real location should use [`decode_absolute_fs_path`] instead.
+/// Relative paths are accepted; sites that name a real location should use
+/// [`decode_absolute_fs_path`] instead.
 pub(crate) fn decode_fs_path(path: &str, label: &str) -> Result<PathBuf> {
     if path.is_empty() {
         return Err(crate::Error::Decoding(format!("{label}: path is empty")));

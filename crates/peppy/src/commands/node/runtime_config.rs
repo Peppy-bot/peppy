@@ -39,7 +39,7 @@ fn resolve_node_name(node_name: Option<String>, node_dir: Option<PathBuf>) -> Re
             let peppy_json5_path = dir.join("peppy.json5");
             let config =
                 NodeConfigParser::from_path(&peppy_json5_path).map_err(Error::PeppyConfig)?;
-            Ok(config.manifest_name().to_string())
+            Ok(config.manifest.name.as_str().to_string())
         }
         _ => Err(Error::ExecutionFailed(
             "Exactly one of --node-name or node_dir must be provided".to_string(),
@@ -82,11 +82,11 @@ async fn print_runtime_config_async(
             .map(|n| n.tag.as_str())
             .collect::<Vec<_>>();
         tags.sort_unstable();
-        info!(
-            "Node '{}' has multiple tags in the stack: {}",
+        return Err(Error::ExecutionFailed(format!(
+            "Node '{}' has multiple tags in the stack: {}. Specify the desired tag.",
             node_name,
             tags.join(", ")
-        );
+        )));
     }
 
     let (messaging_host, messaging_port) = match conn.messenger.messaging_endpoint().await {
@@ -98,15 +98,25 @@ async fn print_runtime_config_async(
     };
 
     let instance_id = get_random(rng());
+    let node_tag = matching_nodes
+        .first()
+        .map(|n| n.tag.as_str())
+        .ok_or_else(|| {
+            Error::ExecutionFailed(format!(
+                "Node '{node_name}' has no tagged entries in the stack"
+            ))
+        })?;
     let runtime_config = RuntimeConfig::new(
         messaging_host.as_str(),
         messaging_port,
         NodeInstanceConfig {
-            instance_id: Name::new(instance_id).map_err(|e| Error::PeppyConfig(e.into()))?,
             arguments: args_to_node_arguments(&args),
-            framework: Default::default(),
+            ..NodeInstanceConfig::new(
+                Name::new(instance_id).map_err(|e| Error::PeppyConfig(e.into()))?,
+            )
         },
         node_name,
+        node_tag,
         conn.core_node_name,
     )
     .map_err(Error::PeppyConfig)?;

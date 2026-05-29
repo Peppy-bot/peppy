@@ -83,14 +83,6 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
         let _ = writeln!(out, "Labels:    {}", labels.join(", "));
     }
 
-    // Available variants (from manifest)
-    if let Some(variants) = &manifest.variants
-        && !variants.is_empty()
-    {
-        let names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
-        let _ = writeln!(out, "Variants:  {}", names.join(", "));
-    }
-
     // Commands
     if let Some(build_cmd) = &config.execution.build_cmd {
         let _ = writeln!(out, "Build cmd:   {}", build_cmd.join(" "));
@@ -108,13 +100,6 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
     let _ = writeln!(out, "Node Stack Status");
     let _ = writeln!(out, "{}", "-".repeat(50));
     let _ = writeln!(out, "Stage:     {}", response.stage);
-    // Always show the selected variant. A node without an explicit
-    // variant is conceptually running the "default" variant — either
-    // literally (auto-resolved from the root manifest's `variants[]`)
-    // or effectively (no variants defined, so the root's own execution
-    // section IS the default).
-    let variant = response.variant_name.as_deref().unwrap_or("default");
-    let _ = writeln!(out, "Variant:   {}", variant);
     if response.instances.is_empty() {
         let _ = writeln!(out, "Instances: None tracked");
     } else {
@@ -166,7 +151,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
         {
             for topic in expected {
                 if let config::node::ConsumedTopic::Linked(linked) = topic {
-                    dependencies.insert(&linked.local_node_id);
+                    dependencies.insert(&linked.link_id);
                 }
             }
         }
@@ -174,15 +159,15 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             && let Some(consumed) = &services.consumes
         {
             for service in consumed {
-                dependencies.insert(&service.local_node_id);
+                dependencies.insert(&service.link_id);
             }
         }
         if let Some(actions) = &config.interfaces.actions
             && let Some(consumed) = &actions.consumes
         {
             for action in consumed {
-                if !action.local_node_id.is_empty() {
-                    dependencies.insert(&action.local_node_id);
+                if !action.link_id.is_empty() {
+                    dependencies.insert(&action.link_id);
                 }
             }
         }
@@ -304,7 +289,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
                             let _ = writeln!(
                                 out,
                                 "  - {} (from node: {})",
-                                linked.name, linked.local_node_id
+                                linked.name, linked.link_id
                             );
                         }
                         config::node::ConsumedTopic::External(external) => {
@@ -323,11 +308,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Services:");
                 for service in services {
-                    let _ = writeln!(
-                        out,
-                        "  - {} (from node: {})",
-                        service.name, service.local_node_id
-                    );
+                    let _ = writeln!(out, "  - {} (from node: {})", service.name, service.link_id);
                 }
             }
 
@@ -340,11 +321,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Actions:");
                 for action in actions {
-                    let _ = writeln!(
-                        out,
-                        "  - {} (from node: {})",
-                        action.name, action.local_node_id
-                    );
+                    let _ = writeln!(out, "  - {} (from node: {})", action.name, action.link_id);
                 }
             }
         }
@@ -471,18 +448,16 @@ mod tests {
                 peppy_schema: "node_v1",
                 manifest: {{
                     name: "sensor_node",
-                    tag: "0.1.0",
+                    tag: "v1",
                 }},
+                interfaces: {{}},
                 execution: {execution_json5}
             }}"#
         );
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("peppy.json5");
         std::fs::write(&path, config_json5).expect("write config");
-        let config = NodeConfigParser::from_path(&path)
-            .expect("parse config")
-            .into_resolved()
-            .expect("resolve config");
+        let config = NodeConfigParser::from_path(&path).expect("parse config");
         NodeInfo {
             config,
             config_integrity: "0".repeat(64),
@@ -491,10 +466,12 @@ mod tests {
                 NodeInstanceInfo {
                     instance_id: "inst-abc".to_string(),
                     state: InstanceState::Running,
+                    slot_bindings: std::collections::BTreeMap::new(),
                 },
                 NodeInstanceInfo {
                     instance_id: "inst-def".to_string(),
                     state: InstanceState::Starting,
+                    slot_bindings: std::collections::BTreeMap::new(),
                 },
             ],
             add_log_path: Some(PathBuf::from("/tmp/peppy/logs/add/sensor_node.log")),
@@ -502,7 +479,6 @@ mod tests {
                 PathBuf::from("/tmp/peppy/logs/run/inst-abc.log"),
                 PathBuf::from("/tmp/peppy/logs/run/inst-def.log"),
             ],
-            variant_name: None,
         }
     }
 
@@ -532,7 +508,7 @@ mod tests {
         // Logs section grouped under <name>:<tag>
         assert!(out.contains("\nLogs\n"), "Logs heading missing:\n{out}");
         assert!(
-            out.contains("sensor_node:0.1.0"),
+            out.contains("sensor_node:v1"),
             "node:tag heading missing:\n{out}"
         );
         assert!(
@@ -550,43 +526,6 @@ mod tests {
         assert!(
             out.contains("    - inst-def: /tmp/peppy/logs/run/inst-def.log"),
             "inst-def run log line missing:\n{out}"
-        );
-    }
-
-    #[test]
-    fn print_node_info_renders_variant_line_as_default_when_none() {
-        let response = sample_response();
-        assert!(response.variant_name.is_none(), "precondition");
-
-        let mut out = String::new();
-        format_node_info(&mut out, &response);
-
-        assert!(
-            out.contains("Variant:   default"),
-            "Variant line should fall back to 'default' when variant_name is None:\n{out}"
-        );
-    }
-
-    #[test]
-    fn print_node_info_renders_variant_line_when_present() {
-        let mut response = sample_response();
-        response.variant_name = Some("macos".to_string());
-
-        let mut out = String::new();
-        format_node_info(&mut out, &response);
-
-        assert!(
-            out.contains("Variant:   macos"),
-            "Variant line missing when variant_name is Some:\n{out}"
-        );
-        // Variant must appear inside the Node Stack Status section, between
-        // the Stage line and the Instances line.
-        let stage_idx = out.find("Stage:").expect("stage line missing");
-        let variant_idx = out.find("Variant:").expect("variant line missing");
-        let instances_idx = out.find("Instances:").expect("instances line missing");
-        assert!(
-            stage_idx < variant_idx && variant_idx < instances_idx,
-            "Variant line should sit between Stage and Instances:\n{out}"
         );
     }
 

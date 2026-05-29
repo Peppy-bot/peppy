@@ -45,7 +45,7 @@ const EMITTED_TOPIC_EXAMPLE2: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
-    local_node_id: "uvc_camera",
+    link_id: "uvc_camera",
     name: "video_stream",
 }
 "#;
@@ -69,7 +69,7 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 {
-    local_node_id: "uvc_camera",
+    link_id: "uvc_camera",
     name: "sound",
 }
 "#;
@@ -110,7 +110,7 @@ fn emit_topic() {
     let topic = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
 
     let mut generator = RustGenerator::new();
-    generator.add_emitted_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -167,8 +167,8 @@ fn emit_two_topics() {
     let topic2 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2);
 
     let mut generator = RustGenerator::new();
-    generator.add_emitted_topic(&topic1).unwrap();
-    generator.add_emitted_topic(&topic2).unwrap();
+    generator.add_emitted_topic(&topic1, None).unwrap();
+    generator.add_emitted_topic(&topic2, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -197,7 +197,7 @@ fn emit_topic_escapes_rust_keyword_fields() {
     let topic = parse_emitted_topic(emitted_topic_keyword_fields_example);
 
     let mut generator = RustGenerator::new();
-    generator.add_emitted_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic, None).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -230,7 +230,7 @@ fn emit_topic_rejects_reserved_message_field_name() {
     let topic = parse_emitted_topic(emitted_topic_reserved_field_example);
     let mut generator = RustGenerator::new();
 
-    let err = generator.add_emitted_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic, None).unwrap_err();
 
     match err {
         Error::UnauthorizedMessageFieldName {
@@ -264,7 +264,7 @@ fn emit_topic_rejects_fixed_string_array() {
     let topic = parse_emitted_topic(emitted_topic_fixed_string_array_example);
     let mut generator = RustGenerator::new();
 
-    let err = generator.add_emitted_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic, None).unwrap_err();
 
     match err {
         Error::UnsupportedFixedArrayItemType { field, item } => {
@@ -298,7 +298,7 @@ fn emit_topic_rejects_fixed_object_array() {
     let topic = parse_emitted_topic(emitted_topic_fixed_object_array_example);
     let mut generator = RustGenerator::new();
 
-    let err = generator.add_emitted_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic, None).unwrap_err();
 
     match err {
         Error::UnsupportedFixedArrayItemType { field, item } => {
@@ -331,7 +331,7 @@ fn emit_topic_with_dynamic_object_array() {
     let topic = parse_emitted_topic(emitted_topic_dynamic_object_array_example);
 
     let mut generator = RustGenerator::new();
-    generator.add_emitted_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic, None).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -359,7 +359,11 @@ fn consumed_topic() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_topic(&topic, format, "uvc_camera")
+        .add_consumed_topic(
+            &topic,
+            format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -381,13 +385,13 @@ fn consumed_topic() {
         ],
     );
 
-    // Subscriber function signature
+    // Subscriber function signature — `from_instance_id` is no longer a
+    // parameter; the consumer pins via `binding_for(<link_id>)`.
     assert_contains_all(
         &rendered,
         &[
             "pub async fn on_next_message_received(",
-            "target_core_node: Option<&str>",
-            "target_instance_id: Option<&str>",
+            "from_core_node: Option<&str>",
             "-> crate::Result<(String, Message)>",
         ],
     );
@@ -421,7 +425,7 @@ fn consumed_topic() {
 fn consumed_topic_escapes_rust_keyword_fields() {
     let subscribed_topic_example_keywords: &str = r#"
     {
-        local_node_id: "keyword_source",
+        link_id: "keyword_source",
         name: "keyword_topic",
     }
     "#;
@@ -436,7 +440,11 @@ fn consumed_topic_escapes_rust_keyword_fields() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_topic(&topic, format, "keyword_source")
+        .add_consumed_topic(
+            &topic,
+            format,
+            &crate::DependencyContext::native("keyword_source", "v1"),
+        )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
@@ -465,10 +473,18 @@ fn consumed_two_topics_same_node() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_topic(&video_topic, video_format, "uvc_camera")
+        .add_consumed_topic(
+            &video_topic,
+            video_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_topic(&sound_topic, sound_format, "uvc_camera")
+        .add_consumed_topic(
+            &sound_topic,
+            sound_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -527,8 +543,8 @@ fn external_consumed_topic() {
         &rendered,
         &[
             "pub async fn on_next_message_received(",
-            "target_core_node: Option<&str>",
-            "target_instance_id: Option<&str>",
+            "from_core_node: Option<&str>",
+            "from_instance_id: Option<&str>",
             "-> crate::Result<(String, Message)>",
         ],
     );
@@ -578,7 +594,7 @@ fn clippy_single_emitted_topic_empty_format() {
     let consumed_action1: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          local_node_id: "brain",
+          link_id: "brain",
           name: "move_arm",
         }
         "#,
@@ -587,7 +603,7 @@ fn clippy_single_emitted_topic_empty_format() {
     let consumed_action2: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          local_node_id: "controller",
+          link_id: "controller",
           name: "rotate_servo_clockwise",
         }
         "#,
@@ -604,12 +620,20 @@ fn clippy_single_emitted_topic_empty_format() {
     };
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_emitted_topic(&emitted_topic).unwrap();
+    generator.add_emitted_topic(&emitted_topic, None).unwrap();
     generator
-        .add_consumed_action(&consumed_action1, &action_messages, "brain")
+        .add_consumed_action(
+            &consumed_action1,
+            &action_messages,
+            &crate::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_action(&consumed_action2, &action_messages, "controller")
+        .add_consumed_action(
+            &consumed_action2,
+            &action_messages,
+            &crate::DependencyContext::native("controller", "v1"),
+        )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -651,13 +675,21 @@ fn compile_lib_with_emitted_and_consumed_topics() {
     let subscribed_format2 = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_emitted_topic(&emitted_topic1).unwrap();
-    generator.add_emitted_topic(&emitted_topic2).unwrap();
+    generator.add_emitted_topic(&emitted_topic1, None).unwrap();
+    generator.add_emitted_topic(&emitted_topic2, None).unwrap();
     generator
-        .add_consumed_topic(&consumed_topic1, subscribed_format1, "uvc_camera")
+        .add_consumed_topic(
+            &consumed_topic1,
+            subscribed_format1,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_topic(&consumed_topic2, subscribed_format2, "uvc_camera")
+        .add_consumed_topic(
+            &consumed_topic2,
+            subscribed_format2,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -716,11 +748,12 @@ fn compile_lib_with_emitted_and_consumed_topics() {
     );
 }
 
-/// Regression guard: all three consumer-side interfaces (topic / service / action)
-/// must emit filter parameters named `target_core_node` / `target_instance_id`.
-/// This test fails loudly if any generator drifts away from the shared naming.
+/// Regression guard: consumer-side topic subscribers emit `from_*` filter params
+/// (messages flow publisher → subscriber), while service/action callers emit
+/// `to_*` filter params (request flows caller → server). This test fails loudly
+/// if any generator drifts away from the directional naming.
 #[test]
-fn consumer_filter_params_use_target_prefix() {
+fn consumer_filter_params_use_directional_prefix() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let topic_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
@@ -751,34 +784,53 @@ fn consumer_filter_params_use_target_prefix() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_topic(&topic, topic_format, "uvc_camera")
+        .add_consumed_topic(
+            &topic,
+            topic_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
+        .add_consumed_service(
+            &service,
+            &request_format,
+            &response_format,
+            &crate::DependencyContext::native("uvc_camera", "v1"),
+        )
         .unwrap();
     generator
-        .add_consumed_action(&action, &action_messages, "brain")
+        .add_consumed_action(
+            &action,
+            &action_messages,
+            &crate::DependencyContext::native("brain", "v1"),
+        )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
 
-    // Positive invariant: the target_* pair is present.
-    assert_contains_all(
-        &rendered,
-        &[
-            "target_core_node: Option<&str>",
-            "target_instance_id: Option<&str>",
-        ],
+    // Topic subscriber: messages flow FROM the publisher. `from_core_node`
+    // stays exposed for cross-core-node pinning; `from_instance_id` is no
+    // longer a parameter — the consumer pins via `binding_for(<link_id>)`
+    // looked up at runtime from the bindings map.
+    assert_eq!(
+        rendered.matches("from_core_node: Option<&str>").count(),
+        1,
+        "expected `from_core_node` once on the topic subscriber; rendered:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("from_instance_id: Option<&str>"),
+        "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 
-    // Count-based check: each consumer interface must surface the pair exactly once.
-    assert_eq!(
-        rendered.matches("target_core_node: Option<&str>").count(),
-        3,
-        "expected `target_core_node` on all 3 consumer interfaces (topic/service/action); rendered:\n{rendered}"
+    // The fixture's `DependencyContext::native` defaults to
+    // `WireLinkId::wildcard()` (no manifest link_id), so the binding lookup
+    // splices `None` and the user-facing `target_instance_id` parameter is
+    // gone. `target_core_node` is never exposed in the generated API.
+    assert!(
+        !rendered.contains("target_core_node"),
+        "target_core_node should not appear in the generated API; rendered:\n{rendered}"
     );
-    assert_eq!(
-        rendered.matches("target_instance_id: Option<&str>").count(),
-        3,
-        "expected `target_instance_id` on all 3 consumer interfaces (topic/service/action); rendered:\n{rendered}"
+    assert!(
+        !rendered.contains("target_instance_id: Option<&str>"),
+        "target_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 }

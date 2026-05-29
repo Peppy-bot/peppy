@@ -9,6 +9,25 @@ use std::{
 
 use crate::launcher::Name;
 
+/// Resolved per-slot binding for one of this consumer instance's declared
+/// `depends_on` entries. The validator translates a launcher / CLI `(KEY,
+/// VALUE)` binding map into this slot-keyed view before serializing into
+/// `NodeInstanceConfig` so the spawned node does no re-resolution work.
+///
+/// `Pinned` corresponds to a `depends_on` entry with `from_any: false`;
+/// it must be bound (the validator rejects pinned-unbound). `FromAnyBound`
+/// is a `from_any: true` slot for which the user supplied one or more
+/// bindings via free-form keys. `FromAnyUnbound` is a `from_any: true`
+/// slot the user left bindless — the wildcard fallback for producers no
+/// sibling slot has claimed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SlotBinding {
+    Pinned { producer_instance_id: String },
+    FromAnyBound { producer_instance_ids: Vec<String> },
+    FromAnyUnbound,
+}
+
 /// Represents a node instance at runtime. Used by RuntimeConfig to identify the running node and its configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -18,6 +37,30 @@ pub struct NodeInstanceConfig {
     pub arguments: BTreeMap<String, AnyType>,
     #[serde(default)]
     pub framework: ResolvedFramework,
+    /// Pre-resolved per-slot bindings for every `link_id` declared in the
+    /// consumer manifest's `depends_on`. Built by the validator from the
+    /// launcher / CLI raw binding map plus the manifest depends_on (which
+    /// distinguishes pinned vs `from_any` slots). Empty when the manifest
+    /// has no `depends_on` entries. Read by the generated subscribe /
+    /// poll / send_goal call sites via
+    /// [`crate::runtime::ConsumerFilter`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub slot_bindings: BTreeMap<String, SlotBinding>,
+}
+
+impl NodeInstanceConfig {
+    /// Builds a config with everything except `instance_id` defaulted:
+    /// empty arguments, default framework, empty slot bindings. Use with
+    /// struct-update syntax to override a field:
+    /// `NodeInstanceConfig { arguments, ..NodeInstanceConfig::new(id) }`.
+    pub fn new(instance_id: Name) -> Self {
+        Self {
+            instance_id,
+            arguments: BTreeMap::new(),
+            framework: ResolvedFramework::default(),
+            slot_bindings: BTreeMap::new(),
+        }
+    }
 }
 
 /// Framework knobs already resolved by the daemon. Distinct from
@@ -65,6 +108,7 @@ pub struct RuntimeConfig {
     pub messaging_host: String,
     pub messaging_port: u16,
     pub node_name: Name,
+    pub node_tag: Name,
     pub bound_core_node: Name,
     pub node_instance: NodeInstanceConfig,
 }
@@ -75,6 +119,7 @@ impl RuntimeConfig {
         messaging_port: u16,
         node_instance: NodeInstanceConfig,
         node_name: impl Into<String>,
+        node_tag: impl Into<String>,
         bound_core_node: impl Into<String>,
     ) -> Result<Self> {
         Ok(Self {
@@ -82,6 +127,7 @@ impl RuntimeConfig {
             messaging_port,
             node_instance,
             node_name: Name::new(node_name.into())?,
+            node_tag: Name::new(node_tag.into())?,
             bound_core_node: Name::new(bound_core_node.into())?,
         })
     }
@@ -129,6 +175,7 @@ mod tests {
                 instance_id: "$INSTANCE_ID"
             },
             node_name: "camera",
+            node_tag: "v1",
             bound_core_node: "core_node"
         }"#;
 
@@ -153,6 +200,7 @@ mod tests {
                     framework: { use_sim_time: true }
                 },
                 node_name: "camera",
+                node_tag: "v1",
                 bound_core_node: "core_node"
             }"#,
         )

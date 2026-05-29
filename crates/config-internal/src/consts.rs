@@ -15,6 +15,13 @@ pub const PEPPY_MESSAGING_PORT_VAR_NAME: &str = "PEPPY_MESSAGING_PORT";
 pub const ALLOWED_CONFIG_CHARS: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
 
+/// Reserved literal that occupies the `link_id` slot on the wire when a
+/// producer is launched without an explicit binding. Consumers that opt into
+/// the producer-default path subscribe with this literal as their `link_id`
+/// filter. `pmi::DEFAULT_LINK_ID` re-exports this so the wire layer and the
+/// config layer share one source of truth.
+pub const DEFAULT_LINK_ID_SENTINEL: &str = "_";
+
 /// Minimum Python version required by peppylib and peppygen projects (e.g. "3.11").
 ///
 /// NOTE: When updating, also update the static files in `peppylib-py/`

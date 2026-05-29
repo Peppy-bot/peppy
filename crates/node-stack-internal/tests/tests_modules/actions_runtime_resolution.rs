@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use config::{ConfigError, ParsingError};
 use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::core_node_config;
@@ -11,10 +12,10 @@ fn action_dependency_resolved_when_dependency_added_first() {
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "controller", tag: "1.0.0", local_id: "controller" }
+                  { name: "controller", tag: "v1", link_id: "controller" }
                 ]
               },
             },
@@ -22,7 +23,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
                 actions: {
                     consumes: [
                         {
-                          local_node_id: "controller",
+                          link_id: "controller",
                           name: "move_right_arm"
                         }
                     ]
@@ -41,7 +42,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
             peppy_schema: "node_v1",
             manifest: {
               name: "controller",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 actions: {
@@ -111,7 +112,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
     let deps = stack
-        .dependencies_of("brain", "1.0.0")
+        .dependencies_of("brain", "v1")
         .into_iter()
         .map(|node| {
             let guard = node.read();
@@ -123,12 +124,12 @@ fn action_dependency_resolved_when_dependency_added_first() {
         .collect::<Vec<_>>();
     assert_eq!(
         deps,
-        vec![("controller".to_string(), "1.0.0".to_string())],
+        vec![("controller".to_string(), "v1".to_string())],
         "dependency edge should be wired for actions"
     );
 
     let dependants = stack
-        .dependents_of("controller", "1.0.0")
+        .dependents_of("controller", "v1")
         .into_iter()
         .map(|node| node.read().config().manifest.name.as_str().to_owned())
         .collect::<Vec<_>>();
@@ -146,10 +147,10 @@ fn action_dependency_fails_when_dependency_is_missing() {
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "controller", tag: "1.0.0", local_id: "controller" }
+                  { name: "controller", tag: "v1", link_id: "controller" }
                 ]
               },
             },
@@ -157,7 +158,7 @@ fn action_dependency_fails_when_dependency_is_missing() {
                 actions: {
                     consumes: [
                         {
-                          local_node_id: "controller",
+                          link_id: "controller",
                           name: "move_right_arm"
                         }
                     ]
@@ -175,16 +176,16 @@ fn action_dependency_fails_when_dependency_is_missing() {
 
     // Adding a node that depends on a non-existent action provider should fail
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
-    let Err(NodeStackError::MissingDependency {
+    let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingDependency {
         dependency,
         dependency_tag,
         ..
-    }) = result
+    }))) = result
     else {
         panic!("expected MissingDependency error, got {:?}", result);
     };
     assert_eq!(dependency, "controller");
-    assert_eq!(dependency_tag, "1.0.0");
+    assert_eq!(dependency_tag, "v1");
     assert_eq!(stack.len(), 1, "stack should only have core node");
 }
 
@@ -197,10 +198,10 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: [
-                  { name: "controller", tag: "1.0.0", local_id: "controller" }
+                  { name: "controller", tag: "v1", link_id: "controller" }
                 ]
               },
             },
@@ -208,7 +209,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
                 actions: {
                     consumes: [
                         {
-                          local_node_id: "controller",
+                          link_id: "controller",
                           name: "move_right_arm"
                         }
                     ]
@@ -228,7 +229,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
             peppy_schema: "node_v1",
             manifest: {
               name: "controller",
-              tag: "1.0.0",
+              tag: "v1",
             },
             interfaces: {
                 actions: {
@@ -289,20 +290,15 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
 
     // Adding brain should fail because controller doesn't expose "move_right_arm"
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
-    let Err(NodeStackError::MissingInterface {
-        dependency,
-        dependency_tag,
-        interface_kind,
-        interface_name,
-        ..
-    }) = result
+    let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingInterface(info)))) =
+        result
     else {
         panic!("expected MissingInterface error, got {:?}", result);
     };
-    assert_eq!(dependency, "controller");
-    assert_eq!(dependency_tag, "1.0.0");
-    assert_eq!(interface_kind, "Action");
-    assert_eq!(interface_name, "move_right_arm");
+    assert_eq!(info.dependency, "controller");
+    assert_eq!(info.dependency_tag, "v1");
+    assert_eq!(info.interface_kind, "Action");
+    assert_eq!(info.interface_name, "move_right_arm");
     assert_eq!(
         stack.len(),
         2,
@@ -311,13 +307,13 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
 }
 
 #[test]
-fn action_dependency_fails_when_local_node_id_is_undeclared() {
+fn action_dependency_fails_when_link_id_is_undeclared() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             peppy_schema: "node_v1",
             manifest: {
               name: "brain",
-              tag: "1.0.0",
+              tag: "v1",
               depends_on: {
                 nodes: []
               },
@@ -326,7 +322,7 @@ fn action_dependency_fails_when_local_node_id_is_undeclared() {
                 actions: {
                     consumes: [
                         {
-                          local_node_id: "nonexistent",
+                          link_id: "nonexistent",
                           name: "move_right_arm"
                         }
                     ]
@@ -343,9 +339,13 @@ fn action_dependency_fails_when_local_node_id_is_undeclared() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
-    let Err(NodeStackError::UndeclaredLocalNodeId { local_node_id, .. }) = result else {
-        panic!("expected UndeclaredLocalNodeId error, got {:?}", result);
+    let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::UndeclaredLinkId {
+        link_id,
+        ..
+    }))) = result
+    else {
+        panic!("expected UndeclaredLinkId error, got {:?}", result);
     };
-    assert_eq!(local_node_id, "nonexistent");
+    assert_eq!(link_id, "nonexistent");
     assert_eq!(stack.len(), 1, "stack should only have core node");
 }

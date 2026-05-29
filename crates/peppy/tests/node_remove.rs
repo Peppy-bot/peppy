@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use peppylib::core_node::transport::poll_stack_list;
+
+use super::common::test_node_target;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[test]
@@ -31,7 +33,7 @@ fn node_remove_command_succeeds() {
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_node";
-    let node_tag = "0.1.0";
+    let node_tag = "v1";
 
     let node_ctx = Arc::new(
         AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
@@ -71,12 +73,12 @@ fn node_remove_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -170,7 +172,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_running_node";
-    let node_tag = "0.1.0";
+    let node_tag = "v1";
     let instance_id = "test_remove_running_instance";
 
     let node_ctx = Arc::new(
@@ -216,7 +218,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            test_node_target(node_name),
         ))
         .expect("node ready service should start");
     let _node_health_handle = rt
@@ -224,7 +226,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            test_node_target(node_name),
         ))
         .expect("node health service should start");
     let (_node_shutdown_handle, node_shutdown_rx) = rt
@@ -232,7 +234,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            test_node_target(node_name),
         ))
         .expect("node shutdown service should start");
 
@@ -242,12 +244,12 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -315,7 +317,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_stop_instances_node";
-    let node_tag = "0.1.0";
+    let node_tag = "v1";
     let instance_id = "test_remove_stop_instances_instance";
 
     let node_ctx = Arc::new(
@@ -359,7 +361,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            test_node_target(node_name),
         ))
         .expect("node ready service should start");
 
@@ -368,7 +370,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            test_node_target(node_name),
         ))
         .expect("node health service should start");
 
@@ -377,7 +379,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             &node_messenger,
             &core_node_name,
             instance_id,
-            node_name,
+            test_node_target(node_name),
         ))
         .expect("node shutdown service should start");
 
@@ -387,12 +389,12 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,

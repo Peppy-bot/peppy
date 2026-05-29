@@ -27,7 +27,7 @@ async fn listen_for_node_sync_success() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "example_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             interfaces: {
                 topics: {
@@ -276,7 +276,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    // The node subscribes to `video_stream` from `uvc_camera:0.1.0`, but this node doesn't exist in the node stack
+    // The node subscribes to `video_stream` from `uvc_camera:v1`, but this node doesn't exist in the node stack
     // so the generation fails since it can't sync the Rust interfaces
     write_node_config(
         node_dir.path(),
@@ -285,11 +285,11 @@ async fn listen_for_node_sync_missing_dependency_fails() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                     ]
                 },
             },
@@ -298,11 +298,11 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                     emits: [],
                     consumes: [
                         {
-                            local_node_id: "uvc_camera",
+                            link_id: "uvc_camera",
                             name: "video_stream",
                         },
                         {
-                            local_node_id: "uvc_camera",
+                            link_id: "uvc_camera",
                             name: "video_stream_rear",
                         },
                     ],
@@ -339,7 +339,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
     assert!(!response.success, "node_sync should fail");
     assert!(
         response.error_message.contains(
-            "my_robot_brain:0.1.0 depends on `uvc_camera:0.1.0`, but it does not exist in the stack"
+            "my_robot_brain:v1 depends on `uvc_camera:v1`, but it does not exist in the stack"
         ),
         "error should mention missing dependency, got: {}",
         response.error_message
@@ -366,18 +366,17 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera_2" },
-                        { name: "lidar_sensor", tag: "1.0.0", local_id: "lidar_sensor" },
-                        { name: "gps_module", tag: "2.0.0", local_id: "gps_module" },
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera_2" },
+                        { name: "lidar_sensor", tag: "v1", link_id: "lidar_sensor" },
+                        { name: "gps_module", tag: "v2", link_id: "gps_module" },
                     ]
                 },
             },
-            interfaces: {},
             execution: {
                 language: "rust",
                 build_cmd: ["cargo", "build", "--release"],
@@ -403,17 +402,17 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
     assert!(!response.success, "node_sync should fail");
     // The error message should contain all three unique missing dependencies
     assert!(
-        response.error_message.contains("uvc_camera:0.1.0"),
+        response.error_message.contains("uvc_camera:v1"),
         "error should mention uvc_camera dependency, got: {}",
         response.error_message
     );
     assert!(
-        response.error_message.contains("lidar_sensor:1.0.0"),
+        response.error_message.contains("lidar_sensor:v1"),
         "error should mention lidar_sensor dependency, got: {}",
         response.error_message
     );
     assert!(
-        response.error_message.contains("gps_module:2.0.0"),
+        response.error_message.contains("gps_module:v2"),
         "error should mention gps_module dependency, got: {}",
         response.error_message
     );
@@ -424,9 +423,9 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
     );
     // Verify deduplication: uvc_camera should only appear once despite two subscriptions
     assert_eq!(
-        response.error_message.matches("uvc_camera:0.1.0").count(),
+        response.error_message.matches("uvc_camera:v1").count(),
         1,
-        "uvc_camera:0.1.0 should appear exactly once (deduplicated), got: {}",
+        "uvc_camera:v1 should appear exactly once (deduplicated), got: {}",
         response.error_message
     );
 
@@ -449,7 +448,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["camera"],
             },
             interfaces: {
@@ -542,11 +541,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                     ]
                 },
             },
@@ -555,7 +554,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                     emits: [],
                     consumes: [
                         {
-                          local_node_id: "uvc_camera",
+                          link_id: "uvc_camera",
                           name: "video_stream",
                         }
                     ],
@@ -662,7 +661,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["camera"],
             },
             interfaces: {
@@ -739,11 +738,11 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                     ]
                 },
             },
@@ -755,7 +754,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                     exposes: [],
                     consumes: [
                         {
-                          local_node_id: "uvc_camera",
+                          link_id: "uvc_camera",
                           name: "enable_camera",
                         }
                     ],
@@ -820,7 +819,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["camera"],
             },
             interfaces: {
@@ -899,11 +898,11 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
-                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                     ]
                 },
             },
@@ -912,7 +911,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                     emits: [],
                     consumes: [
                         {
-                          local_node_id: "uvc_camera",
+                          link_id: "uvc_camera",
                           name: "video_stream",
                         }
                     ],
@@ -980,7 +979,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "brain",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["brain"],
             },
             interfaces: {
@@ -1065,11 +1064,11 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "controller",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["controller"],
                 depends_on: {
                     nodes: [
-                        { name: "brain", tag: "0.1.0", local_id: "brain" }
+                        { name: "brain", tag: "v1", link_id: "brain" }
                     ]
                 },
             },
@@ -1084,7 +1083,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                     exposes: [],
                     consumes: [
                         {
-                          local_node_id: "brain",
+                          link_id: "brain",
                           name: "move_arm",
                         }
                     ],
@@ -1146,7 +1145,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "uvc_camera",
-                tag: "0.1.0",
+                tag: "v1",
                 labels: ["camera"],
             },
             execution: {
@@ -1256,7 +1255,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "example_node",
-                tag: "0.1.0",
+                tag: "v1",
             },
             execution: {
                 language: "rust",
@@ -1340,548 +1339,13 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     );
 }
 
-fn write_variant_config(variant_dir: &Path, peppy_json5: &str) {
-    fs::create_dir_all(variant_dir).expect("failed to create variant directory");
-    let config_path = variant_dir.join(NODE_CONFIG_FILE);
-    fs::write(&config_path, peppy_json5).expect("failed to write variant peppy.json5");
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_with_variant_succeeds() {
+async fn listen_for_node_sync_undeclared_link_id_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-
-    // Create a variant subdirectory with a Rust VariantConfig
-    let variant_dir = node_dir.path().join("rust_variant");
-    write_variant_config(
-        &variant_dir,
-        r#"{
-            peppy_schema: "node_v1",
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"],
-            },
-        }"#,
-    );
-
-    // Root config declares the variant
-    write_node_config(
-        node_dir.path(),
-        r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "example_node",
-                tag: "0.1.0",
-                variants: [
-                    { name: "rust_variant", source: { local: "./rust_variant" } },
-                ],
-            },
-            interfaces: {
-                topics: {
-                    emits: [
-                        {
-                            name: "hello_world",
-                            qos_profile: "sensor_data",
-                            message_format: {
-                                message: "string",
-                            },
-                        },
-                    ],
-                },
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"],
-            },
-        }"#,
-    );
-
-    let expected_git_hash = "deadbeef";
-    let response = poll_node_sync(
-        &NodeSyncRequest::new(node_dir.path(), expected_git_hash, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("node_sync request should complete");
-
-    assert!(
-        response.success,
-        "node_sync should succeed, got error: {}",
-        response.error_message
-    );
-
-    // Verify root .peppy was generated
-    let root_peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
-    assert!(
-        root_peppygen_dir.exists(),
-        "root peppygen directory should exist at {}",
-        root_peppygen_dir.display()
-    );
-
-    // Verify variant .peppy was generated
-    let variant_peppy_dir = variant_dir.join(PEPPY_OUTPUT_DIR);
-    assert!(
-        variant_peppy_dir.exists(),
-        "variant .peppy directory should exist at {}",
-        variant_peppy_dir.display()
-    );
-
-    // Verify git.hash in root .peppy
-    let node_dir_hash_path = node_dir.path().join(PEPPY_OUTPUT_DIR).join("git.hash");
-    assert!(
-        node_dir_hash_path.exists(),
-        "root git.hash should exist at {}",
-        node_dir_hash_path.display()
-    );
-    let stored_git_hash =
-        fs::read_to_string(&node_dir_hash_path).expect("failed to read root git.hash");
-    assert_eq!(
-        stored_git_hash.trim(),
-        expected_git_hash,
-        "root git.hash should contain the sync request git_hash"
-    );
-
-    // Verify git.hash in variant .peppy
-    let variant_git_hash_path = variant_peppy_dir.join("git.hash");
-    assert!(
-        variant_git_hash_path.exists(),
-        "variant git.hash should exist at {}",
-        variant_git_hash_path.display()
-    );
-    let stored_git_hash =
-        fs::read_to_string(&variant_git_hash_path).expect("failed to read variant git.hash");
-    assert_eq!(
-        stored_git_hash.trim(),
-        expected_git_hash,
-        "variant git.hash should contain the sync request git_hash"
-    );
-
-    // Verify root peppygen was generated
-    let root_peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
-    assert!(
-        root_peppygen_dir.exists(),
-        "root peppygen directory should exist at {}",
-        root_peppygen_dir.display()
-    );
-
-    // Verify variant peppygen was generated
-    let variant_peppygen_dir = variant_dir.join(PEPPYGEN_OUTPUT_PATH);
-    assert!(
-        variant_peppygen_dir.exists(),
-        "variant peppygen directory should exist at {}",
-        variant_peppygen_dir.display()
-    );
-
-    // Verify the original variant peppy.json5 was NOT overwritten with the merged config
-    let variant_config_content = fs::read_to_string(variant_dir.join(NODE_CONFIG_FILE))
-        .expect("variant peppy.json5 should still exist");
-    assert!(
-        !variant_config_content.contains("example_node"),
-        "variant peppy.json5 should not contain the root manifest name — \
-         it should remain the original VariantConfig"
-    );
-    assert!(
-        variant_config_content.contains("run_cmd"),
-        "variant peppy.json5 should still contain the original execution config"
-    );
-
-    // Verify the stored fingerprint for the root peppy.json5.
-    // Same sandbox principle: the root fingerprint covers only the raw root
-    // peppy.json5, not the merged config.
-    let root_fingerprint_path = root_peppygen_dir.join("peppy.json5.sha256");
-    let stored_root_fingerprint = fs::read_to_string(&root_fingerprint_path)
-        .expect("root fingerprint file should exist")
-        .trim()
-        .to_string();
-
-    let root_own_bytes = fs::read(node_dir.path().join(NODE_CONFIG_FILE))
-        .expect("root peppy.json5 should be readable");
-    let expected_root_fingerprint = config::fingerprint::fingerprint_for_bytes(&root_own_bytes);
-    assert_eq!(
-        stored_root_fingerprint, expected_root_fingerprint,
-        "stored fingerprint should match the root's own peppy.json5, not the merged config"
-    );
-
-    // Verify the stored fingerprint matches the variant's own peppy.json5.
-    // Each variant lives in its own sandbox for fingerprinting — it is only
-    // aware of its own peppy.json5, not the merged config.
-    let variant_fingerprint_path = variant_peppygen_dir.join("peppy.json5.sha256");
-    let stored_fingerprint = fs::read_to_string(&variant_fingerprint_path)
-        .expect("variant fingerprint file should exist")
-        .trim()
-        .to_string();
-
-    let variant_own_bytes = fs::read(variant_dir.join(NODE_CONFIG_FILE))
-        .expect("variant peppy.json5 should be readable");
-    let expected_fingerprint = config::fingerprint::fingerprint_for_bytes(&variant_own_bytes);
-    assert_eq!(
-        stored_fingerprint, expected_fingerprint,
-        "stored fingerprint should match the variant's own peppy.json5"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_variant_missing_directory_fails() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let node_dir = tempdir().expect("failed to create temp node directory");
-
-    // Root config declares a variant whose directory does not exist
-    write_node_config(
-        node_dir.path(),
-        r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "example_node",
-                tag: "0.1.0",
-                variants: [
-                    { name: "missing_variant", source: { local: "./missing_variant" } },
-                ],
-            },
-            interfaces: {},
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"],
-            },
-        }"#,
-    );
-
-    let response = poll_node_sync(
-        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_sync request should complete");
-
-    assert!(!response.success, "node_sync should fail");
-    assert!(
-        response.error_message.contains("missing_variant"),
-        "error should mention the variant name, got: {}",
-        response.error_message
-    );
-    assert!(
-        response.error_message.contains("does not exist")
-            || response.error_message.contains("No such file"),
-        "error should mention missing variant directory, got: {}",
-        response.error_message
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_variant_invalid_config_fails() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let node_dir = tempdir().expect("failed to create temp node directory");
-
-    // Create variant directory with invalid config
-    let variant_dir = node_dir.path().join("bad_variant");
-    write_variant_config(&variant_dir, r#"{ invalid: [unclosed"#);
-
-    // Root config declares the variant
-    write_node_config(
-        node_dir.path(),
-        r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "example_node",
-                tag: "0.1.0",
-                variants: [
-                    { name: "bad_variant", source: { local: "./bad_variant" } },
-                ],
-            },
-            interfaces: {},
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"],
-            },
-        }"#,
-    );
-
-    let response = poll_node_sync(
-        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_sync request should complete");
-
-    assert!(!response.success, "node_sync should fail");
-    assert!(
-        response.error_message.contains("bad_variant"),
-        "error should mention the variant name, got: {}",
-        response.error_message
-    );
-    assert!(
-        response.error_message.contains("Failed to parse variant"),
-        "error should mention parse failure, got: {}",
-        response.error_message
-    );
-}
-
-/// When a root node has a "default" variant and no execution, sync should
-/// skip root codegen (no .peppy at root) but still generate the variant's .peppy.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_default_variant_skips_root_codegen() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let node_dir = tempdir().expect("failed to create temp node directory");
-
-    // Default variant with its own execution
-    let default_variant_dir = node_dir.path().join("variants").join("default");
-    write_variant_config(
-        &default_variant_dir,
-        r#"{
-            peppy_schema: "node_v1",
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"],
-            },
-        }"#,
-    );
-
-    // Root config: default variant, NO execution
-    write_node_config(
-        node_dir.path(),
-        r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "default_variant_node",
-                tag: "0.1.0",
-                variants: [
-                    { name: "default", source: { local: "./variants/default" } },
-                ],
-            },
-            interfaces: {
-                topics: {
-                    emits: [
-                        {
-                            name: "hello_world",
-                            qos_profile: "sensor_data",
-                            message_format: {
-                                message: "string",
-                            },
-                        },
-                    ],
-                },
-            },
-        }"#,
-    );
-
-    let expected_git_hash = "abc12345";
-    let response = poll_node_sync(
-        &NodeSyncRequest::new(node_dir.path(), expected_git_hash, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("node_sync request should complete");
-
-    assert!(
-        response.success,
-        "node_sync with default variant should succeed, got error: {}",
-        response.error_message
-    );
-
-    // Root peppygen should NOT be generated (no execution at root level)
-    let root_peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
-    assert!(
-        !root_peppygen_dir.exists(),
-        "root peppygen directory should NOT exist for a default-variant node"
-    );
-
-    // Root .peppy should exist (git.hash is always written alongside the
-    // manifest) but should NOT contain peppygen output (no execution at root).
-    let root_peppy_dir = node_dir.path().join(".peppy");
-    assert!(
-        root_peppy_dir.exists(),
-        "root .peppy directory should exist (git.hash lives alongside the manifest)"
-    );
-    assert!(
-        root_peppy_dir.join("git.hash").exists(),
-        "root .peppy/git.hash should exist after sync"
-    );
-
-    // Variant .peppy should be generated
-    let variant_peppy_dir = default_variant_dir.join(PEPPY_OUTPUT_DIR);
-    assert!(
-        variant_peppy_dir.exists(),
-        "variant .peppy directory should exist at {}",
-        variant_peppy_dir.display()
-    );
-
-    // Verify variant peppygen was generated
-    let variant_peppygen_dir = default_variant_dir.join(PEPPYGEN_OUTPUT_PATH);
-    assert!(
-        variant_peppygen_dir.exists(),
-        "variant peppygen directory should exist at {}",
-        variant_peppygen_dir.display()
-    );
-
-    // Verify git.hash in variant .peppy
-    let variant_git_hash_path = variant_peppy_dir.join("git.hash");
-    let stored_git_hash =
-        fs::read_to_string(&variant_git_hash_path).expect("failed to read variant git.hash");
-    assert_eq!(
-        stored_git_hash.trim(),
-        expected_git_hash,
-        "variant git.hash should contain the sync request git_hash"
-    );
-
-    // Verify the original variant peppy.json5 was NOT overwritten with the merged config
-    let variant_config_content = fs::read_to_string(default_variant_dir.join(NODE_CONFIG_FILE))
-        .expect("variant peppy.json5 should still exist");
-    assert!(
-        !variant_config_content.contains("default_variant_node"),
-        "variant peppy.json5 should not contain the root manifest name — \
-         it should remain the original VariantConfig"
-    );
-    assert!(
-        variant_config_content.contains("run_cmd"),
-        "variant peppy.json5 should still contain the original execution config"
-    );
-}
-
-/// Verifies that stale root `.peppy` output directories are cleaned up when a node's
-/// execution moves from the root level into a variant. The first sync creates a root
-/// `.peppy` directory (execution defined at root), then the config is rewritten to remove
-/// root execution and add a `"default"` variant with execution instead. The second sync
-/// should delete the now-stale root `.peppy` directory and create one under the variant.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_default_variant_cleans_stale_root_peppy_dir() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let node_dir = tempdir().expect("failed to create temp node directory");
-
-    // First sync: node WITH execution — creates a root .peppy directory
-    write_node_config(
-        node_dir.path(),
-        r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "example_node",
-                tag: "0.1.0",
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"],
-            },
-        }"#,
-    );
-
-    let response = poll_node_sync(
-        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("first node_sync request should complete");
-
-    assert!(
-        response.success,
-        "first node_sync (with execution) should succeed, got error: {}",
-        response.error_message
-    );
-
-    let root_peppy_dir = node_dir.path().join(PEPPY_OUTPUT_DIR);
-    assert!(
-        root_peppy_dir.exists(),
-        "root .peppy directory should exist after first sync"
-    );
-
-    // Rewrite config: remove execution from root, add a default variant
-    let default_variant_dir = node_dir.path().join("variants").join("default");
-    write_variant_config(
-        &default_variant_dir,
-        r#"{
-            peppy_schema: "node_v1",
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"],
-            },
-        }"#,
-    );
-
-    write_node_config(
-        node_dir.path(),
-        r#"{
-            peppy_schema: "node_v1",
-            manifest: {
-                name: "example_node",
-                tag: "0.1.0",
-                variants: [
-                    { name: "default", source: { local: "./variants/default" } },
-                ],
-            },
-        }"#,
-    );
-
-    // Second sync: language is None at root — should clean up stale root .peppy
-    let response = poll_node_sync(
-        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("second node_sync request should complete");
-
-    assert!(
-        response.success,
-        "second node_sync (without execution) should succeed, got error: {}",
-        response.error_message
-    );
-
-    // Root .peppy should still exist (git.hash is always written alongside
-    // the manifest) but stale peppygen output should have been cleaned up.
-    assert!(
-        root_peppy_dir.exists(),
-        "root .peppy directory should exist (git.hash lives alongside the manifest)"
-    );
-    assert!(
-        root_peppy_dir.join("git.hash").exists(),
-        "root .peppy/git.hash should exist after re-sync"
-    );
-    assert!(
-        !node_dir.path().join(PEPPYGEN_OUTPUT_PATH).exists(),
-        "stale root peppygen output should have been cleaned up after re-sync"
-    );
-
-    // Variant .peppy should be generated
-    let variant_peppy_dir = default_variant_dir.join(PEPPY_OUTPUT_DIR);
-    assert!(
-        variant_peppy_dir.exists(),
-        "variant .peppy directory should exist at {}",
-        variant_peppy_dir.display()
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_undeclared_local_node_id_fails() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let node_dir = tempdir().expect("failed to create temp node directory");
-    // The node consumes a topic from local_node_id "nonexistent", but this
-    // local_node_id is not declared in depends_on.nodes, so sync should fail.
+    // The node consumes a topic from link_id "nonexistent", but this
+    // link_id is not declared in depends_on.nodes, so sync should fail.
     write_node_config(
         node_dir.path(),
         r#"
@@ -1889,7 +1353,7 @@ async fn listen_for_node_sync_undeclared_local_node_id_fails() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 depends_on: {
                     nodes: []
                 },
@@ -1899,7 +1363,7 @@ async fn listen_for_node_sync_undeclared_local_node_id_fails() {
                     emits: [],
                     consumes: [
                         {
-                            local_node_id: "nonexistent",
+                            link_id: "nonexistent",
                             name: "video_stream",
                         }
                     ],
@@ -1934,8 +1398,8 @@ async fn listen_for_node_sync_undeclared_local_node_id_fails() {
 
     assert!(!response.success, "node_sync should fail");
     assert!(
-        response.error_message.contains("undeclared local_node_id"),
-        "error should mention undeclared local_node_id, got: {}",
+        response.error_message.contains("undeclared link_id"),
+        "error should mention undeclared link_id, got: {}",
         response.error_message
     );
 
@@ -1958,7 +1422,7 @@ fn camera_config() -> &'static str {
         peppy_schema: "node_v1",
         manifest: {
             name: "uvc_camera",
-            tag: "0.1.0",
+            tag: "v1",
         },
         interfaces: {
             topics: {
@@ -1982,7 +1446,7 @@ fn camera_config() -> &'static str {
     "#
 }
 
-/// Brain that consumes `video_stream` from `uvc_camera:0.1.0` — used to
+/// Brain that consumes `video_stream` from `uvc_camera:v1` — used to
 /// drive the resolution path in tests where the camera lives in the
 /// repository cache rather than the node stack.
 fn brain_consumes_camera_config() -> &'static str {
@@ -1991,10 +1455,10 @@ fn brain_consumes_camera_config() -> &'static str {
         peppy_schema: "node_v1",
         manifest: {
             name: "my_robot_brain",
-            tag: "0.1.0",
+            tag: "v1",
             depends_on: {
                 nodes: [
-                    { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                    { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
                 ]
             },
         },
@@ -2002,7 +1466,7 @@ fn brain_consumes_camera_config() -> &'static str {
             topics: {
                 emits: [],
                 consumes: [
-                    { local_node_id: "uvc_camera", name: "video_stream" }
+                    { link_id: "uvc_camera", name: "video_stream" }
                 ],
             },
             services: { exposes: [] },
@@ -2061,7 +1525,7 @@ async fn include_repositories_false_does_not_resolve_fs_dep_from_repository() {
     let camera_dir = tempdir().expect("camera tempdir");
     write_node_config(camera_dir.path(), camera_config());
     TestPackagesCache::new()
-        .fs_entry("uvc_camera", "0.1.0", camera_dir.path(), &[])
+        .fs_entry("uvc_camera", "v1", camera_dir.path())
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
@@ -2086,7 +1550,7 @@ async fn include_repositories_true_resolves_fs_dep_from_repository() {
     let camera_dir = tempdir().expect("camera tempdir");
     write_node_config(camera_dir.path(), camera_config());
     TestPackagesCache::new()
-        .fs_entry("uvc_camera", "0.1.0", camera_dir.path(), &[])
+        .fs_entry("uvc_camera", "v1", camera_dir.path())
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
@@ -2107,7 +1571,7 @@ async fn include_repositories_true_resolves_fs_dep_from_repository() {
     assert_eq!(response.resolved_from_repositories.len(), 1);
     let entry = &response.resolved_from_repositories[0];
     assert_eq!(entry.name, "uvc_camera");
-    assert_eq!(entry.tag, "0.1.0");
+    assert_eq!(entry.tag, "v1");
     assert_eq!(entry.source_kind, RepoSourceKind::Fs);
 
     // peppygen for the consumed topic should exist.
@@ -2141,7 +1605,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
         source_repo_dir.join("nodes/dep_a").join(NODE_CONFIG_FILE),
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "dep_a", tag: "0.1.0" },
+            manifest: { name: "dep_a", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [{ name: "topic_a", qos_profile: "sensor_data", message_format: { v: "u32" } }],
@@ -2157,7 +1621,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
         source_repo_dir.join("nodes/dep_b").join(NODE_CONFIG_FILE),
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "dep_b", tag: "0.1.0" },
+            manifest: { name: "dep_b", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [{ name: "topic_b", qos_profile: "sensor_data", message_format: { v: "u32" } }],
@@ -2186,8 +1650,8 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
 
     let repo_url = source_repo_dir.display().to_string();
     TestPackagesCache::new()
-        .git_entry("dep_a", "0.1.0", &repo_url, &branch, "nodes/dep_a", &[])
-        .git_entry("dep_b", "0.1.0", &repo_url, &branch, "nodes/dep_b", &[])
+        .git_entry("dep_a", "v1", &repo_url, &branch, "nodes/dep_a")
+        .git_entry("dep_b", "v1", &repo_url, &branch, "nodes/dep_b")
         .write(&started.peppy_dirs);
 
     // Brain depends on both deps and consumes one topic from each.
@@ -2199,11 +1663,11 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 depends_on: {
                     nodes: [
-                        { name: "dep_a", tag: "0.1.0", local_id: "a" },
-                        { name: "dep_b", tag: "0.1.0", local_id: "b" }
+                        { name: "dep_a", tag: "v1", link_id: "a" },
+                        { name: "dep_b", tag: "v1", link_id: "b" }
                     ]
                 },
             },
@@ -2211,8 +1675,8 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
                 topics: {
                     emits: [],
                     consumes: [
-                        { local_node_id: "a", name: "topic_a" },
-                        { local_node_id: "b", name: "topic_b" }
+                        { link_id: "a", name: "topic_a" },
+                        { link_id: "b", name: "topic_b" }
                     ],
                 },
                 services: { exposes: [] },
@@ -2258,7 +1722,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         r#"
         {
             peppy_schema: "node_v1",
-            manifest: { name: "uvc_camera", tag: "0.1.0" },
+            manifest: { name: "uvc_camera", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [
@@ -2295,7 +1759,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         r#"
         {
             peppy_schema: "node_v1",
-            manifest: { name: "uvc_camera", tag: "0.1.0" },
+            manifest: { name: "uvc_camera", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [
@@ -2309,7 +1773,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         "#,
     );
     TestPackagesCache::new()
-        .fs_entry("uvc_camera", "0.1.0", repo_camera_dir.path(), &[])
+        .fs_entry("uvc_camera", "v1", repo_camera_dir.path())
         .write(&started.peppy_dirs);
 
     // Brain consumes `topic_x` — only the stack version exposes it.
@@ -2321,15 +1785,15 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
+                tag: "v1",
                 depends_on: {
-                    nodes: [{ name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }]
+                    nodes: [{ name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }]
                 },
             },
             interfaces: {
                 topics: {
                     emits: [],
-                    consumes: [{ local_node_id: "uvc_camera", name: "topic_x" }],
+                    consumes: [{ link_id: "uvc_camera", name: "topic_x" }],
                 },
                 services: { exposes: [] },
                 actions: { exposes: [] },
@@ -2349,8 +1813,8 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         response
             .resolved_from_stack
             .iter()
-            .any(|d| d == "uvc_camera:0.1.0"),
-        "stack provenance should list uvc_camera:0.1.0, got {:?}",
+            .any(|d| d == "uvc_camera:v1"),
+        "stack provenance should list uvc_camera:v1, got {:?}",
         response.resolved_from_stack
     );
     assert!(
@@ -2375,7 +1839,7 @@ async fn include_repositories_true_walks_transitive_dep() {
         c_dir.path(),
         r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "dep_c", tag: "0.1.0" },
+            manifest: { name: "dep_c", tag: "v1" },
             interfaces: {
                 topics: {
                     emits: [{ name: "topic_c", qos_profile: "sensor_data", message_format: { v: "u32" } }],
@@ -2392,13 +1856,13 @@ async fn include_repositories_true_walks_transitive_dep() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "dep_b",
-                tag: "0.1.0",
-                depends_on: { nodes: [{ name: "dep_c", tag: "0.1.0", local_id: "c" }] },
+                tag: "v1",
+                depends_on: { nodes: [{ name: "dep_c", tag: "v1", link_id: "c" }] },
             },
             interfaces: {
                 topics: {
                     emits: [{ name: "topic_b", qos_profile: "sensor_data", message_format: { v: "u32" } }],
-                    consumes: [{ local_node_id: "c", name: "topic_c" }],
+                    consumes: [{ link_id: "c", name: "topic_c" }],
                 },
             },
             execution: { language: "rust", run_cmd: ["sleep", "10"] },
@@ -2411,22 +1875,22 @@ async fn include_repositories_true_walks_transitive_dep() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "dep_a",
-                tag: "0.1.0",
-                depends_on: { nodes: [{ name: "dep_b", tag: "0.1.0", local_id: "b" }] },
+                tag: "v1",
+                depends_on: { nodes: [{ name: "dep_b", tag: "v1", link_id: "b" }] },
             },
             interfaces: {
                 topics: {
                     emits: [{ name: "topic_a", qos_profile: "sensor_data", message_format: { v: "u32" } }],
-                    consumes: [{ local_node_id: "b", name: "topic_b" }],
+                    consumes: [{ link_id: "b", name: "topic_b" }],
                 },
             },
             execution: { language: "rust", run_cmd: ["sleep", "10"] },
         }"#,
     );
     TestPackagesCache::new()
-        .fs_entry("dep_a", "0.1.0", a_dir.path(), &[])
-        .fs_entry("dep_b", "0.1.0", b_dir.path(), &[])
-        .fs_entry("dep_c", "0.1.0", c_dir.path(), &[])
+        .fs_entry("dep_a", "v1", a_dir.path())
+        .fs_entry("dep_b", "v1", b_dir.path())
+        .fs_entry("dep_c", "v1", c_dir.path())
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
@@ -2436,13 +1900,13 @@ async fn include_repositories_true_walks_transitive_dep() {
             peppy_schema: "node_v1",
             manifest: {
                 name: "my_robot_brain",
-                tag: "0.1.0",
-                depends_on: { nodes: [{ name: "dep_a", tag: "0.1.0", local_id: "a" }] },
+                tag: "v1",
+                depends_on: { nodes: [{ name: "dep_a", tag: "v1", link_id: "a" }] },
             },
             interfaces: {
                 topics: {
                     emits: [],
-                    consumes: [{ local_node_id: "a", name: "topic_a" }],
+                    consumes: [{ link_id: "a", name: "topic_a" }],
                 },
                 services: { exposes: [] },
                 actions: { exposes: [] },
@@ -2462,7 +1926,7 @@ async fn include_repositories_true_walks_transitive_dep() {
         .iter()
         .map(|e| format!("{}:{}", e.name, e.tag))
         .collect();
-    for expected in ["dep_a:0.1.0", "dep_b:0.1.0", "dep_c:0.1.0"] {
+    for expected in ["dep_a:v1", "dep_b:v1", "dep_c:v1"] {
         assert!(
             names.iter().any(|n| n == expected),
             "expected {} in repo provenance, got {:?}",
@@ -2496,5 +1960,108 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
         response.error_message.contains("peppy repo refresh"),
         "error should suggest repo refresh, got: {}",
         response.error_message
+    );
+}
+
+/// End-to-end regression for the user-reported bug: a `conforms_to` entry
+/// resolved from a git-sourced interface cache must materialize the repo
+/// checkout before reading the interface manifest. The interface cache
+/// records a *repo-relative* path (e.g. `cameras/depth_camera.json5`), so
+/// without `ensure_checkout` the daemon would have tried to read that path
+/// from the daemon's CWD and failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_sync_resolves_git_sourced_conforms_to_interface() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    // Build a local git repo that hosts the interface manifest at the
+    // same repo-relative location the real `interfaces_hub` uses.
+    let source_parent = tempdir().expect("source parent tempdir");
+    let source_repo_dir = source_parent.path().join("interfaces_hub");
+    std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
+    let branch = init_local_git_repo(&source_repo_dir);
+
+    const INTERFACE_BODY: &str = r#"{
+        peppy_schema: "interface_v1",
+        manifest: { name: "depth_camera", tag: "v1" },
+        interfaces: {
+            topics: [
+                { name: "video_stream", qos_profile: "sensor_data" }
+            ]
+        }
+    }"#;
+
+    std::fs::create_dir_all(source_repo_dir.join("cameras")).expect("cameras dir");
+    std::fs::write(
+        source_repo_dir.join("cameras/depth_camera.json5"),
+        INTERFACE_BODY,
+    )
+    .expect("write interface file");
+
+    // Stage and commit the interface file on top of the initial empty
+    // commit so a fresh clone sees it on the resolved ref.
+    let repo = git2::Repository::open(&source_repo_dir).expect("reopen repo");
+    let mut index = repo.index().expect("index");
+    index
+        .add_all(["cameras/*"].iter(), git2::IndexAddOption::DEFAULT, None)
+        .expect("add_all");
+    index.write().expect("write index");
+    let tree_id = index.write_tree().expect("write_tree");
+    let tree = repo.find_tree(tree_id).expect("find_tree");
+    let parent_oid = repo.head().unwrap().target().unwrap();
+    let parent = repo.find_commit(parent_oid).expect("find_commit");
+    let sig = git2::Signature::now("Test", "test@example.com").expect("sig");
+    repo.commit(Some("HEAD"), &sig, &sig, "add interface", &tree, &[&parent])
+        .expect("commit interface");
+
+    let repo_url = source_repo_dir.display().to_string();
+
+    TestPackagesCache::new()
+        .interface_git_entry(
+            "depth_camera",
+            "v1",
+            &repo_url,
+            &branch,
+            "cameras/depth_camera.json5",
+            INTERFACE_BODY,
+        )
+        .write(&started.peppy_dirs);
+
+    // The node under sync declares `conforms_to` against the git-sourced
+    // interface. Before the fix, `handle_node_sync_request` errored here
+    // with "failed to read cached interface ... at cameras/depth_camera.json5".
+    let node_dir = tempdir().expect("node tempdir");
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            peppy_schema: "node_v1",
+            manifest: { name: "depth_publisher", tag: "v1" },
+            interfaces: {
+                topics: { emits: [], consumes: [] },
+                services: { exposes: [] },
+                actions: { exposes: [] },
+                conforms_to: [
+                    { name: "depth_camera", tag: "v1" }
+                ],
+            },
+            execution: { language: "rust", run_cmd: ["sleep", "10"] }
+        }"#,
+    );
+
+    let response = sync_with_flag(&started, node_dir.path(), true).await;
+    assert!(
+        response.success,
+        "sync should resolve the git-sourced conforms_to interface, got error: {}",
+        response.error_message
+    );
+
+    // The interface's checkout should exist on disk now — this proves
+    // `ensure_checkout` ran rather than `std::fs::read` silently relying
+    // on a path that happened to exist in the daemon's CWD.
+    let checkout_count = std::fs::read_dir(started.peppy_dirs.git_checkouts_dir())
+        .expect("git_checkouts_dir should exist")
+        .count();
+    assert_eq!(
+        checkout_count, 1,
+        "exactly one git checkout dir should have been materialized"
     );
 }

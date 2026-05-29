@@ -2,16 +2,14 @@ pub mod add_steps;
 mod build_steps;
 mod entity;
 mod run_steps;
-mod validation;
 
 pub use entity::{
-    BuildContext, DependencySpec, NodeEntity, NodeStage, OutputSinks, StartContext,
-    StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
+    BuildContext, NodeEntity, NodeStage, OutputSinks, StartContext, StartedInstanceCtx,
+    TrackedNodeInstance, WorkingDirGuard,
 };
-pub use validation::{collect_dependency_specs, validate_dependency_specs};
 
 use crate::error::{Error, Result};
-use config::node::{Name, NodeConfig};
+use config::node::{Name, NodeConfig, collect_dependency_specs, validate_dependency_specs};
 use core_node_api::{InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph};
 use names_generator2::get_random;
 use parking_lot::RwLock;
@@ -70,7 +68,6 @@ pub struct EntitySnapshot {
     pub config: NodeConfig,
     pub config_path: PathBuf,
     pub artifact_path: Option<PathBuf>,
-    pub variant_name: Option<String>,
 }
 
 fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
@@ -147,7 +144,7 @@ impl NodeStackInner {
         );
 
         if let Some(err) = errors.into_iter().next() {
-            return Err(err);
+            return Err(err.into());
         }
 
         Ok(())
@@ -267,6 +264,39 @@ impl NodeStackInner {
         None
     }
 
+    /// Find the `(node_name, node_tag)` of any entity in the stack that
+    /// already tracks an instance with `instance_id`, in any state —
+    /// `Starting`, `Running`, etc. Used by the daemon's stack-wide
+    /// instance_id uniqueness guard at spawn time (the validator's
+    /// `rule 7` is the primary check at plan time; this is the
+    /// defensive backstop at the trust boundary).
+    ///
+    /// Skips the root entity — the daemon's own internals own an
+    /// `instance_id`, but it's not user-namable, so a collision there
+    /// is structurally impossible.
+    fn find_entity_label_for_instance_id_any_state(
+        &self,
+        instance_id: &Name,
+    ) -> Option<(String, String)> {
+        for handle in self.graph.node_weights() {
+            let guard = handle.read();
+            if self.is_root(&key_from_entity(&guard)) {
+                continue;
+            }
+            let owns_it = guard
+                .instances()
+                .iter()
+                .any(|inst| inst.instance_id() == instance_id);
+            if owns_it {
+                return Some((
+                    guard.config().manifest.name.as_str().to_owned(),
+                    guard.config().manifest.tag.clone(),
+                ));
+            }
+        }
+        None
+    }
+
     /// Same filtering rule as [`find_by_instance_id`]: only entities
     /// containing a `Running` instance with the given id are returned.
     fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
@@ -347,7 +377,6 @@ impl NodeStackInner {
         config: NodeConfig,
         allow_missing_dependencies: bool,
         config_path: P,
-        variant_name: Option<String>,
     ) -> Result<Option<EntitySnapshot>> {
         let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
         let config_path = config_path.into();
@@ -386,7 +415,7 @@ impl NodeStackInner {
 
                 // Interface changes can break dependents that consume this
                 // node, so they need an explicit gate. Dependency-spec
-                // changes (e.g. swapping `local_node_id` of a consumed
+                // changes (e.g. swapping `link_id` of a consumed
                 // topic) only affect *this* node's outbound edges, so they
                 // don't need the dependents check.
                 if interfaces_changed {
@@ -409,8 +438,7 @@ impl NodeStackInner {
                 }
 
                 if (interfaces_changed || dependencies_changed) && !allow_missing_dependencies {
-                    let candidate =
-                        NodeEntity::new(config.clone(), config_path.clone(), variant_name.clone());
+                    let candidate = NodeEntity::new(config.clone(), config_path.clone());
                     self.validate_dependencies(&candidate)?;
                 }
 
@@ -424,13 +452,12 @@ impl NodeStackInner {
                     config: guard.config().clone(),
                     config_path: guard.config_path().to_path_buf(),
                     artifact_path: guard.artifact_path().map(|p| p.to_path_buf()),
-                    variant_name: guard.variant_name().map(str::to_owned),
                 };
 
                 // Replace the entity in-place under the still-held write
                 // lock. The same `Arc` handle is preserved so any external
                 // readers see the new state.
-                *guard = NodeEntity::new(config, config_path, variant_name);
+                *guard = NodeEntity::new(config, config_path);
 
                 (previous_snapshot, interfaces_changed, dependencies_changed)
             };
@@ -442,7 +469,7 @@ impl NodeStackInner {
             Ok(Some(previous_snapshot))
         } else {
             // Entity doesn't exist, create new one in the Added stage.
-            let entity = NodeEntity::new(config, config_path, variant_name);
+            let entity = NodeEntity::new(config, config_path);
             self.insert_entity(entity, !allow_missing_dependencies)?;
             Ok(None)
         }
@@ -562,6 +589,7 @@ impl NodeStack {
             instance_id,
             Some(std::process::id()),
             InstanceState::Running,
+            std::collections::BTreeMap::new(),
         );
         let root_entity = NodeEntity::root(root_config, root_path, instance);
         Self {
@@ -627,6 +655,20 @@ impl NodeStack {
         guard.find_entity_by_instance_id(instance_id)
     }
 
+    /// Return the `(node_name, node_tag)` of any entity in the stack that
+    /// tracks an instance with `instance_id` in any state — `Starting`,
+    /// `Running`, etc. Used by the daemon to enforce stack-wide
+    /// `instance_id` uniqueness at the spawn trust boundary (per spec
+    /// rule 7). The validator catches collisions at plan time; this is
+    /// the defensive backstop.
+    pub fn find_entity_label_for_instance_id_any_state(
+        &self,
+        instance_id: &Name,
+    ) -> Option<(String, String)> {
+        let guard = self.shared.read();
+        guard.find_entity_label_for_instance_id_any_state(instance_id)
+    }
+
     /// Adds a config to the stack or updates an existing one.
     ///
     /// New entities are inserted in [`NodeStage::Added`]; the caller is
@@ -646,28 +688,8 @@ impl NodeStack {
         allow_missing_dependencies: bool,
         config_path: P,
     ) -> Result<()> {
-        self.push_config_with_variant(config, allow_missing_dependencies, config_path, None)
-    }
-
-    /// Like [`Self::push_config`] but also records the variant label that
-    /// was selected at `node add` time. The variant is stored as
-    /// first-class state on the resulting [`NodeEntity`] and exposed via
-    /// [`NodeEntity::variant_name`]. Passing `None` is equivalent to
-    /// [`Self::push_config`].
-    pub fn push_config_with_variant<P: Into<PathBuf>>(
-        &self,
-        config: NodeConfig,
-        allow_missing_dependencies: bool,
-        config_path: P,
-        variant_name: Option<String>,
-    ) -> Result<()> {
-        self.push_config_capturing_previous(
-            config,
-            allow_missing_dependencies,
-            config_path,
-            variant_name,
-        )
-        .map(|_| ())
+        self.push_config_capturing_previous(config, allow_missing_dependencies, config_path)
+            .map(|_| ())
     }
 
     /// Like [`Self::push_config`] but additionally returns the snapshot of
@@ -682,15 +704,9 @@ impl NodeStack {
         config: NodeConfig,
         allow_missing_dependencies: bool,
         config_path: P,
-        variant_name: Option<String>,
     ) -> Result<Option<EntitySnapshot>> {
         let mut guard = self.shared.write();
-        guard.push_config_impl(
-            config,
-            allow_missing_dependencies,
-            config_path,
-            variant_name,
-        )
+        guard.push_config_impl(config, allow_missing_dependencies, config_path)
     }
 
     pub fn snapshot(&self) -> Vec<EntityHandle> {
@@ -810,7 +826,7 @@ impl NodeStack {
     /// defined below — they are intentionally kept as plain data so the
     /// call-site reads as `stack.restore_snapshot_if_matches(target, snap)`.
     ///
-    /// Atomically restore an entity to a previously captured snapshot, iff the
+    /// Atomically restore an entity to a previously captured snapshot, if the
     /// slot still holds the expected handle+generation. Used by the node-add
     /// rebuild path to roll back to the prior `Ready` state when a rebuild
     /// fails after `push_config` has already replaced the entity in-place.
@@ -823,7 +839,7 @@ impl NodeStack {
         target: RestoreTarget<'_>,
         snapshot: EntitySnapshot,
     ) -> bool {
-        let guard = self.shared.write();
+        let mut guard = self.shared.write();
         let key = NodeKey::new(target.name, target.tag);
 
         if guard.is_root(&key) {
@@ -834,10 +850,10 @@ impl NodeStack {
             return false;
         };
 
-        let Some(current) = guard.graph.node_weight(index) else {
+        let Some(current) = guard.graph.node_weight(index).cloned() else {
             return false;
         };
-        if !Arc::ptr_eq(current, target.expected_handle) {
+        if !Arc::ptr_eq(&current, target.expected_handle) {
             return false;
         }
         {
@@ -858,9 +874,14 @@ impl NodeStack {
             snapshot.config_path,
             snapshot.artifact_path,
             Vec::new(),
-            snapshot.variant_name,
         );
         *current.write() = restored;
+
+        // The failed rebuild may have rewired outgoing edges to match the new
+        // config's dependencies. Now that the snapshot's config is back in
+        // place, the edges must match the snapshot's dependency list too —
+        // otherwise `dependencies_of()` would report a stale view.
+        guard.rewire_dependencies(index);
         true
     }
 
@@ -908,7 +929,6 @@ impl NodeStack {
             let config_path = source_guard.config_path().to_path_buf();
             let artifact_path = source_guard.artifact_path().map(|p| p.to_path_buf());
             let instances: Vec<TrackedNodeInstance> = source_guard.instances().to_vec();
-            let variant_name = source_guard.variant_name().map(str::to_owned);
 
             // Reject transient lifecycle state from the source: snapshot
             // replay only makes sense for entities that are quiescent (no
@@ -951,13 +971,7 @@ impl NodeStack {
             // Materialize the entity directly in the appropriate stage. The
             // `from_snapshot` constructor bypasses the lifecycle because the
             // source artifact already exists on disk.
-            let entity = NodeEntity::from_snapshot(
-                config,
-                config_path,
-                artifact_path,
-                instances,
-                variant_name,
-            );
+            let entity = NodeEntity::from_snapshot(config, config_path, artifact_path, instances);
             prepared.push((format!("{}:{}", name, tag), entity));
         }
 

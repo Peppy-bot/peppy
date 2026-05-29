@@ -28,7 +28,7 @@ impl PeppyLauncherParser {
 
 #[cfg(test)]
 mod tests {
-    use crate::launcher::{DeploymentSource, PeppySchema, VariantSource};
+    use crate::{launcher::DeploymentSource, schema::PeppySchema};
     use tempfile::tempdir;
 
     use super::PeppyLauncherParser;
@@ -147,7 +147,7 @@ mod tests {
         let path = dir.path().join("anything.json5");
         let json5 = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "n", tag: "0.1.0" },
+            manifest: { name: "n", tag: "v1" },
             interfaces: {},
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
         }"#;
@@ -188,90 +188,5 @@ mod tests {
             !cfg.deployments.is_empty(),
             "example launcher should contain deployments"
         );
-    }
-
-    #[test]
-    fn test_parse_peppy_config_with_variants() {
-        let valid_sha = "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a";
-        let json5 = r#"{
-            peppy_schema: "launcher_v1",
-            deployments: [
-                {
-                    source: {
-                        repo: "https://github.com/Peppy-bot/nodes_hub.git",
-                        path: "robot_brain",
-                        ref: "main",
-                        variant: { name: "mock-rust" }
-                    },
-                    instances: [{ instance_id: "the_brain" }]
-                },
-                {
-                    source: {
-                        url: "https://example.com/node.tar.zst",
-                        sha256: "VALID_SHA",
-                        variant: {
-                            url: "https://example.com/variant.tar.zst"
-                        }
-                    },
-                    instances: [{ instance_id: "node_1" }]
-                },
-                {
-                    source: {
-                        local: "./my_node",
-                        variant: {
-                            repo: "https://github.com/Peppy-bot/variants.git",
-                            path: "mock_node",
-                            ref: "v2"
-                        }
-                    },
-                    instances: [{ instance_id: "node_2" }]
-                },
-                {
-                    source: { local: "./no_variant_node" },
-                    instances: [{ instance_id: "node_3" }]
-                }
-            ]
-        }"#
-        .replace("VALID_SHA", valid_sha);
-
-        let cfg = PeppyLauncherParser::from_content(&json5).unwrap();
-        assert_eq!(cfg.deployments.len(), 4);
-
-        // Git source with name variant
-        let d0 = &cfg.deployments[0];
-        let DeploymentSource::Git(git) = &d0.source else {
-            panic!("expected git source");
-        };
-        let Some(VariantSource::Name(v)) = &git.variant else {
-            panic!("expected name variant");
-        };
-        assert_eq!(v.name, "mock-rust");
-
-        // Url source with url variant (no sha256)
-        let d1 = &cfg.deployments[1];
-        let DeploymentSource::Url(url_src) = &d1.source else {
-            panic!("expected url source");
-        };
-        let Some(VariantSource::Url(v)) = &url_src.variant else {
-            panic!("expected url variant");
-        };
-        assert_eq!(v.url, "https://example.com/variant.tar.zst");
-        assert_eq!(v.sha256, None);
-
-        // Local source with git variant
-        let d2 = &cfg.deployments[2];
-        let DeploymentSource::Local(local) = &d2.source else {
-            panic!("expected local source");
-        };
-        let Some(VariantSource::Git(v)) = &local.variant else {
-            panic!("expected git variant");
-        };
-        assert_eq!(v.repo, "https://github.com/Peppy-bot/variants.git");
-        assert_eq!(v.path.as_deref(), Some("mock_node"));
-        assert_eq!(v.ref_.as_deref(), Some("v2"));
-
-        // Source without variant
-        let d3 = &cfg.deployments[3];
-        assert!(d3.source.variant().is_none());
     }
 }

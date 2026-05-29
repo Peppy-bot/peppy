@@ -12,6 +12,7 @@ from peppylib import (
     ClockResponse,
     ClockTick,
     QoSProfile,
+    SenderTarget,
     TopicMessenger,
     subscribe_clock,
     synchronize,
@@ -19,6 +20,7 @@ from peppylib import (
 
 from .common import (
     CORE_NODE,
+    CORE_NODE_TAG,
     SERVER_INSTANCE,
     spawn_stub_listener,
     start_router_and_runner,
@@ -89,7 +91,7 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
             server_handle,
             CORE_NODE,
             SERVER_INSTANCE,
-            CORE_NODE,
+            SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
             "clock",
             QoSProfile.SensorData,
             canned.encode(),

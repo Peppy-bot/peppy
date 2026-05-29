@@ -12,22 +12,32 @@ With a single launch file, you or your team can recreate an entire node environm
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Start by cloning [this repository](https://github.com/Peppy-bot/launch_example):
+Start by cloning [this repository](https://github.com/Peppy-bot/launchers_hub):
 
 <Steps>
 1. Clone the repository:
    ```sh
-   git clone https://github.com/Peppy-bot/launch_example
+   git clone https://github.com/Peppy-bot/launchers_hub
    ```
 
 2. Navigate into the directory:
    ```sh
-   cd launch_example
+   cd launchers_hub
    ```
 </Steps>
 
-In the root directory, you'll find a [`peppy_launcher.json5`](https://github.com/Peppy-bot/launch_example/blob/main/peppy_launcher.json5) file. Opening it reveals the following structure:
- 1. The file is identified by `peppy_schema: "launcher_v1"` at the root — peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node_v1"`)
+In the `examples/` directory, you'll find a launcher file for each language. Opening it reveals the following structure:
+
+<Tabs>
+  <TabItem label="Python">
+[`examples/python_robot.json5`](https://github.com/Peppy-bot/launchers_hub/blob/main/examples/python_robot.json5)
+  </TabItem>
+  <TabItem label="Rust">
+[`examples/rust_robot.json5`](https://github.com/Peppy-bot/launchers_hub/blob/main/examples/rust_robot.json5)
+  </TabItem>
+</Tabs>
+
+ 1. The file is identified by `peppy_schema: "launcher_v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node_v1"`)
  2. All deployments are defined in the `deployments` array
  3. Each deployment requires a `source` and `instances` attribute
 
@@ -41,73 +51,12 @@ The `source` attribute supports four formats:
 The repository source resolves nodes from a locally cached index. Run `peppy repo refresh` before launching to ensure the cache is up to date. If a node or tag is missing from the cache, the launch will fail with a "not found" error.
 :::
 
-### Variants
-
-Each deployment source can optionally include a `variant` field to select a specific variant of the node (e.g., a mock implementation or an architecture-specific build). The `variant` object supports three formats:
-
- - **Name**: Reference a variant by name — `{ name: "mock-rust" }`
- - **Git repository**: Fetch a variant from a git repo — requires `repo`, with optional `path` and `ref`
- - **URL**: Fetch a variant from an HTTP(S) URL — requires `url`, with optional `sha256`
-
-Examples:
-
-```json5
-// Named variant
-{
-  source: {
-    repo: "https://github.com/Peppy-bot/nodes_hub.git",
-    path: "rust/fake_openarm01_controller",
-    ref: "main",
-    variant: {
-      name: "mock-rust"
-    }
-  },
-  instances: [
-    { instance_id: "the_nervous_system" }
-  ]
-}
-```
-
-```json5
-// Git variant
-{
-  source: {
-    local: "./my_node",
-    variant: {
-      repo: "https://github.com/Peppy-bot/node_variants.git",
-      path: "mock",
-      ref: "v1.0.0"
-    }
-  },
-  instances: [
-    { instance_id: "my_node_1" }
-  ]
-}
-```
-
-```json5
-// URL variant
-{
-  source: {
-    local: "./my_node",
-    variant: {
-      url: "https://example.com/my_node_variant.tar.zst",
-      sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
-    }
-  },
-  instances: [
-    { instance_id: "my_node_1" }
-  ]
-}
-```
-
 ```json5
 // Repository source (long form)
 {
   source: {
     name: "openarm01_controller",
-    tag: "0.1.0",
-    variant: { name: "mock-python" }
+    tag: "v1",
   },
   instances: [
     { instance_id: "the_nervous_system" }
@@ -116,11 +65,10 @@ Examples:
 ```
 
 ```json5
-// Repository source (combined shorthand — equivalent to the example above)
+// Repository source (combined shorthand, equivalent to the example above)
 {
   source: {
-    name: "openarm01_controller:0.1.0",
-    variant: { name: "mock-python" }
+    name: "openarm01_controller:v1",
   },
   instances: [
     { instance_id: "the_nervous_system" }
@@ -129,21 +77,19 @@ Examples:
 ```
 
 :::caution
-The git `ref` and `deployment.source` tag share the same format but are independent values.
-This means you could have a git `ref` of `v0.1.0` while `peppy.json5` specifies `v0.1.1`.
-Ensure your git tags match the version in `peppy.json5` to avoid confusion!
+The git `ref` and the node `tag` declared in `peppy.json5` are independent values, and they do not share the same format — git refs can contain dots (e.g. `v0.1.0`), but node tags must start with an ASCII letter and forbid dots (e.g. `v1`, `donut`). This means you could have a git `ref` of `v0.1.0` while `peppy.json5` specifies `tag: "v1"`. Keep them coordinated so a checkout of a given git ref lines up with the tag your launcher expects.
 :::
 
 From within the cloned repository, execute the launcher:
 <Tabs>
   <TabItem label="Python">
 ```sh
-peppy stack launch ./python/peppy_launcher.json5
+peppy stack launch ./examples/python_robot.json5
 ```
   </TabItem>
   <TabItem label="Rust">
 ```sh
-peppy stack launch ./rust/peppy_launcher.json5
+peppy stack launch ./examples/rust_robot.json5
 ```
   </TabItem>
 </Tabs>
@@ -152,7 +98,7 @@ PeppyOS automatically inspects the `name` and `tag` of each node, verifies that 
 
 ### Launching from a repository
 
-Launchers discovered by `peppy repo refresh` (see [Repositories](/advanced_guides/repositories/)) can be invoked by bare name — no path required:
+Launchers discovered by `peppy repo refresh` (see [Repositories](/advanced_guides/repositories/)) can be invoked by bare name, no path required:
 
 ```sh
 peppy stack launch openarm01_sim_teleop
@@ -169,21 +115,21 @@ Verify that the node stack was configured correctly:
 $ peppy stack list
 Node stack
 
-┌─────────────────────────────────────────┬───────┬─────────┬────────────┬──────────────────────────────────────────────────────────────────────────┐
-│ NODE                                    │ STAGE │ VARIANT │ INSTANCES  │ PATH                                                                     │
-├─────────────────────────────────────────┼───────┼─────────┼────────────┼──────────────────────────────────────────────────────────────────────────┤
-│ core-node-adoring-wiles-7286:v0.8.0     │ Root  │ default │ 1 running  │ /Users/tuatini/workspace/peppy                                           │
-│ fake_openarm01_controller:0.1.0         │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_openarm01_controller_0.1.0.tar.zst │
-│ fake_robot_brain:0.1.0                  │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_robot_brain_0.1.0.tar.zst          │
-│ fake_uvc_camera:0.1.0                   │ Ready │ default │ 2 running  │ /Users/tuatini/.peppy/built_nodes/fake_uvc_camera_0.1.0.tar.zst           │
-│ fake_video_reconstruction:0.1.0         │ Ready │ default │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_video_reconstruction_0.1.0.tar.zst │
-└─────────────────────────────────────────┴───────┴─────────┴────────────┴──────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────┬───────┬────────────┬──────────────────────────────────────────────────────────────────────────┐
+│ NODE                                    │ STAGE │ INSTANCES  │ PATH                                                                     │
+├─────────────────────────────────────────┼───────┼────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ core-node-adoring-wiles-7286:v0.8.0     │ Root  │ 1 running  │ /Users/tuatini/workspace/peppy                                           │
+│ fake_openarm01_controller:v1         │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_openarm01_controller_v1.tar.zst │
+│ fake_robot_brain:v1                  │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_robot_brain_v1.tar.zst          │
+│ fake_uvc_camera:v1                   │ Ready │ 2 running  │ /Users/tuatini/.peppy/built_nodes/fake_uvc_camera_v1.tar.zst           │
+│ fake_video_reconstruction:v1         │ Ready │ 1 running  │ /Users/tuatini/.peppy/built_nodes/fake_video_reconstruction_v1.tar.zst │
+└─────────────────────────────────────────┴───────┴────────────┴──────────────────────────────────────────────────────────────────────────┘
 
 
 Dependencies
-  - fake_robot_brain:0.1.0 -> fake_openarm01_controller:0.1.0
-  - fake_robot_brain:0.1.0 -> fake_uvc_camera:0.1.0
-  - fake_video_reconstruction:0.1.0 -> fake_uvc_camera:0.1.0
+  - fake_robot_brain:v1 -> fake_openarm01_controller:v1
+  - fake_robot_brain:v1 -> fake_uvc_camera:v1
+  - fake_video_reconstruction:v1 -> fake_uvc_camera:v1
 ```
 
 The output confirms that all nodes have been added to the stack along with their dependency relationships.

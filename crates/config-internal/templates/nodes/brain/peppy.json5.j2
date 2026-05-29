@@ -4,7 +4,7 @@
   peppy_schema: "node_v1",
   manifest: {
     name: "{{ node_name }}",
-    tag: "0.1.0",
+    tag: "v1",
     labels: [
       "brain"
     ],
@@ -12,18 +12,18 @@
       nodes: [
         {
           name: "{{ uvc_camera_node_name }}",
-          tag: "0.1.0",
-          local_id: "uvc_camera"
+          tag: "v1",
+          link_id: "uvc_camera"
         },
         {
           name: "{{ lidar_sensor_node_name }}",
-          tag: "0.1.0",
-          local_id: "lidar_sensor"
+          tag: "v1",
+          link_id: "lidar_sensor"
         },
         {
           name: "{{ controller_node_name }}",
-          tag: "0.1.0",
-          local_id: "controller"
+          tag: "v1",
+          link_id: "controller"
         },
       ]
     },
@@ -32,11 +32,11 @@
     topics: {
       consumes: [
         {
-          local_node_id: "uvc_camera",
+          link_id: "uvc_camera",
           name: "video_stream"
         },
         {
-          local_node_id: "lidar_sensor",
+          link_id: "lidar_sensor",
           name: "push_lidar_object"
         }
       ],
@@ -44,7 +44,7 @@
     actions: {
       consumes: [
         {
-          local_node_id: "controller",
+          link_id: "controller",
           name: "move_right_arm",
         }
       ],

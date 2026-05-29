@@ -8,7 +8,11 @@
       instances: [
         {
           instance_id: "the_brain",
-          arguments: {}
+          arguments: {},
+          bindings: {
+            front_camera: "camera_front",
+            robot_controller: "the_nervous_system",
+          },
         }
       ],
     },

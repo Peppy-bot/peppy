@@ -101,7 +101,7 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
 
     let git_url = "https://github.com/example/repo.git";
     let fs_repo_dir = started.peppy_dirs.root().join("test_repo");
-    create_node_dir(&fs_repo_dir, "local_sensor", "1.0.0");
+    create_node_dir(&fs_repo_dir, "local_sensor", "v1");
 
     // Write repos with both an fs entry and a git entry
     write_repositories_json5(
@@ -118,7 +118,7 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
         &format!(
             r#"[{{
   "node_name": "git_sensor",
-  "node_tag": "1.0.0",
+  "node_tag": "v1",
   "source_type": "git",
   "source_uri": "{git_url}",
   "path": "nodes/git_sensor"
@@ -171,7 +171,7 @@ async fn remove_url_repo_succeeds_and_triggers_refresh() {
 
     let url = "https://example.com/packages";
     let fs_repo_dir = started.peppy_dirs.root().join("test_repo");
-    create_node_dir(&fs_repo_dir, "local_sensor", "1.0.0");
+    create_node_dir(&fs_repo_dir, "local_sensor", "v1");
 
     write_repositories_json5(
         &started,

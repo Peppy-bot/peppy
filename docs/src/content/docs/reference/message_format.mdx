@@ -15,7 +15,7 @@ message_format: {
 }
 ```
 
-Each field value is a **schema type** — either a bare type token, or a structured schema with modifiers.
+Each field value is a **schema type**: either a bare type token, or a structured schema with modifiers.
 
 ---
 
@@ -61,9 +61,9 @@ error_msg: {
 | `$optional` | No       | When `true`, the field may be absent. Defaults to `false` |
 
 :::note
-`$optional` can only be used on **root-level fields** of a `message_format` — direct children, not fields nested inside objects or array items. If a parent structure is present, all its fields must be present too.
+`$optional` can only be used on **root-level fields** of a `message_format`: direct children, not fields nested inside objects or array items. If a parent structure is present, all its fields must be present too.
 
-In practice, this is used on **service and action response fields** where a value may or may not be present depending on the outcome — for example, an `error_msg` that is only set when the operation fails.
+In practice, this is used on **service and action response fields** where a value may or may not be present depending on the outcome; for example, an `error_msg` that is only set when the operation fails.
 :::
 
 :::caution
@@ -123,7 +123,7 @@ distances: {
 |-------------|----------|-----------------------------------------------------|
 | `$type`     | Yes      | Must be `"array"`                                   |
 | `$items`    | Yes      | A primitive type or an object schema. Nested arrays (arrays of arrays) are not supported |
-| `$length`   | No       | Fixed number of elements. Only supported when `$items` is a numeric or boolean primitive — not supported for `string`, `time`, or object items. Omit for variable-length |
+| `$length`   | No       | Fixed number of elements. Only supported when `$items` is a numeric or boolean primitive (not supported for `string`, `time`, or object items). Omit for variable-length |
 | `$optional` | No       | When `true`, the entire array may be absent          |
 
 ### Fixed-length array
@@ -228,7 +228,7 @@ A full `peppy.json5` topic using multiple schema types:
   peppy_schema: "node_v1",
   manifest: {
     name: "arm_controller",
-    tag: "0.1.0"
+    tag: "v1"
   },
  execution: {
     language: "rust",

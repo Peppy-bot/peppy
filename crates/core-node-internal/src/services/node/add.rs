@@ -1,9 +1,9 @@
-use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
+use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::sync::{
-    self, AutoSyncParams, AutoSyncVariant, collect_consumed_interfaces, generate_peppygen_for_node,
-    stack_resolver,
+    self, AutoSyncParams, collect_consumed_interfaces, generate_peppygen_for_node,
+    resolve_conforms_to, stack_resolver,
 };
 use super::{
     clone_with_progress, extract_tar_zst, format_bytes, generate_random_id,
@@ -14,30 +14,32 @@ use crate::Result;
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
-use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
+use config::node::validate_dependency_specs;
+use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
-use node_stack::{InstanceState, NodeStack, WorkingDirGuard, validate_dependency_specs};
+use node_stack::{InstanceState, NodeStack, WorkingDirGuard};
 use parking_lot::Mutex as StdMutex;
-use peppylib::messaging::{ActionFeedbackPublisher, ServiceRequestContext};
+use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
-use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
+use peppylib::{MessengerHandle, PeppyResult};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use ureq::Error as HttpError;
 
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
+use peppylib::messaging::SenderTarget;
 
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
@@ -47,12 +49,13 @@ pub async fn listen_for_node_add(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ActionMessenger::expose(
+    let action = ConcurrentAction::expose(
         messenger,
         core_node_name,
         instance_id,
-        node_name,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::NODE_ADD_ACTION,
+        true,
     )
     .await?;
 
@@ -72,16 +75,6 @@ pub async fn listen_for_node_add(
     Ok(handle)
 }
 
-impl ActionResult for NodeAddResult {
-    fn identifier() -> &'static str {
-        "node_add_result"
-    }
-
-    fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode().map_err(Into::into)
-    }
-}
-
 #[derive(Clone)]
 struct NodeAddGoalHandler {
     context: NodeAddActionContext,
@@ -89,24 +82,8 @@ struct NodeAddGoalHandler {
 }
 
 impl GoalHandler for NodeAddGoalHandler {
-    type Result = NodeAddResult;
-
-    async fn handle_goal(
-        &self,
-        context: ServiceRequestContext,
-        user_payload: bytes::Bytes,
-        feedback_publisher: ActionFeedbackPublisher,
-        state: Arc<Mutex<ActionState<NodeAddResult>>>,
-    ) -> PeppyResult<Payload> {
-        handle_goal_request(
-            context,
-            user_payload,
-            feedback_publisher,
-            state,
-            self.context.clone(),
-            self.gate.clone(),
-        )
-        .await
+    async fn handle_goal(&self, pending: PendingGoal) {
+        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await
     }
 }
 
@@ -132,7 +109,7 @@ impl Drop for CleanupDir {
 
 pub(crate) struct ResolvedNodeAddSource {
     pub(crate) source_path: PathBuf,
-    pub(crate) node_config: ParsedNodeConfig,
+    pub(crate) node_config: NodeConfig,
     pub(crate) cleanup_dir: Option<PathBuf>,
 }
 
@@ -159,7 +136,7 @@ fn shallow_validate_config(
     repo_url: &str,
     repo_relative_path: &Path,
     repo_ref: Option<&str>,
-) -> std::result::Result<ParsedNodeConfig, ShallowCheckError> {
+) -> std::result::Result<NodeConfig, ShallowCheckError> {
     let bare_dir = tempfile::tempdir().map_err(|e| {
         ShallowCheckError::ShallowFetchFailed(format!("Failed to create temp dir: {}", e))
     })?;
@@ -304,8 +281,12 @@ async fn resolve_git_source(
     .await
     .map_err(|e| format!("Failed to join shallow probe task: {}", e))?;
 
-    let validated_config: Option<ParsedNodeConfig> = match phase1_result {
-        Ok(config) => Some(config),
+    // The shallow probe is only a preflight hint: if it rejects the config,
+    // fail fast; otherwise proceed to the full clone and reparse the config
+    // from the actual checkout. Never use the probe's parsed value as the
+    // final NodeConfig — the clone is the source of truth.
+    match phase1_result {
+        Ok(_) => {}
         Err(ShallowCheckError::InvalidConfig(msg)) => return Err(msg),
         Err(ShallowCheckError::ShallowFetchFailed(reason)) => {
             let _ = feedback_tx.send(FeedbackLine {
@@ -315,9 +296,8 @@ async fn resolve_git_source(
                     reason
                 ),
             });
-            None
         }
-    };
+    }
 
     // --- Phase 2: Full clone (only reached if config is valid or probe fell back) ---
     let checkout_dir = tempfile::tempdir()
@@ -327,6 +307,7 @@ async fn resolve_git_source(
     let clone_checkout_dir = checkout_dir.clone();
     let clone_repo_url = repo_url_str.clone();
     let clone_repo_ref = repo_ref.map(str::to_owned);
+    let clone_feedback_tx = feedback_tx.clone();
     if let Err(err) = tokio::task::spawn_blocking(move || {
         clone_with_progress(
             &clone_repo_url,
@@ -334,7 +315,7 @@ async fn resolve_git_source(
             &clone_checkout_dir,
             false,
             &mut |line| {
-                let _ = feedback_tx.send(FeedbackLine {
+                let _ = clone_feedback_tx.send(FeedbackLine {
                     stream: FeedbackStream::Stdout,
                     line: line.to_owned(),
                 });
@@ -366,20 +347,24 @@ async fn resolve_git_source(
         .map(PathBuf::from)
         .ok_or_else(|| "Invalid repo_path: node config has no parent directory".to_string())?;
 
-    // Reuse the config from Phase 1 if available; otherwise parse from disk (fallback path).
-    let node_config = if let Some(config) = validated_config {
-        config
-    } else {
-        match NodeConfigParser::from_path(&config_path) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                std::fs::remove_dir_all(&checkout_dir).ok();
-                return Err(format!(
-                    "Failed to parse node config at {}: {}",
-                    config_path.display(),
-                    e
-                ));
-            }
+    // Always parse the config from the cloned checkout. The shallow probe
+    // earlier in this function is only a preflight hint — its result is not
+    // trusted as the final config, since the probe and the clone could in
+    // principle disagree (e.g. a force-push between the two fetches).
+    let node_config = match NodeConfigParser::from_path(&config_path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            let msg = format!(
+                "Failed to parse node config at {}: {}",
+                config_path.display(),
+                e
+            );
+            let _ = feedback_tx.send(FeedbackLine {
+                stream: FeedbackStream::Stderr,
+                line: msg.clone(),
+            });
+            std::fs::remove_dir_all(&checkout_dir).ok();
+            return Err(msg);
         }
     };
 
@@ -677,15 +662,15 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
             {
                 let label = format!(
                     "{}_{}",
-                    resolved.node_config.manifest_name(),
-                    resolved.node_config.manifest_tag()
+                    resolved.node_config.manifest.name.as_str(),
+                    resolved.node_config.manifest.tag
                 );
                 return label;
             }
 
             let config_path = path.join(NODE_CONFIG_FILE);
             if let Ok(config) = NodeConfigParser::from_path(&config_path) {
-                return format!("{}_{}", config.manifest_name(), config.manifest_tag());
+                return format!("{}_{}", config.manifest.name.as_str(), config.manifest.tag);
             }
             path.file_name()
                 .and_then(|n| n.to_str())
@@ -721,9 +706,6 @@ async fn resolve_node_add_source(
                 });
             }
 
-            // Git hash verification is deferred to run_node_add (after variant
-            // resolution) so that the check uses the final source_path — which
-            // may be a variant subdirectory that has no .peppy at the root level.
             let config_path = path.join(NODE_CONFIG_FILE);
             let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
                 format!(
@@ -777,8 +759,6 @@ async fn resolve_node_add_source(
     }
 }
 
-use super::variant::{resolve_variant, variant_label};
-
 /// Encodes a rejected goal response, mapping encoding errors to `PeppyError`.
 fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
     super::encode_response_or_err(
@@ -810,83 +790,22 @@ pub(crate) async fn run_node_add(
 
     match AssertUnwindSafe(async {
         // Resolve source (git clone, HTTP download, or local config check).
-        let mut resolved = match resolve_node_add_source(&goal, &action_context.peppy_dirs, &feedback_tx).await {
-            Ok(r) => r,
-            Err(error_msg) => {
-                write_error_to_log(&log_file, &error_msg);
-                return NodeAddResult::failure(&log_path, error_msg);
-            }
-        };
-
-        // RAII guard: ensures resolved.cleanup_dir is removed on any early return
-        // (e.g. variant resolution failure) before process_node_add takes ownership.
-        let mut resolved_cleanup_guard = CleanupDir::new(resolved.cleanup_dir.take());
-
-        // Auto-resolve the default variant when no explicit variant is specified.
-        let effective_variant = match &goal.variant {
-            Some(v) => Some(v.clone()),
-            None if resolved.node_config.has_default_variant() => {
-                Some(NodeSource::Fs(DEFAULT_VARIANT_NAME.into()))
-            }
-            None => None,
-        };
-
-        // Capture the variant label alongside `effective_variant` so it can
-        // be persisted on the `NodeEntity` after `push_config` — the daemon
-        // reads it back out of the entity when answering `node_info`.
-        let variant_name: Option<String> = effective_variant.as_ref().map(variant_label);
-
-        // Capture the root source path before variant resolution may overwrite it.
-        // The .peppy/git.hash file is written by `peppy node sync` at the root
-        // level; non-local variant directories (Git/Http clones) won't have it.
-        let root_source_path = resolved.source_path.clone();
-        let root_execution_language = resolved.node_config.execution_language();
-
-        // If a variant is specified (or auto-resolved), resolve it from the root config.
-        let mut variant_cleanup_dir: Option<PathBuf> = None;
-        let mut variant_source_is_local = true;
-        let node_config: NodeConfig;
-        if let Some(ref variant_source) = effective_variant {
-            let label = variant_label(variant_source);
-            match resolve_variant(
-                variant_source,
-                &resolved.node_config,
-                &resolved.source_path,
-                &action_context.peppy_dirs,
-                None,
-            )
-            .await
-            {
-                Ok(v) => {
-                    if v.manifest_ignored {
-                        let _ = feedback_tx.send(FeedbackLine {
-                            stream: FeedbackStream::Stderr,
-                            line: format!(
-                                "Warning: variant '{}' defines a `manifest` section which will be ignored — only the root node's manifest is used",
-                                label
-                            ),
-                        });
-                    }
-                    node_config = v.merged_config;
-                    resolved.source_path = v.variant_source_path;
-                    variant_source_is_local = v.source_is_local;
-                    variant_cleanup_dir = v.cleanup_dir;
-                }
+        let mut resolved =
+            match resolve_node_add_source(&goal, &action_context.peppy_dirs, &feedback_tx).await {
+                Ok(r) => r,
                 Err(error_msg) => {
                     write_error_to_log(&log_file, &error_msg);
                     return NodeAddResult::failure(&log_path, error_msg);
                 }
-            }
-        } else {
-            match resolved.node_config.into_resolved() {
-                Ok(cfg) => node_config = cfg,
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    write_error_to_log(&log_file, &error_msg);
-                    return NodeAddResult::failure(&log_path, error_msg);
-                }
-            }
-        }
+            };
+
+        // RAII guard: ensures resolved.cleanup_dir is removed on any early return
+        // before process_node_add takes ownership.
+        let mut resolved_cleanup_guard = CleanupDir::new(resolved.cleanup_dir.take());
+
+        let root_source_path = resolved.source_path.clone();
+        let node_config: NodeConfig = resolved.node_config;
+        let root_execution_language = node_config.execution.language;
 
         // Auto-generate .peppy directory if missing (e.g. fresh clone never synced).
         // Must run before git hash verification since sync also writes git.hash.
@@ -904,29 +823,16 @@ pub(crate) async fn run_node_add(
             let sync_git_hash = goal.git_hash.clone();
             let sync_node_stack = action_context.node_stack.clone();
             let sync_peppy_dirs = action_context.peppy_dirs.clone();
-
-            let sync_variant = if variant_source_is_local
-                && effective_variant.is_some()
-                && resolved.source_path != root_source_path
-            {
-                Some((
-                    resolved.source_path.clone(),
-                    node_config.execution.language,
-                    node_config.clone(),
-                ))
-            } else {
-                None
-            };
+            let sync_feedback_tx = feedback_tx.clone();
 
             let sync_result = tokio::task::spawn_blocking(move || {
-                let variant = sync_variant.as_ref().map(|(dir, language, cfg)| {
-                    AutoSyncVariant {
-                        dir,
-                        language: *language,
-                        merged_config: cfg,
-                    }
-                });
-
+                let on_feedback = |line: &str| {
+                    tracing::info!(target: "peppy::interface", "{line}");
+                    let _ = sync_feedback_tx.send(FeedbackLine {
+                        stream: FeedbackStream::Stdout,
+                        line: line.to_string(),
+                    });
+                };
                 sync::auto_sync_if_missing(
                     AutoSyncParams {
                         node_dir: &sync_node_dir,
@@ -934,7 +840,7 @@ pub(crate) async fn run_node_add(
                         manifest: &sync_manifest,
                         interfaces: &sync_interfaces,
                         git_hash: &sync_git_hash,
-                        variant,
+                        on_feedback: &on_feedback,
                     },
                     &sync_node_stack,
                     &sync_peppy_dirs,
@@ -960,9 +866,7 @@ pub(crate) async fn run_node_add(
         // Verify git hash for non-archive local FS sources.
         //
         // The .peppy/git.hash file is always written by `peppy node sync` at
-        // the root level (alongside the peppy.json5 that contains the manifest),
-        // regardless of whether the node has an execution block or uses variants.
-        // Verification always targets the root source path.
+        // the root level (alongside the peppy.json5 that contains the manifest).
         if goal.git_hash != STACK_LAUNCH_GIT_HASH
             && let NodeSource::Fs(original_path) = &goal.source
             && !is_supported_fs_archive(original_path)
@@ -977,9 +881,8 @@ pub(crate) async fn run_node_add(
 
         // Fingerprints are only generated locally by `peppy node sync`.
         // Git/Http sources never have them, so skip verification for remote sources.
-        let is_local_root =
+        let verify_codegen_fingerprint =
             matches!(&goal.source, NodeSource::Fs(_)) && goal.git_hash != STACK_LAUNCH_GIT_HASH;
-        let verify_codegen_fingerprint = is_local_root && variant_source_is_local;
 
         // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
         // now that we know the node name and tag from the resolved config.
@@ -993,9 +896,6 @@ pub(crate) async fn run_node_add(
             log_path
         };
 
-        // RAII guard: cleans up variant clone/download dir on any exit path.
-        let _variant_cleanup_guard = CleanupDir::new(variant_cleanup_dir);
-
         let ctx = ProcessNodeAddContext {
             action: action_context,
             feedback_tx,
@@ -1008,7 +908,6 @@ pub(crate) async fn run_node_add(
             source_path,
             verify_codegen_fingerprint,
             cleanup_dir,
-            variant_name,
             ctx,
         )
         .await
@@ -1030,34 +929,41 @@ pub(crate) async fn run_node_add(
 }
 
 async fn handle_goal_request(
-    context: ServiceRequestContext,
-    user_payload: bytes::Bytes,
-    feedback_publisher: ActionFeedbackPublisher,
-    state: Arc<Mutex<ActionState<NodeAddResult>>>,
+    pending: PendingGoal,
     action_context: NodeAddActionContext,
     gate: ConcurrencyGate,
-) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
+) {
+    let sender_instance_id = pending.instance_id().to_string();
 
-    let goal = match NodeAddGoal::decode(&user_payload) {
+    let goal = match NodeAddGoal::decode(pending.request_bytes()) {
         Ok(g) => g,
-        Err(e) => return encode_rejected_goal(format!("invalid payload: {}", e)),
+        Err(e) => {
+            reject_goal(
+                pending,
+                encode_rejected_goal(format!("invalid payload: {e}")),
+            )
+            .await;
+            return;
+        }
     };
 
-    {
-        let mut state_guard = state.lock().await;
-        if goal.force && matches!(*state_guard, ActionState::Running { .. }) {
-            debug!("Force flag set: aborting previous node_add task");
-        }
-        if let super::gate::Admission::AlreadyRunning { remaining_secs } =
-            gate.try_admit(&mut state_guard, goal.timeout_secs, goal.force)
-        {
-            return encode_rejected_goal(format!(
-                "action already in progress (times out in {remaining_secs}s), \
-                 use `--force` to force adding the node"
-            ));
-        }
+    if goal.force {
+        debug!("Force flag set: aborting any previous node_add task");
     }
+    let generation = match gate.try_admit(goal.timeout_secs, goal.force) {
+        super::gate::Admission::Admitted { generation } => generation,
+        super::gate::Admission::AlreadyRunning { remaining_secs } => {
+            reject_goal(
+                pending,
+                encode_rejected_goal(format!(
+                    "action already in progress (times out in {remaining_secs}s), \
+                     use `--force` to force adding the node"
+                )),
+            )
+            .await;
+            return;
+        }
+    };
 
     match &goal.source {
         NodeSource::Fs(path) => debug!(
@@ -1092,23 +998,44 @@ async fn handle_goal_request(
         Ok(result) => result,
         Err(error_msg) => {
             debug!("{}", error_msg);
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            return encode_rejected_goal(error_msg);
+            gate.clear_running();
+            reject_goal(pending, encode_rejected_goal(error_msg)).await;
+            return;
         }
     };
 
     debug!("Created log file for node add: {}", log_path.display());
 
-    let state_clone = Arc::clone(&state);
+    // `accept` registers the per-goal context before replying accepted, so a
+    // fast cancel/result for this goal can't miss the routing slot.
+    let Some(goal_ctx) = accept_goal(
+        pending,
+        super::encode_response_or_err(
+            "node_add_goal",
+            NodeAddGoalResponse::accepted(&log_path).encode(),
+        ),
+    )
+    .await
+    else {
+        gate.clear_running();
+        return;
+    };
+
+    let feedback_publisher = goal_ctx
+        .feedback_publisher()
+        .expect("node_add declares a feedback topic");
     let log_path_clone = log_path.clone();
     let cancel_token = CancellationToken::new();
     let cancel_token_clone = cancel_token.clone();
     let log_path_for_cancel = log_path.clone();
+    let gate_for_task = gate.clone();
     let task_handle = tokio::spawn(async move {
+        // Frees the gate slot on every exit (completion, panic, or `--force`
+        // abort); a no-op if a later `--force` goal already took over.
+        let _slot = gate_for_task.into_slot_guard(generation);
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
         let consumer_handle =
-            super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
+            super::spawn_feedback_forwarder(feedback_rx, feedback_publisher, |line| {
                 NodeAddFeedback::from_stream(line.stream, &line.line).encode()
             });
 
@@ -1143,18 +1070,15 @@ async fn handle_goal_request(
             }
         };
 
-        // Wait for the feedback consumer to drain before completing.
+        // Drain the feedback consumer before completing so the end-of-stream
+        // sentinel never races ahead of the last feedback line.
         let _ = consumer_handle.await;
-        let mut state_guard = state_clone.lock().await;
-        *state_guard = ActionState::Completed { result };
+        if let Ok(payload) = result.encode() {
+            let _ = goal_ctx.complete(payload).await;
+        }
     });
 
     gate.set_task(task_handle, cancel_token);
-
-    super::encode_response_or_err(
-        "node_add_goal",
-        NodeAddGoalResponse::accepted(&log_path).encode(),
-    )
 }
 
 async fn shutdown_existing_instances(
@@ -1226,7 +1150,6 @@ async fn process_node_add(
     source_path: PathBuf,
     verify_codegen_fingerprint: bool,
     cleanup_dir: Option<PathBuf>,
-    variant_name: Option<String>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
     // Reject any forbidden env vars early so the user gets a fast failure;
@@ -1268,45 +1191,6 @@ async fn process_node_add(
     // RAII guard: cleans up the temp working dir on any exit path.
     let mut working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
 
-    // For variant adds (including auto-resolved default variants), write the
-    // merged config (root manifest + interfaces + variant execution) into the
-    // working directory so the peppygen generator finds a valid NodeConfig.
-    // Strip the variants list from the manifest — it is no longer relevant
-    // once the variant has been resolved and would trigger a validation error
-    // if a "default" variant is present alongside an execution.
-    if goal.variant.is_some() || node_config.manifest.has_default_variant() {
-        let mut write_config = node_config.clone();
-        write_config.manifest.variants = None;
-        let merged_config_str = config::json5_pretty::to_string_pretty(&write_config)
-            .map_err(|e| format!("Failed to serialize merged variant config: {}", e));
-        match merged_config_str {
-            Ok(content) => {
-                let config_path = working_dir.join(NODE_CONFIG_FILE);
-                if let Err(e) = std::fs::write(&config_path, &content) {
-                    let msg = format!("Failed to write merged variant config: {}", e);
-                    write_error_to_log(&ctx.log_file, &msg);
-                    return NodeAddResult::failure(&ctx.log_path, msg);
-                }
-                // Regenerate fingerprint for the new config
-                if let Err(e) = config::fingerprint::generate_node_config_fingerprint(
-                    &config_path,
-                    working_dir.join(PEPPYGEN_OUTPUT_PATH),
-                ) {
-                    let msg = format!(
-                        "Failed to regenerate fingerprint for merged variant config: {}",
-                        e
-                    );
-                    write_error_to_log(&ctx.log_file, &msg);
-                    return NodeAddResult::failure(&ctx.log_path, msg);
-                }
-            }
-            Err(msg) => {
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeAddResult::failure(&ctx.log_path, msg);
-            }
-        }
-    }
-
     if !excluded_dirs.is_empty() {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -1347,10 +1231,19 @@ async fn process_node_add(
     } else {
         generator::CrateDeployMode::Symlink
     };
-    let consumed_interfaces = match collect_consumed_interfaces(
+    let interface_feedback = |line: &str| {
+        tracing::info!(target: "peppy::interface", "{line}");
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: line.to_string(),
+        });
+    };
+    let mut consumed_interfaces = match collect_consumed_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         stack_resolver(&ctx.action.node_stack),
+        &ctx.action.peppy_dirs,
+        &interface_feedback,
     ) {
         Ok(v) => v,
         Err(reason) => {
@@ -1359,6 +1252,19 @@ async fn process_node_add(
             return NodeAddResult::failure(&ctx.log_path, msg);
         }
     };
+    let conformed = match resolve_conforms_to(
+        &node_config.interfaces,
+        &ctx.action.peppy_dirs,
+        &interface_feedback,
+    ) {
+        Ok(v) => v,
+        Err(reason) => {
+            let msg = format!("Failed to resolve `conforms_to` interfaces: {}", reason);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
+        }
+    };
+    consumed_interfaces.extend(conformed);
     if let Err(e) = generate_peppygen_for_node(
         language,
         &working_dir,
@@ -1385,16 +1291,15 @@ async fn process_node_add(
 
     // Push the node config into the stack as an `Added` entity. Use the
     // working_dir copy of peppy.json5 rather than source_path because
-    // source_path may point at a transient variant directory (Git/Http
-    // clone) that is cleaned up after this function returns. The
-    // working_dir persists as long as the entity exists via WorkingDirGuard.
+    // source_path may point at a transient Git/Http clone that is cleaned
+    // up after this function returns. The working_dir persists as long as
+    // the entity exists via WorkingDirGuard.
     let config_path_for_stack = working_dir.join(NODE_CONFIG_FILE);
-    if let Err(e) = ctx.action.node_stack.push_config_with_variant(
-        node_config.clone(),
-        false,
-        &config_path_for_stack,
-        variant_name.clone(),
-    ) {
+    if let Err(e) =
+        ctx.action
+            .node_stack
+            .push_config(node_config.clone(), false, &config_path_for_stack)
+    {
         let msg = format!("Failed to add node config: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);

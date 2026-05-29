@@ -8,11 +8,11 @@ import asyncio
 
 import pytest
 
-from peppylib import MessengerHandle, ServiceMessenger, ZenohdInstance
+from peppylib import MessengerHandle, SenderTarget, ServiceMessenger, ZenohdInstance
 from peppylib.config import NODE_READY_SERVICE
 from peppylib.services import NodeReadyService
 
-from common import TEST_INSTANCE_ID, TEST_NODE_NAME
+from common import TEST_INSTANCE_ID, TEST_NODE_NAME, TEST_NODE_TAG
 
 TEST_CORE_NODE_NAME = "test_core_node"
 CALLER_INSTANCE_ID = "caller_instance"
@@ -35,7 +35,7 @@ async def test_ready_node():
             messenger,
             TEST_CORE_NODE_NAME,
             TEST_INSTANCE_ID,
-            TEST_NODE_NAME,
+            SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
         )
 
         # Allow the service to fully establish its listeners
@@ -65,13 +65,12 @@ async def test_ready_node():
                     poll_messenger,
                     TEST_CORE_NODE_NAME,
                     CALLER_INSTANCE_ID,
-                    TEST_NODE_NAME,
+                    SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                     NODE_READY_SERVICE,
                     target_core_node,
                     target_instance_id,
                     request_payload,
-                    2.0,
-                )
+                    2.0,)
             except RuntimeError as exc:
                 pytest.fail(f"[{label}] poll failed: {exc}")
 

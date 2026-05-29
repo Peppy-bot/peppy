@@ -13,7 +13,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   peppy_schema: "node_v1",
   manifest: {
     name: "test_node",
-    tag: "0.1.0"
+    tag: "v1"
   },
   interfaces: {
     topics: {
@@ -60,9 +60,8 @@ fn generate_peppygen_lib_minimal_config() {
       peppy_schema: "node_v1",
       manifest: {
         name: "minimal_node",
-        tag: "0.1.0"
+        tag: "v1"
       },
-
       execution: {
         language: "rust",
         run_cmd: ["./target/debug/minimal_node"]
@@ -269,7 +268,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           interfaces: {
             topics: {
@@ -321,7 +320,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           execution: {
             language: "rust",
@@ -334,7 +333,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
 
     let consumed_topic: ConsumedTopic = serde_json5::from_str(&format!(
         r#"{{
-          local_node_id: "{EXPOSED_NODE_NAME}",
+          link_id: "{EXPOSED_NODE_NAME}",
           name: "test_topic",
         }}"#
     ))
@@ -346,7 +345,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
     let expected_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
         topic: consumed_topic,
         message_format: consumed_format,
-        dependency_node_name: EXPOSED_NODE_NAME.to_string(),
+        dependency: generator::DependencyContext::native(EXPOSED_NODE_NAME, "v1"),
     })];
 
     generate_peppygen_lib(
@@ -382,7 +381,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           interfaces: {
             services: {
@@ -437,7 +436,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           execution: {
             language: "rust",
@@ -450,7 +449,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
 
     let consumed_service: ConsumedService = serde_json5::from_str(&format!(
         r#"{{
-          local_node_id: "{EXPOSED_NODE_NAME}",
+          link_id: "{EXPOSED_NODE_NAME}",
           name: "test_service",
         }}"#
     ))
@@ -467,7 +466,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
             service: consumed_service,
             request_format,
             response_format,
-            dependency_node_name: EXPOSED_NODE_NAME.to_string(),
+            dependency: generator::DependencyContext::native(EXPOSED_NODE_NAME, "v1"),
         },
     )];
 
@@ -511,7 +510,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           interfaces: {
             actions: {
@@ -578,7 +577,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
           peppy_schema: "node_v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
-            tag: "0.1.0",
+            tag: "v1",
           },
           execution: {
             language: "rust",
@@ -591,7 +590,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
 
     let consumed_action: ConsumedAction = serde_json5::from_str(&format!(
         r#"{{
-          local_node_id: "{EXPOSED_NODE_NAME}",
+          link_id: "{EXPOSED_NODE_NAME}",
           name: "test_action",
         }}"#
     ))
@@ -617,7 +616,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
     let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedAction {
         action: consumed_action,
         messages: action_messages,
-        dependency_node_name: EXPOSED_NODE_NAME.to_string(),
+        dependency: generator::DependencyContext::native(EXPOSED_NODE_NAME, "v1"),
     })];
 
     generate_peppygen_lib(

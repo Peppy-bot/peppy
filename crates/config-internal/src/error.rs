@@ -2,6 +2,17 @@ use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// Formats `items` as a `\n  - `-prefixed bulleted list (no leading or
+/// trailing newline outside the bullets themselves). Used to render
+/// validation/binding error collections inside parent diagnostic strings.
+pub fn format_bulleted<T, I>(items: I) -> String
+where
+    T: core::fmt::Display,
+    I: IntoIterator<Item = T>,
+{
+    items.into_iter().map(|e| format!("\n  - {e}")).collect()
+}
+
 /// Deserializes JSON5 content with field-path tracking.
 ///
 /// On error, prepends the JSON path (e.g. `execution.run_cmd`) to standard
@@ -40,11 +51,146 @@ where
     })
 }
 
+/// Whether a declared slot is a node dep (matched by `(name, tag)` identity)
+/// or an interface dep (matched against the producer's `conforms_to`). Used
+/// in error payloads so messages can name the expected category in singular
+/// human form instead of leaking the `depends_on.nodes` / `depends_on.interfaces`
+/// field path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotKind {
+    Node,
+    Interface,
+}
+
+impl core::fmt::Display for SlotKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            SlotKind::Node => "node",
+            SlotKind::Interface => "interface",
+        })
+    }
+}
+
+/// Payload for [`ParsingError::BindingMissingForPinnedDep`]. Boxed in the
+/// variant so the five `String` fields do not inflate `ParsingError` past
+/// the `clippy::result_large_err` threshold.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "instance `{owner_instance_id}`: slot `{link_id}` is unbound \
+     (expected {kind} `{expected_name}:{expected_tag}`)"
+)]
+pub struct BindingMissingForPinnedDep {
+    pub owner_instance_id: String,
+    pub link_id: String,
+    pub kind: SlotKind,
+    pub expected_name: String,
+    pub expected_tag: String,
+}
+
+/// Payload for [`ParsingError::BindingTargetMismatch`]. Kept as a separate
+/// struct (and boxed in the variant) so the seven `String` fields do not
+/// inflate `ParsingError` past the `clippy::result_large_err` threshold.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "binding `{binding}` on instance `{owner_instance_id}`: target \
+     `{target_instance_id}` deploys node `{actual_name}:{actual_tag}`, \
+     but slot expects node `{expected_name}:{expected_tag}`"
+)]
+pub struct BindingTargetMismatch {
+    pub owner_instance_id: String,
+    pub binding: String,
+    pub target_instance_id: String,
+    pub expected_name: String,
+    pub expected_tag: String,
+    pub actual_name: String,
+    pub actual_tag: String,
+}
+
+/// Payload for [`ParsingError::BindingInterfaceNotConformed`]. Raised when a
+/// `--bind` targets an interface slot but the producer's `interfaces.conforms_to`
+/// list does not include the requested `(interface_name, interface_tag)`.
+///
+/// Boxed in the variant for the same `clippy::result_large_err` reason as the
+/// other binding error payloads.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "binding `{binding}` on instance `{owner_instance_id}`: target \
+     `{target_instance_id}` deploys `{producer_name}:{producer_tag}`, but \
+     the slot requires interface `{interface_name}:{interface_tag}` (add it \
+     to the producer's `conforms_to`)"
+)]
+pub struct BindingInterfaceNotConformed {
+    pub owner_instance_id: String,
+    pub binding: String,
+    pub target_instance_id: String,
+    pub interface_name: String,
+    pub interface_tag: String,
+    pub producer_name: String,
+    pub producer_tag: String,
+}
+
+/// Payload for [`ParsingError::DuplicateInstanceIdAcrossStack`]. Boxed in
+/// the variant for the same `result_large_err` reason as the other binding
+/// variants.
+///
+/// Two instances anywhere in the running stack (any `(node_name,
+/// node_tag)`) share an `instance_id`. The binding model addresses
+/// producers by `instance_id` only, so a stack-wide duplicate would make
+/// `--bind KEY@id` ambiguous.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "duplicate instance_id `{instance_id}`: used by both `{name_a}:{tag_a}` \
+     and `{name_b}:{tag_b}` (instance_ids must be unique across the stack)"
+)]
+pub struct DuplicateInstanceIdAcrossStack {
+    pub instance_id: String,
+    pub name_a: String,
+    pub tag_a: String,
+    pub name_b: String,
+    pub tag_b: String,
+}
+
+/// Payload for [`ParsingError::BindingDeadKey`]. Boxed for the same
+/// `result_large_err` reason as the other binding variants — the six
+/// `String` fields push the enum past the lint threshold otherwise.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "binding `{binding}` on instance `{owner_instance_id}` matches no \
+     declared slot, and no `from_any` slot accepts target \
+     `{target_instance_id}` (deploys `{producer_name}:{producer_tag}`); \
+     declared link_ids: [{declared_link_ids}]"
+)]
+pub struct BindingDeadKey {
+    pub owner_instance_id: String,
+    pub binding: String,
+    pub target_instance_id: String,
+    pub producer_name: String,
+    pub producer_tag: String,
+    pub declared_link_ids: String,
+}
+
+/// Payload for [`ParsingError::MissingInterface`]. Boxed in the variant so
+/// the six `String` fields do not inflate `ParsingError` past the
+/// `clippy::result_large_err` threshold.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "`{dependant}`:{dependant_tag} expects {interface_kind} `{interface_name}` from \
+     `{dependency}`:{dependency_tag}, but it is not exposed"
+)]
+pub struct MissingInterface {
+    pub dependant: String,
+    pub dependant_tag: String,
+    pub dependency: String,
+    pub dependency_tag: String,
+    pub interface_kind: String,
+    pub interface_name: String,
+}
+
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
     // -- General yaml syntax
-    #[error("Cannot read: {0}")]
-    CannotRead(String),
+    #[error("Cannot read {0}: {1}")]
+    CannotRead(String, std::io::ErrorKind),
     #[error("Cannot parse configuration: {0}")]
     CannotParseConfig(String),
     #[error("Empty content found in: {0}")]
@@ -57,6 +203,14 @@ pub enum ParsingError {
     EmptyName,
     #[error("Duplicate name: {0}")]
     DuplicateName(String),
+    #[error(
+        "Duplicate link_id `{0}` in manifest.depends_on (link_ids must be unique across nodes and interfaces)"
+    )]
+    DuplicateLinkId(String),
+    #[error(
+        "Conflicting `from_any: true` for dependency `{name}` (tag `{tag}`) in manifest.depends_on: only one entry per (name, tag) may set from_any=true"
+    )]
+    ConflictingFromAny { name: String, tag: String },
 
     // -- deployments
     #[error("Invalid deployment source: {0}")]
@@ -74,15 +228,67 @@ pub enum ParsingError {
     #[error("Node config `execution.run_cmd` must not be empty")]
     EmptyRunCmd,
 
-    // -- node config: default variant
-    #[error(
-        "Node config with a 'default' variant must not define an `execution` section — the execution comes from the default variant"
-    )]
-    ExecutionWithDefaultVariant,
-    #[error("Node config must define an `execution` section (or declare a 'default' variant)")]
-    MissingExecution,
+    // -- node config: execution
     #[error("Node config `execution.language` is required when an execution block is defined")]
     MissingExecutionLanguage,
+
+    // -- launcher: interface bindings
+    #[error(
+        "interface binding `{binding}` on instance `{owner_instance_id}` refers to unknown instance_id `{instance_id}`"
+    )]
+    UnknownInstanceId {
+        owner_instance_id: String,
+        binding: String,
+        instance_id: String,
+    },
+    #[error(
+        "binding key `{binding}` on instance `{owner_instance_id}` is the reserved producer-default sentinel and cannot be used as a binding slot"
+    )]
+    BindingSentinelKey {
+        owner_instance_id: String,
+        binding: String,
+    },
+    /// `--bind KEY@VALUE` whose `KEY` neither matches a declared pinned
+    /// `link_id` nor a declared `from_any` slot for VALUE's `(name, tag)`.
+    /// Boxed for the same `result_large_err` reason as the other binding
+    /// variants.
+    #[error(transparent)]
+    BindingDeadKey(Box<BindingDeadKey>),
+    /// Two `--bind KEY@…` entries on the same invocation share the same
+    /// `KEY`. Each `KEY` is the binding's label — pinned KEYs match a
+    /// declared link_id; `from_any` KEYs are free-form — and must be
+    /// distinct so the validator can resolve each to a slot
+    /// unambiguously.
+    #[error(
+        "duplicate binding key `{binding}` on instance `{owner_instance_id}` (each --bind KEY must be distinct)"
+    )]
+    BindingDuplicateKey {
+        owner_instance_id: String,
+        binding: String,
+    },
+    /// Boxed payload for the same reason as
+    /// [`ParsingError::BindingTargetMismatch`]: keeps the variant's
+    /// String-heavy struct from inflating `ParsingError`'s size past the
+    /// `clippy::result_large_err` threshold.
+    #[error(transparent)]
+    BindingMissingForPinnedDep(Box<BindingMissingForPinnedDep>),
+    /// Boxed payload so this variant does not grow `ParsingError` past the
+    /// `clippy::result_large_err` threshold; without the indirection, the
+    /// seven `String` fields would inflate every `Result<_, _>` that
+    /// transitively wraps a `ParsingError` (notably code generated against
+    /// `peppylib::PeppyError`).
+    #[error(transparent)]
+    BindingTargetMismatch(Box<BindingTargetMismatch>),
+    /// Pinned `--bind` targets an interface slot but the producer doesn't
+    /// declare conformance to the requested interface. Boxed for the same
+    /// `result_large_err` reason as the other binding variants.
+    #[error(transparent)]
+    BindingInterfaceNotConformed(Box<BindingInterfaceNotConformed>),
+    /// Two instances anywhere in the running stack share an `instance_id`.
+    /// Boxed for the same `result_large_err` reason as the other binding
+    /// variants.
+    #[error(transparent)]
+    DuplicateInstanceIdAcrossStack(Box<DuplicateInstanceIdAcrossStack>),
 
     // -- container config: mount paths
     #[error(
@@ -91,24 +297,52 @@ pub enum ParsingError {
     InvalidMountPath(String, String),
     #[error("Invalid parameter reference `${{parameters:{0}}}` in mount path: {1}")]
     InvalidMountPathParameterRef(String, String),
+
+    // -- node dependency validation
+    #[error(
+        "`{dependant}:{dependant_tag}` depends on `{dependency}:{dependency_tag}`, but it does not exist in the stack"
+    )]
+    MissingDependency {
+        dependant: String,
+        dependant_tag: String,
+        dependency: String,
+        dependency_tag: String,
+    },
+    #[error(
+        "`{dependant}:{dependant_tag}` references undeclared link_id `{link_id}` in consumed interfaces"
+    )]
+    UndeclaredLinkId {
+        dependant: String,
+        dependant_tag: String,
+        link_id: String,
+    },
+    /// Boxed payload for the same reason as
+    /// [`ParsingError::BindingTargetMismatch`]: keeps the variant's
+    /// String-heavy struct from inflating `ParsingError`'s size past the
+    /// `clippy::result_large_err` threshold.
+    #[error(transparent)]
+    MissingInterface(Box<MissingInterface>),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum StructuredError {
     InvalidDeploymentSource(String),
     DuplicateName(String),
-    InvalidName { name: String, allowed: String },
+    InvalidName {
+        name: String,
+        allowed: String,
+    },
     EmptyName,
-}
-
-impl ParsingError {
-    /// Returns `true` when the error indicates that the `manifest` field is
-    /// absent from the config.  This is the hallmark of a **variant** config
-    /// (which deliberately omits `manifest`) and is used by the CLI to decide
-    /// whether to walk up the directory tree to locate the root node config.
-    pub fn is_missing_manifest(&self) -> bool {
-        matches!(self, ParsingError::CannotParseConfig(msg) if msg.contains("missing field `manifest`"))
-    }
+    MissingExecutionLanguage,
+    UnknownInstanceId {
+        owner_instance_id: String,
+        binding: String,
+        instance_id: String,
+    },
+    BindingSentinelKey {
+        owner_instance_id: String,
+        binding: String,
+    },
 }
 
 impl StructuredError {
@@ -128,6 +362,23 @@ impl From<StructuredError> for ParsingError {
                 ParsingError::InvalidName(name, allowed)
             }
             StructuredError::EmptyName => ParsingError::EmptyName,
+            StructuredError::MissingExecutionLanguage => ParsingError::MissingExecutionLanguage,
+            StructuredError::UnknownInstanceId {
+                owner_instance_id,
+                binding,
+                instance_id,
+            } => ParsingError::UnknownInstanceId {
+                owner_instance_id,
+                binding,
+                instance_id,
+            },
+            StructuredError::BindingSentinelKey {
+                owner_instance_id,
+                binding,
+            } => ParsingError::BindingSentinelKey {
+                owner_instance_id,
+                binding,
+            },
         }
     }
 }

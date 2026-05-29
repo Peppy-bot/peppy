@@ -14,8 +14,8 @@ use crate::Result;
 use config::{
     DefaultValue, ParameterSpec,
     consts::PeppyDirs,
-    launcher::PeppySchema,
     node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage, TypeToken},
+    schema::PeppySchema,
 };
 use futures::future::{BoxFuture, FutureExt, try_join_all};
 use names_generator2::get_random;
@@ -179,7 +179,6 @@ impl CoreNode {
                 name: manifest_name,
                 tag: CORE_NODE_TAG.to_string(),
                 labels: None,
-                variants: None,
                 depends_on: None,
             },
             execution: Execution {
@@ -230,6 +229,10 @@ impl CoreNode {
 
     pub fn node_name(&self) -> &str {
         self.node_config.manifest.name.as_str()
+    }
+
+    pub fn node_tag(&self) -> &str {
+        self.node_config.manifest.tag.as_str()
     }
 
     pub fn instance_id(&self) -> &str {

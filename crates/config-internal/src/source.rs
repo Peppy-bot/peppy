@@ -16,8 +16,6 @@ pub enum DeploymentSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeploymentLocalSource {
     pub local: PathBuf,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub variant: Option<VariantSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26,16 +24,12 @@ pub struct DeploymentGitSource {
     pub path: String,
     #[serde(rename = "ref")]
     pub ref_: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub variant: Option<VariantSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeploymentUrlSource {
     pub url: String,
     pub sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub variant: Option<VariantSource>,
 }
 
 /// Deployment source that resolves a node through the user's repo cache
@@ -45,52 +39,6 @@ pub struct DeploymentUrlSource {
 pub struct DeploymentRepoSource {
     pub name: String,
     pub tag: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub variant: Option<VariantSource>,
-}
-
-// ---------------------------------------------------------------------------
-// Variant source — specifies which variant to use for a deployment
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(untagged)]
-pub enum VariantSource {
-    Name(VariantNameSource),
-    Git(VariantGitSource),
-    Url(VariantUrlSource),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct VariantNameSource {
-    pub name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct VariantGitSource {
-    pub repo: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
-    pub ref_: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct VariantUrlSource {
-    pub url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
-}
-
-impl DeploymentSource {
-    pub fn variant(&self) -> Option<&VariantSource> {
-        match self {
-            DeploymentSource::Local(s) => s.variant.as_ref(),
-            DeploymentSource::Git(s) => s.variant.as_ref(),
-            DeploymentSource::Url(s) => s.variant.as_ref(),
-            DeploymentSource::Repo(s) => s.variant.as_ref(),
-        }
-    }
 }
 
 fn invalid_deployment_source<E>(detail: impl Into<String>) -> E
@@ -116,19 +64,23 @@ fn normalize_git_path<E>(value: String) -> Result<String, E>
 where
     E: de::Error,
 {
-    let trimmed = value.trim().trim_start_matches('/');
-    if trimmed.is_empty() {
-        return Err(invalid_deployment_source::<E>("git path cannot be empty"));
-    }
-    let path = Path::new(trimmed);
-    if path.is_absolute()
-        || path
+    let pre_trim = value.trim();
+    // Reject absolute paths (including leading-slash form) and parent-dir
+    // components *before* stripping leading slashes — otherwise `/foo/bar`
+    // would be silently coerced to a valid relative path.
+    let original_path = Path::new(pre_trim);
+    if original_path.is_absolute()
+        || original_path
             .components()
             .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
     {
         return Err(invalid_deployment_source::<E>(
             "git path cannot be absolute or contain parent-dir components",
         ));
+    }
+    let trimmed = pre_trim.trim_start_matches('/');
+    if trimmed.is_empty() {
+        return Err(invalid_deployment_source::<E>("git path cannot be empty"));
     }
     Ok(trimmed.to_owned())
 }
@@ -237,73 +189,6 @@ where
     Ok((name, tag))
 }
 
-impl<'de> Deserialize<'de> for VariantSource {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Debug, Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct RawVariantSource {
-            #[serde(default)]
-            name: Option<String>,
-            #[serde(default)]
-            repo: Option<String>,
-            #[serde(default)]
-            path: Option<String>,
-            #[serde(rename = "ref", default)]
-            ref_: Option<String>,
-            #[serde(default)]
-            url: Option<String>,
-            #[serde(default)]
-            sha256: Option<String>,
-        }
-
-        let raw = RawVariantSource::deserialize(deserializer)?;
-        let has_name = raw.name.is_some();
-        let has_git = raw.repo.is_some() || raw.path.is_some() || raw.ref_.is_some();
-        let has_url = raw.url.is_some() || raw.sha256.is_some();
-
-        match (has_name, has_git, has_url) {
-            (true, false, false) => {
-                let name = trim_non_empty::<D::Error>(
-                    raw.name.expect("name is present"),
-                    "variant name cannot be empty",
-                )?;
-                Ok(VariantSource::Name(VariantNameSource { name }))
-            }
-            (false, true, false) => {
-                let repo = raw.repo.ok_or_else(|| {
-                    invalid_deployment_source::<D::Error>("variant git source requires `repo`")
-                })?;
-                let repo = trim_non_empty::<D::Error>(repo, "variant git repo cannot be empty")?;
-                let path = raw.path.map(normalize_git_path::<D::Error>).transpose()?;
-                let ref_ = raw
-                    .ref_
-                    .map(|r| trim_non_empty::<D::Error>(r, "variant git ref cannot be empty"))
-                    .transpose()?;
-
-                Ok(VariantSource::Git(VariantGitSource { repo, path, ref_ }))
-            }
-            (false, false, true) => {
-                let url = raw.url.ok_or_else(|| {
-                    invalid_deployment_source::<D::Error>("variant url source requires `url`")
-                })?;
-                let url = normalize_http_url::<D::Error>(url)?;
-                let sha256 = raw
-                    .sha256
-                    .map(normalize_sha256_hex::<D::Error>)
-                    .transpose()?;
-
-                Ok(VariantSource::Url(VariantUrlSource { url, sha256 }))
-            }
-            _ => Err(invalid_deployment_source::<D::Error>(
-                "variant source must be one of: { name }, { repo [, path] [, ref] }, { url [, sha256] }",
-            )),
-        }
-    }
-}
-
 impl<'de> Deserialize<'de> for DeploymentSource {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -328,8 +213,6 @@ impl<'de> Deserialize<'de> for DeploymentSource {
             name: Option<String>,
             #[serde(default)]
             tag: Option<String>,
-            #[serde(default)]
-            variant: Option<VariantSource>,
         }
 
         let raw = RawDeploymentSource::deserialize(deserializer)?;
@@ -345,11 +228,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                 })?;
                 let (name, tag) =
                     split_repo_name_and_tag::<D::Error>(name_raw, raw.tag.as_deref())?;
-                Ok(DeploymentSource::Repo(DeploymentRepoSource {
-                    name,
-                    tag,
-                    variant: raw.variant,
-                }))
+                Ok(DeploymentSource::Repo(DeploymentRepoSource { name, tag }))
             }
             (true, false, false, false) => {
                 let local = trim_non_empty::<D::Error>(
@@ -360,10 +239,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                     .components()
                     .filter(|c| !matches!(c, Component::CurDir))
                     .collect();
-                Ok(DeploymentSource::Local(DeploymentLocalSource {
-                    local,
-                    variant: raw.variant,
-                }))
+                Ok(DeploymentSource::Local(DeploymentLocalSource { local }))
             }
             (false, true, false, false) => {
                 let repo = raw.repo.ok_or_else(|| {
@@ -384,7 +260,6 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                     repo,
                     path,
                     ref_,
-                    variant: raw.variant,
                 }))
             }
             (false, false, true, false) => {
@@ -398,11 +273,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                 let url = normalize_http_url::<D::Error>(url)?;
                 let sha256 = normalize_sha256_hex::<D::Error>(sha256)?;
 
-                Ok(DeploymentSource::Url(DeploymentUrlSource {
-                    url,
-                    sha256,
-                    variant: raw.variant,
-                }))
+                Ok(DeploymentSource::Url(DeploymentUrlSource { url, sha256 }))
             }
             _ => {
                 if has_git && has_repo {
@@ -518,278 +389,27 @@ mod tests {
         }
     }
 
-    // -- VariantSource tests --
-
-    #[test]
-    fn variant_source_parses_name() {
-        let v: VariantSource = serde_json5::from_str("{ name: \"mock-rust\" }").unwrap();
-        let VariantSource::Name(n) = v else {
-            panic!("expected name variant");
-        };
-        assert_eq!(n.name, "mock-rust");
-    }
-
-    #[test]
-    fn variant_source_parses_git_full() {
-        let v: VariantSource = serde_json5::from_str(
-            "{ repo: \"https://github.com/Peppy-bot/nodes_hub.git\", path: \"my_variant\", ref: \"main\" }",
-        )
-        .unwrap();
-        let VariantSource::Git(g) = v else {
-            panic!("expected git variant");
-        };
-        assert_eq!(g.repo, "https://github.com/Peppy-bot/nodes_hub.git");
-        assert_eq!(g.path.as_deref(), Some("my_variant"));
-        assert_eq!(g.ref_.as_deref(), Some("main"));
-    }
-
-    #[test]
-    fn variant_source_parses_git_repo_only() {
-        let v: VariantSource =
-            serde_json5::from_str("{ repo: \"https://github.com/Peppy-bot/nodes_hub.git\" }")
-                .unwrap();
-        let VariantSource::Git(g) = v else {
-            panic!("expected git variant");
-        };
-        assert_eq!(g.repo, "https://github.com/Peppy-bot/nodes_hub.git");
-        assert_eq!(g.path, None);
-        assert_eq!(g.ref_, None);
-    }
-
-    #[test]
-    fn variant_source_parses_git_repo_and_path() {
-        let v: VariantSource = serde_json5::from_str(
-            "{ repo: \"https://github.com/Peppy-bot/nodes_hub.git\", path: \"sub/dir\" }",
-        )
-        .unwrap();
-        let VariantSource::Git(g) = v else {
-            panic!("expected git variant");
-        };
-        assert_eq!(g.path.as_deref(), Some("sub/dir"));
-        assert_eq!(g.ref_, None);
-    }
-
-    #[test]
-    fn variant_source_parses_url_full() {
-        let v: VariantSource = serde_json5::from_str(
-            "{ url: \"https://example.com/variant.tar.zst\", sha256: \"33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a\" }",
-        )
-        .unwrap();
-        let VariantSource::Url(u) = v else {
-            panic!("expected url variant");
-        };
-        assert_eq!(u.url, "https://example.com/variant.tar.zst");
-        assert_eq!(
-            u.sha256.as_deref(),
-            Some("33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a")
-        );
-    }
-
-    #[test]
-    fn variant_source_parses_url_without_sha256() {
-        let v: VariantSource =
-            serde_json5::from_str("{ url: \"https://example.com/variant.tar.zst\" }").unwrap();
-        let VariantSource::Url(u) = v else {
-            panic!("expected url variant");
-        };
-        assert_eq!(u.url, "https://example.com/variant.tar.zst");
-        assert_eq!(u.sha256, None);
-    }
-
-    #[test]
-    fn variant_source_rejects_empty_name() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<VariantSource>("{ name: \"\" }").unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
-        assert_eq!(msg, "variant name cannot be empty");
-    }
-
-    #[test]
-    fn variant_source_rejects_mixed_keys() {
-        let err: serde_json5::Error = serde_json5::from_str::<VariantSource>(
-            "{ name: \"mock\", repo: \"https://github.com/Peppy-bot/nodes_hub.git\" }",
-        )
-        .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
-        assert!(
-            msg.contains("variant source must be one of"),
-            "unexpected message: {msg}"
-        );
-    }
-
-    #[test]
-    fn variant_source_rejects_sha256_without_url() {
-        let err: serde_json5::Error = serde_json5::from_str::<VariantSource>(
-            "{ sha256: \"33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a\" }",
-        )
-        .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
-        assert_eq!(msg, "variant url source requires `url`");
-    }
-
-    #[test]
-    fn variant_source_rejects_path_without_repo() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<VariantSource>("{ path: \"sub/dir\" }").unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
-        assert_eq!(msg, "variant git source requires `repo`");
-    }
-
-    #[test]
-    fn variant_source_validates_bad_url() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<VariantSource>("{ url: \"ftp://example.com/node.tar.zst\" }")
-                .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
-        assert_eq!(msg, "url must start with http:// or https://");
-    }
-
-    #[test]
-    fn variant_source_validates_bad_sha256() {
-        let err: serde_json5::Error = serde_json5::from_str::<VariantSource>(
-            "{ url: \"https://example.com/node.tar.zst\", sha256: \"bad\" }",
-        )
-        .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
-        assert_eq!(msg, "sha256 must be a 64-character hexadecimal string");
-    }
-
-    #[test]
-    fn variant_source_validates_bad_git_path() {
-        let err: serde_json5::Error = serde_json5::from_str::<VariantSource>(
-            "{ repo: \"https://github.com/Peppy-bot/nodes_hub.git\", path: \"../escape\" }",
-        )
-        .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
-        assert_eq!(
-            msg,
-            "git path cannot be absolute or contain parent-dir components"
-        );
-    }
-
-    // -- DeploymentSource with variant tests --
-
-    #[test]
-    fn deployment_source_with_name_variant() {
-        let src: DeploymentSource =
-            serde_json5::from_str("{ local: \"./my_node\", variant: { name: \"mock\" } }").unwrap();
-        let DeploymentSource::Local(local) = &src else {
-            panic!("expected local source");
-        };
-        let Some(VariantSource::Name(v)) = &local.variant else {
-            panic!("expected name variant");
-        };
-        assert_eq!(v.name, "mock");
-    }
-
-    #[test]
-    fn deployment_source_git_with_git_variant() {
-        let src: DeploymentSource = serde_json5::from_str(
-            r#"{
-                repo: "https://github.com/Peppy-bot/nodes_hub.git",
-                path: "brain",
-                ref: "main",
-                variant: {
-                    repo: "https://github.com/Peppy-bot/variants.git",
-                    path: "mock_brain",
-                    ref: "v1"
-                }
-            }"#,
-        )
-        .unwrap();
-        let DeploymentSource::Git(git) = &src else {
-            panic!("expected git source");
-        };
-        let Some(VariantSource::Git(v)) = &git.variant else {
-            panic!("expected git variant");
-        };
-        assert_eq!(v.repo, "https://github.com/Peppy-bot/variants.git");
-        assert_eq!(v.path.as_deref(), Some("mock_brain"));
-        assert_eq!(v.ref_.as_deref(), Some("v1"));
-    }
-
-    #[test]
-    fn deployment_source_url_with_url_variant() {
-        let valid_sha = "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a";
-        let input = format!(
-            r#"{{
-                url: "https://example.com/node.tar.zst",
-                sha256: "{valid_sha}",
-                variant: {{
-                    url: "https://example.com/variant.tar.zst",
-                    sha256: "{valid_sha}"
-                }}
-            }}"#
-        );
-        let src: DeploymentSource = serde_json5::from_str(&input).unwrap();
-        let DeploymentSource::Url(url_src) = &src else {
-            panic!("expected url source");
-        };
-        let Some(VariantSource::Url(v)) = &url_src.variant else {
-            panic!("expected url variant");
-        };
-        assert_eq!(v.url, "https://example.com/variant.tar.zst");
-        assert_eq!(v.sha256.as_deref(), Some(valid_sha));
-    }
-
-    #[test]
-    fn deployment_source_without_variant_is_none() {
-        let src: DeploymentSource = serde_json5::from_str("{ local: \"./uvc_camera\" }").unwrap();
-        assert!(src.variant().is_none());
-    }
-
     // -- DeploymentRepoSource tests --
 
     #[test]
     fn repo_source_parses_name_and_tag_fields() {
         let src: DeploymentSource =
-            serde_json5::from_str("{ name: \"robot_brain\", tag: \"0.1.0\" }").unwrap();
+            serde_json5::from_str("{ name: \"robot_brain\", tag: \"v1\" }").unwrap();
         let DeploymentSource::Repo(repo) = src else {
             panic!("expected repo source");
         };
         assert_eq!(repo.name, "robot_brain");
-        assert_eq!(repo.tag, "0.1.0");
-        assert!(repo.variant.is_none());
+        assert_eq!(repo.tag, "v1");
     }
 
     #[test]
     fn repo_source_parses_combined_name_tag() {
-        let src: DeploymentSource =
-            serde_json5::from_str("{ name: \"robot_brain:0.1.0\" }").unwrap();
+        let src: DeploymentSource = serde_json5::from_str("{ name: \"robot_brain:v1\" }").unwrap();
         let DeploymentSource::Repo(repo) = src else {
             panic!("expected repo source");
         };
         assert_eq!(repo.name, "robot_brain");
-        assert_eq!(repo.tag, "0.1.0");
-    }
-
-    #[test]
-    fn repo_source_parses_with_name_variant() {
-        let src: DeploymentSource = serde_json5::from_str(
-            "{ name: \"robot_brain\", tag: \"0.1.0\", variant: { name: \"mock-python\" } }",
-        )
-        .unwrap();
-        let DeploymentSource::Repo(repo) = src else {
-            panic!("expected repo source");
-        };
-        let Some(VariantSource::Name(v)) = repo.variant else {
-            panic!("expected name variant");
-        };
-        assert_eq!(v.name, "mock-python");
+        assert_eq!(repo.tag, "v1");
     }
 
     #[test]
@@ -805,8 +425,7 @@ mod tests {
     #[test]
     fn repo_source_rejects_empty_name() {
         let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"\", tag: \"0.1.0\" }")
-                .unwrap_err();
+            serde_json5::from_str::<DeploymentSource>("{ name: \"\", tag: \"v1\" }").unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
         };
@@ -816,7 +435,7 @@ mod tests {
     #[test]
     fn repo_source_rejects_combined_with_separate_tag() {
         let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:0.1.0\", tag: \"0.1.0\" }")
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:v1\", tag: \"v1\" }")
                 .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
@@ -827,7 +446,7 @@ mod tests {
     #[test]
     fn repo_source_rejects_multiple_colons() {
         let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:0.1:extra\" }").unwrap_err();
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:v1:extra\" }").unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
         };
@@ -835,20 +454,37 @@ mod tests {
     }
 
     #[test]
-    fn repo_source_rejects_traversal_tag() {
+    fn repo_source_rejects_dot_in_tag() {
         let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"..\" }")
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"v1.2\" }")
                 .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
         };
-        assert!(msg.contains("must not start with '.'"), "unexpected: {msg}");
+        assert!(
+            msg.contains("disallowed character") && msg.contains("'.'"),
+            "unexpected: {msg}"
+        );
+    }
+
+    #[test]
+    fn repo_source_rejects_tag_not_starting_with_letter() {
+        let err: serde_json5::Error =
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"0.1.0\" }")
+                .unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(
+            msg.contains("must start with an ASCII letter"),
+            "unexpected: {msg}"
+        );
     }
 
     #[test]
     fn repo_source_rejects_invalid_name_char() {
         let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo/bar\", tag: \"0.1.0\" }")
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo/bar\", tag: \"v1\" }")
                 .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
@@ -862,7 +498,7 @@ mod tests {
     #[test]
     fn repo_source_rejects_mixed_with_local() {
         let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(
-            "{ name: \"foo\", tag: \"0.1.0\", local: \"./x\" }",
+            "{ name: \"foo\", tag: \"v1\", local: \"./x\" }",
         )
         .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
@@ -874,29 +510,12 @@ mod tests {
     #[test]
     fn repo_source_rejects_mixed_with_git_fields() {
         let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(
-            "{ repo: \"https://github.com/org/repo.git\", name: \"foo\", tag: \"0.1.0\" }",
+            "{ repo: \"https://github.com/org/repo.git\", name: \"foo\", tag: \"v1\" }",
         )
         .unwrap_err();
         let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
             panic!("expected InvalidDeploymentSource");
         };
         assert!(msg.contains("cannot mix git fields"), "unexpected: {msg}");
-    }
-
-    #[test]
-    fn deployment_source_variant_convenience_method() {
-        let src: DeploymentSource = serde_json5::from_str(
-            r#"{
-                repo: "https://github.com/Peppy-bot/nodes_hub.git",
-                path: "brain",
-                ref: "main",
-                variant: { name: "mock" }
-            }"#,
-        )
-        .unwrap();
-        let Some(VariantSource::Name(v)) = src.variant() else {
-            panic!("expected name variant via convenience method");
-        };
-        assert_eq!(v.name, "mock");
     }
 }

@@ -291,6 +291,11 @@ where
         self.processor.node_name()
     }
 
+    /// Get the node tag
+    pub fn node_tag(&self) -> &str {
+        self.processor.node_tag()
+    }
+
     /// Get the instance ID
     pub fn instance_id(&self) -> &str {
         self.processor.bound_instance_id()
@@ -412,12 +417,14 @@ struct PreSetupHandles {
 
 async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSetupHandles> {
     let processor = node_runner.processor();
+    let as_identity =
+        crate::messaging::SenderTarget::node(processor.node_name(), processor.node_tag())?;
 
     let ready_handle = listen_for_node_ready(
         node_runner.messenger(),
         processor.bound_core_node(),
         processor.bound_instance_id(),
-        processor.node_name(),
+        as_identity.clone(),
     )
     .await?;
 
@@ -425,7 +432,7 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
         node_runner.messenger(),
         processor.bound_core_node(),
         processor.bound_instance_id(),
-        processor.node_name(),
+        as_identity,
     )
     .await?;
 
@@ -445,11 +452,29 @@ async fn run_post_setup_services(
 ) -> Result<()> {
     let processor = node_runner.processor();
 
+    let as_identity =
+        crate::messaging::SenderTarget::node(processor.node_name(), processor.node_tag())?;
+
+    // `node_health` stays in post-setup on purpose: many tests use
+    // `wait_for_health` as a "setup completed" signal — they spawn a
+    // consumer, wait for its health endpoint, and only then send shutdown,
+    // relying on health reachability to imply that the consumer's
+    // `setup_fn` already produced its observable output (e.g. the printed
+    // response from a `poll` call). Registering health pre-setup
+    // collapses that signal: probes succeed immediately after the process
+    // connects to messaging, before `setup_fn` runs, and the test's
+    // subsequent `send_shutdown` cancels `setup_fn` mid-flight. Keeping
+    // health post-setup preserves the "I've finished setup" contract.
+    // The corollary: a `setup_fn` that intentionally blocks forever
+    // (e.g. `handle_next_request` on a discover-then-pin loser) never
+    // exposes `node_health`. Tests covering that case must skip the
+    // health probe and either rely on pre-setup signals (`shutdown` /
+    // `node_ready`) or wait on a domain-specific signal instead.
     let health_handle = listen_for_node_health(
         node_runner.messenger(),
         processor.bound_core_node(),
         processor.bound_instance_id(),
-        processor.node_name(),
+        as_identity,
     )
     .await?;
 
@@ -506,7 +531,7 @@ mod tests {
         let content = format!(
             r#"{{
                 peppy_schema: "node_v1",
-                manifest: {{ name: "test_node", tag: "0.1.0" }},
+                manifest: {{ name: "test_node", tag: "v1" }},
                 execution: {{ language: "rust", parameters: {{ {parameters} }}, run_cmd: ["./test"] }},
             }}"#,
         );

@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::names;
 use core_node_api::encoding::{PingRequest, PingResponse};
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -17,7 +18,7 @@ pub async fn listen_for_ping(
         messenger,
         core_node_node,
         instance_id,
-        node_name,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::PING,
     )
     .await?;

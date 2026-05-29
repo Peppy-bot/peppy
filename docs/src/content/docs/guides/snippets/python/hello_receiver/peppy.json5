@@ -2,13 +2,14 @@
   peppy_schema: "node_v1",
   manifest: {
     name: "hello_receiver",
-    tag: "0.1.0",
+    tag: "v1",
     depends_on: {
       nodes: [
         {
           name: "hello_world_param",
-          tag: "0.1.0",
-          local_id: "hello_world_param"
+          tag: "v1",
+          link_id: "hello_world_param",
+          from_any: true
         },
       ]
     },
@@ -17,7 +18,7 @@
     topics: {
       consumes: [
         {
-          local_node_id: "hello_world_param",
+          link_id: "hello_world_param",
           name: "message_stream",
         }
       ],

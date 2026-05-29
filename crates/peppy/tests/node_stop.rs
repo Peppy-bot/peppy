@@ -14,6 +14,8 @@ use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 use peppylib::core_node::transport::poll_stack_list;
+
+use super::common::test_node_target;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -79,12 +81,12 @@ async fn node_stop_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -99,19 +101,31 @@ async fn node_stop_command_succeeds() {
 
     // Start in-process node services for health/shutdown so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle =
-        listen_for_node_ready(&node_messenger, &core_node_name, instance_id, node_name)
-            .await
-            .expect("node ready service should start");
-    let _node_health_handle =
-        listen_for_node_health(&node_messenger, &core_node_name, instance_id, node_name)
-            .await
-            .expect("node health service should start");
+    let _node_ready_handle = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node ready service should start");
+    let _node_health_handle = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node health service should start");
 
-    let (_node_shutdown_handle, node_shutdown_rx) =
-        listen_for_shutdown(&node_messenger, &core_node_name, instance_id, node_name)
-            .await
-            .expect("node shutdown service should start");
+    let (_node_shutdown_handle, node_shutdown_rx) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node shutdown service should start");
 
     // Verify the node was added with 0 instances
     let response = poll_stack_list(
@@ -127,16 +141,12 @@ async fn node_stop_command_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         0,
@@ -153,9 +163,12 @@ async fn node_stop_command_succeeds() {
         command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(node_name.to_string()),
-            tag: Some("0.1.0".to_string()),
+            tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            binds: Vec::new(),
+
+            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -178,16 +191,12 @@ async fn node_stop_command_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         1,
@@ -228,16 +237,12 @@ async fn node_stop_command_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == "0.1.0")
-        .unwrap_or_else(|| {
-            panic!(
-                "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-            )
-        });
+    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
+        panic!(
+            "graph should contain the added node. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         node.instance_count(),
         0,

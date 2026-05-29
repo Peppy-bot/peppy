@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use config::ConfigError;
+use config::{ConfigError, ParsingError};
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -14,34 +14,6 @@ pub enum Error {
     // -- nodes errors
     #[error("The node name `{0}` or tag `{1}` could not be found")]
     NoMatchingNode(String, String),
-    #[error(
-        "`{dependant}`:{dependant_tag} expects {interface_kind} `{interface_name}` from `{dependency}`:{dependency_tag}, but it is not exposed"
-    )]
-    MissingInterface {
-        dependant: String,
-        dependant_tag: String,
-        dependency: String,
-        dependency_tag: String,
-        interface_kind: String,
-        interface_name: String,
-    },
-    #[error(
-        "`{dependant}:{dependant_tag}` depends on `{dependency}:{dependency_tag}`, but it does not exist in the stack"
-    )]
-    MissingDependency {
-        dependant: String,
-        dependant_tag: String,
-        dependency: String,
-        dependency_tag: String,
-    },
-    #[error(
-        "`{dependant}:{dependant_tag}` references undeclared local_node_id `{local_node_id}` in consumed interfaces"
-    )]
-    UndeclaredLocalNodeId {
-        dependant: String,
-        dependant_tag: String,
-        local_node_id: String,
-    },
 
     // -- node stack errors
     #[error("Cannot modify the root node (it always has exactly one instance)")]
@@ -55,6 +27,21 @@ pub enum Error {
         instance_id: String,
         node_name: String,
         node_tag: String,
+    },
+    /// Stack-wide `instance_id` collision: the candidate `instance_id`
+    /// is already tracked by a *different* `(node_name, node_tag)` than
+    /// the one being spawned. Bindings address producers by raw
+    /// `instance_id` so duplicates across the stack would make
+    /// `--bind KEY@id` ambiguous. The validator catches this at plan
+    /// time; this is the daemon's defensive backstop at the trust
+    /// boundary.
+    #[error(
+        "Instance ID `{instance_id}` is already tracked by `{existing_node_name}`:{existing_node_tag}; instance_ids must be unique across the entire stack"
+    )]
+    DuplicateInstanceIdAcrossStack {
+        instance_id: String,
+        existing_node_name: String,
+        existing_node_tag: String,
     },
     #[error("Cannot remove node `{node_name}`:{node_tag} because it still has instances")]
     CannotRemoveNodeWithInstances { node_name: String, node_tag: String },
@@ -90,4 +77,10 @@ pub enum Error {
         first: PathBuf,
         second: PathBuf,
     },
+}
+
+impl From<ParsingError> for Error {
+    fn from(err: ParsingError) -> Self {
+        Self::Config(ConfigError::Parsing(err))
+    }
 }

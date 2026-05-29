@@ -42,7 +42,6 @@ impl From<&NodeEntity> for SerializedNode {
                     state: i.state(),
                 })
                 .collect(),
-            variant_name: entity.variant_name().map(str::to_owned),
         }
     }
 }
@@ -167,6 +166,11 @@ pub struct StartContext<'a> {
     /// nodes, the caller is responsible for any host_gateway rewriting before
     /// calling start (the entity treats this as opaque bytes).
     pub runtime_config_json5: &'a str,
+    /// Pre-resolved per-slot bindings for this instance, recorded on the
+    /// `TrackedNodeInstance` so the daemon can surface them via
+    /// `node_info`. The launcher / CLI compute this from the
+    /// validator's per-slot resolution before spawning.
+    pub slot_bindings: std::collections::BTreeMap<String, config::runtime::SlotBinding>,
     /// User + injected env vars (already passed through
     /// `validate_goal_env_vars`, `inject_rust_build_env`, and
     /// `inject_node_runtime_env` in core-node).
@@ -275,22 +279,13 @@ pub struct NodeEntity {
     /// `take_pending_working_dir` clears the entity-side slot. Never
     /// persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
-    /// Variant label captured at `node add` time. `None` for nodes added
-    /// without a variant (no default variant, no `--variant` flag) and for
-    /// the synthetic root entity.
-    variant_name: Option<String>,
 }
 
 impl NodeEntity {
     /// Creates a new `NodeEntity` in the [`NodeStage::Added`] stage. The
     /// `config_path` should point at the `peppy.json5` file that supplied
-    /// `config`. `variant_name` is the variant label selected at add time
-    /// (or `None` if no variant applies).
-    pub fn new<P: Into<PathBuf>>(
-        config: NodeConfig,
-        config_path: P,
-        variant_name: Option<String>,
-    ) -> Self {
+    /// `config`.
+    pub fn new<P: Into<PathBuf>>(config: NodeConfig, config_path: P) -> Self {
         Self {
             config,
             stage: NodeStage::Added {
@@ -298,7 +293,6 @@ impl NodeEntity {
             },
             generation: next_entity_generation(),
             pending_working_dir: None,
-            variant_name,
         }
     }
 
@@ -350,12 +344,6 @@ impl NodeEntity {
 
     pub fn stage(&self) -> &NodeStage {
         &self.stage
-    }
-
-    /// Returns the variant label captured at `node add` time, if any. `None`
-    /// for the synthetic root entity and for nodes added without a variant.
-    pub fn variant_name(&self) -> Option<&str> {
-        self.variant_name.as_deref()
     }
 
     /// Returns the `peppy.json5` path that registered this entity. Always
@@ -667,6 +655,7 @@ impl NodeEntity {
                 ctx.instance_id.clone(),
                 None,
                 InstanceState::Starting,
+                ctx.slot_bindings.clone(),
             ));
 
             (
@@ -978,7 +967,6 @@ impl NodeEntity {
             },
             generation: next_entity_generation(),
             pending_working_dir: None,
-            variant_name: None,
         }
     }
 
@@ -1002,7 +990,6 @@ impl NodeEntity {
         config_path: PathBuf,
         artifact_path: Option<PathBuf>,
         instances: Vec<TrackedNodeInstance>,
-        variant_name: Option<String>,
     ) -> Self {
         let stage = match (artifact_path, instances.is_empty()) {
             (None, true) => NodeStage::Added { config_path },
@@ -1021,7 +1008,6 @@ impl NodeEntity {
             stage,
             generation: next_entity_generation(),
             pending_working_dir: None,
-            variant_name,
         }
     }
 
@@ -1072,6 +1058,13 @@ pub struct TrackedNodeInstance {
     /// Persisted so it can be removed when the instance stops or aborts. `None`
     /// for snapshot-restored or test-fixture instances.
     runtime_config_path: Option<PathBuf>,
+    /// Pre-resolved per-slot bindings for this consumer instance,
+    /// mirroring [`config::runtime::NodeInstanceConfig::slot_bindings`].
+    /// Surfaced through `node_info` so the launcher / CLI can
+    /// cross-check newly-staged binding plans against running
+    /// consumers' existing claims. Empty when the node has no
+    /// `depends_on` slots.
+    slot_bindings: std::collections::BTreeMap<String, config::runtime::SlotBinding>,
 }
 
 impl TrackedNodeInstance {
@@ -1079,15 +1072,34 @@ impl TrackedNodeInstance {
     /// explicitly — there is no default. Callers that have just spawned a
     /// child process and have not yet committed it pass `InstanceState::Starting`;
     /// callers that are reconstructing an entity from a snapshot or test
-    /// fixture pass `InstanceState::Running`.
-    pub fn new(instance_id: Name, pid: Option<u32>, state: InstanceState) -> Self {
+    /// fixture pass `InstanceState::Running`. `slot_bindings` carries the
+    /// validator-resolved per-slot bindings for this instance — pass an
+    /// empty map when reconstructing test fixtures or instances whose
+    /// manifest has no `depends_on` slots.
+    pub fn new(
+        instance_id: Name,
+        pid: Option<u32>,
+        state: InstanceState,
+        slot_bindings: std::collections::BTreeMap<String, config::runtime::SlotBinding>,
+    ) -> Self {
         Self {
             instance_id,
             pid,
             state,
             instance_dir: None,
             runtime_config_path: None,
+            slot_bindings,
         }
+    }
+
+    /// Returns the validator-resolved per-slot bindings recorded for
+    /// this instance. Empty for instances whose manifest has no
+    /// `depends_on` slots or for snapshot-restored / test-fixture
+    /// instances built with an empty bindings map.
+    pub fn slot_bindings(
+        &self,
+    ) -> &std::collections::BTreeMap<String, config::runtime::SlotBinding> {
+        &self.slot_bindings
     }
 
     pub fn instance_id(&self) -> &Name {
@@ -1127,10 +1139,4 @@ impl TrackedNodeInstance {
         self.instance_dir = Some(instance_dir);
         self.runtime_config_path = Some(runtime_config_path);
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DependencySpec {
-    pub node_name: String,
-    pub node_tag: String,
 }

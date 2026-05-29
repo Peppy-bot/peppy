@@ -1,10 +1,12 @@
 //! Cap'n Proto encoding utilities for node info messages.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 
 use capnp::message::Builder;
 use config::node::NodeConfig;
+use config::runtime::SlotBinding;
 
 use crate::graph::{InstanceState, NodeStage};
 use crate::node_capnp;
@@ -55,6 +57,12 @@ impl NodeInfoRequest {
 pub struct NodeInstanceInfo {
     pub instance_id: String,
     pub state: InstanceState,
+    /// Pre-resolved per-slot bindings for this consumer instance,
+    /// mirroring [`config::runtime::NodeInstanceConfig::slot_bindings`].
+    /// Empty when the node has no `depends_on` slots. Surfacing this
+    /// lets the launcher / CLI cross-check newly-staged binding plans
+    /// against what running consumers have already claimed.
+    pub slot_bindings: BTreeMap<String, SlotBinding>,
 }
 
 /// Body of a successful `node_info` lookup — carries all metadata about a
@@ -73,9 +81,6 @@ pub struct NodeInfo {
     pub add_log_path: Option<PathBuf>,
     /// Per-instance run log paths, aligned with `instances` (same order).
     pub run_log_paths: Vec<PathBuf>,
-    /// Variant label captured at `node add` time, if any. `None` for
-    /// the synthetic root entity and for non-variant add paths.
-    pub variant_name: Option<String>,
 }
 
 /// Response payload for the `node_info` service.
@@ -120,6 +125,17 @@ impl NodeInfoResponse {
                             let mut entry = instances_builder.reborrow().get(i as u32);
                             entry.set_instance_id(&inst.instance_id);
                             entry.set_state(inst.state.as_str());
+                            let slot_bindings_json = if inst.slot_bindings.is_empty() {
+                                String::new()
+                            } else {
+                                serde_json5::to_string(&inst.slot_bindings).map_err(|e| {
+                                    crate::Error::Encoding(format!(
+                                        "failed to serialize slot_bindings for instance `{}`: {}",
+                                        inst.instance_id, e
+                                    ))
+                                })?
+                            };
+                            entry.set_slot_bindings_json(&slot_bindings_json);
                         }
                     }
                     found.set_add_log_path(
@@ -138,7 +154,6 @@ impl NodeInfoResponse {
                             paths_builder.set(i as u32, path.to_string_lossy().as_ref());
                         }
                     }
-                    found.set_variant_name(info.variant_name.as_deref().unwrap_or(""));
                 }
             }
         }
@@ -168,9 +183,22 @@ impl NodeInfoResponse {
                     let state_str = entry.get_state()?.to_str()?;
                     let state = InstanceState::from_str(state_str)
                         .map_err(|e| crate::Error::Decoding(e.to_string()))?;
+                    let slot_bindings_json = entry.get_slot_bindings_json()?.to_str()?;
+                    let slot_bindings: BTreeMap<String, SlotBinding> =
+                        if slot_bindings_json.is_empty() {
+                            BTreeMap::new()
+                        } else {
+                            serde_json5::from_str(slot_bindings_json).map_err(|e| {
+                                crate::Error::Decoding(format!(
+                                    "failed to deserialize slot_bindings: {}",
+                                    e
+                                ))
+                            })?
+                        };
                     instances.push(NodeInstanceInfo {
                         instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
                         state,
+                        slot_bindings,
                     });
                 }
                 let add_log_path =
@@ -180,7 +208,6 @@ impl NodeInfoResponse {
                 for i in 0..run_log_paths_reader.len() {
                     run_log_paths.push(PathBuf::from(run_log_paths_reader.get(i)?.to_str()?));
                 }
-                let variant_name = optional_text(found.get_variant_name()?.to_str()?);
                 Ok(NodeInfoResponse::Found(Box::new(NodeInfo {
                     config,
                     config_integrity,
@@ -188,7 +215,6 @@ impl NodeInfoResponse {
                     instances,
                     add_log_path,
                     run_log_paths,
-                    variant_name,
                 })))
             }
         }
@@ -202,45 +228,37 @@ mod tests {
 
     #[test]
     fn node_info_request_roundtrips_name_tag() {
-        let encoded = NodeInfoRequest::new("sensor_node", "0.1.0")
+        let encoded = NodeInfoRequest::new("sensor_node", "v1")
             .encode()
             .expect("encoding should succeed");
         let decoded = NodeInfoRequest::decode(&encoded).expect("decoding should succeed");
 
         assert_eq!(decoded.node_name, "sensor_node");
-        assert_eq!(decoded.node_tag, "0.1.0");
+        assert_eq!(decoded.node_tag, "v1");
     }
 
     fn sample_config_for_roundtrip() -> NodeConfig {
         let config_json5 = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "sensor_node", tag: "0.1.0" },
+            manifest: { name: "sensor_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("peppy.json5");
         std::fs::write(&path, config_json5).expect("write config");
-        NodeConfigParser::from_path(&path)
-            .expect("parse config")
-            .into_resolved()
-            .expect("resolve config")
+        NodeConfigParser::from_path(&path).expect("parse config")
     }
 
-    fn info_with_variant(variant_name: Option<String>) -> NodeInfo {
-        NodeInfo {
+    #[test]
+    fn node_info_response_found_roundtrips() {
+        let info = NodeInfo {
             config: sample_config_for_roundtrip(),
             config_integrity: "0".repeat(64),
             stage: NodeStage::Added,
             instances: vec![],
             add_log_path: None,
             run_log_paths: vec![],
-            variant_name,
-        }
-    }
-
-    #[test]
-    fn node_info_response_roundtrips_variant_name_some() {
-        let info = info_with_variant(Some("macos".to_string()));
+        };
         let encoded = NodeInfoResponse::Found(Box::new(info))
             .encode()
             .expect("encoding should succeed");
@@ -248,15 +266,51 @@ mod tests {
 
         match decoded {
             NodeInfoResponse::Found(info) => {
-                assert_eq!(info.variant_name.as_deref(), Some("macos"));
+                assert_eq!(info.config.manifest.name.as_str(), "sensor_node");
+                assert_eq!(info.stage, NodeStage::Added);
             }
             NodeInfoResponse::NotInStack => panic!("expected Found"),
         }
     }
 
     #[test]
-    fn node_info_response_roundtrips_variant_name_none() {
-        let info = info_with_variant(None);
+    fn node_info_response_roundtrips_instance_slot_bindings() {
+        let bindings_a: BTreeMap<String, SlotBinding> = [
+            (
+                "wrist_left_camera".to_string(),
+                SlotBinding::Pinned {
+                    producer_instance_id: "cam1".to_string(),
+                },
+            ),
+            (
+                "extra_cam".to_string(),
+                SlotBinding::FromAnyBound {
+                    producer_instance_ids: vec!["cam2".to_string(), "cam3".to_string()],
+                },
+            ),
+            ("spare".to_string(), SlotBinding::FromAnyUnbound),
+        ]
+        .into_iter()
+        .collect();
+        let info = NodeInfo {
+            config: sample_config_for_roundtrip(),
+            config_integrity: "0".repeat(64),
+            stage: NodeStage::Ready,
+            instances: vec![
+                NodeInstanceInfo {
+                    instance_id: "inst-with-bindings".to_string(),
+                    state: InstanceState::Running,
+                    slot_bindings: bindings_a.clone(),
+                },
+                NodeInstanceInfo {
+                    instance_id: "inst-no-bindings".to_string(),
+                    state: InstanceState::Starting,
+                    slot_bindings: BTreeMap::new(),
+                },
+            ],
+            add_log_path: None,
+            run_log_paths: vec![],
+        };
         let encoded = NodeInfoResponse::Found(Box::new(info))
             .encode()
             .expect("encoding should succeed");
@@ -264,7 +318,15 @@ mod tests {
 
         match decoded {
             NodeInfoResponse::Found(info) => {
-                assert!(info.variant_name.is_none());
+                assert_eq!(info.instances.len(), 2);
+                assert_eq!(
+                    info.instances[0].slot_bindings, bindings_a,
+                    "slot_bindings should round-trip for the first instance"
+                );
+                assert!(
+                    info.instances[1].slot_bindings.is_empty(),
+                    "empty slot_bindings should round-trip as empty"
+                );
             }
             NodeInfoResponse::NotInStack => panic!("expected Found"),
         }

@@ -1,6 +1,7 @@
 use config::consts::DEFAULT_MESSAGING_PORT;
 use config::node::QoSProfile;
 use names_generator2::get_random;
+use peppylib::messaging::SenderTarget;
 use peppylib::{MessengerHandle, Payload, TopicMessenger};
 use rand::rng;
 
@@ -32,7 +33,7 @@ async fn main() {
         &sender_handle,
         &core_node,
         &instance_id,
-        node_name,
+        SenderTarget::node(node_name, "v1").expect("test target"),
         topic_name,
         qos,
         payload,

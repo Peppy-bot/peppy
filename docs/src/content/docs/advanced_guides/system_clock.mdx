@@ -2,7 +2,7 @@
 title: System clock
 description: Synchronize a node's wall clock against the core node, or subscribe to periodic clock ticks for continuous correlation.
 sidebar:
-  order: 9
+  order: 10
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
@@ -13,8 +13,8 @@ Their clocks drift independently, so "1.7 s ago" on one node no longer points to
 
 `peppylib` exposes two helpers that let any node measure the offset between its local clock and the core node's clock:
 
-- `synchronize` — a one-shot NTP-style request/response. Returns the offset and the observed round-trip delay.
-- `subscribe_clock` — a long-lived subscription to the periodic `clock` topic the core node publishes. Each `ClockTick` carries the core node's clock at emission.
+- `synchronize`: a one-shot NTP-style request/response. Returns the offset and the observed round-trip delay.
+- `subscribe_clock`: a long-lived subscription to the periodic `clock` topic the core node publishes. Each `ClockTick` carries the core node's clock at emission.
 
 :::note
 Neither helper adjusts the local OS clock. They measure and report; aligning a timestamp is left to the caller (`local_now() + sync.offset_ns`).
@@ -27,18 +27,18 @@ Neither helper adjusts the local OS clock. They measure and report; aligning a t
 | Pattern | Request/response | Topic subscription |
 | Result | Offset **and** observed RTT | Snapshot of the core node's clock |
 | Staleness | Bounded by the RTT you just measured | ~one one-way network delay (uncorrected) |
-| Cost per use | One round trip | Passive — ticks arrive at 10 Hz |
+| Cost per use | One round trip | Passive (ticks arrive at 10 Hz) |
 | Use when | You need a precise offset before stamping a recorded artifact | You want continuous correlation, e.g. driving a status display |
 
-If unsure, start with `synchronize` — it gives you both numbers and you can call it once at startup. Reach for `subscribe_clock` when you need the steady drumbeat.
+If unsure, start with `synchronize`; it gives you both numbers and you can call it once at startup. Reach for `subscribe_clock` when you need the steady drumbeat.
 
 ## `synchronize`
 
 `synchronize` performs the standard NTP 4-timestamp exchange against the core node's `CLOCK` service: the helper stamps `t0` before sending, the core node stamps `t1` on receive and `t2` before responding, and the helper stamps `t3` on receive. It returns a `ClockSync` with three fields:
 
-- `offset_ns` (`i64`) — signed nanoseconds. `local + offset_ns ≈ core_node`. Negative means the local clock leads the core node.
-- `round_trip_delay_ns` (`u64`) — the round-trip delay observed on this exchange.
-- `raw` — the wire response with `server_recv_time` (t1), `server_send_time` (t2), and the echoed `client_send_time` (t0), exposed for callers that want to do their own analysis.
+- `offset_ns` (`i64`): signed nanoseconds. `local + offset_ns ≈ core_node`. Negative means the local clock leads the core node.
+- `round_trip_delay_ns` (`u64`): the round-trip delay observed on this exchange.
+- `raw`: the wire response with `server_recv_time` (t1), `server_send_time` (t2), and the echoed `client_send_time` (t0), exposed for callers that want to do their own analysis.
 
 The second argument is a response timeout. Rust accepts `Option<Duration>`; Python accepts `float | None` in seconds. Pass `None` (or omit it in Python) to use the default of 10 seconds.
 
@@ -58,7 +58,7 @@ The second argument is a response timeout. Rust accepts `Option<Duration>`; Pyth
         local_ns = time.time_ns()
         aligned_ns = local_ns + sync.offset_ns
         print(
-            f"offset {sync.offset_ns} ns, RTT {sync.round_trip_delay_ns} ns — "
+            f"offset {sync.offset_ns} ns, RTT {sync.round_trip_delay_ns} ns; "
             f"local={local_ns}, aligned={aligned_ns}"
         )
 
@@ -89,7 +89,7 @@ The second argument is a response timeout. Rust accepts `Option<Duration>`; Pyth
             let aligned_ns = local_ns + sync.offset_ns as i128;
 
             println!(
-                "offset {} ns, RTT {} ns — local={}, aligned={}",
+                "offset {} ns, RTT {} ns; local={}, aligned={}",
                 sync.offset_ns, sync.round_trip_delay_ns, local_ns, aligned_ns,
             );
             Ok(())
@@ -104,9 +104,9 @@ The second argument is a response timeout. Rust accepts `Option<Duration>`; Pyth
 `subscribe_clock` opens a long-lived subscription to the core node's `clock` topic and returns a `ClockSubscription`.
 Call `on_next_tick` in a loop to receive each tick; it returns `None` when the subscription closes (typically because the core node went away).
 
-The core node publishes ticks at **10 Hz** (every 100 ms) by default — high enough to correlate logs across nodes, low enough not to flood the bus. The rate is set on the core node side via `CoreNodeArguments.clock_publish_interval`.
+The core node publishes ticks at **10 Hz** (every 100 ms) by default: high enough to correlate logs across nodes, low enough not to flood the bus. The rate is set on the core node side via `CoreNodeArguments.clock_publish_interval`.
 
-Each `ClockTick` carries a single field, `time` (`u64`): nanoseconds since the Unix epoch, stamped by the core node at emission. Because the tick is one-way, the value is stale by roughly one one-way network delay on receipt — there is no RTT correction. Use `synchronize` if you need bounded staleness.
+Each `ClockTick` carries a single field, `time` (`u64`): nanoseconds since the Unix epoch, stamped by the core node at emission. Because the tick is one-way, the value is stale by roughly one one-way network delay on receipt; there is no RTT correction. Use `synchronize` if you need bounded staleness.
 
 <Tabs>
   <TabItem label="Python">
@@ -159,7 +159,7 @@ Each `ClockTick` carries a single field, `time` (`u64`): nanoseconds since the U
                 {
                     println!("core node wall time: {} ns", tick.time);
                 }
-                // Subscription closed — core node went away.
+                // Subscription closed; core node went away.
             });
             Ok(())
         })
@@ -170,7 +170,7 @@ Each `ClockTick` carries a single field, `time` (`u64`): nanoseconds since the U
 
 ## Behavior notes
 
-- **QoS profile is `SensorData`.** Stale ticks are dropped on slow subscribers rather than back-pressuring the publisher — a clock value the network couldn't deliver fresh is not worth delivering late.
+- **QoS profile is `SensorData`.** Stale ticks are dropped on slow subscribers rather than back-pressuring the publisher: a clock value the network couldn't deliver fresh is not worth delivering late.
 - **`synchronize` is hardened against a misbehaving server.** Offset and delay are computed in widened arithmetic and saturated when narrowed back to `i64` / `u64`, so a peer returning extreme `t1`/`t2` cannot wrap the result or flip its sign.
 - **`on_next_tick` returning `None` is terminal.** Treat it as "core node went away" and rebuild the subscription if you need to keep listening.
 - **Default timeout for `synchronize` is 10 seconds.** Pass an explicit timeout from latency-sensitive paths so a slow or unreachable core node does not stall your node.
@@ -216,8 +216,8 @@ Omit `framework` (or omit `use_sim_time` inside it) to fall through to the daemo
 
 For hot-path code that just wants "what time is it now" without caring whether the node was launched in wall or sim mode, peppylib exposes `PeppyClock` and the generator emits a pre-bound `peppygen::clock` module:
 
-- `init(node_runner)` — async; opens a `clock` subscription in sim mode (a no-op in wall mode) so the first `now_ns` after a tick lands returns immediately. Idempotent. Call it once at the top of your setup function.
-- `now_ns()` — sync; reads the current core-node-aligned time. Returns `Err(PeppyError::ClockNotReady)` (Rust) or raises `RuntimeError` (Python) before `init`, and in sim mode before any `ClockTick` has been observed.
+- `init(node_runner)`: async; opens a `clock` subscription in sim mode (a no-op in wall mode) so the first `now_ns` after a tick lands returns immediately. Idempotent. Call it once at the top of your setup function.
+- `now_ns()`: sync; reads the current core-node-aligned time. Returns `Err(PeppyError::ClockNotReady)` (Rust) or raises `RuntimeError` (Python) before `init`, and in sim mode before any `ClockTick` has been observed.
 
 <Tabs>
   <TabItem label="Python">

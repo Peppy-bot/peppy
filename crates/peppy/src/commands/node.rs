@@ -76,6 +76,43 @@ fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
     Ok((key, value))
 }
 
+/// Parses a `KEY@VALUE` `--bind` argument: KEY is a `link_id` from the
+/// consumer's `depends_on`; VALUE is the producer `instance_id` to pin the
+/// consumer's subscription to. Splits on the first `@`; both halves must be
+/// non-empty. KEY is validated as a wire segment via the strict
+/// `pmi::Segment::try_from`, which rejects empty, `/`, `@`, `*`, `**`, and
+/// the reserved sentinel `_`. VALUE is left as a free-form `instance_id`;
+/// the daemon-side binding validator confirms it matches a running producer
+/// of the expected `(name, tag)`.
+fn parse_bind_kv(raw: &str) -> Result<(String, String), String> {
+    let (key, value) = raw
+        .split_once('@')
+        .ok_or_else(|| format!("invalid --bind value '{raw}': expected KEY@VALUE"))?;
+    let key = key.trim();
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!(
+            "invalid --bind value '{raw}': VALUE cannot be empty"
+        ));
+    }
+    pmi::Segment::try_from(key).map_err(|e| format!("invalid --bind KEY '{key}': {e}"))?;
+    Ok((key.to_string(), value.to_string()))
+}
+
+/// Value parser for the now-removed `--link-id` flag. Always returns an
+/// error pointing the user at the replacement surface. See [`NodeCommands::Run`]
+/// for the hidden, parser-only flag that wires this in.
+fn link_id_removed_error(_: &str) -> Result<String, String> {
+    Err(
+        "--link-id has been removed. Producer-side link_id binding no longer \
+         exists; consumers pin to a specific producer via\n  \
+         peppy node run <node> --bind <KEY>@<PRODUCER_INSTANCE_ID>\n\
+         where KEY is a link_id declared in the consumer's depends_on and \
+         PRODUCER_INSTANCE_ID is the running producer's instance_id (peppy node list)."
+            .to_string(),
+    )
+}
+
 #[derive(Subcommand)]
 pub enum NodeCommands {
     /// Create a new peppy node
@@ -107,23 +144,6 @@ pub enum NodeCommands {
         /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
         #[arg(long = "ref")]
         git_ref: Option<String>,
-        /// Variant selection. Repeatable.
-        ///
-        /// Three shapes are accepted:
-        /// - Variant name for the *root* node: `mock-python`.
-        /// - Git or HTTP URL used directly as the root variant:
-        ///   `https://github.com/org/repo.git/path`,
-        ///   `https://example.com/variant.tar.zst`.
-        /// - `<dep_name>:<dep_tag>@<variant_name>` — override the
-        ///   variant used when resolving a transitive dependency of
-        ///   the target node (only meaningful when the source is
-        ///   `<name>:<tag>`). Repeatable.
-        ///
-        /// At most one *root* shape may appear per invocation; the
-        /// dep-override shape can appear any number of times with
-        /// distinct `name:tag` values.
-        #[arg(long = "variant")]
-        variant: Vec<String>,
         /// If set, runs `peppy node sync` on the source *before* adding. Forces
         /// peppygen interface code to be regenerated from the current
         /// `peppy.json5`, so the snapshot taken by `node add` is up-to-date.
@@ -149,13 +169,33 @@ pub enum NodeCommands {
         /// Combines with `--sync` via `-sr` (sync + build + run).
         #[arg(short = 'r', long)]
         run: bool,
-        /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
-        /// These are passed to the node via PEPPY_RUNTIME_CONFIG when run is true
-        #[arg(value_parser = parse_key_value_arg)]
+        /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30).
+        /// These are passed to the node via PEPPY_RUNTIME_CONFIG and only make
+        /// sense when `--run` is set — `requires = "run"` so a bare
+        /// `peppy node add . frequency=30` errors at parse time instead of
+        /// silently ignoring the argument.
+        #[arg(value_parser = parse_key_value_arg, requires = "run")]
         args: Vec<(String, String)>,
-        /// Optional: specify a deterministic instance ID
-        #[arg(long, hide = true)]
+        /// Optional: specify a deterministic instance ID for the spawn.
+        /// Only meaningful with `--run`; gated with `requires = "run"`.
+        #[arg(long, hide = true, requires = "run")]
         instance_id: Option<String>,
+        /// Pin a `link_id` from this consumer's `depends_on` to a specific
+        /// producer `instance_id`: `KEY@VALUE`. Repeatable
+        /// (`--bind a@p1 --bind b@p2`) or comma-separated
+        /// (`--bind a@p1,b@p2`). Only valid alongside `--run`: without a
+        /// chained run there is no instance to apply the bindings to, so
+        /// `requires = "run"` rejects the combination at parse time.
+        /// Validation is shared with `peppy node run` — see
+        /// `validate_and_run_instance` for the rule set.
+        #[arg(
+            long = "bind",
+            value_delimiter = ',',
+            value_parser = parse_bind_kv,
+            action = clap::ArgAction::Append,
+            requires = "run",
+        )]
+        binds: Vec<(String, String)>,
         /// Idle timeout in seconds — resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -214,6 +254,32 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(short = 'i', long)]
         instance_id: Option<String>,
+        /// Pin a `link_id` from this consumer's `depends_on` to a specific
+        /// producer `instance_id`: `KEY@VALUE`. Repeatable
+        /// (`--bind a@p1 --bind b@p2`) or comma-separated
+        /// (`--bind a@p1,b@p2`). KEY must be a `link_id` declared in this
+        /// node's manifest; VALUE is the producer's `instance_id`
+        /// (see `peppy node list`). Missing bindings for pinned deps are
+        /// treated as validation errors and will abort the run.
+        #[arg(
+            long = "bind",
+            value_delimiter = ',',
+            value_parser = parse_bind_kv,
+            action = clap::ArgAction::Append,
+        )]
+        binds: Vec<(String, String)>,
+        /// Removed. The `--link-id` flag has been replaced by `--bind
+        /// KEY@VALUE`; the value parser always errors with a migration
+        /// hint. Kept as a hidden clap arg so legacy invocations get a
+        /// clear message instead of a generic "unknown flag" error.
+        #[arg(
+            long = "link-id",
+            hide = true,
+            value_delimiter = ',',
+            value_parser = link_id_removed_error,
+            action = clap::ArgAction::Append,
+        )]
+        _link_id_removed: Vec<String>,
         /// Idle timeout in seconds — resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -293,18 +359,26 @@ impl Command for NodeCommand {
             NodeCommands::Add {
                 source,
                 git_ref,
-                variant,
                 sync,
                 build,
                 run,
                 args,
                 instance_id,
+                binds,
                 idle_timeout,
                 max_timeout,
                 force,
             } => {
+                // `requires = "run"` on `args`, `instance_id`, and `binds`
+                // means we can only land here with `run == false` when
+                // *all three* are empty; the run-only fields therefore have
+                // a single legal home: inside `Some(RunAfterAddOptions)`.
                 let run_options = if run {
-                    Some(add::RunAfterAddOptions { args, instance_id })
+                    Some(add::RunAfterAddOptions {
+                        args,
+                        instance_id,
+                        binds,
+                    })
                 } else {
                     None
                 };
@@ -322,7 +396,6 @@ impl Command for NodeCommand {
                     add::AddNodeParams {
                         source,
                         git_ref,
-                        variant,
                         run_options,
                         timeouts,
                         force,
@@ -365,6 +438,8 @@ impl Command for NodeCommand {
                 tag,
                 args,
                 instance_id,
+                binds,
+                _link_id_removed,
                 idle_timeout,
                 max_timeout,
                 build,
@@ -377,7 +452,16 @@ impl Command for NodeCommand {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
                 };
-                run::run_node(ctx, node_name, tag, args, instance_id, timeouts, build)
+                run::run_node(
+                    ctx,
+                    node_name,
+                    tag,
+                    args,
+                    instance_id,
+                    binds,
+                    timeouts,
+                    build,
+                )
             }
             NodeCommands::RuntimeConfig {
                 node_name,
@@ -458,6 +542,46 @@ mod tests {
         }
     }
 
+    fn parse_run_binds(args: &[&str]) -> Vec<(String, String)> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("run"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Run { binds, .. } => binds,
+            _ => panic!("expected Run variant"),
+        }
+    }
+
+    fn try_parse_run(args: &[&str]) -> Result<TestCli, clap::Error> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("run"))
+            .chain(args.iter().copied())
+            .collect();
+        TestCli::try_parse_from(full)
+    }
+
+    fn try_parse_add(args: &[&str]) -> Result<TestCli, clap::Error> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("add"))
+            .chain(args.iter().copied())
+            .collect();
+        TestCli::try_parse_from(full)
+    }
+
+    fn parse_add_binds(args: &[&str]) -> Vec<(String, String)> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("add"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Add { binds, .. } => binds,
+            _ => panic!("expected Add variant"),
+        }
+    }
+
     fn parse_subcommand_force(subcommand: &str, args: &[&str]) -> bool {
         let full: Vec<&str> = std::iter::once("peppy")
             .chain(std::iter::once(subcommand))
@@ -517,16 +641,13 @@ mod tests {
 
     #[test]
     fn run_b_short_flag_sets_build() {
-        assert!(
-            parse_run(&["foo:0.1.0", "-b"]),
-            "-b should set build on run"
-        );
+        assert!(parse_run(&["foo:v1", "-b"]), "-b should set build on run");
     }
 
     #[test]
     fn run_long_build_flag_sets_build() {
         assert!(
-            parse_run(&["foo:0.1.0", "--build"]),
+            parse_run(&["foo:v1", "--build"]),
             "--build should set build on run"
         );
     }
@@ -534,7 +655,7 @@ mod tests {
     #[test]
     fn run_without_build_flag_defaults_to_false() {
         assert!(
-            !parse_run(&["foo:0.1.0"]),
+            !parse_run(&["foo:v1"]),
             "build should default to false on run"
         );
     }
@@ -542,7 +663,7 @@ mod tests {
     #[test]
     fn run_i_short_flag_sets_instance_id() {
         assert_eq!(
-            parse_run_instance_id(&["foo:0.1.0", "-i", "my-inst"]),
+            parse_run_instance_id(&["foo:v1", "-i", "my-inst"]),
             Some("my-inst".to_string()),
             "-i should set instance_id on run"
         );
@@ -551,7 +672,7 @@ mod tests {
     #[test]
     fn run_long_instance_id_flag_sets_instance_id() {
         assert_eq!(
-            parse_run_instance_id(&["foo:0.1.0", "--instance-id", "my-inst"]),
+            parse_run_instance_id(&["foo:v1", "--instance-id", "my-inst"]),
             Some("my-inst".to_string()),
             "--instance-id should set instance_id on run"
         );
@@ -561,7 +682,7 @@ mod tests {
     fn run_bi_short_bundle_sets_build_and_instance_id() {
         // `-bi <id>` ≡ `-b -i <id>`: clap treats `-bi` as a bundled short-flag
         // run with `i` consuming the next positional as its value.
-        let full: Vec<&str> = vec!["peppy", "run", "foo:0.1.0", "-bi", "my-inst"];
+        let full: Vec<&str> = vec!["peppy", "run", "foo:v1", "-bi", "my-inst"];
         let cli = TestCli::try_parse_from(full).expect("should parse");
         match cli.command {
             NodeCommands::Run {
@@ -585,12 +706,12 @@ mod tests {
 
     #[test]
     fn build_f_short_flag_sets_force() {
-        assert!(parse_subcommand_force("build", &["foo:0.1.0", "-f"]));
+        assert!(parse_subcommand_force("build", &["foo:v1", "-f"]));
     }
 
     #[test]
     fn remove_f_short_flag_sets_force() {
-        assert!(parse_subcommand_force("remove", &["foo:0.1.0", "-f"]));
+        assert!(parse_subcommand_force("remove", &["foo:v1", "-f"]));
     }
 
     #[test]
@@ -600,11 +721,216 @@ mod tests {
 
     #[test]
     fn build_without_force_flag_defaults_to_false() {
-        assert!(!parse_subcommand_force("build", &["foo:0.1.0"]));
+        assert!(!parse_subcommand_force("build", &["foo:v1"]));
     }
 
     #[test]
     fn remove_without_force_flag_defaults_to_false() {
-        assert!(!parse_subcommand_force("remove", &["foo:0.1.0"]));
+        assert!(!parse_subcommand_force("remove", &["foo:v1"]));
+    }
+
+    #[test]
+    fn test_bind_repeated() {
+        assert_eq!(
+            parse_run_binds(&["foo:v1", "--bind", "feed@cam_a", "--bind", "ctl@cam_b"]),
+            vec![
+                ("feed".to_string(), "cam_a".to_string()),
+                ("ctl".to_string(), "cam_b".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_bind_comma_delimited() {
+        assert_eq!(
+            parse_run_binds(&["foo:v1", "--bind", "feed@cam_a,ctl@cam_b"]),
+            vec![
+                ("feed".to_string(), "cam_a".to_string()),
+                ("ctl".to_string(), "cam_b".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_bind_missing_at_separator_rejected() {
+        let err = try_parse_run(&["foo:v1", "--bind", "noseparator"])
+            .err()
+            .expect("missing @ should be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("KEY@VALUE"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_bind_reserved_sentinel_key_rejected() {
+        let err = try_parse_run(&["foo:v1", "--bind", "_@cam_a"])
+            .err()
+            .expect("`_` should be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("reserved"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_link_id_removed_with_migration_hint() {
+        let err = try_parse_run(&["foo:v1", "--link-id", "anything"])
+            .err()
+            .expect("--link-id should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--link-id has been removed"),
+            "msg should explain removal: {msg}"
+        );
+        assert!(msg.contains("--bind"), "msg should point at --bind: {msg}");
+    }
+
+    // ─── `peppy node add` --bind / requires=run parse-time enforcement ───
+
+    /// `--bind` on `node add` requires `--run`; the binds parser is the same
+    /// as `node run`'s, so a `KEY@VALUE` pair lands on the `binds` field as
+    /// a tuple.
+    #[test]
+    fn add_with_run_accepts_bind() {
+        let binds = parse_add_binds(&[".", "-r", "--bind", "feed@cam_a"]);
+        assert_eq!(binds, vec![("feed".to_string(), "cam_a".to_string())]);
+    }
+
+    /// Comma-delimited form and repeated `--bind` both feed the same `binds`
+    /// vector on `node add -r`, exactly like on `node run`.
+    #[test]
+    fn add_with_run_bind_repeated_and_comma_delimited() {
+        let repeated = parse_add_binds(&[".", "-r", "--bind", "feed@cam_a", "--bind", "ctl@cam_b"]);
+        let comma = parse_add_binds(&[".", "-r", "--bind", "feed@cam_a,ctl@cam_b"]);
+        let expected = vec![
+            ("feed".to_string(), "cam_a".to_string()),
+            ("ctl".to_string(), "cam_b".to_string()),
+        ];
+        assert_eq!(repeated, expected);
+        assert_eq!(comma, expected);
+    }
+
+    /// `-sbr` plus `--bind` is the bug-replication shape from the report:
+    /// the previous CLI accepted `add . -sbr` and ran an instance with no
+    /// bindings. Now `--bind` must parse on that same invocation so the
+    /// user can supply them in one shot.
+    #[test]
+    fn add_sbr_with_bind_parses() {
+        let cli = try_parse_add(&[".", "-sbr", "--bind", "feed@cam_a"])
+            .expect("`add . -sbr --bind feed@cam_a` should parse");
+        match cli.command {
+            NodeCommands::Add {
+                sync,
+                build,
+                run,
+                binds,
+                ..
+            } => {
+                assert!(sync && build && run, "-sbr should set all three");
+                assert_eq!(binds, vec![("feed".to_string(), "cam_a".to_string())]);
+            }
+            _ => panic!("expected Add variant"),
+        }
+    }
+
+    /// Core fix: `--bind` without `--run` is meaningless (nothing to apply
+    /// the bindings to), so clap rejects it at parse time.
+    #[test]
+    fn add_bind_without_run_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "--bind", "feed@cam_a"])
+            .err()
+            .expect("--bind without --run must be a parse error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--run") || msg.contains("<RUN>"),
+            "error should name the missing --run flag: {msg}"
+        );
+    }
+
+    /// Same enforcement when sync+build are present but `--run` isn't:
+    /// `-sb` is "stop at built", and `--bind` doesn't belong there either.
+    #[test]
+    fn add_sb_with_bind_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "-sb", "--bind", "feed@cam_a"])
+            .err()
+            .expect("`-sb --bind` (no `r`) must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--run") || msg.contains("<RUN>"),
+            "error should name the missing --run flag: {msg}"
+        );
+    }
+
+    /// Positional `key=value` arguments are runtime overrides, so they only
+    /// make sense when chaining a run. `requires = "run"` rejects bare
+    /// `add . frequency=30` instead of silently ignoring the value.
+    #[test]
+    fn add_positional_args_without_run_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "frequency=30"])
+            .err()
+            .expect("trailing key=value without --run must be a parse error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--run") || msg.contains("<RUN>"),
+            "error should name the missing --run flag: {msg}"
+        );
+    }
+
+    /// `--instance-id` only matters when there's a spawn. Without `--run`
+    /// the instance is never created, so the flag is rejected at parse time
+    /// rather than being silently dropped on the floor.
+    #[test]
+    fn add_instance_id_without_run_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "--instance-id", "my-inst"])
+            .err()
+            .expect("--instance-id without --run must be a parse error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--run") || msg.contains("<RUN>"),
+            "error should name the missing --run flag: {msg}"
+        );
+    }
+
+    /// Sanity: a plain `add` with neither run-only flag must keep parsing
+    /// — `requires = "run"` only fires when one of the gated fields is
+    /// present.
+    #[test]
+    fn add_without_any_run_only_args_still_parses() {
+        let cli = try_parse_add(&["."]).expect("plain `add .` should parse");
+        match cli.command {
+            NodeCommands::Add {
+                run,
+                args,
+                instance_id,
+                binds,
+                ..
+            } => {
+                assert!(!run);
+                assert!(args.is_empty());
+                assert!(instance_id.is_none());
+                assert!(binds.is_empty());
+            }
+            _ => panic!("expected Add variant"),
+        }
+    }
+
+    /// The bind value parser is shared between `node add` and `node run`,
+    /// so the reserved-sentinel rejection on `_@…` must trigger on `add`
+    /// too. Catches a regression where `add` would silently accept invalid
+    /// keys that `run` rejects.
+    #[test]
+    fn add_bind_reserved_sentinel_key_rejected() {
+        let err = try_parse_add(&[".", "-r", "--bind", "_@cam_a"])
+            .err()
+            .expect("`_@…` must be rejected on `add` too");
+        let msg = err.to_string();
+        assert!(msg.contains("reserved"), "msg: {msg}");
+    }
+
+    /// And the missing-`@` rejection.
+    #[test]
+    fn add_bind_missing_at_separator_rejected() {
+        let err = try_parse_add(&[".", "-r", "--bind", "noseparator"])
+            .err()
+            .expect("missing `@` must be rejected on `add` too");
+        let msg = err.to_string();
+        assert!(msg.contains("KEY@VALUE"), "msg: {msg}");
     }
 }

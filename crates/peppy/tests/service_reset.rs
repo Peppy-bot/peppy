@@ -86,7 +86,7 @@ async fn service_reset_command_resets_node_stack() {
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let node_name = "reset_test_node";
-    let node_tag = "0.1.0";
+    let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let node_path = write_node_config(
         nodes_dir.path(),
@@ -105,12 +105,12 @@ async fn service_reset_command_resets_node_stack() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,

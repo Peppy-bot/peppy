@@ -6,7 +6,6 @@ pub struct Message(pub(crate) pmi::TopicMessage);
 impl std::fmt::Debug for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Message")
-            .field("key_expr", &self.key_expr())
             .field("instance_id", &self.instance_id())
             .field("core_node", &self.core_node())
             .field("payload", &self.payload())
@@ -20,11 +19,6 @@ impl Message {
         Payload::from(self.0.payload().to_bytes())
     }
 
-    /// Get the key expression of the message.
-    pub fn key_expr(&self) -> &str {
-        self.0.key_expr()
-    }
-
     /// Get the instance ID of the sender.
     pub fn instance_id(&self) -> &str {
         self.0.instance_id()
@@ -33,6 +27,14 @@ impl Message {
     /// Get the core node of the sender.
     pub fn core_node(&self) -> &str {
         self.0.core_node()
+    }
+
+    /// Producer's bound link_id, parsed from the inbound topic keyexpr.
+    /// Returns an empty string for messages that arrived via a non-topic
+    /// path (e.g. service responses), where no link_id is encoded in the
+    /// reply keyexpr's caller slots.
+    pub fn link_id(&self) -> &str {
+        self.0.link_id()
     }
 }
 
@@ -63,11 +65,11 @@ impl std::fmt::Display for TryRecvError {
 
 impl std::error::Error for TryRecvError {}
 
-impl From<tokio::sync::mpsc::error::TryRecvError> for TryRecvError {
-    fn from(err: tokio::sync::mpsc::error::TryRecvError) -> Self {
+impl From<flume::TryRecvError> for TryRecvError {
+    fn from(err: flume::TryRecvError) -> Self {
         match err {
-            tokio::sync::mpsc::error::TryRecvError::Empty => TryRecvError::Empty,
-            tokio::sync::mpsc::error::TryRecvError::Disconnected => TryRecvError::Disconnected,
+            flume::TryRecvError::Empty => TryRecvError::Empty,
+            flume::TryRecvError::Disconnected => TryRecvError::Disconnected,
         }
     }
 }

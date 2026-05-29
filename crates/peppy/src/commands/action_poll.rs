@@ -1,5 +1,5 @@
-use peppylib::messaging::ActionGoalHandle;
-use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
+use peppylib::messaging::{ActionGoalHandle, ResultStatus};
+use peppylib::{ActionMessenger, MessengerHandle};
 use tracing::info;
 
 use super::node::TimeoutConfig;
@@ -77,15 +77,9 @@ where
                 output.add_line(feedback.line(), feedback.is_stderr());
             }
         },
-        |payload| match Res::decode_payload(payload) {
-            Ok(result) => Ok(Some(result)),
-            Err(err) => {
-                if peppylib::encoding::is_result_pending(payload) {
-                    Ok(None)
-                } else {
-                    Err(format!("Failed to decode {action_name} result: {err}"))
-                }
-            }
+        |payload| {
+            Res::decode_payload(payload)
+                .map_err(|err| format!("Failed to decode {action_name} result: {err}"))
         },
     )
     .await?;
@@ -104,16 +98,16 @@ where
 }
 
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
-const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
-const SLEEP_BETWEEN_POLLS: Duration = Duration::from_millis(50);
 
-/// Polls an action goal to completion, draining feedback and checking timeouts.
+/// Drives an accepted action goal to completion: drains feedback into the
+/// scrolling output until the server closes the feedback stream (which it does
+/// when the goal `complete`s, or if its worker drops the goal), honoring the
+/// idle/max timeouts, then fetches the final result once. The result service
+/// rendezvous server-side, so the single `request_result` resolves as soon as
+/// the goal has completed instead of needing a poll loop.
 ///
-/// - `on_feedback` is called with each raw feedback payload to process feedback
-///   (typically decode + feed to scrolling output).
-/// - `decode_result` attempts to decode the final result from the raw payload.
-///   It should return `Ok(Some(result))` on success, `Ok(None)` if the payload
-///   is a "result pending" sentinel, or `Err` on decode failure.
+/// - `on_feedback` is called with each raw feedback payload.
+/// - `decode_result` decodes the final result, returning `Err` on failure.
 ///
 /// On timeout or error, the scrolling output is cleared before returning.
 pub(crate) async fn poll_action_to_completion<R>(
@@ -122,64 +116,64 @@ pub(crate) async fn poll_action_to_completion<R>(
     timeouts: &TimeoutConfig,
     scrolling_output: &mut ScrollingOutput,
     mut on_feedback: impl FnMut(&[u8], &mut ScrollingOutput),
-    decode_result: impl Fn(&[u8]) -> std::result::Result<Option<R>, String>,
+    decode_result: impl Fn(&[u8]) -> std::result::Result<R, String>,
 ) -> Result<R> {
     let idle_timeout = Duration::from_secs(timeouts.idle_secs);
     let absolute_deadline = tokio::time::Instant::now() + Duration::from_secs(timeouts.max_secs);
     let mut last_activity = tokio::time::Instant::now();
 
+    // Drain feedback until the server closes the stream on completion. The
+    // idle / max-timeout budgets bound a goal that goes silent or runs away.
     loop {
-        // Drain feedback so the publisher doesn't block on a full channel.
-        loop {
-            check_timeouts(last_activity, idle_timeout, absolute_deadline, timeouts).inspect_err(
-                |_| {
-                    scrolling_output.clear();
-                },
-            )?;
+        check_timeouts(last_activity, idle_timeout, absolute_deadline, timeouts)
+            .inspect_err(|_| scrolling_output.clear())?;
 
-            match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback())
-                .await
-            {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    on_feedback(&msg.payload(), scrolling_output);
-                }
-                Ok(Err(_)) => {
-                    tracing::debug!("Feedback channel closed");
-                    break;
-                }
-                Err(_) => break, // timeout — drain complete
+        match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
+                on_feedback(&msg.payload(), scrolling_output);
             }
+            Ok(Err(_)) => break, // end-of-stream: the goal has completed
+            Err(_) => {}         // drain slice elapsed; re-check timeouts and keep draining
         }
+    }
 
-        check_timeouts(last_activity, idle_timeout, absolute_deadline, timeouts).inspect_err(
-            |_| {
-                scrolling_output.clear();
-            },
-        )?;
-
-        match ActionMessenger::request_result(messenger, action_handle, RESULT_POLL_TIMEOUT).await {
-            Ok(msg) => {
-                let payload = msg.payload();
-                match decode_result(&payload) {
-                    Ok(Some(result)) => return Ok(result),
-                    Ok(None) => {} // "result pending" — keep polling (don't reset idle timer)
+    // The goal has completed; fetch its (server-buffered) result once. Give the
+    // request the remaining max budget so it resolves promptly.
+    let result_timeout = absolute_deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .max(Duration::from_secs(1));
+    match ActionMessenger::request_result(messenger, action_handle, result_timeout).await {
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                match decode_result(reply.body.as_ref()) {
+                    Ok(result) => Ok(result),
                     Err(err) => {
                         scrolling_output.clear();
-                        return Err(Error::ExecutionFailed(err));
+                        Err(Error::ExecutionFailed(err))
                     }
                 }
             }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => {
+            ResultStatus::Abandoned => {
                 scrolling_output.clear();
-                return Err(Error::ExecutionFailed(format!(
-                    "Failed to get action result: {err}"
-                )));
+                Err(Error::ExecutionFailed(
+                    "the action goal was abandoned by its worker before producing a result"
+                        .to_string(),
+                ))
             }
+            ResultStatus::Expired => {
+                scrolling_output.clear();
+                Err(Error::ExecutionFailed(
+                    "the action result expired before it could be fetched".to_string(),
+                ))
+            }
+        },
+        Err(err) => {
+            scrolling_output.clear();
+            Err(Error::ExecutionFailed(format!(
+                "Failed to get action result: {err}"
+            )))
         }
-
-        tokio::time::sleep(SLEEP_BETWEEN_POLLS).await;
     }
 }
 

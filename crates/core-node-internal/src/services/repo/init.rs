@@ -1,5 +1,4 @@
 use crate::Result;
-use crate::services::repo::json_entry_identity;
 use config::consts::PeppyDirs;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -21,9 +20,11 @@ pub enum InitOutcome {
 ///
 /// - If the file does not exist, the default template is written verbatim
 ///   so its comments and formatting are preserved.
-/// - If the file exists, default entries whose identity (as defined by
-///   [`json_entry_identity`]) is not already present are appended with a
-///   non-conflicting `id`. Existing user entries are preserved unchanged.
+/// - If the file exists, default entries whose `id` is not already present
+///   are appended verbatim. An existing entry with the same `id` claims that
+///   slot regardless of its `type`, `url`, or `ref` — so users who change a
+///   default's branch (or repoint it entirely) never get the default re-added
+///   alongside their edit.
 ///
 /// Runs at daemon startup and is also exposed via `peppy repo init` so
 /// users can resync after upgrading peppy without restarting the daemon.
@@ -47,45 +48,20 @@ pub fn ensure_default_repos(peppy_dirs: &PeppyDirs) -> Result<InitOutcome> {
         core_node_api::Error::Decoding(format!("failed to parse default repositories: {e}"))
     })?;
 
-    let existing_identities: HashSet<String> =
-        existing.iter().filter_map(json_entry_identity).collect();
-    let mut used_ids: HashSet<u64> = existing
+    let existing_ids: HashSet<u64> = existing
         .iter()
         .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
         .collect();
-    let mut max_id = used_ids.iter().copied().max().unwrap_or(0);
 
     let mut added = 0usize;
     for default_entry in defaults {
-        let Some(identity) = json_entry_identity(&default_entry) else {
+        let Some(default_id) = default_entry.get("id").and_then(|v| v.as_u64()) else {
             continue;
         };
-        if existing_identities.contains(&identity) {
+        if existing_ids.contains(&default_id) {
             continue;
         }
-
-        let mut new_entry = default_entry.clone();
-        let default_id = new_entry.get("id").and_then(|v| v.as_u64());
-        let id_to_use = match default_id {
-            Some(id) if !used_ids.contains(&id) => id,
-            _ => {
-                max_id = max_id.checked_add(1).ok_or_else(|| {
-                    core_node_api::Error::Encoding(
-                        "cannot assign id for default repository: id space exhausted".to_string(),
-                    )
-                })?;
-                max_id
-            }
-        };
-        if id_to_use > max_id {
-            max_id = id_to_use;
-        }
-        used_ids.insert(id_to_use);
-
-        if let Some(obj) = new_entry.as_object_mut() {
-            obj.insert("id".to_string(), Value::Number(id_to_use.into()));
-        }
-        existing.push(new_entry);
+        existing.push(default_entry);
         added += 1;
     }
 
@@ -253,11 +229,12 @@ mod tests {
         );
     }
 
-    /// If a user's existing entry occupies an id used by a default repo, the
-    /// missing default is still added but with a freshly assigned id at
-    /// `max(existing) + 1`, leaving the user's entry alone.
+    /// If an existing entry occupies a default's id, that id is considered
+    /// taken and the default is NOT re-added — regardless of url/ref/type.
+    /// This is what stops the daemon from duplicating defaults when a user
+    /// edits a default entry's ref (e.g. main → feature/x).
     #[test]
-    fn assigns_fresh_id_when_default_id_collides() {
+    fn skips_default_when_id_is_already_taken() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let conf_dir = peppy_dirs.conf_dir();
@@ -265,9 +242,8 @@ mod tests {
         std::fs::write(
             conf_dir.join("repositories.json5"),
             r#"[
-                { "id": 1000, "type": "fs", "path": "/squatting/on/1000" },
-                { "id": 1001, "type": "fs", "path": "/squatting/on/1001" },
-                { "id": 1002, "type": "fs", "path": "/squatting/on/1002" }
+                { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes_hub", "ref": "feature/v0.10.0" },
+                { "id": 1001, "type": "fs", "path": "/some/where" }
             ]"#,
         )
         .unwrap();
@@ -275,34 +251,42 @@ mod tests {
         ensure_default_repos(&peppy_dirs).unwrap();
 
         let repos = read_repos(&peppy_dirs);
-        let nodes_hub = repos
+        // Exactly one entry per id 1000 and 1001 — the user's entries, not the defaults.
+        let id_1000: Vec<_> = repos
             .iter()
-            .find(|e| {
-                e.get("type").and_then(|v| v.as_str()) == Some("git")
-                    && e.get("url").and_then(|v| v.as_str())
-                        == Some("https://github.com/Peppy-bot/nodes_hub")
-            })
-            .expect("nodes_hub default should be added");
-        let nodes_hub_id = nodes_hub.get("id").and_then(|v| v.as_u64()).unwrap();
-        assert!(
-            nodes_hub_id > 1002,
-            "default id 1000 was taken — nodes_hub should have been bumped past existing max, got {nodes_hub_id}"
+            .filter(|e| e.get("id").and_then(|v| v.as_u64()) == Some(1000))
+            .collect();
+        assert_eq!(
+            id_1000.len(),
+            1,
+            "id 1000 must not be duplicated: {repos:?}"
+        );
+        assert_eq!(
+            id_1000[0].get("ref").and_then(|v| v.as_str()),
+            Some("feature/v0.10.0"),
+            "user's edited ref must be preserved"
         );
 
-        // All three squatting fs entries must remain untouched.
-        for path in [
-            "/squatting/on/1000",
-            "/squatting/on/1001",
-            "/squatting/on/1002",
-        ] {
-            assert!(
-                repos
-                    .iter()
-                    .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("fs")
-                        && e.get("path").and_then(|v| v.as_str()) == Some(path)),
-                "user entry {path} must be preserved"
-            );
-        }
+        let id_1001: Vec<_> = repos
+            .iter()
+            .filter(|e| e.get("id").and_then(|v| v.as_u64()) == Some(1001))
+            .collect();
+        assert_eq!(
+            id_1001.len(),
+            1,
+            "id 1001 must not be duplicated: {repos:?}"
+        );
+        assert_eq!(
+            id_1001[0].get("type").and_then(|v| v.as_str()),
+            Some("fs"),
+            "user's fs entry at id 1001 must be preserved"
+        );
+
+        // launchers_hub default is not present — id 1001 is taken, so it is skipped.
+        assert!(
+            !has_git_url(&repos, "https://github.com/Peppy-bot/launchers_hub.git"),
+            "launchers_hub default must not be added when its id 1001 is taken"
+        );
     }
 
     /// `repo remove` deletes an entry by id. Subsequent init runs would

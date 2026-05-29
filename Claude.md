@@ -12,7 +12,7 @@ Review this plan thoroughly before making any code changes. For every issue or r
 - I err on the side of handling more edge cases, not fewer; thoughtfulness > speed.
 - Bias toward explicit over clever (the code must stay human readable with meaningful function names).
 - Do not leave legacy code behind or code that is meant to support previous version of the code.
-- When you write comments or documentation, avoid using `—` when possible, this is a recurring pattern that you make and immediately jumps at users as being your coding style.
+- When you write comments or documentation, stop using em-dash `—`, this is a recurring pattern that you make and immediately jumps at users as being your coding style.
 
 ---
 

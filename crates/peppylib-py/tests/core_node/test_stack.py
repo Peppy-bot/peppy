@@ -17,21 +17,19 @@ def _sample_graph_json() -> str:
     """Matches the two-node brain→sensor graph used in the Rust stack tests."""
     brain = {
         "name": "brain",
-        "tag": "0.1.0",
+        "tag": "v1",
         "config_path": "/tmp/brain.json5",
         "artifact_path": None,
         "stage": "Ready",
         "instances": [{"instance_id": "i1", "state": "running"}],
-        "variant_name": "default",
     }
     sensor = {
         "name": "sensor",
-        "tag": "0.1.0",
+        "tag": "v1",
         "config_path": "/tmp/sensor.json5",
         "artifact_path": None,
         "stage": "Added",
         "instances": [],
-        "variant_name": None,
     }
     graph = {
         "nodes": [brain, sensor],
@@ -95,3 +93,71 @@ async def test_stack_list_returns_none_dot_graph_when_not_requested(tmp_path):
     assert brain["stage"] == "Ready"
     assert brain["instances"][0]["state"] == "running"
     assert result.dot_graph is None
+
+
+def _mixed_state_graph_json() -> str:
+    """Two-node fixture: one mixed running/starting, one starting-only —
+    covers filtering and warmup-vs-missing."""
+    router = {
+        "name": "router",
+        "tag": "v1",
+        "config_path": "/tmp/router.json5",
+        "artifact_path": None,
+        "stage": "Ready",
+        "instances": [
+            {"instance_id": "r1", "state": "running"},
+            {"instance_id": "s1", "state": "starting"},
+            {"instance_id": "r2", "state": "running"},
+        ],
+    }
+    warming = {
+        "name": "warming",
+        "tag": "v1",
+        "config_path": "/tmp/warming.json5",
+        "artifact_path": None,
+        "stage": "Ready",
+        "instances": [{"instance_id": "s1", "state": "starting"}],
+    }
+    return json.dumps({"nodes": [router, warming], "edges": []})
+
+
+async def _stack_list_with_mixed_state(tmp_path):
+    response_bytes = StackListResponse(_mixed_state_graph_json(), None).encode()
+    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
+    try:
+        handler = await spawn_stub_listener(
+            server_handle, "stack_list", response_bytes
+        )
+        await wait_until_reachable(node_runner.messenger(), "stack_list")
+        result = await stack_list(node_runner, False, 3.0)
+        await handler
+    finally:
+        await router.stop()
+    return result
+
+
+@pytest.mark.asyncio
+async def test_running_instance_ids_by_node_returns_running_only(tmp_path):
+    """`StackList.running_instance_ids_by_node` filters out `starting` entries."""
+    result = await _stack_list_with_mixed_state(tmp_path)
+    assert result.running_instance_ids_by_node("router", "v1") == ["r1", "r2"]
+
+
+@pytest.mark.asyncio
+async def test_running_instance_ids_by_node_empty_when_all_starting(tmp_path):
+    """A present node with only `starting` instances returns an empty list,
+    not a KeyError — that's how callers tell "warming up" from "not in stack"."""
+    result = await _stack_list_with_mixed_state(tmp_path)
+    assert result.running_instance_ids_by_node("warming", "v1") == []
+
+
+@pytest.mark.asyncio
+async def test_running_instance_ids_by_node_raises_key_error_when_missing(tmp_path):
+    """A missing `(name, tag)` raises `KeyError` carrying the `name:tag` it tried."""
+    result = await _stack_list_with_mixed_state(tmp_path)
+
+    with pytest.raises(KeyError, match="no node matches `missing:v1`"):
+        result.running_instance_ids_by_node("missing", "v1")
+
+    with pytest.raises(KeyError, match="no node matches `router:v2`"):
+        result.running_instance_ids_by_node("router", "v2")

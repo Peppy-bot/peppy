@@ -15,8 +15,9 @@ mod type_mapping;
 pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
-    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, LanguageGenerator,
-    cancel_action_response_format, non_empty_message_format,
+    CapnpSchema, ConsumedActionMessage, DependencyContext, InterfaceArtifact, InterfaceKind,
+    InterfaceOrigin, LanguageGenerator, goal_action_response_format, non_empty_message_format,
+    scoped_schema_key,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
@@ -34,9 +35,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use actions::{
-    ActionHandleRole, build_action_expose_method, build_action_feedback_emit,
-    build_action_handle_method, build_action_handle_struct, build_action_payload_handler,
-    build_action_request_deserializer,
+    build_action_expose_method, build_action_handle_struct, build_action_request_deserializer,
+    build_goal_context_base_methods, build_goal_context_complete,
+    build_goal_context_publish_feedback, build_goal_context_struct,
+    build_goal_response_constructors, build_handle_goal_next_request,
 };
 use context::{GenerationContext, collect_function_params, map_message_format};
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
@@ -46,9 +48,13 @@ use serialization::{
 };
 use services::{
     ExposedServiceMethodSpec, ServiceResponseSpec, build_exposed_service_method,
-    build_request_struct_with_name_and_impl, deserialize_fields_from_format,
+    build_request_struct_with_name_and_impl, build_response_payload_tokens,
+    deserialize_fields_from_format,
 };
-use topics::{ConsumedTopicCallbackSpec, build_consumed_topic_callback, build_topic_emit};
+use topics::{
+    ConsumedTopicCallbackSpec, build_consumed_topic_callback, build_topic_emit,
+    consumed_to_target_expression,
+};
 use type_mapping::{render_tokens, unused_params_stmt};
 
 /// Rust-specific implementation of the interface generator.
@@ -62,6 +68,16 @@ pub struct RustGenerator {
 impl RustGenerator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn make_artifact(
+        &self,
+        leaf_name: &str,
+        origin: Option<&InterfaceOrigin>,
+        kind: InterfaceKind,
+        code_output: String,
+    ) -> InterfaceArtifact {
+        InterfaceArtifact::for_leaf(origin, leaf_name, kind, code_output)
     }
 
     /// Sets the node parameters for code generation.
@@ -86,13 +102,27 @@ impl RustGenerator {
         struct_prefix: &str,
         artifacts: &CapnpSchemaArtifacts,
     ) -> Result<SchemaInfo> {
-        let schema_source = artifacts.encoding_schema();
         let resolved = resolve_schema_file_stem(schema_key);
+
+        // When multiple callers (e.g. two consumed topics sharing producer+topic
+        // with different link_ids) resolve to the same capnp file, the schema
+        // file is written once but every caller still needs a Rust-side
+        // reference to a struct that actually exists in it. Reuse the first
+        // registration's struct identity for every subsequent collision.
+        if let Some(existing) = self.schemas.get(&resolved.file_stem) {
+            return Ok(SchemaInfo {
+                file_stem: resolved.file_stem,
+                struct_module: existing.struct_module().to_string(),
+            });
+        }
+
+        let schema_source = artifacts.encoding_schema();
         let struct_name = format!("{struct_prefix}Message");
         let struct_module = crate::generator::naming::normalize_snake_case(&struct_name);
         let schema = schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
-        let capnp_schema = CapnpSchema::new(resolved.file_stem.clone(), schema);
+        let capnp_schema =
+            CapnpSchema::new(resolved.file_stem.clone(), struct_module.clone(), schema);
         self.schemas
             .insert(resolved.file_stem.clone(), capnp_schema);
 
@@ -133,6 +163,7 @@ impl RustGenerator {
         request_format: Option<&MessageFormat>,
         response_format: Option<&MessageFormat>,
         schema_key: &str,
+        dependency: &DependencyContext,
     ) -> Result<(TokenStream, Vec<TokenStream>, bool)> {
         let request_artifacts =
             map_message_format(&format!("{schema_key}_request"), request_format)?;
@@ -251,12 +282,18 @@ impl RustGenerator {
             }
         };
 
+        // The `to_target` matches the producer's emission shape: address the
+        // dependency as an Interface if it exposes the action via
+        // `conforms_to`, otherwise as its native Node identity.
+        // `target_instance_id` is resolved at runtime from the consumer's
+        // binding map.
+        let to_target_expr = consumed_to_target_expression(dependency);
+        let pinned_target_expr =
+            crate::generator::rust::topics::consumed_pinned_target_expression(dependency);
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
                 timeout: std::time::Duration,
-                target_core_node: Option<&str>,
-                target_instance_id: Option<&str>,
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
             ) -> crate::Result<Self> {
@@ -266,10 +303,10 @@ impl RustGenerator {
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
-                    TARGET_NODE_NAME,
+                    #to_target_expr,
                     TARGET_ACTION_NAME,
-                    target_core_node,
-                    target_instance_id,
+                    None,
+                    #pinned_target_expr,
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -283,91 +320,142 @@ impl RustGenerator {
         Ok((method_tokens, helper_items, has_goal_response_data))
     }
 
-    /// Builds a consumed action response method (cancel_goal or get_result).
+    /// Builds the consumed action `get_result` method and its supporting types.
     ///
-    /// Both follow the same structure: register response artifacts, build a deserializer,
-    /// and generate a method that calls the appropriate ActionMessenger function.
-    fn build_consumed_action_response_method(
+    /// `get_result` returns a typed [`ResultResponse`] carrying a `ResultOutcome`
+    /// enum (Completed/Cancelled with the decoded result data, or the empty
+    /// Abandoned/Expired terminal states). The engine frames the reply as a
+    /// [`peppylib::messaging::ResultStatus`] tag plus the raw body, stripped by
+    /// `ActionMessenger::request_result` into a typed reply, so this only needs
+    /// to decode the body for the data-bearing variants.
+    fn build_consumed_action_get_result_method(
         &mut self,
         context: &mut GenerationContext,
-        spec: ConsumedActionResponseMethodSpec<'_>,
+        action_struct_name: &str,
+        result_artifacts: Option<CapnpSchemaArtifacts>,
+        result_schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
-        let response_data_ident = Ident::new(spec.data_struct_name, Span::call_site());
-        let response_ident = Ident::new(spec.response_struct_name, Span::call_site());
-        let method_name_ident = Ident::new(spec.method_name, Span::call_site());
-        let deserializer_ident = Ident::new(spec.deserializer_name, Span::call_site());
-
+        let data_ident = Ident::new("ResultResponseData", Span::call_site());
+        let response_ident = Ident::new("ResultResponse", Span::call_site());
+        let outcome_ident = Ident::new("ResultOutcome", Span::call_site());
         let mut helper_items = Vec::new();
-        let method_tokens = if let Some(response_artifacts) = spec.response_artifacts {
-            let _response_params = collect_function_params(
+
+        let response_struct = quote! {
+            #[derive(Debug, Clone)]
+            #[allow(dead_code)]
+            pub struct #response_ident {
+                pub instance_id: String,
+                pub core_node: String,
+                pub outcome: #outcome_ident,
+            }
+        };
+
+        let method_tokens = if let Some(result_artifacts) = result_artifacts {
+            // Defines `ResultResponseData` (+ ctor) in the context.
+            let _params = collect_function_params(
                 None,
-                Some(&response_artifacts),
-                &format!("{}{}", spec.action_struct_name, spec.response_struct_name),
+                Some(&result_artifacts),
+                &format!("{action_struct_name}ResultResponse"),
                 context,
-                Some(&response_data_ident),
+                Some(&data_ident),
             )?;
 
-            context.add_metadata_struct(response_ident.clone(), Some(&response_data_ident));
-
-            let response_schema_key = format!("{}_response", spec.schema_key);
             let response_schema = self.register_schema(
-                &response_schema_key,
-                spec.schema_message_prefix,
-                &response_artifacts,
+                result_schema_key,
+                "ResultResponseMessage",
+                &result_artifacts,
             )?;
             let reader_type = response_schema.reader_type_tokens();
-
-            let response_format = response_artifacts.message_format();
-            let data_label = spec.data_struct_name;
-            let response_label = spec.response_struct_name;
+            let response_format = result_artifacts.message_format();
             let context_expr = quote!(format!(
                 "{} {} {}",
-                TARGET_NODE_NAME, TARGET_ACTION_NAME, #response_label
+                TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse"
             ));
-            let (response_statements, response_inits, _) =
-                deserialize_format_fields(response_format, data_label, &context_expr)?;
-
-            let deserialize_helper = build_deserialize_fn(
-                &deserializer_ident,
+            let (statements, inits, _) =
+                deserialize_format_fields(response_format, "ResultResponseData", &context_expr)?;
+            helper_items.push(build_deserialize_fn(
+                &Ident::new("deserialize_result_response", Span::call_site()),
                 &reader_type,
                 &context_expr,
-                &quote!(#response_data_ident),
-                &response_statements,
-                &quote!(#response_data_ident { #( #response_inits ),* }),
-            );
-            helper_items.push(deserialize_helper);
+                &quote!(#data_ident),
+                &statements,
+                &quote!(#data_ident { #( #inits ),* }),
+            ));
 
-            let messenger_call = &spec.messenger_call;
+            helper_items.push(quote! {
+                #[derive(Debug, Clone)]
+                #[allow(dead_code)]
+                pub enum #outcome_ident {
+                    Completed(#data_ident),
+                    Cancelled(#data_ident),
+                    Abandoned,
+                    Expired,
+                }
+            });
+            helper_items.push(response_struct);
+
             quote! {
-                pub async fn #method_name_ident(
+                pub async fn get_result(
                     &self,
                     timeout: std::time::Duration,
                 ) -> crate::Result<#response_ident> {
-                    let response = #messenger_call.await?;
-
-                    let payload = response.payload();
-                    let response_data = #deserializer_ident(payload.as_ref())?;
+                    let reply = peppylib::ActionMessenger::request_result(
+                        &self.messenger,
+                        &self.inner,
+                        timeout,
+                    )
+                    .await?;
+                    let outcome = match reply.status {
+                        peppylib::messaging::ResultStatus::Completed => {
+                            #outcome_ident::Completed(deserialize_result_response(reply.body.as_ref())?)
+                        }
+                        peppylib::messaging::ResultStatus::Cancelled => {
+                            #outcome_ident::Cancelled(deserialize_result_response(reply.body.as_ref())?)
+                        }
+                        peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
+                        peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
+                    };
                     Ok(#response_ident {
-                        instance_id: response.instance_id().to_string(),
-                        core_node: response.core_node().to_string(),
-                        data: response_data,
+                        instance_id: reply.instance_id,
+                        core_node: reply.core_node,
+                        outcome,
                     })
                 }
             }
         } else {
-            context.add_metadata_struct(response_ident.clone(), None);
+            helper_items.push(quote! {
+                #[derive(Debug, Clone)]
+                #[allow(dead_code)]
+                pub enum #outcome_ident {
+                    Completed,
+                    Cancelled,
+                    Abandoned,
+                    Expired,
+                }
+            });
+            helper_items.push(response_struct);
 
-            let messenger_call = &spec.messenger_call;
             quote! {
-                pub async fn #method_name_ident(
+                pub async fn get_result(
                     &self,
                     timeout: std::time::Duration,
                 ) -> crate::Result<#response_ident> {
-                    let response = #messenger_call.await?;
-
+                    let reply = peppylib::ActionMessenger::request_result(
+                        &self.messenger,
+                        &self.inner,
+                        timeout,
+                    )
+                    .await?;
+                    let outcome = match reply.status {
+                        peppylib::messaging::ResultStatus::Completed => #outcome_ident::Completed,
+                        peppylib::messaging::ResultStatus::Cancelled => #outcome_ident::Cancelled,
+                        peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
+                        peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
+                    };
                     Ok(#response_ident {
-                        instance_id: response.instance_id().to_string(),
-                        core_node: response.core_node().to_string(),
+                        instance_id: reply.instance_id,
+                        core_node: reply.core_node,
+                        outcome,
                     })
                 }
             }
@@ -376,15 +464,78 @@ impl RustGenerator {
         Ok((method_tokens, helper_items))
     }
 
-    /// Builds the on_next_feedback_message method for consumed actions
+    /// Builds the consumed action `cancel_goal` method, its `CancelResponse`
+    /// type, and a per-action `CancelState` enum. The cancel reply is the
+    /// framework-owned cancel-ack, decoded via `peppylib::messaging::decode_cancel_ack`
+    /// (there is no per-action cancel payload schema); the engine's `CancelState`
+    /// is then mapped onto a generated enum so user code never has to name a
+    /// `peppylib` type (the user crate only depends on the generated `peppygen`).
+    fn build_consumed_action_cancel_method(
+        &mut self,
+        context: &mut GenerationContext,
+    ) -> Result<(TokenStream, Vec<TokenStream>)> {
+        let response_ident = Ident::new("CancelResponse", Span::call_site());
+        let state_ident = Ident::new("CancelState", Span::call_site());
+        context.add_struct(
+            response_ident.clone(),
+            vec![
+                (Ident::new("instance_id", Span::call_site()), quote!(String)),
+                (Ident::new("core_node", Span::call_site()), quote!(String)),
+                (Ident::new("state", Span::call_site()), quote!(#state_ident)),
+            ],
+        );
+
+        let helper_items = vec![quote! {
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            #[allow(dead_code)]
+            pub enum #state_ident {
+                Signalled,
+                AlreadyTerminal,
+                Unknown,
+            }
+        }];
+
+        let method_tokens = quote! {
+            pub async fn cancel_goal(
+                &self,
+                timeout: std::time::Duration,
+            ) -> crate::Result<#response_ident> {
+                let response = peppylib::ActionMessenger::cancel_goal(
+                    &self.messenger,
+                    &self.inner,
+                    timeout,
+                )
+                .await?;
+                let state = match peppylib::messaging::decode_cancel_ack(response.payload().as_ref())? {
+                    peppylib::messaging::CancelState::Signalled => #state_ident::Signalled,
+                    peppylib::messaging::CancelState::AlreadyTerminal => #state_ident::AlreadyTerminal,
+                    peppylib::messaging::CancelState::Unknown => #state_ident::Unknown,
+                };
+                Ok(#response_ident {
+                    instance_id: response.instance_id().to_string(),
+                    core_node: response.core_node().to_string(),
+                    state,
+                })
+            }
+        };
+
+        Ok((method_tokens, helper_items))
+    }
+
+    /// Builds the on_next_feedback_message method for consumed actions.
+    ///
+    /// `schema_key` is the producer-scoped key from
+    /// [`consumed_action_schema_keys`][`crate::generator::naming::consumed_action_schema_keys`]
+    /// and determines both the artifact name (drives the cap'n proto schema_id)
+    /// and the registered file_stem.
     fn build_consumed_action_feedback_method(
         &mut self,
         context: &mut GenerationContext,
         format: &MessageFormat,
         action_struct_name: &str,
+        schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
-        let feedback_schema_name = format!("{action_struct_name}_feedback");
-        let format_artifacts = map_message_format(&feedback_schema_name, Some(format))?
+        let format_artifacts = map_message_format(schema_key, Some(format))?
             .expect("feedback format should always yield encoding artifacts");
 
         let struct_prefix = format!("{action_struct_name}Feedback");
@@ -405,14 +556,8 @@ impl RustGenerator {
             .collect();
         context.add_struct(struct_ident.clone(), fields);
 
-        let schema_key = format!("{schema_struct_name}_payload");
         let encoding = self
-            .prepare_message_encoding(
-                &schema_key,
-                &struct_prefix,
-                Some(&format_artifacts),
-                &params,
-            )?
+            .prepare_message_encoding(schema_key, &struct_prefix, Some(&format_artifacts), &params)?
             .expect("feedback encoding spec should exist");
         let reader_type = encoding.reader_type.clone();
 
@@ -461,20 +606,6 @@ impl RustGenerator {
     }
 }
 
-/// Describes the parameterizable parts of a consumed action response method
-/// (cancel_goal or get_result).
-struct ConsumedActionResponseMethodSpec<'a> {
-    action_struct_name: &'a str,
-    method_name: &'a str,
-    response_struct_name: &'a str,
-    data_struct_name: &'a str,
-    deserializer_name: &'a str,
-    schema_message_prefix: &'a str,
-    schema_key: &'a str,
-    response_artifacts: Option<CapnpSchemaArtifacts>,
-    messenger_call: TokenStream,
-}
-
 struct SchemaInfo {
     file_stem: String,
     struct_module: String,
@@ -495,7 +626,11 @@ impl SchemaInfo {
 }
 
 impl LanguageGenerator for RustGenerator {
-    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
+    fn add_emitted_topic(
+        &mut self,
+        topic: &EmittedTopic,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
 
@@ -511,8 +646,9 @@ impl LanguageGenerator for RustGenerator {
             &mut context,
             None,
         )?;
+        let scoped_key = scoped_schema_key(origin, &fn_name_str);
         let encoding = self.prepare_message_encoding(
-            &fn_name_str,
+            &scoped_key,
             &schema_prefix,
             format_artifacts.as_ref(),
             &params,
@@ -525,6 +661,7 @@ impl LanguageGenerator for RustGenerator {
             encoding.as_ref(),
             topic,
             &fn_name_str,
+            origin,
         );
 
         let tokens: TokenStream = quote! {
@@ -538,15 +675,20 @@ impl LanguageGenerator for RustGenerator {
             module_label = String::from("topic");
         }
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            origin,
             InterfaceKind::EmittedTopic,
             rendered,
         ));
         Ok(())
     }
 
-    fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
+    fn add_exposed_service(
+        &mut self,
+        service: &ExposedService,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let fn_name_str = fn_name.to_string();
         let struct_prefix = to_camel_case(&fn_name_str);
@@ -570,8 +712,9 @@ impl LanguageGenerator for RustGenerator {
             &mut context,
             Some(&generic_response_ident),
         )?;
+        let scoped_request_key = scoped_schema_key(origin, &fn_name_str);
         let encoding = self.prepare_message_encoding(
-            &fn_name_str,
+            &scoped_request_key,
             &struct_prefix,
             request_wire_artifacts.as_ref(),
             &wire_params,
@@ -599,7 +742,7 @@ impl LanguageGenerator for RustGenerator {
 
         let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
-            let schema_key = format!("{fn_name_str}_response");
+            let schema_key = scoped_schema_key(origin, &format!("{fn_name_str}_response"));
             let schema_info =
                 self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
             Some(ServiceResponseSpec {
@@ -630,6 +773,7 @@ impl LanguageGenerator for RustGenerator {
                 request_data_struct: request_data_struct_ident.as_ref(),
                 response_spec: response_spec.as_ref(),
                 use_service_name_const: true,
+                origin,
             })?;
 
         let service_name_const = {
@@ -651,42 +795,61 @@ impl LanguageGenerator for RustGenerator {
             #( #service_tokens )*
         };
         let rendered = render_tokens(tokens);
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            origin,
             InterfaceKind::ExposedService,
             rendered,
         ));
         Ok(())
     }
 
-    fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
+    fn add_exposed_action(
+        &mut self,
+        action: &ExposedAction,
+        origin: Option<&InterfaceOrigin>,
+    ) -> Result<()> {
         let base_ident = prefixed_ident("", non_empty_str(&action.name), "action");
         let base_name = base_ident.to_string();
         let action_prefix = to_camel_case(&base_name);
 
         let mut context = GenerationContext::default();
+        // Methods on `impl ActionHandle` (expose + handle_goal_next_request).
         let mut action_handle_methods: Vec<TokenStream> = Vec::new();
+        // Methods on `impl GoalContext` (request/goal_id/cancel_signal/... plus
+        // publish_feedback and complete/complete_cancelled when applicable).
+        let mut goal_context_methods: Vec<TokenStream> = Vec::new();
         let mut helper_tokens: Vec<TokenStream> = Vec::new();
+        // Free items (the GoalResponse constructors).
+        let mut extra_items: Vec<TokenStream> = Vec::new();
 
         let action_name_literal = Literal::string(&action.name);
 
-        let has_goal = action.goal_service.is_some();
         let has_feedback = action.feedback_topic.is_some();
-        let has_result = action.result_service.is_some();
 
-        if let Some(goal) = action.goal_service.as_ref() {
+        // Every action is goal-driven in the concurrent model: clients fire a
+        // goal, the server accepts/rejects and (when accepted) drives it through
+        // a GoalContext. An absent `goal_service` simply means the goal carries
+        // no request/response payload.
+        {
+            let goal_service = action.goal_service.as_ref();
             let label = format!("{base_name}_goal");
             let schema_struct_prefix = format!("{action_prefix}Goal");
 
             let request_artifacts = map_message_format(
                 &format!("{label}_request"),
-                goal.request_message_format.as_ref(),
+                goal_service.and_then(|goal| goal.request_message_format.as_ref()),
             )?;
-            let response_artifacts = map_message_format(
-                &format!("{label}_response"),
-                goal.response_message_format.as_ref(),
-            )?;
+            // The goal acknowledgement is framework-owned ({accepted,
+            // error_message}); any goal response declared in the action schema
+            // is ignored. The decider returns GoalResponse::accept() /
+            // GoalResponse::reject(reason).
+            let goal_response_format = goal_action_response_format();
+            let response_artifacts =
+                map_message_format(&format!("{label}_response"), Some(&goal_response_format))?;
 
+            // Generates `GoalResponse` (+ `new`) when there is a response, and
+            // returns the request params used to build `GoalRequestData`.
             let goal_data_params = collect_function_params(
                 request_artifacts.as_ref(),
                 response_artifacts.as_ref(),
@@ -709,29 +872,18 @@ impl LanguageGenerator for RustGenerator {
                 goal_request_data_struct.as_ref(),
             );
 
+            let scoped_goal_key = scoped_schema_key(origin, &label);
             let encoding = self.prepare_message_encoding(
-                &label,
+                &scoped_goal_key,
                 &schema_struct_prefix,
                 request_artifacts.as_ref(),
                 &goal_data_params,
             )?;
 
-            let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
-                let response_schema_prefix = format!("{schema_struct_prefix}Response");
-                let schema_key = format!("{label}_response");
-                let schema_info =
-                    self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
-                Some(ServiceResponseSpec {
-                    format: return_artifacts.message_format(),
-                    struct_ident: Ident::new("GoalResponse", Span::call_site()),
-                    builder_type: schema_info.builder_type_tokens(),
-                    include_service_instance_id: false,
-                })
-            } else {
-                None
-            };
-
-            if let Some(spec) = encoding.as_ref() {
+            // A deserializer is only needed when the goal carries request data
+            // (an empty `{}` request format yields an encoding but no
+            // `GoalRequestData` struct, so there is nothing to decode).
+            if let (Some(_), Some(spec)) = (goal_request_data_struct.as_ref(), encoding.as_ref()) {
                 let deserializer_fn = build_action_request_deserializer(
                     &Ident::new("deserialize_goal_request", Span::call_site()),
                     spec,
@@ -746,158 +898,42 @@ impl LanguageGenerator for RustGenerator {
                 helper_tokens.push(deserializer_fn);
             }
 
-            let goal_handler_fn = build_action_payload_handler(
-                &Ident::new("handle_goal_payload", Span::call_site()),
-                &Ident::new("deserialize_goal_request", Span::call_site()),
-                &Ident::new("GoalRequest", Span::call_site()),
-                goal_request_data_struct.as_ref(),
-                response_spec.as_ref(),
-                encoding.is_some(),
-            )?;
-            helper_tokens.push(goal_handler_fn);
+            // The decider returns a framework `GoalResponse`
+            // (`accept()` / `reject(reason)`).
+            extra_items.push(build_goal_response_constructors());
 
-            let goal_role = if has_feedback {
-                ActionHandleRole::Goal
-            } else {
-                ActionHandleRole::Plain
+            // Serialization for the `GoalResponse` (reads a local `response`).
+            // The goal response is framework-owned, so it is always present.
+            let return_artifacts = response_artifacts
+                .as_ref()
+                .expect("framework goal response format always yields artifacts");
+            let response_schema_prefix = format!("{schema_struct_prefix}Response");
+            let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
+            let schema_info =
+                self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
+            let spec = ServiceResponseSpec {
+                format: return_artifacts.message_format(),
+                struct_ident: Ident::new("GoalResponse", Span::call_site()),
+                builder_type: schema_info.builder_type_tokens(),
+                include_service_instance_id: false,
             };
-            let goal_method = build_action_handle_method(
-                &Ident::new("handle_goal_next_request", Span::call_site()),
-                &Ident::new("handle_goal_payload", Span::call_site()),
-                &Ident::new("GoalRequest", Span::call_site()),
-                &Ident::new("GoalResponse", Span::call_site()),
-                &Ident::new("goal_service", Span::call_site()),
-                encoding.is_some(),
-                goal_role,
-            );
-            action_handle_methods.push(goal_method);
+            let response_ident = Ident::new("response", Span::call_site());
+            let error_context = quote!(format!("{} {}", "handle_goal_next_request", ACTION_NAME));
+            let response_serialization =
+                build_response_payload_tokens(&spec, &response_ident, &error_context, None)?;
 
-            let cancel_label = format!("{base_name}_goal_cancel");
-            let cancel_schema_prefix = format!("{action_prefix}GoalCancel");
-            let cancel_response_format = cancel_action_response_format();
-            let cancel_response_artifacts =
-                map_message_format(&cancel_label, Some(&cancel_response_format))?;
-
-            context.add_metadata_struct(Ident::new("CancelRequest", Span::call_site()), None);
-
-            let _cancel_params = collect_function_params(
-                None,
-                cancel_response_artifacts.as_ref(),
-                "Cancel",
-                &mut context,
-                None,
-            )?;
-
-            let cancel_response_spec =
-                if let Some(return_artifacts) = cancel_response_artifacts.as_ref() {
-                    let schema_key = format!("{cancel_label}_response");
-                    let schema_info = self.register_schema(
-                        &schema_key,
-                        &format!("{cancel_schema_prefix}Response"),
-                        return_artifacts,
-                    )?;
-                    Some(ServiceResponseSpec {
-                        format: return_artifacts.message_format(),
-                        struct_ident: Ident::new("CancelResponse", Span::call_site()),
-                        builder_type: schema_info.builder_type_tokens(),
-                        include_service_instance_id: false,
-                    })
-                } else {
-                    None
-                };
-
-            let cancel_handler_fn = build_action_payload_handler(
-                &Ident::new("handle_cancel_payload", Span::call_site()),
-                &Ident::new("deserialize_cancel_request", Span::call_site()),
-                &Ident::new("CancelRequest", Span::call_site()),
-                None,
-                cancel_response_spec.as_ref(),
-                false,
-            )?;
-            helper_tokens.push(cancel_handler_fn);
-
-            let cancel_role = if has_feedback {
-                ActionHandleRole::Cancel
-            } else {
-                ActionHandleRole::Plain
-            };
-            let cancel_method = build_action_handle_method(
-                &Ident::new("handle_cancel_next_request", Span::call_site()),
-                &Ident::new("handle_cancel_payload", Span::call_site()),
-                &Ident::new("CancelRequest", Span::call_site()),
-                &Ident::new("CancelResponse", Span::call_site()),
-                &Ident::new("cancel_service", Span::call_site()),
-                false,
-                cancel_role,
-            );
-            action_handle_methods.push(cancel_method);
+            action_handle_methods.push(build_handle_goal_next_request(
+                goal_request_data_struct.is_some(),
+                response_serialization,
+            ));
         }
 
-        if let Some(result) = action.result_service.as_ref() {
-            let label = format!("{base_name}_result");
-            let schema_struct_prefix = format!("{action_prefix}Result");
+        // Every action hands out a GoalContext with these base methods.
+        goal_context_methods.push(build_goal_context_base_methods());
 
-            let response_artifacts = map_message_format(
-                &format!("{label}_response"),
-                result.response_message_format.as_ref(),
-            )?;
-
-            context.add_metadata_struct(Ident::new("ResultRequest", Span::call_site()), None);
-
-            let _result_params = collect_function_params(
-                None,
-                response_artifacts.as_ref(),
-                "Result",
-                &mut context,
-                None,
-            )?;
-
-            let result_response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
-                let schema_key = format!("{label}_response");
-                let schema_info = self.register_schema(
-                    &schema_key,
-                    &format!("{schema_struct_prefix}Response"),
-                    return_artifacts,
-                )?;
-                Some(ServiceResponseSpec {
-                    format: return_artifacts.message_format(),
-                    struct_ident: Ident::new("ResultResponse", Span::call_site()),
-                    builder_type: schema_info.builder_type_tokens(),
-                    include_service_instance_id: false,
-                })
-            } else {
-                None
-            };
-
-            let result_handler_fn = build_action_payload_handler(
-                &Ident::new("handle_result_payload", Span::call_site()),
-                &Ident::new("deserialize_result_request", Span::call_site()),
-                &Ident::new("ResultRequest", Span::call_site()),
-                None,
-                result_response_spec.as_ref(),
-                false,
-            )?;
-            helper_tokens.push(result_handler_fn);
-
-            let result_role = if has_feedback {
-                ActionHandleRole::Result
-            } else {
-                ActionHandleRole::Plain
-            };
-            let result_method = build_action_handle_method(
-                &Ident::new("handle_result_next_request", Span::call_site()),
-                &Ident::new("handle_result_payload", Span::call_site()),
-                &Ident::new("ResultRequest", Span::call_site()),
-                &Ident::new("ResultResponse", Span::call_site()),
-                &Ident::new("result_service", Span::call_site()),
-                false,
-                result_role,
-            );
-            action_handle_methods.push(result_method);
-        }
-
+        // Feedback → `GoalContext::publish_feedback`.
         if let Some(feedback) = action.feedback_topic.as_ref() {
-            let label = format!("emit_feedback {}", &action.name);
+            let label = format!("publish_feedback {}", &action.name);
             let struct_prefix = format!("{action_prefix}Feedback");
             let feedback_schema_name = format!("{base_name}_feedback");
             let format_artifacts =
@@ -910,30 +946,80 @@ impl LanguageGenerator for RustGenerator {
                 None,
             )?;
             let encoding = self.prepare_message_encoding(
-                &format!("emit_{base_name}_feedback"),
+                &scoped_schema_key(origin, &format!("emit_{base_name}_feedback")),
                 &struct_prefix,
                 format_artifacts.as_ref(),
                 &params,
             )?;
 
-            let method_tokens = build_action_feedback_emit(&params, encoding.as_ref(), &label);
-            action_handle_methods.push(method_tokens);
+            goal_context_methods.push(build_goal_context_publish_feedback(
+                &params,
+                encoding.as_ref(),
+                &label,
+            ));
+        }
+
+        // Result → `GoalContext::complete` / `complete_cancelled`.
+        if let Some(result) = action.result_service.as_ref() {
+            let label = format!("{base_name}_result");
+            let schema_struct_prefix = format!("{action_prefix}Result");
+
+            let response_artifacts = map_message_format(
+                &format!("{label}_response"),
+                result.response_message_format.as_ref(),
+            )?;
+
+            // The result-response fields become `complete(fields…)` parameters.
+            let result_params = collect_function_params(
+                response_artifacts.as_ref(),
+                None,
+                &schema_struct_prefix,
+                &mut context,
+                None,
+            )?;
+            let encoding = self.prepare_message_encoding(
+                &scoped_schema_key(origin, &format!("{label}_response")),
+                &schema_struct_prefix,
+                response_artifacts.as_ref(),
+                &result_params,
+            )?;
+
+            goal_context_methods.push(build_goal_context_complete(
+                "complete",
+                &result_params,
+                encoding.as_ref(),
+                &label,
+            ));
+            goal_context_methods.push(build_goal_context_complete(
+                "complete_cancelled",
+                &result_params,
+                encoding.as_ref(),
+                &label,
+            ));
         }
 
         if action_handle_methods.is_empty() {
             return Ok(());
         }
 
-        let action_handle_struct = build_action_handle_struct(has_goal, has_feedback, has_result);
-        let expose_method = build_action_expose_method(has_goal, has_feedback, has_result);
+        let action_handle_struct = build_action_handle_struct();
+        let goal_context_struct = build_goal_context_struct();
+        let expose_method = build_action_expose_method(has_feedback, origin);
 
         let mut items = vec![quote!(const ACTION_NAME: &str = #action_name_literal;)];
         items.extend(context.into_tokens());
+        items.extend(extra_items);
         items.push(action_handle_struct);
+        items.push(goal_context_struct);
         items.push(quote! {
             impl ActionHandle {
                 #expose_method
                 #( #action_handle_methods )*
+            }
+        });
+        items.push(quote! {
+            impl GoalContext {
+                #( #goal_context_methods )*
             }
         });
         items.extend(helper_tokens);
@@ -942,8 +1028,9 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&action.name),
+            origin,
             InterfaceKind::ExposedAction,
             rendered,
         ));
@@ -954,21 +1041,21 @@ impl LanguageGenerator for RustGenerator {
         &mut self,
         topic: &ConsumedTopic,
         arguments: MessageFormat,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()> {
         let ConsumedTopic::Linked(linked) = topic else {
             return Err(Error::InvariantViolation {
                 context: "add_consumed_topic called with ConsumedTopic::External; use add_external_consumed_topic instead".into(),
             });
         };
-        let node_name = linked.local_node_id.as_str();
+        let node_name = linked.link_id.as_str();
 
         let node_component = sanitize_component(node_name);
         let topic_component = sanitize_component(linked.name.as_str());
 
         debug_assert!(
             !node_component.is_empty(),
-            "ConsumedTopic.local_node_id should be validated as non-empty"
+            "ConsumedTopic.link_id should be validated as non-empty"
         );
         debug_assert!(
             !topic_component.is_empty(),
@@ -986,18 +1073,9 @@ impl LanguageGenerator for RustGenerator {
         if module_label.trim().is_empty() {
             module_label = String::from("topic");
         }
-        let mut module_component = sanitize_component(&module_label);
-        if module_component.is_empty() {
-            module_component = String::from("topic");
-        }
 
-        let schema_key = if !topic_component.is_empty() {
-            format!("on_next_{topic_component}_message")
-        } else if !node_component.is_empty() {
-            format!("on_next_{node_component}_message")
-        } else {
-            format!("{module_component}_message")
-        };
+        let schema_key =
+            crate::generator::naming::consumed_topic_schema_key(node_name, linked.name.as_str());
 
         let format_artifacts = map_message_format(&schema_key, Some(&arguments))?
             .expect("message encoding spec should exist when message format is provided");
@@ -1040,7 +1118,7 @@ impl LanguageGenerator for RustGenerator {
             encoding: &encoding,
             topic,
             struct_prefix: &message_struct_name,
-            dependency_node_name,
+            dependency,
         })?;
         let mut items = context.into_tokens();
         items.push(method_tokens);
@@ -1050,8 +1128,9 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedTopic,
             rendered,
         ));
@@ -1073,7 +1152,7 @@ impl LanguageGenerator for RustGenerator {
         }
 
         let module_label = name.trim().to_string();
-        let schema_key = format!("on_next_{topic_component}_message");
+        let schema_key = crate::generator::naming::consumed_topic_schema_key("", name);
 
         let format_artifacts = map_message_format(&schema_key, Some(&arguments))?
             .expect("message encoding spec should exist when message format is provided");
@@ -1127,8 +1206,9 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedTopic,
             rendered,
         ));
@@ -1141,8 +1221,9 @@ impl LanguageGenerator for RustGenerator {
         service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()> {
+        let dependency_node_name = dependency.producer_name.as_str();
         let request_arguments = non_empty_message_format(Some(request_arguments));
         let response_arguments = non_empty_message_format(Some(response_arguments));
 
@@ -1159,17 +1240,10 @@ impl LanguageGenerator for RustGenerator {
         )?;
         let struct_prefix = to_camel_case(service_name_component.as_str());
 
-        let method_label = {
-            let mut components = Vec::with_capacity(3);
-            components.push(String::from("poll"));
-
-            let node_ident = prefixed_ident("", Some(dependency_node_name), "node");
-            components.push(node_ident.to_string());
-
-            components.push(service_name_component.clone());
-
-            components.join("_")
-        };
+        let method_label = crate::generator::naming::consumed_service_request_schema_key(
+            dependency_node_name,
+            service.name.as_str(),
+        );
         let method_ident = Ident::new("poll", Span::call_site());
 
         let mut context = GenerationContext::default();
@@ -1260,15 +1334,23 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
+        // The `to_target` matches the producer's emission shape: if the
+        // dependency exposes the service via `conforms_to`, address it as the
+        // interface; otherwise as the dependency's node identity.
+        // `target_instance_id` is resolved at runtime from the consumer's
+        // binding map.
+        let to_target_expr = consumed_to_target_expression(dependency);
+        let pinned_target_expr =
+            crate::generator::rust::topics::consumed_pinned_target_expression(dependency);
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
-                NODE_NAME,
+                #to_target_expr,
                 SERVICE_NAME,
-                target_core_node,
-                target_instance_id,
+                None,
+                #pinned_target_expr,
                 request_payload,
                 timeout,
             )
@@ -1280,7 +1362,11 @@ impl LanguageGenerator for RustGenerator {
             if let Some(response_artifacts) = response_artifacts.as_ref() {
                 let response_struct_name = format!("{struct_prefix}Response");
 
-                let response_schema_key = format!("{method_label}_response");
+                let response_schema_key =
+                    crate::generator::naming::consumed_service_response_schema_key(
+                        dependency_node_name,
+                        service.name.as_str(),
+                    );
                 let response_schema = self.register_schema(
                     &response_schema_key,
                     &response_struct_name,
@@ -1348,8 +1434,6 @@ impl LanguageGenerator for RustGenerator {
         let mut fn_param_tokens = vec![
             quote!(node_runner: &crate::NodeRunner),
             quote!(timeout: std::time::Duration),
-            quote!(target_core_node: Option<&str>),
-            quote!(target_instance_id: Option<&str>),
         ];
         if !request_struct_params.is_empty() {
             fn_param_tokens.push(quote!(request: #request_struct_ident));
@@ -1372,8 +1456,8 @@ impl LanguageGenerator for RustGenerator {
             all_tokens.push(deserialize_fn);
         }
 
-        let mut module_label = raw_module_label(&service.local_node_id, &service.name);
-        if module_name_from_components(&service.local_node_id, &service.name).is_empty() {
+        let mut module_label = raw_module_label(&service.link_id, &service.name);
+        if module_name_from_components(&service.link_id, &service.name).is_empty() {
             module_label = method_label
                 .strip_prefix("poll_")
                 .map(|label| label.to_string())
@@ -1386,8 +1470,9 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedService,
             rendered,
         ));
@@ -1398,8 +1483,9 @@ impl LanguageGenerator for RustGenerator {
         &mut self,
         action: &ConsumedAction,
         messages: &ConsumedActionMessage,
-        dependency_node_name: &str,
+        dependency: &DependencyContext,
     ) -> Result<()> {
+        let dependency_node_name = dependency.producer_name.as_str();
         let node_component = sanitize_component(dependency_node_name);
         let action_component = sanitize_component(action.name.as_str());
         let base_component = match (node_component.is_empty(), action_component.is_empty()) {
@@ -1409,7 +1495,16 @@ impl LanguageGenerator for RustGenerator {
             (false, false) => format!("{node_component}_{action_component}"),
         };
         let action_prefix = to_camel_case(&base_component);
+        // `action_struct_name` names Rust IDENTIFIERS in the generated code
+        // (e.g. `UvcCameraEnableActionGoalMessage`). The cap'n proto schema
+        // keys (file_stems) are produced separately via the shared helper so
+        // both the Rust and Python generators emit the same file_stems for
+        // the same `(producer, action)` input.
         let action_struct_name = format!("{action_prefix}Action");
+        let action_schema_keys = crate::generator::naming::consumed_action_schema_keys(
+            dependency_node_name,
+            action.name.as_str(),
+        );
 
         let mut context = GenerationContext::default();
         let mut methods: Vec<TokenStream> = Vec::new();
@@ -1423,47 +1518,26 @@ impl LanguageGenerator for RustGenerator {
         };
 
         let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
-        let goal_response_format = non_empty_message_format(messages.goal_response.as_ref());
+        // The goal acknowledgement is framework-owned ({accepted, error_message}).
+        let goal_response_fmt = goal_action_response_format();
+        let goal_response_format = Some(&goal_response_fmt);
         let feedback_format = non_empty_message_format(messages.feedback.as_ref());
         let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
-        let goal_schema_key = format!("{action_struct_name}_fire_goal");
         let (goal_method, mut goal_helpers, has_goal_response_data) = self
             .build_consumed_action_fire_goal_method(
                 &mut context,
                 &action_struct_name,
                 goal_request_format,
                 goal_response_format,
-                &goal_schema_key,
+                &action_schema_keys.goal_request,
+                dependency,
             )?;
         methods.push(goal_method);
         helper_items.append(&mut goal_helpers);
 
-        let cancel_schema_key = format!("{action_struct_name}_cancel_goal");
-        let cancel_response_format = cancel_action_response_format();
-        let cancel_artifacts =
-            map_message_format(&cancel_schema_key, Some(&cancel_response_format))?
-                .expect("cancel response format should yield artifacts");
-        let (cancel_method, mut cancel_helpers) = self.build_consumed_action_response_method(
-            &mut context,
-            ConsumedActionResponseMethodSpec {
-                action_struct_name: &action_struct_name,
-                method_name: "cancel_goal",
-                response_struct_name: "CancelResponse",
-                data_struct_name: "CancelResponseData",
-                deserializer_name: "deserialize_cancel_response",
-                schema_message_prefix: "CancelResponseMessage",
-                schema_key: &cancel_schema_key,
-                response_artifacts: Some(cancel_artifacts),
-                messenger_call: quote! {
-                    peppylib::ActionMessenger::cancel_goal(
-                        &self.messenger,
-                        &self.inner,
-                        timeout,
-                    )
-                },
-            },
-        )?;
+        let (cancel_method, mut cancel_helpers) =
+            self.build_consumed_action_cancel_method(&mut context)?;
         methods.push(cancel_method);
         helper_items.append(&mut cancel_helpers);
 
@@ -1473,35 +1547,19 @@ impl LanguageGenerator for RustGenerator {
                     &mut context,
                     feedback_format,
                     &action_struct_name,
+                    &action_schema_keys.feedback,
                 )?;
             methods.push(feedback_method);
             helper_items.append(&mut feedback_helpers);
         }
 
-        let result_schema_key = format!("{action_struct_name}_get_result");
-        let result_artifacts = map_message_format(
-            &format!("{result_schema_key}_response"),
-            result_response_format,
-        )?;
-        let (result_method, mut result_helpers) = self.build_consumed_action_response_method(
+        let result_artifacts =
+            map_message_format(&action_schema_keys.result_response, result_response_format)?;
+        let (result_method, mut result_helpers) = self.build_consumed_action_get_result_method(
             &mut context,
-            ConsumedActionResponseMethodSpec {
-                action_struct_name: &action_struct_name,
-                method_name: "get_result",
-                response_struct_name: "ResultResponse",
-                data_struct_name: "ResultResponseData",
-                deserializer_name: "deserialize_result_response",
-                schema_message_prefix: "ResultResponseMessage",
-                schema_key: &result_schema_key,
-                response_artifacts: result_artifacts,
-                messenger_call: quote! {
-                    peppylib::ActionMessenger::request_result(
-                        &self.messenger,
-                        &self.inner,
-                        timeout,
-                    )
-                },
-            },
+            &action_struct_name,
+            result_artifacts,
+            &action_schema_keys.result_response,
         )?;
         methods.push(result_method);
         helper_items.append(&mut result_helpers);
@@ -1538,9 +1596,10 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        let module_label = raw_module_label(&action.local_node_id, &action.name);
-        self.push_section(InterfaceArtifact::from_kind(
+        let module_label = raw_module_label(&action.link_id, &action.name);
+        self.push_section(self.make_artifact(
             &sanitize_node_display_name(&module_label),
+            None,
             InterfaceKind::ConsumedAction,
             rendered,
         ));

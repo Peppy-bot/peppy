@@ -7,18 +7,22 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-In a standard PeppyOS setup, a node subscribes to topics from its declared dependencies using `local_node_id`.
-This creates a directed graph: if `arm_controller` depends on `robot_arm`, it can expect topics from `robot_arm` — but not the other way around, since that would create a circular dependency.
+In a standard PeppyOS setup, a node subscribes to topics from its declared dependencies using `link_id`.
+This creates a directed graph: if `arm_controller` depends on `robot_arm`, it can expect topics from `robot_arm`, but not the other way around, since that would create a circular dependency.
 
 **External consumed topics** solve this by letting a node subscribe to a topic *without* declaring a dependency on the publisher.
 The subscriber defines the `message_format` inline and receives messages from any node that emits a matching topic.
+
+:::note
+External consumed topics sit **outside** the [binding-driven routing model](/advanced_guides/topics/#bindings-and-routing) that governs linked topics, services, and actions. There is no `link_id`, so no binding can target the slot, and the routing rules (pinned-bound, `from_any` claim, wildcard fallback) do not apply. An external slot is a pure wildcard: it receives every message published on the matching topic name, optionally narrowed by the call-site `from_core_node` / `from_instance_id` filters.
+:::
 
 ## Example: robot arm control loop
 
 Consider a robot arm that needs bidirectional communication between two nodes:
 
-- **`arm_controller`** — plans trajectories and sends joint commands.
-- **`robot_arm`** — drives the physical joints and reports their state.
+- **`arm_controller`**: plans trajectories and sends joint commands.
+- **`robot_arm`**: drives the physical joints and reports their state.
 
 ```
 arm_controller                                  robot_arm
@@ -29,13 +33,13 @@ arm_controller                                  robot_arm
       │                                              │
 ```
 
-`arm_controller` depends on `robot_arm` to consume its `joint_states` topic — that's a standard linked consumed topic.
+`arm_controller` depends on `robot_arm` to consume its `joint_states` topic; that's a standard linked consumed topic.
 `robot_arm` needs to receive `joint_commands`, but it cannot depend on `arm_controller` (circular dependency).
 Instead, it declares `joint_commands` as an **external consumed topic**.
 
 ## Configuring external consumed topics
 
-An external consumed topic has a `name` and an inline `message_format`, but no `local_node_id`:
+An external consumed topic has a `name` and an inline `message_format`, but no `link_id`:
 
 <Tabs>
   <TabItem label="Python">
@@ -44,8 +48,8 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
       peppy_schema: "node_v1",
       manifest: {
         name: "robot_arm",
-        tag: "0.1.0",
-        // No depends_on — robot_arm does not depend on arm_controller
+        tag: "v1",
+        // No depends_on; robot_arm does not depend on arm_controller
       },
       interfaces: {
         topics: {
@@ -70,7 +74,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
           ],
           consumes: [
             {
-              // No local_node_id — this is an external consumed topic
+              // No link_id; this is an external consumed topic
               name: "joint_commands",
               message_format: {
                 target_positions: {
@@ -98,8 +102,8 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
       peppy_schema: "node_v1",
       manifest: {
         name: "robot_arm",
-        tag: "0.1.0",
-        // No depends_on — robot_arm does not depend on arm_controller
+        tag: "v1",
+        // No depends_on; robot_arm does not depend on arm_controller
       },
       interfaces: {
         topics: {
@@ -124,7 +128,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
           ],
           consumes: [
             {
-              // No local_node_id — this is an external consumed topic
+              // No link_id; this is an external consumed topic
               name: "joint_commands",
               message_format: {
                 target_positions: {
@@ -157,10 +161,10 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
       peppy_schema: "node_v1",
       manifest: {
         name: "arm_controller",
-        tag: "0.1.0",
+        tag: "v1",
         depends_on: {
           nodes: [
-            { name: "robot_arm", tag: "0.1.0", local_id: "robot_arm" },
+            { name: "robot_arm", tag: "v1", link_id: "robot_arm" },
           ]
         },
       },
@@ -182,7 +186,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
           ],
           consumes: [
             {
-              local_node_id: "robot_arm",  // Linked — references depends_on
+              link_id: "robot_arm",  // Linked: references depends_on
               name: "joint_states",
             },
           ],
@@ -202,10 +206,10 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
       peppy_schema: "node_v1",
       manifest: {
         name: "arm_controller",
-        tag: "0.1.0",
+        tag: "v1",
         depends_on: {
           nodes: [
-            { name: "robot_arm", tag: "0.1.0", local_id: "robot_arm" },
+            { name: "robot_arm", tag: "v1", link_id: "robot_arm" },
           ]
         },
       },
@@ -227,7 +231,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
           ],
           consumes: [
             {
-              local_node_id: "robot_arm",  // Linked — references depends_on
+              link_id: "robot_arm",  // Linked: references depends_on
               name: "joint_states",
             },
           ],
@@ -245,7 +249,7 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
 
 :::note
 The `message_format` of an external consumed topic is defined inline by the subscriber.
-For linked consumed topics, the format is resolved automatically from the dependency's configuration — which is why only `local_node_id` and `name` are needed.
+For linked consumed topics, the format is resolved automatically from the dependency's configuration, which is why only `link_id` and `name` are needed.
 :::
 
 ## Receiving external messages
@@ -310,8 +314,8 @@ The module name is the **topic name only** (e.g. `joint_commands`), since there 
                 loop {
                     let (instance_id, command) = joint_commands::on_next_message_received(
                         &node_runner_clone,
-                        None,
-                        None,
+                        None, // from_core_node (None = any)
+                        None, // from_instance_id (None = any)
                     )
                     .await
                     .expect("failed to receive joint command");
@@ -339,7 +343,10 @@ The module name is the **topic name only** (e.g. `joint_commands`), since there 
   </TabItem>
 </Tabs>
 
-The API is identical to linked consumed topics — the only difference is where the `message_format` comes from (inline vs. resolved from the dependency).
+The API is almost identical to linked consumed topics. Two differences are worth calling out:
+
+- The `message_format` is defined inline by the subscriber instead of resolved from the dependency.
+- External `on_next_message_received` exposes an extra `from_instance_id` parameter so the subscriber can narrow by producer instance at the call site. Linked consumers don't take this parameter because launcher bindings already steer their routing; there is no binding mechanism for external slots, so the call-site filter is the only narrowing handle they have.
 
 On the other side, the `arm_controller` uses a standard linked topic. Notice the module name includes the node prefix (`robot_arm_joint_states`):
 
@@ -361,7 +368,7 @@ On the other side, the `arm_controller` uses a standard linked topic. Notice the
 
     async def control_loop(node_runner: NodeRunner):
         while True:
-            # Linked topic: module name is <local_node_id>_<topic_name>
+            # Linked topic: module name is <link_id>_<topic_name>
             instance_id, state = await robot_arm_joint_states.on_next_message_received(
                 node_runner,
             )
@@ -399,10 +406,9 @@ On the other side, the `arm_controller` uses a standard linked topic. Notice the
             let node_runner_clone = node_runner.clone();
             tokio::spawn(async move {
                 loop {
-                    // Linked topic: module name is <local_node_id>_<topic_name>
+                    // Linked topic: module name is <link_id>_<topic_name>
                     let (instance_id, state) = robot_arm_joint_states::on_next_message_received(
                         &node_runner_clone,
-                        None,
                         None,
                     )
                     .await
@@ -436,39 +442,60 @@ On the other side, the `arm_controller` uses a standard linked topic. Notice the
 
 | | Linked | External |
 |---|---|---|
-| Config | `local_node_id` + `name` | `name` + `message_format` |
+| Config | `link_id` + `name` | `name` + `message_format` |
 | Dependency | Required in `depends_on` | None |
 | Message format | Resolved from the dependency | Defined inline by the subscriber |
-| Module name | `<local_node_id>_<topic_name>` | `<topic_name>` |
+| Module name | `<link_id>_<topic_name>` | `<topic_name>` |
 | Subscribes to | A specific publisher node | Any node emitting that topic |
 
 ## Why only topics?
 
-PeppyOS has three communication patterns — topics, services, and actions — but only topics support external (dependency-free) subscriptions. The reason is how each pattern flows data:
+PeppyOS has three communication patterns (topics, services, and actions), but only topics support external (dependency-free) subscriptions. The reason is how each pattern flows data:
 
 | | Topics | Services | Actions |
 |---|---|---|---|
 | Pattern | Publish-subscribe | Request-response | Goal-feedback-result |
 | Data flow | One-way: publisher → subscriber | Two-way: request then response | Multi-step: goal, feedback, result |
 | Initiator | Publisher pushes; subscriber listens passively | Consumer actively calls the exposer | Consumer orchestrates the full lifecycle |
-| Coupling | None — subscriber does not call the publisher | Inherent — consumer targets a specific service | Inherent — built on services, same constraint |
-| External variant? | Yes — passive listening needs no dependency | No — calling requires a target node | No — same as services |
+| Coupling | None (subscriber does not call the publisher) | Inherent (consumer targets a specific service) | Inherent (built on services, same constraint) |
+| External form? | Yes (passive listening needs no dependency) | No (calling requires a target node) | No (same as services) |
 
 A topic subscriber is **passive**: it declares a message format and waits for data to arrive, without knowing or addressing the publisher.
-That is why removing `depends_on` works — there is nothing to call.
+That is why removing `depends_on` works: there is nothing to call, so the [binding-driven routing](/advanced_guides/topics/#bindings-and-routing) used by linked topics, services, and actions does not apply: there is no `link_id` for a binding to target.
 
 [Services](/advanced_guides/services) and [actions](/advanced_guides/actions) are **caller-driven**: the consumer actively invokes a specific service on a specific node.
-Even without a config dependency, the consumer would still need to target that node at runtime, reintroducing the coupling that external consumed topics are designed to avoid.
+Even without a config dependency, the consumer would still need to target that node at runtime, reintroducing the coupling (and the binding plumbing) that external consumed topics are designed to avoid.
 
-In the robot arm example, `robot_arm` passively listens for `joint_commands` from any source — it never calls `arm_controller`.
+In the robot arm example, `robot_arm` passively listens for `joint_commands` from any source; it never calls `arm_controller`.
 If it needed to call a service on `arm_controller` instead, it would need `depends_on`, creating the circular dependency that external consumed topics exist to prevent.
 
 ## When to use external consumed topics
 
 Use external consumed topics when:
 
-- **Bidirectional communication** — two nodes need to exchange data and a direct dependency would create a cycle.
-- **Loose coupling** — the subscriber should not care which specific node publishes the data. For instance, a `robot_arm` node that accepts commands from any controller (teleoperation, autonomous planner, calibration script).
-- **Non-DAG communication** — the publisher is not part of the node stack, or the relationship between publisher and subscriber is not a natural dependency.
+- **Bidirectional communication**: two nodes need to exchange data and a direct dependency would create a cycle.
+- **Loose coupling**: the subscriber should not care which specific node publishes the data. For instance, a `robot_arm` node that accepts commands from any controller (teleoperation, autonomous planner, calibration script).
+- **Non-DAG communication**: the publisher is not part of the node stack, or the relationship between publisher and subscriber is not a natural dependency.
 
-For all other cases, prefer linked consumed topics — they enforce explicit dependencies and let PeppyOS resolve message formats automatically.
+For all other cases, prefer linked consumed topics; they enforce explicit dependencies and let PeppyOS resolve message formats automatically.
+
+## When to use bidirectional communication vs. actions?
+
+Bidirectional communication (via external consumed topics) and [actions](/advanced_guides/actions/) can both look like "two nodes talking back and forth", but they model different shapes of interaction. The distinction is **lifecycle**: does the exchange have a defined start and end, or does it run continuously for as long as the nodes are up?
+
+|  | Bidirectional communication | Actions |
+|---|---|---|
+| Lifecycle | Continuous; runs for the whole lifetime of both nodes | Bounded; each goal has an explicit start (goal accepted) and end (result delivered, cancelled, or errored) |
+| Initiator | Either side publishes whenever it has data | Client issues a goal; server responds |
+| Concurrency | Both streams flow in parallel, indefinitely | One goal at a time per action (serial) |
+| Per-exchange feedback | Implicit (each side publishes its own stream) | Explicit feedback channel during the goal |
+| Cancellation | No notion; you just stop publishing | First-class cancel request mid-flight |
+| Natural fit | Inner control loops, continuous state mirroring, telemetry exchanges that never "finish" | Discrete jobs with a clear "done" condition |
+
+In the robot arm example on this page, `arm_controller` and `robot_arm` exchange `joint_commands` and `joint_states` **continuously** for as long as the robot is powered on. There is no point at which the exchange "completes"; each side just keeps producing its stream. That is the bidirectional shape: a continuous mechanism that works across the whole lifecycle of the robot, with no specific start or end.
+
+Actions cover the opposite shape. A `move_arm` action that takes `(arm_id, desired_position)` has a clear beginning (goal accepted), an end (the arm reaches the position, or the goal is cancelled), and a single in-flight job at a time. The framework gives you a feedback channel for progress and a cancel channel to abort early, both scoped to that one goal. When the result arrives, that exchange is over.
+
+A useful test: if you find yourself wanting to say *"the controller asks the arm to do X and waits until it's done"*, that is an action. If you find yourself saying *"the controller streams setpoints at 100 Hz and the arm streams state back at 1 kHz"*, that is bidirectional communication.
+
+Both shapes can coexist on the same pair of nodes. A `robot_arm` might expose a `calibrate` action (run once at startup, has a definite end) **and** exchange `joint_commands` / `joint_states` continuously with whatever controller is driving it.

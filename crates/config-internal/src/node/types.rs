@@ -1,8 +1,7 @@
 use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
-    launcher::PeppySchema,
-    source::DeploymentSource,
+    schema::PeppySchema,
 };
 use indexmap::IndexMap;
 use serde::{
@@ -62,22 +61,6 @@ impl Toolchain {
     }
 }
 
-/// Raw node configuration as deserialized from JSON5. The `execution` field is
-/// optional because configs with a `"default"` variant omit it — execution
-/// comes from the variant. Use [`RawNodeConfig::into_resolved`] to produce a
-/// [`NodeConfig`] with guaranteed `execution`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RawNodeConfig {
-    #[serde(deserialize_with = "deserialize_node_v1_schema")]
-    pub(crate) peppy_schema: PeppySchema,
-    pub(crate) manifest: Manifest,
-    #[serde(default)]
-    pub(crate) interfaces: Interfaces,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) execution: Option<RawExecution>,
-}
-
 /// Reject any `peppy_schema` value other than `node_v1` so a launcher
 /// document that happens to share a node-compatible field set can't
 /// slip through `NodeConfigParser`.
@@ -88,192 +71,9 @@ where
     PeppySchema::deserialize_expecting(deserializer, PeppySchema::NodeV1)
 }
 
-/// Name reserved for the default variant.
-pub const DEFAULT_VARIANT_NAME: &str = "default";
-
-impl RawNodeConfig {
-    /// Returns `true` if the manifest contains a variant named `"default"`.
-    pub(crate) fn has_default_variant(&self) -> bool {
-        self.manifest.has_default_variant()
-    }
-
-    /// Converts into a resolved [`NodeConfig`] when execution is already present
-    /// (non-variant configs).
-    ///
-    /// Returns an error if `execution` is `None`
-    /// (e.g., for configs with a default variant that has not been resolved yet).
-    pub(crate) fn into_resolved(self) -> crate::error::Result<NodeConfig> {
-        let execution = self
-            .execution
-            .ok_or(ParsingError::MissingExecution)?
-            .into_execution()?;
-        Ok(NodeConfig {
-            peppy_schema: self.peppy_schema,
-            manifest: self.manifest,
-            interfaces: self.interfaces,
-            execution,
-        })
-    }
-}
-
-/// Opaque handle over a parsed node configuration.
-///
-/// Produced by [`NodeConfigParser`] when parsing a `peppy.json5` file or content
-/// string. The raw fields are not accessible outside of the `config` crate;
-/// use the provided methods to inspect or resolve the config.
-#[derive(Debug, Clone, Serialize)]
-pub struct ParsedNodeConfig(pub(crate) RawNodeConfig);
-
-impl ParsedNodeConfig {
-    /// Returns `true` if the manifest contains a variant named `"default"`.
-    pub fn has_default_variant(&self) -> bool {
-        self.0.has_default_variant()
-    }
-
-    /// Returns `true` if the manifest declares one or more variants.
-    pub fn has_variants(&self) -> bool {
-        self.0
-            .manifest
-            .variants
-            .as_ref()
-            .is_some_and(|v| !v.is_empty())
-    }
-
-    /// Converts into a fully resolved [`NodeConfig`] when execution is already
-    /// present (non-variant configs).
-    ///
-    /// Returns an error if execution is absent (e.g. for configs with a default
-    /// variant that has not been resolved yet).
-    pub fn into_resolved(self) -> crate::error::Result<NodeConfig> {
-        self.0.into_resolved()
-    }
-
-    /// Converts into a [`NodeConfig`], using a default `Execution` if none is
-    /// present. Intended for display-only paths (e.g. `node info`) where a
-    /// missing execution (due to failed variant resolution) should not prevent
-    /// returning useful information.
-    pub fn into_resolved_or_default(self) -> NodeConfig {
-        let execution = self
-            .0
-            .execution
-            .and_then(|raw| raw.into_execution().ok())
-            .unwrap_or_default();
-        NodeConfig {
-            peppy_schema: self.0.peppy_schema,
-            manifest: self.0.manifest,
-            interfaces: self.0.interfaces,
-            execution,
-        }
-    }
-
-    /// Returns the node name from the manifest.
-    pub fn manifest_name(&self) -> &str {
-        self.0.manifest.name.as_str()
-    }
-
-    /// Returns the node tag from the manifest.
-    pub fn manifest_tag(&self) -> &str {
-        &self.0.manifest.tag
-    }
-
-    /// Returns the schema identifier.
-    pub fn peppy_schema(&self) -> PeppySchema {
-        self.0.peppy_schema
-    }
-
-    /// Looks up a variant by name in the manifest's variants list.
-    pub fn find_variant(&self, name: &str) -> Option<&Variant> {
-        self.0
-            .manifest
-            .variants
-            .as_ref()
-            .and_then(|variants| variants.iter().find(|v| v.name.as_str() == name))
-    }
-
-    /// Returns the names of all variants declared in the manifest.
-    pub fn variant_names(&self) -> Vec<String> {
-        self.0
-            .manifest
-            .variants
-            .as_ref()
-            .map(|variants| {
-                variants
-                    .iter()
-                    .map(|v| v.name.as_str().to_owned())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Returns a reference to the node's manifest.
-    pub fn manifest(&self) -> &Manifest {
-        &self.0.manifest
-    }
-
-    /// Returns the execution language, if an execution block is present and
-    /// specifies one.
-    ///
-    /// Configs with a default variant have no execution at the root level.
-    pub fn execution_language(&self) -> Option<PeppygenLanguage> {
-        self.0.execution.as_ref().and_then(|e| e.language)
-    }
-
-    /// Returns a reference to the node's interfaces.
-    pub fn interfaces(&self) -> &Interfaces {
-        &self.0.interfaces
-    }
-
-    /// Merges this config with a variant config, producing a fully resolved
-    /// [`NodeConfig`].
-    ///
-    /// Validates that any interfaces declared by the variant match the root's
-    /// interfaces. The merged config uses the root's peppy_schema, manifest,
-    /// and interfaces, combined with the variant's execution.
-    pub fn merge_variant(
-        &self,
-        variant_config: VariantConfig,
-        variant_label: &str,
-    ) -> Result<MergedVariant, String> {
-        if let Some(ref variant_interfaces) = variant_config.interfaces
-            && *variant_interfaces != Interfaces::default()
-            && !self.0.interfaces.matches_unordered(variant_interfaces)
-        {
-            return Err(format!(
-                "VariantInterfaceMismatch: variant '{}' defines interfaces that differ from the root node '{}:{}'",
-                variant_label,
-                self.0.manifest.name.as_str(),
-                self.0.manifest.tag,
-            ));
-        }
-
-        let manifest_ignored = variant_config.manifest.is_some();
-
-        let config = NodeConfig {
-            peppy_schema: self.0.peppy_schema,
-            manifest: self.0.manifest.clone(),
-            interfaces: self.0.interfaces.clone(),
-            execution: variant_config.execution,
-        };
-
-        Ok(MergedVariant {
-            config,
-            manifest_ignored,
-        })
-    }
-}
-
-/// Result of merging a [`ParsedNodeConfig`] with a [`VariantConfig`].
-#[derive(Debug)]
-pub struct MergedVariant {
-    /// The fully resolved merged config.
-    pub config: NodeConfig,
-    /// True when the variant's config defined a `manifest` section that was ignored.
-    pub manifest_ignored: bool,
-}
-
-/// Fully resolved node configuration with guaranteed `execution`.
-/// Produced from [`RawNodeConfig`] after variant resolution or after validation
-/// confirms that execution is present in the root config.
+/// Fully resolved node configuration. A peppy node always has a `manifest`
+/// and an `execution` block; `interfaces` is optional and defaults to empty
+/// for nodes with no topics/services/actions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
@@ -656,8 +456,8 @@ pub struct ExposedAction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LinkedConsumedTopic {
-    #[serde(deserialize_with = "deserialize_consumed_topic_local_node_id")]
-    pub local_node_id: String,
+    #[serde(deserialize_with = "deserialize_consumed_topic_link_id")]
+    pub link_id: String,
     #[serde(deserialize_with = "deserialize_consumed_topic_name")]
     pub name: String,
 }
@@ -685,9 +485,9 @@ impl ConsumedTopic {
         }
     }
 
-    pub fn local_node_id(&self) -> Option<&str> {
+    pub fn link_id(&self) -> Option<&str> {
         match self {
-            Self::Linked(t) => Some(&t.local_node_id),
+            Self::Linked(t) => Some(&t.link_id),
             Self::External(_) => None,
         }
     }
@@ -696,8 +496,8 @@ impl ConsumedTopic {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedService {
-    #[serde(deserialize_with = "deserialize_consumed_service_local_node_id")]
-    pub local_node_id: String,
+    #[serde(deserialize_with = "deserialize_consumed_service_link_id")]
+    pub link_id: String,
     #[serde(default)]
     pub name: String,
 }
@@ -705,8 +505,8 @@ pub struct ConsumedService {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedAction {
-    #[serde(deserialize_with = "deserialize_consumed_action_local_node_id")]
-    pub local_node_id: String,
+    #[serde(deserialize_with = "deserialize_consumed_action_link_id")]
+    pub link_id: String,
     #[serde(default)]
     pub name: String,
 }
@@ -732,11 +532,11 @@ impl Default for ActionServiceEndpoint {
     }
 }
 
-fn deserialize_consumed_topic_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_topic_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.local_node_id")
+    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.link_id")
 }
 
 fn deserialize_consumed_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -746,18 +546,32 @@ where
     deserialize_non_empty_identifier(deserializer, "ConsumedTopic.name")
 }
 
-fn deserialize_consumed_service_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_service_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ConsumedService.local_node_id")
+    deserialize_non_empty_identifier(deserializer, "ConsumedService.link_id")
 }
 
-fn deserialize_consumed_action_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_action_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ConsumedAction.local_node_id")
+    deserialize_non_empty_identifier(deserializer, "ConsumedAction.link_id")
+}
+
+fn deserialize_node_dependency_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_empty_identifier(deserializer, "NodeDependency.link_id")
+}
+
+fn deserialize_interface_dependency_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_empty_identifier(deserializer, "InterfaceDependency.link_id")
 }
 
 fn deserialize_non_empty_identifier<'de, D>(
@@ -806,24 +620,35 @@ fn default_action_service_qos_profile() -> QoSProfile {
 pub struct NodeDependency {
     pub name: Name,
     pub tag: String,
-    pub local_id: String,
+    #[serde(deserialize_with = "deserialize_node_dependency_link_id")]
+    pub link_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_any: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterfaceDependency {
+    pub name: Name,
+    pub tag: String,
+    #[serde(deserialize_with = "deserialize_interface_dependency_link_id")]
+    pub link_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_any: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DependsOn {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<NodeDependency>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<InterfaceDependency>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Variant {
-    pub name: Name,
-    pub source: DeploymentSource,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Execution {
     pub language: PeppygenLanguage,
     #[serde(default)]
@@ -836,36 +661,37 @@ pub struct Execution {
     pub container: Option<ContainerConfig>,
 }
 
-/// Intermediate execution config used during initial parsing of [`RawNodeConfig`].
-///
-/// Unlike [`Execution`], `language` is optional so that semantic validation
-/// (e.g. "execution not permitted with default variant") can run before
-/// strict field validation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RawExecution {
-    pub language: Option<PeppygenLanguage>,
-    #[serde(default)]
-    pub parameters: ParameterSchema,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub build_cmd: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_cmd: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container: Option<ContainerConfig>,
-}
+/// Custom deserialization for [`Execution`] so a missing `language` field
+/// produces a structured `MissingExecutionLanguage` error rather than the
+/// generic serde "missing field" message.
+impl<'de> Deserialize<'de> for Execution {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawExecution {
+            language: Option<PeppygenLanguage>,
+            #[serde(default)]
+            parameters: ParameterSchema,
+            build_cmd: Option<Vec<String>>,
+            run_cmd: Option<Vec<String>>,
+            container: Option<ContainerConfig>,
+        }
 
-impl RawExecution {
-    pub(crate) fn into_execution(self) -> crate::error::Result<Execution> {
-        let language = self
-            .language
-            .ok_or(ParsingError::MissingExecutionLanguage)?;
+        let raw = RawExecution::deserialize(deserializer)?;
+        let language = raw.language.ok_or_else(|| {
+            de::Error::custom(
+                crate::error::StructuredError::MissingExecutionLanguage.json5_message(),
+            )
+        })?;
         Ok(Execution {
             language,
-            parameters: self.parameters,
-            build_cmd: self.build_cmd,
-            run_cmd: self.run_cmd,
-            container: self.container,
+            parameters: raw.parameters,
+            build_cmd: raw.build_cmd,
+            run_cmd: raw.run_cmd,
+            container: raw.container,
         })
     }
 }
@@ -878,26 +704,7 @@ pub struct Manifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub variants: Option<Vec<Variant>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depends_on: Option<DependsOn>,
-}
-
-impl Manifest {
-    /// Returns `true` if the manifest contains a variant named `"default"`.
-    pub fn has_default_variant(&self) -> bool {
-        self.default_variant_source().is_some()
-    }
-
-    /// Returns the deployment source for the `"default"` variant, if one exists.
-    pub fn default_variant_source(&self) -> Option<&DeploymentSource> {
-        self.variants.as_ref().and_then(|variants| {
-            variants
-                .iter()
-                .find(|v| v.name.as_str() == DEFAULT_VARIANT_NAME)
-                .map(|v| &v.source)
-        })
-    }
 }
 
 /// Top-level system directories that cannot be used as mount sources.
@@ -1044,6 +851,15 @@ fn parameter_spec_display(spec: &ParameterSpec) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ConformsToItem {
+    pub name: Name,
+    pub tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Interfaces {
@@ -1053,6 +869,8 @@ pub struct Interfaces {
     pub services: Option<ServiceInterfaces>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actions: Option<ActionInterfaces>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conforms_to: Option<Vec<ConformsToItem>>,
 }
 
 /// Puts a value into canonical form so that derived `PartialEq` becomes
@@ -1135,6 +953,10 @@ impl Normalize for LinkedConsumedTopic {
     fn normalize(&mut self) {}
 }
 
+impl Normalize for ConformsToItem {
+    fn normalize(&mut self) {}
+}
+
 impl Normalize for ExternalConsumedTopic {
     fn normalize(&mut self) {
         self.message_format.normalize();
@@ -1202,7 +1024,7 @@ impl Normalize for TopicInterfaces {
         normalize_opt_vec(&mut self.consumes, |a, b| {
             a.name()
                 .cmp(b.name())
-                .then_with(|| a.local_node_id().cmp(&b.local_node_id()))
+                .then_with(|| a.link_id().cmp(&b.link_id()))
                 .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
         });
     }
@@ -1216,9 +1038,7 @@ impl Normalize for ServiceInterfaces {
                 .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
         });
         normalize_opt_vec(&mut self.consumes, |a, b| {
-            a.name
-                .cmp(&b.name)
-                .then_with(|| a.local_node_id.cmp(&b.local_node_id))
+            a.name.cmp(&b.name).then_with(|| a.link_id.cmp(&b.link_id))
         });
     }
 }
@@ -1231,9 +1051,7 @@ impl Normalize for ActionInterfaces {
                 .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
         });
         normalize_opt_vec(&mut self.consumes, |a, b| {
-            a.name
-                .cmp(&b.name)
-                .then_with(|| a.local_node_id.cmp(&b.local_node_id))
+            a.name.cmp(&b.name).then_with(|| a.link_id.cmp(&b.link_id))
         });
     }
 }
@@ -1243,6 +1061,13 @@ impl Normalize for Interfaces {
         normalize_opt_default(&mut self.topics);
         normalize_opt_default(&mut self.services);
         normalize_opt_default(&mut self.actions);
+        normalize_opt_vec(&mut self.conforms_to, |a, b| {
+            a.name
+                .as_str()
+                .cmp(b.name.as_str())
+                .then_with(|| a.tag.cmp(&b.tag))
+                .then_with(|| a.sha256.cmp(&b.sha256))
+        });
     }
 }
 
@@ -1251,57 +1076,6 @@ impl Interfaces {
     /// within each list and the order of fields within message formats.
     pub fn matches_unordered(&self, other: &Interfaces) -> bool {
         self.clone().normalized() == other.clone().normalized()
-    }
-}
-
-/// Trait shared by [`NodeConfig`] and [`VariantConfig`], providing access to
-/// common fields for validation and variant resolution.
-pub trait PeppyNodeConfig {
-    fn peppy_schema(&self) -> PeppySchema;
-    fn interfaces(&self) -> Option<&Interfaces>;
-    fn execution(&self) -> &Execution;
-}
-
-impl PeppyNodeConfig for NodeConfig {
-    fn peppy_schema(&self) -> PeppySchema {
-        self.peppy_schema
-    }
-
-    fn interfaces(&self) -> Option<&Interfaces> {
-        Some(&self.interfaces)
-    }
-
-    fn execution(&self) -> &Execution {
-        &self.execution
-    }
-}
-
-/// Configuration for a node variant. Unlike [`NodeConfig`], `manifest` and
-/// `interfaces` are optional — variants typically inherit these from the root
-/// node and only define their own `execution`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VariantConfig {
-    #[serde(deserialize_with = "deserialize_node_v1_schema")]
-    pub peppy_schema: PeppySchema,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manifest: Option<Manifest>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interfaces: Option<Interfaces>,
-    pub execution: Execution,
-}
-
-impl PeppyNodeConfig for VariantConfig {
-    fn peppy_schema(&self) -> PeppySchema {
-        self.peppy_schema
-    }
-
-    fn interfaces(&self) -> Option<&Interfaces> {
-        self.interfaces.as_ref()
-    }
-
-    fn execution(&self) -> &Execution {
-        &self.execution
     }
 }
 
@@ -1321,45 +1095,37 @@ mod tests {
     }
 
     #[test]
-    fn consumed_topic_linked_local_node_id_is_required() {
-        let valid = r#"{ local_node_id: "uvc_camera", name: "video_stream" }"#;
+    fn consumed_topic_linked_link_id_is_required() {
+        let valid = r#"{ link_id: "uvc_camera", name: "video_stream" }"#;
         let topic: ConsumedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
-        let ConsumedTopic::Linked(LinkedConsumedTopic {
-            local_node_id,
-            name,
-        }) = &topic
-        else {
+        let ConsumedTopic::Linked(LinkedConsumedTopic { link_id, name }) = &topic else {
             panic!("expected Linked variant");
         };
-        assert_eq!(local_node_id, "uvc_camera");
+        assert_eq!(link_id, "uvc_camera");
         assert_eq!(name, "video_stream");
 
-        let empty_local_node_id = r#"{ local_node_id: "", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(empty_local_node_id).is_err());
+        let empty_link_id = r#"{ link_id: "", name: "video_stream" }"#;
+        assert!(serde_json5::from_str::<ConsumedTopic>(empty_link_id).is_err());
 
-        let missing_name = r#"{ local_node_id: "uvc_camera", name: "" }"#;
+        let missing_name = r#"{ link_id: "uvc_camera", name: "" }"#;
         assert!(serde_json5::from_str::<ConsumedTopic>(missing_name).is_err());
 
-        let whitespace_only = r#"{ local_node_id: "   ", name: "video_stream" }"#;
+        let whitespace_only = r#"{ link_id: "   ", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<ConsumedTopic>(whitespace_only).is_err());
 
-        let punctuation_only = r#"{ local_node_id: "--", name: "video_stream" }"#;
+        let punctuation_only = r#"{ link_id: "--", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<ConsumedTopic>(punctuation_only).is_err());
 
-        let missing_name_field = r#"{ local_node_id: "uvc_camera" }"#;
+        let missing_name_field = r#"{ link_id: "uvc_camera" }"#;
         assert!(serde_json5::from_str::<ConsumedTopic>(missing_name_field).is_err());
 
-        let trimmed = r#"{ local_node_id: " uvc_camera ", name: " video_stream " }"#;
+        let trimmed = r#"{ link_id: " uvc_camera ", name: " video_stream " }"#;
         let topic: ConsumedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        let ConsumedTopic::Linked(LinkedConsumedTopic {
-            local_node_id,
-            name,
-        }) = &topic
-        else {
+        let ConsumedTopic::Linked(LinkedConsumedTopic { link_id, name }) = &topic else {
             panic!("expected Linked variant");
         };
-        assert_eq!(local_node_id, "uvc_camera");
+        assert_eq!(link_id, "uvc_camera");
         assert_eq!(name, "video_stream");
     }
 
@@ -1383,7 +1149,7 @@ mod tests {
         let name_only = r#"{ name: "cmd_vel" }"#;
         assert!(
             serde_json5::from_str::<ConsumedTopic>(name_only).is_err(),
-            "name-only (no local_node_id, no message_format) should fail"
+            "name-only (no link_id, no message_format) should fail"
         );
 
         // External with empty name should fail
@@ -1394,7 +1160,7 @@ mod tests {
     #[test]
     fn consumed_topic_mixed_linked_and_external() {
         let json = r#"[
-            { local_node_id: "camera", name: "video_stream" },
+            { link_id: "camera", name: "video_stream" },
             { name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }
         ]"#;
         let topics: Vec<ConsumedTopic> =
@@ -1410,7 +1176,7 @@ mod tests {
     fn consumed_topic_rejects_unknown_fields() {
         // Linked with extra message_format should fail (not silently drop it)
         let linked_with_extra = r#"{
-            local_node_id: "camera",
+            link_id: "camera",
             name: "video_stream",
             message_format: { x: "f64" }
         }"#;
@@ -1419,35 +1185,35 @@ mod tests {
             "linked topic with extra message_format should be rejected"
         );
 
-        // External with extra local_node_id should fail (not silently drop it)
+        // External with extra link_id should fail (not silently drop it)
         let external_with_extra = r#"{
-            local_node_id: "camera",
+            link_id: "camera",
             name: "cmd_vel",
             message_format: { linear_x: "f64" }
         }"#;
         assert!(
             serde_json5::from_str::<ConsumedTopic>(external_with_extra).is_err(),
-            "external topic with extra local_node_id should be rejected"
+            "external topic with extra link_id should be rejected"
         );
     }
 
     #[test]
-    fn consumed_service_local_node_id_is_required() {
-        let with_local_node_id = r#"{ local_node_id: "uvc_camera", name: "enable_camera" }"#;
-        let service: ConsumedService = serde_json5::from_str(with_local_node_id)
-            .expect("service with local_node_id should parse");
-        assert_eq!(service.local_node_id, "uvc_camera");
+    fn consumed_service_link_id_is_required() {
+        let with_link_id = r#"{ link_id: "uvc_camera", name: "enable_camera" }"#;
+        let service: ConsumedService =
+            serde_json5::from_str(with_link_id).expect("service with link_id should parse");
+        assert_eq!(service.link_id, "uvc_camera");
 
-        let trimmed = r#"{ local_node_id: "  uvc_camera  ", name: "enable_camera" }"#;
+        let trimmed = r#"{ link_id: "  uvc_camera  ", name: "enable_camera" }"#;
         let service: ConsumedService =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        assert_eq!(service.local_node_id, "uvc_camera");
+        assert_eq!(service.link_id, "uvc_camera");
 
-        let without_local_node_id = r#"{ name: "enable_camera" }"#;
-        assert!(serde_json5::from_str::<ConsumedService>(without_local_node_id).is_err());
+        let without_link_id = r#"{ name: "enable_camera" }"#;
+        assert!(serde_json5::from_str::<ConsumedService>(without_link_id).is_err());
 
-        let blank_local_node_id = r#"{ local_node_id: "   ", name: "enable_camera" }"#;
-        assert!(serde_json5::from_str::<ConsumedService>(blank_local_node_id).is_err());
+        let blank_link_id = r#"{ link_id: "   ", name: "enable_camera" }"#;
+        assert!(serde_json5::from_str::<ConsumedService>(blank_link_id).is_err());
     }
 
     #[test]
@@ -1879,11 +1645,11 @@ mod tests {
     fn manifest_with_depends_on() {
         let json5 = r#"{
             name: "slam",
-            tag: "0.1.0",
+            tag: "v1",
             depends_on: {
                 nodes: [
-                    { name: "lidar_driver", tag: "0.1.0", local_id: "lidar" },
-                    { name: "nav_system", tag: "0.1.0", local_id: "navigation" }
+                    { name: "lidar_driver", tag: "v1", link_id: "lidar" },
+                    { name: "nav_system", tag: "v1", link_id: "navigation" }
                 ]
             }
         }"#;
@@ -1891,115 +1657,228 @@ mod tests {
         let deps = manifest.depends_on.expect("depends_on should be Some");
         assert_eq!(deps.nodes.len(), 2);
         assert_eq!(deps.nodes[0].name.as_str(), "lidar_driver");
-        assert_eq!(deps.nodes[0].tag, "0.1.0");
-        assert_eq!(deps.nodes[0].local_id, "lidar");
+        assert_eq!(deps.nodes[0].tag, "v1");
+        assert_eq!(deps.nodes[0].link_id, "lidar");
         assert_eq!(deps.nodes[1].name.as_str(), "nav_system");
-        assert_eq!(deps.nodes[1].local_id, "navigation");
+        assert_eq!(deps.nodes[1].link_id, "navigation");
+        assert!(deps.interfaces.is_empty());
+    }
+
+    #[test]
+    fn depends_on_with_interfaces_full() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [
+                { name: "depth_camera", tag: "v1", sha256: "aaa", link_id: "depth_camera" }
+            ]
+        }"#;
+        let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
+        assert!(deps.nodes.is_empty());
+        assert_eq!(deps.interfaces.len(), 1);
+        assert_eq!(deps.interfaces[0].name.as_str(), "depth_camera");
+        assert_eq!(deps.interfaces[0].tag, "v1");
+        assert_eq!(deps.interfaces[0].link_id, "depth_camera");
+        assert_eq!(deps.interfaces[0].sha256.as_deref(), Some("aaa"));
+    }
+
+    #[test]
+    fn depends_on_with_interfaces_no_sha256() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [
+                { name: "depth_camera", tag: "v1", link_id: "depth_camera" }
+            ]
+        }"#;
+        let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
+        assert_eq!(deps.interfaces.len(), 1);
+        assert!(deps.interfaces[0].sha256.is_none());
+    }
+
+    #[test]
+    fn depends_on_interfaces_requires_name() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [{ tag: "v1", link_id: "depth_camera" }]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    }
+
+    #[test]
+    fn depends_on_interfaces_requires_tag() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [{ name: "depth_camera", link_id: "depth_camera" }]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    }
+
+    #[test]
+    fn depends_on_interfaces_requires_link_id() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [{ name: "depth_camera", tag: "v1" }]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    }
+
+    #[test]
+    fn depends_on_interfaces_rejects_unknown_fields() {
+        let json5 = r#"{
+            nodes: [],
+            interfaces: [
+                { name: "depth_camera", tag: "v1", link_id: "depth_camera", extra: "bad" }
+            ]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    }
+
+    #[test]
+    fn depends_on_with_only_interfaces() {
+        let json5 = r#"{
+            interfaces: [
+                { name: "uvc_camera", tag: "v1", link_id: "camera" }
+            ]
+        }"#;
+        let deps: DependsOn = serde_json5::from_str(json5).expect("nodes should be optional");
+        assert!(deps.nodes.is_empty());
+        assert_eq!(deps.interfaces.len(), 1);
+        assert_eq!(deps.interfaces[0].link_id, "camera");
     }
 
     #[test]
     fn manifest_without_depends_on() {
         let json5 = r#"{
             name: "simple_node",
-            tag: "0.1.0"
+            tag: "v1"
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert!(manifest.depends_on.is_none());
     }
 
     #[test]
+    fn interfaces_with_conforms_to_full() {
+        let json5 = r#"{
+            conforms_to: [
+                { name: "depth_camera", tag: "v1", sha256: "aaaa" }
+            ]
+        }"#;
+        let interfaces: Interfaces = serde_json5::from_str(json5).expect("should parse");
+        let items = interfaces.conforms_to.expect("conforms_to should be Some");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name.as_str(), "depth_camera");
+        assert_eq!(items[0].tag, "v1");
+        assert_eq!(items[0].sha256.as_deref(), Some("aaaa"));
+    }
+
+    #[test]
+    fn interfaces_with_conforms_to_no_sha256() {
+        let json5 = r#"{
+            conforms_to: [
+                { name: "depth_camera", tag: "v1" }
+            ]
+        }"#;
+        let interfaces: Interfaces = serde_json5::from_str(json5).expect("should parse");
+        let items = interfaces.conforms_to.expect("conforms_to should be Some");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name.as_str(), "depth_camera");
+        assert_eq!(items[0].tag, "v1");
+        assert!(items[0].sha256.is_none());
+    }
+
+    #[test]
+    fn interfaces_without_conforms_to() {
+        let json5 = r#"{}"#;
+        let interfaces: Interfaces = serde_json5::from_str(json5).expect("should parse");
+        assert!(interfaces.conforms_to.is_none());
+    }
+
+    #[test]
+    fn interfaces_conforms_to_requires_name() {
+        let json5 = r#"{
+            conforms_to: [
+                { tag: "v1" }
+            ]
+        }"#;
+        assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
+    }
+
+    #[test]
+    fn interfaces_conforms_to_requires_tag() {
+        let json5 = r#"{
+            conforms_to: [
+                { name: "depth_camera" }
+            ]
+        }"#;
+        assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
+    }
+
+    #[test]
+    fn interfaces_conforms_to_rejects_unknown_fields() {
+        let json5 = r#"{
+            conforms_to: [
+                { name: "depth_camera", tag: "v1", extra: "bad" }
+            ]
+        }"#;
+        assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
+    }
+
+    #[test]
+    fn interfaces_conforms_to_normalization_sorts_by_name() {
+        let item_a = ConformsToItem {
+            name: Name::new("alpha").unwrap(),
+            tag: "v1".into(),
+            sha256: None,
+        };
+        let item_b = ConformsToItem {
+            name: Name::new("beta").unwrap(),
+            tag: "v1".into(),
+            sha256: Some("aaaa".into()),
+        };
+
+        let interfaces_a = Interfaces {
+            topics: None,
+            services: None,
+            actions: None,
+            conforms_to: Some(vec![item_a.clone(), item_b.clone()]),
+        };
+        let interfaces_b = Interfaces {
+            topics: None,
+            services: None,
+            actions: None,
+            conforms_to: Some(vec![item_b, item_a]),
+        };
+
+        assert!(interfaces_a.matches_unordered(&interfaces_b));
+    }
+
+    #[test]
     fn depends_on_rejects_unknown_fields() {
         let json5 = r#"{
             name: "node",
-            tag: "0.1.0",
+            tag: "v1",
             depends_on: {
-                nodes: [{ name: "dep", tag: "0.1.0", local_id: "d", extra: "bad" }]
+                nodes: [{ name: "dep", tag: "v1", link_id: "d", extra: "bad" }]
             }
         }"#;
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
     }
 
     #[test]
-    fn manifest_with_variants() {
-        let json5 = r#"{
-            name: "uvc_camera",
-            tag: "0.1.0",
-            variants: [
-                {
-                    name: "mujoco",
-                    source: { local: "./fake_robot_brain" }
-                },
-                {
-                    name: "isaac-sim",
-                    source: {
-                        repo: "https://github.com/Peppy-bot/nodes_hub.git",
-                        path: "robot_brain_etcher1",
-                        ref: "main"
-                    }
-                },
-                {
-                    name: "gazebo",
-                    source: {
-                        url: "https://example.com/fake_robot_brain.tar.zst",
-                        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
-                    }
-                }
-            ]
-        }"#;
-        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
-        let variants = manifest.variants.expect("variants should be Some");
-        assert_eq!(variants.len(), 3);
-        assert_eq!(variants[0].name.as_str(), "mujoco");
-        assert_eq!(variants[1].name.as_str(), "isaac-sim");
-        assert_eq!(variants[2].name.as_str(), "gazebo");
-    }
-
-    #[test]
-    fn manifest_without_variants() {
+    fn manifest_parses_minimal() {
         let json5 = r#"{
             name: "simple_node",
-            tag: "0.1.0"
+            tag: "v1"
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
-        assert!(manifest.variants.is_none());
-    }
-
-    #[test]
-    fn variant_rejects_unknown_fields() {
-        let json5 = r#"{
-            name: "node",
-            tag: "0.1.0",
-            variants: [{ name: "v1", source: { local: "./x" }, extra: "bad" }]
-        }"#;
-        assert!(serde_json5::from_str::<Manifest>(json5).is_err());
-    }
-
-    #[test]
-    fn variant_config_omits_none_interfaces_on_serialize() {
-        let json5 = r#"{
-            peppy_schema: "node_v1",
-            execution: { language: "rust" }
-        }"#;
-        let config: VariantConfig =
-            serde_json5::from_str(json5).expect("minimal variant config should parse");
-        assert!(config.interfaces.is_none());
-
-        let serialized = serde_json5::to_string(&config).unwrap();
-        assert!(
-            !serialized.contains("interfaces"),
-            "interfaces should be omitted when None, got: {serialized}"
-        );
-        assert!(
-            !serialized.contains("manifest"),
-            "manifest should be omitted when None, got: {serialized}"
-        );
+        assert_eq!(manifest.name.as_str(), "simple_node");
+        assert_eq!(manifest.tag, "v1");
     }
 
     #[test]
     fn node_config_rejects_unknown_fields() {
         let json5 = r#"{
             peppy_schema: "node_v1",
-            manifest: { name: "node", tag: "0.1.0" },
+            manifest: { name: "node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./run"] },
             extra: "bad"
         }"#;
@@ -2013,40 +1892,7 @@ mod tests {
     fn node_config_rejects_non_node_schema() {
         let json5 = r#"{
             peppy_schema: "launcher_v1",
-            manifest: { name: "node", tag: "0.1.0" },
-            interfaces: {},
-            execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
-        }"#;
-        let err = serde_json5::from_str::<RawNodeConfig>(json5)
-            .expect_err("launcher_v1 schema must be rejected");
-        assert!(
-            err.to_string().contains("node_v1"),
-            "error should mention the expected schema, got: {err}"
-        );
-    }
-
-    #[test]
-    fn variant_config_rejects_non_node_schema() {
-        let json5 = r#"{
-            peppy_schema: "launcher_v1",
-            execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
-        }"#;
-        let err = serde_json5::from_str::<VariantConfig>(json5)
-            .expect_err("launcher_v1 schema must be rejected");
-        assert!(
-            err.to_string().contains("node_v1"),
-            "error should mention the expected schema, got: {err}"
-        );
-    }
-
-    /// `NodeConfig` is reachable through public deserialization paths that
-    /// bypass `RawNodeConfig`, so the schema guard must apply here too.
-    #[test]
-    fn node_config_rejects_launcher_schema() {
-        let json5 = r#"{
-            peppy_schema: "launcher_v1",
-            manifest: { name: "node", tag: "0.1.0" },
-            interfaces: {},
+            manifest: { name: "node", tag: "v1" },
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
         }"#;
         let err = serde_json5::from_str::<NodeConfig>(json5)
@@ -2058,17 +1904,17 @@ mod tests {
     }
 
     #[test]
-    fn consume_normalization_sorts_by_name_and_local_node_id() {
-        // TopicInterfaces: two linked consumed topics with same name, different local_node_id
+    fn consume_normalization_sorts_by_name_and_link_id() {
+        // TopicInterfaces: two linked consumed topics with same name, different link_id
         let mut topics_a = TopicInterfaces {
             emits: None,
             consumes: Some(vec![
                 ConsumedTopic::Linked(LinkedConsumedTopic {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "topic".into(),
                 }),
                 ConsumedTopic::Linked(LinkedConsumedTopic {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "topic".into(),
                 }),
             ]),
@@ -2077,11 +1923,11 @@ mod tests {
             emits: None,
             consumes: Some(vec![
                 ConsumedTopic::Linked(LinkedConsumedTopic {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "topic".into(),
                 }),
                 ConsumedTopic::Linked(LinkedConsumedTopic {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "topic".into(),
                 }),
             ]),
@@ -2091,19 +1937,19 @@ mod tests {
         assert_eq!(topics_a, topics_b);
         // Verify sorted order: node_a before node_b
         let consumes = topics_a.consumes.unwrap();
-        assert!(matches!(&consumes[0], ConsumedTopic::Linked(t) if t.local_node_id == "node_a"));
-        assert!(matches!(&consumes[1], ConsumedTopic::Linked(t) if t.local_node_id == "node_b"));
+        assert!(matches!(&consumes[0], ConsumedTopic::Linked(t) if t.link_id == "node_a"));
+        assert!(matches!(&consumes[1], ConsumedTopic::Linked(t) if t.link_id == "node_b"));
 
-        // ServiceInterfaces: same name, different local_node_id
+        // ServiceInterfaces: same name, different link_id
         let mut services_a = ServiceInterfaces {
             exposes: None,
             consumes: Some(vec![
                 ConsumedService {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "svc".into(),
                 },
                 ConsumedService {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "svc".into(),
                 },
             ]),
@@ -2112,11 +1958,11 @@ mod tests {
             exposes: None,
             consumes: Some(vec![
                 ConsumedService {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "svc".into(),
                 },
                 ConsumedService {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "svc".into(),
                 },
             ]),
@@ -2125,19 +1971,19 @@ mod tests {
         services_b.normalize();
         assert_eq!(services_a, services_b);
         let consumes = services_a.consumes.unwrap();
-        assert_eq!(consumes[0].local_node_id, "node_a");
-        assert_eq!(consumes[1].local_node_id, "node_b");
+        assert_eq!(consumes[0].link_id, "node_a");
+        assert_eq!(consumes[1].link_id, "node_b");
 
-        // ActionInterfaces: same name, different local_node_id
+        // ActionInterfaces: same name, different link_id
         let mut actions_a = ActionInterfaces {
             exposes: None,
             consumes: Some(vec![
                 ConsumedAction {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "act".into(),
                 },
                 ConsumedAction {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "act".into(),
                 },
             ]),
@@ -2146,11 +1992,11 @@ mod tests {
             exposes: None,
             consumes: Some(vec![
                 ConsumedAction {
-                    local_node_id: "node_a".into(),
+                    link_id: "node_a".into(),
                     name: "act".into(),
                 },
                 ConsumedAction {
-                    local_node_id: "node_b".into(),
+                    link_id: "node_b".into(),
                     name: "act".into(),
                 },
             ]),
@@ -2159,7 +2005,7 @@ mod tests {
         actions_b.normalize();
         assert_eq!(actions_a, actions_b);
         let consumes = actions_a.consumes.unwrap();
-        assert_eq!(consumes[0].local_node_id, "node_a");
-        assert_eq!(consumes[1].local_node_id, "node_b");
+        assert_eq!(consumes[0].link_id, "node_a");
+        assert_eq!(consumes[1].link_id, "node_b");
     }
 }

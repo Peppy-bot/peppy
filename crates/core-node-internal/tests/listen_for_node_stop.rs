@@ -28,7 +28,7 @@ fn is_process_running(pid: u32) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_stop_success() {
     const TARGET_NODE_NAME: &str = "stoppable_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "stoppable_instance";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -101,7 +101,7 @@ async fn listen_for_node_stop_success() {
         &shutdown_handle,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
-        TARGET_NODE_NAME,
+        common::test_node_target(TARGET_NODE_NAME),
     )
     .await
     .expect("failed to start shutdown service");
@@ -127,7 +127,7 @@ async fn listen_for_node_stop_success() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
+        common::core_node_target(&started_core_node.core_node_name),
         &started_core_node.core_node_name,
         Duration::from_secs(10),
     )
@@ -166,7 +166,7 @@ async fn listen_for_node_stop_fails_when_instance_id_not_found() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
+        common::core_node_target(&started_core_node.core_node_name),
         &started_core_node.core_node_name,
         Duration::from_secs(5),
     )

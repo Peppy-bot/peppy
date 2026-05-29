@@ -11,11 +11,13 @@ mod internal {
     pub mod consts;
     pub mod encoding;
     pub mod fingerprint;
+    pub mod interface;
     pub mod json5_pretty;
     pub mod launcher;
     pub mod node;
     pub mod repo_node_id;
     pub mod runtime;
+    pub mod schema;
     pub mod source;
 }
 
@@ -27,7 +29,11 @@ pub use common::{
 };
 
 // -- error --
-pub use error::{Error as ConfigError, ParsingError, Result as ConfigResult};
+pub use error::{
+    BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateInstanceIdAcrossStack,
+    Error as ConfigError, MissingInterface, ParsingError, Result as ConfigResult, SlotKind,
+    format_bulleted,
+};
 
 // -- atomic_write --
 pub mod atomic_write {
@@ -38,9 +44,9 @@ pub mod atomic_write {
 pub mod consts {
     pub use crate::internal::consts::{
         ALLOWED_CONFIG_CHARS, AppEnv, CORE_NODE_TOPIC_NAME, DAEMON_STATE_FILE_ENV,
-        DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT,
-        DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, NODE_CONFIG_FILE,
-        PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
+        DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_LINK_ID_SENTINEL, DEFAULT_MESSAGING_HOST,
+        DEFAULT_MESSAGING_PORT, DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE,
+        NODE_CONFIG_FILE, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
         PEPPYLIB_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION, PeppyDirs,
         RUNTIME_CONFIG_VAR_NAME, app_env, set_app_env,
     };
@@ -75,32 +81,44 @@ pub mod fingerprint {
 // -- node --
 pub mod node {
     pub use crate::internal::node::{
-        ActionInterfaces, ArrayKind, ArraySchema, CallbackNameError, ConsumedAction,
-        ConsumedService, ConsumedTopic, ContainerConfig, DEFAULT_VARIANT_NAME, DependsOn,
-        EmittedTopic, Execution, ExposedAction, ExposedService, ExternalConsumedTopic,
-        InterfaceKind, Interfaces, LinkedConsumedTopic, Manifest, MergedVariant, MessageFormat,
-        Name, NodeConfig, NodeConfigCreator, NodeConfigParser, NodeDependency, ObjectKind,
-        ObjectSchema, ParsedNodeConfig, PeppyNodeConfig, PeppygenLanguage, PrimitiveSchema,
-        QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, Variant,
-        VariantConfig, VariantConfigParser, extract_parameter_refs, find_root_node_dir,
-        is_blocked_mount_source, load_standalone_node_config,
+        ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
+        CallbackNameError, ConformsToItem, ConsumedAction, ConsumedService, ConsumedTopic,
+        ContainerConfig, DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction,
+        ExposedService, ExternalConsumedTopic, InterfaceKind, Interfaces, LinkedConsumedTopic,
+        Manifest, MessageFormat, Name, NodeConfig, NodeConfigCreator, NodeConfigParser,
+        NodeDependency, ObjectKind, ObjectSchema, PeppygenLanguage, PrimitiveSchema, QoSProfile,
+        SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken,
+        collect_dependency_specs, extract_parameter_refs, is_blocked_mount_source,
+        load_standalone_node_config, validate_dependency_specs,
     };
 }
 
 // -- runtime --
 pub mod runtime {
     pub use crate::internal::runtime::{
-        LauncherRuntimeConfig, NodeInstanceConfig, ResolvedFramework, RuntimeConfig,
+        LauncherRuntimeConfig, NodeInstanceConfig, ResolvedFramework, RuntimeConfig, SlotBinding,
     };
 }
 
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
-        DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides, Name,
-        PeppyLauncher, PeppyLauncherParser, PeppySchema, VariantGitSource, VariantNameSource,
-        VariantSource, VariantUrlSource,
+        BindingValidationItem, Deployment, DeploymentGitSource, DeploymentInstance,
+        DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
+        FrameworkOverrides, Name, PeppyLauncher, PeppyLauncherParser, ValidatedBindings,
+        validate_bindings,
+    };
+}
+
+// -- schema --
+pub mod schema {
+    pub use crate::internal::schema::PeppySchema;
+}
+
+// -- interface --
+pub mod interface {
+    pub use crate::internal::interface::{
+        Interfaces, Manifest, PeppyInterface, PeppyInterfaceParser,
     };
 }
 
@@ -108,7 +126,7 @@ pub mod launcher {
 pub mod source {
     pub use crate::internal::source::{
         DeploymentGitSource, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
-        DeploymentUrlSource, VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
+        DeploymentUrlSource,
     };
 }
 

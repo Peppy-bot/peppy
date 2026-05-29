@@ -14,13 +14,11 @@ use super::cache as node_cache;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use chrono::Local;
 use config::consts::PeppyDirs;
-use config::node::ParsedNodeConfig;
-use core_node_api::encoding::{
-    DepVariantOverride, NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind,
-};
+use config::node::NodeConfig;
+use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind};
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
-use node_stack::VirtualDeptree;
+use node_stack::{VirtualDeptree, WorkingDirGuard};
 use parking_lot::Mutex as StdMutex;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -46,12 +44,8 @@ pub(crate) async fn run_repo_node_add(
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
 ) -> NodeAddResult {
-    let (root_name, root_tag, dep_variant_overrides) = match &goal.source {
-        NodeSource::RepoNode {
-            name,
-            tag,
-            dep_variant_overrides,
-        } => (name.clone(), tag.clone(), dep_variant_overrides.clone()),
+    let (root_name, root_tag) = match &goal.source {
+        NodeSource::RepoNode { name, tag } => (name.clone(), tag.clone()),
         _ => {
             return NodeAddResult::failure(
                 &log_path,
@@ -59,20 +53,6 @@ pub(crate) async fn run_repo_node_add(
             );
         }
     };
-
-    if let Some(root_override) = dep_variant_overrides
-        .iter()
-        .find(|ov| ov.name == root_name && ov.tag == root_tag)
-    {
-        return fail(
-            &log_file,
-            &log_path,
-            format!(
-                "Dependency variant override {}:{}@{} targets the root repo node; use the root variant field instead",
-                root_override.name, root_override.tag, root_override.variant
-            ),
-        );
-    }
 
     emit(
         &feedback_tx,
@@ -109,35 +89,10 @@ pub(crate) async fn run_repo_node_add(
         cache_generation,
         feedback_tx: &feedback_tx,
     };
-    let resolution = match resolve_transitive_closure(
-        resolution_ctx,
-        &root_name,
-        &root_tag,
-        &dep_variant_overrides,
-    )
-    .await
-    {
+    let resolution = match resolve_transitive_closure(resolution_ctx, &root_name, &root_tag).await {
         Ok(r) => r,
         Err(msg) => return fail(&log_file, &log_path, msg),
     };
-
-    // Warn about overrides that targeted nodes not actually in the tree.
-    for ov in &dep_variant_overrides {
-        let in_tree = resolution
-            .to_add
-            .iter()
-            .any(|n| n.name == ov.name && n.tag == ov.tag);
-        if !in_tree {
-            emit(
-                &feedback_tx,
-                FeedbackStream::Warning,
-                format!(
-                    "Dependency variant override for {}:{} ignored — not in the resolved dependency tree",
-                    ov.name, ov.tag
-                ),
-            );
-        }
-    }
 
     let tree_input: Vec<(PathBuf, config::node::NodeConfig)> = resolution
         .to_add
@@ -155,7 +110,6 @@ pub(crate) async fn run_repo_node_add(
         }
     };
 
-    // Build a (name, tag) -> ResolvedBatchNode lookup for variant info.
     let node_lookup: HashMap<(String, String), &ResolvedBatchNode> = resolution
         .to_add
         .iter()
@@ -208,6 +162,13 @@ pub(crate) async fn run_repo_node_add(
         // in place. On rollback we re-install this config instead of
         // removing the slot, so an in-place replacement that later fails
         // elsewhere in the batch does not wipe the user's prior state.
+        //
+        // We also clone the previous entity's `pending_working_dir` Arc so
+        // its `WorkingDirGuard` stays alive through the sub-add. The
+        // sub-add's `push_config` drops the previous entity (and its only
+        // owning reference to the guard) — without this clone the guard
+        // would drop and the temp dir backing `config_path` would be
+        // removed before rollback ever runs.
         let previous = action_context
             .node_stack
             .find(&node.name, &node.tag)
@@ -216,7 +177,7 @@ pub(crate) async fn run_repo_node_add(
                 PreviousConfig {
                     config: guard.config().clone(),
                     config_path: guard.config_path().to_path_buf(),
-                    variant_name: guard.variant_name().map(ToString::to_string),
+                    working_dir: guard.pending_working_dir(),
                 }
             });
 
@@ -283,10 +244,8 @@ struct ResolvedBatchNode {
     root_dir: PathBuf,
     config_resolved: config::node::NodeConfig,
     source_kind: RepoSourceKind,
-    /// Caller-requested variant for this node, if any.
-    variant_override: Option<String>,
     /// Only set to `true` for the root of the batch. Controls whether
-    /// the env_vars / force / root variant from the original goal apply.
+    /// the env_vars / force from the original goal apply.
     is_root: bool,
 }
 
@@ -301,7 +260,7 @@ type MaterializeOutput = (
     String,
     bool,
     RepoSourceKind,
-    Result<(PathBuf, ParsedNodeConfig), String>,
+    Result<(PathBuf, NodeConfig), String>,
 );
 
 /// Bundles the cache/IO dependencies threaded through the batch-resolution
@@ -318,7 +277,6 @@ async fn resolve_transitive_closure<'a>(
     ctx: BatchResolutionCtx<'a>,
     root_name: &str,
     root_tag: &str,
-    dep_overrides: &[DepVariantOverride],
 ) -> Result<Resolution, String> {
     let BatchResolutionCtx {
         peppy_dirs,
@@ -326,10 +284,6 @@ async fn resolve_transitive_closure<'a>(
         cache_generation,
         feedback_tx,
     } = ctx;
-    let override_map: HashMap<(String, String), String> = dep_overrides
-        .iter()
-        .map(|o| ((o.name.clone(), o.tag.clone()), o.variant.clone()))
-        .collect();
 
     let mut to_add: Vec<ResolvedBatchNode> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
@@ -393,27 +347,7 @@ async fn resolve_transitive_closure<'a>(
             }
         };
 
-        // Roots take their variant from goal.variant (handled later in
-        // run_single_batched_add); deps look at override_map.
-        let variant_override = if is_root {
-            None
-        } else {
-            override_map.get(&(name.clone(), tag.clone())).cloned()
-        };
-
-        // Enforce that an override points at a variant declared by this
-        // dep's manifest. (Root variant validation happens inside
-        // run_node_add itself.)
-        if let Some(ref v) = variant_override
-            && !parsed.variant_names().iter().any(|n| n == v)
-        {
-            return Err(format!(
-                "variant '{v}' not declared on dep {name}:{tag} (available: {:?})",
-                parsed.variant_names()
-            ));
-        }
-
-        if let Some(deps) = parsed.manifest().depends_on.as_ref() {
+        if let Some(deps) = parsed.manifest.depends_on.as_ref() {
             for dep in &deps.nodes {
                 let dep_name = dep.name.as_str().to_owned();
                 let dep_tag = dep.tag.clone();
@@ -424,20 +358,12 @@ async fn resolve_transitive_closure<'a>(
             }
         }
 
-        // VirtualDeptree only reads `manifest.depends_on` from this config
-        // for the topological sort; execution is supplied by `run_node_add`
-        // later from the working dir. For variant-only nodes (no root-level
-        // execution) `into_resolved()` rightfully refuses, so we use the
-        // display-friendly fallback.
-        let config_resolved = parsed.clone().into_resolved_or_default();
-
         to_add.push(ResolvedBatchNode {
             name,
             tag,
             root_dir,
-            config_resolved,
+            config_resolved: parsed,
             source_kind,
-            variant_override,
             is_root,
         });
     }
@@ -473,15 +399,10 @@ async fn run_single_batched_add(
     );
 
     if node.is_root {
-        // Env vars / force / root variant only apply to the root entity.
+        // Env vars / force only apply to the root entity.
         sub_goal = sub_goal
             .with_env_vars(batch_goal.env_vars.clone())
             .with_force(batch_goal.force);
-        if let Some(ref v) = batch_goal.variant {
-            sub_goal = sub_goal.with_variant_source(v.clone());
-        }
-    } else if let Some(ref v) = node.variant_override {
-        sub_goal = sub_goal.with_variant_name(v.clone());
     }
 
     // Each sub-add gets its own log file derived from `{name}_{tag}`.
@@ -520,10 +441,16 @@ async fn run_single_batched_add(
 /// Artifact/stage state is intentionally omitted — a successful rollback
 /// returns the entity to `Added` (pending build); any previously built
 /// artifact remains on disk and a follow-up `node build` rewires it.
+///
+/// `working_dir` keeps the previous entity's `WorkingDirGuard` alive across
+/// the sub-add: `config_path` points inside that temp dir, so without
+/// holding the guard the directory would be removed when the sub-add
+/// replaces the entity and rollback would re-install a config at a path
+/// that no longer exists.
 struct PreviousConfig {
-    config: config::node::NodeConfig,
+    config: NodeConfig,
     config_path: PathBuf,
-    variant_name: Option<String>,
+    working_dir: Option<Arc<WorkingDirGuard>>,
 }
 
 struct RollbackEntry {
@@ -535,8 +462,8 @@ struct RollbackEntry {
 /// Drop-based rollback: if the guard is dropped armed, every entry in
 /// `added` is undone in reverse order (so dependants go first, then
 /// deps). Entries that replaced an existing config restore the previous
-/// state via `push_config_with_variant`; entries that introduced a new
-/// slot are removed. On success, call [`RollbackGuard::disarm`].
+/// state via `push_config`; entries that introduced a new slot are
+/// removed. On success, call [`RollbackGuard::disarm`].
 struct RollbackGuard {
     node_stack: Arc<node_stack::NodeStack>,
     added: Vec<RollbackEntry>,
@@ -569,18 +496,31 @@ impl Drop for RollbackGuard {
                 previous,
             } = entry;
             match previous {
-                Some(prev) => match self.node_stack.push_config_with_variant(
-                    prev.config,
-                    false,
-                    prev.config_path,
-                    prev.variant_name,
-                ) {
-                    Ok(()) => debug!("Rolled back batched replacement of {}:{}", name, tag),
-                    Err(e) => warn!(
-                        "Batch-add rollback (restore previous) failed for {}:{} — {}",
-                        name, tag, e
-                    ),
-                },
+                Some(prev) => {
+                    let PreviousConfig {
+                        config,
+                        config_path,
+                        working_dir,
+                    } = prev;
+                    match self.node_stack.push_config(config, false, config_path) {
+                        Ok(()) => {
+                            // Reattach the previous working-dir guard so the
+                            // restored entity owns the temp dir its
+                            // `config_path` lives inside, mirroring the
+                            // post-`push_config` step in the add path.
+                            if let Some(guard) = working_dir
+                                && let Some(handle) = self.node_stack.find(&name, &tag)
+                            {
+                                handle.write().set_pending_working_dir(guard);
+                            }
+                            debug!("Rolled back batched replacement of {}:{}", name, tag)
+                        }
+                        Err(e) => warn!(
+                            "Batch-add rollback (restore previous) failed for {}:{} — {}",
+                            name, tag, e
+                        ),
+                    }
+                }
                 None => match self.node_stack.remove_config(&name, &tag) {
                     Ok(_) => debug!("Rolled back batched add of {}:{}", name, tag),
                     Err(e) => warn!("Batch-add rollback failed for {}:{} — {}", name, tag, e),

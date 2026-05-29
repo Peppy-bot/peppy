@@ -1,5 +1,7 @@
 use derive_more::From;
 
+use crate::wire::{SegmentError, SenderTargetError};
+
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, From)]
@@ -21,8 +23,10 @@ pub enum Error {
     UnsupportedEngine,
     ZenohdError(String),
     ZenohDConfigurationNotFound,
-    InstanceIdNotFound(String),
-    CoreNodeNotFound(String),
+    #[from]
+    InvalidSegment(SegmentError),
+    #[from]
+    InvalidSenderTarget(SenderTargetError),
 }
 
 impl core::fmt::Display for Error {

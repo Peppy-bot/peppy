@@ -7,6 +7,7 @@ use config::consts::PeppyDirs;
 use core_node_api::encoding::{
     RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource, RepoSourceKind,
 };
+use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -26,7 +27,7 @@ pub async fn listen_for_repo_list(
         messenger,
         core_node_name,
         instance_id,
-        node_name,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         names::REPO_LIST,
     )
     .await?;
@@ -110,22 +111,9 @@ fn handle_repo_list_request_inner(
                     continue;
                 }
                 let repo_label = path.to_string_lossy().into_owned();
-                let mut repo_seen = HashSet::new();
-                let mut discovered = Vec::new();
-                let mut launchers_seen = HashSet::new();
-                let mut launchers = Vec::new();
-                walk_directory(
-                    &path,
-                    RepoSourceKind::Fs,
-                    None,
-                    None,
-                    &mut repo_seen,
-                    &mut discovered,
-                    &mut launchers_seen,
-                    &mut launchers,
-                    &exclusions.fs_paths,
-                );
-                for node in discovered {
+                let walked =
+                    walk_directory(&path, RepoSourceKind::Fs, None, None, &exclusions.fs_paths);
+                for node in walked.nodes {
                     let key = (node.node_name.clone(), node.node_tag.clone());
                     let duplicate = !global_seen.insert(key);
                     all_entries.push(RepoListNodeEntry {
@@ -133,7 +121,6 @@ fn handle_repo_list_request_inner(
                         node_tag: node.node_tag,
                         source_type: node.source_type,
                         path: node.path,
-                        variants: node.variants,
                         duplicate,
                         repo_id,
                         repo_label: repo_label.clone(),
@@ -170,15 +157,6 @@ fn handle_repo_list_request_inner(
                         .unwrap_or("");
                     let key = (name.to_string(), tag.to_string());
                     let duplicate = !global_seen.insert(key);
-                    let variants = cached
-                        .get("variants")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(|s| s.to_owned()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
                     let repo_label = format!("{repo_url} (ref: {resolved_ref})");
                     all_entries.push(RepoListNodeEntry {
                         node_name: name.to_string(),
@@ -189,7 +167,6 @@ fn handle_repo_list_request_inner(
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string(),
-                        variants,
                         duplicate,
                         repo_id,
                         repo_label,

@@ -24,7 +24,4 @@ pub enum Error {
 
     #[error(transparent)]
     ParsingError(#[from] config::ParsingError),
-
-    #[error("RepoNode is not a valid variant source")]
-    RepoNodeNotValidVariantSource,
 }
