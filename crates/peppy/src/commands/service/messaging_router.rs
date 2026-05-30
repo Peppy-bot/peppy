@@ -66,9 +66,9 @@ impl ServeAsyncCommand for MessagingRouter {
             ready_tx.send(()).ok();
 
             // Router watchdog: probe the router's liveness and respawn zenohd
-            // if it wedges (see the zenohd pipe-deadlock incident). Backends
-            // without a restartable router (the mock) return `None` and just
-            // wait for ctrl-c. Either way, ctrl-c ends the wait.
+            // if it wedges. Backends without a restartable router (the mock)
+            // return `None` and just wait for ctrl-c. Either way, ctrl-c ends
+            // the wait.
             let health_checker = { messenger.lock().await.router_health_checker() };
             match health_checker {
                 Some(checker) => {
