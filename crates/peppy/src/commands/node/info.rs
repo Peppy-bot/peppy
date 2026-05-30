@@ -109,11 +109,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             // in `NodeInstanceInfo::healthy`; `healthy` until a probe is seen
             // to fail. Shown alongside state so a running-but-failing instance
             // stands out without a separate `stack list` round-trip.
-            let health = if instance.healthy {
-                "healthy"
-            } else {
-                "unhealthy"
-            };
+            let health = crate::commands::health_label(instance.healthy);
             let _ = writeln!(
                 out,
                 "           - {}  [{}]  {}",

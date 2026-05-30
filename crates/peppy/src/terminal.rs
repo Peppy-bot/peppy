@@ -12,6 +12,20 @@ use crossterm::{
 use std::collections::VecDeque;
 use std::io::{IsTerminal, Stdout, Write};
 
+/// Whether stdout should carry ANSI color: only when it is an interactive
+/// terminal and `NO_COLOR` is unset or empty. Single source of truth for the
+/// color gate so every command formats consistently.
+pub(crate) fn colors_enabled() -> bool {
+    std::io::stdout().is_terminal() && !no_color_requested()
+}
+
+/// Whether the `NO_COLOR` convention asks for plain output: the variable set to
+/// a non-empty value. An empty `NO_COLOR` is treated as unset, per the
+/// convention at https://no-color.org.
+fn no_color_requested() -> bool {
+    std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty())
+}
+
 /// A fixed-height scrolling output region for the terminal.
 ///
 /// This struct manages displaying a fixed number of lines in the terminal,
@@ -37,7 +51,7 @@ impl ScrollingOutput {
     /// * `max_lines` - The maximum number of lines to display at once.
     pub fn new(max_lines: usize) -> Self {
         let stdout = std::io::stdout();
-        let is_terminal = stdout.is_terminal() && !Self::no_color_requested();
+        let is_terminal = colors_enabled();
 
         Self {
             lines: VecDeque::with_capacity(max_lines),
@@ -46,11 +60,6 @@ impl ScrollingOutput {
             is_terminal,
             stdout,
         }
-    }
-
-    /// Checks if the NO_COLOR environment variable is set.
-    fn no_color_requested() -> bool {
-        std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty())
     }
 
     /// Adds a line to the output and refreshes the display.
