@@ -394,11 +394,45 @@ fn format_instances_compact(node: &SerializedNode) -> String {
 }
 
 /// For nodes that have been built, the artifact path is the most useful
-/// locator; otherwise fall back to the source config path.
+/// locator; otherwise fall back to the source config path. The home directory
+/// is collapsed to `~` to keep the column narrow.
 fn display_path(node: &SerializedNode) -> String {
-    node.artifact_path
+    let path = node
+        .artifact_path
         .clone()
-        .unwrap_or_else(|| node.config_path.clone())
+        .unwrap_or_else(|| node.config_path.clone());
+    shorten_home(&path)
+}
+
+/// Collapses a leading home-directory prefix to `~`, matching shell display.
+/// Returns the path unchanged when the home dir can't be resolved.
+fn shorten_home(path: &str) -> String {
+    match dirs::home_dir().as_deref().and_then(|h| h.to_str()) {
+        Some(home) => shorten_home_with(path, home),
+        None => path.to_string(),
+    }
+}
+
+/// Core of [`shorten_home`], split out so it can be tested without depending on
+/// the ambient home directory. Only an exact home dir or one followed by a
+/// separator is rewritten, so a sibling like `/home/user2/...` is never
+/// mangled into `~2/...`.
+fn shorten_home_with(path: &str, home: &str) -> String {
+    // Trailing separators on the resolved home would break the boundary check
+    // below; a home of `/` has no useful `~` form, so leave such paths as-is.
+    let home = home.trim_end_matches('/');
+    if home.is_empty() {
+        return path.to_string();
+    }
+    if path == home {
+        return "~".to_string();
+    }
+    if let Some(rest) = path.strip_prefix(home) {
+        if rest.starts_with('/') {
+            return format!("~{rest}");
+        }
+    }
+    path.to_string()
 }
 
 #[cfg(test)]
@@ -820,6 +854,24 @@ mod tests {
         let node_region = &out[..out.find("Instance bindings").expect("bindings heading")];
         assert_uniform("node table", &box_line_widths(node_region));
         assert_uniform("bindings table", &box_line_widths(bindings_section(&out)));
+    }
+
+    #[test]
+    fn shorten_home_collapses_only_the_home_prefix() {
+        let home = "/home/user";
+        // Exact home and a child both collapse.
+        assert_eq!(shorten_home_with(home, home), "~");
+        assert_eq!(
+            shorten_home_with("/home/user/.peppy/built_nodes/x.sif", home),
+            "~/.peppy/built_nodes/x.sif"
+        );
+        // A sibling that merely shares the prefix text must not be rewritten.
+        assert_eq!(shorten_home_with("/home/user2/x", home), "/home/user2/x");
+        // Unrelated paths and a degenerate `/` home are left untouched.
+        assert_eq!(shorten_home_with("/etc/passwd", home), "/etc/passwd");
+        assert_eq!(shorten_home_with("/etc/passwd", "/"), "/etc/passwd");
+        // A trailing slash on the resolved home is tolerated.
+        assert_eq!(shorten_home_with("/home/user/x", "/home/user/"), "~/x");
     }
 
     /// Drops ANSI SGR escape sequences so a colored render can be compared
