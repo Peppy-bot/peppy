@@ -742,7 +742,10 @@ impl NodeEntity {
         let mut output_reader_handles = Vec::new();
 
         let sinks = &ctx.output_sinks;
+        // Register each reader before launching its task so the daemon's drain
+        // primitive counts it without racing the task's startup.
         if let Some(stdout) = child.stdout.take() {
+            sinks.hooks.on_reader_registered();
             output_reader_handles.push(spawn_output_reader_async(
                 stdout,
                 sinks.feedback_tx.clone(),
@@ -755,6 +758,7 @@ impl NodeEntity {
         }
 
         if let Some(stderr) = child.stderr.take() {
+            sinks.hooks.on_reader_registered();
             output_reader_handles.push(spawn_output_reader_async(
                 stderr,
                 sinks.feedback_tx.clone(),
