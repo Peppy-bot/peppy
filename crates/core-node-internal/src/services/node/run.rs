@@ -1176,18 +1176,21 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
         loop {
             tokio::time::sleep(p.interval).await;
 
-            // If the monitored instance (`p.target_instance_id`) was removed
-            // externally (e.g. user ran `node stop`), our job is done.
-            if p.node_stack
-                .find_by_instance_id(&p.target_instance_id)
-                .is_none()
-            {
+            // Resolve the monitored instance once per tick. If it was removed
+            // externally (e.g. user ran `node stop`), our job is done: skip the
+            // poll and exit. The returned clone shares the instance's health
+            // flag (an `Arc<AtomicBool>`), so recording the probe result on it
+            // after the poll still updates the tracked instance even though it
+            // was resolved beforehand. Should the instance be removed during the
+            // poll, that write lands on a now-detached flag no reader can reach,
+            // so it is harmless.
+            let Some(instance) = p.node_stack.find_by_instance_id(&p.target_instance_id) else {
                 debug!(
                     "Health monitor: instance '{}' no longer in stack, exiting",
                     instance_id_str
                 );
                 return;
-            }
+            };
 
             let poll_result = ServiceMessenger::poll(
                 &p.messenger,
@@ -1210,13 +1213,9 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
 
             // Record the probe result so `stack list` and `node info` can report
             // health without re-probing. A failed probe flags the instance
-            // unhealthy on the first failure — before the `max_failures` removal
-            // threshold — so a flaky instance shows as unhealthy while it lasts.
-            // `find_by_instance_id` hands back a clone whose health flag is
-            // shared (Arc), so setting it here updates the tracked instance.
-            if let Some(instance) = p.node_stack.find_by_instance_id(&p.target_instance_id) {
-                instance.set_healthy(transition.healthy);
-            }
+            // unhealthy on the first failure, before the `max_failures` removal
+            // threshold, so a flaky instance shows as unhealthy while it lasts.
+            instance.set_healthy(transition.healthy);
 
             if let Err(err) = poll_result {
                 debug!(

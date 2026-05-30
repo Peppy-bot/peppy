@@ -14,8 +14,9 @@ use std::io::{IsTerminal, Stdout, Write};
 
 /// Whether stdout should carry ANSI color: only when it is an interactive
 /// terminal and `NO_COLOR` is unset or empty. Single source of truth for the
-/// color gate so every command formats consistently.
-pub(crate) fn colors_enabled() -> bool {
+/// color gate so every command, and the binary's log formatter, stay
+/// consistent. Re-exported from the crate root as `peppy::colors_enabled`.
+pub fn colors_enabled() -> bool {
     std::io::stdout().is_terminal() && !no_color_requested()
 }
 
