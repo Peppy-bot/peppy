@@ -81,7 +81,14 @@ fn default_env_filter(default_directive: &str) -> EnvFilter {
 
 pub fn init_tracing(style: LogStyle) {
     let env_filter = match style {
-        LogStyle::Verbose => default_env_filter("info"),
+        // Demote Zenoh's routine session-lifecycle chatter (`Using ZID`,
+        // `close session zid=…`) to WARN. The router watchdog probes liveness by
+        // opening and closing a throwaway Zenoh session every couple of seconds,
+        // and at INFO those two lines per probe bury the daemon's own logs. The
+        // daemon's useful messaging logs come from the `pmi`/`peppy` targets, not
+        // `zenoh`, and genuine Zenoh warnings/errors still surface. Override with
+        // `RUST_LOG=info` to see the full Zenoh output when debugging the router.
+        LogStyle::Verbose => default_env_filter("info,zenoh=warn"),
         LogStyle::Compact => default_env_filter("peppy=info"),
     };
 
