@@ -53,6 +53,28 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// Generic polling helper: repeatedly calls `predicate` until it returns
+/// `Some(value)`, then returns that value. If `timeout` elapses first, panics
+/// with `timeout_message`. Polls every 20 ms. `predicate` is synchronous on
+/// purpose: the current callers only touch the filesystem, the node stack, and
+/// child processes, none of which await.
+pub async fn poll_until<T>(
+    timeout: Duration,
+    timeout_message: &str,
+    mut predicate: impl FnMut() -> Option<T>,
+) -> T {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(value) = predicate() {
+            return value;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("{timeout_message}");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// Polls `ServiceMessenger::is_reachable` until the named service responds or
 /// `deadline` expires. Replaces fixed sleeps used as broker-propagation
 /// barriers in tests that spawn a `handle_requests` task and then need to

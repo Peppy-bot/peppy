@@ -1,5 +1,5 @@
 use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
-use super::gate::ConcurrencyGate;
+use super::gate::{COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use super::write_error_to_log;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use crate::Result;
@@ -20,19 +20,10 @@ use std::fs::File;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
-
-/// Upper bound on how long a `--force` admission waits for the build task it
-/// displaced to run its cooperative teardown (SIGKILL + reap the build child,
-/// roll the entity back to `Added`, re-attach the working dir) before the new
-/// build proceeds. Mirrors `RUN_PHASE_CANCEL_CLEANUP_BUDGET` in
-/// `services/stack/launch.rs`. On timeout the entity is still `Building` and the
-/// stage re-read rejects with a transient, retryable message rather than wedging.
-const FORCE_SUPERSEDE_CLEANUP_BUDGET: Duration = Duration::from_secs(30);
 
 pub async fn listen_for_node_build(
     messenger: &MessengerHandle,
@@ -210,11 +201,11 @@ impl NodeBuildGoalHandler {
         // re-reading the entity below. Its cancel token was already signaled in
         // `try_admit`, so awaiting the handle lets it SIGKILL + reap the build
         // child and roll the entity back to `Added` with its working dir
-        // re-attached — leaving it buildable for this goal. Bounded so a wedged
+        // re-attached, leaving it buildable for this goal. Bounded so a wedged
         // old task cannot stall the forced rebuild forever; on timeout the stage
         // re-read rejects transiently rather than wedging permanently.
         if let Some(old_task) = superseded {
-            let _ = tokio::time::timeout(FORCE_SUPERSEDE_CLEANUP_BUDGET, old_task).await;
+            let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, old_task).await;
         }
 
         debug!(
@@ -458,7 +449,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 // Superseded by a `--force` build (the build I/O returned a
                 // cancellation error after SIGKILL'ing + reaping the child).
                 // Roll the entity back to `Added` and re-attach the staged
-                // working dir so the forced rebuild can reuse it — the only
+                // working dir so the forced rebuild can reuse it, the only
                 // surviving copy of the source. (Removing it, as the genuine
                 // failure path does, would delete the working dir and make the
                 // rebuild impossible.)

@@ -932,10 +932,11 @@ impl<'a> ApptainerCommand<'a> {
     fn assemble_command(&self) -> Result<Command> {
         let args = self.build_args()?;
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let guest_pgid_file = match &self.cancel_pgid_file {
-            Some(pgid_file) => Some(self.facade.translate_path(pgid_file)?),
-            None => None,
-        };
+        let guest_pgid_file = self
+            .cancel_pgid_file
+            .as_deref()
+            .map(|pgid_file| self.facade.translate_path(pgid_file))
+            .transpose()?;
         self.facade.command(
             &str_args,
             &self.lima_shell_extra_args,

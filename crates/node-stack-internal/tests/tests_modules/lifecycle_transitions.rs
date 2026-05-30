@@ -1185,19 +1185,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
     });
 
     // Wait until the entity is observably in `Building`.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        {
-            let guard = handle_after_push.read();
-            if matches!(guard.stage(), NodeStage::Building { .. }) {
-                break;
-            }
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("entity did not enter Building within 10s");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    real_lifecycle::wait_for_building(&handle_after_push).await;
 
     // Build "fails" — the caller rolls back by restoring the v1 snapshot it
     // captured before calling push_config.
@@ -1261,7 +1249,7 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
     let harness = real_lifecycle::lifecycle_harness();
     let config_path = harness.peppy_root.path().join("sensor_v1.json5");
 
-    // Push a node with a blocking build_cmd and drive it into `Building` — the
+    // Push a node with a blocking build_cmd and drive it into `Building`, the
     // legitimate way to observe the stage with no backdoor.
     let control_dir = tempfile::tempdir().expect("control tempdir");
     let proceed_file = control_dir.path().join("proceed");
@@ -1297,16 +1285,7 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
         .await
     });
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        if matches!(handle.read().stage(), NodeStage::Building { .. }) {
-            break;
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("entity did not enter Building within 10s");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    real_lifecycle::wait_for_building(&handle).await;
 
     // The working dir to re-attach on a successful rollback, plus a scratch dir
     // for the throwaway guards the mismatch cases never store.
@@ -1436,19 +1415,7 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
     });
 
     // Wait until we observe `Building` on the entity.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        {
-            let guard = handle.read();
-            if matches!(guard.stage(), NodeStage::Building { .. }) {
-                break;
-            }
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("entity did not enter Building within 10s");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    real_lifecycle::wait_for_building(&handle).await;
 
     // A concurrent push replaces the entity under the same handle, bumping
     // its generation. push_config accepts the replacement even while the

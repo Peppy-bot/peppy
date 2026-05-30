@@ -30,7 +30,7 @@
 //!
 //! A `--force` goal supersedes that task and admits a replacement while the
 //! superseded task is still winding down (whether it is later `abort()`ed or
-//! awaited to cooperative completion) — so a naive release could clear the
+//! awaited to cooperative completion), so a naive release could clear the
 //! *replacement's* slot and break the single-goal invariant. Each admission
 //! therefore carries a monotonic `generation`: the work task holds a
 //! [`GoalSlotGuard`] for its generation, and the guard's drop frees the slot
@@ -45,6 +45,23 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+/// Bounded wait for a gate-cancelled task's cooperative teardown after its
+/// `CancellationToken` has been signaled. Both single-goal callers that signal
+/// a cancel and then await the doomed task rely on this same budget:
+///
+/// - `services/node/builder.rs` on a `--force` `node_build`: after `try_admit`
+///   signals the displaced build's token, it awaits the superseded handle for
+///   up to this long so the old build SIGKILLs + reaps its child and rolls the
+///   entity back to `Added` before the new build starts.
+/// - `services/stack/launch.rs` on a run-phase idle/max timeout: after signaling
+///   the run-phase token it awaits the phase future for up to this long so it
+///   can SIGKILL the child, unregister the `Starting` instance, and clear temp
+///   files before the launch failure is returned.
+///
+/// On expiry both callers fall back to dropping the future and surface a
+/// transient/timeout failure rather than wedging.
+pub(crate) const COOPERATIVE_TEARDOWN_BUDGET: Duration = Duration::from_secs(30);
+
 /// Outcome of [`ConcurrencyGate::try_admit`].
 pub(crate) enum Admission {
     /// The new goal was admitted; the gate clock has been started. The
@@ -55,9 +72,9 @@ pub(crate) enum Admission {
         generation: u64,
         /// The task this admission force-displaced, if any. Its cancel token has
         /// already been signaled inside `try_admit`; the caller awaits this
-        /// handle (bounded) so the old task's cooperative teardown — SIGKILL +
+        /// handle (bounded) so the old task's cooperative teardown (SIGKILL +
         /// reap the build child, roll the entity back to `Added`, re-attach the
-        /// working dir — finishes before the new build starts. `None` on a cold
+        /// working dir) finishes before the new build starts. `None` on a cold
         /// admission (nothing was running).
         superseded: Option<JoinHandle<()>>,
     },
@@ -109,7 +126,7 @@ impl ConcurrencyGate {
     /// Admits a new goal, starting the gate clock and returning the admission's
     /// generation. When a goal is already in flight and `force` is true, the
     /// previous task's cancel token is signaled and its `JoinHandle` is *handed
-    /// back* in [`Admission::Admitted::superseded`] — it is deliberately NOT
+    /// back* in [`Admission::Admitted::superseded`]; it is deliberately NOT
     /// aborted, because `JoinHandle::abort` drops the task future and skips the
     /// cooperative teardown (kill+reap the build child, roll the entity back to
     /// `Added`). The caller awaits the returned handle (bounded) so that
@@ -130,7 +147,7 @@ impl ConcurrencyGate {
             }
             // Force: signal cancellation so the spawned task runs its cooperative
             // teardown, then hand its handle back to the caller to await. Do NOT
-            // abort — that would drop the future and skip the teardown. Bumping
+            // abort; that would drop the future and skip the teardown. Bumping
             // the generation below makes the old task's `GoalSlotGuard` drop a
             // no-op, so its eventual release cannot clobber this admission.
             if let Some(token) = state.cancel_token.take() {
@@ -343,15 +360,15 @@ mod tests {
 
     /// A `--force` admission must hand the displaced task's `JoinHandle` back to
     /// the caller (so it can await cooperative teardown) instead of aborting it.
-    /// The token is signaled, so awaiting the returned handle resolves `Ok(())`
-    /// — proving the task finished cooperatively rather than being `abort()`ed
+    /// The token is signaled, so awaiting the returned handle resolves `Ok(())`,
+    /// proving the task finished cooperatively rather than being `abort()`ed
     /// (which would make the join return a cancelled `JoinError`).
     #[tokio::test]
     async fn force_supersede_returns_old_handle_without_abort() {
         let gate = ConcurrencyGate::new();
 
         // Cold admission, then register a real task that runs until its token
-        // fires — mirroring how a build handler installs its task via `set_task`.
+        // fires, mirroring how a build handler installs its task via `set_task`.
         let gen_a = admit(&gate, false);
         let token = CancellationToken::new();
         let token_for_task = token.clone();

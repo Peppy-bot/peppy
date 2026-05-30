@@ -222,7 +222,7 @@ pub async fn stream_child_output(
         }
         _ = cancel_token.cancelled() => {
             // SIGKILL the whole process group, then *await* the child so it is
-            // reaped before we return — the superseding build must not race a
+            // reaped before we return; the superseding build must not race a
             // dying subprocess over the same working dir.
             let _ = guard.child.start_kill();
             let _ = guard.child.wait().await;

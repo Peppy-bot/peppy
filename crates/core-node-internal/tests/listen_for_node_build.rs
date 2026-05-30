@@ -161,65 +161,58 @@ async fn listen_for_node_build_runs_build_cmd() {
 
 /// Polls until `pid_file` exists and holds a non-empty PID, returning it.
 async fn wait_for_pid_file(pid_file: &Path) -> String {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        if let Ok(contents) = std::fs::read_to_string(pid_file) {
+    common::poll_until(
+        Duration::from_secs(30),
+        "build_cmd did not record its PID within 30s",
+        || {
+            let contents = std::fs::read_to_string(pid_file).ok()?;
             let pid = contents.trim();
-            if !pid.is_empty() {
-                return pid.to_string();
-            }
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("build_cmd did not record its PID within 30s");
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+            (!pid.is_empty()).then(|| pid.to_string())
+        },
+    )
+    .await
 }
 
 /// Polls until the entity for `(name, tag)` is observably in `Building`.
 async fn wait_for_building(node_stack: &node_stack::NodeStack, name: &str, tag: &str) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        if let Some(handle) = node_stack.find(name, tag)
-            && matches!(
+    common::poll_until(
+        Duration::from_secs(30),
+        "entity did not enter Building within 30s",
+        || {
+            let handle = node_stack.find(name, tag)?;
+            matches!(
                 handle.read().stage(),
                 node_stack::NodeStage::Building { .. }
             )
-        {
-            return;
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("entity did not enter Building within 30s");
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+            .then_some(())
+        },
+    )
+    .await
 }
 
 /// Polls `kill -0 <pid>` (no `libc`/`unsafe`) until the process is gone.
 async fn wait_until_pid_dead(pid: &str) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let alive = std::process::Command::new("kill")
-            .arg("-0")
-            .arg(pid)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !alive {
-            return;
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("build subprocess (pid {pid}) was not killed within 30s");
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    common::poll_until(
+        Duration::from_secs(30),
+        &format!("build subprocess (pid {pid}) was not killed within 30s"),
+        || {
+            let alive = std::process::Command::new("kill")
+                .arg("-0")
+                .arg(pid)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            (!alive).then_some(())
+        },
+    )
+    .await
 }
 
 /// `node build --force` on a node whose build is stuck mid-flight (the daemon
 /// task kept running after the CLI was Ctrl+C'd) must cancel + SIGKILL the
-/// in-flight build, reuse the staged working dir, and succeed — rather than
+/// in-flight build, reuse the staged working dir, and succeed, rather than
 /// rejecting with "is in stage `Building`; cannot build".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
@@ -275,7 +268,7 @@ async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
         .map(|g| g.path().to_path_buf())
         .expect("a working dir should be staged after add");
 
-    // Fire the first build; it blocks in `Building` on the proceed sentinel —
+    // Fire the first build; it blocks in `Building` on the proceed sentinel,
     // simulating a build whose CLI was Ctrl+C'd while the daemon keeps building.
     let first_build = {
         let messenger = started_core_node.caller_handle.clone();

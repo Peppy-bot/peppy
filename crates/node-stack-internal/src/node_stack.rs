@@ -483,6 +483,36 @@ impl NodeStackInner {
         }
     }
 
+    /// Resolves the graph slot for `key` and confirms it still holds the exact
+    /// `Arc<RwLock<NodeEntity>>` the caller captured. Returns the slot's
+    /// `NodeIndex` and a clone of the handle when the slot exists, is not the
+    /// root, and is pointer-identical to `expected_handle`; returns `None`
+    /// otherwise.
+    ///
+    /// This is the shared identity prologue for the `*_if_matches` cleanup
+    /// methods on `NodeStack`. It deliberately stops at the pointer check: each
+    /// caller applies its own generation + `Building` stage check under the
+    /// specific lock it needs for its mutation, so those checks stay in the
+    /// callers rather than being folded in here.
+    fn resolve_matching_slot(
+        &self,
+        key: &NodeKey,
+        expected_handle: &Arc<RwLock<NodeEntity>>,
+    ) -> Option<(NodeIndex, EntityHandle)> {
+        if self.is_root(key) {
+            return None;
+        }
+
+        let &index = self.key_to_index.get(key)?;
+        let current = self.graph.node_weight(index)?.clone();
+
+        if !Arc::ptr_eq(&current, expected_handle) {
+            return None;
+        }
+
+        Some((index, current))
+    }
+
     /// Clears all nodes except the root node from the stack.
     fn clear(&mut self) {
         let root_handle = self.root();
@@ -790,23 +820,16 @@ impl NodeStack {
         let mut guard = self.shared.write();
         let key = NodeKey::new(name, tag);
 
-        if guard.is_root(&key) {
-            return false;
-        }
-
-        let Some(&index) = guard.key_to_index.get(&key) else {
+        let Some((_index, current)) = guard.resolve_matching_slot(&key, expected_handle) else {
             return false;
         };
 
-        let matches = guard.graph.node_weight(index).is_some_and(|current| {
-            Arc::ptr_eq(current, expected_handle) && {
-                let entity = current.read();
-                entity.generation() == expected_generation
-                    && matches!(entity.stage(), NodeStage::Building { .. })
-            }
-        });
-
-        if !matches {
+        let generation_and_stage_match = {
+            let entity = current.read();
+            entity.generation() == expected_generation
+                && matches!(entity.stage(), NodeStage::Building { .. })
+        };
+        if !generation_and_stage_match {
             return false;
         }
 
@@ -845,20 +868,9 @@ impl NodeStack {
         let guard = self.shared.write();
         let key = NodeKey::new(name, tag);
 
-        if guard.is_root(&key) {
-            return false;
-        }
-
-        let Some(&index) = guard.key_to_index.get(&key) else {
+        let Some((_index, current)) = guard.resolve_matching_slot(&key, expected_handle) else {
             return false;
         };
-
-        let Some(current) = guard.graph.node_weight(index).cloned() else {
-            return false;
-        };
-        if !Arc::ptr_eq(&current, expected_handle) {
-            return false;
-        }
 
         let mut entity = current.write();
         if entity.generation() != expected_generation
@@ -895,20 +907,10 @@ impl NodeStack {
         let mut guard = self.shared.write();
         let key = NodeKey::new(target.name, target.tag);
 
-        if guard.is_root(&key) {
-            return false;
-        }
-
-        let Some(&index) = guard.key_to_index.get(&key) else {
+        let Some((index, current)) = guard.resolve_matching_slot(&key, target.expected_handle)
+        else {
             return false;
         };
-
-        let Some(current) = guard.graph.node_weight(index).cloned() else {
-            return false;
-        };
-        if !Arc::ptr_eq(&current, target.expected_handle) {
-            return false;
-        }
         {
             let entity = current.read();
             if entity.generation() != target.expected_generation
