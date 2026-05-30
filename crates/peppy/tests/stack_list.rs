@@ -238,8 +238,8 @@ async fn node_list_command_succeeds() {
     );
 
     assert!(
-        output.contains(&format!("{consumer_label} -> {provider_label}")),
-        "output should contain the dependency edge consumer -> provider:\n{output}"
+        output.contains(&format!("{consumer_label} ➔ {provider_label}")),
+        "output should contain the dependency edge consumer ➔ provider:\n{output}"
     );
 
     // Silence unused variable when LogCapture is only constructed for

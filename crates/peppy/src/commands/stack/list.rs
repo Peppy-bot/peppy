@@ -1,3 +1,4 @@
+use std::io::IsTerminal as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +8,7 @@ use core_node_api::encoding::StackListRequest;
 use core_node_api::{
     InstanceState, SerializedEdge, SerializedInstance, SerializedNode, SerializedNodeGraph,
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
@@ -64,7 +65,7 @@ pub async fn list_nodes_collecting(
         a_key.cmp(&b_key)
     });
 
-    let mut out = format_stack_list(&nodes, &edges);
+    let mut out = format_stack_list(&nodes, &edges, colors_enabled());
 
     if let (Some(path), Some(dot_graph)) = (dot_graph_path, response.dot_graph) {
         std::fs::write(&path, dot_graph).map_err(|e| {
@@ -82,8 +83,14 @@ pub async fn list_nodes_collecting(
 }
 
 /// Pure formatter for the `peppy stack list` output — kept free of any IO so
-/// it can be unit-tested directly.
-pub fn format_stack_list(nodes: &[SerializedNode], edges: &[SerializedEdge]) -> String {
+/// it can be unit-tested directly. `colorize` tints node labels, instances,
+/// and bindings with ANSI SGR codes; the caller passes `false` for
+/// non-interactive output so piped/redirected text and tests stay plain.
+pub fn format_stack_list(
+    nodes: &[SerializedNode],
+    edges: &[SerializedEdge],
+    colorize: bool,
+) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();
@@ -94,7 +101,7 @@ pub fn format_stack_list(nodes: &[SerializedNode], edges: &[SerializedEdge]) -> 
         let _ = writeln!(out, "  (empty)");
         let _ = writeln!(out);
     } else {
-        render_nodes_table(&mut out, nodes);
+        render_nodes_table(&mut out, nodes, colorize);
     }
 
     // Per-instance bindings. A distinct view from the node table above, but it
@@ -108,19 +115,57 @@ pub fn format_stack_list(nodes: &[SerializedNode], edges: &[SerializedEdge]) -> 
         let _ = writeln!(out, "  (none)");
         let _ = writeln!(out);
     } else {
-        render_bindings_table(&mut out, &binding_nodes);
+        render_bindings_table(&mut out, &binding_nodes, colorize);
     }
 
+    // Dependencies reuse node labels but a distinct `➔` arrow (bindings above
+    // use a lighter `→`) so the two relationships never read as the same edge.
     let _ = writeln!(out, "Dependencies");
     if edges.is_empty() {
         let _ = writeln!(out, "  (none)");
     } else {
         for edge in edges {
-            let _ = writeln!(out, "  {} -> {}", edge.from.label(), edge.to.label());
+            let _ = writeln!(
+                out,
+                "  {} ➔ {}",
+                paint(colorize, NODE_COLOR, &edge.from.label()),
+                paint(colorize, NODE_COLOR, &edge.to.label()),
+            );
         }
     }
 
     out
+}
+
+/// Whether `peppy stack list` should emit ANSI colors: only when stdout is an
+/// interactive terminal and `NO_COLOR` is unset/empty. Mirrors the gate in
+/// `terminal.rs` so the CLI stays consistent.
+fn colors_enabled() -> bool {
+    std::io::stdout().is_terminal() && !no_color_requested()
+}
+
+fn no_color_requested() -> bool {
+    std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty())
+}
+
+// ANSI SGR codes used to tint the tables, applied only when `colorize` is set.
+// `col_width` strips these before measuring, so a colored cell occupies the
+// same display columns as its plain text and the box stays aligned.
+const NODE_COLOR: &str = "\x1b[36m"; // cyan — node labels
+const COUNT_COLOR: &str = "\x1b[32m"; // green — per-node instance counts
+const INSTANCE_COLOR: &str = "\x1b[35m"; // magenta — instance ids
+const BINDING_COLOR: &str = "\x1b[33m"; // yellow — slot bindings
+const RESET: &str = "\x1b[0m";
+
+/// Wraps `s` in `code`/reset when `colorize` is set, otherwise returns it
+/// unchanged. Empty input is left untouched so blank continuation cells don't
+/// carry dangling escape codes.
+fn paint(colorize: bool, code: &str, s: &str) -> String {
+    if colorize && !s.is_empty() {
+        format!("{code}{s}{RESET}")
+    } else {
+        s.to_string()
+    }
 }
 
 /// Terminal display width of a cell. Column widths, box-drawing borders, and
@@ -128,24 +173,51 @@ pub fn format_stack_list(nodes: &[SerializedNode], edges: &[SerializedEdge]) -> 
 /// content — a wide CJK glyph or a Unicode path in the `PATH` column counts as
 /// more bytes than display columns, and a combining mark as fewer. Routing
 /// every measurement through this keeps the three in agreement.
+///
+/// ANSI SGR escapes (the color codes `paint` injects) occupy zero display
+/// columns, so they are skipped here; otherwise a colored cell would measure
+/// wider than its plain text and skew the box against the borders.
 fn col_width(s: &str) -> usize {
-    UnicodeWidthStr::width(s)
+    if !s.as_bytes().contains(&0x1b) {
+        return UnicodeWidthStr::width(s);
+    }
+    let mut width = 0;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Consume a CSI sequence: `\x1b[` params … up to a final byte in
+            // `@`..=`~`. The `[` introducer itself falls in that range, so it
+            // must be skipped first or the scan would stop one char too early.
+            // These bytes never reach the screen as columns.
+            if chars.clone().next() == Some('[') {
+                chars.next();
+            }
+            for f in chars.by_ref() {
+                if ('@'..='~').contains(&f) {
+                    break;
+                }
+            }
+        } else {
+            width += UnicodeWidthChar::width(c).unwrap_or(0);
+        }
+    }
+    width
 }
 
 /// Column headers kept in one place so widths stay consistent between the
 /// separator and data rows.
 const HEADERS: [&str; 4] = ["NODE", "STAGE", "INSTANCES", "PATH"];
 
-fn render_nodes_table(out: &mut String, nodes: &[SerializedNode]) {
+fn render_nodes_table(out: &mut String, nodes: &[SerializedNode], colorize: bool) {
     use std::fmt::Write as _;
 
     let rows: Vec<[String; 4]> = nodes
         .iter()
         .map(|n| {
             [
-                n.label(),
+                paint(colorize, NODE_COLOR, &n.label()),
                 n.stage_label().to_string(),
-                format_instances_compact(n),
+                paint(colorize, COUNT_COLOR, &format_instances_compact(n)),
                 display_path(n),
             ]
         })
@@ -178,7 +250,7 @@ const BINDING_HEADERS: [&str; 3] = ["NODE", "INSTANCE", "BINDINGS"];
 /// Renders the per-instance bindings table. `nodes` must already be filtered
 /// to entries with at least one instance — the caller prints `(none)` when
 /// none qualify, so this never emits an empty body.
-fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode]) {
+fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: bool) {
     use std::fmt::Write as _;
 
     // One block of rows per node. Within a block, the NODE cell is populated
@@ -188,10 +260,10 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode]) {
         .iter()
         .map(|node| {
             let mut rows: Vec<[String; 3]> = Vec::new();
-            let mut node_cell = node.label();
+            let mut node_cell = paint(colorize, NODE_COLOR, &node.label());
             for instance in &node.instances {
-                let mut instance_cell = instance.instance_id.clone();
-                for binding in format_instance_bindings(instance) {
+                let mut instance_cell = paint(colorize, INSTANCE_COLOR, &instance.instance_id);
+                for binding in format_instance_bindings(instance, colorize) {
                     rows.push([
                         std::mem::take(&mut node_cell),
                         std::mem::take(&mut instance_cell),
@@ -228,18 +300,28 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode]) {
     let _ = writeln!(out);
 }
 
-/// One display string per slot binding on the instance, in `link_id ->
-/// producer` form and ordered by link id (`BTreeMap` iteration order).
-/// Returns `["(none)"]` when the instance has no bindings so its row still
-/// renders.
-fn format_instance_bindings(instance: &SerializedInstance) -> Vec<String> {
+/// One display string per slot binding on the instance, in `link_id →
+/// producer` form and ordered by link id (`BTreeMap` iteration order). Each
+/// side is tinted by what it denotes: the link id in the binding color, the
+/// producer in the instance color (it names another instance), so the line is
+/// readable by hue rather than by column. The `→` arrow is deliberately
+/// lighter than the `➔` used for dependencies so the two relationships read
+/// differently. Returns `["(none)"]` when the instance has no bindings so its
+/// row still renders.
+fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Vec<String> {
     if instance.slot_bindings.is_empty() {
         return vec!["(none)".to_string()];
     }
     instance
         .slot_bindings
         .iter()
-        .map(|(link_id, binding)| format!("{} -> {}", link_id, format_slot_binding(binding)))
+        .map(|(link_id, binding)| {
+            format!(
+                "{} → {}",
+                paint(colorize, BINDING_COLOR, link_id),
+                paint(colorize, INSTANCE_COLOR, &format_slot_binding(binding)),
+            )
+        })
         .collect()
 }
 
@@ -384,7 +466,7 @@ mod tests {
                 vec![("i1", InstanceState::Running)],
             ),
         ];
-        let out = format_stack_list(&nodes, &[]);
+        let out = format_stack_list(&nodes, &[], false);
 
         for header in HEADERS {
             assert!(out.contains(header), "missing header {}:\n{}", header, out);
@@ -415,7 +497,7 @@ mod tests {
                 ("s1", InstanceState::Starting),
             ],
         )];
-        let out = format_stack_list(&nodes, &[]);
+        let out = format_stack_list(&nodes, &[], false);
         assert!(
             out.contains("2 (1 running, 1 starting)"),
             "mixed breakdown missing:\n{}",
@@ -425,7 +507,7 @@ mod tests {
 
     #[test]
     fn empty_stack_renders_empty_marker() {
-        let out = format_stack_list(&[], &[]);
+        let out = format_stack_list(&[], &[], false);
         assert!(out.contains("(empty)"), "empty marker missing:\n{}", out);
         assert!(
             out.contains("Dependencies"),
@@ -443,9 +525,9 @@ mod tests {
             from: from.clone(),
             to: to.clone(),
         }];
-        let out = format_stack_list(&[from, to], &edges);
+        let out = format_stack_list(&[from, to], &edges, false);
         assert!(
-            out.contains("brain:v1 -> sensor:v1"),
+            out.contains("brain:v1 ➔ sensor:v1"),
             "edge line missing:\n{}",
             out
         );
@@ -478,7 +560,7 @@ mod tests {
                 )],
             )],
         )];
-        let out = format_stack_list(&nodes, &[]);
+        let out = format_stack_list(&nodes, &[], false);
         let section = bindings_section(&out);
 
         for header in BINDING_HEADERS {
@@ -490,7 +572,7 @@ mod tests {
         );
         assert!(section.contains("bk-1"), "instance id missing:\n{out}");
         assert!(
-            section.contains("arm -> arm-1"),
+            section.contains("arm → arm-1"),
             "binding line missing:\n{out}"
         );
     }
@@ -520,16 +602,16 @@ mod tests {
                 ],
             )],
         )];
-        let out = format_stack_list(&nodes, &[]);
+        let out = format_stack_list(&nodes, &[], false);
         let section = bindings_section(&out);
 
         // Both slots render, sorted by link id (BTreeMap order) regardless of
         // insertion order: "backbone" precedes "clock".
         let backbone_at = section
-            .find("backbone -> bb-1")
+            .find("backbone → bb-1")
             .expect("first binding missing");
         let clock_at = section
-            .find("clock -> clk-1")
+            .find("clock → clk-1")
             .expect("second binding missing");
         assert!(
             backbone_at < clock_at,
@@ -550,7 +632,7 @@ mod tests {
             "camera",
             vec![("cam-1", InstanceState::Running, vec![])],
         )];
-        let out = format_stack_list(&nodes, &[]);
+        let out = format_stack_list(&nodes, &[], false);
         let section = bindings_section(&out);
 
         assert!(section.contains("cam-1"), "instance id missing:\n{out}");
@@ -578,14 +660,14 @@ mod tests {
                 ],
             )],
         )];
-        let out = format_stack_list(&nodes, &[]);
+        let out = format_stack_list(&nodes, &[], false);
         let section = bindings_section(&out);
 
         let sensors_at = section
-            .find("sensors -> cam-1, cam-2")
+            .find("sensors → cam-1, cam-2")
             .expect("from_any bound producers should be comma-joined");
         let extra_at = section
-            .find("extra -> (any)")
+            .find("extra → (any)")
             .expect("from_any unbound should render (any)");
         // Sorted by link id regardless of insertion order: "extra" < "sensors".
         assert!(
@@ -597,7 +679,7 @@ mod tests {
     #[test]
     fn bindings_section_renders_none_when_no_node_has_instances() {
         let nodes = vec![node("sensor", "v1", NodeStage::Added, vec![])];
-        let out = format_stack_list(&nodes, &[]);
+        let out = format_stack_list(&nodes, &[], false);
         let section = bindings_section(&out);
         assert!(
             section.contains("(none)"),
@@ -628,15 +710,15 @@ mod tests {
                 )],
             )],
         )];
-        let out = format_stack_list(&nodes, &[]);
+        let out = format_stack_list(&nodes, &[], false);
         let section = bindings_section(&out);
 
         assert!(
-            section.contains("sensors -> (any)"),
+            section.contains("sensors → (any)"),
             "empty from_any bound should collapse to (any):\n{out}"
         );
         assert!(
-            !section.contains("sensors -> \n") && !section.contains("sensors ->  "),
+            !section.contains("sensors → \n") && !section.contains("sensors →  "),
             "binding line must not trail with an empty producer:\n{out}"
         );
     }
@@ -666,7 +748,7 @@ mod tests {
             node("ghost", "v1", NodeStage::Added, vec![]),
             binding_node("beta", vec![("beta-1", InstanceState::Running, vec![])]),
         ];
-        let out = format_stack_list(&nodes, &[]);
+        let out = format_stack_list(&nodes, &[], false);
         let section = bindings_section(&out);
 
         // Instance-less node never appears in the bindings table.
@@ -717,7 +799,7 @@ mod tests {
                 )],
             )],
         )];
-        let out = format_stack_list(&nodes, &[]);
+        let out = format_stack_list(&nodes, &[], false);
 
         fn box_line_widths(block: &str) -> Vec<usize> {
             block
@@ -738,5 +820,81 @@ mod tests {
         let node_region = &out[..out.find("Instance bindings").expect("bindings heading")];
         assert_uniform("node table", &box_line_widths(node_region));
         assert_uniform("bindings table", &box_line_widths(bindings_section(&out)));
+    }
+
+    /// Drops ANSI SGR escape sequences so a colored render can be compared
+    /// against its plain counterpart.
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                if chars.clone().next() == Some('[') {
+                    chars.next();
+                }
+                for f in chars.by_ref() {
+                    if ('@'..='~').contains(&f) {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn colorize_is_purely_additive() {
+        // Colorizing must only inject SGR codes — it must never move a column.
+        // Stripping the codes back out has to reproduce the plain render byte
+        // for byte, which also exercises the ANSI-aware `col_width`.
+        let nodes = vec![binding_node(
+            "backbone",
+            vec![(
+                "bk-1",
+                InstanceState::Running,
+                vec![(
+                    "arm",
+                    SlotBinding::Pinned {
+                        producer_instance_id: "arm-1".to_string(),
+                    },
+                )],
+            )],
+        )];
+        let from = node("brain", "v1", NodeStage::Ready, vec![]);
+        let to = node("sensor", "v1", NodeStage::Ready, vec![]);
+        let edges = vec![SerializedEdge {
+            from: from.clone(),
+            to: to.clone(),
+        }];
+
+        let plain = format_stack_list(&nodes, &edges, false);
+        let colored = format_stack_list(&nodes, &edges, true);
+
+        assert!(
+            colored.contains('\x1b'),
+            "colorized output should carry ANSI codes:\n{colored:?}"
+        );
+        assert!(
+            !plain.contains('\x1b'),
+            "plain output must stay free of ANSI codes:\n{plain:?}"
+        );
+        assert_eq!(
+            strip_ansi(&colored),
+            plain,
+            "stripping colors must reproduce the plain layout exactly"
+        );
+
+        // The two relationships use distinct arrows so they never read alike:
+        // `→` for bindings, `➔` for dependencies.
+        assert!(
+            bindings_section(&plain).contains("arm → arm-1"),
+            "bindings should use the light arrow:\n{plain}"
+        );
+        assert!(
+            plain.contains("brain:v1 ➔ sensor:v1"),
+            "dependencies should use the heavy arrow:\n{plain}"
+        );
     }
 }
