@@ -181,24 +181,24 @@ Now we need to make sure our nodes are started. If we take a look at our node st
 $ peppy stack list
 Node stack
 
-┌─────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────────────┐
-│ NODE                                │ STAGE │ INSTANCES │ PATH                                                           │
-├─────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────────────┤
-│ core-node-sweet-germain-4388:v0.8.0 │ Root  │ 1 running │ /Users/tuatini/workspace/peppy                                 │
-│ hello_receiver:v1                   │ Ready │ 0         │ /Users/tuatini/.peppy/built_nodes/hello_receiver_v1.tar.zst    │
-│ hello_world_param:v1                │ Ready │ 0         │ /Users/tuatini/.peppy/built_nodes/hello_world_param_v1.tar.zst │
-└─────────────────────────────────────┴───────┴───────────┴────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────┐
+│ NODE                                 │ STAGE │ INSTANCES │ PATH                                              │
+├──────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────┤
+│ core-node-sweet-germain-4388:v0.10.0 │ Root  │ 1 running │ ~/workspace/peppy                                 │
+│ hello_receiver:v1                    │ Ready │ 0         │ ~/.peppy/built_nodes/hello_receiver_v1.tar.zst    │
+│ hello_world_param:v1                 │ Ready │ 0         │ ~/.peppy/built_nodes/hello_world_param_v1.tar.zst │
+└──────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────┘
 
 Instance bindings
 
-┌─────────────────────────────────────┬──────────────────────────────┬──────────┐
-│ NODE                                │ INSTANCE                     │ BINDINGS │
-├─────────────────────────────────────┼──────────────────────────────┼──────────┤
-│ core-node-sweet-germain-4388:v0.8.0 │ core-node-sweet-germain-4388 │ (none)   │
-└─────────────────────────────────────┴──────────────────────────────┴──────────┘
+┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬──────────┐
+│ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS │
+├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┤
+│ core-node-sweet-germain-4388:v0.10.0 │ core-node-sweet-germain-4388 │ running │ healthy │ (none)   │
+└──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴──────────┘
 
 Dependencies
-  hello_receiver:v1 -> hello_world_param:v1
+  hello_receiver:v1 ➔ hello_world_param:v1
 ```
 
 We need to make sure that at least one instance is started for `hello_receiver:v1` and another one for `hello_world_param:v1`.
@@ -260,32 +260,32 @@ We can see the messages from both instances!
 $ peppy stack list
 Node stack
 
-┌─────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────────────┐
-│ NODE                                │ STAGE │ INSTANCES │ PATH                                                           │
-├─────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────────────┤
-│ core-node-sweet-germain-4388:v0.8.0 │ Root  │ 1 running │ /Users/tuatini/workspace/peppy                                 │
-│ hello_receiver:v1                   │ Ready │ 1 running │ /Users/tuatini/.peppy/built_nodes/hello_receiver_v1.tar.zst    │
-│ hello_world_param:v1                │ Ready │ 2 running │ /Users/tuatini/.peppy/built_nodes/hello_world_param_v1.tar.zst │
-└─────────────────────────────────────┴───────┴───────────┴────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────┐
+│ NODE                                 │ STAGE │ INSTANCES │ PATH                                              │
+├──────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────┤
+│ core-node-sweet-germain-4388:v0.10.0 │ Root  │ 1 running │ ~/workspace/peppy                                 │
+│ hello_receiver:v1                    │ Ready │ 1 running │ ~/.peppy/built_nodes/hello_receiver_v1.tar.zst    │
+│ hello_world_param:v1                 │ Ready │ 2 running │ ~/.peppy/built_nodes/hello_world_param_v1.tar.zst │
+└──────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────┘
 
 Instance bindings
 
-┌─────────────────────────────────────┬──────────────────────────────┬────────────────────────────┐
-│ NODE                                │ INSTANCE                     │ BINDINGS                   │
-├─────────────────────────────────────┼──────────────────────────────┼────────────────────────────┤
-│ core-node-sweet-germain-4388:v0.8.0 │ core-node-sweet-germain-4388 │ (none)                     │
-├─────────────────────────────────────┼──────────────────────────────┼────────────────────────────┤
-│ hello_receiver:v1                   │ vigorous-buck-8117           │ hello_world_param -> (any) │
-├─────────────────────────────────────┼──────────────────────────────┼────────────────────────────┤
-│ hello_world_param:v1                │ gifted-moser-9365            │ (none)                     │
-│                                     │ admiring-black-0614          │ (none)                     │
-└─────────────────────────────────────┴──────────────────────────────┴────────────────────────────┘
+┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬───────────────────────────┐
+│ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS                  │
+├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤
+│ core-node-sweet-germain-4388:v0.10.0 │ core-node-sweet-germain-4388 │ running │ healthy │ (none)                    │
+├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤
+│ hello_receiver:v1                    │ vigorous-buck-8117           │ running │ healthy │ hello_world_param → (any) │
+├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤
+│ hello_world_param:v1                 │ gifted-moser-9365            │ running │ healthy │ (none)                    │
+│                                      │ admiring-black-0614          │ running │ healthy │ (none)                    │
+└──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴───────────────────────────┘
 
 Dependencies
-  hello_receiver:v1 -> hello_world_param:v1
+  hello_receiver:v1 ➔ hello_world_param:v1
 ```
 
-The `Instance bindings` table makes the routing explicit: `hello_receiver`'s instance resolved its `hello_world_param` slot to `(any)`. Because `hello_receiver` declares that dependency with `from_any: true` and we never passed a `--bind`, the slot stays unbound and accepts every `hello_world_param` instance — which is exactly why `vigorous-buck-8117` prints messages from both `gifted-moser-9365` and `admiring-black-0614` above. To restrict it to one producer, start the consumer with `--bind hello_world_param@<instance_id>`; the cell would then read `hello_world_param -> <instance_id>`.
+The `Instance bindings` table makes the routing explicit: `hello_receiver`'s instance resolved its `hello_world_param` slot to `(any)`. Because `hello_receiver` declares that dependency with `from_any: true` and we never passed a `--bind`, the slot stays unbound and accepts every `hello_world_param` instance — which is exactly why `vigorous-buck-8117` prints messages from both `gifted-moser-9365` and `admiring-black-0614` above. To restrict it to one producer, start the consumer with `--bind hello_world_param@<instance_id>`; the cell would then read `hello_world_param → <instance_id>`.
 
 ---
 We'll explore [services](/advanced_guides/services) and [actions](/advanced_guides/actions) in the advanced guides, although they fundamentally work the same way.

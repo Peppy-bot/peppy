@@ -28,6 +28,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Poll;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -82,21 +83,39 @@ pub struct FeedbackLine {
 }
 
 /// Hooks called by [`spawn_output_reader_async`] at meaningful moments in the
-/// reader loop. This trait exists so `node-stack-internal` doesn't have to know
-/// about the daemon's `FeedbackSync` quiescence-detection primitive — the
-/// daemon implements `OutputReaderHooks` for its `FeedbackSync` and threads it
-/// through `StartContext`.
+/// reader loop. This trait exists so `node-stack-internal` does not have to
+/// know about the daemon's `FeedbackSync` drain primitive: the daemon
+/// implements `OutputReaderHooks` for its `FeedbackSync` and threads it through
+/// `StartContext`.
 ///
-/// Both methods default to no-ops so tests can use `NoOpHooks` directly.
+/// All methods default to no-ops so tests and the build path can use
+/// `NoOpHooks` directly.
 pub trait OutputReaderHooks: Send + Sync {
-    /// Called once when the first stdout line of the run arrives. Idempotent
-    /// — the implementation is responsible for swallowing repeat calls.
+    /// Called once when the first stdout line of the run arrives. Idempotent:
+    /// the implementation is responsible for swallowing repeat calls.
     fn on_first_stdout_line(&self) {}
     /// Called after each line is successfully forwarded to the internal
     /// feedback channel (the one the reader writes to). The daemon's
-    /// `FeedbackSync` increments its `read_count` here so that
-    /// `flush_with_timeout` knows how many lines need to be drained.
+    /// `FeedbackSync` counts these so its drain primitive knows how many lines
+    /// still need to reach the external feedback stream.
     fn on_line_read(&self) {}
+    /// Called synchronously by the spawner, once per reader, before the reader
+    /// task is launched. Lets the daemon count the readers it must wait on
+    /// without racing their startup.
+    fn on_reader_registered(&self) {}
+    /// Called when the reader has consumed every complete line currently
+    /// buffered and its next read would block. This is a positive signal that
+    /// the pipe is drained as of now, which the daemon's drain primitive relies
+    /// on instead of inferring quiescence from the absence of reads (a starved
+    /// reader task could otherwise look quiescent while data waits unread).
+    fn on_reader_idle(&self) {}
+    /// Called when the reader obtains a fresh line after having been idle, i.e.
+    /// new output arrived. Pairs with [`Self::on_reader_idle`].
+    fn on_reader_active(&self) {}
+    /// Called once when the reader task exits (EOF or read error). The argument
+    /// reports whether the reader was idle at exit so the daemon can keep its
+    /// live and idle reader counts consistent.
+    fn on_reader_exit(&self, _was_idle: bool) {}
 }
 
 /// No-op implementation of [`OutputReaderHooks`] used by tests and any caller
@@ -298,18 +317,45 @@ where
 {
     tokio::spawn(async move {
         let mut lines = tokio::io::BufReader::new(reader).lines();
+        // Tracks whether we have already signalled idle for the current quiet
+        // stretch, so `on_reader_idle` fires once per active-to-idle transition.
+        let mut idle = false;
 
-        loop {
-            let line = match lines.next_line().await {
-                Ok(Some(line)) => line,
-                Ok(None) => break,
-                Err(e) => return Err(e),
+        let outcome = loop {
+            // Poll the next-line future once without committing to awaiting it.
+            // A `Pending` result means every complete line currently buffered
+            // has been consumed, so the reader is caught up: signal idle before
+            // blocking for more. A reader that is slow to be scheduled never
+            // reaches this point, so it never falsely reports being drained.
+            let next = lines.next_line();
+            tokio::pin!(next);
+            let read = match std::future::poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx))).await {
+                Poll::Ready(read) => read,
+                Poll::Pending => {
+                    if !idle {
+                        idle = true;
+                        hooks.on_reader_idle();
+                    }
+                    next.await
+                }
             };
+
+            let line = match read {
+                Ok(Some(line)) => line,
+                Ok(None) => break Ok(()),
+                Err(e) => break Err(e),
+            };
+
+            // A line arrived: the reader is active again until it next blocks.
+            if idle {
+                idle = false;
+                hooks.on_reader_active();
+            }
 
             write_feedback_log_line(&log_file, stream, &line);
 
-            // Signal when the first stdout line arrives so container quiescence
-            // detection can wait for the runscript to actually produce output.
+            // Signal when the first stdout line arrives so container drains can
+            // wait for the runscript to actually produce output.
             if matches!(stream, FeedbackStream::Stdout) {
                 hooks.on_first_stdout_line();
             }
@@ -328,8 +374,11 @@ where
             if feedback_tx.send(FeedbackLine { stream, line }).is_ok() {
                 hooks.on_line_read();
             }
-        }
-        Ok(())
+        };
+
+        // Report exit so the daemon stops counting this reader as live.
+        hooks.on_reader_exit(idle);
+        outcome
     })
 }
 
