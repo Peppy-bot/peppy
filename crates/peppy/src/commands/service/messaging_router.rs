@@ -7,11 +7,19 @@ use tokio::sync::{Mutex, oneshot, watch};
 use tracing::{error, info, warn};
 
 /// How often the watchdog probes the router while it appears healthy.
-const WATCHDOG_PROBE_INTERVAL: Duration = Duration::from_secs(10);
+///
+/// The probe cadence ([`WATCHDOG_PROBE_INTERVAL`] / [`WATCHDOG_PROBE_TIMEOUT`] /
+/// [`WATCHDOG_MAX_FAILURES`]) is tuned so the watchdog detects a wedge, respawns
+/// zenohd, and lets node sessions reconnect *before* the core node's health
+/// monitor evicts those nodes from the stack — otherwise a transient router
+/// hang still tears the stack down even though the watchdog "fixed" the router.
+/// The `watchdog_outpaces_health_monitor_eviction` test enforces this against
+/// the health-monitor cadence in `core_node.rs`.
+const WATCHDOG_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 /// Per-probe timeout. A wedged router exceeds any real localhost round-trip.
-const WATCHDOG_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const WATCHDOG_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Consecutive failed probes before the router is declared wedged.
-const WATCHDOG_MAX_FAILURES: u32 = 3;
+const WATCHDOG_MAX_FAILURES: u32 = 2;
 /// Pause after a restart to let the (reconnecting) sessions re-establish
 /// before re-probing.
 const WATCHDOG_RESTART_GRACE: Duration = Duration::from_secs(3);
@@ -185,9 +193,9 @@ fn warn_messaging_restarting(failures: u32) {
          probes (no response for ~{unresponsive_secs}s). The peppy daemon is\n\
          RESTARTING the messaging router now to recover the bus.\n\
          \n\
-         Impact: in-flight messages were lost and running node instances may\n\
-         have been dropped from the stack. After recovery, check\n\
-         `peppy stack list` and relaunch your stack if needed.\n\
+         Impact: in-flight messages were lost. The daemon and node sessions\n\
+         reconnect automatically; after recovery check `peppy stack list` and\n\
+         relaunch any node that did not rejoin.\n\
          ===================================================================="
     );
 }
@@ -199,8 +207,51 @@ fn warn_messaging_restarted() {
          ====================================================================\n\
          ✅  MESSAGING ROUTER RESTARTED — accepting connections again\n\
          ====================================================================\n\
-         The Zenoh router was respawned and is responsive again. Nodes that\n\
-         did not auto-reconnect must be relaunched (`peppy stack launch`).\n\
+         The Zenoh router was respawned and is responsive again. The daemon and\n\
+         node sessions reconnect automatically; relaunch your stack only if\n\
+         `peppy stack list` shows a node did not rejoin.\n\
          ===================================================================="
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The router watchdog must detect a wedged router, respawn it, and leave
+    /// time for node sessions to reconnect *before* the core node's health
+    /// monitor evicts those nodes from the stack. If this inverts, a transient
+    /// router hang tears the whole stack down even though the watchdog "fixed"
+    /// the router. Both cadences are compile-time constants, so this is a pure
+    /// arithmetic guard against a future tweak silently breaking the ordering.
+    #[test]
+    fn watchdog_outpaces_health_monitor_eviction() {
+        use super::super::core_node::{
+            HEALTH_MONITOR_INTERVAL, HEALTH_MONITOR_MAX_FAILURES, HEALTH_MONITOR_TIMEOUT,
+        };
+
+        // Worst case for the watchdog to declare the router wedged and finish
+        // respawning it.
+        let watchdog_recovery = (WATCHDOG_PROBE_INTERVAL + WATCHDOG_PROBE_TIMEOUT)
+            * WATCHDOG_MAX_FAILURES
+            + WATCHDOG_RESTART_GRACE;
+
+        // Earliest the health monitor can evict an instance: the wedge lands
+        // just before a scheduled poll, so the first failure costs only the
+        // poll timeout and each later failure a full interval + timeout cycle.
+        let health_earliest_evict = HEALTH_MONITOR_TIMEOUT
+            + (HEALTH_MONITOR_INTERVAL + HEALTH_MONITOR_TIMEOUT)
+                * (HEALTH_MONITOR_MAX_FAILURES - 1);
+
+        // Headroom for node sessions to reconnect (zenoh retry backoff ~1-4s)
+        // after the router is back but before the health monitor's final poll.
+        const NODE_RECONNECT_HEADROOM: Duration = Duration::from_secs(4);
+
+        assert!(
+            watchdog_recovery + NODE_RECONNECT_HEADROOM < health_earliest_evict,
+            "watchdog recovery ({watchdog_recovery:?}) + reconnect headroom \
+             ({NODE_RECONNECT_HEADROOM:?}) must beat the health monitor's earliest \
+             eviction ({health_earliest_evict:?})"
+        );
+    }
 }
