@@ -6,10 +6,58 @@ pub(crate) const LIMA_INSTANCE: &str = env!("LIMA_INSTANCE");
 pub(crate) const LIMA_TEMPLATE: &str = env!("LIMA_TEMPLATE");
 pub(crate) const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 1, 0);
 
+/// Single-quote a string for safe embedding in a shell command string.
+pub(crate) fn shell_single_quote(s: &str) -> String {
+    // Replace any single quotes with the '\'' idiom, then wrap in single quotes.
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Single-quote a path for safe embedding in a shell command string.
-fn shell_escape(path: &Path) -> String {
-    // Replace any single quotes in the path with the '\'' idiom, then wrap in single quotes.
-    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+pub(crate) fn shell_escape(path: &Path) -> String {
+    shell_single_quote(&path.display().to_string())
+}
+
+/// Builds the guest-side argv (after the `limactl shell ... --` separator) that
+/// runs an `apptainer build` as its own session/process-group leader and records
+/// its PGID to `pgid_file`.
+///
+/// `setsid -w` makes `sh` the session+group leader (so its PGID equals its PID)
+/// and waits for it, forwarding stdout/stderr and the exit status unchanged.
+/// `sh` writes that PID to `pgid_file`, then `exec`s apptainer, which keeps the
+/// PID; apptainer's `%post` children inherit the group. On cancel,
+/// [`lima_kill_pgid_script`] SIGKILLs that whole group from inside the VM.
+pub(crate) fn lima_guest_build_argv(
+    apptainer_bin: &Path,
+    apptainer_args: &[&str],
+    pgid_file: &Path,
+) -> Vec<String> {
+    let mut guest = format!(
+        "echo $$ > {}; exec {}",
+        shell_escape(pgid_file),
+        shell_escape(apptainer_bin)
+    );
+    for arg in apptainer_args {
+        guest.push(' ');
+        guest.push_str(&shell_single_quote(arg));
+    }
+    vec![
+        "setsid".to_string(),
+        "-w".to_string(),
+        "sh".to_string(),
+        "-c".to_string(),
+        guest,
+    ]
+}
+
+/// Guest-side `sh -c` script that SIGKILLs the build process group recorded at
+/// `pgid_file` by [`lima_guest_build_argv`]. The negative PGID targets the whole
+/// group (apptainer + its `%post` children). Best-effort: a missing or
+/// already-dead group is not an error.
+pub(crate) fn lima_kill_pgid_script(pgid_file: &Path) -> String {
+    format!(
+        "kill -KILL -\"$(cat {})\" 2>/dev/null || true",
+        shell_escape(pgid_file)
+    )
 }
 
 /// Build a `limactl shell <instance> --` command pre-configured with LIMA_HOME.

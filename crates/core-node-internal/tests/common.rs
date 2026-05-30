@@ -552,8 +552,63 @@ pub async fn send_node_build_and_wait(
     env_vars: Vec<(String, String)>,
     feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
 ) -> Result<NodeBuildResult, String> {
-    let goal =
-        NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs()).with_env_vars(env_vars);
+    send_node_build_and_wait_internal(
+        messenger,
+        core_node_name,
+        node_name,
+        node_tag,
+        goal_timeout,
+        result_timeout,
+        env_vars,
+        feedback_tx,
+        false,
+    )
+    .await
+}
+
+/// Like [`send_node_build_and_wait`] but sets the `--force` flag, which cancels
+/// any in-flight build for the node and supersedes it.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_node_build_and_wait_with_force(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    node_tag: &str,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    env_vars: Vec<(String, String)>,
+    feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
+    force: bool,
+) -> Result<NodeBuildResult, String> {
+    send_node_build_and_wait_internal(
+        messenger,
+        core_node_name,
+        node_name,
+        node_tag,
+        goal_timeout,
+        result_timeout,
+        env_vars,
+        feedback_tx,
+        force,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_node_build_and_wait_internal(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    node_tag: &str,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    env_vars: Vec<(String, String)>,
+    feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
+    force: bool,
+) -> Result<NodeBuildResult, String> {
+    let goal = NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs())
+        .with_env_vars(env_vars)
+        .with_force(force);
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode build goal: {}", e))?;
@@ -1493,6 +1548,7 @@ pub async fn real_build_and_spawn_instance(
             feedback_tx: &build_feedback_tx,
             log_file: build_log,
             env_vars: &[],
+            cancel_token: tokio_util::sync::CancellationToken::new(),
         },
     )
     .await

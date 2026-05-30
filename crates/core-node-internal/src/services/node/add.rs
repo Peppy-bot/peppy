@@ -951,7 +951,20 @@ async fn handle_goal_request(
         debug!("Force flag set: aborting any previous node_add task");
     }
     let generation = match gate.try_admit(goal.timeout_secs, goal.force) {
-        super::gate::Admission::Admitted { generation } => generation,
+        super::gate::Admission::Admitted {
+            generation,
+            superseded,
+        } => {
+            // `node_add` keeps the hard-abort semantics: it overwrites the
+            // entity wholesale via `push_config`, so it does not need the old
+            // task's cooperative teardown the way `node_build` does (which
+            // awaits it to reuse the staged working dir). The gate already
+            // signaled the cancel token; abort drops the superseded future.
+            if let Some(old_task) = superseded {
+                old_task.abort();
+            }
+            generation
+        }
         super::gate::Admission::AlreadyRunning { remaining_secs } => {
             reject_goal(
                 pending,

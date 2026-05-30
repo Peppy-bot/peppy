@@ -877,3 +877,93 @@ fn gocryptfs_path_matches_apptainer_search_dir() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Guest-side cancellation (Lima): build wrapped as a process-group leader so
+// `kill_inflight_build` can SIGKILL the whole guest group on --force cancel.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lima_guest_build_argv_wraps_in_setsid_and_records_pgid() {
+    let argv = super::lima::lima_guest_build_argv(
+        Path::new("/opt/apptainer/bin/apptainer"),
+        &["build", "/home/u/out.sif", "/home/u/node.def"],
+        Path::new("/home/u/build.pgid"),
+    );
+
+    // `setsid -w sh -c <script>`: the script is one argv element.
+    assert_eq!(argv[0], "setsid");
+    assert_eq!(argv[1], "-w");
+    assert_eq!(argv[2], "sh");
+    assert_eq!(argv[3], "-c");
+    assert_eq!(argv.len(), 5);
+
+    let script = &argv[4];
+    assert_eq!(
+        script,
+        "echo $$ > '/home/u/build.pgid'; \
+         exec '/opt/apptainer/bin/apptainer' 'build' '/home/u/out.sif' '/home/u/node.def'",
+        "the wrapper must record the session PGID, then exec apptainer so its \
+         children inherit the group"
+    );
+}
+
+#[test]
+fn lima_kill_pgid_script_sigkills_the_whole_group() {
+    let script = super::lima::lima_kill_pgid_script(Path::new("/home/u/build.pgid"));
+    // Negative PGID → SIGKILL the whole group (apptainer + its %post children);
+    // best-effort so a missing/already-dead group is not an error.
+    assert_eq!(
+        script,
+        "kill -KILL -\"$(cat '/home/u/build.pgid')\" 2>/dev/null || true"
+    );
+}
+
+#[test]
+fn build_command_wrapping_and_kill_match_the_backend() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let out = PathBuf::from(&home).join("peppy_cancel_test/out.sif");
+    let def = PathBuf::from(&home).join("peppy_cancel_test/node.def");
+    let pgid = PathBuf::from(&home).join("peppy_cancel_test/build.pgid");
+
+    let cmd = facade
+        .build(&out, &def)
+        .cancel_pgid_file(&pgid)
+        .into_std_command()
+        .expect("build command should assemble");
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+
+    match &facade.backend {
+        Backend::Lima { .. } => {
+            // The guest invocation is wrapped so the build is a process-group
+            // leader recording its PGID.
+            assert!(
+                args.iter().any(|a| a == "setsid"),
+                "Lima build must be wrapped in setsid, got: {args:?}"
+            );
+            assert!(
+                args.iter().any(|a| a.contains("build.pgid")),
+                "Lima build wrapper must record the PGID file, got: {args:?}"
+            );
+        }
+        Backend::Native { .. } => {
+            // No VM: the host process group already covers the build tree, so
+            // the command is the plain `apptainer build ...` with no wrapping,
+            // and `kill_inflight_build` is a no-op.
+            assert!(
+                !args.iter().any(|a| a == "setsid"),
+                "native build must not be wrapped, got: {args:?}"
+            );
+            assert_eq!(args[0], "build");
+            facade
+                .kill_inflight_build(&pgid)
+                .expect("native kill_inflight_build must be an Ok no-op");
+        }
+    }
+}

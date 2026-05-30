@@ -2,7 +2,8 @@ mod common;
 
 use common::{
     NodeAddSource, send_node_add_and_wait, send_node_add_and_wait_with_env,
-    send_node_build_and_wait, start_core_node_with_mock_messenger, write_peppy_json5,
+    send_node_build_and_wait, send_node_build_and_wait_with_force,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use core_node_api::encoding::NodeBuildFeedback;
@@ -155,6 +156,211 @@ async fn listen_for_node_build_runs_build_cmd() {
         !source_marker.exists(),
         "build_cmd should NOT have created marker file in source dir at {}",
         source_marker.display()
+    );
+}
+
+/// Polls until `pid_file` exists and holds a non-empty PID, returning it.
+async fn wait_for_pid_file(pid_file: &Path) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(contents) = std::fs::read_to_string(pid_file) {
+            let pid = contents.trim();
+            if !pid.is_empty() {
+                return pid.to_string();
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("build_cmd did not record its PID within 30s");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Polls until the entity for `(name, tag)` is observably in `Building`.
+async fn wait_for_building(node_stack: &node_stack::NodeStack, name: &str, tag: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(handle) = node_stack.find(name, tag)
+            && matches!(
+                handle.read().stage(),
+                node_stack::NodeStage::Building { .. }
+            )
+        {
+            return;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("entity did not enter Building within 30s");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Polls `kill -0 <pid>` (no `libc`/`unsafe`) until the process is gone.
+async fn wait_until_pid_dead(pid: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let alive = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !alive {
+            return;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("build subprocess (pid {pid}) was not killed within 30s");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// `node build --force` on a node whose build is stuck mid-flight (the daemon
+/// task kept running after the CLI was Ctrl+C'd) must cancel + SIGKILL the
+/// in-flight build, reuse the staged working dir, and succeed — rather than
+/// rejecting with "is in stage `Building`; cannot build".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
+    const TARGET_NODE_NAME: &str = "force_build_node";
+    const TARGET_NODE_TAG: &str = "v1";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // Coordination files live outside the working dir so the test can read/touch
+    // them regardless of where the build runs.
+    let control_dir = tempfile::tempdir().expect("control tempdir");
+    let pid_file = control_dir.path().join("build.pid");
+    let proceed_file = control_dir.path().join("proceed");
+
+    // The build_cmd records its PID, blocks on the proceed sentinel, then writes
+    // the marker (relative path → lands in the working dir → ends up archived).
+    let build_script = format!(
+        "echo $$ > '{}'; while [ ! -f '{}' ]; do sleep 0.05; done; touch '{}'",
+        pid_file.display(),
+        proceed_file.display(),
+        BUILD_CMD_MARKER_FILE
+    );
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            execution: {
+                language: "rust",
+                build_cmd: ["{BUILD_SCRIPT}"],
+                run_cmd: ["sleep", "10"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
+    .replace("{BUILD_SCRIPT}", &build_script);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let (node_name, node_tag) =
+        stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
+
+    // The staged working dir (only surviving copy of the source) the forced
+    // build must reuse.
+    let staged_path = node_stack
+        .find(&node_name, &node_tag)
+        .expect("entity should exist after add")
+        .read()
+        .pending_working_dir()
+        .map(|g| g.path().to_path_buf())
+        .expect("a working dir should be staged after add");
+
+    // Fire the first build; it blocks in `Building` on the proceed sentinel —
+    // simulating a build whose CLI was Ctrl+C'd while the daemon keeps building.
+    let first_build = {
+        let messenger = started_core_node.caller_handle.clone();
+        let core_node_name = started_core_node.core_node_name.clone();
+        let node_name = node_name.clone();
+        let node_tag = node_tag.clone();
+        tokio::spawn(async move {
+            send_node_build_and_wait(
+                &messenger,
+                &core_node_name,
+                &node_name,
+                &node_tag,
+                GOAL_TIMEOUT,
+                RESULT_TIMEOUT,
+                Vec::new(),
+                None,
+            )
+            .await
+        })
+    };
+
+    let first_pid = wait_for_pid_file(&pid_file).await;
+    wait_for_building(&node_stack, &node_name, &node_tag).await;
+
+    // Force-rebuild: must cancel + SIGKILL the in-flight build and take over.
+    let forced_build = {
+        let messenger = started_core_node.caller_handle.clone();
+        let core_node_name = started_core_node.core_node_name.clone();
+        let node_name = node_name.clone();
+        let node_tag = node_tag.clone();
+        tokio::spawn(async move {
+            send_node_build_and_wait_with_force(
+                &messenger,
+                &core_node_name,
+                &node_name,
+                &node_tag,
+                GOAL_TIMEOUT,
+                RESULT_TIMEOUT,
+                Vec::new(),
+                None,
+                true,
+            )
+            .await
+        })
+    };
+
+    // The in-flight build's subprocess must actually be killed by the force.
+    wait_until_pid_dead(&first_pid).await;
+
+    // Let the (reused) forced build run to completion.
+    std::fs::write(&proceed_file, b"").expect("touch proceed file");
+
+    let forced_result = forced_build
+        .await
+        .expect("forced build task should not panic")
+        .expect("forced build request should succeed");
+    assert!(
+        forced_result.success,
+        "forced build must succeed (not be rejected as `Building`), got error: {:?}",
+        forced_result.error_message
+    );
+
+    // The superseded first build reports a cancellation failure, not success.
+    let first_result = first_build
+        .await
+        .expect("first build task should not panic")
+        .expect("first build request should resolve");
+    assert!(
+        !first_result.success,
+        "the superseded first build must not report success"
+    );
+
+    // The entity ends `Ready` and the archive proves the reused build_cmd ran to
+    // completion.
+    let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
+    assert!(
+        archive_contains_entry(&archive_path, BUILD_CMD_MARKER_FILE),
+        "the forced build should have run build_cmd to completion in the reused working dir"
+    );
+
+    // The staged working dir was reused and then consumed by the successful
+    // forced build (it was re-attached on cancel, not deleted).
+    assert!(
+        !staged_path.exists(),
+        "the reused working dir should be cleaned up after a successful build"
     );
 }
 

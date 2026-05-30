@@ -472,7 +472,7 @@ impl Apptainer {
     }
 
     pub fn version(&self) -> Result<String> {
-        let mut cmd = self.command(&["--version"], &[])?;
+        let mut cmd = self.command(&["--version"], &[], None)?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let output = cmd.output().map_err(Error::from)?;
         if !output.status.success() {
@@ -484,6 +484,39 @@ impl Apptainer {
             });
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// SIGKILL the guest-side build process group recorded at `pgid_file` by the
+    /// Lima build wrapper (see [`ApptainerCommand::cancel_pgid_file`]).
+    ///
+    /// On the native backend (Linux) the host process-group SIGKILL already
+    /// reached the whole build tree, so this is a no-op. Under Lima (macOS) the
+    /// guest `apptainer build` and its `%post` children live in a separate
+    /// kernel; this reaches into the VM and kills the whole group. Best-effort:
+    /// a missing or already-dead group is not an error.
+    pub fn kill_inflight_build(&self, pgid_file: &Path) -> Result<()> {
+        match &self.backend {
+            Backend::Native { .. } => Ok(()),
+            Backend::Lima {
+                limactl_path,
+                lima_home,
+                ..
+            } => {
+                let guest_pgid = self.translate_path(pgid_file)?;
+                let script = lima::lima_kill_pgid_script(&guest_pgid);
+                Command::new(limactl_path)
+                    .env("LIMA_HOME", lima_home)
+                    .arg("shell")
+                    .arg(lima::LIMA_INSTANCE)
+                    .arg("--")
+                    .arg("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .status()
+                    .map_err(Error::from)?;
+                Ok(())
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -518,6 +551,7 @@ impl Apptainer {
             flags: Vec::new(),
             bind_mounts: Vec::new(),
             lima_shell_extra_args: Vec::new(),
+            cancel_pgid_file: None,
         }
     }
 
@@ -535,6 +569,7 @@ impl Apptainer {
             flags: Vec::new(),
             bind_mounts: Vec::new(),
             lima_shell_extra_args: Vec::new(),
+            cancel_pgid_file: None,
         }
     }
 
@@ -551,6 +586,7 @@ impl Apptainer {
             flags: Vec::new(),
             bind_mounts: Vec::new(),
             lima_shell_extra_args: Vec::new(),
+            cancel_pgid_file: None,
         }
     }
 
@@ -623,7 +659,17 @@ impl Apptainer {
     /// On Linux: runs `{apptainer_bin} <args...>` directly.
     /// On macOS: runs `{limactl} shell peppy -- {guest_apptainer_bin} <args...>` to
     /// execute inside the Lima VM using the synced guest-side binary.
-    fn command(&self, args: &[&str], lima_shell_extra_args: &[String]) -> Result<Command> {
+    ///
+    /// `guest_pgid_file` (Lima only) wraps the guest invocation so apptainer runs
+    /// as a process-group leader recording its PGID there; see
+    /// [`lima::lima_guest_build_argv`]. The native backend ignores it (the host
+    /// process group already covers the whole build tree).
+    fn command(
+        &self,
+        args: &[&str],
+        lima_shell_extra_args: &[String],
+        guest_pgid_file: Option<&Path>,
+    ) -> Result<Command> {
         match &self.backend {
             Backend::Native { apptainer_bin } => {
                 let mut cmd = Command::new(apptainer_bin);
@@ -643,8 +689,15 @@ impl Apptainer {
                     cmd.arg(arg);
                 }
                 cmd.arg("--");
-                cmd.arg(apptainer_bin);
-                cmd.args(args);
+                match guest_pgid_file {
+                    Some(pgid_file) => {
+                        cmd.args(lima::lima_guest_build_argv(apptainer_bin, args, pgid_file));
+                    }
+                    None => {
+                        cmd.arg(apptainer_bin);
+                        cmd.args(args);
+                    }
+                }
                 Ok(cmd)
             }
         }
@@ -740,6 +793,10 @@ pub struct ApptainerCommand<'a> {
     flags: Vec<String>,
     bind_mounts: Vec<BindMount>,
     lima_shell_extra_args: Vec<String>,
+    /// When set, run the guest build (Lima only) as a process-group leader that
+    /// records its PGID here, so [`Apptainer::kill_inflight_build`] can SIGKILL
+    /// the whole guest group on cancel. Only meaningful for `build`.
+    cancel_pgid_file: Option<PathBuf>,
 }
 
 impl<'a> ApptainerCommand<'a> {
@@ -811,6 +868,18 @@ impl<'a> ApptainerCommand<'a> {
         self
     }
 
+    /// Make the guest build a process-group leader that records its PGID to
+    /// `pgid_file`, so [`Apptainer::kill_inflight_build`] can SIGKILL the whole
+    /// guest group (apptainer + its `%post` children) on cancellation.
+    ///
+    /// Only effective under the Lima backend (macOS) and only for `build`
+    /// commands. On the native backend (Linux) the host process-group SIGKILL
+    /// already covers the build tree, so this is ignored.
+    pub fn cancel_pgid_file(mut self, pgid_file: &Path) -> Self {
+        self.cancel_pgid_file = Some(pgid_file.to_path_buf());
+        self
+    }
+
     // -----------------------------------------------------------------------
     // Generic flag / args
     // -----------------------------------------------------------------------
@@ -852,12 +921,26 @@ impl<'a> ApptainerCommand<'a> {
     /// Stdout and stderr are inherited (not piped), so build/run progress
     /// output flows directly to the terminal.
     pub fn spawn(self) -> Result<Child> {
+        let mut cmd = self.assemble_command()?;
+        cmd.spawn().map_err(Error::from)
+    }
+
+    /// Assemble the fully-configured [`Command`] (subcommand + flags + binds +
+    /// positional args, wrapped in `limactl shell` under Lima) shared by the
+    /// terminal methods. Resolves the cancel-PGID file to its guest path so the
+    /// Lima build can be run as a process-group leader.
+    fn assemble_command(&self) -> Result<Command> {
         let args = self.build_args()?;
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let mut cmd = self
-            .facade
-            .command(&str_args, &self.lima_shell_extra_args)?;
-        cmd.spawn().map_err(Error::from)
+        let guest_pgid_file = match &self.cancel_pgid_file {
+            Some(pgid_file) => Some(self.facade.translate_path(pgid_file)?),
+            None => None,
+        };
+        self.facade.command(
+            &str_args,
+            &self.lima_shell_extra_args,
+            guest_pgid_file.as_deref(),
+        )
     }
 
     /// Build the fully-configured [`Command`] without spawning it.
@@ -869,20 +952,14 @@ impl<'a> ApptainerCommand<'a> {
     /// The returned command has **no stdio overrides** — stdout, stderr, and
     /// stdin all default to `Inherit`.
     pub fn into_std_command(self) -> Result<Command> {
-        let args = self.build_args()?;
-        let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        self.facade.command(&str_args, &self.lima_shell_extra_args)
+        self.assemble_command()
     }
 
     /// Run the command to completion and return its captured output.
     ///
     /// Stdout and stderr are piped (captured).
     pub fn output(self) -> Result<Output> {
-        let args = self.build_args()?;
-        let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let mut cmd = self
-            .facade
-            .command(&str_args, &self.lima_shell_extra_args)?;
+        let mut cmd = self.assemble_command()?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.output().map_err(Error::from)
     }

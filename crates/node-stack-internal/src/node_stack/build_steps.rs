@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use config::consts::PeppyDirs;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
@@ -96,6 +97,11 @@ pub(super) struct ContainerBuildInputs<'a> {
     pub lima_shell_extra_args: &'a [String],
     pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
     pub log_file: Arc<StdMutex<File>>,
+    /// Fired when a `--force` build supersedes this one. On Linux the
+    /// host process-group SIGKILL is enough; on macOS the guest-side apptainer
+    /// (and its `%post` children) live in a separate kernel and are killed via
+    /// [`containers::Apptainer::kill_inflight_build`].
+    pub cancel_token: &'a CancellationToken,
 }
 
 /// Builds a container image using the Apptainer facade.
@@ -136,7 +142,20 @@ pub(super) async fn build_container_image(
     let output_path = inputs.working_dir.join(&sif_name);
     let def_path = inputs.working_dir.join(inputs.def_file);
 
-    let mut cmd_builder = apptainer.build(&output_path, &def_path);
+    // On macOS the build runs inside a Lima VM, so SIGKILL'ing the host
+    // `limactl shell` does not reach the guest `apptainer build` or its
+    // `%post` children. The facade therefore runs the guest build as a
+    // process-group leader and records its PGID here, which
+    // `kill_inflight_build` uses on cancel to SIGKILL the whole guest group.
+    // Kept as a sibling of `working_dir` (still under `$HOME`, so guest-visible
+    // at the same path) but *outside* it, so the def file's `%files .` does not
+    // bake it into the image. A no-op file on the native backend.
+    let pgid_file = pgid_file_path(inputs.working_dir);
+    let _pgid_cleanup = PgidFileCleanup(&pgid_file);
+
+    let mut cmd_builder = apptainer
+        .build(&output_path, &def_path)
+        .cancel_pgid_file(&pgid_file);
     for arg in inputs.apptainer_build_extra_args {
         cmd_builder = cmd_builder.raw_flag(arg);
     }
@@ -157,8 +176,28 @@ pub(super) async fn build_container_image(
     let child = spawn_in_process_group(cmd)
         .map_err(|e| format!("Failed to spawn apptainer build: {}", e))?;
 
-    let (status, stderr_tail) =
-        stream_child_output(child, inputs.feedback_tx, inputs.log_file, true).await?;
+    let stream_result = stream_child_output(
+        child,
+        inputs.feedback_tx,
+        inputs.log_file,
+        true,
+        inputs.cancel_token,
+    )
+    .await;
+
+    // A `--force` supersede SIGKILL'd + reaped the host child above; now reach
+    // into the VM and kill the guest process group too (no-op on Linux). Reuses
+    // the already-initialized facade. Runs on a blocking thread because the
+    // guest kill shells out to `limactl`.
+    if inputs.cancel_token.is_cancelled() {
+        let pgid_file_for_kill = pgid_file.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = apptainer.kill_inflight_build(&pgid_file_for_kill);
+        })
+        .await;
+    }
+
+    let (status, stderr_tail) = stream_result?;
 
     if !status.success() {
         let mut msg = format!("apptainer build failed with status {}", status);
@@ -170,6 +209,26 @@ pub(super) async fn build_container_image(
     }
 
     Ok(())
+}
+
+/// Path of the guest build's PGID file: a sibling of `working_dir` (same parent,
+/// under `$HOME`) with a `.pgid` suffix, so it is guest-visible but not captured
+/// by the def file's `%files .`.
+fn pgid_file_path(working_dir: &Path) -> PathBuf {
+    let mut os = working_dir.as_os_str().to_owned();
+    os.push(".pgid");
+    PathBuf::from(os)
+}
+
+/// Removes the guest-build PGID file on drop. The file is written by the guest
+/// build wrapper (Lima) and never created on the native backend, so removal is
+/// best-effort and silent.
+struct PgidFileCleanup<'a>(&'a Path);
+
+impl Drop for PgidFileCleanup<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0);
+    }
 }
 
 /// Expands `${VAR}` references in a string using the provided environment
@@ -217,6 +276,7 @@ pub(super) async fn run_build_cmd(
     env_vars: &[(String, String)],
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
+    cancel_token: &CancellationToken,
 ) -> std::result::Result<(), String> {
     let Some(cmd) = build_cmd else {
         return Ok(());
@@ -285,7 +345,8 @@ pub(super) async fn run_build_cmd(
     let child = spawn_in_process_group(command)
         .map_err(|e| format!("failed to execute build_cmd `{}`: {}", full_cmd_display, e))?;
 
-    let (status, _) = stream_child_output(child, feedback_tx, log_file, false).await?;
+    let (status, _) =
+        stream_child_output(child, feedback_tx, log_file, false, cancel_token).await?;
 
     if !status.success() {
         return Err(format!(
@@ -326,6 +387,7 @@ mod tests {
         let log_file = Arc::new(StdMutex::new(
             tempfile::tempfile().expect("tempfile should succeed"),
         ));
+        let cancel_token = CancellationToken::new();
         let err = build_container_image(ContainerBuildInputs {
             working_dir,
             node_name: "sensor",
@@ -335,6 +397,7 @@ mod tests {
             lima_shell_extra_args: &[],
             feedback_tx: &feedback_tx,
             log_file,
+            cancel_token: &cancel_token,
         })
         .await
         .expect_err("unsafe tag must be rejected");

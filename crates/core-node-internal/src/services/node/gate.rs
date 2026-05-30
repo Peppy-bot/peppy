@@ -3,9 +3,13 @@
 //!
 //! Each of those actions allows only one in-flight task at a time and rejects
 //! concurrent goals with `"action already in progress (times out in Xs)"`.
-//! `node_add` and `node_build` additionally support `--force`, which aborts
-//! the in-flight task before admitting the new one. Actions without force
-//! simply never pass `force = true` to [`ConcurrencyGate::try_admit`].
+//! `node_add` and `node_build` additionally support `--force`, which cancels
+//! the in-flight task before admitting the new one. On force, `try_admit`
+//! signals the old task's cancel token and hands its `JoinHandle` back to the
+//! caller (see [`Admission::Admitted::superseded`]); the caller decides whether
+//! to `abort()` it (`node_add`, which overwrites the entity) or `await` its
+//! cooperative teardown (`node_build`, which reuses the staged working dir).
+//! Actions without force simply never pass `force = true`.
 //!
 //! All gate state lives behind a single `parking_lot::Mutex`, so admission
 //! decisions never await. Unlike a poll-based design, the gate does not retain
@@ -24,14 +28,14 @@
 //! only be the goal currently being handled. The one gate access that *is*
 //! concurrent is the in-flight work task freeing its slot when it finishes.
 //!
-//! A `--force` goal can abort that task and admit a replacement while the
-//! aborted task is still winding down — `JoinHandle::abort()` is cooperative and
-//! does not interrupt a synchronous stretch between `.await`s — so a naive
-//! release could clear the *replacement's* slot and break the single-goal
-//! invariant. Each admission therefore carries a monotonic `generation`: the
-//! work task holds a [`GoalSlotGuard`] for its generation, and the guard's drop
-//! frees the slot only while that generation is still current. A superseded
-//! task's release is thus a safe no-op.
+//! A `--force` goal supersedes that task and admits a replacement while the
+//! superseded task is still winding down (whether it is later `abort()`ed or
+//! awaited to cooperative completion) — so a naive release could clear the
+//! *replacement's* slot and break the single-goal invariant. Each admission
+//! therefore carries a monotonic `generation`: the work task holds a
+//! [`GoalSlotGuard`] for its generation, and the guard's drop frees the slot
+//! only while that generation is still current. A superseded task's release is
+//! thus a safe no-op.
 
 use parking_lot::Mutex;
 use peppylib::messaging::GoalContext;
@@ -47,7 +51,16 @@ pub(crate) enum Admission {
     /// `generation` identifies this admission — the work task hands it to its
     /// [`GoalSlotGuard`] so the slot is freed only while this admission is still
     /// the current one (a later `--force` goal bumps the generation).
-    Admitted { generation: u64 },
+    Admitted {
+        generation: u64,
+        /// The task this admission force-displaced, if any. Its cancel token has
+        /// already been signaled inside `try_admit`; the caller awaits this
+        /// handle (bounded) so the old task's cooperative teardown — SIGKILL +
+        /// reap the build child, roll the entity back to `Added`, re-attach the
+        /// working dir — finishes before the new build starts. `None` on a cold
+        /// admission (nothing was running).
+        superseded: Option<JoinHandle<()>>,
+    },
     /// A goal is already in flight and force was not requested.
     AlreadyRunning { remaining_secs: u64 },
 }
@@ -95,13 +108,17 @@ impl ConcurrencyGate {
 
     /// Admits a new goal, starting the gate clock and returning the admission's
     /// generation. When a goal is already in flight and `force` is true, the
-    /// previous task is cancelled and aborted before admission proceeds
-    /// (aborting drops its `GoalContext`, which closes the old goal's feedback
-    /// stream and evicts its registry slot). Otherwise the in-flight goal's
-    /// `remaining_secs` is returned and the gate is left unchanged so the caller
-    /// can encode a rejection.
+    /// previous task's cancel token is signaled and its `JoinHandle` is *handed
+    /// back* in [`Admission::Admitted::superseded`] — it is deliberately NOT
+    /// aborted, because `JoinHandle::abort` drops the task future and skips the
+    /// cooperative teardown (kill+reap the build child, roll the entity back to
+    /// `Added`). The caller awaits the returned handle (bounded) so that
+    /// teardown completes before the new build starts. Otherwise the in-flight
+    /// goal's `remaining_secs` is returned and the gate is left unchanged so the
+    /// caller can encode a rejection.
     pub(crate) fn try_admit(&self, timeout_secs: u64, force: bool) -> Admission {
         let mut state = self.state.lock();
+        let mut superseded = None;
         if let Some(running) = &state.running {
             if !force {
                 let remaining = Duration::from_secs(running.timeout_secs)
@@ -111,14 +128,15 @@ impl ConcurrencyGate {
                     remaining_secs: remaining,
                 };
             }
-            // Force: signal cancellation so the spawned task can run cleanup,
-            // then hard-abort it.
+            // Force: signal cancellation so the spawned task runs its cooperative
+            // teardown, then hand its handle back to the caller to await. Do NOT
+            // abort — that would drop the future and skip the teardown. Bumping
+            // the generation below makes the old task's `GoalSlotGuard` drop a
+            // no-op, so its eventual release cannot clobber this admission.
             if let Some(token) = state.cancel_token.take() {
                 token.cancel();
             }
-            if let Some(handle) = state.running_task.take() {
-                handle.abort();
-            }
+            superseded = state.running_task.take();
         }
         state.running = Some(RunningInfo {
             started_at: Instant::now(),
@@ -129,6 +147,7 @@ impl ConcurrencyGate {
         state.generation = state.generation.wrapping_add(1);
         Admission::Admitted {
             generation: state.generation,
+            superseded,
         }
     }
 
@@ -246,7 +265,7 @@ mod tests {
 
     fn admit(gate: &ConcurrencyGate, force: bool) -> u64 {
         match gate.try_admit(60, force) {
-            Admission::Admitted { generation } => generation,
+            Admission::Admitted { generation, .. } => generation,
             Admission::AlreadyRunning { .. } => panic!("expected admission"),
         }
     }
@@ -320,5 +339,48 @@ mod tests {
         drop(gate.clone().into_slot_guard(generation));
         // Slot is free again, so a fresh goal is admitted rather than rejected.
         assert_eq!(admit(&gate, false), generation + 1);
+    }
+
+    /// A `--force` admission must hand the displaced task's `JoinHandle` back to
+    /// the caller (so it can await cooperative teardown) instead of aborting it.
+    /// The token is signaled, so awaiting the returned handle resolves `Ok(())`
+    /// — proving the task finished cooperatively rather than being `abort()`ed
+    /// (which would make the join return a cancelled `JoinError`).
+    #[tokio::test]
+    async fn force_supersede_returns_old_handle_without_abort() {
+        let gate = ConcurrencyGate::new();
+
+        // Cold admission, then register a real task that runs until its token
+        // fires — mirroring how a build handler installs its task via `set_task`.
+        let gen_a = admit(&gate, false);
+        let token = CancellationToken::new();
+        let token_for_task = token.clone();
+        let task = tokio::spawn(async move {
+            token_for_task.cancelled().await;
+        });
+        gate.set_task(task, token);
+
+        // Force-admit over it.
+        let (gen_b, superseded) = match gate.try_admit(60, true) {
+            Admission::Admitted {
+                generation,
+                superseded,
+            } => (generation, superseded),
+            Admission::AlreadyRunning { .. } => panic!("force admission must succeed"),
+        };
+        assert_eq!(gen_b, gen_a + 1, "force admission bumps the generation");
+        assert!(is_running(&gate));
+
+        let old_task = superseded.expect("the displaced task must be handed back");
+        assert!(
+            !old_task.is_finished(),
+            "the displaced task must not be aborted by `try_admit`"
+        );
+        let join = old_task.await;
+        assert!(
+            join.is_ok(),
+            "the displaced task should finish cooperatively after its token was signaled, \
+             not be aborted (a cancelled join would be `Err`)"
+        );
     }
 }

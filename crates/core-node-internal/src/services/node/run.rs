@@ -322,7 +322,8 @@ async fn handle_goal_request(
     };
 
     let generation = match gate.try_admit(goal.timeout_secs, false) {
-        super::gate::Admission::Admitted { generation } => generation,
+        // `node_run` never forces, so nothing is ever superseded here.
+        super::gate::Admission::Admitted { generation, .. } => generation,
         super::gate::Admission::AlreadyRunning { remaining_secs } => {
             reject_goal(
                 pending,

@@ -13,6 +13,7 @@ use core_node_api::{
 use tokio::process::Child;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::build_io::{FeedbackLine, FeedbackStream, OutputReaderHooks, spawn_output_reader_async};
 use crate::error::{Error, Result};
@@ -153,6 +154,10 @@ pub struct BuildContext<'a> {
     /// `inject_rust_build_env`, and `inject_node_runtime_env`. Container
     /// nodes ignore this field — apptainer build does not consume it.
     pub env_vars: &'a [(String, String)],
+    /// Fired when a `--force` build supersedes this one. The build I/O layer
+    /// SIGKILLs and reaps the build subprocess so the superseding build can
+    /// reuse the working dir without racing a dying process.
+    pub cancel_token: CancellationToken,
 }
 
 /// Inputs required to drive [`NodeEntity::prepare_and_spawn`] to completion.
@@ -340,6 +345,31 @@ impl NodeEntity {
         self.generation
     }
 
+    /// Rolls a `Building` entity back to `Added`, preserving `config_path`, and
+    /// re-attaches the staged working-directory guard so a follow-up build can
+    /// reuse it. Used by the `node_build` `--force` cancellation path: the
+    /// superseded build leaves the entity buildable again rather than removing
+    /// it (the staged working dir is the only surviving copy of the source).
+    ///
+    /// The caller ([`super::NodeStack::rollback_to_added_if_matches`]) holds the
+    /// stack + entity write locks and has already verified the entity is
+    /// `Building` with a matching generation. Deliberately does NOT bump the
+    /// generation: this is the same entity, re-presented as buildable, and the
+    /// superseding build captures the current generation via its own lookup.
+    pub fn rollback_building_to_added(&mut self, working_dir: Arc<WorkingDirGuard>) {
+        let NodeStage::Building { config_path } = &self.stage else {
+            debug_assert!(
+                false,
+                "rollback_building_to_added called on a non-Building entity"
+            );
+            return;
+        };
+        self.stage = NodeStage::Added {
+            config_path: config_path.clone(),
+        };
+        self.pending_working_dir = Some(working_dir);
+    }
+
     pub fn config(&self) -> &NodeConfig {
         &self.config
     }
@@ -450,6 +480,7 @@ impl NodeEntity {
                     lima_shell_extra_args,
                     feedback_tx: ctx.feedback_tx,
                     log_file: Arc::clone(&ctx.log_file),
+                    cancel_token: &ctx.cancel_token,
                 })
                 .await
                 .map_err(|reason| Error::BuildFailed {
@@ -465,6 +496,7 @@ impl NodeEntity {
                     ctx.env_vars,
                     ctx.feedback_tx,
                     Arc::clone(&ctx.log_file),
+                    &ctx.cancel_token,
                 )
                 .await
                 .map_err(|reason| Error::BuildFailed {

@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 /// Maximum number of stderr lines to retain for error diagnostics.
 /// Used by both the build (apptainer/archive) path and the start (node run) path.
@@ -142,14 +143,18 @@ pub fn spawn_in_process_group(
 /// collected stderr tail lines.
 ///
 /// **Cancellation contract:** the child must have been spawned via
-/// [`spawn_in_process_group`] so that if this future is dropped before the
-/// child exits, the internal `KillGuard` can SIGKILL the entire subprocess
-/// tree.
+/// [`spawn_in_process_group`] so that the entire subprocess tree can be
+/// signaled. When `cancel_token` fires before the child exits, the child's
+/// process group is SIGKILL'd *and reaped* (awaited) before this returns
+/// `Err("build cancelled")`, so no zombie lingers and the working dir is free
+/// for a superseding build. If this future is instead dropped outright, the
+/// `KillGuard` still SIGKILLs the group as a fallback (without reaping).
 pub async fn stream_child_output(
     mut child: Box<dyn ChildWrapper>,
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
     collect_stderr_tail: bool,
+    cancel_token: &CancellationToken,
 ) -> std::result::Result<(std::process::ExitStatus, Vec<String>), String> {
     let stderr_tail: Option<Arc<StdMutex<VecDeque<String>>>> = if collect_stderr_tail {
         Some(Arc::new(StdMutex::new(VecDeque::with_capacity(
@@ -210,11 +215,21 @@ pub async fn stream_child_output(
         child: child.as_mut(),
         completed: false,
     };
-    let status = guard
-        .child
-        .wait()
-        .await
-        .map_err(|e| format!("failed to wait for process: {}", e))?;
+    let status = tokio::select! {
+        biased;
+        wait_result = guard.child.wait() => {
+            wait_result.map_err(|e| format!("failed to wait for process: {}", e))?
+        }
+        _ = cancel_token.cancelled() => {
+            // SIGKILL the whole process group, then *await* the child so it is
+            // reaped before we return — the superseding build must not race a
+            // dying subprocess over the same working dir.
+            let _ = guard.child.start_kill();
+            let _ = guard.child.wait().await;
+            guard.completed = true;
+            return Err("build cancelled".to_string());
+        }
+    };
     guard.completed = true;
 
     // Join reader tasks and surface the first error so build diagnostics

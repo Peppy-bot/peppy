@@ -817,6 +817,59 @@ impl NodeStack {
         true
     }
 
+    /// Rolls the config at `(name, tag)` back from `Building` to `Added` and
+    /// re-attaches `working_dir`, but only if its current entity is `Building`
+    /// AND the underlying `Arc<RwLock<NodeEntity>>` is the same handle the caller
+    /// holds and the entity's `generation` matches.
+    ///
+    /// Used by the `node_build` `--force` cancellation path: rather than
+    /// removing the entity (as the failure path does), the superseded build
+    /// leaves it buildable again so the forced rebuild can reuse the same staged
+    /// working dir (the only surviving copy of the source). The handle +
+    /// generation + `Building` check rules out the race where a concurrent
+    /// `push_config` replaced the entity in-place: if any differs, the entity is
+    /// no longer the one we built and we leave the new state untouched.
+    ///
+    /// Returns `true` if the rollback was applied, `false` otherwise.
+    pub fn rollback_to_added_if_matches(
+        &self,
+        name: &str,
+        tag: &str,
+        expected_handle: &Arc<RwLock<NodeEntity>>,
+        expected_generation: u64,
+        working_dir: Arc<WorkingDirGuard>,
+    ) -> bool {
+        // Hold the stack write lock (not read) so a concurrent `push_config`
+        // cannot swap the graph node between the identity check and the entity
+        // mutation, mirroring `remove_config_if_matches`.
+        let guard = self.shared.write();
+        let key = NodeKey::new(name, tag);
+
+        if guard.is_root(&key) {
+            return false;
+        }
+
+        let Some(&index) = guard.key_to_index.get(&key) else {
+            return false;
+        };
+
+        let Some(current) = guard.graph.node_weight(index).cloned() else {
+            return false;
+        };
+        if !Arc::ptr_eq(&current, expected_handle) {
+            return false;
+        }
+
+        let mut entity = current.write();
+        if entity.generation() != expected_generation
+            || !matches!(entity.stage(), NodeStage::Building { .. })
+        {
+            return false;
+        }
+        entity.rollback_building_to_added(working_dir);
+        true
+    }
+
     /// Slot identity for [`NodeStack::restore_snapshot_if_matches`]: the
     /// name/tag key plus the handle+generation the caller captured before
     /// starting the rebuild. Bundled so callers can express the rollback

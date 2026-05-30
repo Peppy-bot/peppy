@@ -101,7 +101,8 @@ impl GoalHandler for RepoRefreshGoalHandler {
         }
 
         let generation = match self.gate.try_admit(300, false) {
-            Admission::Admitted { generation } => generation,
+            // `repo_refresh` never forces, so nothing is ever superseded here.
+            Admission::Admitted { generation, .. } => generation,
             Admission::AlreadyRunning { .. } => {
                 reject_goal(
                     pending,

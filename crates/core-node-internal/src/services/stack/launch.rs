@@ -1463,7 +1463,8 @@ async fn handle_goal_request(
     // `timeout_secs` is gate-reporting only; 0 indicates "no enforced budget"
     // (when --max-timeout-secs is unset).
     let generation = match gate.try_admit(goal.max_timeout_secs.unwrap_or(0), false) {
-        Admission::Admitted { generation } => generation,
+        // `stack_launch` never forces, so nothing is ever superseded here.
+        Admission::Admitted { generation, .. } => generation,
         Admission::AlreadyRunning { .. } => {
             reject_goal(
                 pending,
