@@ -155,6 +155,8 @@ const NODE_COLOR: &str = "\x1b[36m"; // cyan — node labels
 const COUNT_COLOR: &str = "\x1b[32m"; // green — per-node instance counts
 const INSTANCE_COLOR: &str = "\x1b[35m"; // magenta — instance ids
 const BINDING_COLOR: &str = "\x1b[33m"; // yellow — slot bindings
+const STATUS_RUNNING_COLOR: &str = "\x1b[32m"; // green — a running instance
+const STATUS_STARTING_COLOR: &str = "\x1b[33m"; // yellow — a starting instance
 const RESET: &str = "\x1b[0m";
 
 /// Wraps `s` in `code`/reset when `colorize` is set, otherwise returns it
@@ -243,9 +245,10 @@ fn render_nodes_table(out: &mut String, nodes: &[SerializedNode], colorize: bool
 
 /// Headers for the per-instance bindings table. The node→instance→binding
 /// hierarchy is conveyed by row grouping rather than nesting columns: a node
-/// label appears only on the first row of its group, an instance id only on
-/// the first of its binding rows, and a horizontal rule separates node groups.
-const BINDING_HEADERS: [&str; 3] = ["NODE", "INSTANCE", "BINDINGS"];
+/// label appears only on the first row of its group, an instance id (and its
+/// status) only on the first of its binding rows, and a horizontal rule
+/// separates node groups.
+const BINDING_HEADERS: [&str; 4] = ["NODE", "INSTANCE", "STATUS", "BINDINGS"];
 
 /// Renders the per-instance bindings table. `nodes` must already be filtered
 /// to entries with at least one instance — the caller prints `(none)` when
@@ -254,19 +257,21 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
     use std::fmt::Write as _;
 
     // One block of rows per node. Within a block, the NODE cell is populated
-    // only on the first row and each instance's INSTANCE cell only on the
-    // first of its binding rows; the rest are blank continuation cells.
-    let blocks: Vec<Vec<[String; 3]>> = nodes
+    // only on the first row and each instance's INSTANCE and STATUS cells only
+    // on the first of its binding rows; the rest are blank continuation cells.
+    let blocks: Vec<Vec<[String; 4]>> = nodes
         .iter()
         .map(|node| {
-            let mut rows: Vec<[String; 3]> = Vec::new();
+            let mut rows: Vec<[String; 4]> = Vec::new();
             let mut node_cell = paint(colorize, NODE_COLOR, &node.label());
             for instance in &node.instances {
                 let mut instance_cell = paint(colorize, INSTANCE_COLOR, &instance.instance_id);
+                let mut status_cell = format_instance_status(instance, colorize);
                 for binding in format_instance_bindings(instance, colorize) {
                     rows.push([
                         std::mem::take(&mut node_cell),
                         std::mem::take(&mut instance_cell),
+                        std::mem::take(&mut status_cell),
                         binding,
                     ]);
                 }
@@ -275,7 +280,7 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
         })
         .collect();
 
-    let mut widths: [usize; 3] = BINDING_HEADERS.map(col_width);
+    let mut widths: [usize; 4] = BINDING_HEADERS.map(col_width);
     for row in blocks.iter().flatten() {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(col_width(cell));
@@ -283,7 +288,7 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
     }
 
     write_border(out, &widths, '┌', '┬', '┐');
-    let header_row: [String; 3] = BINDING_HEADERS.map(|h| h.to_string());
+    let header_row: [String; 4] = BINDING_HEADERS.map(|h| h.to_string());
     write_row(out, &header_row, &widths);
     write_border(out, &widths, '├', '┼', '┤');
     for (group_idx, block) in blocks.iter().enumerate() {
@@ -298,6 +303,18 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
     }
     write_border(out, &widths, '└', '┴', '┘');
     let _ = writeln!(out);
+}
+
+/// The instance's lifecycle state for the STATUS column. Tinted as a
+/// traffic-light cue — green once running, yellow while still starting — and
+/// rendered from the same `InstanceState` that `peppy node info` shows as
+/// `[running]`/`[starting]`, without the brackets since the column delimits it.
+fn format_instance_status(instance: &SerializedInstance, colorize: bool) -> String {
+    let color = match instance.state {
+        InstanceState::Running => STATUS_RUNNING_COLOR,
+        InstanceState::Starting => STATUS_STARTING_COLOR,
+    };
+    paint(colorize, color, &instance.state.to_string())
 }
 
 /// One display string per slot binding on the instance, in `link_id →
@@ -427,11 +444,10 @@ fn shorten_home_with(path: &str, home: &str) -> String {
     if path == home {
         return "~".to_string();
     }
-    if let Some(rest) = path.strip_prefix(home) {
-        if rest.starts_with('/') {
+    if let Some(rest) = path.strip_prefix(home)
+        && rest.starts_with('/') {
             return format!("~{rest}");
         }
-    }
     path.to_string()
 }
 
@@ -608,6 +624,49 @@ mod tests {
         assert!(
             section.contains("arm → arm-1"),
             "binding line missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn bindings_table_renders_status_column() {
+        let nodes = vec![
+            binding_node("arm", vec![("starting-1", InstanceState::Starting, vec![])]),
+            binding_node(
+                "brain",
+                vec![(
+                    "br-1",
+                    InstanceState::Running,
+                    vec![
+                        (
+                            "camera",
+                            SlotBinding::Pinned {
+                                producer_instance_id: "cam-1".to_string(),
+                            },
+                        ),
+                        (
+                            "controller",
+                            SlotBinding::Pinned {
+                                producer_instance_id: "ctl-1".to_string(),
+                            },
+                        ),
+                    ],
+                )],
+            ),
+        ];
+        let out = format_stack_list(&nodes, &[], false);
+        let section = bindings_section(&out);
+
+        assert!(section.contains("STATUS"), "STATUS header missing:\n{out}");
+        assert!(
+            section.contains("starting"),
+            "starting status missing:\n{out}"
+        );
+        // The status renders once per instance: br-1 has two binding rows but
+        // its "running" status sits on the first only, blanked thereafter.
+        assert_eq!(
+            section.matches("running").count(),
+            1,
+            "status should appear once per instance:\n{out}"
         );
     }
 
