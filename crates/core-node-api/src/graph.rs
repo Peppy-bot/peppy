@@ -116,6 +116,13 @@ impl std::error::Error for UnknownNodeStage {}
 pub struct SerializedInstance {
     pub instance_id: String,
     pub state: InstanceState,
+    /// Liveness from the most recent `node_health` probe the `stack list`
+    /// service ran for this instance: `true` if it answered its `node_health`
+    /// service within the probe timeout, `false` otherwise. Defaulted to `true`
+    /// on decode so a `graph_json` payload from a producer that predates this
+    /// field is not read as spuriously unhealthy.
+    #[serde(default = "default_instance_healthy")]
+    pub healthy: bool,
     /// Validator-resolved per-slot bindings for this instance, keyed by the
     /// consumer manifest's `depends_on` link id. Mirrors
     /// [`config::runtime::NodeInstanceConfig::slot_bindings`] and the
@@ -125,6 +132,13 @@ pub struct SerializedInstance {
     /// parse.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: BTreeMap<String, SlotBinding>,
+}
+
+/// Decode default for [`SerializedInstance::healthy`]: assume healthy when the
+/// field is absent (an older producer) rather than flagging every instance
+/// unhealthy on version skew.
+fn default_instance_healthy() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +266,7 @@ mod tests {
                 .map(|(id, st)| SerializedInstance {
                     instance_id: (*id).into(),
                     state: *st,
+                    healthy: true,
                     slot_bindings: BTreeMap::new(),
                 })
                 .collect(),
@@ -397,6 +412,7 @@ mod tests {
         let instance = SerializedInstance {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
+            healthy: true,
             slot_bindings: bindings,
         };
 
@@ -412,6 +428,7 @@ mod tests {
         let instance = SerializedInstance {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
+            healthy: true,
             slot_bindings: BTreeMap::new(),
         };
         let json = serde_json::to_string(&instance).expect("serialize");

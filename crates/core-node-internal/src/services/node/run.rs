@@ -1112,6 +1112,43 @@ struct HealthMonitorParams {
     max_failures: u32,
 }
 
+/// The state change a single health-probe result drives, separated from its
+/// side effects (recording the flag on the instance, evicting the node) so the
+/// failure-streak/eviction logic is unit-testable without a live messenger or
+/// stack.
+struct ProbeTransition {
+    /// Health flag to record on the instance — read by `stack list` and
+    /// `node info`. `true` on a successful probe, `false` on a failed one.
+    healthy: bool,
+    /// Whether the consecutive-failure streak has reached `max_failures` and
+    /// the instance should be removed from the stack.
+    evict: bool,
+}
+
+/// Folds one probe result into `consecutive_failures` and reports the resulting
+/// health flag and whether the removal threshold has been reached. A success
+/// resets the streak and marks healthy; a failure grows the streak, marks
+/// unhealthy, and asks for eviction once the streak reaches `max_failures`.
+fn probe_transition(
+    probe_succeeded: bool,
+    consecutive_failures: &mut u32,
+    max_failures: u32,
+) -> ProbeTransition {
+    if probe_succeeded {
+        *consecutive_failures = 0;
+        ProbeTransition {
+            healthy: true,
+            evict: false,
+        }
+    } else {
+        *consecutive_failures += 1;
+        ProbeTransition {
+            healthy: false,
+            evict: *consecutive_failures >= max_failures,
+        }
+    }
+}
+
 /// Spawns a background task that periodically polls the node's health service.
 /// If `max_failures` consecutive health checks fail, the instance is removed
 /// from the node stack and the event is logged to the stack log.
@@ -1152,7 +1189,7 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 return;
             }
 
-            match ServiceMessenger::poll(
+            let poll_result = ServiceMessenger::poll(
                 &p.messenger,
                 &p.core_node_name,
                 &p.caller_instance_id,
@@ -1163,43 +1200,54 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 request_payload.clone(),
                 p.timeout,
             )
-            .await
-            {
-                Ok(_) => {
-                    consecutive_failures = 0;
-                }
-                Err(err) => {
-                    consecutive_failures += 1;
-                    debug!(
-                        "Health monitor: instance '{}' health check failed ({}/{}): {}",
-                        instance_id_str, consecutive_failures, p.max_failures, err
+            .await;
+
+            let transition = probe_transition(
+                poll_result.is_ok(),
+                &mut consecutive_failures,
+                p.max_failures,
+            );
+
+            // Record the probe result so `stack list` and `node info` can report
+            // health without re-probing. A failed probe flags the instance
+            // unhealthy on the first failure — before the `max_failures` removal
+            // threshold — so a flaky instance shows as unhealthy while it lasts.
+            // `find_by_instance_id` hands back a clone whose health flag is
+            // shared (Arc), so setting it here updates the tracked instance.
+            if let Some(instance) = p.node_stack.find_by_instance_id(&p.target_instance_id) {
+                instance.set_healthy(transition.healthy);
+            }
+
+            if let Err(err) = poll_result {
+                debug!(
+                    "Health monitor: instance '{}' health check failed ({}/{}): {}",
+                    instance_id_str, consecutive_failures, p.max_failures, err
+                );
+
+                if transition.evict {
+                    tracing::warn!(
+                        "Health monitor: instance '{}' failed {} consecutive health checks, removing from stack",
+                        instance_id_str,
+                        p.max_failures
                     );
 
-                    if consecutive_failures >= p.max_failures {
-                        tracing::warn!(
-                            "Health monitor: instance '{}' failed {} consecutive health checks, removing from stack",
-                            instance_id_str,
-                            p.max_failures
-                        );
-
-                        if let Some(entity_handle) = p
-                            .node_stack
-                            .find_entity_by_instance_id(&p.target_instance_id)
-                        {
-                            entity_handle.write().stop_instance(&p.target_instance_id);
-                        }
-
-                        super::append_stack_log(
-                            &p.peppy_dirs,
-                            &format!(
-                                "Removed instance '{}' of node '{}:{}': \
-                                 failed {} consecutive health checks",
-                                instance_id_str, p.to_node_name, p.node_tag, p.max_failures,
-                            ),
-                        );
-
-                        return;
+                    if let Some(entity_handle) = p
+                        .node_stack
+                        .find_entity_by_instance_id(&p.target_instance_id)
+                    {
+                        entity_handle.write().stop_instance(&p.target_instance_id);
                     }
+
+                    super::append_stack_log(
+                        &p.peppy_dirs,
+                        &format!(
+                            "Removed instance '{}' of node '{}:{}': \
+                             failed {} consecutive health checks",
+                            instance_id_str, p.to_node_name, p.node_tag, p.max_failures,
+                        ),
+                    );
+
+                    return;
                 }
             }
         }
@@ -1209,6 +1257,43 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_transition_tracks_failures_health_and_eviction() {
+        let mut failures = 0u32;
+
+        // A successful probe marks the instance healthy and resets the streak.
+        let t = probe_transition(true, &mut failures, 3);
+        assert!(t.healthy, "a successful probe should mark healthy");
+        assert!(!t.evict, "a successful probe should never evict");
+        assert_eq!(failures, 0);
+
+        // Each failure marks unhealthy and grows the streak; eviction only
+        // fires once the streak reaches `max_failures`.
+        let t = probe_transition(false, &mut failures, 3);
+        assert!(!t.healthy, "the first failed probe should mark unhealthy");
+        assert!(!t.evict, "one failure is below the threshold");
+        assert_eq!(failures, 1);
+
+        let t = probe_transition(false, &mut failures, 3);
+        assert!(!t.healthy);
+        assert!(!t.evict, "two failures is still below the threshold");
+        assert_eq!(failures, 2);
+
+        let t = probe_transition(false, &mut failures, 3);
+        assert!(!t.healthy);
+        assert!(
+            t.evict,
+            "the third consecutive failure should hit the threshold"
+        );
+        assert_eq!(failures, 3);
+
+        // A success after failures clears both the streak and the unhealthy flag.
+        let t = probe_transition(true, &mut failures, 3);
+        assert!(t.healthy);
+        assert!(!t.evict);
+        assert_eq!(failures, 0, "a success should reset the failure streak");
+    }
 
     #[test]
     fn test_resolve_mount_path_parameters_simple() {

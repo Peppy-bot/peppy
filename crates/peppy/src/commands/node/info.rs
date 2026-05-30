@@ -105,10 +105,19 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
     } else {
         let _ = writeln!(out, "Instances: {} tracked", response.instances.len());
         for instance in &response.instances {
+            // Health is the daemon's last `node_health` probe result, carried
+            // in `NodeInstanceInfo::healthy`; `healthy` until a probe is seen
+            // to fail. Shown alongside state so a running-but-failing instance
+            // stands out without a separate `stack list` round-trip.
+            let health = if instance.healthy {
+                "healthy"
+            } else {
+                "unhealthy"
+            };
             let _ = writeln!(
                 out,
-                "           - {}  [{}]",
-                instance.instance_id, instance.state
+                "           - {}  [{}]  {}",
+                instance.instance_id, instance.state, health
             );
         }
     }
@@ -466,11 +475,13 @@ mod tests {
                 NodeInstanceInfo {
                     instance_id: "inst-abc".to_string(),
                     state: InstanceState::Running,
+                    healthy: true,
                     slot_bindings: std::collections::BTreeMap::new(),
                 },
                 NodeInstanceInfo {
                     instance_id: "inst-def".to_string(),
                     state: InstanceState::Starting,
+                    healthy: false,
                     slot_bindings: std::collections::BTreeMap::new(),
                 },
             ],
@@ -497,12 +508,12 @@ mod tests {
             "instance count missing:\n{out}"
         );
         assert!(
-            out.contains("- inst-abc  [running]"),
-            "running instance line missing:\n{out}"
+            out.contains("- inst-abc  [running]  healthy"),
+            "running healthy instance line missing:\n{out}"
         );
         assert!(
-            out.contains("- inst-def  [starting]"),
-            "starting instance line missing:\n{out}"
+            out.contains("- inst-def  [starting]  unhealthy"),
+            "starting unhealthy instance line missing:\n{out}"
         );
 
         // Logs section grouped under <name>:<tag>

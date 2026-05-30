@@ -157,6 +157,8 @@ const INSTANCE_COLOR: &str = "\x1b[35m"; // magenta — instance ids
 const BINDING_COLOR: &str = "\x1b[33m"; // yellow — slot bindings
 const STATUS_RUNNING_COLOR: &str = "\x1b[32m"; // green — a running instance
 const STATUS_STARTING_COLOR: &str = "\x1b[33m"; // yellow — a starting instance
+const HEALTH_HEALTHY_COLOR: &str = "\x1b[32m"; // green — a healthy instance
+const HEALTH_UNHEALTHY_COLOR: &str = "\x1b[31m"; // red — an unhealthy instance
 const RESET: &str = "\x1b[0m";
 
 /// Wraps `s` in `code`/reset when `colorize` is set, otherwise returns it
@@ -245,10 +247,10 @@ fn render_nodes_table(out: &mut String, nodes: &[SerializedNode], colorize: bool
 
 /// Headers for the per-instance bindings table. The node→instance→binding
 /// hierarchy is conveyed by row grouping rather than nesting columns: a node
-/// label appears only on the first row of its group, an instance id (and its
-/// status) only on the first of its binding rows, and a horizontal rule
-/// separates node groups.
-const BINDING_HEADERS: [&str; 4] = ["NODE", "INSTANCE", "STATUS", "BINDINGS"];
+/// label appears only on the first row of its group, an instance id (with its
+/// status and health) only on the first of its binding rows, and a horizontal
+/// rule separates node groups.
+const BINDING_HEADERS: [&str; 5] = ["NODE", "INSTANCE", "STATUS", "HEALTH", "BINDINGS"];
 
 /// Renders the per-instance bindings table. `nodes` must already be filtered
 /// to entries with at least one instance — the caller prints `(none)` when
@@ -257,21 +259,24 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
     use std::fmt::Write as _;
 
     // One block of rows per node. Within a block, the NODE cell is populated
-    // only on the first row and each instance's INSTANCE and STATUS cells only
-    // on the first of its binding rows; the rest are blank continuation cells.
-    let blocks: Vec<Vec<[String; 4]>> = nodes
+    // only on the first row and each instance's INSTANCE, STATUS, and HEALTH
+    // cells only on the first of its binding rows; the rest are blank
+    // continuation cells.
+    let blocks: Vec<Vec<[String; 5]>> = nodes
         .iter()
         .map(|node| {
-            let mut rows: Vec<[String; 4]> = Vec::new();
+            let mut rows: Vec<[String; 5]> = Vec::new();
             let mut node_cell = paint(colorize, NODE_COLOR, &node.label());
             for instance in &node.instances {
                 let mut instance_cell = paint(colorize, INSTANCE_COLOR, &instance.instance_id);
                 let mut status_cell = format_instance_status(instance, colorize);
+                let mut health_cell = format_instance_health(instance, colorize);
                 for binding in format_instance_bindings(instance, colorize) {
                     rows.push([
                         std::mem::take(&mut node_cell),
                         std::mem::take(&mut instance_cell),
                         std::mem::take(&mut status_cell),
+                        std::mem::take(&mut health_cell),
                         binding,
                     ]);
                 }
@@ -280,7 +285,7 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
         })
         .collect();
 
-    let mut widths: [usize; 4] = BINDING_HEADERS.map(col_width);
+    let mut widths: [usize; 5] = BINDING_HEADERS.map(col_width);
     for row in blocks.iter().flatten() {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(col_width(cell));
@@ -288,7 +293,7 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
     }
 
     write_border(out, &widths, '┌', '┬', '┐');
-    let header_row: [String; 4] = BINDING_HEADERS.map(|h| h.to_string());
+    let header_row: [String; 5] = BINDING_HEADERS.map(|h| h.to_string());
     write_row(out, &header_row, &widths);
     write_border(out, &widths, '├', '┼', '┤');
     for (group_idx, block) in blocks.iter().enumerate() {
@@ -315,6 +320,17 @@ fn format_instance_status(instance: &SerializedInstance, colorize: bool) -> Stri
         InstanceState::Starting => STATUS_STARTING_COLOR,
     };
     paint(colorize, color, &instance.state.to_string())
+}
+
+/// The instance's health for the HEALTH column, from the daemon's live
+/// `node_health` probe carried in [`SerializedInstance::healthy`]. Green for
+/// `healthy`, red for `unhealthy`, so a failing instance stands out.
+fn format_instance_health(instance: &SerializedInstance, colorize: bool) -> String {
+    if instance.healthy {
+        paint(colorize, HEALTH_HEALTHY_COLOR, "healthy")
+    } else {
+        paint(colorize, HEALTH_UNHEALTHY_COLOR, "unhealthy")
+    }
 }
 
 /// One display string per slot binding on the instance, in `link_id →
@@ -445,9 +461,10 @@ fn shorten_home_with(path: &str, home: &str) -> String {
         return "~".to_string();
     }
     if let Some(rest) = path.strip_prefix(home)
-        && rest.starts_with('/') {
-            return format!("~{rest}");
-        }
+        && rest.starts_with('/')
+    {
+        return format!("~{rest}");
+    }
     path.to_string()
 }
 
@@ -473,6 +490,7 @@ mod tests {
                 .map(|(id, state)| SerializedInstance {
                     instance_id: id.to_string(),
                     state,
+                    healthy: true,
                     slot_bindings: std::collections::BTreeMap::new(),
                 })
                 .collect(),
@@ -496,6 +514,7 @@ mod tests {
                 .map(|(id, state, binds)| SerializedInstance {
                     instance_id: id.to_string(),
                     state,
+                    healthy: true,
                     slot_bindings: binds
                         .into_iter()
                         .map(|(slot, binding)| (slot.to_string(), binding))
@@ -667,6 +686,56 @@ mod tests {
             section.matches("running").count(),
             1,
             "status should appear once per instance:\n{out}"
+        );
+    }
+
+    #[test]
+    fn bindings_table_renders_health_column() {
+        // A node with one healthy and one unhealthy instance, built directly so
+        // both `SerializedInstance::healthy` values are exercised.
+        let nodes = vec![SerializedNode {
+            name: "arm".to_string(),
+            tag: "v1".to_string(),
+            config_path: "/tmp/arm.json5".to_string(),
+            artifact_path: None,
+            stage: Some(NodeStage::Ready),
+            instances: vec![
+                SerializedInstance {
+                    instance_id: "healthy-1".to_string(),
+                    state: InstanceState::Running,
+                    healthy: true,
+                    slot_bindings: std::collections::BTreeMap::new(),
+                },
+                SerializedInstance {
+                    instance_id: "down-1".to_string(),
+                    state: InstanceState::Running,
+                    healthy: false,
+                    slot_bindings: std::collections::BTreeMap::new(),
+                },
+            ],
+        }];
+        let out = format_stack_list(&nodes, &[], false);
+        let section = bindings_section(&out);
+
+        assert!(section.contains("HEALTH"), "HEALTH header missing:\n{out}");
+
+        // Each instance reports its own health on its row: the healthy one reads
+        // "healthy" (and not "unhealthy"), the failing one "unhealthy".
+        let healthy_line = section
+            .lines()
+            .find(|l| l.contains("healthy-1"))
+            .expect("healthy instance row missing");
+        assert!(
+            healthy_line.contains("healthy") && !healthy_line.contains("unhealthy"),
+            "healthy instance should report healthy:\n{out}"
+        );
+        let down_line = section
+            .lines()
+            .find(|l| l.contains("down-1"))
+            .expect("unhealthy instance row missing");
+        assert!(
+            down_line.contains("unhealthy"),
+            "failing instance should report unhealthy:\n{out}"
         );
     }
 

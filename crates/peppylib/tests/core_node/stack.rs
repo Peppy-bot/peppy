@@ -77,6 +77,7 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
         instances: vec![SerializedInstance {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
+            healthy: true,
             slot_bindings: std::collections::BTreeMap::new(),
         }],
     };
@@ -127,6 +128,7 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
         instances: vec![SerializedInstance {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
+            healthy: true,
             slot_bindings: std::collections::BTreeMap::new(),
         }],
     };

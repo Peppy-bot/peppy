@@ -40,6 +40,7 @@ impl From<&NodeEntity> for SerializedNode {
                 .map(|i| SerializedInstance {
                     instance_id: i.instance_id().as_str().to_string(),
                     state: i.state(),
+                    healthy: i.healthy(),
                     slot_bindings: i.slot_bindings().clone(),
                 })
                 .collect(),
@@ -1066,6 +1067,12 @@ pub struct TrackedNodeInstance {
     /// consumers' existing claims. Empty when the node has no
     /// `depends_on` slots.
     slot_bindings: std::collections::BTreeMap<String, config::runtime::SlotBinding>,
+    /// Last `node_health` outcome recorded by the daemon's health monitor.
+    /// Behind an `Arc<AtomicBool>` so the monitor can update it through the
+    /// cheap clone returned by `NodeStack::find_by_instance_id`, without taking
+    /// an entity write lock. `true` until a probe is observed to fail; surfaced
+    /// by `stack list` so it reports health without a per-instance round-trip.
+    healthy: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TrackedNodeInstance {
@@ -1090,6 +1097,7 @@ impl TrackedNodeInstance {
             instance_dir: None,
             runtime_config_path: None,
             slot_bindings,
+            healthy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -1113,6 +1121,20 @@ impl TrackedNodeInstance {
 
     pub fn state(&self) -> InstanceState {
         self.state
+    }
+
+    /// The last `node_health` outcome the health monitor recorded for this
+    /// instance. `true` until a probe is observed to fail.
+    pub fn healthy(&self) -> bool {
+        self.healthy.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Records the latest `node_health` outcome. Takes `&self` because the flag
+    /// is an `Arc<AtomicBool>`; the health monitor updates it through the clone
+    /// returned by `NodeStack::find_by_instance_id`.
+    pub fn set_healthy(&self, healthy: bool) {
+        self.healthy
+            .store(healthy, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Returns the on-disk instance directory recorded during start, if any.
@@ -1198,5 +1220,54 @@ mod tests {
         assert_eq!(serialized.instances[0].instance_id, "sensor-1");
         assert_eq!(serialized.instances[0].slot_bindings, bindings);
         assert!(serialized.instances[1].slot_bindings.is_empty());
+    }
+
+    /// Guards the one line that places per-instance health onto the
+    /// `graph_json` wire: `From<&NodeEntity>` must copy each instance's
+    /// `healthy()` through to its `SerializedInstance`. Hardcoding that line to
+    /// `true` (or dropping it) makes the unhealthy assertion fail. Also the
+    /// only coverage of the `healthy()`/`set_healthy()` pair: a fresh instance
+    /// defaults to healthy, and `set_healthy(false)` flips it.
+    #[test]
+    fn serialized_node_carries_per_instance_health() {
+        let healthy = TrackedNodeInstance::new(
+            Name::new("sensor-1").unwrap(),
+            Some(42),
+            InstanceState::Running,
+            BTreeMap::new(),
+        );
+        assert!(
+            healthy.healthy(),
+            "a freshly-created instance should default to healthy"
+        );
+        let unhealthy = TrackedNodeInstance::new(
+            Name::new("sensor-2").unwrap(),
+            Some(43),
+            InstanceState::Running,
+            BTreeMap::new(),
+        );
+        unhealthy.set_healthy(false);
+        assert!(
+            !unhealthy.healthy(),
+            "set_healthy(false) should flip the flag"
+        );
+
+        let entity = NodeEntity::from_snapshot(
+            sensor_config(),
+            PathBuf::from("/tmp/sensor/peppy.json5"),
+            Some(PathBuf::from("/tmp/sensor.sif")),
+            vec![healthy, unhealthy],
+        );
+
+        let serialized = SerializedNode::from(&entity);
+        assert_eq!(serialized.instances.len(), 2);
+        assert!(
+            serialized.instances[0].healthy,
+            "healthy instance should serialize as healthy"
+        );
+        assert!(
+            !serialized.instances[1].healthy,
+            "unhealthy instance should serialize as unhealthy"
+        );
     }
 }

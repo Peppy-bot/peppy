@@ -280,6 +280,11 @@ struct NodeInstanceInfo {
     # CLI cross-check newly-staged binding plans against what running
     # consumers have already claimed.
     slotBindingsJson @2 :Text;
+    # Liveness from the daemon's most recent `node_health` probe for this
+    # instance: true when it last answered within the probe timeout, false
+    # otherwise. Defaults to `true` so a message from a producer that predates
+    # this field is not read as spuriously unhealthy on version skew.
+    healthy @3 :Bool = true;
 }
 
 # Node info lookup result.

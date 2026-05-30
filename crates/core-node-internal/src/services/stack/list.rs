@@ -65,6 +65,8 @@ fn handle_node_list_request_inner(
     } else {
         None
     };
+    // `to_serialized_graph` carries each instance's last health-monitor result,
+    // so `stack list` reports health without a separate `node_health` round-trip.
     let serialized_graph = node_stack.to_serialized_graph();
     let graph_json = serde_json::to_string(&serialized_graph).unwrap_or_else(|_| "{}".to_string());
     StackListResponse::new(dot_graph, graph_json)
