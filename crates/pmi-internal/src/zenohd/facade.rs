@@ -413,9 +413,11 @@ mod tests {
         use std::io::Write;
         use tempfile::Builder;
 
-        // Missing file: fall back to pointing at the path.
-        let missing = Path::new("/nonexistent/zenohd_0.log");
-        assert!(zenohd_log_excerpt(missing).contains("see zenohd log"));
+        // Missing file: fall back to pointing at the path. Build it inside a
+        // temp dir (without creating the file) so the test is portable.
+        let dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let missing = dir.path().join("zenohd_0.log");
+        assert!(zenohd_log_excerpt(&missing).contains("see zenohd log"));
 
         // Present file: include the tail of its contents.
         let mut log = Builder::new()
