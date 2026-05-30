@@ -9,8 +9,9 @@ mod zenoh_tests {
     use bytes::Bytes;
     use pmi::{
         MessengerBackend, Payload, PublisherQoS, SubscriberQoS, TopicWireReceiver, TopicWireSender,
-        ZenohAdapter,
+        ZenohAdapter, ZenohNetProtocol,
     };
+    use std::time::{Duration, Instant};
 
     /// Awaits a single message on `rx` or fails the test on timeout. The
     /// `label` is included in both timeout and channel-closed panics so test
@@ -47,6 +48,141 @@ mod zenoh_tests {
             to_topic,
         )
         .expect("valid wire fields")
+    }
+
+    /// Opens a fresh (non-reconnecting) publisher session against the router at
+    /// `host:port`, retrying briefly in case the router is still settling after
+    /// a respawn. Panics if it can't connect within the retry budget.
+    async fn open_publisher(host: &str, port: u16) -> ZenohAdapter {
+        for _ in 0..40 {
+            if let Ok(mut adapter) = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)
+                && adapter.start_session().await.is_ok()
+            {
+                return adapter;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("could not open a publisher session against {host}:{port}");
+    }
+
+    /// Repeatedly publishes to `topic` and waits briefly for the subscriber to
+    /// receive, until something arrives or `budget` elapses. Returns `true` if a
+    /// message was delivered. Used after a router respawn to give the
+    /// reconnecting subscriber time to re-establish and re-declare.
+    async fn poll_until_delivered(
+        publisher: &mut ZenohAdapter,
+        topic: &str,
+        rx: &mut flume::Receiver<pmi::TopicMessage>,
+        budget: Duration,
+    ) -> bool {
+        let deadline = Instant::now() + budget;
+        let mut attempt = 0u32;
+        while Instant::now() < deadline {
+            attempt += 1;
+            let body = Bytes::from(format!("after-restart-{attempt}"));
+            // Ignore publish errors: the publisher's link may still be
+            // re-establishing in the first moments after the respawn.
+            let _ = publisher
+                .publish_topic(
+                    &sender(topic),
+                    Payload::from_bytes(body),
+                    PublisherQoS::Standard,
+                    true,
+                )
+                .await;
+            // Only a post-restart payload proves recovery: a stale `before-restart`
+            // sample redelivered through the reconnecting session must not count.
+            if let Ok(Ok(msg)) =
+                tokio::time::timeout(Duration::from_millis(800), rx.recv_async()).await
+                && msg.payload().as_bytes().starts_with(b"after-restart-")
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Proves the daemon's in-process recovery path: a reconnecting subscriber
+    /// session keeps working after its router process is killed and respawned on
+    /// the same port — i.e. the session reconnects *and re-declares* its
+    /// subscription. This is the half of the router-watchdog fix that the unit
+    /// tests can't cover.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reconnecting_subscriber_recovers_after_router_restart() {
+        const TOPIC: &str = "reconnect_topic";
+        let _lock = ZENOH_SERIAL.lock().await;
+
+        // `instance` owns the zenohd process so we can respawn it on the same
+        // port mid-test. We never open a session on it — only use it to drive
+        // the router lifecycle (stop_router / start_router).
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("Failed to start zenohd process");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        // The subscriber session uses the SAME reconnecting config the daemon
+        // uses (`with_session_reconnect`) — this is the behaviour under test.
+        let mut subscriber = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port)
+            .expect("subscriber adapter")
+            .with_session_reconnect();
+        subscriber
+            .start_session()
+            .await
+            .expect("subscriber start_session");
+        let mut subscription = subscriber
+            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .await
+            .expect("subscribe");
+
+        // Baseline: a fresh publisher reaches the subscriber through the router.
+        {
+            let mut publisher = open_publisher(&host, port).await;
+            wait_for_subscriber_discovery().await;
+            publisher
+                .publish_topic(
+                    &sender(TOPIC),
+                    Payload::from_bytes(Bytes::from_static(b"before-restart")),
+                    PublisherQoS::Standard,
+                    true,
+                )
+                .await
+                .expect("baseline publish");
+            let got = recv_or_timeout(&mut subscription.rx, "baseline").await;
+            assert_eq!(got.payload(), &Bytes::from_static(b"before-restart"));
+        }
+
+        // Respawn zenohd on the same port — exactly what the watchdog does when
+        // it finds the router wedged.
+        instance
+            .messenger()
+            .stop_router()
+            .await
+            .expect("stop_router");
+        instance
+            .messenger()
+            .start_router()
+            .await
+            .expect("start_router");
+
+        // The reconnecting subscriber must re-establish and re-declare its
+        // subscription against the new router. Drive a fresh publisher and poll
+        // until delivery (or give up after a generous budget).
+        let mut publisher = open_publisher(&host, port).await;
+        wait_for_subscriber_discovery().await;
+        let recovered = poll_until_delivered(
+            &mut publisher,
+            TOPIC,
+            &mut subscription.rx,
+            Duration::from_secs(30),
+        )
+        .await;
+
+        assert!(
+            recovered,
+            "reconnecting subscriber did not receive after the router was respawned: the session \
+             did not reconnect + re-declare its subscription"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

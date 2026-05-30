@@ -140,6 +140,59 @@ pub struct ZenohClientConfigTemplate {
     pub protocol: zenohd::ZenohNetProtocol,
 }
 
+/// Client config for the daemon's long-lived session. Unlike the fail-fast
+/// default, this retries the connection forever (`timeout_ms: -1`,
+/// `exit_on_failure: false`) so the session re-establishes — and re-declares
+/// its subscriptions/queryables — if the router is restarted under it (e.g. by
+/// the router watchdog respawning zenohd).
+#[derive(Template)]
+#[template(
+    source = r#"{
+    "mode": "client",
+    "connect": {
+        "endpoints": ["{{ protocol }}/{{ host }}:{{ port }}"],
+        "timeout_ms": -1,
+        "exit_on_failure": false,
+        "retry": {
+            "period_init_ms": 1000,
+            "period_max_ms": 4000,
+            "period_increase_factor": 2.0
+        }
+    }
+}"#,
+    ext = "txt"
+)]
+pub struct ZenohReconnectingClientConfigTemplate {
+    pub host: String,
+    pub port: u16,
+    pub protocol: ZenohNetProtocol,
+}
+
+/// Client config for the router watchdog's liveness probe. Scouting is
+/// disabled so the probe only ever tries the configured router endpoint (never
+/// a multicast-discovered peer), making "is *our* router responsive?" a
+/// deterministic question.
+#[derive(Template)]
+#[template(
+    source = r#"{
+    "mode": "client",
+    "connect": {
+        "endpoints": ["{{ protocol }}/{{ host }}:{{ port }}"]
+    },
+    "scouting": {
+        "multicast": {
+            "enabled": false
+        }
+    }
+}"#,
+    ext = "txt"
+)]
+pub struct ZenohProbeClientConfigTemplate {
+    pub host: String,
+    pub port: u16,
+    pub protocol: ZenohNetProtocol,
+}
+
 #[derive(Template)]
 #[template(
     source = r#"{
@@ -169,6 +222,9 @@ pub struct ZenohAdapter {
     zenohd: Option<zenohd::ZenohdFacade>,
     client_config: ZenohClientConfig,
     session: Option<Arc<zenoh::Session>>,
+    /// When true, [`start_session`](MessengerBackend::start_session) opens a
+    /// reconnecting session (see [`ZenohReconnectingClientConfigTemplate`]).
+    reconnect_session: bool,
 }
 
 impl ZenohAdapter {
@@ -183,19 +239,32 @@ impl ZenohAdapter {
             zenohd: Some(facade),
             client_config,
             session: None,
+            reconnect_session: false,
         })
     }
 
     /// Creates a ZenohAdapter that connects to an existing zenohd router.
     /// Use this when you want to connect to a router that's already running.
     pub fn connect_to(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
-        let client_config = Self::create_client_config(protocol, host, port);
+        let client_config = Self::create_client_config(protocol, host, port, false);
 
         Ok(Self {
             zenohd: None,
             client_config,
             session: None,
+            reconnect_session: false,
         })
+    }
+
+    /// Marks this adapter's long-lived session as reconnecting: on
+    /// [`start_session`](MessengerBackend::start_session) it uses a config that
+    /// retries the connection (and re-declares its subscriptions/queryables) if
+    /// the router is restarted under it. Used by the daemon so the router
+    /// watchdog can respawn zenohd without leaving the daemon's own session
+    /// dead. CLI and short-lived adapters leave this off (fail-fast default).
+    pub fn with_session_reconnect(mut self) -> Self {
+        self.reconnect_session = true;
+        self
     }
 
     /// Starts a zenohd router with an ephemeral port, retrying on bind failures.
@@ -269,10 +338,27 @@ impl ZenohAdapter {
         (self.client_config.host.as_str(), self.client_config.port)
     }
 
+    /// Builds a lock-free [`RouterHealthChecker`] bound to this adapter's router
+    /// endpoint, for the router watchdog to probe liveness without holding the
+    /// central messenger lock.
+    pub fn router_health_checker(&self) -> RouterHealthChecker {
+        let probe_str = ZenohProbeClientConfigTemplate {
+            host: self.client_config.host.clone(),
+            port: self.client_config.port,
+            protocol: self.client_config.protocol,
+        }
+        .render()
+        .expect("Failed to render probe client config template");
+        let probe_config = zenoh::config::Config::from_json5(&probe_str)
+            .expect("Failed to create probe client config");
+        RouterHealthChecker { probe_config }
+    }
+
     fn create_client_config(
         protocol: ZenohNetProtocol,
         host: &str,
         port: u16,
+        reconnect: bool,
     ) -> ZenohClientConfig {
         let connect_host = if host == "0.0.0.0" {
             "127.0.0.1".to_string()
@@ -280,32 +366,49 @@ impl ZenohAdapter {
             host.to_string()
         };
 
-        let client_template = ZenohClientConfigTemplate {
-            host: connect_host,
-            port,
-            protocol,
-        };
-
-        let client_config_str = client_template
+        // The long-lived daemon session uses the reconnecting template so it
+        // survives a router restart; everything else (CLI connects, readiness
+        // probes) uses the fail-fast template so a down router errors quickly
+        // instead of blocking on retries.
+        let client_config_str = if reconnect {
+            ZenohReconnectingClientConfigTemplate {
+                host: connect_host.clone(),
+                port,
+                protocol,
+            }
             .render()
-            .expect("Failed to render client config template");
+            .expect("Failed to render reconnecting client config template")
+        } else {
+            ZenohClientConfigTemplate {
+                host: connect_host.clone(),
+                port,
+                protocol,
+            }
+            .render()
+            .expect("Failed to render client config template")
+        };
 
         let client_config = zenoh::config::Config::from_json5(&client_config_str)
             .expect("Failed to create client config");
 
         ZenohClientConfig {
             zenoh_config: client_config,
-            host: client_template.host,
-            port: client_template.port,
-            protocol: client_template.protocol,
+            host: connect_host,
+            port,
+            protocol,
         }
     }
 
     fn derive_client_config_from_zenohd(zenohd: &zenohd::ZenohdFacade) -> ZenohClientConfig {
+        // Fail-fast: this config also backs the ephemeral readiness probe in
+        // `start_router_ephemeral`, which relies on `zenoh::open` erroring
+        // quickly. The daemon's reconnecting session is built separately in
+        // `start_session` when `reconnect_session` is set.
         Self::create_client_config(
             zenohd.zenoh_endpoint.protocol,
             &zenohd.zenoh_endpoint.host,
             zenohd.zenoh_endpoint.port,
+            false,
         )
     }
 
@@ -341,7 +444,23 @@ impl ZenohAdapter {
 
 impl MessengerBackend for ZenohAdapter {
     async fn start_session(&mut self) -> Result<()> {
-        let session = zenoh::open(self.client_config.zenoh_config.clone())
+        // The daemon's long-lived session uses a reconnecting config so it
+        // re-establishes itself (and re-declares its subscriptions/queryables)
+        // if the router is restarted under it — e.g. by the router watchdog.
+        // Short-lived / CLI sessions keep the fail-fast default.
+        let config = if self.reconnect_session {
+            Self::create_client_config(
+                self.client_config.protocol,
+                &self.client_config.host,
+                self.client_config.port,
+                true,
+            )
+            .zenoh_config
+        } else {
+            self.client_config.zenoh_config.clone()
+        };
+
+        let session = zenoh::open(config)
             .await
             .map_err(|e| Error::BackendError(format!("Failed to create Zenoh session: {}", e)))?;
 
@@ -805,5 +924,65 @@ impl ZenohPublisher {
                 topic: e.to_string(),
             })?;
         Ok(())
+    }
+}
+
+/// Lock-free handle for probing whether the Zenoh router is responsive.
+///
+/// Holds a fail-fast probe config (scouting disabled, single connect attempt to
+/// the router endpoint). [`Self::is_router_responsive`] opens a throwaway
+/// session bounded by `timeout` — the same operation a CLI client performs — so
+/// it detects a wedged router that still accepts TCP connections but never
+/// completes the Zenoh session handshake. Obtain one via
+/// [`crate::Messenger::router_health_checker`] and probe without holding the
+/// central messenger lock.
+pub struct RouterHealthChecker {
+    probe_config: zenoh::config::Config,
+}
+
+impl RouterHealthChecker {
+    /// Returns `true` if a fresh session to the router completes within
+    /// `timeout`; `false` otherwise (timed out, connection refused, …).
+    pub async fn is_router_responsive(&self, timeout: std::time::Duration) -> bool {
+        match tokio::time::timeout(timeout, zenoh::open(self.probe_config.clone())).await {
+            Ok(Ok(session)) => {
+                // We only needed the handshake. Close the probe session, but
+                // don't let a slow close stall the watchdog.
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), session.close()).await;
+                true
+            }
+            // Open errored, or our timeout elapsed before the handshake settled.
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnecting_and_probe_configs_parse() {
+        // Guards the JSON5 schemas: a malformed connect/scouting block would
+        // otherwise panic at daemon startup inside `create_client_config` /
+        // `router_health_checker` (both `.expect()` on parse).
+        let reconnecting =
+            ZenohAdapter::create_client_config(ZenohNetProtocol::Tcp, "0.0.0.0", 7448, true);
+        // `0.0.0.0` must be rewritten to a connectable loopback host.
+        assert_eq!(reconnecting.host, "127.0.0.1");
+
+        let fail_fast =
+            ZenohAdapter::create_client_config(ZenohNetProtocol::Tcp, "127.0.0.1", 7448, false);
+        assert_eq!(fail_fast.port, 7448);
+
+        let probe_str = ZenohProbeClientConfigTemplate {
+            host: "127.0.0.1".to_string(),
+            port: 7448,
+            protocol: ZenohNetProtocol::Tcp,
+        }
+        .render()
+        .expect("probe template renders");
+        zenoh::config::Config::from_json5(&probe_str).expect("probe config parses");
     }
 }
