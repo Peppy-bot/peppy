@@ -90,9 +90,11 @@ mod zenoh_tests {
                     true,
                 )
                 .await;
-            if tokio::time::timeout(Duration::from_millis(800), rx.recv_async())
-                .await
-                .is_ok_and(|r| r.is_ok())
+            // Only a post-restart payload proves recovery: a stale `before-restart`
+            // sample redelivered through the reconnecting session must not count.
+            if let Ok(Ok(msg)) =
+                tokio::time::timeout(Duration::from_millis(800), rx.recv_async()).await
+                && msg.payload().as_bytes().starts_with(b"after-restart-")
             {
                 return true;
             }

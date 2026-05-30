@@ -143,10 +143,15 @@ async fn node_session_recovers_after_router_restart() {
     // The reconnecting node session must re-establish and re-declare its
     // subscription. Drive a fresh publisher (on the new router) and poll until
     // delivery, or give up after a generous budget.
-    let sender_handle = MessengerHandle::from_host_port(&host, port)
+    // A non-reconnecting `from_host_port` would race the respawn: the freshly
+    // started router can accept a TCP connection before its protocol handshake
+    // has settled, failing the one-shot session open. A reconnecting publisher
+    // opens immediately and connects in the background instead, so the
+    // emit-until-delivered loop below drives recovery without a hand-rolled
+    // connect-retry loop here.
+    let sender_handle = MessengerHandle::from_host_port_reconnecting(&host, port)
         .await
         .expect("failed to create post-restart sender handle");
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let mut recovered = false;
@@ -162,9 +167,11 @@ async fn node_session_recovers_after_router_restart() {
             Payload::from_static(b"after-restart"),
         )
         .await;
-        if tokio::time::timeout(Duration::from_millis(800), subscription.on_next_message())
-            .await
-            .is_ok_and(|m| m.is_some())
+        // Only the post-restart payload proves recovery: a stale `before-restart`
+        // delivery redelivered through the reconnecting session must not count.
+        if let Ok(Some(msg)) =
+            tokio::time::timeout(Duration::from_millis(800), subscription.on_next_message()).await
+            && msg.payload() == Payload::from_static(b"after-restart")
         {
             recovered = true;
             break;
