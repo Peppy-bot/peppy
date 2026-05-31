@@ -591,7 +591,7 @@ pub async fn send_node_build_and_wait(
 /// Like [`send_node_build_and_wait`] but sets the `--force` flag, which cancels
 /// any in-flight build for the node and supersedes it.
 #[allow(clippy::too_many_arguments)]
-pub async fn send_node_build_and_wait_with_force(
+pub async fn send_node_build_and_wait_forced(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -600,7 +600,6 @@ pub async fn send_node_build_and_wait_with_force(
     result_timeout: Duration,
     env_vars: Vec<(String, String)>,
     feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
-    force: bool,
 ) -> Result<NodeBuildResult, String> {
     send_node_build_and_wait_internal(
         messenger,
@@ -611,7 +610,7 @@ pub async fn send_node_build_and_wait_with_force(
         result_timeout,
         env_vars,
         feedback_tx,
-        force,
+        true,
     )
     .await
 }

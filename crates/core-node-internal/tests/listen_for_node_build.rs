@@ -2,8 +2,8 @@ mod common;
 
 use common::{
     NodeAddSource, send_node_add_and_wait, send_node_add_and_wait_with_env,
-    send_node_build_and_wait, send_node_build_and_wait_with_force,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
+    write_peppy_json5,
 };
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use core_node_api::encoding::NodeBuildFeedback;
@@ -300,7 +300,7 @@ async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
         let node_name = node_name.clone();
         let node_tag = node_tag.clone();
         tokio::spawn(async move {
-            send_node_build_and_wait_with_force(
+            send_node_build_and_wait_forced(
                 &messenger,
                 &core_node_name,
                 &node_name,
@@ -309,7 +309,6 @@ async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
                 RESULT_TIMEOUT,
                 Vec::new(),
                 None,
-                true,
             )
             .await
         })
