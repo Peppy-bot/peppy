@@ -145,17 +145,20 @@ pub(super) async fn build_container_image(
     // On macOS the build runs inside a Lima VM, so SIGKILL'ing the host
     // `limactl shell` does not reach the guest `apptainer build` or its
     // `%post` children. The facade therefore runs the guest build as a
-    // process-group leader and records its PGID here, which
-    // `kill_inflight_build` uses on cancel to SIGKILL the whole guest group.
-    // Kept as a sibling of `working_dir` (still under `$HOME`, so guest-visible
-    // at the same path) but *outside* it, so the def file's `%files .` does not
-    // bake it into the image. A no-op file on the native backend.
-    let pgid_file = pgid_file_path(inputs.working_dir);
-    let _pgid_cleanup = PgidFileCleanup(&pgid_file);
+    // process-group leader and records its PGID to a guest-native file keyed by
+    // this build key, which `kill_inflight_build` (called with the same key)
+    // uses on cancel to SIGKILL the whole guest group. The working-dir basename
+    // is a unique, filesystem-safe key. A no-op on the native backend.
+    let build_key = inputs
+        .working_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_owned);
 
-    let mut cmd_builder = apptainer
-        .build(&output_path, &def_path)
-        .cancel_pgid_file(&pgid_file);
+    let mut cmd_builder = apptainer.build(&output_path, &def_path);
+    if let Some(key) = &build_key {
+        cmd_builder = cmd_builder.cancel_pgid(key);
+    }
     for arg in inputs.apptainer_build_extra_args {
         cmd_builder = cmd_builder.raw_flag(arg);
     }
@@ -189,10 +192,11 @@ pub(super) async fn build_container_image(
     // into the VM and kill the guest process group too (no-op on Linux). Reuses
     // the already-initialized facade. Runs on a blocking thread because the
     // guest kill shells out to `limactl`.
-    if inputs.cancel_token.is_cancelled() {
-        let pgid_file_for_kill = pgid_file.clone();
+    if inputs.cancel_token.is_cancelled()
+        && let Some(key) = build_key
+    {
         let _ = tokio::task::spawn_blocking(move || {
-            let _ = apptainer.kill_inflight_build(&pgid_file_for_kill);
+            let _ = apptainer.kill_inflight_build(&key);
         })
         .await;
     }
@@ -209,26 +213,6 @@ pub(super) async fn build_container_image(
     }
 
     Ok(())
-}
-
-/// Path of the guest build's PGID file: a sibling of `working_dir` (same parent,
-/// under `$HOME`) with a `.pgid` suffix, so it is guest-visible but not captured
-/// by the def file's `%files .`.
-fn pgid_file_path(working_dir: &Path) -> PathBuf {
-    let mut os = working_dir.as_os_str().to_owned();
-    os.push(".pgid");
-    PathBuf::from(os)
-}
-
-/// Removes the guest-build PGID file on drop. The file is written by the guest
-/// build wrapper (Lima) and never created on the native backend, so removal is
-/// best-effort and silent.
-struct PgidFileCleanup<'a>(&'a Path);
-
-impl Drop for PgidFileCleanup<'_> {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(self.0);
-    }
 }
 
 /// Expands `${VAR}` references in a string using the provided environment

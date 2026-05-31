@@ -888,7 +888,7 @@ fn lima_guest_build_argv_wraps_in_setsid_and_records_pgid() {
     let argv = super::lima::lima_guest_build_argv(
         Path::new("/opt/apptainer/bin/apptainer"),
         &["build", "/home/u/out.sif", "/home/u/node.def"],
-        Path::new("/home/u/build.pgid"),
+        Path::new("/tmp/peppy/pgids/buildkey.pgid"),
     );
 
     // `setsid -w sh -c <script>`: the script is one argv element.
@@ -901,69 +901,147 @@ fn lima_guest_build_argv_wraps_in_setsid_and_records_pgid() {
     let script = &argv[4];
     assert_eq!(
         script,
-        "echo $$ > '/home/u/build.pgid'; \
-         exec '/opt/apptainer/bin/apptainer' 'build' '/home/u/out.sif' '/home/u/node.def'",
-        "the wrapper must record the session PGID, then exec apptainer so its \
-         children inherit the group"
+        "mkdir -p '/tmp/peppy/pgids'; echo $$ > '/tmp/peppy/pgids/buildkey.pgid'; \
+         '/opt/apptainer/bin/apptainer' 'build' '/home/u/out.sif' '/home/u/node.def'; \
+         __rc=$?; rm -f '/tmp/peppy/pgids/buildkey.pgid'; exit $__rc",
+        "the wrapper makes sh the group leader, records its PGID to the guest-native \
+         pgid file, runs apptainer as a child so its children inherit the group, then \
+         removes the pgid file and forwards apptainer's exit status"
     );
 }
 
 #[test]
 fn lima_kill_pgid_script_sigkills_the_whole_group() {
-    let script = super::lima::lima_kill_pgid_script(Path::new("/home/u/build.pgid"));
-    // Negative PGID → SIGKILL the whole group (apptainer + its %post children);
-    // best-effort so a missing/already-dead group is not an error.
+    let script = super::lima::lima_kill_pgid_script(Path::new("/tmp/peppy/pgids/buildkey.pgid"));
+    // Negative PGID → SIGKILL the whole group (apptainer + its %post children),
+    // then remove the pgid file (the cancel path SIGKILLs the wrapper before it
+    // can self-clean). Best-effort: a missing/already-dead group is not an error.
     assert_eq!(
         script,
-        "kill -KILL -\"$(cat '/home/u/build.pgid')\" 2>/dev/null || true"
+        "kill -KILL -\"$(cat '/tmp/peppy/pgids/buildkey.pgid')\" 2>/dev/null; \
+         rm -f '/tmp/peppy/pgids/buildkey.pgid' 2>/dev/null; true"
     );
 }
 
-#[test]
-fn build_command_wrapping_and_kill_match_the_backend() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+/// Builds a Native-backend facade for command-assembly tests without booting a
+/// VM. The apptainer path need not exist: these tests only inspect the assembled
+/// argv and the no-op kill path.
+fn native_facade() -> Apptainer {
+    Apptainer {
+        apptainer_dir: PathBuf::from("/opt/apptainer"),
+        backend: Backend::Native {
+            apptainer_bin: PathBuf::from("/opt/apptainer/bin/apptainer"),
+        },
+        extra_mounts: Vec::new(),
+    }
+}
 
+/// Builds a Lima-backend facade for command-assembly tests. The limactl/apptainer
+/// paths need not exist: `into_std_command` only constructs the argv, it does not
+/// spawn anything.
+fn lima_facade() -> Apptainer {
+    Apptainer {
+        apptainer_dir: PathBuf::from("/opt/apptainer"),
+        backend: Backend::Lima {
+            apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
+            limactl_path: PathBuf::from("/opt/lima/bin/limactl"),
+            lima_home: PathBuf::from("/home/u/.lima"),
+        },
+        extra_mounts: Vec::new(),
+    }
+}
+
+/// The guest-build PGID path is guest-native (`/tmp/peppy/pgids/<key>.pgid`), so
+/// it lives on the guest's tmpfs rather than the virtiofs host mount.
+#[test]
+fn guest_pgid_path_is_guest_native() {
+    assert_eq!(
+        super::lima::guest_pgid_path("foo"),
+        PathBuf::from("/tmp/peppy/pgids/foo.pgid")
+    );
+}
+
+/// Under Lima, a build is wrapped as a process-group leader that records its
+/// PGID to the guest-native path and self-cleans (no `exec`, so `sh` survives to
+/// remove the file). The guest path is passed through untranslated.
+#[test]
+fn lima_build_wraps_in_setsid_with_guest_native_pgid() {
+    let facade = lima_facade();
     let home = std::env::var("HOME").expect("HOME must be set");
-    let out = PathBuf::from(&home).join("peppy_cancel_test/out.sif");
-    let def = PathBuf::from(&home).join("peppy_cancel_test/node.def");
-    let pgid = PathBuf::from(&home).join("peppy_cancel_test/build.pgid");
+    // Output/def live under $HOME so Lima path translation accepts them.
+    let out = PathBuf::from(&home).join("peppy_build_test/out.sif");
+    let def = PathBuf::from(&home).join("peppy_build_test/node.def");
 
     let cmd = facade
         .build(&out, &def)
-        .cancel_pgid_file(&pgid)
+        .cancel_pgid("buildkey")
         .into_std_command()
-        .expect("build command should assemble");
+        .expect("Lima build command should assemble");
     let args: Vec<String> = cmd
         .get_args()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
 
-    match &facade.backend {
-        Backend::Lima { .. } => {
-            // The guest invocation is wrapped so the build is a process-group
-            // leader recording its PGID.
-            assert!(
-                args.iter().any(|a| a == "setsid"),
-                "Lima build must be wrapped in setsid, got: {args:?}"
-            );
-            assert!(
-                args.iter().any(|a| a.contains("build.pgid")),
-                "Lima build wrapper must record the PGID file, got: {args:?}"
-            );
-        }
-        Backend::Native { .. } => {
-            // No VM: the host process group already covers the build tree, so
-            // the command is the plain `apptainer build ...` with no wrapping,
-            // and `kill_inflight_build` is a no-op.
-            assert!(
-                !args.iter().any(|a| a == "setsid"),
-                "native build must not be wrapped, got: {args:?}"
-            );
-            assert_eq!(args[0], "build");
-            facade
-                .kill_inflight_build(&pgid)
-                .expect("native kill_inflight_build must be an Ok no-op");
-        }
-    }
+    assert!(
+        args.iter().any(|a| a == "setsid"),
+        "Lima build must be wrapped in setsid, got: {args:?}"
+    );
+    let script = args
+        .last()
+        .expect("the wrapper script is the last argv element");
+    assert!(
+        script.contains("/tmp/peppy/pgids/buildkey.pgid"),
+        "wrapper must record the guest-native PGID, got: {script}"
+    );
+    assert!(
+        script.contains("mkdir -p '/tmp/peppy/pgids'"),
+        "wrapper must create the guest-native PGID dir, got: {script}"
+    );
+    assert!(
+        !script.contains("exec "),
+        "wrapper must run apptainer as a child (no exec) so sh can self-clean, got: {script}"
+    );
+}
+
+/// Under Native (Linux) there is no VM: the command is a plain
+/// `apptainer build ...` with no pgid wrapper, `kill_inflight_build` is an Ok
+/// no-op (the host process group already covers the build tree), and
+/// `guest_command` runs directly on the host.
+#[test]
+fn native_build_is_plain_and_kill_is_a_noop() {
+    let facade = native_facade();
+    let out = PathBuf::from("/work/out.sif");
+    let def = PathBuf::from("/work/node.def");
+
+    let cmd = facade
+        .build(&out, &def)
+        .cancel_pgid("buildkey")
+        .into_std_command()
+        .expect("native build command should assemble");
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+
+    assert!(
+        !args.iter().any(|a| a == "setsid"),
+        "native build must not be wrapped, got: {args:?}"
+    );
+    assert_eq!(args[0], "build", "native build runs apptainer directly");
+    assert!(
+        !args.iter().any(|a| a.contains(".pgid")),
+        "native build must not reference a PGID file, got: {args:?}"
+    );
+
+    facade
+        .kill_inflight_build("buildkey")
+        .expect("native kill_inflight_build must be an Ok no-op");
+
+    let output = facade
+        .guest_command(&["echo", "peppy-native"])
+        .expect("guest_command should run on the host under Native");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "peppy-native"
+    );
 }

@@ -6,6 +6,19 @@ pub(crate) const LIMA_INSTANCE: &str = env!("LIMA_INSTANCE");
 pub(crate) const LIMA_TEMPLATE: &str = env!("LIMA_TEMPLATE");
 pub(crate) const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 1, 0);
 
+/// Guest-native directory for build PGID files. Lives under `/tmp/peppy` on the
+/// guest's own tmpfs (alongside the synced apptainer install), never the
+/// virtiofs host-home mount, so the wrapper's pgid write cannot lose a
+/// mount-visibility race the way a path under `$HOME` can.
+pub(crate) const GUEST_PGID_DIR: &str = "/tmp/peppy/pgids";
+
+/// Guest-native path of a build's PGID file, keyed by a unique, filesystem-safe
+/// build key (the working-dir basename). The build wrapper and the kill script
+/// both derive the path from this one helper so they can never disagree.
+pub(crate) fn guest_pgid_path(build_key: &str) -> PathBuf {
+    PathBuf::from(GUEST_PGID_DIR).join(format!("{build_key}.pgid"))
+}
+
 /// Single-quote a string for safe embedding in a shell command string.
 pub(crate) fn shell_single_quote(s: &str) -> String {
     // Replace any single quotes with the '\'' idiom, then wrap in single quotes.
@@ -19,20 +32,26 @@ pub(crate) fn shell_escape(path: &Path) -> String {
 
 /// Builds the guest-side argv (after the `limactl shell ... --` separator) that
 /// runs an `apptainer build` as its own session/process-group leader and records
-/// its PGID to `pgid_file`.
+/// its PGID to `pgid_file` (a guest-native path from [`guest_pgid_path`]).
 ///
 /// `setsid -w` makes `sh` the session+group leader (so its PGID equals its PID)
 /// and waits for it, forwarding stdout/stderr and the exit status unchanged.
-/// `sh` writes that PID to `pgid_file`, then `exec`s apptainer, which keeps the
-/// PID; apptainer's `%post` children inherit the group. On cancel,
-/// [`lima_kill_pgid_script`] SIGKILLs that whole group from inside the VM.
+/// `sh` records that PID to `pgid_file`, then runs apptainer as a child of the
+/// same group (not via `exec`) so apptainer's `%post` children inherit the group
+/// and `sh` survives to remove the pgid file and forward apptainer's exit status
+/// on the normal path. `mkdir -p` of the guest-native pgid dir makes the write
+/// independent of the virtiofs host mount. On cancel, [`lima_kill_pgid_script`]
+/// SIGKILLs the whole group (`sh` + apptainer + `%post` children) from inside
+/// the VM.
 pub(crate) fn lima_guest_build_argv(
     apptainer_bin: &Path,
     apptainer_args: &[&str],
     pgid_file: &Path,
 ) -> Vec<String> {
+    let pgid_dir = pgid_file.parent().unwrap_or_else(|| Path::new("/tmp"));
     let mut guest = format!(
-        "echo $$ > {}; exec {}",
+        "mkdir -p {}; echo $$ > {}; {}",
+        shell_escape(pgid_dir),
         shell_escape(pgid_file),
         shell_escape(apptainer_bin)
     );
@@ -40,6 +59,10 @@ pub(crate) fn lima_guest_build_argv(
         guest.push(' ');
         guest.push_str(&shell_single_quote(arg));
     }
+    guest.push_str(&format!(
+        "; __rc=$?; rm -f {}; exit $__rc",
+        shell_escape(pgid_file)
+    ));
     vec![
         "setsid".to_string(),
         "-w".to_string(),
@@ -50,14 +73,14 @@ pub(crate) fn lima_guest_build_argv(
 }
 
 /// Guest-side `sh -c` script that SIGKILLs the build process group recorded at
-/// `pgid_file` by [`lima_guest_build_argv`]. The negative PGID targets the whole
-/// group (apptainer + its `%post` children). Best-effort: a missing or
-/// already-dead group is not an error.
+/// `pgid_file` by [`lima_guest_build_argv`], then removes the pgid file. The
+/// negative PGID targets the whole group (`sh` + apptainer + its `%post`
+/// children); the `rm -f` cleans up on the cancel path, where the wrapper is
+/// SIGKILLed before it can self-clean. Best-effort: a missing or already-dead
+/// group is not an error.
 pub(crate) fn lima_kill_pgid_script(pgid_file: &Path) -> String {
-    format!(
-        "kill -KILL -\"$(cat {})\" 2>/dev/null || true",
-        shell_escape(pgid_file)
-    )
+    let escaped = shell_escape(pgid_file);
+    format!("kill -KILL -\"$(cat {escaped})\" 2>/dev/null; rm -f {escaped} 2>/dev/null; true")
 }
 
 /// Build a `limactl shell <instance> --` command pre-configured with LIMA_HOME.

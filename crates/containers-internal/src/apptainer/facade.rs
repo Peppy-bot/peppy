@@ -486,15 +486,17 @@ impl Apptainer {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    /// SIGKILL the guest-side build process group recorded at `pgid_file` by the
-    /// Lima build wrapper (see [`ApptainerCommand::cancel_pgid_file`]).
+    /// SIGKILL the guest-side build process group recorded for `build_key` by the
+    /// Lima build wrapper (see [`ApptainerCommand::cancel_pgid`]). `build_key`
+    /// must match the one passed to `cancel_pgid` for this build; both resolve to
+    /// the same guest-native pgid path via [`lima::guest_pgid_path`].
     ///
     /// On the native backend (Linux) the host process-group SIGKILL already
     /// reached the whole build tree, so this is a no-op. Under Lima (macOS) the
     /// guest `apptainer build` and its `%post` children live in a separate
     /// kernel; this reaches into the VM and kills the whole group. Best-effort:
     /// a missing or already-dead group is not an error.
-    pub fn kill_inflight_build(&self, pgid_file: &Path) -> Result<()> {
+    pub fn kill_inflight_build(&self, build_key: &str) -> Result<()> {
         match &self.backend {
             Backend::Native { .. } => Ok(()),
             Backend::Lima {
@@ -502,7 +504,7 @@ impl Apptainer {
                 lima_home,
                 ..
             } => {
-                let guest_pgid = self.translate_path(pgid_file)?;
+                let guest_pgid = lima::guest_pgid_path(build_key);
                 let script = lima::lima_kill_pgid_script(&guest_pgid);
                 Command::new(limactl_path)
                     .env("LIMA_HOME", lima_home)
@@ -516,6 +518,38 @@ impl Apptainer {
                     .map_err(Error::from)?;
                 Ok(())
             }
+        }
+    }
+
+    /// Run `args` in the container runtime environment and capture its output.
+    ///
+    /// On Linux (`Backend::Native`) the command runs directly on the host. On
+    /// macOS (`Backend::Lima`) it runs inside the guest VM via
+    /// `limactl shell <instance> -- <args>`. Complements
+    /// [`kill_inflight_build`](Self::kill_inflight_build) for diagnostics and
+    /// lifecycle checks that need to observe runtime-side processes (the same
+    /// kernel the build runs in).
+    pub fn guest_command(&self, args: &[&str]) -> Result<std::process::Output> {
+        let (program, rest) = args.split_first().ok_or_else(|| {
+            Error::ConfigurationError("guest_command requires at least one argument".into())
+        })?;
+        match &self.backend {
+            Backend::Native { .. } => Command::new(program)
+                .args(rest)
+                .output()
+                .map_err(Error::from),
+            Backend::Lima {
+                limactl_path,
+                lima_home,
+                ..
+            } => Command::new(limactl_path)
+                .env("LIMA_HOME", lima_home)
+                .arg("shell")
+                .arg(lima::LIMA_INSTANCE)
+                .arg("--")
+                .args(args)
+                .output()
+                .map_err(Error::from),
         }
     }
 
@@ -551,7 +585,7 @@ impl Apptainer {
             flags: Vec::new(),
             bind_mounts: Vec::new(),
             lima_shell_extra_args: Vec::new(),
-            cancel_pgid_file: None,
+            cancel_pgid_path: None,
         }
     }
 
@@ -569,7 +603,7 @@ impl Apptainer {
             flags: Vec::new(),
             bind_mounts: Vec::new(),
             lima_shell_extra_args: Vec::new(),
-            cancel_pgid_file: None,
+            cancel_pgid_path: None,
         }
     }
 
@@ -586,7 +620,7 @@ impl Apptainer {
             flags: Vec::new(),
             bind_mounts: Vec::new(),
             lima_shell_extra_args: Vec::new(),
-            cancel_pgid_file: None,
+            cancel_pgid_path: None,
         }
     }
 
@@ -794,9 +828,11 @@ pub struct ApptainerCommand<'a> {
     bind_mounts: Vec<BindMount>,
     lima_shell_extra_args: Vec<String>,
     /// When set, run the guest build (Lima only) as a process-group leader that
-    /// records its PGID here, so [`Apptainer::kill_inflight_build`] can SIGKILL
-    /// the whole guest group on cancel. Only meaningful for `build`.
-    cancel_pgid_file: Option<PathBuf>,
+    /// records its PGID to this guest-native path, so
+    /// [`Apptainer::kill_inflight_build`] can SIGKILL the whole guest group on
+    /// cancel. Resolved from a build key via [`lima::guest_pgid_path`]. Only
+    /// meaningful for `build`.
+    cancel_pgid_path: Option<PathBuf>,
 }
 
 impl<'a> ApptainerCommand<'a> {
@@ -868,15 +904,17 @@ impl<'a> ApptainerCommand<'a> {
         self
     }
 
-    /// Make the guest build a process-group leader that records its PGID to
-    /// `pgid_file`, so [`Apptainer::kill_inflight_build`] can SIGKILL the whole
-    /// guest group (apptainer + its `%post` children) on cancellation.
+    /// Make the guest build a process-group leader that records its PGID to a
+    /// guest-native file keyed by `build_key`, so [`Apptainer::kill_inflight_build`]
+    /// (called with the same key) can SIGKILL the whole guest group (apptainer +
+    /// its `%post` children) on cancellation. `build_key` must be unique and
+    /// filesystem-safe (the working-dir basename is a good choice).
     ///
     /// Only effective under the Lima backend (macOS) and only for `build`
     /// commands. On the native backend (Linux) the host process-group SIGKILL
     /// already covers the build tree, so this is ignored.
-    pub fn cancel_pgid_file(mut self, pgid_file: &Path) -> Self {
-        self.cancel_pgid_file = Some(pgid_file.to_path_buf());
+    pub fn cancel_pgid(mut self, build_key: &str) -> Self {
+        self.cancel_pgid_path = Some(lima::guest_pgid_path(build_key));
         self
     }
 
@@ -927,20 +965,18 @@ impl<'a> ApptainerCommand<'a> {
 
     /// Assemble the fully-configured [`Command`] (subcommand + flags + binds +
     /// positional args, wrapped in `limactl shell` under Lima) shared by the
-    /// terminal methods. Resolves the cancel-PGID file to its guest path so the
-    /// Lima build can be run as a process-group leader.
+    /// terminal methods. The cancel-PGID path is already guest-native, so it is
+    /// passed straight through to wrap the Lima build as a process-group leader.
     fn assemble_command(&self) -> Result<Command> {
         let args = self.build_args()?;
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let guest_pgid_file = self
-            .cancel_pgid_file
-            .as_deref()
-            .map(|pgid_file| self.facade.translate_path(pgid_file))
-            .transpose()?;
+        // The pgid path comes from `lima::guest_pgid_path`, i.e. it is already a
+        // guest-side path, so it must NOT go through `translate_path` (which
+        // would reject `/tmp/...` as outside `$HOME`).
         self.facade.command(
             &str_args,
             &self.lima_shell_extra_args,
-            guest_pgid_file.as_deref(),
+            self.cancel_pgid_path.as_deref(),
         )
     }
 
