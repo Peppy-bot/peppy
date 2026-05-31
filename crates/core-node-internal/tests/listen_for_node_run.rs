@@ -1912,19 +1912,16 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_run_remove_node_on_unhealthy_node() {
+async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     const TARGET_NODE_NAME: &str = "health_monitor_node";
     const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "health_monitor_instance";
 
     // Use fast health monitor settings so the test completes quickly:
-    // check every 200ms, timeout 100ms per attempt, remove after 2 consecutive failures.
-    let started = start_core_node_with_health_monitor(
-        Duration::from_millis(200),
-        Duration::from_millis(100),
-        2,
-    )
-    .await;
+    // check every 200ms with a 100ms per-attempt timeout.
+    let started =
+        start_core_node_with_health_monitor(Duration::from_millis(200), Duration::from_millis(100))
+            .await;
 
     // Create a node with a simple long-running run_cmd
     let peppy_json5 = r#"{
@@ -2038,25 +2035,36 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
     // will fail (the node process is dead and the mock health service is gone)
     drop(health_task);
 
-    // Wait for the health monitor to detect the failure and remove the instance.
-    // With interval=200ms, timeout=100ms, max_failures=2, removal should happen
-    // within ~600-800ms. Give it 5 seconds for CI safety.
+    // Wait for the health monitor to detect the failure and mark the instance
+    // unhealthy. With interval=200ms and timeout=100ms the first failed probe
+    // lands within ~300ms; give it 5 seconds for CI safety. The instance must
+    // stay in the stack the whole time, only its health flag flips.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if started
-            .node_stack
-            .find_by_instance_id(&instance_id)
-            .is_none()
-        {
-            break;
+        match started.node_stack.find_by_instance_id(&instance_id) {
+            Some(instance) if !instance.healthy() => break,
+            Some(_) => {}
+            None => {
+                panic!("instance was removed from the stack; it should only be marked unhealthy")
+            }
         }
         if tokio::time::Instant::now() >= deadline {
-            panic!("instance was not removed from the stack within timeout");
+            panic!("instance was not marked unhealthy within timeout");
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Verify the stack log contains the removal event
+    // The unhealthy instance stays tracked, so `stack list` / `node info` keep
+    // reporting it instead of it vanishing from the stack.
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_some_and(|instance| !instance.healthy()),
+        "unhealthy instance should remain tracked in the stack"
+    );
+
+    // Verify the stack log recorded the unhealthy transition.
     let stack_log_path = started.peppy_dirs.stack_log_path();
     assert!(
         stack_log_path.exists(),
@@ -2072,8 +2080,8 @@ async fn listen_for_node_run_remove_node_on_unhealthy_node() {
         log_content
     );
     assert!(
-        log_content.contains("health checks"),
-        "stack log should mention health checks, got:
+        log_content.contains("unhealthy"),
+        "stack log should record the unhealthy transition, got:
 {}",
         log_content
     );

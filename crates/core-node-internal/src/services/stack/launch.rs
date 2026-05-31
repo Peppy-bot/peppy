@@ -75,7 +75,6 @@ pub struct StackLaunchTimeouts {
     pub node_start_health: Duration,
     pub health_monitor_interval: Duration,
     pub health_monitor_timeout: Duration,
-    pub health_monitor_max_failures: u32,
 }
 
 /// Daemon-wide defaults the stack launcher applies to every spawned
@@ -691,7 +690,6 @@ async fn start_node_directly(
         peppy_dirs: ctx.peppy_dirs.clone(),
         health_monitor_interval: ctx.timeouts.health_monitor_interval,
         health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
-        health_monitor_max_failures: ctx.timeouts.health_monitor_max_failures,
     };
 
     let log_file_for_timeout = log_file.clone();

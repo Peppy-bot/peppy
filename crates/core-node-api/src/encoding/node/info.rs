@@ -57,6 +57,12 @@ impl NodeInfoRequest {
 pub struct NodeInstanceInfo {
     pub instance_id: String,
     pub state: InstanceState,
+    /// Liveness from the daemon's most recent `node_health` probe for this
+    /// instance: `true` while it answers within the probe timeout, `false`
+    /// once a probe fails. Surfaced by `peppy node info` so a failing instance
+    /// is visible without a separate health round-trip. Decodes to `true` when
+    /// absent (an older producer) rather than flagging the instance unhealthy.
+    pub healthy: bool,
     /// Pre-resolved per-slot bindings for this consumer instance,
     /// mirroring [`config::runtime::NodeInstanceConfig::slot_bindings`].
     /// Empty when the node has no `depends_on` slots. Surfacing this
@@ -125,6 +131,7 @@ impl NodeInfoResponse {
                             let mut entry = instances_builder.reborrow().get(i as u32);
                             entry.set_instance_id(&inst.instance_id);
                             entry.set_state(inst.state.as_str());
+                            entry.set_healthy(inst.healthy);
                             let slot_bindings_json = if inst.slot_bindings.is_empty() {
                                 String::new()
                             } else {
@@ -198,6 +205,7 @@ impl NodeInfoResponse {
                     instances.push(NodeInstanceInfo {
                         instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
                         state,
+                        healthy: entry.get_healthy(),
                         slot_bindings,
                     });
                 }
@@ -300,11 +308,13 @@ mod tests {
                 NodeInstanceInfo {
                     instance_id: "inst-with-bindings".to_string(),
                     state: InstanceState::Running,
+                    healthy: true,
                     slot_bindings: bindings_a.clone(),
                 },
                 NodeInstanceInfo {
                     instance_id: "inst-no-bindings".to_string(),
                     state: InstanceState::Starting,
+                    healthy: false,
                     slot_bindings: BTreeMap::new(),
                 },
             ],
@@ -326,6 +336,14 @@ mod tests {
                 assert!(
                     info.instances[1].slot_bindings.is_empty(),
                     "empty slot_bindings should round-trip as empty"
+                );
+                assert!(
+                    info.instances[0].healthy,
+                    "healthy=true should round-trip for the first instance"
+                );
+                assert!(
+                    !info.instances[1].healthy,
+                    "healthy=false should round-trip for the second instance"
                 );
             }
             NodeInfoResponse::NotInStack => panic!("expected Found"),

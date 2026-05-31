@@ -148,6 +148,7 @@ async fn handle_node_info_request_inner(
             instances.push(NodeInstanceInfo {
                 instance_id: id.to_owned(),
                 state: instance.state(),
+                healthy: instance.healthy(),
                 slot_bindings: instance.slot_bindings().clone(),
             });
             run_log_paths.push(run_log_dir.join(format!("{}.log", id)));

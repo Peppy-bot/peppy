@@ -1,5 +1,3 @@
-use std::io::IsTerminal;
-
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
@@ -71,24 +69,27 @@ where
     }
 }
 
-fn should_colorize_stdout() -> bool {
-    std::env::var("NO_COLOR").map_or(true, |v| v.is_empty()) && std::io::stdout().is_terminal()
-}
-
 fn default_env_filter(default_directive: &str) -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_directive))
 }
 
 pub fn init_tracing(style: LogStyle) {
     let env_filter = match style {
-        LogStyle::Verbose => default_env_filter("info"),
+        // Demote Zenoh's routine session-lifecycle chatter (`Using ZID`,
+        // `close session zid=…`) to WARN. The router watchdog probes liveness by
+        // opening and closing a throwaway Zenoh session every couple of seconds,
+        // and at INFO those two lines per probe bury the daemon's own logs. The
+        // daemon's useful messaging logs come from the `pmi`/`peppy` targets, not
+        // `zenoh`, and genuine Zenoh warnings/errors still surface. Override with
+        // `RUST_LOG=info` to see the full Zenoh output when debugging the router.
+        LogStyle::Verbose => default_env_filter("info,zenoh=warn"),
         LogStyle::Compact => default_env_filter("peppy=info"),
     };
 
     match style {
         LogStyle::Verbose => tracing_subscriber::fmt().with_env_filter(env_filter).init(),
         LogStyle::Compact => {
-            let colorize = should_colorize_stdout();
+            let colorize = peppy::colors_enabled();
             let format = tracing_subscriber::fmt::format::format()
                 .without_time()
                 .with_level(false)

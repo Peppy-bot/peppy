@@ -119,6 +119,10 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     assert_eq!(info_response.instances.len(), 1);
     assert_eq!(info_response.instances[0].instance_id, TARGET_INSTANCE_ID);
     assert_eq!(info_response.instances[0].state, InstanceState::Running);
+    assert!(
+        info_response.instances[0].healthy,
+        "a freshly-running instance should report healthy"
+    );
     assert_eq!(info_response.run_log_paths.len(), 1);
     let expected_run_log = started_core_node
         .peppy_dirs
@@ -147,6 +151,28 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     assert_eq!(
         info_response.add_log_path.as_deref(),
         Some(recorded_add_log.as_path())
+    );
+
+    // Flip the tracked instance unhealthy (as the health monitor does on a
+    // failed `node_health` probe) and re-poll. `node info` reads the live flag
+    // off the tracked instance, so the response must now report `unhealthy` —
+    // this makes the handler's `healthy: instance.healthy()` wiring
+    // load-bearing rather than a value a test never distinguishes from a
+    // hardcoded `true`.
+    node_stack
+        .find_by_instance_id(&instance_id)
+        .expect("running instance should be findable")
+        .set_healthy(false);
+    let info_response = poll_node_info(
+        &started_core_node,
+        &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_info request should succeed");
+    assert!(
+        !info_response.instances[0].healthy,
+        "node info should report the instance unhealthy after set_healthy(false)"
     );
 }
 

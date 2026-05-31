@@ -1169,7 +1169,6 @@ fn default_node_arguments() -> CoreNodeArguments {
         node_start_health_timeout: Duration::from_secs(30),
         health_monitor_interval: Duration::from_secs(5),
         health_monitor_timeout: Duration::from_secs(3),
-        health_monitor_max_failures: 3,
         // Faster than the production default (100 ms) so publish_clock tests
         // observe several ticks within a small fixed budget without flaking.
         clock_publish_interval: Duration::from_millis(50),
@@ -1242,14 +1241,12 @@ pub async fn start_core_node_with_health_timeout(
 pub async fn start_core_node_with_health_monitor(
     health_monitor_interval: Duration,
     health_monitor_timeout: Duration,
-    health_monitor_max_failures: u32,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
     args.health_monitor_interval = health_monitor_interval;
     args.health_monitor_timeout = health_monitor_timeout;
-    args.health_monitor_max_failures = health_monitor_max_failures;
     start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
 }
 

@@ -10,17 +10,15 @@ use tokio::sync::{Mutex, oneshot, watch};
 use tracing::info;
 
 /// Cadence of the per-node health monitor (see
-/// `core_node::services::node::run::spawn_health_monitor`). A running instance
-/// is evicted from the stack after [`HEALTH_MONITOR_MAX_FAILURES`] consecutive
-/// failed polls.
-///
-/// The router watchdog in `messaging_router.rs` is deliberately tuned to detect
-/// and respawn a wedged router *faster* than this eviction window, so a
-/// transient router hang does not tear down the whole stack. The
-/// `watchdog_outpaces_health_monitor_eviction` test enforces that relationship.
+/// `core_node::services::node::run::spawn_health_monitor`). The monitor probes
+/// each running instance every [`HEALTH_MONITOR_INTERVAL`], allowing
+/// [`HEALTH_MONITOR_TIMEOUT`] per probe, and flips the instance's health flag
+/// (surfaced by `stack list` and `node info`). A failing probe marks the
+/// instance unhealthy; a later passing one marks it healthy again. The monitor
+/// never removes an instance, so a transient router hang shows up as a brief
+/// unhealthy blip rather than tearing the stack down.
 pub(crate) const HEALTH_MONITOR_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) const HEALTH_MONITOR_TIMEOUT: Duration = Duration::from_secs(3);
-pub(crate) const HEALTH_MONITOR_MAX_FAILURES: u32 = 3;
 
 pub struct CoreNodeRunner {
     core_node: CoreNode,
@@ -42,7 +40,6 @@ impl CoreNodeRunner {
             node_start_health_timeout,
             health_monitor_interval: HEALTH_MONITOR_INTERVAL,
             health_monitor_timeout: HEALTH_MONITOR_TIMEOUT,
-            health_monitor_max_failures: HEALTH_MONITOR_MAX_FAILURES,
             // 10 Hz: high enough to correlate logs across nodes, low enough to
             // avoid flooding the bus.
             clock_publish_interval: Duration::from_millis(100),
