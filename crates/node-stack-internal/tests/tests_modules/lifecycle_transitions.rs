@@ -1,15 +1,16 @@
 //! Tests focused on the `NodeStage` lifecycle transitions managed by
 //! `NodeEntity`.
 
-use parking_lot::Mutex as StdMutex;
+use parking_lot::{Mutex as StdMutex, RwLock};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use config::node::Name;
 use node_stack::{
     BuildContext, EntitySnapshot, InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage,
-    RestoreTarget,
+    RestoreTarget, WorkingDirGuard,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::helpers::config_common::core_node_config;
 use crate::helpers::real_lifecycle;
@@ -450,6 +451,7 @@ async fn concurrent_builds_are_rejected_immediately() {
                         feedback_tx: &feedback_tx,
                         log_file,
                         env_vars: &[],
+                        cancel_token: CancellationToken::new(),
                     },
                 )
                 .await
@@ -604,6 +606,7 @@ async fn build_runs_add_cmd_for_process_node() {
             feedback_tx: &h.feedback_tx,
             log_file: Arc::clone(&h.log_file),
             env_vars: &[],
+            cancel_token: CancellationToken::new(),
         },
     )
     .await
@@ -1175,25 +1178,14 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
                 feedback_tx: &feedback_tx_clone,
                 log_file: log_file_clone,
                 env_vars: &[],
+                cancel_token: CancellationToken::new(),
             },
         )
         .await
     });
 
     // Wait until the entity is observably in `Building`.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        {
-            let guard = handle_after_push.read();
-            if matches!(guard.stage(), NodeStage::Building { .. }) {
-                break;
-            }
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("entity did not enter Building within 10s");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    real_lifecycle::wait_for_building(&handle_after_push).await;
 
     // Build "fails" — the caller rolls back by restoring the v1 snapshot it
     // captured before calling push_config.
@@ -1246,6 +1238,132 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
     );
 }
 
+/// `rollback_to_added_if_matches` is the node-stack API the `node_build`
+/// `--force` cancellation path calls: it rolls a `Building` entity back to
+/// `Added` and re-attaches the staged working dir so the forced rebuild can
+/// reuse it, but only when the handle + generation + `Building` slot identity
+/// still matches.
+#[tokio::test]
+async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working_dir() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
+    let config_path = harness.peppy_root.path().join("sensor_v1.json5");
+
+    // Push a node with a blocking build_cmd and drive it into `Building`, the
+    // legitimate way to observe the stage with no backdoor.
+    let control_dir = tempfile::tempdir().expect("control tempdir");
+    let proceed_file = control_dir.path().join("proceed");
+    let blocking_config = sensor_config_with_build_cmd(&format!(
+        "while [ ! -f '{}' ]; do sleep 0.02; done; exit 0",
+        proceed_file.display()
+    ));
+    stack
+        .push_config(blocking_config, false, &config_path)
+        .expect("push_config should succeed");
+    let handle = stack.find("sensor", "v1").expect("entity should exist");
+    let captured_generation = handle.read().generation();
+    let original_config_path = handle.read().config_path().to_path_buf();
+
+    let working_dir = tempfile::tempdir().expect("working_dir tempdir");
+    let working_path = working_dir.path().to_path_buf();
+    let peppy_dirs_clone = harness.peppy_dirs.clone();
+    let feedback_tx_clone = harness.feedback_tx.clone();
+    let log_file_clone = Arc::clone(&harness.log_file);
+    let build_handle_clone = Arc::clone(&handle);
+    let build_task = tokio::spawn(async move {
+        NodeEntity::build(
+            &build_handle_clone,
+            BuildContext {
+                working_dir: &working_path,
+                peppy_dirs: &peppy_dirs_clone,
+                feedback_tx: &feedback_tx_clone,
+                log_file: log_file_clone,
+                env_vars: &[],
+                cancel_token: CancellationToken::new(),
+            },
+        )
+        .await
+    });
+
+    real_lifecycle::wait_for_building(&handle).await;
+
+    // The working dir to re-attach on a successful rollback, plus a scratch dir
+    // for the throwaway guards the mismatch cases never store.
+    let restaged = tempfile::tempdir().expect("restaged dir");
+    let restaged_path = restaged.path().to_path_buf();
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let scratch_guard = || Arc::new(WorkingDirGuard::new(scratch.path().to_path_buf()));
+
+    // Mismatch cases mutate nothing and return false.
+    assert!(
+        !stack.rollback_to_added_if_matches(
+            "sensor",
+            "v1",
+            &handle,
+            captured_generation + 1,
+            scratch_guard(),
+        ),
+        "a generation mismatch must not roll back"
+    );
+    let unrelated_handle = Arc::new(RwLock::new(NodeEntity::new(sensor_config(), &config_path)));
+    assert!(
+        !stack.rollback_to_added_if_matches(
+            "sensor",
+            "v1",
+            &unrelated_handle,
+            captured_generation,
+            scratch_guard(),
+        ),
+        "a different handle must not roll back"
+    );
+    assert!(
+        matches!(handle.read().stage(), NodeStage::Building { .. }),
+        "the entity must still be Building after the mismatch cases"
+    );
+
+    // Success: rolls back to `Added`, preserving config_path and re-attaching
+    // the staged working dir.
+    assert!(
+        stack.rollback_to_added_if_matches(
+            "sensor",
+            "v1",
+            &handle,
+            captured_generation,
+            Arc::new(WorkingDirGuard::new(restaged_path.clone())),
+        ),
+        "a matching handle + generation + Building slot must roll back"
+    );
+    {
+        let guard = handle.read();
+        match guard.stage() {
+            NodeStage::Added { config_path } => assert_eq!(config_path, &original_config_path),
+            other => panic!("expected Added after rollback, got {:?}", other),
+        }
+        assert_eq!(
+            guard.pending_working_dir().map(|g| g.path().to_path_buf()),
+            Some(restaged_path.clone()),
+            "the staged working dir must be re-attached so the rebuild can reuse it"
+        );
+    }
+
+    // Rolling back again is a no-op: the entity is no longer `Building`.
+    assert!(
+        !stack.rollback_to_added_if_matches(
+            "sensor",
+            "v1",
+            &handle,
+            captured_generation,
+            scratch_guard(),
+        ),
+        "a non-Building entity must not roll back"
+    );
+
+    // Unblock and drain the build task so it does not leak. Its Phase 3 commit
+    // observes the entity is no longer `Building` and returns an error.
+    std::fs::write(&proceed_file, b"").expect("touch proceed file");
+    let _ = build_task.await.expect("build task should not panic");
+}
+
 /// `restore_snapshot_if_matches` must not clobber a concurrent replacement:
 /// if the handle+generation drift (because another `push_config` landed
 /// between the caller's capture and the build failure), the rollback should
@@ -1290,25 +1408,14 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
                 feedback_tx: &feedback_tx_clone,
                 log_file: log_file_clone,
                 env_vars: &[],
+                cancel_token: CancellationToken::new(),
             },
         )
         .await
     });
 
     // Wait until we observe `Building` on the entity.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        {
-            let guard = handle.read();
-            if matches!(guard.stage(), NodeStage::Building { .. }) {
-                break;
-            }
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("entity did not enter Building within 10s");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    real_lifecycle::wait_for_building(&handle).await;
 
     // A concurrent push replaces the entity under the same handle, bumping
     // its generation. push_config accepts the replacement even while the

@@ -133,7 +133,7 @@ where
 #[cfg(test)]
 pub(crate) mod test_utils {
     use std::env;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, PoisonError};
 
     /// Global mutex that serializes all env-var mutations across test threads
     /// within this crate, preventing races between processor (daemon-mode) and
@@ -150,7 +150,11 @@ pub(crate) mod test_utils {
 
     impl EnvVarGuard {
         pub(crate) fn set(key: &'static str, value: &str) -> Self {
-            let _lock = ENV_VAR_MUTEX.lock().expect("env mutex should lock");
+            // Recover from a poisoned mutex: the guarded section only mutates a
+            // single env var, so a panic while held leaves no broken invariant.
+            // Without this, one failing test cascades PoisonError into every
+            // later env-dependent test and hides the real failure.
+            let _lock = ENV_VAR_MUTEX.lock().unwrap_or_else(PoisonError::into_inner);
             let previous = env::var(key).ok();
             // SAFETY: environment mutation is guarded by a global mutex to avoid races.
             unsafe { env::set_var(key, value) };
@@ -162,7 +166,11 @@ pub(crate) mod test_utils {
         }
 
         pub(crate) fn remove(key: &'static str) -> Self {
-            let _lock = ENV_VAR_MUTEX.lock().expect("env mutex should lock");
+            // Recover from a poisoned mutex: the guarded section only mutates a
+            // single env var, so a panic while held leaves no broken invariant.
+            // Without this, one failing test cascades PoisonError into every
+            // later env-dependent test and hides the real failure.
+            let _lock = ENV_VAR_MUTEX.lock().unwrap_or_else(PoisonError::into_inner);
             let previous = env::var(key).ok();
             // SAFETY: environment mutation is guarded by a global mutex to avoid races.
             unsafe { env::remove_var(key) };

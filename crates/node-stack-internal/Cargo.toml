@@ -21,6 +21,7 @@ tokio = { version = "1", features = [
     "time",
     "macros",
 ] }
+tokio-util = "0.7"
 tar = "0.4"
 zstd = "0.13.3"
 chrono = "0.4"

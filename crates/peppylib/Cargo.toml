@@ -36,6 +36,7 @@ build-helpers = { path = "../build-helpers-internal" }
 capnpc = "0.25"
 
 [dev-dependencies]
+libc = "0.2"
 tempfile = "3.10"
 askama = "0.16"
 tokio = { version = "1", features = ["full"] }

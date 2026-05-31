@@ -17,17 +17,21 @@ use peppylib::core_node::transport::poll_stack_list;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn list_nodes(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Result<()> {
-    let output = crate::commands::block_on(list_nodes_collecting(ctx, dot_graph_path))?;
+    let colorize = crate::terminal::colors_enabled();
+    let output = crate::commands::block_on(list_nodes_collecting(ctx, dot_graph_path, colorize))?;
     print!("{}", output);
     Ok(())
 }
 
 /// Like [`list_nodes`] but returns the rendered output as a `String` instead
-/// of printing it. Used by integration tests so they can assert against the
-/// exact bytes the CLI would print without having to capture stdout.
+/// of printing it. `colorize` is passed in rather than read from the ambient
+/// terminal so the result is deterministic: the CLI passes
+/// [`crate::terminal::colors_enabled`], while integration tests pass `false`
+/// for stable, color-free assertions.
 pub async fn list_nodes_collecting(
     ctx: &Arc<AppContext>,
     dot_graph_path: Option<PathBuf>,
+    colorize: bool,
 ) -> Result<String> {
     let conn = ctx.connect_to_daemon().await?;
 
@@ -64,7 +68,7 @@ pub async fn list_nodes_collecting(
         a_key.cmp(&b_key)
     });
 
-    let mut out = format_stack_list(&nodes, &edges, crate::terminal::colors_enabled());
+    let mut out = format_stack_list(&nodes, &edges, colorize);
 
     if let (Some(path), Some(dot_graph)) = (dot_graph_path, response.dot_graph) {
         std::fs::write(&path, dot_graph).map_err(|e| {

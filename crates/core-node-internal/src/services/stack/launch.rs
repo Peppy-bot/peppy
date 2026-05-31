@@ -2,7 +2,7 @@ use crate::Result;
 use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
-use crate::services::node::gate::{Admission, ConcurrencyGate};
+use crate::services::node::gate::{Admission, COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use crate::services::node::{
     FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
     NodeRunActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
@@ -36,11 +36,6 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
-
-/// Upper bound on how long a run-phase future may spend in its cancellation
-/// cleanup (SIGKILL the child + unregister the `Starting` instance + clear
-/// temp files). Keeps a misbehaving cleanup from stalling the launch failure.
-const RUN_PHASE_CANCEL_CLEANUP_BUDGET: Duration = Duration::from_secs(30);
 
 /// Watches for an idle period: returns when no `notify_one()` arrives for `idle_timeout`.
 /// Each call to `notify_one()` on `notify` resets the clock.
@@ -379,7 +374,7 @@ fn spawn_feedback_forwarder(
 ///   dropping it leaves the OS process and its `Starting` stack entry behind. Callers that
 ///   need run-phase cancellation pass `cancel_and_drain = Some(token)`; on timeout the
 ///   runner signals the token and awaits the phase future's cooperative cleanup (bounded by
-///   `RUN_PHASE_CANCEL_CLEANUP_BUDGET`) instead of dropping it.
+///   `COOPERATIVE_TEARDOWN_BUDGET`) instead of dropping it.
 async fn run_phase_with_timeouts<F, T>(
     phase: F,
     activity_notify: Arc<Notify>,
@@ -441,7 +436,7 @@ where
 
 /// Timeout behavior for phases that own resources (e.g. a spawned child
 /// process) not reaped by `Drop`. On timeout, signals `cancel_token` and
-/// awaits the phase future for up to `RUN_PHASE_CANCEL_CLEANUP_BUDGET` so it
+/// awaits the phase future for up to `COOPERATIVE_TEARDOWN_BUDGET` so it
 /// can run its own teardown (SIGKILL the child, unregister the `Starting`
 /// instance, remove temp files) before we return the timeout outcome.
 async fn run_phase_cancel_on_timeout<F, T>(
@@ -479,7 +474,7 @@ where
     // the future as a last resort — still strictly better than today, since
     // the run phase would have been dropped immediately in that branch.
     cancel_token.cancel();
-    let _ = tokio::time::timeout(RUN_PHASE_CANCEL_CLEANUP_BUDGET, phase.as_mut()).await;
+    let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, phase.as_mut()).await;
 
     timeout_kind
 }
@@ -1461,7 +1456,8 @@ async fn handle_goal_request(
     // `timeout_secs` is gate-reporting only; 0 indicates "no enforced budget"
     // (when --max-timeout-secs is unset).
     let generation = match gate.try_admit(goal.max_timeout_secs.unwrap_or(0), false) {
-        Admission::Admitted { generation } => generation,
+        // `stack_launch` never forces, so nothing is ever superseded here.
+        Admission::Admitted { generation, .. } => generation,
         Admission::AlreadyRunning { .. } => {
             reject_goal(
                 pending,
