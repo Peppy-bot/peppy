@@ -60,7 +60,6 @@ pub struct NodeRunServiceConfig {
     pub peppy_dirs: PeppyDirs,
     pub health_monitor_interval: Duration,
     pub health_monitor_timeout: Duration,
-    pub health_monitor_max_failures: u32,
 }
 
 #[derive(Clone)]
@@ -74,7 +73,6 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) peppy_dirs: PeppyDirs,
     pub(crate) health_monitor_interval: Duration,
     pub(crate) health_monitor_timeout: Duration,
-    pub(crate) health_monitor_max_failures: u32,
 }
 
 struct ProcessNodeRunContext {
@@ -113,7 +111,6 @@ pub async fn listen_for_node_run(
             peppy_dirs: config.peppy_dirs,
             health_monitor_interval: config.health_monitor_interval,
             health_monitor_timeout: config.health_monitor_timeout,
-            health_monitor_max_failures: config.health_monitor_max_failures,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -892,7 +889,6 @@ async fn process_node_run(
                         peppy_dirs: ctx.action.peppy_dirs.clone(),
                         interval: ctx.action.health_monitor_interval,
                         timeout: ctx.action.health_monitor_timeout,
-                        max_failures: ctx.action.health_monitor_max_failures,
                     });
 
                     // Wait until the readers have drained the child's startup
@@ -1173,53 +1169,17 @@ struct HealthMonitorParams {
     peppy_dirs: PeppyDirs,
     interval: Duration,
     timeout: Duration,
-    max_failures: u32,
 }
 
-/// The state change a single health-probe result drives, separated from its
-/// side effects (recording the flag on the instance, evicting the node) so the
-/// failure-streak/eviction logic is unit-testable without a live messenger or
-/// stack.
-struct ProbeTransition {
-    /// Health flag to record on the instance — read by `stack list` and
-    /// `node info`. `true` on a successful probe, `false` on a failed one.
-    healthy: bool,
-    /// Whether the consecutive-failure streak has reached `max_failures` and
-    /// the instance should be removed from the stack.
-    evict: bool,
-}
-
-/// Folds one probe result into `consecutive_failures` and reports the resulting
-/// health flag and whether the removal threshold has been reached. A success
-/// resets the streak and marks healthy; a failure grows the streak, marks
-/// unhealthy, and asks for eviction once the streak reaches `max_failures`.
-fn probe_transition(
-    probe_succeeded: bool,
-    consecutive_failures: &mut u32,
-    max_failures: u32,
-) -> ProbeTransition {
-    if probe_succeeded {
-        *consecutive_failures = 0;
-        ProbeTransition {
-            healthy: true,
-            evict: false,
-        }
-    } else {
-        *consecutive_failures += 1;
-        ProbeTransition {
-            healthy: false,
-            evict: *consecutive_failures >= max_failures,
-        }
-    }
-}
-
-/// Spawns a background task that periodically polls the node's health service.
-/// If `max_failures` consecutive health checks fail, the instance is removed
-/// from the node stack and the event is logged to the stack log.
+/// Spawns a background task that periodically polls the node's health service
+/// and records the outcome on the instance's health flag, which `stack list`
+/// and `node info` surface. A failing probe marks the instance `unhealthy`; a
+/// later passing probe marks it `healthy` again. This task never removes the
+/// instance from the stack, so an unhealthy node stays visible until it
+/// recovers or is stopped explicitly (e.g. `node stop`).
 ///
-/// The task exits when:
-/// - The instance is no longer found in the stack (removed externally).
-/// - The health checks fail consecutively `max_failures` times.
+/// The task exits only when the instance is no longer found in the stack
+/// (stopped externally).
 fn spawn_health_monitor(p: HealthMonitorParams) {
     tokio::spawn(async move {
         let instance_id_str = p.target_instance_id.as_str().to_owned();
@@ -1235,7 +1195,10 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
             }
         };
 
-        let mut consecutive_failures: u32 = 0;
+        // Tracks the previously observed health so the monitor logs only on
+        // transitions (a node going down or recovering), not on every failing
+        // tick. Instances start healthy, matching the flag's initial value.
+        let mut was_healthy = true;
 
         loop {
             tokio::time::sleep(p.interval).await;
@@ -1269,50 +1232,70 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
             )
             .await;
 
-            let transition = probe_transition(
-                poll_result.is_ok(),
-                &mut consecutive_failures,
-                p.max_failures,
-            );
+            let probe_succeeded = poll_result.is_ok();
+            let probe_error = poll_result.err();
 
             // Record the probe result so `stack list` and `node info` can report
             // health without re-probing. A failed probe flags the instance
-            // unhealthy on the first failure, before the `max_failures` removal
-            // threshold, so a flaky instance shows as unhealthy while it lasts.
-            instance.set_healthy(transition.healthy);
+            // unhealthy; a later successful probe clears the flag. The instance
+            // is never removed here, so an unhealthy node stays visible in the
+            // stack until it recovers or is stopped explicitly.
+            instance.set_healthy(probe_succeeded);
 
-            if let Err(err) = poll_result {
-                debug!(
-                    "Health monitor: instance '{}' health check failed ({}/{}): {}",
-                    instance_id_str, consecutive_failures, p.max_failures, err
-                );
-
-                if transition.evict {
+            // Log only on health edges so a node that stays down
+            // does not re-emit the same warning every tick.
+            match (was_healthy, probe_succeeded) {
+                // Down edge: alert once when a healthy node first fails.
+                (true, false) => {
+                    let reason = probe_error
+                        .as_ref()
+                        .map(|e| e.to_string())
+                        .unwrap_or_default();
                     tracing::warn!(
-                        "Health monitor: instance '{}' failed {} consecutive health checks, removing from stack",
+                        "Health monitor: instance '{}' of node '{}:{}' became unhealthy: {}",
                         instance_id_str,
-                        p.max_failures
+                        p.to_node_name,
+                        p.node_tag,
+                        reason
                     );
-
-                    if let Some(entity_handle) = p
-                        .node_stack
-                        .find_entity_by_instance_id(&p.target_instance_id)
-                    {
-                        entity_handle.write().stop_instance(&p.target_instance_id);
-                    }
-
                     super::append_stack_log(
                         &p.peppy_dirs,
                         &format!(
-                            "Removed instance '{}' of node '{}:{}': \
-                             failed {} consecutive health checks",
-                            instance_id_str, p.to_node_name, p.node_tag, p.max_failures,
+                            "Instance '{}' of node '{}:{}' became unhealthy: \
+                             failed health check ({})",
+                            instance_id_str, p.to_node_name, p.node_tag, reason,
                         ),
                     );
-
-                    return;
+                }
+                // Up edge: the node came back.
+                (false, true) => {
+                    tracing::info!(
+                        "Health monitor: instance '{}' of node '{}:{}' recovered",
+                        instance_id_str,
+                        p.to_node_name,
+                        p.node_tag
+                    );
+                    super::append_stack_log(
+                        &p.peppy_dirs,
+                        &format!(
+                            "Instance '{}' of node '{}:{}' recovered after a failed health check",
+                            instance_id_str, p.to_node_name, p.node_tag,
+                        ),
+                    );
+                }
+                // No edge: a low-noise debug heartbeat while still failing; the
+                // `if let` makes the still-healthy case a no-op.
+                (false, false) | (true, true) => {
+                    if let Some(err) = &probe_error {
+                        debug!(
+                            "Health monitor: instance '{}' health check still failing: {}",
+                            instance_id_str, err
+                        );
+                    }
                 }
             }
+
+            was_healthy = probe_succeeded;
         }
     });
 }
@@ -1320,43 +1303,6 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn probe_transition_tracks_failures_health_and_eviction() {
-        let mut failures = 0u32;
-
-        // A successful probe marks the instance healthy and resets the streak.
-        let t = probe_transition(true, &mut failures, 3);
-        assert!(t.healthy, "a successful probe should mark healthy");
-        assert!(!t.evict, "a successful probe should never evict");
-        assert_eq!(failures, 0);
-
-        // Each failure marks unhealthy and grows the streak; eviction only
-        // fires once the streak reaches `max_failures`.
-        let t = probe_transition(false, &mut failures, 3);
-        assert!(!t.healthy, "the first failed probe should mark unhealthy");
-        assert!(!t.evict, "one failure is below the threshold");
-        assert_eq!(failures, 1);
-
-        let t = probe_transition(false, &mut failures, 3);
-        assert!(!t.healthy);
-        assert!(!t.evict, "two failures is still below the threshold");
-        assert_eq!(failures, 2);
-
-        let t = probe_transition(false, &mut failures, 3);
-        assert!(!t.healthy);
-        assert!(
-            t.evict,
-            "the third consecutive failure should hit the threshold"
-        );
-        assert_eq!(failures, 3);
-
-        // A success after failures clears both the streak and the unhealthy flag.
-        let t = probe_transition(true, &mut failures, 3);
-        assert!(t.healthy);
-        assert!(!t.evict);
-        assert_eq!(failures, 0, "a success should reset the failure streak");
-    }
 
     #[test]
     fn test_resolve_mount_path_parameters_simple() {
