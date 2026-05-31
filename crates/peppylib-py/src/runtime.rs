@@ -9,11 +9,65 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 type SharedPyError = Arc<Mutex<Option<PyErr>>>;
-type SharedEventLoop = Arc<Mutex<Option<Py<PyAny>>>>;
-type AsyncSetupResult = (std::sync::mpsc::Receiver<()>, Py<PyAny>, SharedEventLoop);
+type AsyncSetupResult = (std::sync::mpsc::Receiver<()>, Py<PyAny>, EventLoopShutdown);
+
+/// How long the main thread waits for the asyncio event-loop thread to drain
+/// on shutdown before giving up and letting the process exit anyway.
+const EVENT_LOOP_JOIN_TIMEOUT_SECS: f64 = 5.0;
+
+/// Teardown handles for the persistent asyncio event-loop thread.
+///
+/// On shutdown the loop thread must be brought down deterministically. Its
+/// background tasks may be executing native code (pycapnp serialization, a
+/// pyo3 future) and, because the thread is a daemon, CPython would otherwise
+/// kill it mid-call during interpreter finalization, segfaulting the process.
+struct EventLoopShutdown {
+    /// Pure-Python callable that cancels pending tasks and stops the loop.
+    /// Idempotent and safe to call from any thread.
+    trigger: Py<PyAny>,
+    /// The daemon thread running the event loop. Joined before `run` returns
+    /// so no native call is in flight when the interpreter finalizes.
+    thread: Py<PyAny>,
+}
+
+impl EventLoopShutdown {
+    /// Cancel pending tasks, stop the loop, and join its thread (bounded by
+    /// [`EVENT_LOOP_JOIN_TIMEOUT_SECS`]). CPython releases the GIL while
+    /// joining, so the loop thread can observe the cancellation and exit.
+    /// Best-effort: if a background task refuses to cancel within the timeout,
+    /// shutdown proceeds rather than hanging process exit.
+    fn quiesce(self) {
+        let still_alive = Python::try_attach(|py| -> PyResult<bool> {
+            // Best-effort cancellation; the join below must run even if the
+            // trigger raises, so the daemon thread cannot outlive `run`.
+            let _ = self.trigger.bind(py).call0();
+            let thread = self.thread.bind(py);
+            thread.call_method1("join", (EVENT_LOOP_JOIN_TIMEOUT_SECS,))?;
+            thread.call_method0("is_alive")?.is_truthy()
+        });
+        if let Some(Ok(true)) = still_alive {
+            eprintln!(
+                "peppy: asyncio event-loop thread did not stop within {:.0}s; \
+                 proceeding with shutdown (a background task may be ignoring cancellation)",
+                EVENT_LOOP_JOIN_TIMEOUT_SECS
+            );
+        }
+    }
+}
 
 fn peppy_io_err(message: impl Into<String>) -> peppylib::PeppyError {
     peppylib::PeppyError::Io(std::io::Error::other(message.into()))
+}
+
+/// Enable Python's faulthandler so a fatal signal (e.g. a SIGSEGV raised by a
+/// native extension on a background thread) prints a traceback for every thread
+/// to stderr instead of dying silently. Best-effort and idempotent; it only
+/// fires on a crash, so it is safe to leave on in production.
+fn enable_faulthandler(py: Python<'_>) {
+    let _ = py
+        .import("faulthandler")
+        .and_then(|module| module.call_method0("enable"))
+        .map(|_| ());
 }
 
 fn call_setup_function(
@@ -96,6 +150,26 @@ def make_run_loop(event_loop, asyncio_mod, cancel_token):
                 print(f'Fatal error in peppy asyncio event loop: {exc}', file=sys.stderr, flush=True)
             cancel_token.cancel()
     return _run
+
+def make_shutdown_trigger(event_loop, asyncio_mod):
+    async def _drain():
+        current = asyncio_mod.current_task()
+        pending = [task for task in asyncio_mod.all_tasks() if task is not current]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio_mod.gather(*pending, return_exceptions=True)
+        event_loop.stop()
+
+    def _trigger():
+        # Cancel pending tasks and stop the loop so its thread can exit before
+        # the process tears down. Safe to call from any thread and idempotent:
+        # a no-op once the loop is no longer running.
+        if not event_loop.is_running():
+            return
+        asyncio_mod.run_coroutine_threadsafe(_drain(), event_loop)
+
+    return _trigger
 ",
         c"_peppy_event_loop_helpers.py",
         c"_peppy_event_loop_helpers",
@@ -155,9 +229,16 @@ fn start_async_setup(
     let thread = threading.call_method("Thread", (), Some(&thread_kwargs))?;
     thread.call_method0("start")?;
 
-    // 5. Submit the setup coroutine and register a done callback.
+    // 5. Build the shutdown trigger: a pure-Python callable that cancels
+    //    pending tasks and stops the loop. Fired by both the shutdown monitor
+    //    (below) and the main thread after builder.run() returns.
+    let shutdown_trigger = helpers
+        .getattr("make_shutdown_trigger")?
+        .call1((&event_loop, &asyncio))?;
+
+    // 6. Submit the setup coroutine and register a done callback.
     //    A Rust channel signals completion so the caller can release the GIL
-    //    before blocking — the event loop thread needs it to run the coroutine.
+    //    before blocking; the event loop thread needs it to run the coroutine.
     let future =
         asyncio.call_method1("run_coroutine_threadsafe", (setup_awaitable, &event_loop))?;
     let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
@@ -173,31 +254,33 @@ fn start_async_setup(
     future.call_method1("add_done_callback", (done_cb,))?;
     let future_ref = future.unbind();
 
-    // 6. Schedule shutdown monitor: stop the event loop when the node shuts down.
-    //    The event loop reference is shared so the main thread can also stop it
-    //    after builder.run() returns, preventing a race where the process exits
-    //    before the shutdown monitor thread has finished.
-    let shared_loop: SharedEventLoop = Arc::new(Mutex::new(Some(event_loop.unbind())));
-    let loop_for_shutdown = Arc::clone(&shared_loop);
+    // 7. Schedule the shutdown monitor: fire the loop teardown as soon as the
+    //    node is cancelled (external shutdown or an uncaught task error), while
+    //    the loop is still alive so pending tasks observe cancellation. The
+    //    main thread fires the same idempotent trigger and joins the loop
+    //    thread after builder.run() returns; see `EventLoopShutdown`.
+    let trigger_for_monitor = shutdown_trigger.clone().unbind();
     let cancel_for_shutdown = node_runner.cancellation_token().clone();
     let rt_handle = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("peppy-asyncio-shutdown".to_string())
         .spawn(move || {
             rt_handle.block_on(cancel_for_shutdown.cancelled());
-            let loop_ref = loop_for_shutdown.lock().ok().and_then(|mut g| g.take());
-            if let Some(event_loop) = loop_ref {
-                let _ = Python::try_attach(|py| -> PyResult<()> {
-                    let loop_ = event_loop.bind(py);
-                    let stop = loop_.getattr("stop")?;
-                    loop_.call_method1("call_soon_threadsafe", (stop,))?;
-                    Ok(())
-                });
-            }
+            let _ = Python::try_attach(|py| -> PyResult<()> {
+                trigger_for_monitor.bind(py).call0()?;
+                Ok(())
+            });
         })
         .map_err(|e| PyRuntimeError::new_err(format!("failed to start shutdown monitor: {e}")))?;
 
-    Ok((rx, future_ref, shared_loop))
+    Ok((
+        rx,
+        future_ref,
+        EventLoopShutdown {
+            trigger: shutdown_trigger.unbind(),
+            thread: thread.unbind(),
+        },
+    ))
 }
 
 fn store_python_error(error_slot: &SharedPyError, err: PyErr) {
@@ -431,6 +514,10 @@ impl PyNodeBuilder {
     /// This method blocks until the node exits (shutdown or Ctrl+C).
     /// Must be called from a thread (not from the async event loop).
     fn run(&self, py: Python<'_>, setup_fn: Py<PyAny>) -> PyResult<()> {
+        // Print a per-thread traceback if a fatal signal (e.g. a native
+        // extension SIGSEGV on a background thread) kills the process.
+        enable_faulthandler(py);
+
         let standalone_config = self.standalone_config.clone();
         let config_path = self.config_path.clone();
         let setup_error: SharedPyError = Arc::new(Mutex::new(None));
@@ -453,7 +540,8 @@ impl PyNodeBuilder {
             // reference to the Python object for the entire node lifetime.
             let setup_return_value: Arc<Mutex<Option<Py<PyAny>>>> = Arc::new(Mutex::new(None));
             let setup_return_for_run = Arc::clone(&setup_return_value);
-            let event_loop_handle: Arc<Mutex<Option<SharedEventLoop>>> = Arc::new(Mutex::new(None));
+            let event_loop_handle: Arc<Mutex<Option<EventLoopShutdown>>> =
+                Arc::new(Mutex::new(None));
             let event_loop_for_run = Arc::clone(&event_loop_handle);
 
             let run_result = builder.run(
@@ -477,11 +565,12 @@ impl PyNodeBuilder {
                             });
 
                         match async_handle {
-                            Some(Ok(Some((rx, future_ref, shared_loop)))) => {
-                                // Store event loop handle so the main thread
-                                // can stop it after builder.run() returns.
+                            Some(Ok(Some((rx, future_ref, shutdown)))) => {
+                                // Store the loop teardown handle so the main
+                                // thread can quiesce and join it after
+                                // builder.run() returns.
                                 if let Ok(mut guard) = event_loop_slot.lock() {
-                                    *guard = Some(shared_loop);
+                                    *guard = Some(shutdown);
                                 }
 
                                 // Phase 2: wait without GIL so event loop
@@ -521,21 +610,14 @@ impl PyNodeBuilder {
                 },
             );
 
-            // Stop the event loop if the shutdown monitor thread hasn't
-            // already. This prevents a race where the process exits before
-            // the background thread finishes stopping the loop, which can
-            // cause a SIGSEGV when the daemon event-loop thread is killed
-            // mid-execution during interpreter finalization.
-            if let Some(shared) = event_loop_handle.lock().ok().and_then(|mut g| g.take()) {
-                let loop_ref = shared.lock().ok().and_then(|mut g| g.take());
-                if let Some(event_loop) = loop_ref {
-                    let _ = Python::try_attach(|py| -> PyResult<()> {
-                        let loop_ = event_loop.bind(py);
-                        let stop = loop_.getattr("stop")?;
-                        loop_.call_method1("call_soon_threadsafe", (stop,))?;
-                        Ok(())
-                    });
-                }
+            // Quiesce the asyncio event loop before returning: cancel pending
+            // tasks, stop the loop, and JOIN its thread. Joining is what
+            // prevents the SIGSEGV; without it the daemon loop thread can be
+            // killed while inside a native call (pycapnp serialization, a pyo3
+            // future) during interpreter finalization. The shutdown monitor may
+            // have already fired the cancellation, but the trigger is idempotent.
+            if let Some(shutdown) = event_loop_handle.lock().ok().and_then(|mut g| g.take()) {
+                shutdown.quiesce();
             }
 
             // `setup_return_value` is dropped here after `builder.run()`

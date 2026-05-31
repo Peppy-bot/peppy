@@ -58,7 +58,6 @@ pub struct CoreNodeArguments {
     pub node_start_health_timeout: Duration,
     pub health_monitor_interval: Duration,
     pub health_monitor_timeout: Duration,
-    pub health_monitor_max_failures: u32,
     pub clock_publish_interval: Duration,
     /// Daemon-wide default for the framework `use_sim_time` flag. Per-instance
     /// launcher overrides win over this; when an instance omits the override,
@@ -104,7 +103,6 @@ pub struct CoreNode {
     node_start_health_timeout: Duration,
     health_monitor_interval: Duration,
     health_monitor_timeout: Duration,
-    health_monitor_max_failures: u32,
     clock_publish_interval: Duration,
     daemon_use_sim_time: bool,
 }
@@ -169,7 +167,6 @@ impl CoreNode {
         let node_start_health_timeout = node_arguments.node_start_health_timeout;
         let health_monitor_interval = node_arguments.health_monitor_interval;
         let health_monitor_timeout = node_arguments.health_monitor_timeout;
-        let health_monitor_max_failures = node_arguments.health_monitor_max_failures;
         let clock_publish_interval = node_arguments.clock_publish_interval;
         let daemon_use_sim_time = node_arguments.daemon_use_sim_time;
 
@@ -209,7 +206,6 @@ impl CoreNode {
             node_start_health_timeout,
             health_monitor_interval,
             health_monitor_timeout,
-            health_monitor_max_failures,
             clock_publish_interval,
             daemon_use_sim_time,
         }
@@ -330,7 +326,6 @@ impl CoreNode {
                         node_start_health: self.node_start_health_timeout,
                         health_monitor_interval: self.health_monitor_interval,
                         health_monitor_timeout: self.health_monitor_timeout,
-                        health_monitor_max_failures: self.health_monitor_max_failures,
                     },
                     use_sim_time: self.daemon_use_sim_time,
                 },
@@ -400,7 +395,6 @@ impl CoreNode {
                     peppy_dirs: self.peppy_dirs.clone(),
                     health_monitor_interval: self.health_monitor_interval,
                     health_monitor_timeout: self.health_monitor_timeout,
-                    health_monitor_max_failures: self.health_monitor_max_failures,
                 },
             )
             .boxed(),

@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::process::Child;
 use tokio::sync::{Notify, mpsc};
@@ -31,11 +31,27 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-const STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_millis(100);
-const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
-const CONTAINER_STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_secs(2);
-const CONTAINER_STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(100);
-const FEEDBACK_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Quiet window the drain waits after the readers report they are caught up,
+/// to absorb a brief second burst of startup output before closing the feedback
+/// stream. A process emits its startup output as one burst, so a short window
+/// suffices; a container prints intermittently during image conversion and
+/// needs a longer one.
+const PROCESS_DRAIN_QUIET_WINDOW: Duration = Duration::from_millis(10);
+const CONTAINER_DRAIN_QUIET_WINDOW: Duration = Duration::from_millis(100);
+/// Liveness backstop for the drain. It is not reached on the normal path: a
+/// process drains as soon as its readers go idle, and a container that produces
+/// stdout drains shortly after. It only bounds a wedged reader or a container
+/// that never produces the stdout the drain was told to wait for.
+const DRAIN_MAX_WAIT: Duration = Duration::from_secs(2);
+
+/// Quiet window to use for the given node kind. See the constants above.
+fn drain_quiet_window(is_container: bool) -> Duration {
+    if is_container {
+        CONTAINER_DRAIN_QUIET_WINDOW
+    } else {
+        PROCESS_DRAIN_QUIET_WINDOW
+    }
+}
 
 #[derive(Clone)]
 pub struct NodeRunServiceConfig {
@@ -44,7 +60,6 @@ pub struct NodeRunServiceConfig {
     pub peppy_dirs: PeppyDirs,
     pub health_monitor_interval: Duration,
     pub health_monitor_timeout: Duration,
-    pub health_monitor_max_failures: u32,
 }
 
 #[derive(Clone)]
@@ -58,7 +73,6 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) peppy_dirs: PeppyDirs,
     pub(crate) health_monitor_interval: Duration,
     pub(crate) health_monitor_timeout: Duration,
-    pub(crate) health_monitor_max_failures: u32,
 }
 
 struct ProcessNodeRunContext {
@@ -97,7 +111,6 @@ pub async fn listen_for_node_run(
             peppy_dirs: config.peppy_dirs,
             health_monitor_interval: config.health_monitor_interval,
             health_monitor_timeout: config.health_monitor_timeout,
-            health_monitor_max_failures: config.health_monitor_max_failures,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -121,12 +134,19 @@ impl GoalHandler for NodeRunGoalHandler {
 
 #[derive(Clone)]
 struct FeedbackSync {
+    /// Lines read from the child and forwarded onto the internal channel.
     read_count: Arc<AtomicU64>,
+    /// Lines copied from the internal channel onto the external feedback topic.
     published_count: Arc<AtomicU64>,
-    notify: Arc<Notify>,
-    read_notify: Arc<Notify>,
+    /// Output readers that have registered and not yet exited.
+    readers_live: Arc<AtomicUsize>,
+    /// Registered readers currently blocked waiting for more output, i.e. they
+    /// have drained every complete line in their pipe.
+    readers_idle: Arc<AtomicUsize>,
+    /// Set once the first stdout line of the run is seen.
     stdout_seen: Arc<AtomicBool>,
-    stdout_notify: Arc<Notify>,
+    /// Woken on every state change that can affect drain progress.
+    changed: Arc<Notify>,
 }
 
 impl FeedbackSync {
@@ -134,107 +154,119 @@ impl FeedbackSync {
         Self {
             read_count: Arc::new(AtomicU64::new(0)),
             published_count: Arc::new(AtomicU64::new(0)),
-            notify: Arc::new(Notify::new()),
-            read_notify: Arc::new(Notify::new()),
+            readers_live: Arc::new(AtomicUsize::new(0)),
+            readers_idle: Arc::new(AtomicUsize::new(0)),
             stdout_seen: Arc::new(AtomicBool::new(false)),
-            stdout_notify: Arc::new(Notify::new()),
+            changed: Arc::new(Notify::new()),
         }
     }
 
     fn signal_stdout(&self) {
         if !self.stdout_seen.swap(true, Ordering::Relaxed) {
-            self.stdout_notify.notify_waiters();
+            self.changed.notify_waiters();
         }
     }
 
     fn increment_read(&self) {
         self.read_count.fetch_add(1, Ordering::Relaxed);
-        self.read_notify.notify_waiters();
     }
 
     fn increment_published(&self) {
         self.published_count.fetch_add(1, Ordering::Relaxed);
-        self.notify.notify_waiters();
+        self.changed.notify_waiters();
     }
 
-    /// Waits until all read lines have been published, or until `timeout` elapses.
-    /// Returns `true` if all lines were flushed, `false` on timeout.
-    async fn flush_with_timeout(&self, timeout: Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + timeout;
+    fn register_reader(&self) {
+        self.readers_live.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn reader_idle(&self) {
+        self.readers_idle.fetch_add(1, Ordering::Relaxed);
+        self.changed.notify_waiters();
+    }
+
+    fn reader_active(&self) {
+        self.readers_idle.fetch_sub(1, Ordering::Relaxed);
+        self.changed.notify_waiters();
+    }
+
+    fn reader_exit(&self, was_idle: bool) {
+        if was_idle {
+            self.readers_idle.fetch_sub(1, Ordering::Relaxed);
+        }
+        self.readers_live.fetch_sub(1, Ordering::Relaxed);
+        self.changed.notify_waiters();
+    }
+
+    /// True when every live reader is blocked waiting for more output (so all
+    /// buffered lines have been read), every read line has been published onto
+    /// the external feedback topic, and stdout has been seen if required.
+    fn is_drained(&self, require_stdout: bool) -> bool {
+        let live = self.readers_live.load(Ordering::Relaxed);
+        let idle = self.readers_idle.load(Ordering::Relaxed);
+        let read = self.read_count.load(Ordering::Relaxed);
+        let published = self.published_count.load(Ordering::Relaxed);
+        idle >= live
+            && published >= read
+            && (!require_stdout || self.stdout_seen.load(Ordering::Relaxed))
+    }
+
+    /// Waits until the readers have drained the child's pipes and every read
+    /// line has reached the external feedback topic, then returns so the caller
+    /// can close the stream.
+    ///
+    /// Unlike a fixed-time wait, this keys off a positive "reader is caught up"
+    /// signal, so a reader that is slow to be scheduled under load delays the
+    /// close instead of being mistaken for "no more output". Once drained, the
+    /// state is confirmed stable for `quiet_window` so a brief second burst is
+    /// not cut off. `max_wait` is a liveness backstop only.
+    ///
+    /// Returns `true` if the stream drained, `false` if `max_wait` elapsed.
+    async fn wait_for_drain(
+        &self,
+        quiet_window: Duration,
+        require_stdout: bool,
+        max_wait: Duration,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + max_wait;
         loop {
-            if self.published_count.load(Ordering::Relaxed)
-                >= self.read_count.load(Ordering::Relaxed)
-            {
-                return true;
+            // Register for the next state change before re-checking, so a change
+            // between the check and the await is not lost.
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            if self.is_drained(require_stdout) {
+                // No live reader can produce more output: nothing to settle.
+                if self.readers_live.load(Ordering::Relaxed) == 0 {
+                    return true;
+                }
+                // Live readers remain (the node is running): confirm the drained
+                // state holds for the quiet window before closing.
+                match tokio::time::timeout(quiet_window, notified).await {
+                    Err(_) => return true,
+                    Ok(_) => continue,
+                }
             }
+
             let now = tokio::time::Instant::now();
             if now >= deadline {
                 return false;
             }
-            let remaining = deadline - now;
-            let notified = self.notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if self.published_count.load(Ordering::Relaxed)
-                >= self.read_count.load(Ordering::Relaxed)
-            {
-                return true;
-            }
-            match tokio::time::timeout(remaining, notified).await {
-                Ok(_) => {}
-                Err(_) => return false,
-            }
+            let _ = tokio::time::timeout(deadline - now, notified).await;
         }
     }
 
-    /// Flush pending feedback, logging a debug warning on timeout.
-    async fn flush_or_warn(&self, instance_id: &str) {
-        if !self.flush_with_timeout(FEEDBACK_FLUSH_TIMEOUT).await {
+    /// Drain the feedback stream, logging a debug warning if the backstop fires.
+    async fn drain_or_warn(&self, instance_id: &str, quiet_window: Duration, require_stdout: bool) {
+        if !self
+            .wait_for_drain(quiet_window, require_stdout, DRAIN_MAX_WAIT)
+            .await
+        {
             debug!(
-                "feedback flush timed out for node instance '{}'",
+                "feedback drain timed out for node instance '{}'",
                 instance_id
             );
-        }
-    }
-
-    async fn wait_for_read_quiescence(
-        &self,
-        max_wait: Duration,
-        quiet_window: Duration,
-        require_stdout: bool,
-    ) {
-        let start = Instant::now();
-        let mut last_read = self.read_count.load(Ordering::Relaxed);
-        let mut saw_read = last_read > 0;
-
-        loop {
-            let elapsed = Instant::now().duration_since(start);
-            if elapsed >= max_wait {
-                break;
-            }
-
-            let remaining = max_wait - elapsed;
-            let wait = quiet_window.min(remaining);
-
-            match tokio::time::timeout(wait, self.read_notify.notified()).await {
-                Ok(_) => {
-                    let current = self.read_count.load(Ordering::Relaxed);
-                    if current != last_read {
-                        last_read = current;
-                        saw_read = true;
-                    }
-                }
-                Err(_) => {
-                    // No reads during `wait` (quiet). If we've already seen at least one read,
-                    // treat that as the end of the initial burst — but only if we don't
-                    // require stdout or stdout has already been seen. For containers,
-                    // stderr-only quiet periods (e.g. during SIF-to-sandbox conversion)
-                    // should not be treated as quiescence.
-                    if saw_read && (!require_stdout || self.stdout_seen.load(Ordering::Relaxed)) {
-                        break;
-                    }
-                }
-            }
         }
     }
 }
@@ -246,6 +278,22 @@ impl node_stack::OutputReaderHooks for FeedbackSync {
 
     fn on_line_read(&self) {
         self.increment_read();
+    }
+
+    fn on_reader_registered(&self) {
+        self.register_reader();
+    }
+
+    fn on_reader_idle(&self) {
+        self.reader_idle();
+    }
+
+    fn on_reader_active(&self) {
+        self.reader_active();
+    }
+
+    fn on_reader_exit(&self, was_idle: bool) {
+        self.reader_exit(was_idle);
     }
 }
 
@@ -703,7 +751,9 @@ async fn process_node_run(
     if cancel_token.is_cancelled() {
         let msg = "cancelled before node process spawn".to_string();
         write_error_to_log(&ctx.log_file, &msg);
-        feedback_sync.flush_or_warn(instance_id_str).await;
+        feedback_sync
+            .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+            .await;
         publish_enabled.store(false, Ordering::Release);
         return NodeRunResult::failure(msg);
     }
@@ -714,7 +764,9 @@ async fn process_node_run(
             Err(e) => {
                 let msg = e.to_string();
                 write_error_to_log(&ctx.log_file, &msg);
-                feedback_sync.flush_or_warn(instance_id_str).await;
+                feedback_sync
+                    .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+                    .await;
                 publish_enabled.store(false, Ordering::Release);
                 return NodeRunResult::failure(msg);
             }
@@ -764,7 +816,9 @@ async fn process_node_run(
             &instance_id,
         )
         .await;
-        feedback_sync.flush_or_warn(instance_id_str).await;
+        feedback_sync
+            .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+            .await;
         publish_enabled.store(false, Ordering::Release);
         return NodeRunResult::failure(msg);
     }
@@ -808,7 +862,9 @@ async fn process_node_run(
                     &instance_id,
                 )
                 .await;
-                feedback_sync.flush_or_warn(instance_id_str).await;
+                feedback_sync
+                    .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+                    .await;
                 publish_enabled.store(false, Ordering::Release);
                 return NodeRunResult::failure(msg);
             }
@@ -834,29 +890,31 @@ async fn process_node_run(
                         peppy_dirs: ctx.action.peppy_dirs.clone(),
                         interval: ctx.action.health_monitor_interval,
                         timeout: ctx.action.health_monitor_timeout,
-                        max_failures: ctx.action.health_monitor_max_failures,
                     });
 
-                    let (max_wait, quiet_window) = if is_container {
-                        (
-                            CONTAINER_STARTUP_OUTPUT_MAX_WAIT,
-                            CONTAINER_STARTUP_OUTPUT_QUIET_WINDOW,
-                        )
-                    } else {
-                        (STARTUP_OUTPUT_MAX_WAIT, STARTUP_OUTPUT_QUIET_WINDOW)
-                    };
+                    // Wait until the readers have drained the child's startup
+                    // output onto the feedback stream before closing it. Keyed
+                    // off a positive "reader caught up" signal, so heavy load
+                    // delays the close instead of dropping output. Containers
+                    // wait for their first stdout line; processes do not, so a
+                    // silent process is not penalized.
                     feedback_sync
-                        .wait_for_read_quiescence(max_wait, quiet_window, is_container)
+                        .drain_or_warn(
+                            instance_id_str,
+                            drain_quiet_window(is_container),
+                            is_container,
+                        )
                         .await;
                     let result = NodeRunResult::success(pid);
-                    feedback_sync.flush_or_warn(instance_id_str).await;
                     publish_enabled.store(false, Ordering::Release);
                     result
                 }
                 Err(e) => {
                     let msg = format!("Failed to register instance: {}", e);
                     write_error_to_log(&ctx.log_file, &msg);
-                    feedback_sync.flush_or_warn(instance_id_str).await;
+                    feedback_sync
+                        .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+                        .await;
                     publish_enabled.store(false, Ordering::Release);
                     NodeRunResult::failure(msg)
                 }
@@ -880,7 +938,9 @@ async fn process_node_run(
                 &instance_id,
             )
             .await;
-            feedback_sync.flush_or_warn(instance_id_str).await;
+            feedback_sync
+                .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+                .await;
             publish_enabled.store(false, Ordering::Release);
             NodeRunResult::failure(msg)
         }
@@ -1110,53 +1170,17 @@ struct HealthMonitorParams {
     peppy_dirs: PeppyDirs,
     interval: Duration,
     timeout: Duration,
-    max_failures: u32,
 }
 
-/// The state change a single health-probe result drives, separated from its
-/// side effects (recording the flag on the instance, evicting the node) so the
-/// failure-streak/eviction logic is unit-testable without a live messenger or
-/// stack.
-struct ProbeTransition {
-    /// Health flag to record on the instance — read by `stack list` and
-    /// `node info`. `true` on a successful probe, `false` on a failed one.
-    healthy: bool,
-    /// Whether the consecutive-failure streak has reached `max_failures` and
-    /// the instance should be removed from the stack.
-    evict: bool,
-}
-
-/// Folds one probe result into `consecutive_failures` and reports the resulting
-/// health flag and whether the removal threshold has been reached. A success
-/// resets the streak and marks healthy; a failure grows the streak, marks
-/// unhealthy, and asks for eviction once the streak reaches `max_failures`.
-fn probe_transition(
-    probe_succeeded: bool,
-    consecutive_failures: &mut u32,
-    max_failures: u32,
-) -> ProbeTransition {
-    if probe_succeeded {
-        *consecutive_failures = 0;
-        ProbeTransition {
-            healthy: true,
-            evict: false,
-        }
-    } else {
-        *consecutive_failures += 1;
-        ProbeTransition {
-            healthy: false,
-            evict: *consecutive_failures >= max_failures,
-        }
-    }
-}
-
-/// Spawns a background task that periodically polls the node's health service.
-/// If `max_failures` consecutive health checks fail, the instance is removed
-/// from the node stack and the event is logged to the stack log.
+/// Spawns a background task that periodically polls the node's health service
+/// and records the outcome on the instance's health flag, which `stack list`
+/// and `node info` surface. A failing probe marks the instance `unhealthy`; a
+/// later passing probe marks it `healthy` again. This task never removes the
+/// instance from the stack, so an unhealthy node stays visible until it
+/// recovers or is stopped explicitly (e.g. `node stop`).
 ///
-/// The task exits when:
-/// - The instance is no longer found in the stack (removed externally).
-/// - The health checks fail consecutively `max_failures` times.
+/// The task exits only when the instance is no longer found in the stack
+/// (stopped externally).
 fn spawn_health_monitor(p: HealthMonitorParams) {
     tokio::spawn(async move {
         let instance_id_str = p.target_instance_id.as_str().to_owned();
@@ -1172,23 +1196,29 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
             }
         };
 
-        let mut consecutive_failures: u32 = 0;
+        // Tracks the previously observed health so the monitor logs only on
+        // transitions (a node going down or recovering), not on every failing
+        // tick. Instances start healthy, matching the flag's initial value.
+        let mut was_healthy = true;
 
         loop {
             tokio::time::sleep(p.interval).await;
 
-            // If the monitored instance (`p.target_instance_id`) was removed
-            // externally (e.g. user ran `node stop`), our job is done.
-            if p.node_stack
-                .find_by_instance_id(&p.target_instance_id)
-                .is_none()
-            {
+            // Resolve the monitored instance once per tick. If it was removed
+            // externally (e.g. user ran `node stop`), our job is done: skip the
+            // poll and exit. The returned clone shares the instance's health
+            // flag (an `Arc<AtomicBool>`), so recording the probe result on it
+            // after the poll still updates the tracked instance even though it
+            // was resolved beforehand. Should the instance be removed during the
+            // poll, that write lands on a now-detached flag no reader can reach,
+            // so it is harmless.
+            let Some(instance) = p.node_stack.find_by_instance_id(&p.target_instance_id) else {
                 debug!(
                     "Health monitor: instance '{}' no longer in stack, exiting",
                     instance_id_str
                 );
                 return;
-            }
+            };
 
             let poll_result = ServiceMessenger::poll(
                 &p.messenger,
@@ -1203,54 +1233,70 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
             )
             .await;
 
-            let transition = probe_transition(
-                poll_result.is_ok(),
-                &mut consecutive_failures,
-                p.max_failures,
-            );
+            let probe_succeeded = poll_result.is_ok();
+            let probe_error = poll_result.err();
 
             // Record the probe result so `stack list` and `node info` can report
             // health without re-probing. A failed probe flags the instance
-            // unhealthy on the first failure — before the `max_failures` removal
-            // threshold — so a flaky instance shows as unhealthy while it lasts.
-            // `find_by_instance_id` hands back a clone whose health flag is
-            // shared (Arc), so setting it here updates the tracked instance.
-            if let Some(instance) = p.node_stack.find_by_instance_id(&p.target_instance_id) {
-                instance.set_healthy(transition.healthy);
-            }
+            // unhealthy; a later successful probe clears the flag. The instance
+            // is never removed here, so an unhealthy node stays visible in the
+            // stack until it recovers or is stopped explicitly.
+            instance.set_healthy(probe_succeeded);
 
-            if let Err(err) = poll_result {
-                debug!(
-                    "Health monitor: instance '{}' health check failed ({}/{}): {}",
-                    instance_id_str, consecutive_failures, p.max_failures, err
-                );
-
-                if transition.evict {
+            // Log only on health edges so a node that stays down
+            // does not re-emit the same warning every tick.
+            match (was_healthy, probe_succeeded) {
+                // Down edge: alert once when a healthy node first fails.
+                (true, false) => {
+                    let reason = probe_error
+                        .as_ref()
+                        .map(|e| e.to_string())
+                        .unwrap_or_default();
                     tracing::warn!(
-                        "Health monitor: instance '{}' failed {} consecutive health checks, removing from stack",
+                        "Health monitor: instance '{}' of node '{}:{}' became unhealthy: {}",
                         instance_id_str,
-                        p.max_failures
+                        p.to_node_name,
+                        p.node_tag,
+                        reason
                     );
-
-                    if let Some(entity_handle) = p
-                        .node_stack
-                        .find_entity_by_instance_id(&p.target_instance_id)
-                    {
-                        entity_handle.write().stop_instance(&p.target_instance_id);
-                    }
-
                     super::append_stack_log(
                         &p.peppy_dirs,
                         &format!(
-                            "Removed instance '{}' of node '{}:{}': \
-                             failed {} consecutive health checks",
-                            instance_id_str, p.to_node_name, p.node_tag, p.max_failures,
+                            "Instance '{}' of node '{}:{}' became unhealthy: \
+                             failed health check ({})",
+                            instance_id_str, p.to_node_name, p.node_tag, reason,
                         ),
                     );
-
-                    return;
+                }
+                // Up edge: the node came back.
+                (false, true) => {
+                    tracing::info!(
+                        "Health monitor: instance '{}' of node '{}:{}' recovered",
+                        instance_id_str,
+                        p.to_node_name,
+                        p.node_tag
+                    );
+                    super::append_stack_log(
+                        &p.peppy_dirs,
+                        &format!(
+                            "Instance '{}' of node '{}:{}' recovered after a failed health check",
+                            instance_id_str, p.to_node_name, p.node_tag,
+                        ),
+                    );
+                }
+                // No edge: a low-noise debug heartbeat while still failing; the
+                // `if let` makes the still-healthy case a no-op.
+                (false, false) | (true, true) => {
+                    if let Some(err) = &probe_error {
+                        debug!(
+                            "Health monitor: instance '{}' health check still failing: {}",
+                            instance_id_str, err
+                        );
+                    }
                 }
             }
+
+            was_healthy = probe_succeeded;
         }
     });
 }
@@ -1258,43 +1304,6 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn probe_transition_tracks_failures_health_and_eviction() {
-        let mut failures = 0u32;
-
-        // A successful probe marks the instance healthy and resets the streak.
-        let t = probe_transition(true, &mut failures, 3);
-        assert!(t.healthy, "a successful probe should mark healthy");
-        assert!(!t.evict, "a successful probe should never evict");
-        assert_eq!(failures, 0);
-
-        // Each failure marks unhealthy and grows the streak; eviction only
-        // fires once the streak reaches `max_failures`.
-        let t = probe_transition(false, &mut failures, 3);
-        assert!(!t.healthy, "the first failed probe should mark unhealthy");
-        assert!(!t.evict, "one failure is below the threshold");
-        assert_eq!(failures, 1);
-
-        let t = probe_transition(false, &mut failures, 3);
-        assert!(!t.healthy);
-        assert!(!t.evict, "two failures is still below the threshold");
-        assert_eq!(failures, 2);
-
-        let t = probe_transition(false, &mut failures, 3);
-        assert!(!t.healthy);
-        assert!(
-            t.evict,
-            "the third consecutive failure should hit the threshold"
-        );
-        assert_eq!(failures, 3);
-
-        // A success after failures clears both the streak and the unhealthy flag.
-        let t = probe_transition(true, &mut failures, 3);
-        assert!(t.healthy);
-        assert!(!t.evict);
-        assert_eq!(failures, 0, "a success should reset the failure streak");
-    }
 
     #[test]
     fn test_resolve_mount_path_parameters_simple() {
@@ -1342,5 +1351,147 @@ mod tests {
         let result = resolve_mount_path_parameters(&mount_paths, &arguments);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("blocked system directory"));
+    }
+
+    // ---- FeedbackSync::wait_for_drain ----
+    //
+    // These run on a paused clock so the quiet-window settle and the backstop
+    // resolve instantly and deterministically instead of sleeping.
+
+    /// Drives the hook sequence a real output reader produces when it reads `n`
+    /// lines, has them all published, and then catches up (goes idle).
+    fn register_read_publish_idle(sync: &FeedbackSync, n: usize) {
+        sync.register_reader();
+        for _ in 0..n {
+            sync.increment_read();
+            sync.increment_published();
+        }
+        sync.reader_idle();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_drain_returns_once_readers_idle_and_published() {
+        let sync = FeedbackSync::new();
+        register_read_publish_idle(&sync, 1); // stdout reader
+        register_read_publish_idle(&sync, 1); // stderr reader
+
+        let drained = sync
+            .wait_for_drain(Duration::from_millis(10), false, Duration::from_secs(2))
+            .await;
+        assert!(
+            drained,
+            "should drain once every reader is idle and every line is published"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_drain_blocks_until_publish_catches_up() {
+        let sync = FeedbackSync::new();
+        sync.register_reader();
+        sync.increment_read(); // a line was read and the reader is caught up...
+        sync.reader_idle();
+        // ...but the forwarder has not copied it onto the external topic yet.
+
+        let still_waiting = tokio::time::timeout(
+            Duration::from_millis(50),
+            sync.wait_for_drain(Duration::from_millis(10), false, Duration::from_secs(10)),
+        )
+        .await;
+        assert!(
+            still_waiting.is_err(),
+            "drain must not return while a read line is still unpublished"
+        );
+
+        sync.increment_published();
+        let drained = sync
+            .wait_for_drain(Duration::from_millis(10), false, Duration::from_secs(2))
+            .await;
+        assert!(drained, "drain should complete once the line is published");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_drain_blocks_while_a_reader_is_active() {
+        let sync = FeedbackSync::new();
+        sync.register_reader();
+        sync.register_reader();
+        sync.reader_idle(); // only one of the two readers is caught up
+
+        let still_waiting = tokio::time::timeout(
+            Duration::from_millis(50),
+            sync.wait_for_drain(Duration::from_millis(10), false, Duration::from_secs(10)),
+        )
+        .await;
+        assert!(
+            still_waiting.is_err(),
+            "drain must wait until every live reader is idle"
+        );
+
+        sync.reader_idle(); // second reader is now caught up
+        let drained = sync
+            .wait_for_drain(Duration::from_millis(10), false, Duration::from_secs(2))
+            .await;
+        assert!(drained, "drain completes once all readers are idle");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_drain_requires_stdout_when_asked() {
+        let sync = FeedbackSync::new();
+        sync.register_reader();
+        sync.reader_idle(); // caught up, but no stdout line has been seen
+
+        // With require_stdout, an idle reader that never produced stdout must
+        // hit the backstop instead of draining early.
+        let drained = sync
+            .wait_for_drain(Duration::from_millis(10), true, Duration::from_millis(50))
+            .await;
+        assert!(!drained, "require_stdout must block until stdout is seen");
+
+        sync.signal_stdout();
+        let drained = sync
+            .wait_for_drain(Duration::from_millis(10), true, Duration::from_secs(2))
+            .await;
+        assert!(drained, "drain completes once stdout has been seen");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_drain_with_no_live_readers_returns_immediately() {
+        let sync = FeedbackSync::new();
+        // No readers registered, e.g. a failure before the child was spawned.
+        // The long windows would block forever if the fast path were missing.
+        let drained = sync
+            .wait_for_drain(Duration::from_secs(60), false, Duration::from_secs(60))
+            .await;
+        assert!(drained, "with no live readers there is nothing to drain");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_drain_backstop_fires_when_a_reader_never_idles() {
+        let sync = FeedbackSync::new();
+        sync.register_reader(); // a reader that never reports idle (e.g. wedged)
+
+        let drained = sync
+            .wait_for_drain(Duration::from_millis(10), false, Duration::from_millis(50))
+            .await;
+        assert!(
+            !drained,
+            "the backstop must fire when a reader never drains"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_drain_stops_counting_an_exited_reader() {
+        let sync = FeedbackSync::new();
+        sync.register_reader();
+        sync.register_reader();
+        sync.reader_idle(); // one reader is idle
+        sync.reader_exit(false); // the other hits EOF while active and exits
+
+        let drained = sync
+            .wait_for_drain(Duration::from_millis(10), false, Duration::from_secs(2))
+            .await;
+        assert!(
+            drained,
+            "an exited reader must no longer be counted as live"
+        );
     }
 }

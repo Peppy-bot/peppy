@@ -1,4 +1,3 @@
-use std::io::IsTerminal as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +9,7 @@ use core_node_api::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::commands::CALLER_INSTANCE_ID;
+use crate::commands::{CALLER_INSTANCE_ID, health_label};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -65,7 +64,7 @@ pub async fn list_nodes_collecting(
         a_key.cmp(&b_key)
     });
 
-    let mut out = format_stack_list(&nodes, &edges, colors_enabled());
+    let mut out = format_stack_list(&nodes, &edges, crate::terminal::colors_enabled());
 
     if let (Some(path), Some(dot_graph)) = (dot_graph_path, response.dot_graph) {
         std::fs::write(&path, dot_graph).map_err(|e| {
@@ -137,17 +136,6 @@ pub fn format_stack_list(
     out
 }
 
-/// Whether `peppy stack list` should emit ANSI colors: only when stdout is an
-/// interactive terminal and `NO_COLOR` is unset/empty. Mirrors the gate in
-/// `terminal.rs` so the CLI stays consistent.
-fn colors_enabled() -> bool {
-    std::io::stdout().is_terminal() && !no_color_requested()
-}
-
-fn no_color_requested() -> bool {
-    std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty())
-}
-
 // ANSI SGR codes used to tint the tables, applied only when `colorize` is set.
 // `col_width` strips these before measuring, so a colored cell occupies the
 // same display columns as its plain text and the box stays aligned.
@@ -189,18 +177,7 @@ fn col_width(s: &str) -> usize {
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
-            // Consume a CSI sequence: `\x1b[` params … up to a final byte in
-            // `@`..=`~`. The `[` introducer itself falls in that range, so it
-            // must be skipped first or the scan would stop one char too early.
-            // These bytes never reach the screen as columns.
-            if chars.clone().next() == Some('[') {
-                chars.next();
-            }
-            for f in chars.by_ref() {
-                if ('@'..='~').contains(&f) {
-                    break;
-                }
-            }
+            skip_csi(&mut chars);
         } else {
             width += UnicodeWidthChar::width(c).unwrap_or(0);
         }
@@ -208,17 +185,63 @@ fn col_width(s: &str) -> usize {
     width
 }
 
+/// Advances past a CSI escape sequence whose leading `\x1b` has already been
+/// consumed: an optional `[` introducer, then bytes up to and including a final
+/// byte in `@`..=`~`. The `[` itself falls in that range, so it must be skipped
+/// first or the scan would stop one char too early. Shared by [`col_width`]
+/// (which measures around the codes) and the tests' `strip_ansi` (which drops
+/// them) so the two never disagree on what an escape sequence is.
+fn skip_csi(chars: &mut std::str::Chars<'_>) {
+    if chars.clone().next() == Some('[') {
+        chars.next();
+    }
+    for f in chars.by_ref() {
+        if ('@'..='~').contains(&f) {
+            break;
+        }
+    }
+}
+
 /// Column headers kept in one place so widths stay consistent between the
 /// separator and data rows.
 const HEADERS: [&str; 4] = ["NODE", "STAGE", "INSTANCES", "PATH"];
 
-fn render_nodes_table(out: &mut String, nodes: &[SerializedNode], colorize: bool) {
+/// Renders a box-drawing table from a header row and one or more row blocks. A
+/// horizontal rule separates consecutive blocks, so the nodes table passes a
+/// single block (no internal rules) and the bindings table one block per node
+/// group. Column widths are measured across every cell with `col_width`, which
+/// strips ANSI so a colored cell aligns with its plain text.
+fn render_table(out: &mut String, headers: &[&str], blocks: &[Vec<Vec<String>>]) {
     use std::fmt::Write as _;
 
-    let rows: Vec<[String; 4]> = nodes
+    let mut widths: Vec<usize> = headers.iter().copied().map(col_width).collect();
+    for row in blocks.iter().flatten() {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(col_width(cell));
+        }
+    }
+
+    write_border(out, &widths, '┌', '┬', '┐');
+    let header_row: Vec<String> = headers.iter().copied().map(String::from).collect();
+    write_row(out, &header_row, &widths);
+    write_border(out, &widths, '├', '┼', '┤');
+    for (block_idx, block) in blocks.iter().enumerate() {
+        if block_idx > 0 {
+            write_border(out, &widths, '├', '┼', '┤');
+        }
+        for row in block {
+            write_row(out, row, &widths);
+        }
+    }
+    write_border(out, &widths, '└', '┴', '┘');
+    let _ = writeln!(out);
+}
+
+fn render_nodes_table(out: &mut String, nodes: &[SerializedNode], colorize: bool) {
+    let rows: Vec<Vec<String>> = nodes
         .iter()
         .map(|n| {
-            [
+            vec![
                 paint(colorize, NODE_COLOR, &n.label()),
                 n.stage_label().to_string(),
                 paint(colorize, COUNT_COLOR, &format_instances_compact(n)),
@@ -227,22 +250,8 @@ fn render_nodes_table(out: &mut String, nodes: &[SerializedNode], colorize: bool
         })
         .collect();
 
-    let mut widths: [usize; 4] = HEADERS.map(col_width);
-    for row in &rows {
-        for (i, cell) in row.iter().enumerate() {
-            widths[i] = widths[i].max(col_width(cell));
-        }
-    }
-
-    write_border(out, &widths, '┌', '┬', '┐');
-    let header_row: [String; 4] = HEADERS.map(|h| h.to_string());
-    write_row(out, &header_row, &widths);
-    write_border(out, &widths, '├', '┼', '┤');
-    for row in &rows {
-        write_row(out, row, &widths);
-    }
-    write_border(out, &widths, '└', '┴', '┘');
-    let _ = writeln!(out);
+    // A single block: the nodes table has no internal group rules.
+    render_table(out, &HEADERS, &[rows]);
 }
 
 /// Headers for the per-instance bindings table. The node→instance→binding
@@ -256,23 +265,23 @@ const BINDING_HEADERS: [&str; 5] = ["NODE", "INSTANCE", "STATUS", "HEALTH", "BIN
 /// to entries with at least one instance — the caller prints `(none)` when
 /// none qualify, so this never emits an empty body.
 fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: bool) {
-    use std::fmt::Write as _;
-
-    // One block of rows per node. Within a block, the NODE cell is populated
-    // only on the first row and each instance's INSTANCE, STATUS, and HEALTH
-    // cells only on the first of its binding rows; the rest are blank
-    // continuation cells.
-    let blocks: Vec<Vec<[String; 5]>> = nodes
+    // One block of rows per node, so `render_table` draws a rule between node
+    // groups (keeping it unambiguous which instances belong to which node, even
+    // when a node's last instance has a single binding). Within a block, the
+    // NODE cell is populated only on the first row and each instance's INSTANCE,
+    // STATUS, and HEALTH cells only on the first of its binding rows; the rest
+    // are blank continuation cells.
+    let blocks: Vec<Vec<Vec<String>>> = nodes
         .iter()
         .map(|node| {
-            let mut rows: Vec<[String; 5]> = Vec::new();
+            let mut rows: Vec<Vec<String>> = Vec::new();
             let mut node_cell = paint(colorize, NODE_COLOR, &node.label());
             for instance in &node.instances {
                 let mut instance_cell = paint(colorize, INSTANCE_COLOR, &instance.instance_id);
                 let mut status_cell = format_instance_status(instance, colorize);
                 let mut health_cell = format_instance_health(instance, colorize);
                 for binding in format_instance_bindings(instance, colorize) {
-                    rows.push([
+                    rows.push(vec![
                         std::mem::take(&mut node_cell),
                         std::mem::take(&mut instance_cell),
                         std::mem::take(&mut status_cell),
@@ -285,29 +294,7 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
         })
         .collect();
 
-    let mut widths: [usize; 5] = BINDING_HEADERS.map(col_width);
-    for row in blocks.iter().flatten() {
-        for (i, cell) in row.iter().enumerate() {
-            widths[i] = widths[i].max(col_width(cell));
-        }
-    }
-
-    write_border(out, &widths, '┌', '┬', '┐');
-    let header_row: [String; 5] = BINDING_HEADERS.map(|h| h.to_string());
-    write_row(out, &header_row, &widths);
-    write_border(out, &widths, '├', '┼', '┤');
-    for (group_idx, block) in blocks.iter().enumerate() {
-        // Rule between node groups so it is unambiguous which instances belong
-        // to which node, even when a node's last instance has only one binding.
-        if group_idx > 0 {
-            write_border(out, &widths, '├', '┼', '┤');
-        }
-        for row in block {
-            write_row(out, row, &widths);
-        }
-    }
-    write_border(out, &widths, '└', '┴', '┘');
-    let _ = writeln!(out);
+    render_table(out, &BINDING_HEADERS, &blocks);
 }
 
 /// The instance's lifecycle state for the STATUS column. Tinted as a
@@ -326,11 +313,12 @@ fn format_instance_status(instance: &SerializedInstance, colorize: bool) -> Stri
 /// `node_health` probe carried in [`SerializedInstance::healthy`]. Green for
 /// `healthy`, red for `unhealthy`, so a failing instance stands out.
 fn format_instance_health(instance: &SerializedInstance, colorize: bool) -> String {
-    if instance.healthy {
-        paint(colorize, HEALTH_HEALTHY_COLOR, "healthy")
+    let color = if instance.healthy {
+        HEALTH_HEALTHY_COLOR
     } else {
-        paint(colorize, HEALTH_UNHEALTHY_COLOR, "unhealthy")
-    }
+        HEALTH_UNHEALTHY_COLOR
+    };
+    paint(colorize, color, health_label(instance.healthy))
 }
 
 /// One display string per slot binding on the instance, in `link_id →
@@ -1009,14 +997,7 @@ mod tests {
         let mut chars = s.chars();
         while let Some(c) = chars.next() {
             if c == '\x1b' {
-                if chars.clone().next() == Some('[') {
-                    chars.next();
-                }
-                for f in chars.by_ref() {
-                    if ('@'..='~').contains(&f) {
-                        break;
-                    }
-                }
+                skip_csi(&mut chars);
             } else {
                 out.push(c);
             }

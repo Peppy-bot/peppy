@@ -4,6 +4,7 @@ Tests for peppylib NodeBuilder runner lifecycle.
 Python equivalent of crates/peppylib/tests/runner.rs.
 """
 
+import faulthandler
 import queue
 import tempfile
 import threading
@@ -12,7 +13,19 @@ from pathlib import Path
 
 import pytest
 
-from peppylib import MessengerHandle, SenderTarget, ServiceMessenger, ZenohdInstance
+from peppylib import (
+    MessengerHandle,
+    QoSProfile,
+    SenderTarget,
+    ServiceMessenger,
+    TopicMessenger,
+    ZenohdInstance,
+)
+
+# Dump a per-thread traceback if a fatal signal kills the test process, so a
+# regression in the shutdown teardown surfaces as a stack trace, not a bare
+# SIGSEGV.
+faulthandler.enable()
 from peppylib.config import (
     NODE_CONFIG_FILE,
     NODE_HEALTH_SERVICE,
@@ -697,3 +710,110 @@ async def test_node_runner_exposes_messenger_and_metadata(monkeypatch):
 
     assert not runner_thread.is_alive(), "Runner should have exited"
     assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
+
+
+EVENT_LOOP_THREAD_NAME = "peppy-asyncio-loop"
+SHUTDOWN_REPEAT = 5
+
+
+@pytest.mark.asyncio
+async def test_shutdown_joins_event_loop_thread(monkeypatch):
+    """run() must cancel background tasks and JOIN the asyncio event-loop
+    thread before returning.
+
+    Regression test for a shutdown SIGSEGV: the event loop runs on a daemon
+    thread, and a generated emit loop drives native code every tick (pycapnp
+    serialization plus a pyo3 future). A daemon thread that is not joined before
+    run() returns can be killed mid-native-call during interpreter
+    finalization. We assert the thread is gone the instant run() returns, and
+    repeat to shake out the race. The finalization crash itself only reproduces
+    across a process exit and is covered by looping the generator's
+    `topics_communication` subprocess test.
+    """
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(PEPPY_CONFIG)
+
+            standalone_config = (
+                StandaloneConfig()
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_messaging(router.host, router.port)
+                .with_instance_id(TEST_INSTANCE_ID)
+                .with_node_name(TEST_NODE_NAME)
+            )
+
+            for iteration in range(SHUTDOWN_REPEAT):
+                token_queue: queue.Queue = queue.Queue()
+                started_queue: queue.Queue = queue.Queue()
+                lingering_queue: queue.Queue = queue.Queue()
+                error_queue: queue.Queue = queue.Queue()
+
+                def run_node():
+                    try:
+
+                        async def setup_fn(_params, node_runner):
+                            token = node_runner.cancellation_token()
+                            token_queue.put(token)
+                            messenger = node_runner.messenger()
+                            core_node = node_runner.bound_core_node()
+                            instance_id = node_runner.bound_instance_id()
+                            node_name = node_runner.node_name()
+                            node_tag = node_runner.node_tag()
+
+                            async def emit_loop():
+                                started_queue.put("started")
+                                while not token.is_cancelled():
+                                    await TopicMessenger.emit(
+                                        messenger,
+                                        core_node,
+                                        instance_id,
+                                        SenderTarget.node(node_name, node_tag),
+                                        "regression_topic",
+                                        QoSProfile.Reliable,
+                                        b"frame",
+                                    )
+                                    await asyncio.sleep(0.001)
+
+                            return [asyncio.create_task(emit_loop())]
+
+                        (
+                            NodeBuilder()
+                            .with_config_path(peppy_config_path)
+                            .standalone(standalone_config)
+                            .run(setup_fn)
+                        )
+
+                        # run() has returned: the daemon event-loop thread must
+                        # already be joined, otherwise interpreter finalization
+                        # could kill it mid-native-call.
+                        lingering_queue.put(
+                            [
+                                t.name
+                                for t in threading.enumerate()
+                                if t.name == EVENT_LOOP_THREAD_NAME
+                            ]
+                        )
+                    except Exception as e:
+                        error_queue.put(e)
+
+                runner_thread = threading.Thread(target=run_node, daemon=True)
+                runner_thread.start()
+
+                await asyncio.to_thread(started_queue.get, timeout=5.0)
+                token = await asyncio.to_thread(token_queue.get, timeout=5.0)
+                token.cancel()
+                runner_thread.join(timeout=10.0)
+
+                assert not runner_thread.is_alive(), (
+                    f"Runner should have exited (iteration {iteration})"
+                )
+                assert error_queue.empty(), (
+                    f"Runner error (iteration {iteration}): {error_queue.get_nowait()}"
+                )
+                lingering = await asyncio.to_thread(lingering_queue.get, timeout=5.0)
+                assert lingering == [], (
+                    f"event-loop thread still alive after run() returned "
+                    f"(iteration {iteration}): {lingering}"
+                )
