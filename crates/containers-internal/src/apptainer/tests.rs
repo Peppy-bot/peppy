@@ -891,36 +891,59 @@ fn lima_guest_build_argv_wraps_in_setsid_and_records_pgid() {
         Path::new("/tmp/peppy/pgids/buildkey.pgid"),
     );
 
-    // `setsid -w sh -c <script>`: the script is one argv element.
+    // `setsid -w sh -c <fixed script> sh <pgid_file> <apptainer_bin> <args...>`:
+    // the script is a constant and every value is passed as a positional param,
+    // so nothing is interpolated or shell-escaped.
     assert_eq!(argv[0], "setsid");
     assert_eq!(argv[1], "-w");
     assert_eq!(argv[2], "sh");
     assert_eq!(argv[3], "-c");
-    assert_eq!(argv.len(), 5);
-
-    let script = &argv[4];
     assert_eq!(
-        script,
-        "mkdir -p '/tmp/peppy/pgids'; echo $$ > '/tmp/peppy/pgids/buildkey.pgid'; \
-         '/opt/apptainer/bin/apptainer' 'build' '/home/u/out.sif' '/home/u/node.def'; \
-         __rc=$?; rm -f '/tmp/peppy/pgids/buildkey.pgid'; exit $__rc",
+        argv[4],
+        "d=$(dirname \"$1\"); mkdir -p \"$d\"; echo $$ > \"$1\"; \
+         pgid=\"$1\"; shift; \"$@\"; __rc=$?; rm -f \"$pgid\"; exit $__rc",
         "the wrapper makes sh the group leader, records its PGID to the guest-native \
-         pgid file, runs apptainer as a child so its children inherit the group, then \
-         removes the pgid file and forwards apptainer's exit status"
+         pgid file ($1), runs apptainer as a child so its children inherit the group, \
+         then removes the pgid file and forwards apptainer's exit status"
     );
+    assert_eq!(
+        argv[5], "sh",
+        "the `$0` placeholder so the next value is `$1`"
+    );
+    assert_eq!(
+        argv[6], "/tmp/peppy/pgids/buildkey.pgid",
+        "`$1`: the pgid file"
+    );
+    assert_eq!(argv[7], "/opt/apptainer/bin/apptainer");
+    assert_eq!(argv[8], "build");
+    assert_eq!(argv[9], "/home/u/out.sif");
+    assert_eq!(argv[10], "/home/u/node.def");
+    assert_eq!(argv.len(), 11);
 }
 
 #[test]
-fn lima_kill_pgid_script_sigkills_the_whole_group() {
-    let script = super::lima::lima_kill_pgid_script(Path::new("/tmp/peppy/pgids/buildkey.pgid"));
-    // Negative PGID → SIGKILL the whole group (apptainer + its %post children),
-    // then remove the pgid file (the cancel path SIGKILLs the wrapper before it
-    // can self-clean). Best-effort: a missing/already-dead group is not an error.
+fn lima_kill_pgid_argv_sigkills_the_whole_group() {
+    let argv = super::lima::lima_kill_pgid_argv(Path::new("/tmp/peppy/pgids/buildkey.pgid"));
+    // `sh -c <fixed script> sh <pgid_file>`: the pgid file is passed as `$1`, so
+    // nothing is interpolated or shell-escaped. The negative PGID SIGKILLs the
+    // whole group (apptainer + its %post children), then `rm -f` removes the pgid
+    // file (the cancel path SIGKILLs the wrapper before it can self-clean).
+    // Best-effort: a missing/already-dead group is not an error.
+    assert_eq!(argv[0], "sh");
+    assert_eq!(argv[1], "-c");
     assert_eq!(
-        script,
-        "kill -KILL -\"$(cat '/tmp/peppy/pgids/buildkey.pgid')\" 2>/dev/null; \
-         rm -f '/tmp/peppy/pgids/buildkey.pgid' 2>/dev/null; true"
+        argv[2],
+        "kill -KILL -\"$(cat \"$1\")\" 2>/dev/null; rm -f \"$1\" 2>/dev/null; true"
     );
+    assert_eq!(
+        argv[3], "sh",
+        "the `$0` placeholder so the next value is `$1`"
+    );
+    assert_eq!(
+        argv[4], "/tmp/peppy/pgids/buildkey.pgid",
+        "`$1`: the pgid file"
+    );
+    assert_eq!(argv.len(), 5);
 }
 
 /// Builds a Native-backend facade for command-assembly tests without booting a
@@ -986,15 +1009,18 @@ fn lima_build_wraps_in_setsid_with_guest_native_pgid() {
         args.iter().any(|a| a == "setsid"),
         "Lima build must be wrapped in setsid, got: {args:?}"
     );
-    let script = args
-        .last()
-        .expect("the wrapper script is the last argv element");
+    // The pgid path is now its own argv element (a positional param to the
+    // wrapper), not interpolated into the script string.
     assert!(
-        script.contains("/tmp/peppy/pgids/buildkey.pgid"),
-        "wrapper must record the guest-native PGID, got: {script}"
+        args.iter().any(|a| a == "/tmp/peppy/pgids/buildkey.pgid"),
+        "wrapper must pass the guest-native PGID path as an argv element, got: {args:?}"
     );
+    let script = args
+        .iter()
+        .find(|a| a.contains("echo $$"))
+        .expect("the wrapper records the PGID with `echo $$`");
     assert!(
-        script.contains("mkdir -p '/tmp/peppy/pgids'"),
+        script.contains("mkdir -p"),
         "wrapper must create the guest-native PGID dir, got: {script}"
     );
     assert!(

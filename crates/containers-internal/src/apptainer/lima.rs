@@ -19,68 +19,64 @@ pub(crate) fn guest_pgid_path(build_key: &str) -> PathBuf {
     PathBuf::from(GUEST_PGID_DIR).join(format!("{build_key}.pgid"))
 }
 
-/// Single-quote a string for safe embedding in a shell command string.
-pub(crate) fn shell_single_quote(s: &str) -> String {
-    // Replace any single quotes with the '\'' idiom, then wrap in single quotes.
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-/// Single-quote a path for safe embedding in a shell command string.
-pub(crate) fn shell_escape(path: &Path) -> String {
-    shell_single_quote(&path.display().to_string())
-}
-
 /// Builds the guest-side argv (after the `limactl shell ... --` separator) that
 /// runs an `apptainer build` as its own session/process-group leader and records
 /// its PGID to `pgid_file` (a guest-native path from [`guest_pgid_path`]).
 ///
 /// `setsid -w` makes `sh` the session+group leader (so its PGID equals its PID)
-/// and waits for it, forwarding stdout/stderr and the exit status unchanged.
-/// `sh` records that PID to `pgid_file`, then runs apptainer as a child of the
-/// same group (not via `exec`) so apptainer's `%post` children inherit the group
-/// and `sh` survives to remove the pgid file and forward apptainer's exit status
-/// on the normal path. `mkdir -p` of the guest-native pgid dir makes the write
-/// independent of the virtiofs host mount. On cancel, [`lima_kill_pgid_script`]
-/// SIGKILLs the whole group (`sh` + apptainer + `%post` children) from inside
-/// the VM.
+/// and waits for it, forwarding stdout/stderr and the exit status unchanged. The
+/// `sh -c` script is a fixed constant: the pgid file, apptainer binary, and its
+/// args arrive as the shell's own positional parameters (`$1`, then `$@`), so
+/// they are never re-tokenized and need no shell escaping. The script `mkdir -p`s
+/// the guest-native pgid dir (derived from `$1`) so the write does not race the
+/// virtiofs host mount, records `$$` to `$1`, then runs apptainer as a child of
+/// the same group (not via `exec`) so apptainer's `%post` children inherit the
+/// group and `sh` survives to remove the pgid file and forward apptainer's exit
+/// status on the normal path. On cancel, [`lima_kill_pgid_argv`] SIGKILLs the
+/// whole group (`sh` + apptainer + `%post` children) from inside the VM.
 pub(crate) fn lima_guest_build_argv(
     apptainer_bin: &Path,
     apptainer_args: &[&str],
     pgid_file: &Path,
 ) -> Vec<String> {
-    let pgid_dir = pgid_file.parent().unwrap_or_else(|| Path::new("/tmp"));
-    let mut guest = format!(
-        "mkdir -p {}; echo $$ > {}; {}",
-        shell_escape(pgid_dir),
-        shell_escape(pgid_file),
-        shell_escape(apptainer_bin)
-    );
-    for arg in apptainer_args {
-        guest.push(' ');
-        guest.push_str(&shell_single_quote(arg));
-    }
-    guest.push_str(&format!(
-        "; __rc=$?; rm -f {}; exit $__rc",
-        shell_escape(pgid_file)
-    ));
-    vec![
+    // Fixed script; values follow as positional params. `sh` is the `$0`
+    // placeholder so the next operand is `$1` (the pgid file) and the rest are
+    // apptainer's binary and args. Derive the pgid dir from `$1`, record the
+    // leader PID, then `shift` `$1` off so `"$@"` runs apptainer as a child while
+    // `$pgid` keeps the path for cleanup.
+    let script = "d=$(dirname \"$1\"); mkdir -p \"$d\"; echo $$ > \"$1\"; \
+                  pgid=\"$1\"; shift; \"$@\"; __rc=$?; rm -f \"$pgid\"; exit $__rc";
+    let mut argv = vec![
         "setsid".to_string(),
         "-w".to_string(),
         "sh".to_string(),
         "-c".to_string(),
-        guest,
-    ]
+        script.to_string(),
+        "sh".to_string(),
+        pgid_file.display().to_string(),
+        apptainer_bin.display().to_string(),
+    ];
+    argv.extend(apptainer_args.iter().map(|arg| arg.to_string()));
+    argv
 }
 
-/// Guest-side `sh -c` script that SIGKILLs the build process group recorded at
-/// `pgid_file` by [`lima_guest_build_argv`], then removes the pgid file. The
-/// negative PGID targets the whole group (`sh` + apptainer + its `%post`
-/// children); the `rm -f` cleans up on the cancel path, where the wrapper is
-/// SIGKILLed before it can self-clean. Best-effort: a missing or already-dead
-/// group is not an error.
-pub(crate) fn lima_kill_pgid_script(pgid_file: &Path) -> String {
-    let escaped = shell_escape(pgid_file);
-    format!("kill -KILL -\"$(cat {escaped})\" 2>/dev/null; rm -f {escaped} 2>/dev/null; true")
+/// Guest-side argv (after the `limactl shell ... --` separator) that SIGKILLs the
+/// build process group recorded at `pgid_file` by [`lima_guest_build_argv`], then
+/// removes the pgid file. The `sh -c` script is a fixed constant and the pgid file
+/// arrives as `$1`, so it needs no shell escaping. The negative PGID targets the
+/// whole group (`sh` + apptainer + its `%post` children); the `rm -f` cleans up on
+/// the cancel path, where the wrapper is SIGKILLed before it can self-clean.
+/// Best-effort: a missing or already-dead group is not an error.
+pub(crate) fn lima_kill_pgid_argv(pgid_file: &Path) -> Vec<String> {
+    let script = "kill -KILL -\"$(cat \"$1\")\" 2>/dev/null; \
+                  rm -f \"$1\" 2>/dev/null; true";
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        script.to_string(),
+        "sh".to_string(),
+        pgid_file.display().to_string(),
+    ]
 }
 
 /// Build a `limactl shell <instance> --` command pre-configured with LIMA_HOME.
@@ -430,28 +426,54 @@ pub(crate) fn ensure_guest_apptainer(
         ))
     })?;
 
-    // Copy host installation to guest via tar pipe.
-    // `limactl copy -r` is unreliable with long or special-character paths,
-    // so we tar on the host and untar in the guest through a pipe.
-    let limactl_str = limactl.to_string_lossy();
-    let lima_home_str = lima_home.to_string_lossy();
-    let tar_pipe = Command::new("bash")
-        .arg("-c")
-        .arg(format!(
-            "tar -cf - -C {} . | LIMA_HOME={} {} shell {} -- tar -xf - -C {}",
-            shell_escape(host_dir),
-            shell_escape(Path::new(&*lima_home_str)),
-            shell_escape(Path::new(&*limactl_str)),
-            instance,
-            guest_dir.display(),
-        ))
+    // Copy host installation to guest via tar pipe. `limactl copy -r` is
+    // unreliable with long or special-character paths, so we tar on the host and
+    // untar in the guest. The two `tar` processes are wired together in Rust (no
+    // shell), so paths pass as argv and need no escaping, and a failure on either
+    // side is surfaced (a shell pipe would mask the host-side `tar` exit status).
+    let mut host_tar = Command::new("tar")
+        .args(["-cf", "-", "-C"])
+        .arg(host_dir)
+        .arg(".")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::LimaSyncFailed(format!("failed to start host tar: {e}")))?;
+
+    // Hand the host tar's stdout to the guest tar's stdin. Taking it here also
+    // drops our own copy of the read end so the pipe closes cleanly.
+    let host_stdout = host_tar
+        .stdout
+        .take()
+        .expect("host tar was spawned with a piped stdout");
+
+    let guest_tar = lima_shell_cmd(limactl, lima_home, instance)
+        .args(["tar", "-xf", "-", "-C"])
+        .arg(&guest_dir)
+        .stdin(Stdio::from(host_stdout))
+        .stderr(Stdio::piped())
         .output()
         .map_err(|e| Error::LimaSyncFailed(format!("tar pipe to guest failed: {e}")))?;
 
-    check_output(&tar_pipe, |stderr| {
+    let host_status = host_tar
+        .wait()
+        .map_err(|e| Error::LimaSyncFailed(format!("failed to wait for host tar: {e}")))?;
+    if !host_status.success() {
+        let mut stderr = String::new();
+        if let Some(mut pipe) = host_tar.stderr.take() {
+            use std::io::Read;
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        return Err(Error::LimaSyncFailed(format!(
+            "host tar returned {host_status}: {}",
+            stderr.trim()
+        )));
+    }
+
+    check_output(&guest_tar, |stderr| {
         Error::LimaSyncFailed(format!(
             "tar pipe to guest returned {}: {stderr}",
-            tar_pipe.status
+            guest_tar.status
         ))
     })?;
 

@@ -505,15 +505,12 @@ impl Apptainer {
                 ..
             } => {
                 let guest_pgid = lima::guest_pgid_path(build_key);
-                let script = lima::lima_kill_pgid_script(&guest_pgid);
                 Command::new(limactl_path)
                     .env("LIMA_HOME", lima_home)
                     .arg("shell")
                     .arg(lima::LIMA_INSTANCE)
                     .arg("--")
-                    .arg("sh")
-                    .arg("-c")
-                    .arg(script)
+                    .args(lima::lima_kill_pgid_argv(&guest_pgid))
                     .status()
                     .map_err(Error::from)?;
                 Ok(())
