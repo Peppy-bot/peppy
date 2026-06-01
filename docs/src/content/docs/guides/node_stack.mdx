@@ -178,7 +178,7 @@ Each health transition (a `running` instance going `unhealthy`, or recovering af
 
 ## Inspecting a node with `peppy node info`
 
-When you need more than the one-line view from `stack list`, `peppy node info` dumps the node's stage, its currently-tracked instances with their individual states, and the paths to its add log and per-instance run logs. It takes a `<node_name>:<node_tag>` reference to a node **that has already been added to the stack**; it doesn't touch the filesystem or any git/http source, so run `peppy node add` first if the node isn't in the stack yet:
+When you need more than the one-line view from `stack list`, `peppy node info` dumps the node's stage, its currently-tracked instances with their individual states and last-known health, and the paths to its add log and per-instance run logs. It takes a `<node_name>:<node_tag>` reference to a node **that has already been added to the stack**; it doesn't touch the filesystem or any git/http source, so run `peppy node add` first if the node isn't in the stack yet:
 
 ```sh
 peppy node info hello_world:v1
@@ -200,8 +200,8 @@ Node Stack Status
 --------------------------------------------------
 Stage:     Ready
 Instances: 2 tracked
-           - suspicious-swanson-5880  [running]
-           - flamboyant-penrose-9622  [running]
+           - suspicious-swanson-5880  [running]  healthy
+           - flamboyant-penrose-9622  [running]  healthy
 
 Logs
 --------------------------------------------------
