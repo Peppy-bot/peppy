@@ -3,8 +3,8 @@ use config::node::QoSProfile;
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Once};
 use std::time::Duration;
 use tokio::sync::oneshot;
 
@@ -46,12 +46,46 @@ impl ActionClientCase {
     }
 }
 
+/// Raises the process soft `nofile` limit once per test binary. Each test below
+/// spawns an ephemeral zenoh router, and running them in parallel can exhaust
+/// file descriptors under the macOS default soft limit of 256, surfacing as
+/// flaky `Too many open files` (EMFILE) errors. Bumping the soft limit toward
+/// the hard limit removes that ceiling without reducing test parallelism. Best
+/// effort: a failed syscall leaves the original limit in place and the real
+/// EMFILE error still surfaces.
+fn ensure_test_fd_limit() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // 8192 is comfortably above the peak concurrent router count and well
+        // under the macOS per-process cap (kern.maxfilesperproc).
+        const DESIRED_SOFT: libc::rlim_t = 8192;
+        // SAFETY: get/setrlimit operate on a stack-allocated rlimit and report
+        // failure through their return code, which we honor.
+        unsafe {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+                return;
+            }
+            let target = DESIRED_SOFT.min(limit.rlim_max);
+            if limit.rlim_cur >= target {
+                return;
+            }
+            limit.rlim_cur = target;
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
+        }
+    });
+}
+
 struct TestRouterContext {
     instance: ZenohdInstance,
 }
 
 impl TestRouterContext {
     async fn start() -> Self {
+        ensure_test_fd_limit();
         let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("failed to start zenoh router for tests");

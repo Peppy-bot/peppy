@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use config::consts::PeppyDirs;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
@@ -96,6 +97,11 @@ pub(super) struct ContainerBuildInputs<'a> {
     pub lima_shell_extra_args: &'a [String],
     pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
     pub log_file: Arc<StdMutex<File>>,
+    /// Fired when a `--force` build supersedes this one. On Linux the
+    /// host process-group SIGKILL is enough; on macOS the guest-side apptainer
+    /// (and its `%post` children) live in a separate kernel and are killed via
+    /// [`containers::Apptainer::kill_inflight_build`].
+    pub cancel_token: &'a CancellationToken,
 }
 
 /// Builds a container image using the Apptainer facade.
@@ -136,7 +142,23 @@ pub(super) async fn build_container_image(
     let output_path = inputs.working_dir.join(&sif_name);
     let def_path = inputs.working_dir.join(inputs.def_file);
 
+    // On macOS the build runs inside a Lima VM, so SIGKILL'ing the host
+    // `limactl shell` does not reach the guest `apptainer build` or its
+    // `%post` children. The facade therefore runs the guest build as a
+    // process-group leader and records its PGID to a guest-native file keyed by
+    // this build key, which `kill_inflight_build` (called with the same key)
+    // uses on cancel to SIGKILL the whole guest group. The working-dir basename
+    // is a unique, filesystem-safe key. A no-op on the native backend.
+    let build_key = inputs
+        .working_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_owned);
+
     let mut cmd_builder = apptainer.build(&output_path, &def_path);
+    if let Some(key) = &build_key {
+        cmd_builder = cmd_builder.cancel_pgid(key);
+    }
     for arg in inputs.apptainer_build_extra_args {
         cmd_builder = cmd_builder.raw_flag(arg);
     }
@@ -157,8 +179,29 @@ pub(super) async fn build_container_image(
     let child = spawn_in_process_group(cmd)
         .map_err(|e| format!("Failed to spawn apptainer build: {}", e))?;
 
-    let (status, stderr_tail) =
-        stream_child_output(child, inputs.feedback_tx, inputs.log_file, true).await?;
+    let stream_result = stream_child_output(
+        child,
+        inputs.feedback_tx,
+        inputs.log_file,
+        true,
+        inputs.cancel_token,
+    )
+    .await;
+
+    // A `--force` supersede SIGKILL'd + reaped the host child above; now reach
+    // into the VM and kill the guest process group too (no-op on Linux). Reuses
+    // the already-initialized facade. Runs on a blocking thread because the
+    // guest kill shells out to `limactl`.
+    if inputs.cancel_token.is_cancelled()
+        && let Some(key) = build_key
+    {
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = apptainer.kill_inflight_build(&key);
+        })
+        .await;
+    }
+
+    let (status, stderr_tail) = stream_result?;
 
     if !status.success() {
         let mut msg = format!("apptainer build failed with status {}", status);
@@ -217,6 +260,7 @@ pub(super) async fn run_build_cmd(
     env_vars: &[(String, String)],
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
+    cancel_token: &CancellationToken,
 ) -> std::result::Result<(), String> {
     let Some(cmd) = build_cmd else {
         return Ok(());
@@ -285,7 +329,8 @@ pub(super) async fn run_build_cmd(
     let child = spawn_in_process_group(command)
         .map_err(|e| format!("failed to execute build_cmd `{}`: {}", full_cmd_display, e))?;
 
-    let (status, _) = stream_child_output(child, feedback_tx, log_file, false).await?;
+    let (status, _) =
+        stream_child_output(child, feedback_tx, log_file, false, cancel_token).await?;
 
     if !status.success() {
         return Err(format!(
@@ -326,6 +371,7 @@ mod tests {
         let log_file = Arc::new(StdMutex::new(
             tempfile::tempfile().expect("tempfile should succeed"),
         ));
+        let cancel_token = CancellationToken::new();
         let err = build_container_image(ContainerBuildInputs {
             working_dir,
             node_name: "sensor",
@@ -335,6 +381,7 @@ mod tests {
             lima_shell_extra_args: &[],
             feedback_tx: &feedback_tx,
             log_file,
+            cancel_token: &cancel_token,
         })
         .await
         .expect_err("unsafe tag must be rejected");

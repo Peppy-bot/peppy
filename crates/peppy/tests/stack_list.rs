@@ -78,6 +78,35 @@ fn make_consumer_depend_on_provider(
     );
 }
 
+/// A node's row parsed from the rendered stack inventory table.
+struct InventoryRow {
+    stage: String,
+    instances: String,
+}
+
+/// Parse a node's row from the rendered stack inventory table.
+///
+/// Inventory rows are drawn with box borders ('│'), which sets them apart from
+/// the plain-text dependency edges and lets us read each padded cell by column
+/// order: NODE, STAGE, INSTANCES, PATH. Reading the cells directly keeps the
+/// assertions independent of comfy-table's column widths and padding, which
+/// shift with the detected terminal width.
+fn node_inventory_row(output: &str, label: &str) -> InventoryRow {
+    let row = output
+        .lines()
+        .find(|line| line.contains('│') && line.contains(label))
+        .unwrap_or_else(|| panic!("inventory row for {label} should be present:\n{output}"));
+
+    // split('│') yields an empty leading cell before the first border, then the
+    // padded NODE, STAGE, INSTANCES, PATH cells, then an empty trailing cell.
+    let cells: Vec<&str> = row.split('│').map(str::trim).collect();
+
+    InventoryRow {
+        stage: cells.get(2).unwrap_or(&"").to_string(),
+        instances: cells.get(3).unwrap_or(&"").to_string(),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_list_command_succeeds() {
     // Mock messaging is sufficient for listing and dependency graph tests (no spawned node process).
@@ -193,7 +222,9 @@ async fn node_list_command_succeeds() {
 
     // Run the list command via the testable collecting variant so we can
     // assert on the exact text the CLI would print without capturing stdout.
-    let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, None)
+    // `false`: render without ANSI color so the assertions match plain table
+    // text regardless of whether the test runs attached to a terminal.
+    let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, None, false)
         .await
         .expect("node list command should succeed");
 
@@ -214,32 +245,26 @@ async fn node_list_command_succeeds() {
         "table headers missing:\n{output}"
     );
 
-    let provider_line = output
-        .lines()
-        .find(|line| line.contains(&provider_label))
-        .expect("output should contain the provider node");
-    assert!(
-        provider_line.contains("Ready"),
+    let provider_row = node_inventory_row(&output, &provider_label);
+    assert_eq!(
+        provider_row.stage, "Ready",
         "provider row should be in Ready stage:\n{output}"
     );
     // No instances were started, so the INSTANCES column must render as "0".
-    assert!(
-        provider_line.contains(" 0 "),
+    assert_eq!(
+        provider_row.instances, "0",
         "provider row should report zero instances:\n{output}"
     );
 
-    let consumer_line = output
-        .lines()
-        .find(|line| line.contains(&consumer_label))
-        .expect("output should contain the consumer node");
-    assert!(
-        consumer_line.contains("Ready"),
+    let consumer_row = node_inventory_row(&output, &consumer_label);
+    assert_eq!(
+        consumer_row.stage, "Ready",
         "consumer row should be in Ready stage:\n{output}"
     );
 
     assert!(
-        output.contains(&format!("{consumer_label} -> {provider_label}")),
-        "output should contain the dependency edge consumer -> provider:\n{output}"
+        output.contains(&format!("{consumer_label} ➔ {provider_label}")),
+        "output should contain the dependency edge consumer ➔ provider:\n{output}"
     );
 
     // Silence unused variable when LogCapture is only constructed for
@@ -358,10 +383,13 @@ async fn node_list_command_with_dot_representation_succeeds() {
 
     let dot_graph_path = node_dir.path().join("node_stack.dot");
 
-    let output =
-        peppy::commands::stack::list_nodes_collecting(&node_ctx, Some(dot_graph_path.clone()))
-            .await
-            .expect("node list command should succeed");
+    let output = peppy::commands::stack::list_nodes_collecting(
+        &node_ctx,
+        Some(dot_graph_path.clone()),
+        false,
+    )
+    .await
+    .expect("node list command should succeed");
 
     assert!(
         dot_graph_path.exists(),

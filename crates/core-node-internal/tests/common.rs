@@ -53,6 +53,28 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// Generic polling helper: repeatedly calls `predicate` until it returns
+/// `Some(value)`, then returns that value. If `timeout` elapses first, panics
+/// with `timeout_message`. Polls every 20 ms. `predicate` is synchronous on
+/// purpose: the current callers only touch the filesystem, the node stack, and
+/// child processes, none of which await.
+pub async fn poll_until<T>(
+    timeout: Duration,
+    timeout_message: &str,
+    mut predicate: impl FnMut() -> Option<T>,
+) -> T {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(value) = predicate() {
+            return value;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("{timeout_message}");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// Polls `ServiceMessenger::is_reachable` until the named service responds or
 /// `deadline` expires. Replaces fixed sleeps used as broker-propagation
 /// barriers in tests that spawn a `handle_requests` task and then need to
@@ -552,8 +574,62 @@ pub async fn send_node_build_and_wait(
     env_vars: Vec<(String, String)>,
     feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
 ) -> Result<NodeBuildResult, String> {
-    let goal =
-        NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs()).with_env_vars(env_vars);
+    send_node_build_and_wait_internal(
+        messenger,
+        core_node_name,
+        node_name,
+        node_tag,
+        goal_timeout,
+        result_timeout,
+        env_vars,
+        feedback_tx,
+        false,
+    )
+    .await
+}
+
+/// Like [`send_node_build_and_wait`] but sets the `--force` flag, which cancels
+/// any in-flight build for the node and supersedes it.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_node_build_and_wait_forced(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    node_tag: &str,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    env_vars: Vec<(String, String)>,
+    feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
+) -> Result<NodeBuildResult, String> {
+    send_node_build_and_wait_internal(
+        messenger,
+        core_node_name,
+        node_name,
+        node_tag,
+        goal_timeout,
+        result_timeout,
+        env_vars,
+        feedback_tx,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_node_build_and_wait_internal(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    node_tag: &str,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    env_vars: Vec<(String, String)>,
+    feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
+    force: bool,
+) -> Result<NodeBuildResult, String> {
+    let goal = NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs())
+        .with_env_vars(env_vars)
+        .with_force(force);
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode build goal: {}", e))?;
@@ -1169,7 +1245,6 @@ fn default_node_arguments() -> CoreNodeArguments {
         node_start_health_timeout: Duration::from_secs(30),
         health_monitor_interval: Duration::from_secs(5),
         health_monitor_timeout: Duration::from_secs(3),
-        health_monitor_max_failures: 3,
         // Faster than the production default (100 ms) so publish_clock tests
         // observe several ticks within a small fixed budget without flaking.
         clock_publish_interval: Duration::from_millis(50),
@@ -1242,14 +1317,12 @@ pub async fn start_core_node_with_health_timeout(
 pub async fn start_core_node_with_health_monitor(
     health_monitor_interval: Duration,
     health_monitor_timeout: Duration,
-    health_monitor_max_failures: u32,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
     args.health_monitor_interval = health_monitor_interval;
     args.health_monitor_timeout = health_monitor_timeout;
-    args.health_monitor_max_failures = health_monitor_max_failures;
     start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
 }
 
@@ -1493,6 +1566,7 @@ pub async fn real_build_and_spawn_instance(
             feedback_tx: &build_feedback_tx,
             log_file: build_log,
             env_vars: &[],
+            cancel_token: tokio_util::sync::CancellationToken::new(),
         },
     )
     .await

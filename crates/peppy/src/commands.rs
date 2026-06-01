@@ -22,6 +22,12 @@ pub(crate) const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Number of lines to display in the scrolling output region.
 pub(crate) const SCROLLING_OUTPUT_LINES: usize = 10;
 
+/// Single source of truth for the word `stack list` and `node info` print for
+/// an instance's health, so the two commands can never drift apart on it.
+pub(crate) fn health_label(healthy: bool) -> &'static str {
+    if healthy { "healthy" } else { "unhealthy" }
+}
+
 /// Trait for executable commands
 pub trait Command {
     /// Execute the command

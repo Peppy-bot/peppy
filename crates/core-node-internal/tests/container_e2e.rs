@@ -5,11 +5,14 @@ mod container_e2e_tests {
 
     use common::{
         CALLER_INSTANCE_ID, NodeRunTestTimeouts, send_node_add_and_wait, send_node_build_and_wait,
-        send_node_run_and_wait, start_core_node_with_real_messenger_and_timeouts,
+        send_node_build_and_wait_forced, send_node_run_and_wait,
+        start_core_node_with_real_messenger_and_timeouts, write_peppy_json5,
     };
+    use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
     use config::node::Name as NodeName;
     use config::node::Toolchain;
     use core_node_api::encoding::NodeInitRequest;
+    use node_stack::{NodeStack, NodeStage};
     use peppylib::core_node::transport::poll_node_init;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -343,6 +346,169 @@ mod container_e2e_tests {
             !log_content.contains("CodegenFingerprintRead"),
             "log file should not contain config fingerprint startup errors, got:\n{}",
             log_content
+        );
+    }
+
+    /// Polls the node stack until `(name, tag)` is `Building`, so the next
+    /// `--force` actually supersedes a running build rather than racing its
+    /// admission.
+    async fn wait_until_building(stack: &NodeStack, name: &str, tag: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            if let Some(handle) = stack.find(name, tag)
+                && matches!(handle.read().stage(), NodeStage::Building { .. })
+            {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "node {name}:{tag} did not enter Building within 60s"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// `node build --force` superseding an in-flight container build must SIGKILL
+    /// the displaced build's process group (apptainer + its `%post` children),
+    /// not just the host `limactl`. Regression test for the guest zombie left
+    /// behind when the PGID file write lost a guest-filesystem race and the kill
+    /// became a no-op.
+    ///
+    /// Runs on both backends: `guest_command` queries the kernel the build runs
+    /// in (the Lima guest on macOS, the host on Linux), and the assertion is the
+    /// same. The bug is macOS-only, so this is red on the pre-fix Lima path and a
+    /// green regression guard on Linux (where cancellation already uses the host
+    /// process group).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn container_force_build_kills_displaced_guest_build() {
+        const NODE_NAME: &str = "zombie_e2e_node";
+        const NODE_TAG: &str = "v1";
+        const MARKER: &str = "PEPPY_ZOMBIE_E2E_MARKER";
+        // Each `--force` supersedes the prior in-flight build. The first build is
+        // cold (its PGID write always succeeds), so we need several reuse builds
+        // for the guest-FS race to bite at least once.
+        const BUILDS: usize = 6;
+
+        let started = start_core_node_with_real_messenger_and_timeouts(
+            Duration::from_secs(120),
+            Duration::from_secs(60),
+        )
+        .await;
+
+        // Same runtime the build uses, for inspecting/cleaning its processes.
+        let facade = containers::Apptainer::new().expect("apptainer facade should init");
+
+        // Count live `%post` marker processes in the build kernel. The `[P]...`
+        // class keeps the grep from matching its own argv.
+        let count_markers = || -> usize {
+            let out = facade
+                .guest_command(&[
+                    "sh",
+                    "-c",
+                    "ps -eo args | grep -c '[P]EPPY_ZOMBIE_E2E_MARKER'",
+                ])
+                .expect("guest_command should run");
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(0)
+        };
+
+        // A container node whose apptainer build blocks forever in `%post`,
+        // leaving a uniquely-named process (`sh /PEPPY_ZOMBIE_E2E_MARKER`, so the
+        // marker shows up in `ps args`) for each in-flight build.
+        let source_dir = tempfile::tempdir().expect("source dir");
+        write_peppy_json5(
+            source_dir.path(),
+            r#"{
+                peppy_schema: "node_v1",
+                manifest: { name: "zombie_e2e_node", tag: "v1" },
+                execution: { language: "rust", container: { def_file: "apptainer.def" } }
+            }"#,
+        );
+        std::fs::write(
+            source_dir.path().join("apptainer.def"),
+            format!(
+                "Bootstrap: docker\nFrom: {DEFAULT_ALPINE_BASE_IMAGE}\n\n\
+                 %post\n    echo 'while true; do sleep 100000; done' > /{MARKER}\n    sh /{MARKER}\n"
+            ),
+        )
+        .expect("write apptainer.def");
+
+        // Stage the node (node_add does not build the image).
+        let add = send_node_add_and_wait(
+            &started.caller_handle,
+            &started.core_node_name,
+            source_dir.path(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+            None,
+        )
+        .await
+        .expect("node_add request should complete");
+        assert!(
+            add.success,
+            "node_add should succeed, got error: {:?}",
+            add.error_message
+        );
+
+        // Fire the builds. Each blocks in `%post` (so it never returns until
+        // superseded) and each `--force` supersedes the prior one, which must
+        // kill the displaced build's whole process group.
+        let mut tasks = Vec::new();
+        for i in 0..BUILDS {
+            let messenger = started.caller_handle.clone();
+            let core_node = started.core_node_name.clone();
+            tasks.push(tokio::spawn(async move {
+                let _ = send_node_build_and_wait_forced(
+                    &messenger,
+                    &core_node,
+                    NODE_NAME,
+                    NODE_TAG,
+                    Duration::from_secs(30),
+                    Duration::from_secs(600),
+                    Vec::new(),
+                    None,
+                )
+                .await;
+            }));
+
+            // Wait until the build is registered Building, then let apptainer
+            // fetch/extract and enter `%post` (its marker process appears).
+            wait_until_building(&started.node_stack, NODE_NAME, NODE_TAG).await;
+            tokio::time::sleep(Duration::from_secs(12)).await;
+            eprintln!(
+                "[zombie-e2e] after build {i}: live markers = {}",
+                count_markers()
+            );
+        }
+
+        // After the supersede chain, at most the final still-active build may have
+        // a live marker. On the pre-fix code, displaced reuse-builds whose PGID
+        // write lost the race were never killed and leak orphaned `%post`
+        // processes.
+        let live = count_markers();
+
+        // Clean up before asserting so a failure never leaks build processes.
+        // Kill each marker's whole (setsid-detached) process group so the
+        // `%post` loop and its `sleep` child go together.
+        let kill_groups = format!(
+            "for p in $(pgrep -f '[P]{m}'); do \
+                 g=$(ps -o pgid= -p \"$p\" 2>/dev/null | tr -d ' '); \
+                 [ -n \"$g\" ] && kill -KILL -\"$g\" 2>/dev/null; \
+             done; true",
+            m = &MARKER[1..]
+        );
+        let _ = facade.guest_command(&["sh", "-c", &kill_groups]);
+        for t in tasks {
+            t.abort();
+        }
+
+        assert!(
+            live <= 1,
+            "after {BUILDS} `--force` rebuilds, {live} `%post` marker processes survived in \
+             the build kernel; every displaced build must be SIGKILLed (expected <= 1, only \
+             the active build)"
         );
     }
 }

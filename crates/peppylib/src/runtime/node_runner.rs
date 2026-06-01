@@ -28,9 +28,14 @@ impl NodeRunner {
         processor: Processor,
         cancellation_token: CancellationToken,
     ) -> Result<Self> {
-        let messenger =
-            MessengerHandle::from_host_port(processor.messaging_host(), processor.messaging_port())
-                .await?;
+        // Nodes are long-lived: use a reconnecting session so a router restart
+        // (e.g. the daemon's watchdog respawning zenohd) is recovered
+        // transparently instead of leaving the node off the bus.
+        let messenger = MessengerHandle::from_host_port_reconnecting(
+            processor.messaging_host(),
+            processor.messaging_port(),
+        )
+        .await?;
 
         Ok(Self {
             messenger,

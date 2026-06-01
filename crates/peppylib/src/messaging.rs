@@ -233,6 +233,24 @@ impl MessengerHandle {
         })
     }
 
+    /// Like [`from_host_port`](Self::from_host_port) but opens a *reconnecting*
+    /// session: if the router is restarted under it (e.g. the daemon's router
+    /// watchdog respawning zenohd), the session re-establishes and re-declares
+    /// its subscriptions/queryables instead of going dead.
+    ///
+    /// Used by long-lived node processes. Short-lived / CLI connections keep
+    /// [`from_host_port`](Self::from_host_port) so a dead daemon fails fast
+    /// rather than blocking on connection retries.
+    pub async fn from_host_port_reconnecting(host: &str, port: u16) -> Result<Self> {
+        let adapter =
+            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)?.with_session_reconnect();
+        let messenger = Self::new_session(adapter).await?;
+        Ok(Self {
+            messenger: Arc::new(Mutex::new(messenger)),
+            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
+        })
+    }
+
     async fn new_session(adapter: ZenohAdapter) -> Result<Messenger> {
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
         messenger

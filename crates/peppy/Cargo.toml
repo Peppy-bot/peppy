@@ -37,6 +37,9 @@ names-generator2 = "0.2.1"
 rand = "0.10"
 crossterm = "0.29"
 walkdir = "2.5"
+# Terminal display width for aligning `stack list` table columns when a cell
+# (e.g. a Unicode filesystem path) contains wide or zero-width glyphs.
+unicode-width = "0.2"
 tempfile = { version = "3.8", optional = true }
 parking_lot = { workspace = true, optional = true }
 

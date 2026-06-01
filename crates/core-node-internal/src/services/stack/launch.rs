@@ -2,7 +2,7 @@ use crate::Result;
 use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
-use crate::services::node::gate::{Admission, ConcurrencyGate};
+use crate::services::node::gate::{Admission, COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use crate::services::node::{
     FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
     NodeRunActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
@@ -37,11 +37,6 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-/// Upper bound on how long a run-phase future may spend in its cancellation
-/// cleanup (SIGKILL the child + unregister the `Starting` instance + clear
-/// temp files). Keeps a misbehaving cleanup from stalling the launch failure.
-const RUN_PHASE_CANCEL_CLEANUP_BUDGET: Duration = Duration::from_secs(30);
-
 /// Watches for an idle period: returns when no `notify_one()` arrives for `idle_timeout`.
 /// Each call to `notify_one()` on `notify` resets the clock.
 async fn watch_idle(notify: Arc<Notify>, idle_timeout: Duration) {
@@ -75,7 +70,6 @@ pub struct StackLaunchTimeouts {
     pub node_start_health: Duration,
     pub health_monitor_interval: Duration,
     pub health_monitor_timeout: Duration,
-    pub health_monitor_max_failures: u32,
 }
 
 /// Daemon-wide defaults the stack launcher applies to every spawned
@@ -380,7 +374,7 @@ fn spawn_feedback_forwarder(
 ///   dropping it leaves the OS process and its `Starting` stack entry behind. Callers that
 ///   need run-phase cancellation pass `cancel_and_drain = Some(token)`; on timeout the
 ///   runner signals the token and awaits the phase future's cooperative cleanup (bounded by
-///   `RUN_PHASE_CANCEL_CLEANUP_BUDGET`) instead of dropping it.
+///   `COOPERATIVE_TEARDOWN_BUDGET`) instead of dropping it.
 async fn run_phase_with_timeouts<F, T>(
     phase: F,
     activity_notify: Arc<Notify>,
@@ -442,7 +436,7 @@ where
 
 /// Timeout behavior for phases that own resources (e.g. a spawned child
 /// process) not reaped by `Drop`. On timeout, signals `cancel_token` and
-/// awaits the phase future for up to `RUN_PHASE_CANCEL_CLEANUP_BUDGET` so it
+/// awaits the phase future for up to `COOPERATIVE_TEARDOWN_BUDGET` so it
 /// can run its own teardown (SIGKILL the child, unregister the `Starting`
 /// instance, remove temp files) before we return the timeout outcome.
 async fn run_phase_cancel_on_timeout<F, T>(
@@ -480,7 +474,7 @@ where
     // the future as a last resort — still strictly better than today, since
     // the run phase would have been dropped immediately in that branch.
     cancel_token.cancel();
-    let _ = tokio::time::timeout(RUN_PHASE_CANCEL_CLEANUP_BUDGET, phase.as_mut()).await;
+    let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, phase.as_mut()).await;
 
     timeout_kind
 }
@@ -691,7 +685,6 @@ async fn start_node_directly(
         peppy_dirs: ctx.peppy_dirs.clone(),
         health_monitor_interval: ctx.timeouts.health_monitor_interval,
         health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
-        health_monitor_max_failures: ctx.timeouts.health_monitor_max_failures,
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -1463,7 +1456,8 @@ async fn handle_goal_request(
     // `timeout_secs` is gate-reporting only; 0 indicates "no enforced budget"
     // (when --max-timeout-secs is unset).
     let generation = match gate.try_admit(goal.max_timeout_secs.unwrap_or(0), false) {
-        Admission::Admitted { generation } => generation,
+        // `stack_launch` never forces, so nothing is ever superseded here.
+        Admission::Admitted { generation, .. } => generation,
         Admission::AlreadyRunning { .. } => {
             reject_goal(
                 pending,
@@ -1525,9 +1519,10 @@ async fn handle_goal_request(
     let log_path_clone = log_path.clone();
     let gate_for_task = gate.clone();
     tokio::spawn(async move {
-        // Frees the gate slot on every exit (completion or panic); a no-op if a
-        // later goal already took over.
-        let _slot = gate_for_task.into_slot_guard(generation);
+        // Frees the gate slot on every exit: explicitly before completion on the
+        // normal path (via `release_then_complete` below), or on unwind for a
+        // panic. A no-op if a later goal already took over.
+        let slot = gate_for_task.into_slot_guard(generation);
         let LaunchActionContext {
             messenger,
             bound_core_node,
@@ -1564,7 +1559,7 @@ async fn handle_goal_request(
         // Catch panics so a panic inside the launch sequence still completes the
         // goal with a failure result, rather than leaving the client to wait out
         // the SDK's retention window for a result that never arrives. Releasing
-        // the gate on panic is handled by `_slot` above. Mirrors the panic
+        // the gate on panic is handled by `slot` above. Mirrors the panic
         // handling in `run_node_run` / `run_node_add` / `run_node_build`.
         let result = match AssertUnwindSafe(process_launch(goal, ctx))
             .catch_unwind()
@@ -1581,7 +1576,7 @@ async fn handle_goal_request(
             }
         };
         if let Ok(payload) = result.encode() {
-            let _ = goal_ctx.complete(payload).await;
+            slot.release_then_complete(&goal_ctx, payload).await;
         }
     });
 }

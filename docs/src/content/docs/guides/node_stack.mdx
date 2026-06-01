@@ -128,13 +128,22 @@ You should see something like:
 $ peppy stack list
 Node stack
 
-┌────────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────────────┐
-│ NODE                                   │ STAGE │ INSTANCES │ PATH                                                      │
-├────────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────────────┤
-│ core-node-funny-chatterjee-6386:v0.8.0 │ Root  │ 1 running │ /home/ubuntu/.peppy/bin                                   │
-│ hello_world:v1                      │ Ready │ 1 running │ /home/ubuntu/.peppy/built_nodes/hello_world_v1.tar.zst │
-└────────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────┬───────┬───────────┬─────────────────────────────────────────────┐
+│ NODE                                    │ STAGE │ INSTANCES │ PATH                                        │
+├─────────────────────────────────────────┼───────┼───────────┼─────────────────────────────────────────────┤
+│ core-node-funny-chatterjee-6386:v0.10.0 │ Root  │ 1 running │ ~/.peppy/bin                                │
+│ hello_world:v1                          │ Ready │ 1 running │ ~/.peppy/built_nodes/hello_world_v1.tar.zst │
+└─────────────────────────────────────────┴───────┴───────────┴─────────────────────────────────────────────┘
 
+Instance bindings
+
+┌─────────────────────────────────────────┬─────────────────────────────────┬─────────┬─────────┬──────────┐
+│ NODE                                    │ INSTANCE                        │ STATUS  │ HEALTH  │ BINDINGS │
+├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┤
+│ core-node-funny-chatterjee-6386:v0.10.0 │ core-node-funny-chatterjee-6386 │ running │ healthy │ (none)   │
+├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┤
+│ hello_world:v1                          │ suspicious-swanson-5880         │ running │ healthy │ (none)   │
+└─────────────────────────────────────────┴─────────────────────────────────┴─────────┴─────────┴──────────┘
 
 Dependencies
   (none)
@@ -148,6 +157,24 @@ The `STAGE` column reports each node's **stage**, its artifact-level lifecycle:
 - **`Root`**: the synthetic core-node entity. Always present, and always reports exactly one running instance (the daemon itself).
 
 The `INSTANCES` column aggregates per-instance state (`starting`, `running`) for the node, independently of its stage. To see individual instance IDs, use [`peppy node info`](#inspecting-a-node-with-peppy-node-info).
+
+Below the node table, the **`Instance bindings`** table expands the stack one level further: one row per instance, grouped by node, alongside the slot **bindings** that instance resolved when it started. A binding ties one of the consumer's `depends_on` slots — identified by its `link_id` — to the producer instance(s) that feed it, rendered as `link_id → producer`. A `from_any` slot left unbound resolves to `link_id → (any)` (it accepts every producer of that slot), and an instance whose node declares no `depends_on` shows `(none)`. Only nodes that currently have at least one instance appear in this table. See [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for how slots are declared and how `--bind` pins them. In the listing above neither node declares a dependency, so every binding cell is `(none)`.
+
+### Instance health and lifecycle
+
+Beyond the bindings, the `Instance bindings` table reports two per-instance columns that follow an instance through its runtime lifecycle:
+
+- **`STATUS`** is the instance's lifecycle state. A freshly launched instance is `starting` while its process comes up and clears its startup health gate, then becomes `running` once it has started successfully. This is the same state [`peppy node info`](#inspecting-a-node-with-peppy-node-info) prints as `[starting]` / `[running]`.
+- **`HEALTH`** is the outcome of the core node's most recent liveness probe against the instance: `healthy` or `unhealthy`. Every instance starts out `healthy`.
+
+Once an instance is `running`, the daemon keeps probing its health in the background (every 5 seconds, allowing 3 seconds per probe) and updates the `HEALTH` flag from the result:
+
+- A failed probe marks the instance `unhealthy`. This covers a crashed or wedged process, or one that has lost its messaging session.
+- A later successful probe marks it `healthy` again.
+
+A running instance is **never removed from the stack because it is unhealthy**. It stays listed, reported as `unhealthy`, until it either recovers on its own or you stop it explicitly with [`peppy node stop`](#stopping-your-node) (one instance) or [`peppy node remove`](#removing-your-node) (the whole node). So a transient failure, such as a momentary loss of the messaging session, surfaces as a short `unhealthy` window rather than silently tearing instances out of your stack, and a process that has truly died stays visible so you can see that it died instead of wondering where it went.
+
+Each health transition (a `running` instance going `unhealthy`, or recovering afterwards) is appended to the daemon's stack log at `~/.peppy/stack_log.log`, giving you a timestamped record of when an instance failed and when it came back.
 
 ## Inspecting a node with `peppy node info`
 
@@ -220,12 +247,19 @@ If you run `peppy stack list` again, you'll see that only the core node remains:
 $ peppy stack list
 Node stack
 
-┌────────────────────────────────────────┬───────┬───────────┬─────────────────────────┐
-│ NODE                                   │ STAGE │ INSTANCES │ PATH                    │
-├────────────────────────────────────────┼───────┼───────────┼─────────────────────────┤
-│ core-node-funny-chatterjee-6386:v0.8.0 │ Root  │ 1 running │ /home/ubuntu/.peppy/bin │
-└────────────────────────────────────────┴───────┴───────────┴─────────────────────────┘
+┌─────────────────────────────────────────┬───────┬───────────┬──────────────┐
+│ NODE                                    │ STAGE │ INSTANCES │ PATH         │
+├─────────────────────────────────────────┼───────┼───────────┼──────────────┤
+│ core-node-funny-chatterjee-6386:v0.10.0 │ Root  │ 1 running │ ~/.peppy/bin │
+└─────────────────────────────────────────┴───────┴───────────┴──────────────┘
 
+Instance bindings
+
+┌─────────────────────────────────────────┬─────────────────────────────────┬─────────┬─────────┬──────────┐
+│ NODE                                    │ INSTANCE                        │ STATUS  │ HEALTH  │ BINDINGS │
+├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┤
+│ core-node-funny-chatterjee-6386:v0.10.0 │ core-node-funny-chatterjee-6386 │ running │ healthy │ (none)   │
+└─────────────────────────────────────────┴─────────────────────────────────┴─────────┴─────────┴──────────┘
 
 Dependencies
   (none)

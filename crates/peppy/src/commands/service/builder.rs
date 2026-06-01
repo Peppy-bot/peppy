@@ -56,8 +56,12 @@ impl ServeCommandBuilder {
         let listening_port = extract_messaging_port();
         let adapter = match engine.as_str() {
             "zenoh" => {
+                // Reconnecting session: if the router watchdog respawns zenohd,
+                // the daemon's own session re-establishes (and re-declares the
+                // core node's services) instead of going silent.
                 let adapter =
-                    ZenohAdapter::with_router(ZenohNetProtocol::Tcp, "0.0.0.0", listening_port)?;
+                    ZenohAdapter::with_router(ZenohNetProtocol::Tcp, "0.0.0.0", listening_port)?
+                        .with_session_reconnect();
                 MessengerAdapter::Zenoh(adapter)
             }
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),

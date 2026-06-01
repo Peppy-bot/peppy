@@ -101,7 +101,8 @@ impl GoalHandler for RepoRefreshGoalHandler {
         }
 
         let generation = match self.gate.try_admit(300, false) {
-            Admission::Admitted { generation } => generation,
+            // `repo_refresh` never forces, so nothing is ever superseded here.
+            Admission::Admitted { generation, .. } => generation,
             Admission::AlreadyRunning { .. } => {
                 reject_goal(
                     pending,
@@ -124,9 +125,10 @@ impl GoalHandler for RepoRefreshGoalHandler {
         let gate_for_task = self.gate.clone();
 
         tokio::spawn(async move {
-            // Frees the gate slot on every exit (completion or panic); a no-op
-            // if a later goal already took over.
-            let _slot = gate_for_task.into_slot_guard(generation);
+            // Frees the gate slot on every exit: explicitly before completion on
+            // the normal path (via `release_then_complete` below), or on unwind
+            // for a panic. A no-op if a later goal already took over.
+            let slot = gate_for_task.into_slot_guard(generation);
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RepoRefreshFeedback>();
 
             let drain = tokio::spawn(async move {
@@ -195,7 +197,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
             let _ = drain.await;
 
             if let Ok(payload) = result.encode() {
-                let _ = goal_ctx.complete(payload).await;
+                slot.release_then_complete(&goal_ctx, payload).await;
             }
         });
     }
