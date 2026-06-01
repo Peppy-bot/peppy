@@ -2,6 +2,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightLlmsTxt from 'starlight-llms-txt';
+import remarkGfm from 'remark-gfm';
 import { decodeHTML } from 'entities';
 import { fileURLToPath } from 'node:url';
 import { basename } from 'node:path';
@@ -127,6 +128,11 @@ function releaseHtmlEntryType() {
 // https://astro.build/config
 export default defineConfig({
 	site: 'https://docs.peppy.bot',
+	// GFM (tables, strikethrough, autolinks) is not applied to .mdx files unless
+	// remark-gfm is registered explicitly here; the MDX integration inherits it.
+	markdown: {
+		remarkPlugins: [remarkGfm],
+	},
 	integrations: [
 		releaseHtmlEntryType(),
 		starlight({
