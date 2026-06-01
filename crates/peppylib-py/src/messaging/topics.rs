@@ -120,40 +120,6 @@ impl PyTopicMessenger {
         })
     }
 
-    /// Consume a topic from any node (external/unlinked topics).
-    #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_topic, from_core_node, from_instance_id, qos))]
-    #[allow(clippy::too_many_arguments)]
-    fn consume_external<'py>(
-        py: Python<'py>,
-        messenger: &PyMessengerHandle,
-        as_core_node: String,
-        as_instance_id: String,
-        to_topic: String,
-        from_core_node: Option<String>,
-        from_instance_id: Option<String>,
-        qos: PyQoSProfile,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let handle = messenger.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let subscription = TopicMessenger::consume_external(
-                &handle,
-                &as_core_node,
-                &as_instance_id,
-                &to_topic,
-                from_core_node.as_deref(),
-                from_instance_id.as_deref(),
-                qos.into(),
-            )
-            .await
-            .map_err(to_py_err)?;
-
-            Ok(PySubscription {
-                inner: Arc::new(Mutex::new(subscription)),
-            })
-        })
-    }
-
     /// Emit (publish) a message to a topic. Pass `SenderTarget.node(name, tag)`
     /// or `SenderTarget.interface(name, tag)`.
     #[staticmethod]

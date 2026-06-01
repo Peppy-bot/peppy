@@ -455,42 +455,11 @@ pub struct ExposedAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct LinkedConsumedTopic {
+pub struct ConsumedTopic {
     #[serde(deserialize_with = "deserialize_consumed_topic_link_id")]
     pub link_id: String,
     #[serde(deserialize_with = "deserialize_consumed_topic_name")]
     pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ExternalConsumedTopic {
-    #[serde(deserialize_with = "deserialize_consumed_topic_name")]
-    pub name: String,
-    pub message_format: MessageFormat,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum ConsumedTopic {
-    Linked(LinkedConsumedTopic),
-    External(ExternalConsumedTopic),
-}
-
-impl ConsumedTopic {
-    pub fn name(&self) -> &str {
-        match self {
-            Self::Linked(t) => &t.name,
-            Self::External(t) => &t.name,
-        }
-    }
-
-    pub fn link_id(&self) -> Option<&str> {
-        match self {
-            Self::Linked(t) => Some(&t.link_id),
-            Self::External(_) => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -949,27 +918,12 @@ impl Normalize for EmittedTopic {
     }
 }
 
-impl Normalize for LinkedConsumedTopic {
+impl Normalize for ConsumedTopic {
     fn normalize(&mut self) {}
 }
 
 impl Normalize for ConformsToItem {
     fn normalize(&mut self) {}
-}
-
-impl Normalize for ExternalConsumedTopic {
-    fn normalize(&mut self) {
-        self.message_format.normalize();
-    }
-}
-
-impl Normalize for ConsumedTopic {
-    fn normalize(&mut self) {
-        match self {
-            ConsumedTopic::Linked(t) => t.normalize(),
-            ConsumedTopic::External(t) => t.normalize(),
-        }
-    }
 }
 
 impl Normalize for ExposedService {
@@ -1022,10 +976,7 @@ impl Normalize for TopicInterfaces {
                 .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
         });
         normalize_opt_vec(&mut self.consumes, |a, b| {
-            a.name()
-                .cmp(b.name())
-                .then_with(|| a.link_id().cmp(&b.link_id()))
-                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+            a.name.cmp(&b.name).then_with(|| a.link_id.cmp(&b.link_id))
         });
     }
 }
@@ -1098,11 +1049,8 @@ mod tests {
     fn consumed_topic_linked_link_id_is_required() {
         let valid = r#"{ link_id: "uvc_camera", name: "video_stream" }"#;
         let topic: ConsumedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
-        let ConsumedTopic::Linked(LinkedConsumedTopic { link_id, name }) = &topic else {
-            panic!("expected Linked variant");
-        };
-        assert_eq!(link_id, "uvc_camera");
-        assert_eq!(name, "video_stream");
+        assert_eq!(topic.link_id, "uvc_camera");
+        assert_eq!(topic.name, "video_stream");
 
         let empty_link_id = r#"{ link_id: "", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<ConsumedTopic>(empty_link_id).is_err());
@@ -1122,59 +1070,34 @@ mod tests {
         let trimmed = r#"{ link_id: " uvc_camera ", name: " video_stream " }"#;
         let topic: ConsumedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        let ConsumedTopic::Linked(LinkedConsumedTopic { link_id, name }) = &topic else {
-            panic!("expected Linked variant");
-        };
-        assert_eq!(link_id, "uvc_camera");
-        assert_eq!(name, "video_stream");
+        assert_eq!(topic.link_id, "uvc_camera");
+        assert_eq!(topic.name, "video_stream");
     }
 
     #[test]
-    fn consumed_topic_external_requires_name_and_message_format() {
-        let valid = r#"{ name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
-        let topic: ConsumedTopic =
-            serde_json5::from_str(valid).expect("valid external topic should parse");
-        let ConsumedTopic::External(ExternalConsumedTopic {
-            name,
-            message_format,
-        }) = &topic
-        else {
-            panic!("expected External variant, got: {:?}", topic);
-        };
-        assert_eq!(name, "cmd_vel");
-        assert_eq!(message_format.0.len(), 2);
-        assert_eq!(topic.name(), "cmd_vel");
+    fn consumed_topic_rejects_external_shape() {
+        // External consumed topics were removed. An entry with an inline
+        // message_format and no link_id must fail to parse as a consumed topic
+        // (message_format is an unknown field, link_id is required).
+        let external_shape =
+            r#"{ name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
+        assert!(
+            serde_json5::from_str::<ConsumedTopic>(external_shape).is_err(),
+            "external-shaped topic (no link_id, inline message_format) should be rejected"
+        );
 
-        // name-only without message_format is an error (matches neither variant)
+        // name-only (no link_id) must also fail.
         let name_only = r#"{ name: "cmd_vel" }"#;
         assert!(
             serde_json5::from_str::<ConsumedTopic>(name_only).is_err(),
-            "name-only (no link_id, no message_format) should fail"
+            "name-only (no link_id) should fail"
         );
-
-        // External with empty name should fail
-        let empty_name = r#"{ name: "", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(empty_name).is_err());
-    }
-
-    #[test]
-    fn consumed_topic_mixed_linked_and_external() {
-        let json = r#"[
-            { link_id: "camera", name: "video_stream" },
-            { name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }
-        ]"#;
-        let topics: Vec<ConsumedTopic> =
-            serde_json5::from_str(json).expect("mixed array should parse");
-        assert_eq!(topics.len(), 2);
-        assert!(matches!(&topics[0], ConsumedTopic::Linked(_)));
-        assert!(matches!(&topics[1], ConsumedTopic::External(_)));
-        assert_eq!(topics[0].name(), "video_stream");
-        assert_eq!(topics[1].name(), "cmd_vel");
     }
 
     #[test]
     fn consumed_topic_rejects_unknown_fields() {
-        // Linked with extra message_format should fail (not silently drop it)
+        // A linked consumed topic with an extra message_format must fail rather
+        // than silently dropping the field.
         let linked_with_extra = r#"{
             link_id: "camera",
             name: "video_stream",
@@ -1182,18 +1105,7 @@ mod tests {
         }"#;
         assert!(
             serde_json5::from_str::<ConsumedTopic>(linked_with_extra).is_err(),
-            "linked topic with extra message_format should be rejected"
-        );
-
-        // External with extra link_id should fail (not silently drop it)
-        let external_with_extra = r#"{
-            link_id: "camera",
-            name: "cmd_vel",
-            message_format: { linear_x: "f64" }
-        }"#;
-        assert!(
-            serde_json5::from_str::<ConsumedTopic>(external_with_extra).is_err(),
-            "external topic with extra link_id should be rejected"
+            "consumed topic with extra message_format should be rejected"
         );
     }
 
@@ -1909,27 +1821,27 @@ mod tests {
         let mut topics_a = TopicInterfaces {
             emits: None,
             consumes: Some(vec![
-                ConsumedTopic::Linked(LinkedConsumedTopic {
+                ConsumedTopic {
                     link_id: "node_b".into(),
                     name: "topic".into(),
-                }),
-                ConsumedTopic::Linked(LinkedConsumedTopic {
+                },
+                ConsumedTopic {
                     link_id: "node_a".into(),
                     name: "topic".into(),
-                }),
+                },
             ]),
         };
         let mut topics_b = TopicInterfaces {
             emits: None,
             consumes: Some(vec![
-                ConsumedTopic::Linked(LinkedConsumedTopic {
+                ConsumedTopic {
                     link_id: "node_a".into(),
                     name: "topic".into(),
-                }),
-                ConsumedTopic::Linked(LinkedConsumedTopic {
+                },
+                ConsumedTopic {
                     link_id: "node_b".into(),
                     name: "topic".into(),
-                }),
+                },
             ]),
         };
         topics_a.normalize();
@@ -1937,8 +1849,8 @@ mod tests {
         assert_eq!(topics_a, topics_b);
         // Verify sorted order: node_a before node_b
         let consumes = topics_a.consumes.unwrap();
-        assert!(matches!(&consumes[0], ConsumedTopic::Linked(t) if t.link_id == "node_a"));
-        assert!(matches!(&consumes[1], ConsumedTopic::Linked(t) if t.link_id == "node_b"));
+        assert_eq!(consumes[0].link_id, "node_a");
+        assert_eq!(consumes[1].link_id, "node_b");
 
         // ServiceInterfaces: same name, different link_id
         let mut services_a = ServiceInterfaces {
