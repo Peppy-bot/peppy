@@ -180,7 +180,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
         struct_prefix,
         dependency,
     } = spec;
-    let topic_literal = Literal::string(topic.name());
+    let topic_literal = Literal::string(&topic.name);
     let node_name_literal = Literal::string(&dependency.producer_name);
     let helper_fn_tokens = build_topic_deserialize_helper(
         helper_fn_ident,
@@ -334,84 +334,6 @@ pub fn consumed_to_target_expression(
             quote!(peppylib::messaging::SenderTarget::node(#node_name, #node_tag)?)
         }
     }
-}
-
-pub struct ExternalConsumedTopicCallbackSpec<'a> {
-    pub fn_name: &'a Ident,
-    pub helper_fn_ident: &'a Ident,
-    pub args_struct_ident: &'a Ident,
-    pub params: &'a [FunctionParam],
-    pub artifacts: &'a CapnpSchemaArtifacts,
-    pub encoding: &'a MessageEncodingSpec,
-    pub topic_name: &'a str,
-    pub struct_prefix: &'a str,
-}
-
-pub fn build_external_consumed_topic_callback(
-    spec: ExternalConsumedTopicCallbackSpec,
-) -> Result<TokenStream> {
-    let ExternalConsumedTopicCallbackSpec {
-        fn_name,
-        helper_fn_ident,
-        args_struct_ident,
-        params,
-        artifacts,
-        encoding,
-        topic_name,
-        struct_prefix,
-    } = spec;
-    let topic_literal = Literal::string(topic_name);
-    let helper_fn_tokens = build_topic_deserialize_helper(
-        helper_fn_ident,
-        args_struct_ident,
-        params,
-        artifacts,
-        encoding,
-        struct_prefix,
-    )?;
-
-    Ok(quote! {
-        pub async fn #fn_name(
-            node_runner: &crate::NodeRunner,
-            from_core_node: Option<&str>,
-            from_instance_id: Option<&str>,
-        ) -> crate::Result<(String, #args_struct_ident)> {
-            let topic_name = #topic_literal;
-            let qos = peppylib::config::QoSProfile::Standard;
-
-            let message = {
-                let subscription_future = peppylib::TopicMessenger::consume_external(
-                    node_runner.messenger(),
-                    node_runner.processor().bound_core_node(),
-                    node_runner.processor().bound_instance_id(),
-                    topic_name,
-                    from_core_node,
-                    from_instance_id,
-                    qos,
-                );
-                let mut subscription = subscription_future.await.map_err(|source| {
-                    crate::Error::TopicSubscribe {
-                        topic_name: topic_name.to_string(),
-                        node_name: String::new(),
-                        source_msg: source.to_string(),
-                    }
-                })?;
-                subscription
-                    .on_next_message()
-                    .await
-                    .ok_or_else(|| crate::Error::SubscriptionClosed {
-                        topic_name: topic_name.to_string(),
-                    })?
-            };
-
-            let payload = message.payload();
-            let instance_id = message.instance_id().to_string();
-            let message = #helper_fn_ident(payload.as_ref())?;
-            Ok((instance_id, message))
-        }
-
-        #helper_fn_tokens
-    })
 }
 
 fn build_topic_deserialize_helper(

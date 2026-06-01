@@ -155,9 +155,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             && let Some(expected) = &topics.consumes
         {
             for topic in expected {
-                if let config::node::ConsumedTopic::Linked(linked) = topic {
-                    dependencies.insert(&linked.link_id);
-                }
+                dependencies.insert(&topic.link_id);
             }
         }
         if let Some(services) = &config.interfaces.services
@@ -289,18 +287,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Consumed Topics:");
                 for topic in topics {
-                    match topic {
-                        config::node::ConsumedTopic::Linked(linked) => {
-                            let _ = writeln!(
-                                out,
-                                "  - {} (from node: {})",
-                                linked.name, linked.link_id
-                            );
-                        }
-                        config::node::ConsumedTopic::External(external) => {
-                            let _ = writeln!(out, "  - {} (external)", external.name);
-                        }
-                    }
+                    let _ = writeln!(out, "  - {} (from node: {})", topic.name, topic.link_id);
                 }
             }
 
