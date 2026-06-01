@@ -153,7 +153,7 @@ fn topic_subscribe_interface_target() {
 }
 
 #[test]
-fn topic_subscribe_external_consumer_wildcards_full_target() {
+fn topic_subscribe_fully_untargeted_wildcards_all_slots() {
     let receiver = TopicWireReceiver {
         as_core_node: seg("core_subscriber"),
         as_instance_id: seg("sub_inst"),

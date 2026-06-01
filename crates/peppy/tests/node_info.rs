@@ -296,9 +296,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     // `format_node_info` does when rendering the "Dependencies" section.
     let mut dependencies: BTreeSet<&str> = BTreeSet::new();
     for topic in topics {
-        if let config::node::ConsumedTopic::Linked(linked) = topic {
-            dependencies.insert(&linked.link_id);
-        }
+        dependencies.insert(&topic.link_id);
     }
     for service in services {
         dependencies.insert(&service.link_id);
