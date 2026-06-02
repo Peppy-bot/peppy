@@ -95,7 +95,8 @@ pub mod node {
 // -- runtime --
 pub mod runtime {
     pub use crate::internal::runtime::{
-        LauncherRuntimeConfig, NodeInstanceConfig, ResolvedFramework, RuntimeConfig, SlotBinding,
+        DeferredStatus, LauncherRuntimeConfig, NodeInstanceConfig, ResolvedFramework,
+        RuntimeConfig, SlotBinding,
     };
 }
 
@@ -105,7 +106,7 @@ pub mod launcher {
         BindingValidationItem, Deployment, DeploymentGitSource, DeploymentInstance,
         DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
         FrameworkOverrides, Name, PeppyLauncher, PeppyLauncherParser, ValidatedBindings,
-        validate_bindings,
+        producer_satisfies_slot, slot_meta_for_link_id, validate_bindings,
     };
 }
 

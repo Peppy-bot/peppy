@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use config::runtime::SlotBinding;
+use config::runtime::{DeferredStatus, SlotBinding};
 use serde::{Deserialize, Serialize};
 
 /// Per-instance lifecycle state. Wire representation is the lowercase variant
@@ -132,6 +132,15 @@ pub struct SerializedInstance {
     /// parse.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: BTreeMap<String, SlotBinding>,
+    /// Observability status for this instance's `SlotBinding::Deferred`
+    /// slots, keyed by `link_id`. Computed fresh by
+    /// `NodeStack::to_serialized_graph` from the live stack (target running?
+    /// conforming?), not stored, so it stays correct across the target
+    /// stopping or its id being reused. Only deferred slots appear; an
+    /// instance with no deferred bindings carries an empty map. Defaulted on
+    /// decode so older `graph_json` payloads still parse.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub deferred_status: BTreeMap<String, DeferredStatus>,
 }
 
 /// Decode default for [`SerializedInstance::healthy`]: assume healthy when the
@@ -268,6 +277,7 @@ mod tests {
                     state: *st,
                     healthy: true,
                     slot_bindings: BTreeMap::new(),
+                    deferred_status: BTreeMap::new(),
                 })
                 .collect(),
         }
@@ -414,6 +424,7 @@ mod tests {
             state: InstanceState::Running,
             healthy: true,
             slot_bindings: bindings,
+            deferred_status: BTreeMap::new(),
         };
 
         let json = serde_json::to_string(&instance).expect("serialize");
@@ -430,6 +441,7 @@ mod tests {
             state: InstanceState::Running,
             healthy: true,
             slot_bindings: BTreeMap::new(),
+            deferred_status: BTreeMap::new(),
         };
         let json = serde_json::to_string(&instance).expect("serialize");
         assert!(

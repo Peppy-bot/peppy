@@ -15,17 +15,41 @@ use crate::launcher::Name;
 /// `NodeInstanceConfig` so the spawned node does no re-resolution work.
 ///
 /// `Pinned` corresponds to a `depends_on` entry with `from_any: false`;
-/// it must be bound (the validator rejects pinned-unbound). `FromAnyBound`
-/// is a `from_any: true` slot for which the user supplied one or more
-/// bindings via free-form keys. `FromAnyUnbound` is a `from_any: true`
-/// slot the user left bindless — the wildcard fallback for producers no
-/// sibling slot has claimed.
+/// it must be bound (the validator rejects pinned-unbound). `Deferred` is
+/// a pinned slot bound via `--bind-deferred` to a target that was not
+/// running at launch: it routes identically to `Pinned` (the transport
+/// tolerates a producer that appears later), but its conformance and
+/// identity were not checked up front — the daemon verifies them when the
+/// target appears. `FromAnyBound` is a `from_any: true` slot for which the
+/// user supplied one or more bindings via free-form keys. `FromAnyUnbound`
+/// is a `from_any: true` slot the user left bindless — the wildcard
+/// fallback for producers no sibling slot has claimed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SlotBinding {
     Pinned { producer_instance_id: String },
+    Deferred { producer_instance_id: String },
     FromAnyBound { producer_instance_ids: Vec<String> },
     FromAnyUnbound,
+}
+
+/// Observability state of a `SlotBinding::Deferred` slot, computed from the
+/// live stack rather than stored: a deferred slot's status is a pure
+/// function of whether its target is running and, if so, whether the
+/// target's node satisfies the slot. Surfaced per `link_id` in
+/// `peppy stack list` and the daemon logs.
+///
+/// - `Pending` — the target instance is not currently running (it has not
+///   appeared yet, or its id was a typo, or it has stopped).
+/// - `Active` — the target is running and its node satisfies the slot
+///   (conforms to the interface, or matches the node identity).
+/// - `NonConforming` — the target is running but does not satisfy the slot.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeferredStatus {
+    Pending,
+    Active,
+    NonConforming,
 }
 
 /// Represents a node instance at runtime. Used by RuntimeConfig to identify the running node and its configuration

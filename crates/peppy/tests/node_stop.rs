@@ -86,6 +86,7 @@ async fn node_stop_command_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds_deferred: Vec::new(),
             binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
@@ -166,6 +167,7 @@ async fn node_stop_command_succeeds() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            binds_deferred: Vec::new(),
             binds: Vec::new(),
 
             _link_id_removed: Vec::new(),

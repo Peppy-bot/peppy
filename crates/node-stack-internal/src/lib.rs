@@ -13,7 +13,8 @@ pub use build_io::{FeedbackLine, FeedbackStream, OutputReaderHooks};
 pub use core_node_api::InstanceState;
 pub use node_stack::add_steps;
 pub use node_stack::{
-    BuildContext, EntityHandle, EntitySnapshot, NodeEntity, NodeStack, NodeStage, OutputSinks,
-    RestoreTarget, StartContext, StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
+    BuildContext, DeferredReport, EntityHandle, EntitySnapshot, NodeEntity, NodeStack, NodeStage,
+    OutputSinks, RestoreTarget, StartContext, StartedInstanceCtx, TrackedNodeInstance,
+    WorkingDirGuard,
 };
 pub use virtual_deptree::{NodeKey, VirtualDeptree, VirtualNodeInfo};

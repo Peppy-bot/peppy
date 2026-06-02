@@ -5,7 +5,7 @@ use crate::Result;
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Name;
-use config::runtime::RuntimeConfig;
+use config::runtime::{DeferredStatus, RuntimeConfig};
 use config::{AnyType, apply_parameter_defaults, resolve_argument_path};
 use core_node_api::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use futures::FutureExt;
@@ -878,6 +878,16 @@ async fn process_node_run(
             .await;
             match commit_result {
                 Ok(_) => {
+                    // Now that this instance is committed and visible in the
+                    // stack, surface the deferred bindings it touches — slots
+                    // it owns that are still waiting, and any consumer whose
+                    // deferred slot this instance just satisfied (or violated).
+                    log_deferred_reports(
+                        &ctx.action.node_stack,
+                        &ctx.action.peppy_dirs,
+                        instance_id.as_str(),
+                    );
+
                     spawn_health_monitor(HealthMonitorParams {
                         messenger: ctx.action.messenger.clone(),
                         core_node_name: ctx.action.core_node_name.clone(),
@@ -1153,6 +1163,71 @@ async fn wait_for_ready_signal(
             Err(err) => {
                 last_err = Some(err);
                 tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
+
+/// Log the deferred-binding slots that `around_instance_id` now touches,
+/// once it is committed to the stack. This is the late counterpart to the
+/// strict bind check: a slot whose deferred target just appeared is logged
+/// as resolved (`Active`) or, if the target is the wrong node, surfaced as a
+/// conformance error (`NonConforming`) — restoring the safety the eager
+/// check gives without tearing the consumer down. A still-missing target
+/// (`Pending`) is a tracing-only note: it is the expected steady state for a
+/// deferred binding and would only spam the persistent stack log.
+fn log_deferred_reports(node_stack: &NodeStack, peppy_dirs: &PeppyDirs, around_instance_id: &str) {
+    for report in node_stack.collect_deferred_reports(around_instance_id) {
+        let iface = report.interface.as_deref().unwrap_or("<unknown interface>");
+        match report.status {
+            DeferredStatus::Active => {
+                tracing::info!(
+                    "Deferred binding '{}' on instance '{}' ({}) resolved: target '{}' is running and conforms to {}",
+                    report.link_id,
+                    report.consumer_instance_id,
+                    report.consumer_node,
+                    report.target_instance_id,
+                    iface,
+                );
+                super::append_stack_log(
+                    peppy_dirs,
+                    &format!(
+                        "Deferred binding '{}' on instance '{}' resolved to '{}' ({})",
+                        report.link_id,
+                        report.consumer_instance_id,
+                        report.target_instance_id,
+                        iface,
+                    ),
+                );
+            }
+            DeferredStatus::NonConforming => {
+                tracing::error!(
+                    "Deferred binding '{}' on instance '{}' ({}) rejected: target '{}' is running but does not conform to {}",
+                    report.link_id,
+                    report.consumer_instance_id,
+                    report.consumer_node,
+                    report.target_instance_id,
+                    iface,
+                );
+                super::append_stack_log(
+                    peppy_dirs,
+                    &format!(
+                        "Deferred binding '{}' on instance '{}' REJECTED: target '{}' does not conform to {}",
+                        report.link_id,
+                        report.consumer_instance_id,
+                        report.target_instance_id,
+                        iface,
+                    ),
+                );
+            }
+            DeferredStatus::Pending => {
+                tracing::info!(
+                    "Deferred binding '{}' on instance '{}' ({}) is pending: target '{}' is not running yet",
+                    report.link_id,
+                    report.consumer_instance_id,
+                    report.consumer_node,
+                    report.target_instance_id,
+                );
             }
         }
     }
