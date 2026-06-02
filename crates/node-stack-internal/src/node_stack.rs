@@ -9,6 +9,7 @@ pub use entity::{
 };
 
 use crate::error::{Error, Result};
+use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
 use config::node::{
     ConformsToItem, DependsOn, Name, NodeConfig, collect_dependency_specs,
     validate_dependency_specs,
@@ -149,6 +150,53 @@ impl NodeStackInner {
 
         if let Some(err) = errors.into_iter().next() {
             return Err(err.into());
+        }
+
+        self.validate_no_service_action_cycle(entity)?;
+
+        Ok(())
+    }
+
+    /// Reject a service/action dependency cycle that the candidate would close.
+    ///
+    /// Interface deps are absent from the node-dep graph, so a caller-driven
+    /// cycle routed through interfaces is invisible to the structural check.
+    /// This runs over the whole stack plus the candidate (using the candidate's
+    /// incoming config on a re-add, not the stale stored one) so a cycle
+    /// completed across separate invocations, including the deferred
+    /// (`--bind-deferred`) case, is caught the moment the second node is added.
+    fn validate_no_service_action_cycle(&self, entity: &NodeEntity) -> Result<()> {
+        let candidate_key = key_from_entity(entity);
+
+        let mut configs: Vec<(String, String, NodeConfig)> =
+            Vec::with_capacity(self.graph.node_count() + 1);
+        for handle in self.graph.node_weights() {
+            let guard = handle.read();
+            let key = key_from_entity(&guard);
+            // Skip the stale stored config when the candidate replaces an
+            // existing node; its incoming config is appended below.
+            if key == candidate_key {
+                continue;
+            }
+            configs.push((key.name, key.tag, guard.config().clone()));
+        }
+        configs.push((
+            candidate_key.name,
+            candidate_key.tag,
+            entity.config().clone(),
+        ));
+
+        let view: Vec<CycleCheckNode<'_>> = configs
+            .iter()
+            .map(|(name, tag, config)| CycleCheckNode { name, tag, config })
+            .collect();
+
+        if let Some(cycle) = find_service_action_cycle(&view) {
+            return Err(Error::ServiceActionInterfaceCycle {
+                nodes: cycle.nodes,
+                interface: cycle.interface,
+                kind: cycle.kind.to_string(),
+            });
         }
 
         Ok(())

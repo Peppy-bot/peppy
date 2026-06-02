@@ -4,9 +4,11 @@ pub mod archive;
 pub mod build_io;
 mod error;
 mod node_stack;
+mod service_action_cycle;
 mod virtual_deptree;
 
 pub use error::Error as NodeStackError;
+pub use service_action_cycle::{CycleCheckNode, ServiceActionCycle, find_service_action_cycle};
 
 pub use archive::extract_tar_zst;
 pub use build_io::{FeedbackLine, FeedbackStream, OutputReaderHooks};

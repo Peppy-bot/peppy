@@ -1978,3 +1978,174 @@ async fn node_run_bind_deferred_surfaces_nonconforming_target() {
         .execute(&ctx);
     }
 }
+
+/// Writes an `interface_v1` document exposing a single service, so a consumer
+/// can declare `services.consumes` against it and a producer can `conforms_to`
+/// it.
+fn write_service_interface_v1_doc(path: &Path, name: &str, tag: &str, service_name: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("failed to create interface parent dir");
+    }
+    let body = format!(
+        r#"{{
+            peppy_schema: "interface_v1",
+            manifest: {{ name: "{name}", tag: "{tag}" }},
+            interfaces: {{
+                services: [
+                    {{
+                        name: "{service_name}",
+                        request_message_format: {{ ping: "bool" }},
+                        response_message_format: {{ pong: "bool" }}
+                    }}
+                ]
+            }}
+        }}"#
+    );
+    fs::write(path, body).expect("failed to write service interface_v1 doc");
+}
+
+/// `--bind-deferred` must not be an escape hatch for service/action
+/// bidirectionality. `node_c` provides `iface_a` and consumes `iface_b`'s
+/// service; `node_p` provides `iface_b` and consumes `iface_a`'s service.
+/// Wiring both forms a request/response cycle. The consumer launches with a
+/// deferred binding to the absent producer (proving deferral works), but the
+/// moment the cycle-closing producer is added, the daemon rejects it with a
+/// service cycle error and leaves the stack untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bind_deferred_does_not_allow_service_cycle_through_interfaces() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+
+    let nodes_dir = tempfile::tempdir().expect("temp nodes dir");
+    let interface_repo_dir = tempfile::tempdir().expect("temp interface repo");
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    // Two service-bearing interfaces, one provided by each node.
+    write_service_interface_v1_doc(
+        &interface_repo_dir.path().join("iface_a/peppy.json5"),
+        "iface_a",
+        "v1",
+        "svc_a",
+    );
+    write_service_interface_v1_doc(
+        &interface_repo_dir.path().join("iface_b/peppy.json5"),
+        "iface_b",
+        "v1",
+        "svc_b",
+    );
+
+    // Register the interface repo so the daemon's node-add can resolve the
+    // interface docs from cache.
+    let conf_dir = serve.temp_dir().join("conf");
+    fs::create_dir_all(&conf_dir).expect("create conf dir");
+    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
+        { "id": 1, "type": "fs", "path": interface_repo_dir.path().to_string_lossy() }
+    ]))
+    .expect("serialize repos");
+    fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+
+    let sleep_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "exec sleep 30".to_string(),
+    ];
+
+    // node_c: conforms to iface_a, consumes iface_b's service.
+    let c_depends_on =
+        r#"{ nodes: [], interfaces: [{ name: "iface_b", tag: "v1", link_id: "to_b" }] }"#;
+    let c_interfaces = r#"{
+        conforms_to: [{ name: "iface_a", tag: "v1" }],
+        services: { consumes: [{ link_id: "to_b", name: "svc_b" }] }
+    }"#;
+    let c_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        "node_c",
+        TEST_NODE_TAG,
+        &git_hash,
+        &sleep_cmd,
+        Some(c_depends_on),
+        Some(c_interfaces),
+    );
+
+    // node_p: conforms to iface_b, consumes iface_a's service. Closes the cycle.
+    let p_depends_on =
+        r#"{ nodes: [], interfaces: [{ name: "iface_a", tag: "v1", link_id: "to_a" }] }"#;
+    let p_interfaces = r#"{
+        conforms_to: [{ name: "iface_b", tag: "v1" }],
+        services: { consumes: [{ link_id: "to_a", name: "svc_a" }] }
+    }"#;
+    let p_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        "node_p",
+        TEST_NODE_TAG,
+        &git_hash,
+        &sleep_cmd,
+        Some(p_depends_on),
+        Some(p_interfaces),
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    RepoCommand {
+        command: RepoCommands::Refresh,
+    }
+    .execute(&ctx)
+    .expect("repo refresh should populate interface cache");
+
+    let _c_services =
+        start_instance_services(&node_messenger, &core_node_name, "c_1", "node_c").await;
+
+    // 1. Launch node_c, deferring its service slot to the not-yet-present
+    //    node_p. Deferral is allowed; the consumer comes up.
+    add_run_instance(
+        &ctx,
+        &c_path,
+        "c_1",
+        vec![("to_b".to_string(), "p_1".to_string())],
+    )
+    .expect("consumer should launch with a deferred service binding to an absent producer");
+
+    // 2. Adding node_p closes the service cycle and must be rejected at add
+    //    time. `--bind-deferred` did not let the cycle through.
+    let err = add_run_instance(&ctx, &p_path, "p_1", Vec::new())
+        .expect_err("adding the cycle-closing producer must be rejected");
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("cycle"),
+        "error should report a dependency cycle, got: {err}"
+    );
+
+    // The producer must not have entered the stack; the consumer stays.
+    let resp = poll_stack_list(
+        &StackListRequest::new(false),
+        &node_messenger,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack list should respond");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&resp.graph_json).expect("graph_json should parse");
+    assert!(
+        !graph.nodes.iter().any(|n| n.name == "node_p"),
+        "rejected producer must not be in the stack"
+    );
+    assert!(
+        graph.nodes.iter().any(|n| n.name == "node_c"),
+        "consumer should remain in the stack"
+    );
+
+    let _ = NodeCommand {
+        command: NodeCommands::Stop {
+            instance_id: "c_1".to_string(),
+        },
+    }
+    .execute(&ctx);
+}

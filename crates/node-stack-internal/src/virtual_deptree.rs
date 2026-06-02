@@ -21,6 +21,7 @@ use petgraph::algo::toposort;
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 
 use crate::error::{Error, Result};
+use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
 
 /// `(name, tag)` identifier used to address a node in the virtual dep tree.
 pub type NodeKey = (String, String);
@@ -120,6 +121,25 @@ impl VirtualDeptree {
                 .unwrap_or_else(|| ("?".to_owned(), "?".to_owned()));
             return Err(Error::VirtualDeptreeCycle {
                 nodes: vec![format!("{}:{}", key.0, key.1)],
+            });
+        }
+
+        // Interface deps were dropped from the node-dep graph above, so a
+        // service/action cycle routed through interfaces survives the toposort.
+        // Reject it explicitly: caller-driven dependencies must stay acyclic.
+        let cycle_nodes: Vec<CycleCheckNode<'_>> = infos
+            .values()
+            .map(|info| CycleCheckNode {
+                name: info.config.manifest.name.as_str(),
+                tag: info.config.manifest.tag.as_str(),
+                config: &info.config,
+            })
+            .collect();
+        if let Some(cycle) = find_service_action_cycle(&cycle_nodes) {
+            return Err(Error::ServiceActionInterfaceCycle {
+                nodes: cycle.nodes,
+                interface: cycle.interface,
+                kind: cycle.kind.to_string(),
             });
         }
 
@@ -323,6 +343,223 @@ mod tests {
                 assert_eq!(second, second_dir);
             }
             other => panic!("expected DuplicateLocalNode, got {:?}", other),
+        }
+    }
+
+    /// Writes a node config that conforms to interfaces and consumes
+    /// service/action/topic items through interface deps, for the
+    /// caller-driven cycle tests. `iface_deps` and the consume lists are
+    /// `(name, tag, link_id)` / `link_id` / `(link_id, topic_name)`.
+    fn write_node_full(
+        dir: &Path,
+        name: &str,
+        conforms_to: &[(&str, &str)],
+        iface_deps: &[(&str, &str, &str)],
+        service_consumes: &[&str],
+        action_consumes: &[&str],
+        topic_consumes: &[(&str, &str)],
+    ) -> NodeConfig {
+        std::fs::create_dir_all(dir).unwrap();
+        let join = |items: Vec<String>| items.join(", ");
+        let conforms = join(
+            conforms_to
+                .iter()
+                .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}" }}"#))
+                .collect(),
+        );
+        let ifaces = join(
+            iface_deps
+                .iter()
+                .map(|(n, t, l)| format!(r#"{{ name: "{n}", tag: "{t}", link_id: "{l}" }}"#))
+                .collect(),
+        );
+        let services = join(
+            service_consumes
+                .iter()
+                .map(|l| format!(r#"{{ link_id: "{l}" }}"#))
+                .collect(),
+        );
+        let actions = join(
+            action_consumes
+                .iter()
+                .map(|l| format!(r#"{{ link_id: "{l}" }}"#))
+                .collect(),
+        );
+        let topics = join(
+            topic_consumes
+                .iter()
+                .map(|(l, n)| format!(r#"{{ link_id: "{l}", name: "{n}" }}"#))
+                .collect(),
+        );
+        let json5 = format!(
+            r#"{{
+                peppy_schema: "node_v1",
+                manifest: {{
+                    name: "{name}",
+                    tag: "v1",
+                    depends_on: {{ nodes: [], interfaces: [{ifaces}] }},
+                }},
+                interfaces: {{
+                    conforms_to: [{conforms}],
+                    services: {{ consumes: [{services}] }},
+                    actions: {{ consumes: [{actions}] }},
+                    topics: {{ consumes: [{topics}] }},
+                }},
+                execution: {{ language: "rust", run_cmd: ["./bin"] }},
+            }}"#
+        );
+        let path = dir.join(config::consts::NODE_CONFIG_FILE);
+        std::fs::write(&path, json5).unwrap();
+        NodeConfigParser::from_path(&path).unwrap()
+    }
+
+    #[test]
+    fn build_detects_mutual_service_interface_cycle() {
+        let tmp = TempDir::new().unwrap();
+        let a_dir = tmp.path().join("a");
+        let b_dir = tmp.path().join("b");
+        let a = write_node_full(
+            &a_dir,
+            "a",
+            &[("iface_a", "v1")],
+            &[("iface_b", "v1", "to_b")],
+            &["to_b"],
+            &[],
+            &[],
+        );
+        let b = write_node_full(
+            &b_dir,
+            "b",
+            &[("iface_b", "v1")],
+            &[("iface_a", "v1", "to_a")],
+            &["to_a"],
+            &[],
+            &[],
+        );
+
+        match VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)]) {
+            Err(Error::ServiceActionInterfaceCycle { kind, .. }) => assert_eq!(kind, "service"),
+            other => panic!("expected ServiceActionInterfaceCycle, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_detects_mutual_action_interface_cycle() {
+        let tmp = TempDir::new().unwrap();
+        let a_dir = tmp.path().join("a");
+        let b_dir = tmp.path().join("b");
+        let a = write_node_full(
+            &a_dir,
+            "a",
+            &[("iface_a", "v1")],
+            &[("iface_b", "v1", "to_b")],
+            &[],
+            &["to_b"],
+            &[],
+        );
+        let b = write_node_full(
+            &b_dir,
+            "b",
+            &[("iface_b", "v1")],
+            &[("iface_a", "v1", "to_a")],
+            &[],
+            &["to_a"],
+            &[],
+        );
+
+        match VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)]) {
+            Err(Error::ServiceActionInterfaceCycle { kind, .. }) => assert_eq!(kind, "action"),
+            other => panic!("expected ServiceActionInterfaceCycle, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_allows_bidirectional_topic_interfaces() {
+        let tmp = TempDir::new().unwrap();
+        let a_dir = tmp.path().join("a");
+        let b_dir = tmp.path().join("b");
+        let a = write_node_full(
+            &a_dir,
+            "a",
+            &[("iface_a", "v1")],
+            &[("iface_b", "v1", "to_b")],
+            &[],
+            &[],
+            &[("to_b", "telemetry")],
+        );
+        let b = write_node_full(
+            &b_dir,
+            "b",
+            &[("iface_b", "v1")],
+            &[("iface_a", "v1", "to_a")],
+            &[],
+            &[],
+            &[("to_a", "telemetry")],
+        );
+
+        let tree = VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)])
+            .expect("mutual topics must stay allowed");
+        assert_eq!(tree.len(), 2);
+    }
+
+    #[test]
+    fn build_allows_one_directional_service_interface() {
+        let tmp = TempDir::new().unwrap();
+        let a_dir = tmp.path().join("a");
+        let b_dir = tmp.path().join("b");
+        let a = write_node_full(
+            &a_dir,
+            "a",
+            &[],
+            &[("iface_b", "v1", "to_b")],
+            &["to_b"],
+            &[],
+            &[],
+        );
+        let b = write_node_full(&b_dir, "b", &[("iface_b", "v1")], &[], &[], &[], &[]);
+
+        let tree = VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)])
+            .expect("one-directional service dep is fine");
+        assert_eq!(tree.len(), 2);
+    }
+
+    #[test]
+    fn build_detects_three_node_service_cycle() {
+        let tmp = TempDir::new().unwrap();
+        let a_dir = tmp.path().join("a");
+        let b_dir = tmp.path().join("b");
+        let c_dir = tmp.path().join("c");
+        let a = write_node_full(
+            &a_dir,
+            "a",
+            &[("iface_a", "v1")],
+            &[("iface_b", "v1", "to_b")],
+            &["to_b"],
+            &[],
+            &[],
+        );
+        let b = write_node_full(
+            &b_dir,
+            "b",
+            &[("iface_b", "v1")],
+            &[("iface_c", "v1", "to_c")],
+            &["to_c"],
+            &[],
+            &[],
+        );
+        let c = write_node_full(
+            &c_dir,
+            "c",
+            &[("iface_c", "v1")],
+            &[("iface_a", "v1", "to_a")],
+            &["to_a"],
+            &[],
+            &[],
+        );
+
+        match VirtualDeptree::build(vec![(a_dir, a), (b_dir, b), (c_dir, c)]) {
+            Err(Error::ServiceActionInterfaceCycle { nodes, .. }) => assert_eq!(nodes.len(), 3),
+            other => panic!("expected ServiceActionInterfaceCycle, got {:?}", other),
         }
     }
 }
