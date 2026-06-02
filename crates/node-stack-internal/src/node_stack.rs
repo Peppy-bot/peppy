@@ -168,16 +168,27 @@ impl NodeStackInner {
     fn validate_no_service_action_cycle(&self, entity: &NodeEntity) -> Result<()> {
         let candidate_key = key_from_entity(entity);
 
+        // On a re-add the candidate already lives in the graph, and
+        // `push_config_impl` calls us while holding that entity's *write* lock
+        // (it validates and replaces the entity under one held lock). Reading
+        // its handle here would re-enter a lock the current thread already
+        // holds — `parking_lot::RwLock` is not reentrant, so it would
+        // self-deadlock. Identify the candidate's slot by index up front and
+        // skip it without ever locking it; its incoming config is appended
+        // below instead of the stale stored one.
+        let candidate_index = self.key_to_index.get(&candidate_key).copied();
+
         let mut configs: Vec<(String, String, NodeConfig)> =
             Vec::with_capacity(self.graph.node_count() + 1);
-        for handle in self.graph.node_weights() {
-            let guard = handle.read();
-            let key = key_from_entity(&guard);
-            // Skip the stale stored config when the candidate replaces an
-            // existing node; its incoming config is appended below.
-            if key == candidate_key {
+        for index in self.graph.node_indices() {
+            if Some(index) == candidate_index {
                 continue;
             }
+            let Some(handle) = self.graph.node_weight(index) else {
+                continue;
+            };
+            let guard = handle.read();
+            let key = key_from_entity(&guard);
             configs.push((key.name, key.tag, guard.config().clone()));
         }
         configs.push((
