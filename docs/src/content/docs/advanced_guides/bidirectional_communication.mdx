@@ -285,7 +285,7 @@ peppy stack launch ./peppy_launcher.json5
 
 After `peppy node sync`, the code generator creates a module for each consumed topic under `peppygen.consumed_topics` (Python) / `peppygen::consumed_topics` (Rust), and a module for each emitted topic under `peppygen.emitted_topics`.
 Because both consumed topics arrive through an interface dependency with a `link_id`, their module names follow the linked convention `<link_id>_<topic_name>`: `controller_joint_commands` inside `robot_arm` and `arm_joint_states` inside `arm_controller`.
-Emitted topics, inherited through `conforms_to`, are named by topic alone: `joint_states` and `joint_commands`.
+Emitted topics inherited through `conforms_to` nest under their interface as `<interface_name>.<interface_tag>.<topic_name>`: `joint_state_source.v1.joint_states` inside `robot_arm` and `joint_command_source.v1.joint_commands` inside `arm_controller`. (A topic emitted natively, declared in the node's own `topics.emits`, would instead be flat `<topic_name>`.)
 
 <Tabs>
   <TabItem label="Python">
@@ -296,7 +296,7 @@ Emitted topics, inherited through `conforms_to`, are named by topic alone: `join
     from peppygen import NodeBuilder, NodeRunner
     from peppygen.parameters import Parameters
     from peppygen.consumed_topics import controller_joint_commands
-    from peppygen.emitted_topics import joint_states
+    from peppygen.emitted_topics.joint_state_source.v1 import joint_states
 
 
     async def handle_commands(node_runner: NodeRunner):
@@ -334,7 +334,7 @@ Emitted topics, inherited through `conforms_to`, are named by topic alone: `join
   <TabItem label="Rust">
     ```rust title="src/main.rs"
     use peppygen::consumed_topics::controller_joint_commands;
-    use peppygen::emitted_topics::joint_states;
+    use peppygen::emitted_topics::joint_state_source::v1::joint_states;
     use peppygen::{NodeBuilder, Parameters, Result};
 
     fn main() -> Result<()> {
@@ -382,7 +382,7 @@ On the other side, `arm_controller` consumes `joint_states` and emits `joint_com
     from peppygen import NodeBuilder, NodeRunner
     from peppygen.parameters import Parameters
     from peppygen.consumed_topics import arm_joint_states
-    from peppygen.emitted_topics import joint_commands
+    from peppygen.emitted_topics.joint_command_source.v1 import joint_commands
 
 
     def compute_next_target(current: list[float]) -> list[float]:
@@ -421,7 +421,7 @@ On the other side, `arm_controller` consumes `joint_states` and emits `joint_com
   <TabItem label="Rust">
     ```rust title="src/main.rs"
     use peppygen::consumed_topics::arm_joint_states;
-    use peppygen::emitted_topics::joint_commands;
+    use peppygen::emitted_topics::joint_command_source::v1::joint_commands;
     use peppygen::{NodeBuilder, Parameters, Result};
 
     fn main() -> Result<()> {
