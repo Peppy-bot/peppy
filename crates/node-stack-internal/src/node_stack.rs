@@ -589,23 +589,27 @@ impl NodeStackInner {
 
     /// Returns a serializable representation of the graph.
     fn to_serialized_graph(&self) -> SerializedNodeGraph {
-        // Built before the node pass so a consumer's deferred target — which
-        // may live in any entity — is always resolvable.
+        // Built before serializing any entity so a consumer's deferred target,
+        // which may live in any entity, is always resolvable.
         let index = self.build_instance_index();
+
+        // The node list and the edge endpoints must serialize each entity
+        // identically, including its resolved `deferred_status`. Both passes go
+        // through this closure so the two views cannot drift apart.
+        let serialize_entity = |entity: &NodeEntity| {
+            let mut node = SerializedNode::from(entity);
+            fill_deferred_status(
+                &mut node,
+                entity.config().manifest.depends_on.as_ref(),
+                &index,
+            );
+            node
+        };
 
         let nodes = self
             .graph
             .node_weights()
-            .map(|handle| {
-                let guard = handle.read();
-                let mut node = SerializedNode::from(&*guard);
-                fill_deferred_status(
-                    &mut node,
-                    guard.config().manifest.depends_on.as_ref(),
-                    &index,
-                );
-                node
-            })
+            .map(|handle| serialize_entity(&handle.read()))
             .collect();
 
         let edges = self
@@ -615,11 +619,9 @@ impl NodeStackInner {
                 let (src_idx, dst_idx) = self.graph.edge_endpoints(edge_idx)?;
                 let src_handle = self.graph.node_weight(src_idx)?;
                 let dst_handle = self.graph.node_weight(dst_idx)?;
-                let src_guard = src_handle.read();
-                let dst_guard = dst_handle.read();
                 Some(SerializedEdge {
-                    from: SerializedNode::from(&*src_guard),
-                    to: SerializedNode::from(&*dst_guard),
+                    from: serialize_entity(&src_handle.read()),
+                    to: serialize_entity(&dst_handle.read()),
                 })
             })
             .collect();
