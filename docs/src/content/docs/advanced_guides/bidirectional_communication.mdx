@@ -281,6 +281,30 @@ peppy node sync -r ./arm_controller
 peppy stack launch ./peppy_launcher.json5
 ```
 
+## Launching incrementally with deferred bindings
+
+The launcher above resolves both bindings at once. To bring the same pair up incrementally with two separate commands, use `--bind-deferred`.
+
+Plain `--bind` is strict: `peppy node run --bind=<link_id>@<instance_id>` requires `<instance_id>` to already be running and fails fast with an unknown-instance error otherwise. That alone cannot express a mutual binding one command at a time, because whichever instance you launch first references one that does not exist yet.
+
+`--bind-deferred=<link_id>@<instance_id>` relaxes that for a single binding. It takes the same `<link_id>@<instance_id>` form as `--bind` but accepts a target that is not running yet: the binding is recorded at launch and takes effect when the target instance appears. Deferral is per binding, so one `node run` can mix strict and deferred bindings.
+
+```sh
+# arm_1 starts first; its controller slot is deferred to ctrl_1, which does not exist yet
+peppy node run --instance-id=arm_1 --bind-deferred=controller@ctrl_1 robot_arm:v1
+
+# ctrl_1 starts second with a strict bind to the now-running arm_1
+peppy node run --instance-id=ctrl_1 --bind=arm@arm_1 arm_controller:v1
+```
+
+`arm_1`'s `controller` slot stays pending until `ctrl_1` appears, then binds to it. Because both channels are async pub/sub, `arm_1` runs in the meantime: it emits `joint_states` and simply receives no `joint_commands` until `ctrl_1` is up. When the deferred target appears, peppy checks conformance exactly as the launcher does, so a non-conforming `ctrl_1` is still rejected, only later rather than up front. Pending deferred bindings appear in `peppy stack list`, so an unfilled slot is visible rather than silent.
+
+If you would rather not reason about start order, defer both directions; each slot fills once its target is up.
+
+:::caution
+A deferred binding trades the strict flag's fast feedback for flexibility. A typo in the deferred `instance_id` does not fail at launch; it becomes a binding that never resolves and stays pending. Check `peppy stack list` after launch to confirm deferred slots fill.
+:::
+
 ## Receiving messages
 
 After `peppy node sync`, the code generator creates a module for each consumed topic under `peppygen.consumed_topics` (Python) / `peppygen::consumed_topics` (Rust), and a module for each emitted topic under `peppygen.emitted_topics`.
