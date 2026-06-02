@@ -365,6 +365,135 @@ A launcher can wire the three slots to any mix of conforming producers:
 
 Swapping `realsense_d405:v1` for `mujoco_depth_camera_sim:v1` in the launcher requires no change to the consumer node, since both producers conform to the same interface and the binding works unchanged.
 
+## Caller-driven cycles are rejected
+
+An interface dependency is deliberately invisible to the node dependency graph, which is exactly what lets two nodes depend on each other's interfaces without forming a structural cycle (see [Bidirectional communication](/advanced_guides/bidirectional_communication)). For **topics** this is always safe: a topic dependency is passive ("I receive whatever is published"), so two nodes can each receive from the other with no runtime ordering between them.
+
+**Services and actions are different.** Consuming a service or action interface means "I will actively call the provider and wait for its reply." If two nodes each call a service (or action) the other provides, neither can make progress until the other does: a request/response deadlock. Routing the calls through interfaces hides that cycle from the static graph, but it does not make the deadlock go away. PeppyOS therefore rebuilds the *caller-driven* edges separately, resolving each interface dep to its conforming providers via `conforms_to`, and rejects any service/action cycle it finds.
+
+### An example that is rejected
+
+Two service interfaces, one provided by each node:
+
+```json5
+// pose_service/peppy.json5 (interface)
+{
+  peppy_schema: "interface_v1",
+  manifest: { name: "pose_service", tag: "v1" },
+  interfaces: {
+    services: [
+      {
+        name: "current_pose",
+        response_message_format: { x: "f64", y: "f64", theta: "f64" },
+      },
+    ],
+  },
+}
+
+// obstacle_service/peppy.json5 (interface)
+{
+  peppy_schema: "interface_v1",
+  manifest: { name: "obstacle_service", tag: "v1" },
+  interfaces: {
+    services: [
+      {
+        name: "nearest_obstacle",
+        request_message_format: { x: "f64", y: "f64" },
+        response_message_format: { distance: "f64", bearing: "f64" },
+      },
+    ],
+  },
+}
+```
+
+`localizer` provides `pose_service` and *calls* `obstacle_service`; `mapper` provides `obstacle_service` and *calls* `pose_service`. Each node conforms to the interface it provides and consumes the service it calls through a `link_id`, exactly like the bidirectional-topic pattern, except both consumed links are **services**:
+
+```json5
+// localizer/peppy.json5
+{
+  peppy_schema: "node_v1",
+  manifest: {
+    name: "localizer",
+    tag: "v1",
+    depends_on: {
+      interfaces: [
+        { name: "obstacle_service", tag: "v1", link_id: "obstacles" },
+      ],
+    },
+  },
+  interfaces: {
+    conforms_to: [{ name: "pose_service", tag: "v1" }], // provides current_pose
+    services: {
+      consumes: [
+        { name: "nearest_obstacle", link_id: "obstacles" }, // calls mapper
+      ],
+    },
+  },
+  execution: {
+    language: "rust",
+    build_cmd: ["cargo", "build", "--release"],
+    run_cmd: ["./target/release/localizer"],
+  },
+}
+
+// mapper/peppy.json5
+{
+  peppy_schema: "node_v1",
+  manifest: {
+    name: "mapper",
+    tag: "v1",
+    depends_on: {
+      interfaces: [
+        { name: "pose_service", tag: "v1", link_id: "pose" },
+      ],
+    },
+  },
+  interfaces: {
+    conforms_to: [{ name: "obstacle_service", tag: "v1" }], // provides nearest_obstacle
+    services: {
+      consumes: [
+        { name: "current_pose", link_id: "pose" }, // calls localizer
+      ],
+    },
+  },
+  execution: {
+    language: "rust",
+    build_cmd: ["cargo", "build", "--release"],
+    run_cmd: ["./target/release/mapper"],
+  },
+}
+```
+
+The two caller-driven edges close a cycle:
+
+```
+localizer ── calls obstacle_service (nearest_obstacle) ──▶ mapper
+    ▲                                                        │
+    └────────── calls pose_service (current_pose) ◀──────────┘
+```
+
+Whichever node is added second is rejected at add time with a `ServiceActionInterfaceCycle` error. The offending node is **not** committed and the stack is left unchanged:
+
+```
+service dependency cycle through interfaces involving localizer:v1 -> mapper:v1 (closing interface `obstacle_service:v1`). service request/response cycles deadlock and are not allowed; only topics may be bidirectional. If these providers are not actually cross-bound, pin the binding or split the interface.
+```
+
+The same rejection applies however you wire it: directly through `depends_on.nodes`, through interfaces, through the launcher (`peppy stack launch`), or incrementally with [`--bind-deferred`](/advanced_guides/bidirectional_communication/#launching-incrementally-with-deferred-bindings). Deferral does not relax the rule: the first node launches because its provider is not present yet, but the moment the second node makes both directions resolvable, the daemon's stack-wide check sees the cycle and rejects that second node.
+
+### Two properties of the check
+
+- **It is conservative (type-level).** The check reasons about node identities and their declared `conforms_to`, not about which producer a specific `--bind` resolves to. If a service or action interface has several conforming providers and only one of them closes a cycle, the configuration is still rejected, because *any* conforming provider could be bound into the cyclic slot. If you hit this, pin the binding to a non-cyclic provider or split the interface so the cyclic capability is not declared on the shared contract.
+- **Topics never count.** Only links consumed as a *service* or *action* contribute a caller-driven edge. The very same two nodes wired to consume each other's `link_id` as a **topic** are accepted, because passive subscriptions cannot deadlock, which is exactly what [bidirectional communication](/advanced_guides/bidirectional_communication) relies on.
+
+### How to fix it
+
+If the two nodes genuinely need to exchange data, model it without a caller-driven cycle:
+
+- Make at least one direction a **topic** stream rather than a service or action: passive subscriptions never deadlock. This is the [bidirectional communication](/advanced_guides/bidirectional_communication) pattern.
+- Or model the request/response exchange as an [action](/advanced_guides/actions), which is one-directional by construction (the client depends on the server), so it never needs a back-edge.
+
+See [Why topics only?](/advanced_guides/bidirectional_communication/#why-topics-only) for the full rationale behind the topic/service/action distinction.
+
 ## What conformance is not
 
 - **Conformance is explicit.** A node that natively emits `video_stream` but does not declare `conforms_to: [{ depth_camera, v1 }]` does **not** satisfy a `depth_camera:v1` interface slot, even if every field matches. The contract is the explicit `conforms_to` claim, not structural duck typing.
