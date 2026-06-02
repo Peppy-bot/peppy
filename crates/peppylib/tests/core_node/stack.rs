@@ -79,6 +79,7 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
             state: InstanceState::Running,
             healthy: true,
             slot_bindings: std::collections::BTreeMap::new(),
+            deferred_status: std::collections::BTreeMap::new(),
         }],
     };
     let sensor = SerializedNode {
@@ -130,6 +131,7 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
             state: InstanceState::Running,
             healthy: true,
             slot_bindings: std::collections::BTreeMap::new(),
+            deferred_status: std::collections::BTreeMap::new(),
         }],
     };
     let sensor = SerializedNode {

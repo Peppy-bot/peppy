@@ -1,17 +1,23 @@
 name: Docs drift
 
+# Runs only for the release PR that merges `dev` into `main`. The base-branch
+# filter restricts to PRs targeting `main`; the job-level `if` further restricts
+# the head to `dev`, so unrelated PRs into `main` (or any PR into other branches)
+# never trigger it. PR-only by design: on a `push` event the
+# `github.event.pull_request.*` context is empty, which would feed the scripts
+# garbage refs.
 on:
-  push:
-    branches: [ main ]
   pull_request:
+    types: [opened, reopened]
     branches: [ main ]
 
 concurrency:
-  group: docs-drift-${{ github.event.pull_request.number || github.ref }}
+  group: docs-drift-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   docs-drift:
+    if: github.head_ref == 'dev'
     runs-on: self-hosted
     permissions:
       contents: write

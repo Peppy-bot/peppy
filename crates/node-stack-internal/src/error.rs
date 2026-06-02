@@ -70,6 +70,25 @@ pub enum Error {
     // -- virtual deptree errors
     #[error("Virtual dependency tree contains a cycle involving: {nodes:?}")]
     VirtualDeptreeCycle { nodes: Vec<String> },
+
+    // -- caller-driven (service/action) cycle errors
+    /// A service or action dependency forms a cycle, whether routed directly
+    /// or through an interface. Caller-driven request/response cycles deadlock
+    /// at runtime, so only topics may be bidirectional. Detection is
+    /// type-level, so a service/action interface with several conforming
+    /// providers can be rejected even when a specific binding would avoid the
+    /// cycle: pin the binding or split the interface.
+    #[error(
+        "{kind} dependency cycle through interfaces involving {} (closing interface `{interface}`). \
+         {kind} request/response cycles deadlock and are not allowed; only topics may be bidirectional. \
+         If these providers are not actually cross-bound, pin the binding or split the interface.",
+        .nodes.join(" -> ")
+    )]
+    ServiceActionInterfaceCycle {
+        nodes: Vec<String>,
+        interface: String,
+        kind: String,
+    },
     #[error("Duplicate local node `{name}:{tag}` discovered at `{first}` and `{second}`")]
     DuplicateLocalNode {
         name: String,
