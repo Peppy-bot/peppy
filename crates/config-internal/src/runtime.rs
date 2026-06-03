@@ -15,17 +15,41 @@ use crate::launcher::Name;
 /// `NodeInstanceConfig` so the spawned node does no re-resolution work.
 ///
 /// `Pinned` corresponds to a `depends_on` entry with `from_any: false`;
-/// it must be bound (the validator rejects pinned-unbound). `FromAnyBound`
-/// is a `from_any: true` slot for which the user supplied one or more
-/// bindings via free-form keys. `FromAnyUnbound` is a `from_any: true`
-/// slot the user left bindless — the wildcard fallback for producers no
-/// sibling slot has claimed.
+/// it must be bound (the validator rejects pinned-unbound). `Deferred` is
+/// a pinned slot bound via `--bind-deferred` to a target that was not
+/// running at launch: it routes identically to `Pinned` (the transport
+/// tolerates a producer that appears later), but its conformance and
+/// identity were not checked up front — the daemon verifies them when the
+/// target appears. `FromAnyBound` is a `from_any: true` slot for which the
+/// user supplied one or more bindings via free-form keys. `FromAnyUnbound`
+/// is a `from_any: true` slot the user left bindless — the wildcard
+/// fallback for producers no sibling slot has claimed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SlotBinding {
     Pinned { producer_instance_id: String },
+    Deferred { producer_instance_id: String },
     FromAnyBound { producer_instance_ids: Vec<String> },
     FromAnyUnbound,
+}
+
+/// Observability state of a `SlotBinding::Deferred` slot, computed from the
+/// live stack rather than stored: a deferred slot's status is a pure
+/// function of whether its target is running and, if so, whether the
+/// target's node satisfies the slot. Surfaced per `link_id` in
+/// `peppy stack list` and the daemon logs.
+///
+/// - `Pending` — the target instance is not currently running (it has not
+///   appeared yet, or its id was a typo, or it has stopped).
+/// - `Active` — the target is running and its node satisfies the slot
+///   (conforms to the interface, or matches the node identity).
+/// - `NonConforming` — the target is running but does not satisfy the slot.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeferredStatus {
+    Pending,
+    Active,
+    NonConforming,
 }
 
 /// Represents a node instance at runtime. Used by RuntimeConfig to identify the running node and its configuration
@@ -238,6 +262,61 @@ mod tests {
             config.node_instance.instance_id
         );
         assert!(parsed.node_instance.arguments.is_empty());
+    }
+
+    /// Pin the wire contract of the binding enums: `SlotBinding` is internally
+    /// tagged on `kind` with snake_case variants and field names, and
+    /// `DeferredStatus` is a snake_case string. A rename or tag change here is a
+    /// `graph_json` / launch-config wire break, so assert the exact JSON shape
+    /// and that each variant round-trips back to itself.
+    #[test]
+    fn slot_binding_and_deferred_status_serde_contract() {
+        use serde_json::json;
+
+        let cases = [
+            (
+                SlotBinding::Pinned {
+                    producer_instance_id: "p1".to_string(),
+                },
+                json!({ "kind": "pinned", "producer_instance_id": "p1" }),
+            ),
+            (
+                SlotBinding::Deferred {
+                    producer_instance_id: "p2".to_string(),
+                },
+                json!({ "kind": "deferred", "producer_instance_id": "p2" }),
+            ),
+            (
+                SlotBinding::FromAnyBound {
+                    producer_instance_ids: vec!["p3".to_string(), "p4".to_string()],
+                },
+                json!({ "kind": "from_any_bound", "producer_instance_ids": ["p3", "p4"] }),
+            ),
+            (
+                SlotBinding::FromAnyUnbound,
+                json!({ "kind": "from_any_unbound" }),
+            ),
+        ];
+        for (value, expected) in cases {
+            let encoded = serde_json::to_value(&value).expect("serialize SlotBinding");
+            assert_eq!(encoded, expected, "SlotBinding JSON shape changed");
+            let decoded: SlotBinding =
+                serde_json::from_value(expected).expect("deserialize SlotBinding");
+            assert_eq!(decoded, value, "SlotBinding did not round-trip");
+        }
+
+        let status_cases = [
+            (DeferredStatus::Pending, json!("pending")),
+            (DeferredStatus::Active, json!("active")),
+            (DeferredStatus::NonConforming, json!("non_conforming")),
+        ];
+        for (value, expected) in status_cases {
+            let encoded = serde_json::to_value(value).expect("serialize DeferredStatus");
+            assert_eq!(encoded, expected, "DeferredStatus JSON shape changed");
+            let decoded: DeferredStatus =
+                serde_json::from_value(expected).expect("deserialize DeferredStatus");
+            assert_eq!(decoded, value, "DeferredStatus did not round-trip");
+        }
     }
 
     #[test]

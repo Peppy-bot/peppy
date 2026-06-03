@@ -20,7 +20,7 @@ use super::types::{
     scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
     validate_message_format_field_names,
 };
-use crate::error::{Error, Result};
+use crate::error::Result;
 use config::encoding::MessageFormatMapper;
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
@@ -241,32 +241,13 @@ impl LanguageGenerator for PythonGenerator {
         arguments: MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
-        let ConsumedTopic::Linked(linked) = topic else {
-            return Err(Error::InvariantViolation {
-                context: "add_consumed_topic called with ConsumedTopic::External; use add_external_consumed_topic instead".into(),
-            });
-        };
         let schema_key = crate::generator::naming::consumed_topic_schema_key(
-            linked.link_id.as_str(),
-            linked.name.as_str(),
+            topic.link_id.as_str(),
+            topic.name.as_str(),
         );
         let schema_info = self.register_schema(&schema_key, &arguments)?;
         let code = topics::build_consumed_topic(topic, &arguments, &schema_info, dependency)?;
-        let module_label = module_name_from_components(&linked.link_id, &linked.name);
-        self.push_section(self.make_artifact(
-            &module_label,
-            None,
-            InterfaceKind::ConsumedTopic,
-            code,
-        ));
-        Ok(())
-    }
-
-    fn add_external_consumed_topic(&mut self, name: &str, arguments: MessageFormat) -> Result<()> {
-        let schema_key = crate::generator::naming::consumed_topic_schema_key("", name);
-        let schema_info = self.register_schema(&schema_key, &arguments)?;
-        let code = topics::build_external_consumed_topic(name, &arguments, &schema_info)?;
-        let module_label = name.trim().to_string();
+        let module_label = module_name_from_components(&topic.link_id, &topic.name);
         self.push_section(self.make_artifact(
             &module_label,
             None,

@@ -85,17 +85,30 @@ fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
 /// the daemon-side binding validator confirms it matches a running producer
 /// of the expected `(name, tag)`.
 fn parse_bind_kv(raw: &str) -> Result<(String, String), String> {
+    parse_bind_kv_for("--bind", raw)
+}
+
+/// `--bind-deferred` shares `--bind`'s `KEY@VALUE` grammar; this wrapper only
+/// swaps the flag name into the error messages so a malformed deferred bind
+/// reports `--bind-deferred` rather than the misleading `--bind`.
+fn parse_bind_kv_deferred(raw: &str) -> Result<(String, String), String> {
+    parse_bind_kv_for("--bind-deferred", raw)
+}
+
+/// Shared `KEY@VALUE` parser for the bind flags. `flag` is woven into the
+/// error messages so each flag reports its own name.
+fn parse_bind_kv_for(flag: &str, raw: &str) -> Result<(String, String), String> {
     let (key, value) = raw
         .split_once('@')
-        .ok_or_else(|| format!("invalid --bind value '{raw}': expected KEY@VALUE"))?;
+        .ok_or_else(|| format!("invalid {flag} value '{raw}': expected KEY@VALUE"))?;
     let key = key.trim();
     let value = value.trim();
     if value.is_empty() {
         return Err(format!(
-            "invalid --bind value '{raw}': VALUE cannot be empty"
+            "invalid {flag} value '{raw}': VALUE cannot be empty"
         ));
     }
-    pmi::Segment::try_from(key).map_err(|e| format!("invalid --bind KEY '{key}': {e}"))?;
+    pmi::Segment::try_from(key).map_err(|e| format!("invalid {flag} KEY '{key}': {e}"))?;
     Ok((key.to_string(), value.to_string()))
 }
 
@@ -196,6 +209,18 @@ pub enum NodeCommands {
             requires = "run",
         )]
         binds: Vec<(String, String)>,
+        /// Like `--bind`, but tolerates a producer `instance_id` that is not
+        /// running yet: the binding is recorded and verified when the target
+        /// appears. Same `KEY@VALUE` shape and `requires = "run"` gating as
+        /// `--bind`. See `peppy node run --bind-deferred`.
+        #[arg(
+            long = "bind-deferred",
+            value_delimiter = ',',
+            value_parser = parse_bind_kv_deferred,
+            action = clap::ArgAction::Append,
+            requires = "run",
+        )]
+        binds_deferred: Vec<(String, String)>,
         /// Idle timeout in seconds — resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -268,6 +293,20 @@ pub enum NodeCommands {
             action = clap::ArgAction::Append,
         )]
         binds: Vec<(String, String)>,
+        /// Like `--bind`, but accepts a producer `instance_id` that is not
+        /// running yet. The binding is recorded at launch and pinned
+        /// immediately; conformance is verified when the target appears. Use
+        /// it to bring up mutually-bound nodes one command at a time (the
+        /// strict `--bind` rejects an absent target). Same `KEY@VALUE` shape;
+        /// deferral is per binding, so one `run` may mix `--bind` and
+        /// `--bind-deferred`. A deferred KEY must be a pinned `link_id`.
+        #[arg(
+            long = "bind-deferred",
+            value_delimiter = ',',
+            value_parser = parse_bind_kv_deferred,
+            action = clap::ArgAction::Append,
+        )]
+        binds_deferred: Vec<(String, String)>,
         /// Removed. The `--link-id` flag has been replaced by `--bind
         /// KEY@VALUE`; the value parser always errors with a migration
         /// hint. Kept as a hidden clap arg so legacy invocations get a
@@ -365,19 +404,22 @@ impl Command for NodeCommand {
                 args,
                 instance_id,
                 binds,
+                binds_deferred,
                 idle_timeout,
                 max_timeout,
                 force,
             } => {
-                // `requires = "run"` on `args`, `instance_id`, and `binds`
-                // means we can only land here with `run == false` when
-                // *all three* are empty; the run-only fields therefore have
-                // a single legal home: inside `Some(RunAfterAddOptions)`.
+                // `requires = "run"` on `args`, `instance_id`, `binds`, and
+                // `binds_deferred` means we can only land here with
+                // `run == false` when all of them are empty; the run-only
+                // fields therefore have a single legal home: inside
+                // `Some(RunAfterAddOptions)`.
                 let run_options = if run {
                     Some(add::RunAfterAddOptions {
                         args,
                         instance_id,
                         binds,
+                        binds_deferred,
                     })
                 } else {
                     None
@@ -439,6 +481,7 @@ impl Command for NodeCommand {
                 args,
                 instance_id,
                 binds,
+                binds_deferred,
                 _link_id_removed,
                 idle_timeout,
                 max_timeout,
@@ -459,6 +502,7 @@ impl Command for NodeCommand {
                     args,
                     instance_id,
                     binds,
+                    binds_deferred,
                     timeouts,
                     build,
                 )
@@ -554,6 +598,21 @@ mod tests {
         }
     }
 
+    /// Like [`parse_run_binds`] but returns the `--bind-deferred` list, so a
+    /// test can assert how the two flags split (pair it with
+    /// [`parse_run_binds`] on the same args for the strict side).
+    fn parse_run_binds_deferred(args: &[&str]) -> Vec<(String, String)> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("run"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Run { binds_deferred, .. } => binds_deferred,
+            _ => panic!("expected Run variant"),
+        }
+    }
+
     fn try_parse_run(args: &[&str]) -> Result<TestCli, clap::Error> {
         let full: Vec<&str> = std::iter::once("peppy")
             .chain(std::iter::once("run"))
@@ -578,6 +637,22 @@ mod tests {
         let cli = TestCli::try_parse_from(full).expect("should parse");
         match cli.command {
             NodeCommands::Add { binds, .. } => binds,
+            _ => panic!("expected Add variant"),
+        }
+    }
+
+    /// Like [`parse_add_binds`] but returns the `--bind-deferred` list, so a
+    /// test can assert deferred binds land in their own `binds_deferred` field
+    /// on `node add` (the same split `node run` does via
+    /// [`parse_run_binds_deferred`]).
+    fn parse_add_binds_deferred(args: &[&str]) -> Vec<(String, String)> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("add"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Add { binds_deferred, .. } => binds_deferred,
             _ => panic!("expected Add variant"),
         }
     }
@@ -752,6 +827,46 @@ mod tests {
     }
 
     #[test]
+    fn test_bind_deferred_parses_into_its_own_list_alongside_strict() {
+        // `--bind` and `--bind-deferred` can be mixed on one `run`; each
+        // lands in its own list with the same KEY@VALUE shape.
+        let args = &[
+            "robot_arm:v1",
+            "--bind",
+            "clock@clk_1",
+            "--bind-deferred",
+            "controller@ctrl_1",
+        ];
+        assert_eq!(
+            parse_run_binds(args),
+            vec![("clock".to_string(), "clk_1".to_string())]
+        );
+        assert_eq!(
+            parse_run_binds_deferred(args),
+            vec![("controller".to_string(), "ctrl_1".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_bind_deferred_supports_comma_delimited_and_repeated() {
+        let deferred = parse_run_binds_deferred(&[
+            "robot_arm:v1",
+            "--bind-deferred",
+            "a@p1,b@p2",
+            "--bind-deferred",
+            "c@p3",
+        ]);
+        assert_eq!(
+            deferred,
+            vec![
+                ("a".to_string(), "p1".to_string()),
+                ("b".to_string(), "p2".to_string()),
+                ("c".to_string(), "p3".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn test_bind_missing_at_separator_rejected() {
         let err = try_parse_run(&["foo:v1", "--bind", "noseparator"])
             .err()
@@ -837,6 +952,35 @@ mod tests {
         let err = try_parse_add(&[".", "--bind", "feed@cam_a"])
             .err()
             .expect("--bind without --run must be a parse error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--run") || msg.contains("<RUN>"),
+            "error should name the missing --run flag: {msg}"
+        );
+    }
+
+    /// `--bind-deferred` on `node add` requires `--run` too, and the parsed
+    /// pair lands on the `binds_deferred` field — its own list, exactly like
+    /// the `node run` split asserted by
+    /// `test_bind_deferred_parses_into_its_own_list_alongside_strict`.
+    #[test]
+    fn add_with_run_accepts_bind_deferred() {
+        let deferred =
+            parse_add_binds_deferred(&[".", "-r", "--bind-deferred", "controller@ctrl_1"]);
+        assert_eq!(
+            deferred,
+            vec![("controller".to_string(), "ctrl_1".to_string())]
+        );
+    }
+
+    /// `--bind-deferred` without `--run` is meaningless (nothing to apply the
+    /// deferred bindings to), so `requires = "run"` rejects it at parse time —
+    /// the same gating as the strict `--bind`.
+    #[test]
+    fn add_bind_deferred_without_run_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "--bind-deferred", "controller@ctrl_1"])
+            .err()
+            .expect("--bind-deferred without --run must be a parse error");
         let msg = err.to_string();
         assert!(
             msg.contains("--run") || msg.contains("<RUN>"),

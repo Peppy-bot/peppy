@@ -9,7 +9,12 @@ pub use entity::{
 };
 
 use crate::error::{Error, Result};
-use config::node::{Name, NodeConfig, collect_dependency_specs, validate_dependency_specs};
+use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
+use config::node::{
+    ConformsToItem, DependsOn, Name, NodeConfig, collect_dependency_specs,
+    validate_dependency_specs,
+};
+use config::runtime::{DeferredStatus, SlotBinding};
 use core_node_api::{InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph};
 use names_generator2::get_random;
 use parking_lot::RwLock;
@@ -145,6 +150,64 @@ impl NodeStackInner {
 
         if let Some(err) = errors.into_iter().next() {
             return Err(err.into());
+        }
+
+        self.validate_no_service_action_cycle(entity)?;
+
+        Ok(())
+    }
+
+    /// Reject a service/action dependency cycle that the candidate would close.
+    ///
+    /// Interface deps are absent from the node-dep graph, so a caller-driven
+    /// cycle routed through interfaces is invisible to the structural check.
+    /// This runs over the whole stack plus the candidate (using the candidate's
+    /// incoming config on a re-add, not the stale stored one) so a cycle
+    /// completed across separate invocations, including the deferred
+    /// (`--bind-deferred`) case, is caught the moment the second node is added.
+    fn validate_no_service_action_cycle(&self, entity: &NodeEntity) -> Result<()> {
+        let candidate_key = key_from_entity(entity);
+
+        // On a re-add the candidate already lives in the graph, and
+        // `push_config_impl` calls us while holding that entity's *write* lock
+        // (it validates and replaces the entity under one held lock). Reading
+        // its handle here would re-enter a lock the current thread already
+        // holds — `parking_lot::RwLock` is not reentrant, so it would
+        // self-deadlock. Identify the candidate's slot by index up front and
+        // skip it without ever locking it; its incoming config is appended
+        // below instead of the stale stored one.
+        let candidate_index = self.key_to_index.get(&candidate_key).copied();
+
+        let mut configs: Vec<(String, String, NodeConfig)> =
+            Vec::with_capacity(self.graph.node_count() + 1);
+        for index in self.graph.node_indices() {
+            if Some(index) == candidate_index {
+                continue;
+            }
+            let Some(handle) = self.graph.node_weight(index) else {
+                continue;
+            };
+            let guard = handle.read();
+            let key = key_from_entity(&guard);
+            configs.push((key.name, key.tag, guard.config().clone()));
+        }
+        configs.push((
+            candidate_key.name,
+            candidate_key.tag,
+            entity.config().clone(),
+        ));
+
+        let view: Vec<CycleCheckNode<'_>> = configs
+            .iter()
+            .map(|(name, tag, config)| CycleCheckNode { name, tag, config })
+            .collect();
+
+        if let Some(cycle) = find_service_action_cycle(&view) {
+            return Err(Error::ServiceActionInterfaceCycle {
+                nodes: cycle.nodes,
+                closing_dependency: cycle.closing_dependency,
+                kind: cycle.kind.to_string(),
+            });
         }
 
         Ok(())
@@ -437,9 +500,17 @@ impl NodeStackInner {
                     }
                 }
 
-                if (interfaces_changed || dependencies_changed) && !allow_missing_dependencies {
+                if interfaces_changed || dependencies_changed {
                     let candidate = NodeEntity::new(config.clone(), config_path.clone());
-                    self.validate_dependencies(&candidate)?;
+                    if allow_missing_dependencies {
+                        // A permissive (`--bind-deferred` / missing-dependency)
+                        // re-add skips the full dependency check, but must still
+                        // not close a service/action cycle — run the cycle check
+                        // on the candidate's incoming config regardless.
+                        self.validate_no_service_action_cycle(&candidate)?;
+                    } else {
+                        self.validate_dependencies(&candidate)?;
+                    }
                 }
 
                 // Capture the entity state we are about to replace, while
@@ -470,6 +541,13 @@ impl NodeStackInner {
         } else {
             // Entity doesn't exist, create new one in the Added stage.
             let entity = NodeEntity::new(config, config_path);
+            if allow_missing_dependencies {
+                // `insert_entity` skips dependency validation — and with it the
+                // cycle check — on a permissive add, so run the cycle check
+                // explicitly. The entity is not in the graph yet, so this sees
+                // it as the candidate appended to the live stack.
+                self.validate_no_service_action_cycle(&entity)?;
+            }
             self.insert_entity(entity, !allow_missing_dependencies)?;
             Ok(None)
         }
@@ -550,15 +628,62 @@ impl NodeStackInner {
         format!("{:?}", dot)
     }
 
+    /// Index every instance in the stack by `instance_id` so a consumer's
+    /// `Deferred` slot can be resolved against its target's node identity,
+    /// `conforms_to`, and running state when computing
+    /// [`DeferredStatus`]. Last writer wins on a duplicate id, which cannot
+    /// happen for running instances (stack-wide id uniqueness is enforced at
+    /// bind time).
+    fn build_instance_index(&self) -> HashMap<String, ProducerInfo> {
+        let mut index = HashMap::new();
+        for handle in self.graph.node_weights() {
+            let guard = handle.read();
+            let node_name = guard.config().manifest.name.as_str().to_string();
+            let node_tag = guard.config().manifest.tag.clone();
+            let conforms_to = guard
+                .config()
+                .interfaces
+                .conforms_to
+                .clone()
+                .unwrap_or_default();
+            for inst in guard.instances() {
+                index.insert(
+                    inst.instance_id().as_str().to_string(),
+                    ProducerInfo {
+                        node_name: node_name.clone(),
+                        node_tag: node_tag.clone(),
+                        conforms_to: conforms_to.clone(),
+                        running: inst.state() == InstanceState::Running,
+                    },
+                );
+            }
+        }
+        index
+    }
+
     /// Returns a serializable representation of the graph.
     fn to_serialized_graph(&self) -> SerializedNodeGraph {
+        // Built before serializing any entity so a consumer's deferred target,
+        // which may live in any entity, is always resolvable.
+        let index = self.build_instance_index();
+
+        // The node list and the edge endpoints must serialize each entity
+        // identically, including its resolved `deferred_status`. Both passes go
+        // through this closure so the two views cannot drift apart.
+        let serialize_entity = |entity: &NodeEntity| {
+            let mut node = SerializedNode::from(entity);
+            fill_deferred_status(
+                &mut node,
+                entity.config().manifest.depends_on.as_ref(),
+                &index,
+            );
+            node
+        };
+
         let nodes = self
             .graph
             .node_weights()
-            .map(|handle| {
-                let guard = handle.read();
-                SerializedNode::from(&*guard)
-            })
+            .map(|handle| serialize_entity(&handle.read()))
             .collect();
 
         let edges = self
@@ -568,16 +693,166 @@ impl NodeStackInner {
                 let (src_idx, dst_idx) = self.graph.edge_endpoints(edge_idx)?;
                 let src_handle = self.graph.node_weight(src_idx)?;
                 let dst_handle = self.graph.node_weight(dst_idx)?;
-                let src_guard = src_handle.read();
-                let dst_guard = dst_handle.read();
                 Some(SerializedEdge {
-                    from: SerializedNode::from(&*src_guard),
-                    to: SerializedNode::from(&*dst_guard),
+                    from: serialize_entity(&src_handle.read()),
+                    to: serialize_entity(&dst_handle.read()),
                 })
             })
             .collect();
 
         SerializedNodeGraph { nodes, edges }
+    }
+
+    /// Collect the deferred-binding status of every slot touching
+    /// `around_instance_id`, in either direction: slots that `around` itself
+    /// owns (it is the consumer), and slots on other running consumers that
+    /// target `around` (it is the producer that just appeared/changed).
+    /// Pure read of the live stack; the caller logs the results. Used right
+    /// after an instance commits to surface deferred resolutions and
+    /// conformance failures that the strict bind check would have caught up
+    /// front.
+    fn collect_deferred_reports(&self, around_instance_id: &str) -> Vec<DeferredReport> {
+        let index = self.build_instance_index();
+        let mut reports = Vec::new();
+        for handle in self.graph.node_weights() {
+            let guard = handle.read();
+            let depends_on = guard.config().manifest.depends_on.as_ref();
+            let consumer_node = format!(
+                "{}:{}",
+                guard.config().manifest.name.as_str(),
+                guard.config().manifest.tag
+            );
+            for inst in guard.instances() {
+                if inst.state() != InstanceState::Running {
+                    continue;
+                }
+                let consumer_instance_id = inst.instance_id().as_str();
+                for (link_id, binding) in inst.slot_bindings() {
+                    let SlotBinding::Deferred {
+                        producer_instance_id,
+                    } = binding
+                    else {
+                        continue;
+                    };
+                    // Only the slots that involve `around` — either this
+                    // consumer is `around`, or the slot targets `around`.
+                    if consumer_instance_id != around_instance_id
+                        && producer_instance_id != around_instance_id
+                    {
+                        continue;
+                    }
+                    let status =
+                        deferred_status_for(depends_on, link_id, producer_instance_id, &index);
+                    let interface = config::launcher::slot_meta_for_link_id(depends_on, link_id)
+                        .map(|(_, name, tag)| format!("{name}:{tag}"));
+                    reports.push(DeferredReport {
+                        consumer_instance_id: consumer_instance_id.to_string(),
+                        consumer_node: consumer_node.clone(),
+                        link_id: link_id.clone(),
+                        target_instance_id: producer_instance_id.clone(),
+                        interface,
+                        status,
+                    });
+                }
+            }
+        }
+        reports
+    }
+}
+
+/// One stack instance's producer-side facts, indexed by `instance_id`, used
+/// to resolve the [`DeferredStatus`] of any consumer slot that targets it.
+struct ProducerInfo {
+    node_name: String,
+    node_tag: String,
+    conforms_to: Vec<ConformsToItem>,
+    running: bool,
+}
+
+/// A deferred slot's resolved status at a point in time, produced by
+/// [`NodeStack::collect_deferred_reports`]. Carries enough context for the
+/// daemon to log a self-explanatory line; the daemon (not this crate) owns
+/// the logging so the layering stays one-way.
+#[derive(Debug, Clone)]
+pub struct DeferredReport {
+    /// The consumer instance that owns the deferred slot.
+    pub consumer_instance_id: String,
+    /// The consumer's `name:tag`, for readable log lines.
+    pub consumer_node: String,
+    /// The deferred slot's `link_id`.
+    pub link_id: String,
+    /// The producer `instance_id` the slot is pinned to.
+    pub target_instance_id: String,
+    /// The interface the slot requires (`name:tag`), if the slot resolves to
+    /// a declared dependency. `None` only in the defensive case where the
+    /// link_id is no longer declared.
+    pub interface: Option<String>,
+    /// Current status of the deferred slot.
+    pub status: DeferredStatus,
+}
+
+/// Fill each instance's `deferred_status` map for its `SlotBinding::Deferred`
+/// slots, derived from the consumer's `depends_on` (which interface the slot
+/// requires) and the live `index` (is the target up, and does it satisfy the
+/// slot). Slots that are not deferred are left out. The two-step collect
+/// avoids borrowing `slot_bindings` while mutating `deferred_status` on the
+/// same instance.
+fn fill_deferred_status(
+    node: &mut SerializedNode,
+    depends_on: Option<&DependsOn>,
+    index: &HashMap<String, ProducerInfo>,
+) {
+    for instance in &mut node.instances {
+        let deferred: Vec<(String, String)> = instance
+            .slot_bindings
+            .iter()
+            .filter_map(|(link_id, binding)| match binding {
+                SlotBinding::Deferred {
+                    producer_instance_id,
+                } => Some((link_id.clone(), producer_instance_id.clone())),
+                _ => None,
+            })
+            .collect();
+        for (link_id, target_instance_id) in deferred {
+            let status = deferred_status_for(depends_on, &link_id, &target_instance_id, index);
+            instance.deferred_status.insert(link_id, status);
+        }
+    }
+}
+
+/// Status of one deferred slot: `Pending` while the target is not running
+/// (absent, typo'd, or stopped), otherwise `Active` / `NonConforming`
+/// depending on whether the running target satisfies the slot the consumer
+/// declared.
+fn deferred_status_for(
+    depends_on: Option<&DependsOn>,
+    link_id: &str,
+    target_instance_id: &str,
+    index: &HashMap<String, ProducerInfo>,
+) -> DeferredStatus {
+    let Some(producer) = index.get(target_instance_id).filter(|p| p.running) else {
+        return DeferredStatus::Pending;
+    };
+    match config::launcher::slot_meta_for_link_id(depends_on, link_id) {
+        Some((kind, slot_name, slot_tag)) => {
+            if config::launcher::producer_satisfies_slot(
+                kind,
+                slot_name,
+                slot_tag,
+                &producer.node_name,
+                &producer.node_tag,
+                &producer.conforms_to,
+            ) {
+                DeferredStatus::Active
+            } else {
+                DeferredStatus::NonConforming
+            }
+        }
+        // Defensive: the validator only mints `Deferred` for a declared
+        // pinned slot, so this link_id should always resolve. If it somehow
+        // does not, the target is at least running — report it as `Active`
+        // rather than inventing a conformance verdict we cannot compute.
+        None => DeferredStatus::Active,
     }
 }
 
@@ -1056,5 +1331,13 @@ impl NodeStack {
     pub fn to_serialized_graph(&self) -> SerializedNodeGraph {
         let guard = self.shared.read();
         guard.to_serialized_graph()
+    }
+
+    /// Deferred-binding status of every slot involving `around_instance_id`
+    /// (as consumer or as target). Snapshot of the live stack for the caller
+    /// to log; see [`NodeStackInner::collect_deferred_reports`].
+    pub fn collect_deferred_reports(&self, around_instance_id: &str) -> Vec<DeferredReport> {
+        let guard = self.shared.read();
+        guard.collect_deferred_reports(around_instance_id)
     }
 }

@@ -289,6 +289,20 @@ pub enum ParsingError {
     /// variants.
     #[error(transparent)]
     DuplicateInstanceIdAcrossStack(Box<DuplicateInstanceIdAcrossStack>),
+    /// `--bind-deferred KEY@VALUE` whose `KEY` is not a declared pinned
+    /// `link_id`. Deferral only makes sense for a pinned slot: a `from_any`
+    /// slot accepts any conforming producer, so it cannot be resolved
+    /// without inspecting the target's `conforms_to`, which is exactly what
+    /// a not-yet-running deferred target cannot provide.
+    #[error(
+        "deferred binding `{binding}` on instance `{owner_instance_id}` must reference a pinned \
+         link_id declared in this node's depends_on; `{binding}` is not a pinned link_id \
+         (--bind-deferred is not supported for from_any or free-form slots)"
+    )]
+    DeferredBindingNotPinned {
+        owner_instance_id: String,
+        binding: String,
+    },
 
     // -- container config: mount paths
     #[error(

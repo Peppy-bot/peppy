@@ -102,12 +102,9 @@ pub fn validate_dependency_specs(
     if let Some(topics) = &interfaces.topics
         && let Some(consumes) = &topics.consumes
     {
-        let items = consumes.iter().filter_map(|t| match t {
-            crate::node::ConsumedTopic::Linked(linked) => {
-                Some((linked.link_id.as_str(), linked.name.as_str()))
-            }
-            _ => None,
-        });
+        let items = consumes
+            .iter()
+            .map(|t| (t.link_id.as_str(), t.name.as_str()));
         validate_consumed_items(
             items,
             InterfaceKind::Topic,

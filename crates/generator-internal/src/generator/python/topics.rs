@@ -131,37 +131,21 @@ pub fn build_emitted_topic(
     Ok(builder.build())
 }
 
-/// Generates Python code for an expected (receiving) topic.
+/// Generates Python code for a consumed (receiving) topic.
 pub fn build_consumed_topic(
     topic: &ConsumedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
     dependency: &crate::generator::types::DependencyContext,
 ) -> Result<String> {
-    build_consumed_topic_inner(topic.name(), arguments, schema_info, Some(dependency))
-}
-
-pub fn build_external_consumed_topic(
-    topic_name: &str,
-    arguments: &MessageFormat,
-    schema_info: &PythonSchemaInfo,
-) -> Result<String> {
-    build_consumed_topic_inner(topic_name, arguments, schema_info, None)
-}
-
-fn build_consumed_topic_inner(
-    topic_name: &str,
-    arguments: &MessageFormat,
-    schema_info: &PythonSchemaInfo,
-    dependency: Option<&crate::generator::types::DependencyContext>,
-) -> Result<String> {
+    let topic_name = topic.name.as_str();
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
 
     // Collect fields from the message format
     let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
 
-    // Always need Optional for the function parameters (from_core_node, from_instance_id),
+    // Always need Optional for the function parameters (from_core_node),
     // plus any Optional fields in the dataclasses.
     // Tuple is used for the return type of on_next_message_received.
     builder.add_import("from typing import Optional, Tuple");
@@ -193,57 +177,39 @@ fn build_consumed_topic_inner(
     // Generate on_next_message_received function
     builder.add_import("import peppylib");
     builder.blank_line();
-    if dependency.is_some() {
-        builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None) -> Tuple[str, Message]:");
-    } else {
-        builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None, from_instance_id: Optional[str] = None) -> Tuple[str, Message]:");
-    }
+    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None) -> Tuple[str, Message]:");
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
-    if let Some(dep) = dependency {
-        builder.line("subscription = await peppylib.TopicMessenger.subscribe(");
-        builder.indent();
-        builder.line("node_runner.messenger(),");
-        builder.line("node_runner.bound_core_node(),");
-        builder.line("node_runner.bound_instance_id(),");
-        let from_target = sender_target_python_expr(
-            dep.origin.as_ref(),
-            &format!("{:?}", dep.producer_name),
-            &format!("{:?}", dep.producer_tag),
-        );
-        builder.line(&format!("{from_target},"));
-        builder.line("topic_name,");
-        builder.line("from_core_node,");
-        let from_instance_id = consumed_from_instance_id_python_expr(dep);
-        builder.line(&format!("{from_instance_id},"));
-        builder.line("peppylib.QoSProfile.Standard,");
-        // `is_from_any: true` for `from_any: true` slots — gates the
-        // messenger's per-`(name, tag)` reservation. Pinned slots
-        // (and the test-fixture wildcard with no manifest dep) pass
-        // `false`.
-        let is_from_any = matches!(
-            dep.link_id,
-            crate::generator::types::WireLinkId::Wildcard { link_id: Some(_) }
-        );
-        builder.line(&format!(
-            "is_from_any={},",
-            if is_from_any { "True" } else { "False" }
-        ));
-        builder.dedent();
-        builder.line(")");
-    } else {
-        builder.line("subscription = await peppylib.TopicMessenger.consume_external(");
-        builder.indent();
-        builder.line("node_runner.messenger(),");
-        builder.line("node_runner.bound_core_node(),");
-        builder.line("node_runner.bound_instance_id(),");
-        builder.line("topic_name,");
-        builder.line("from_core_node,");
-        builder.line("from_instance_id,");
-        builder.line("peppylib.QoSProfile.Standard,");
-        builder.dedent();
-        builder.line(")");
-    }
+    builder.line("subscription = await peppylib.TopicMessenger.subscribe(");
+    builder.indent();
+    builder.line("node_runner.messenger(),");
+    builder.line("node_runner.bound_core_node(),");
+    builder.line("node_runner.bound_instance_id(),");
+    let from_target = sender_target_python_expr(
+        dependency.origin.as_ref(),
+        &format!("{:?}", dependency.producer_name),
+        &format!("{:?}", dependency.producer_tag),
+    );
+    builder.line(&format!("{from_target},"));
+    builder.line("topic_name,");
+    builder.line("from_core_node,");
+    let from_instance_id = consumed_from_instance_id_python_expr(dependency);
+    builder.line(&format!("{from_instance_id},"));
+    builder.line("peppylib.QoSProfile.Standard,");
+    // `is_from_any: true` for `from_any: true` slots gates the
+    // messenger's per-`(name, tag)` reservation. Pinned slots
+    // (and the test-fixture wildcard with no manifest dep) pass
+    // `false`.
+    let is_from_any = matches!(
+        dependency.link_id,
+        crate::generator::types::WireLinkId::Wildcard { link_id: Some(_) }
+    );
+    builder.line(&format!(
+        "is_from_any={},",
+        if is_from_any { "True" } else { "False" }
+    ));
+    builder.dedent();
+    builder.line(")");
     builder.line("raw_message = await subscription.on_next_message()");
     builder.line("payload = raw_message.payload");
     builder.line("instance_id = raw_message.instance_id");

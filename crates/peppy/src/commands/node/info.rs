@@ -155,9 +155,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             && let Some(expected) = &topics.consumes
         {
             for topic in expected {
-                if let config::node::ConsumedTopic::Linked(linked) = topic {
-                    dependencies.insert(&linked.link_id);
-                }
+                dependencies.insert(&topic.link_id);
             }
         }
         if let Some(services) = &config.interfaces.services
@@ -289,18 +287,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Consumed Topics:");
                 for topic in topics {
-                    match topic {
-                        config::node::ConsumedTopic::Linked(linked) => {
-                            let _ = writeln!(
-                                out,
-                                "  - {} (from node: {})",
-                                linked.name, linked.link_id
-                            );
-                        }
-                        config::node::ConsumedTopic::External(external) => {
-                            let _ = writeln!(out, "  - {} (external)", external.name);
-                        }
-                    }
+                    let _ = writeln!(out, "  - {} (via slot: {})", topic.name, topic.link_id);
                 }
             }
 
@@ -313,7 +300,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Services:");
                 for service in services {
-                    let _ = writeln!(out, "  - {} (from node: {})", service.name, service.link_id);
+                    let _ = writeln!(out, "  - {} (via slot: {})", service.name, service.link_id);
                 }
             }
 
@@ -326,7 +313,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Actions:");
                 for action in actions {
-                    let _ = writeln!(out, "  - {} (from node: {})", action.name, action.link_id);
+                    let _ = writeln!(out, "  - {} (via slot: {})", action.name, action.link_id);
                 }
             }
         }
