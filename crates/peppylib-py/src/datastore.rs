@@ -81,7 +81,9 @@ impl PyDatastoreGetResponse {
 
 /// Python wrapper for `peppylib::core_node::datastore::StoredValue` — the
 /// value returned by [`datastore_get`]: the raw bytes plus their Zenoh-style
-/// encoding tag.
+/// encoding tag. The `encoding` getter returns a plain `str` (the open set of
+/// tags means an arbitrary value may come back); it compares equal to the
+/// `peppylib.Encoding` members.
 #[pyclass(name = "StoredValue", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyStoredValue {
@@ -103,7 +105,7 @@ impl PyStoredValue {
 
     #[getter]
     fn encoding(&self) -> &str {
-        &self.inner.encoding
+        self.inner.encoding.as_str()
     }
 }
 

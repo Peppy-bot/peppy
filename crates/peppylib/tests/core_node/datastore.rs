@@ -17,7 +17,7 @@ use core_node_api::encoding::{
 use core_node_api::names;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::runtime::NodeRunner;
-use peppylib::{StoredValue, datastore_get, datastore_store};
+use peppylib::{Encoding, StoredValue, datastore_get, datastore_store};
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
@@ -120,7 +120,7 @@ async fn store_then_get_round_trips_binary_value() {
         &node_runner,
         key,
         value.clone(),
-        "application/octet-stream",
+        Encoding::APPLICATION_OCTET_STREAM,
         Duration::from_secs(3),
     )
     .await
@@ -134,7 +134,7 @@ async fn store_then_get_round_trips_binary_value() {
         got,
         Some(StoredValue {
             value,
-            encoding: "application/octet-stream".to_string(),
+            encoding: Encoding::APPLICATION_OCTET_STREAM,
         })
     );
 }

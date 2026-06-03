@@ -5,6 +5,7 @@ peppylib - The peppyOS control library
 import sys
 from ._version import __version__
 from . import encoding
+from .datastore import Encoding
 
 # Force line-buffered stdout/stderr when not connected to a TTY (e.g., when
 # spawned by the daemon with piped I/O). Without this, Python defaults to full
@@ -86,6 +87,7 @@ __all__ = [
     "CancellationToken",
     "StackList",
     "StoredValue",
+    "Encoding",
     "datastore_get",
     "datastore_store",
     "info",

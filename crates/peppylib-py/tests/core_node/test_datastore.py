@@ -8,7 +8,7 @@ into `None`); the full store/get round-trip semantics are covered Rust-side.
 
 import pytest
 
-from peppylib import datastore_get, datastore_store
+from peppylib import Encoding, datastore_get, datastore_store
 from peppylib.core_node import DatastoreGetResponse, DatastoreStoreResponse
 
 from .common import spawn_stub_listener, start_router_and_runner, wait_until_reachable
@@ -17,7 +17,8 @@ from .common import spawn_stub_listener, start_router_and_runner, wait_until_rea
 @pytest.mark.asyncio
 async def test_datastore_store_returns_none_on_ack(tmp_path):
     """`datastore_store()` encodes the request, and resolves to `None` once the
-    service acks (a timeout or decode failure would raise instead)."""
+    service acks (a timeout or decode failure would raise instead). Passing an
+    `Encoding` member proves the StrEnum flows through the binding as a str."""
     router, node_runner, server_handle = await start_router_and_runner(tmp_path)
     try:
         handler = await spawn_stub_listener(
@@ -25,7 +26,9 @@ async def test_datastore_store_returns_none_on_ack(tmp_path):
         )
         await wait_until_reachable(node_runner.messenger(), "datastore_store")
 
-        result = await datastore_store(node_runner, "greeting", b"hello", "text/plain", 3.0)
+        result = await datastore_store(
+            node_runner, "greeting", b"hello", Encoding.TEXT_PLAIN, 3.0
+        )
 
         await handler
     finally:
@@ -56,6 +59,8 @@ async def test_datastore_get_returns_stored_value(tmp_path):
     assert result is not None
     assert result.value == b"\x00\xff\x80\xfe"
     assert result.encoding == "application/octet-stream"
+    # The raw tag compares equal to the matching Encoding member.
+    assert result.encoding == Encoding.APPLICATION_OCTET_STREAM
 
 
 @pytest.mark.asyncio

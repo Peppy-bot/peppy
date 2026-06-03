@@ -1,0 +1,154 @@
+---
+title: Datastore
+description: Share small values across nodes through the core node's in-memory key/value store.
+sidebar:
+  order: 11
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Topics and services move data between nodes that are up at the same time. Sometimes you instead want a place to *leave* a value so another node can pick it up later, or so a node can read back what it wrote before it restarted. The **datastore** is that place: a small in-memory key/value store that lives in the core node and is shared by every node in the stack.
+
+`peppylib` exposes two helpers:
+
+- `datastore_store`: upsert a value under a key.
+- `datastore_get`: read the value back, or `None` if the key was never set.
+
+Each value is a pair of *raw bytes* and an *encoding tag* (a short string such as `"text/plain"`, `"application/json"`, or `"application/octet-stream"`). This mirrors Zenoh's `(payload, encoding)` value model: the store keeps your bytes verbatim and hands back the tag you chose, so any value type round-trips faithfully. The store never inspects either field.
+
+`peppylib` ships an `Encoding` helper with constants for the common tags — `Encoding::TEXT_PLAIN`, `Encoding::APPLICATION_JSON`, `Encoding::APPLICATION_OCTET_STREAM` in Rust, and the same members on Python's `Encoding` (a `StrEnum`). Like Zenoh's own encoding, the set is **open**: the constants are a convenience, but any string is a valid tag, so you are never boxed in to the listed ones.
+
+Both are available from Rust as `peppylib::datastore_store`, `peppylib::datastore_get`, `peppylib::StoredValue`, and `peppylib::Encoding`, and from Python as `from peppylib import datastore_store, datastore_get, StoredValue, Encoding`. Like the other core node helpers, they are not re-exported by `peppygen`; import them from `peppylib` directly.
+
+Both take a `NodeRunner`, the same handle your node receives from `NodeBuilder::new().run(...)` (see the [services guide](/advanced_guides/services/) for a typical setup), and talk to the node's bound core node.
+
+## When to use this
+
+- **A shared blackboard.** One node computes a value (a calibration result, a chosen target, a mode flag) and another reads it later. Unlike a topic, the reader does not have to be subscribed at the moment the value is produced; it can ask for the key whenever it needs it.
+- **Last-known-value handoff.** A node that restarts can read back the value it stored before, as long as the core node stayed up, instead of recomputing from scratch.
+- **Small cross-node state that does not warrant a service contract.** When defining a request/response service is more ceremony than the data is worth, a well-known key is often enough.
+
+It is **not** a database. The store is in-memory and process-local to the core node (see the notes below), so reach for topics when you need streaming data, for services when you need a node to *act* on a request, and for a real persistence layer when you need durability.
+
+## `datastore_store`
+
+`datastore_store` writes `value` (arbitrary bytes) under `key`, tagged with `encoding`, on the node's bound core node. It returns once the core node acknowledges the write. Storing a key that already exists overwrites the previous value and encoding.
+
+The final argument is a response timeout. Rust accepts anything that converts to `Option<Duration>`; Python accepts a `float` in seconds. Pass `None` (or omit it in Python) to use the default of 10 seconds.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python title="src/my_node/__main__.py"
+    from peppygen import NodeBuilder, NodeRunner
+    from peppygen.parameters import Parameters
+    from peppylib import datastore_store, Encoding
+
+
+    async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
+        await datastore_store(
+            node_runner,
+            "calibration/wrist_offset",
+            b'{"x": 0.1, "y": -0.4}',
+            Encoding.APPLICATION_JSON,
+            3.0,
+        )
+        print("stored wrist offset")
+
+
+    def main():
+        NodeBuilder().run(setup)
+
+
+    if __name__ == "__main__":
+        main()
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust title="src/main.rs"
+    use std::time::Duration;
+
+    use peppygen::{NodeBuilder, Parameters, Result};
+    use peppylib::{datastore_store, Encoding};
+
+    fn main() -> Result<()> {
+        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+            datastore_store(
+                &node_runner,
+                "calibration/wrist_offset",
+                br#"{"x": 0.1, "y": -0.4}"#.to_vec(),
+                Encoding::APPLICATION_JSON,
+                Duration::from_secs(3),
+            )
+            .await?;
+            println!("stored wrist offset");
+            Ok(())
+        })
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## `datastore_get`
+
+`datastore_get` reads the value stored under `key` from the node's bound core node. A key that was never stored (or that no node has stored yet) reads as `None` rather than an error: the helper folds the wire response's `found` flag into `Option::None` (Rust) / `None` (Python), so you never get back an empty `StoredValue` you have to second-guess.
+
+When the key is present you get a `StoredValue` with two fields:
+
+- `value`: the raw bytes, exactly as stored (`Vec<u8>` in Rust, `bytes` in Python).
+- `encoding`: the encoding tag they were stored with.
+
+The second argument is the same response timeout as above.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python title="src/my_node/__main__.py"
+    from peppygen import NodeBuilder, NodeRunner
+    from peppygen.parameters import Parameters
+    from peppylib import datastore_get
+
+
+    async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
+        stored = await datastore_get(node_runner, "calibration/wrist_offset", 3.0)
+        if stored is None:
+            print("no wrist offset stored yet")
+        else:
+            print(f"wrist offset ({stored.encoding}): {stored.value!r}")
+
+
+    def main():
+        NodeBuilder().run(setup)
+
+
+    if __name__ == "__main__":
+        main()
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust title="src/main.rs"
+    use std::time::Duration;
+
+    use peppygen::{NodeBuilder, Parameters, Result};
+    use peppylib::datastore_get;
+
+    fn main() -> Result<()> {
+        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+            let key = "calibration/wrist_offset";
+            match datastore_get(&node_runner, key, Duration::from_secs(3)).await? {
+                Some(stored) => println!("wrist offset ({}): {:?}", stored.encoding, stored.value),
+                None => println!("no wrist offset stored yet"),
+            }
+            Ok(())
+        })
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## Behavior notes
+
+- **In-memory, never written to disk.** The store lives inside the core node process. Values last exactly as long as the core node does; restarting the core node starts from an empty store. Treat it as fast shared scratch space, not durable storage.
+- **Shared across the whole stack, with no namespacing.** Every node bound to the same core node reads and writes one flat keyspace. Coordinate on key names (a prefix convention like `calibration/...` works well) so two nodes do not clobber each other by accident.
+- **Keys are arbitrary strings.** A key rides inside the request payload, not as a Zenoh keyexpr, so any character is allowed: slashes, spaces, `*`, `{}`, anything. `"robot/state**{1}"` is a perfectly valid key.
+- **Store is an upsert; last writer wins.** A later store under an existing key overwrites both the value and the encoding. There is no atomic read-modify-write, so two nodes that both do get-then-store on the same key can race; design keys so a single writer owns each one when that matters.
+- **The encoding tag is yours to interpret.** The store treats it as an opaque label and returns it unchanged. Reach for the `Encoding` constants for the common tags and pass any string for the rest (the Zenoh-style MIME-like tags are a good default), then have readers branch on it when you store more than one value type. A tag read back from `StoredValue.encoding` compares equal to its `Encoding` member, so `stored.encoding == Encoding.APPLICATION_JSON` works.
+- **Default timeout is 10 seconds.** Pass an explicit timeout from a latency-sensitive path so a slow or unreachable core node does not stall your node.
