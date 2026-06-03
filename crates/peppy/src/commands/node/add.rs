@@ -34,10 +34,6 @@ pub struct RunAfterAddOptions {
     /// `instance_id`s. Validated by the same launcher rules that gate
     /// `peppy node run` via [`validate_and_run_instance`].
     pub binds: Vec<(String, String)>,
-    /// `--bind-deferred KEY@VALUE` pairs: like `binds` but tolerating a
-    /// not-yet-running target. Threaded into the same
-    /// [`validate_and_run_instance`] path as `peppy node run`.
-    pub binds_deferred: Vec<(String, String)>,
 }
 
 /// Parameters for adding a node.
@@ -237,7 +233,6 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         &run_options.args,
         run_options.instance_id,
         &run_options.binds,
-        &run_options.binds_deferred,
         &timeouts,
     )
     .await?;

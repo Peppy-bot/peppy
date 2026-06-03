@@ -281,30 +281,6 @@ peppy node sync -r ./arm_controller
 peppy stack launch ./peppy_launcher.json5
 ```
 
-## Launching incrementally with deferred bindings
-
-The launcher above resolves both bindings at once. To bring the same pair up incrementally with two separate commands, use `--bind-deferred`.
-
-Plain `--bind` is strict: `peppy node run --bind=<link_id>@<instance_id>` requires `<instance_id>` to already be running and fails fast with an unknown-instance error otherwise. That alone cannot express a mutual binding one command at a time, because whichever instance you launch first references one that does not exist yet.
-
-`--bind-deferred=<link_id>@<instance_id>` relaxes that for a single binding. It takes the same `<link_id>@<instance_id>` form as `--bind` but accepts a target that is not running yet: the binding is recorded at launch and takes effect when the target instance appears. Deferral is per binding, so one `node run` can mix strict and deferred bindings.
-
-```sh
-# arm_1 starts first; its controller slot is deferred to ctrl_1, which does not exist yet
-peppy node run --instance-id=arm_1 --bind-deferred=controller@ctrl_1 robot_arm:v1
-
-# ctrl_1 starts second with a strict bind to the now-running arm_1
-peppy node run --instance-id=ctrl_1 --bind=arm@arm_1 arm_controller:v1
-```
-
-`arm_1`'s `controller` slot stays pending until `ctrl_1` appears, then binds to it. Because both channels are async pub/sub, `arm_1` runs in the meantime: it emits `joint_states` and simply receives no `joint_commands` until `ctrl_1` is up. When the deferred target appears, peppy checks conformance exactly as the launcher does, so a non-conforming `ctrl_1` is still rejected, only later rather than up front. Pending deferred bindings appear in `peppy stack list`, so an unfilled slot is visible rather than silent.
-
-If you would rather not reason about start order, defer both directions; each slot fills once its target is up.
-
-:::caution
-A deferred binding trades the strict flag's fast feedback for flexibility. A typo in the deferred `instance_id` does not fail at launch; it becomes a binding that never resolves and stays pending. Check `peppy stack list` after launch to confirm deferred slots fill.
-:::
-
 ## Receiving messages
 
 After `peppy node sync`, the code generator creates a module for each consumed topic under `peppygen.consumed_topics` (Python) / `peppygen::consumed_topics` (Rust), and a module for each emitted topic under `peppygen.emitted_topics`.
@@ -501,7 +477,7 @@ Depending on an interface removes the edge from the **static** dependency graph,
 
 Services and actions are caller-driven. Depending on a service or action interface means "I will actively invoke the provider", so the interface indirection hides the dependency from the static graph without making the relationship one-way. Two nodes paired this way would each call into the other and form a real request-response cycle at runtime, each blocked on the other, which is exactly the hazard the acyclic dependency model exists to prevent. PeppyOS therefore does not support mutual service or action dependencies: two nodes cannot each consume a service or action that the other provides. These dependencies stay one-directional whether they target a node directly or go through an interface.
 
-This is enforced, not just advised. If you try to wire a service or action cycle, PeppyOS detects it and rejects it as a hard build-time failure: the offending node is not added and the stack is left unchanged, with a `ServiceActionInterfaceCycle` error naming the nodes and the interface that closes the cycle. There is no escape hatch. The rule holds whether you wire the relationship directly, through an interface, through the launcher (`peppy stack launch`), or incrementally with `--bind-deferred`. In particular, `--bind-deferred` does not enable mutual services or actions: deferring a bind only postpones which provider the slot resolves to, it does not relax the acyclicity rule. The first node launches fine because its provider is not present yet, but the moment you add the second node so both directions resolve, the daemon's stack-wide check sees the cycle and rejects that second node.
+This is enforced, not just advised. If you try to wire a service or action cycle, PeppyOS detects it and rejects it as a hard build-time failure: the offending node is not added and the stack is left unchanged, with a `ServiceActionInterfaceCycle` error naming the nodes and the interface that closes the cycle. There is no escape hatch. The rule holds whether you wire the relationship directly, through an interface, through the launcher (`peppy stack launch`), or incrementally across separate commands. Bringing the nodes up one at a time does not enable mutual services or actions: the first node is added fine because its provider is not present yet, but the moment you add the second node so both directions resolve, the daemon's stack-wide check sees the cycle and rejects that second node.
 
 The cycle check is conservative. It reasons about node identities and their declared `conforms_to`, not about which provider a specific binding picks, so a service or action interface with several conforming providers can be rejected even when the binding you intend would avoid the cycle. If you hit this, pin the binding to a non-cyclic provider or split the interface so the cyclic capability is not declared.
 

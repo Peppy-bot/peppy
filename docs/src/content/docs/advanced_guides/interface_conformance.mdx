@@ -478,7 +478,7 @@ Whichever node is added second is rejected at add time with a `ServiceActionInte
 service dependency cycle through interfaces involving localizer:v1 -> mapper:v1 (closing interface `obstacle_service:v1`). service request/response cycles deadlock and are not allowed; only topics may be bidirectional. If these providers are not actually cross-bound, pin the binding or split the interface.
 ```
 
-The same rejection applies however you wire it: directly through `depends_on.nodes`, through interfaces, through the launcher (`peppy stack launch`), or incrementally with [`--bind-deferred`](/advanced_guides/bidirectional_communication/#launching-incrementally-with-deferred-bindings). Deferral does not relax the rule: the first node launches because its provider is not present yet, but the moment the second node makes both directions resolvable, the daemon's stack-wide check sees the cycle and rejects that second node.
+The same rejection applies however you wire it: directly through `depends_on.nodes`, through interfaces, through the launcher (`peppy stack launch`), or incrementally across separate commands. Bringing the nodes up one at a time does not relax the rule: the first node is added because its provider is not present yet, but the moment the second node makes both directions resolvable, the daemon's stack-wide check sees the cycle and rejects that second node.
 
 ### Two properties of the check
 

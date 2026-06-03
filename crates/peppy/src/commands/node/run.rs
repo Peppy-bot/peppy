@@ -11,7 +11,7 @@ use core_node_api::encoding::{
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
 use rand::rng;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
@@ -62,7 +62,6 @@ fn empty_deployment_instance(instance_id: Name) -> DeploymentInstance {
         env_vars: BTreeMap::new(),
         framework: config::launcher::FrameworkOverrides::default(),
         bindings: BTreeMap::new(),
-        deferred_bindings: BTreeSet::new(),
     }
 }
 
@@ -279,37 +278,21 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
-/// Collapse the clap-parsed strict `--bind` and deferred `--bind-deferred`
-/// `Vec<(KEY, VALUE)>` lists into one `link_id -> instance_id` map plus the
-/// set of `KEY`s that were deferred. Each `KEY` must be unique across BOTH
-/// flags (rule 6): a slot bound both strictly and deferred, or bound twice,
-/// would clobber and is ambiguous, so it is rejected here — the single point
-/// of cross-mode conflict detection before the binding map reaches the
-/// validator. Strict keys are inserted first so the error message for a
-/// strict/deferred conflict points at the deferred duplicate.
-fn binds_to_map(
-    binds: &[(String, String)],
-    binds_deferred: &[(String, String)],
-    instance_id: &str,
-) -> Result<(BTreeMap<String, String>, BTreeSet<String>)> {
+/// Collapse the clap-parsed `Vec<(KEY, VALUE)>` into a `BTreeMap`,
+/// rejecting duplicate `KEY`s. Each `KEY` must be unique per invocation
+/// (rule 6) — pinned `KEY`s match a declared link_id, free-form `KEY`s
+/// label a `from_any` binding, and either way two bindings on the same
+/// key would clobber.
+fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
     let mut map = BTreeMap::new();
-    let mut deferred_keys = BTreeSet::new();
     for (key, value) in binds {
         if map.insert(key.clone(), value.clone()).is_some() {
             return Err(Error::ExecutionFailed(format!(
-                "duplicate binding key `{key}` on instance `{instance_id}` (each --bind / --bind-deferred KEY must be distinct)"
+                "duplicate binding key `{key}` on instance `{instance_id}` (each --bind KEY must be distinct)"
             )));
         }
     }
-    for (key, value) in binds_deferred {
-        if map.insert(key.clone(), value.clone()).is_some() {
-            return Err(Error::ExecutionFailed(format!(
-                "duplicate binding key `{key}` on instance `{instance_id}` (each --bind / --bind-deferred KEY must be distinct)"
-            )));
-        }
-        deferred_keys.insert(key.clone());
-    }
-    Ok((map, deferred_keys))
+    Ok(map)
 }
 
 /// Pre-flight bind validation. Snapshots the running stack via
@@ -343,7 +326,6 @@ async fn validate_binds_against_stack(
     target_tag: &str,
     target_instance_id: &str,
     binds: &BTreeMap<String, String>,
-    deferred_binds: &BTreeSet<String>,
 ) -> Result<Option<BTreeMap<String, SlotBinding>>> {
     let stack_response = poll_stack_list(
         &StackListRequest::new(false),
@@ -477,7 +459,6 @@ async fn validate_binds_against_stack(
     // group.
     let synthetic_instances = vec![DeploymentInstance {
         bindings: binds.clone(),
-        deferred_bindings: deferred_binds.clone(),
         ..empty_deployment_instance(
             Name::new(target_instance_id.to_owned()).map_err(|e| Error::PeppyConfig(e.into()))?,
         )
@@ -535,11 +516,10 @@ pub async fn validate_and_run_instance(
     args: &[(String, String)],
     instance_id: Option<String>,
     binds: &[(String, String)],
-    binds_deferred: &[(String, String)],
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     let prelaunch_instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
-    let (binds_map, deferred_keys) = binds_to_map(binds, binds_deferred, &prelaunch_instance_id)?;
+    let binds_map = binds_to_map(binds, &prelaunch_instance_id)?;
     let slot_bindings = match validate_binds_against_stack(
         messenger,
         core_node_name,
@@ -547,7 +527,6 @@ pub async fn validate_and_run_instance(
         tag,
         &prelaunch_instance_id,
         &binds_map,
-        &deferred_keys,
     )
     .await
     {
@@ -676,7 +655,6 @@ pub fn run_node(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     binds: Vec<(String, String)>,
-    binds_deferred: Vec<(String, String)>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -687,7 +665,6 @@ pub fn run_node(
         args,
         instance_id,
         binds,
-        binds_deferred,
         timeouts,
         build,
     ))
@@ -701,7 +678,6 @@ async fn run_node_async(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     binds: Vec<(String, String)>,
-    binds_deferred: Vec<(String, String)>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -781,7 +757,6 @@ async fn run_node_async(
         &args,
         instance_id,
         &binds,
-        &binds_deferred,
         &remaining_timeouts(&timeouts, start, "run")?,
     )
     .await?;
@@ -970,39 +945,5 @@ mod tests {
 
         // Past budget — same error path.
         assert!(remaining_max_secs(30, 45, "run").is_err());
-    }
-
-    #[test]
-    fn binds_to_map_separates_strict_and_deferred_keys() {
-        let strict = vec![("a".to_string(), "p1".to_string())];
-        let deferred = vec![("b".to_string(), "p2".to_string())];
-        let (map, deferred_keys) = binds_to_map(&strict, &deferred, "inst").expect("should build");
-        assert_eq!(map.get("a"), Some(&"p1".to_string()));
-        assert_eq!(map.get("b"), Some(&"p2".to_string()));
-        assert!(
-            !deferred_keys.contains("a"),
-            "strict key must not be deferred"
-        );
-        assert!(deferred_keys.contains("b"), "deferred key must be flagged");
-    }
-
-    #[test]
-    fn binds_to_map_rejects_key_bound_both_strict_and_deferred() {
-        let strict = vec![("controller".to_string(), "ctrl_1".to_string())];
-        let deferred = vec![("controller".to_string(), "ctrl_2".to_string())];
-        let err = binds_to_map(&strict, &deferred, "arm_1").expect_err("conflict should error");
-        let msg = format!("{err}");
-        assert!(msg.contains("duplicate binding key"), "unexpected: {msg}");
-        assert!(msg.contains("controller"), "unexpected: {msg}");
-    }
-
-    #[test]
-    fn binds_to_map_rejects_duplicate_deferred_key() {
-        let deferred = vec![
-            ("controller".to_string(), "ctrl_1".to_string()),
-            ("controller".to_string(), "ctrl_2".to_string()),
-        ];
-        let err = binds_to_map(&[], &deferred, "arm_1").expect_err("dup should error");
-        assert!(format!("{err}").contains("duplicate binding key"));
     }
 }

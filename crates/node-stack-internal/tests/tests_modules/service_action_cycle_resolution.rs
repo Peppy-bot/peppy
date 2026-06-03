@@ -2,10 +2,9 @@
 //!
 //! `push_config` is the mechanism the daemon's `node add` uses to commit a node
 //! into the persistent stack, so these tests exercise the exact path that
-//! catches a service/action cycle completed across separate invocations
-//! (including the deferred / `--bind-deferred` case): the first node is added
-//! with no provider present yet, then the second node closes the cycle and is
-//! rejected. Topics must stay bidirectional.
+//! catches a service/action cycle completed across separate invocations: the
+//! first node is added with no provider present yet, then the second node closes
+//! the cycle and is rejected. Topics must stay bidirectional.
 
 use std::path::PathBuf;
 
@@ -90,10 +89,10 @@ fn mutual_service_through_interfaces_rejected_when_second_node_added() {
 
 #[test]
 fn mutual_service_through_interfaces_rejected_on_permissive_add() {
-    // `node add` (and the deferred `--bind-deferred` path) pushes with
-    // `allow_missing_dependencies = true`, which skips the dependency check.
-    // That must NOT skip the cycle check: a permissive add that closes a
-    // service/action cycle has to be rejected just like a strict one.
+    // `node add` pushes with `allow_missing_dependencies = true`, which skips
+    // the dependency check. That must NOT skip the cycle check: a permissive
+    // add that closes a service/action cycle has to be rejected just like a
+    // strict one.
     let stack = new_stack();
 
     let a = interface_node(
