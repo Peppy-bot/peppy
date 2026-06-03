@@ -18,6 +18,7 @@ pub use core_node::{
     clock::{
         ClockSubscription, ClockSync, PeppyClock, clock_for_node, subscribe_clock, synchronize,
     },
+    datastore::{StoredValue, datastore_get, datastore_store},
     info::info,
     stack::{StackList, stack_list},
 };
