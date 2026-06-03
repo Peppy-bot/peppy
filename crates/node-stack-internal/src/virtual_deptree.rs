@@ -127,7 +127,7 @@ impl VirtualDeptree {
         // Interface deps were dropped from the node-dep graph above, so a
         // service/action cycle routed through interfaces survives the toposort.
         // Reject it explicitly: caller-driven dependencies must stay acyclic.
-        let cycle_nodes: Vec<CycleCheckNode<'_>> = infos
+        let mut cycle_nodes: Vec<CycleCheckNode<'_>> = infos
             .values()
             .map(|info| CycleCheckNode {
                 name: info.config.manifest.name.as_str(),
@@ -135,10 +135,14 @@ impl VirtualDeptree {
                 config: &info.config,
             })
             .collect();
+        // `infos` is a `HashMap`, so its iteration order is nondeterministic.
+        // Sort by `(name, tag)` so the node-index order handed to the finder —
+        // and thus which SCC it reports when several exist — is stable.
+        cycle_nodes.sort_by(|a, b| (a.name, a.tag).cmp(&(b.name, b.tag)));
         if let Some(cycle) = find_service_action_cycle(&cycle_nodes) {
             return Err(Error::ServiceActionInterfaceCycle {
                 nodes: cycle.nodes,
-                interface: cycle.interface,
+                closing_dependency: cycle.closing_dependency,
                 kind: cycle.kind.to_string(),
             });
         }

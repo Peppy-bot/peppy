@@ -448,12 +448,17 @@ mod tests {
             !json.contains("slot_bindings"),
             "empty bindings must be omitted from the wire form: {json}"
         );
+        assert!(
+            !json.contains("deferred_status"),
+            "empty deferred_status must be omitted from the wire form: {json}"
+        );
 
         // A legacy payload that predates the field still decodes (default empty).
         let legacy = r#"{"instance_id":"i1","state":"running"}"#;
         let decoded: SerializedInstance = serde_json::from_str(legacy).expect("decode legacy");
         assert_eq!(decoded, instance);
         assert!(decoded.slot_bindings.is_empty());
+        assert!(decoded.deferred_status.is_empty());
     }
 
     #[test]
