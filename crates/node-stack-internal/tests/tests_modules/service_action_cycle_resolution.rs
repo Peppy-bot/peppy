@@ -89,6 +89,45 @@ fn mutual_service_through_interfaces_rejected_when_second_node_added() {
 }
 
 #[test]
+fn mutual_service_through_interfaces_rejected_on_permissive_add() {
+    // `node add` (and the deferred `--bind-deferred` path) pushes with
+    // `allow_missing_dependencies = true`, which skips the dependency check.
+    // That must NOT skip the cycle check: a permissive add that closes a
+    // service/action cycle has to be rejected just like a strict one.
+    let stack = new_stack();
+
+    let a = interface_node(
+        "a",
+        "iface_a",
+        "iface_b",
+        "to_b",
+        r#"services: { consumes: [{ link_id: "to_b", name: "do_b" }] }"#,
+    );
+    stack
+        .push_config(a, true, PathBuf::from("/tmp"))
+        .expect("first node adds permissively with no provider present yet");
+    assert_eq!(stack.len(), 2, "core + a");
+
+    let b = interface_node(
+        "b",
+        "iface_b",
+        "iface_a",
+        "to_a",
+        r#"services: { consumes: [{ link_id: "to_a", name: "do_a" }] }"#,
+    );
+    let err = stack
+        .push_config(b, true, PathBuf::from("/tmp"))
+        .expect_err("a permissive add must still reject a service cycle");
+
+    match err {
+        NodeStackError::ServiceActionInterfaceCycle { kind, .. } => assert_eq!(kind, "service"),
+        other => panic!("expected ServiceActionInterfaceCycle, got {other:?}"),
+    }
+    assert_eq!(stack.len(), 2, "rejected node must not be added");
+    assert!(!stack.contains("b", "v1"));
+}
+
+#[test]
 fn mutual_action_through_interfaces_rejected_when_second_node_added() {
     let stack = new_stack();
 

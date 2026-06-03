@@ -45,9 +45,11 @@ pub struct ServiceActionCycle {
     /// `name:tag` labels of the nodes on the cycle, sorted for deterministic
     /// reporting.
     pub nodes: Vec<String>,
-    /// The interface (or node, for a direct dependency) `name:tag` whose
-    /// caller-driven edge closes the cycle.
-    pub interface: String,
+    /// The `name:tag` of the dependency whose caller-driven edge closes the
+    /// cycle. This is an interface for an interface-routed edge, or a direct
+    /// node identity for a direct `depends_on.nodes` edge — hence the neutral
+    /// name rather than `interface`.
+    pub closing_dependency: String,
     /// Whether the closing edge is a service or an action dependency.
     pub kind: InterfaceKind,
 }
@@ -232,7 +234,7 @@ fn cycle_from_component(
 
     Some(ServiceActionCycle {
         nodes: labels,
-        interface: closing.label.clone(),
+        closing_dependency: closing.label.clone(),
         kind: closing.kind,
     })
 }

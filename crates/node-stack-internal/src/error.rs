@@ -79,14 +79,14 @@ pub enum Error {
     /// providers can be rejected even when a specific binding would avoid the
     /// cycle: pin the binding or split the interface.
     #[error(
-        "{kind} dependency cycle through interfaces involving {} (closing interface `{interface}`). \
+        "{kind} dependency cycle through interfaces involving {} (closing dependency `{closing_dependency}`). \
          {kind} request/response cycles deadlock and are not allowed; only topics may be bidirectional. \
          If these providers are not actually cross-bound, pin the binding or split the interface.",
         .nodes.join(" -> ")
     )]
     ServiceActionInterfaceCycle {
         nodes: Vec<String>,
-        interface: String,
+        closing_dependency: String,
         kind: String,
     },
     #[error("Duplicate local node `{name}:{tag}` discovered at `{first}` and `{second}`")]

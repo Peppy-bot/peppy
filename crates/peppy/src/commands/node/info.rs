@@ -287,7 +287,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Consumed Topics:");
                 for topic in topics {
-                    let _ = writeln!(out, "  - {} (from node: {})", topic.name, topic.link_id);
+                    let _ = writeln!(out, "  - {} (via slot: {})", topic.name, topic.link_id);
                 }
             }
 
@@ -300,7 +300,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Services:");
                 for service in services {
-                    let _ = writeln!(out, "  - {} (from node: {})", service.name, service.link_id);
+                    let _ = writeln!(out, "  - {} (via slot: {})", service.name, service.link_id);
                 }
             }
 
@@ -313,7 +313,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Actions:");
                 for action in actions {
-                    let _ = writeln!(out, "  - {} (from node: {})", action.name, action.link_id);
+                    let _ = writeln!(out, "  - {} (via slot: {})", action.name, action.link_id);
                 }
             }
         }

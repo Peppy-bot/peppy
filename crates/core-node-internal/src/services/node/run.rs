@@ -1178,7 +1178,15 @@ async fn wait_for_ready_signal(
 /// deferred binding and would only spam the persistent stack log.
 fn log_deferred_reports(node_stack: &NodeStack, peppy_dirs: &PeppyDirs, around_instance_id: &str) {
     for report in node_stack.collect_deferred_reports(around_instance_id) {
-        let iface = report.interface.as_deref().unwrap_or("<unknown interface>");
+        // `interface` is `None` only in the defensive case where the slot's
+        // `link_id` is no longer declared in the consumer's `depends_on` (see
+        // `DeferredReport::interface`). Name that condition plainly instead of
+        // the misleading "<unknown interface>" — a node-bound slot still
+        // carries its `name:tag`, so `None` never means "node-bound".
+        let iface = report
+            .interface
+            .as_deref()
+            .unwrap_or("an undeclared dependency");
         match report.status {
             DeferredStatus::Active => {
                 tracing::info!(

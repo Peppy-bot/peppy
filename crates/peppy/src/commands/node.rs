@@ -85,17 +85,30 @@ fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
 /// the daemon-side binding validator confirms it matches a running producer
 /// of the expected `(name, tag)`.
 fn parse_bind_kv(raw: &str) -> Result<(String, String), String> {
+    parse_bind_kv_for("--bind", raw)
+}
+
+/// `--bind-deferred` shares `--bind`'s `KEY@VALUE` grammar; this wrapper only
+/// swaps the flag name into the error messages so a malformed deferred bind
+/// reports `--bind-deferred` rather than the misleading `--bind`.
+fn parse_bind_kv_deferred(raw: &str) -> Result<(String, String), String> {
+    parse_bind_kv_for("--bind-deferred", raw)
+}
+
+/// Shared `KEY@VALUE` parser for the bind flags. `flag` is woven into the
+/// error messages so each flag reports its own name.
+fn parse_bind_kv_for(flag: &str, raw: &str) -> Result<(String, String), String> {
     let (key, value) = raw
         .split_once('@')
-        .ok_or_else(|| format!("invalid --bind value '{raw}': expected KEY@VALUE"))?;
+        .ok_or_else(|| format!("invalid {flag} value '{raw}': expected KEY@VALUE"))?;
     let key = key.trim();
     let value = value.trim();
     if value.is_empty() {
         return Err(format!(
-            "invalid --bind value '{raw}': VALUE cannot be empty"
+            "invalid {flag} value '{raw}': VALUE cannot be empty"
         ));
     }
-    pmi::Segment::try_from(key).map_err(|e| format!("invalid --bind KEY '{key}': {e}"))?;
+    pmi::Segment::try_from(key).map_err(|e| format!("invalid {flag} KEY '{key}': {e}"))?;
     Ok((key.to_string(), value.to_string()))
 }
 
@@ -203,7 +216,7 @@ pub enum NodeCommands {
         #[arg(
             long = "bind-deferred",
             value_delimiter = ',',
-            value_parser = parse_bind_kv,
+            value_parser = parse_bind_kv_deferred,
             action = clap::ArgAction::Append,
             requires = "run",
         )]
@@ -290,7 +303,7 @@ pub enum NodeCommands {
         #[arg(
             long = "bind-deferred",
             value_delimiter = ',',
-            value_parser = parse_bind_kv,
+            value_parser = parse_bind_kv_deferred,
             action = clap::ArgAction::Append,
         )]
         binds_deferred: Vec<(String, String)>,
@@ -628,6 +641,22 @@ mod tests {
         }
     }
 
+    /// Like [`parse_add_binds`] but returns the `--bind-deferred` list, so a
+    /// test can assert deferred binds land in their own `binds_deferred` field
+    /// on `node add` (the same split `node run` does via
+    /// [`parse_run_binds_deferred`]).
+    fn parse_add_binds_deferred(args: &[&str]) -> Vec<(String, String)> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("add"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Add { binds_deferred, .. } => binds_deferred,
+            _ => panic!("expected Add variant"),
+        }
+    }
+
     fn parse_subcommand_force(subcommand: &str, args: &[&str]) -> bool {
         let full: Vec<&str> = std::iter::once("peppy")
             .chain(std::iter::once(subcommand))
@@ -923,6 +952,35 @@ mod tests {
         let err = try_parse_add(&[".", "--bind", "feed@cam_a"])
             .err()
             .expect("--bind without --run must be a parse error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--run") || msg.contains("<RUN>"),
+            "error should name the missing --run flag: {msg}"
+        );
+    }
+
+    /// `--bind-deferred` on `node add` requires `--run` too, and the parsed
+    /// pair lands on the `binds_deferred` field — its own list, exactly like
+    /// the `node run` split asserted by
+    /// `test_bind_deferred_parses_into_its_own_list_alongside_strict`.
+    #[test]
+    fn add_with_run_accepts_bind_deferred() {
+        let deferred =
+            parse_add_binds_deferred(&[".", "-r", "--bind-deferred", "controller@ctrl_1"]);
+        assert_eq!(
+            deferred,
+            vec![("controller".to_string(), "ctrl_1".to_string())]
+        );
+    }
+
+    /// `--bind-deferred` without `--run` is meaningless (nothing to apply the
+    /// deferred bindings to), so `requires = "run"` rejects it at parse time —
+    /// the same gating as the strict `--bind`.
+    #[test]
+    fn add_bind_deferred_without_run_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "--bind-deferred", "controller@ctrl_1"])
+            .err()
+            .expect("--bind-deferred without --run must be a parse error");
         let msg = err.to_string();
         assert!(
             msg.contains("--run") || msg.contains("<RUN>"),

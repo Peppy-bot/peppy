@@ -205,7 +205,7 @@ impl NodeStackInner {
         if let Some(cycle) = find_service_action_cycle(&view) {
             return Err(Error::ServiceActionInterfaceCycle {
                 nodes: cycle.nodes,
-                interface: cycle.interface,
+                closing_dependency: cycle.closing_dependency,
                 kind: cycle.kind.to_string(),
             });
         }
@@ -500,9 +500,17 @@ impl NodeStackInner {
                     }
                 }
 
-                if (interfaces_changed || dependencies_changed) && !allow_missing_dependencies {
+                if interfaces_changed || dependencies_changed {
                     let candidate = NodeEntity::new(config.clone(), config_path.clone());
-                    self.validate_dependencies(&candidate)?;
+                    if allow_missing_dependencies {
+                        // A permissive (`--bind-deferred` / missing-dependency)
+                        // re-add skips the full dependency check, but must still
+                        // not close a service/action cycle — run the cycle check
+                        // on the candidate's incoming config regardless.
+                        self.validate_no_service_action_cycle(&candidate)?;
+                    } else {
+                        self.validate_dependencies(&candidate)?;
+                    }
                 }
 
                 // Capture the entity state we are about to replace, while
@@ -533,6 +541,13 @@ impl NodeStackInner {
         } else {
             // Entity doesn't exist, create new one in the Added stage.
             let entity = NodeEntity::new(config, config_path);
+            if allow_missing_dependencies {
+                // `insert_entity` skips dependency validation — and with it the
+                // cycle check — on a permissive add, so run the cycle check
+                // explicitly. The entity is not in the graph yet, so this sees
+                // it as the candidate appended to the live stack.
+                self.validate_no_service_action_cycle(&entity)?;
+            }
             self.insert_entity(entity, !allow_missing_dependencies)?;
             Ok(None)
         }

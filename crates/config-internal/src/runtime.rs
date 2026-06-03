@@ -264,6 +264,61 @@ mod tests {
         assert!(parsed.node_instance.arguments.is_empty());
     }
 
+    /// Pin the wire contract of the binding enums: `SlotBinding` is internally
+    /// tagged on `kind` with snake_case variants and field names, and
+    /// `DeferredStatus` is a snake_case string. A rename or tag change here is a
+    /// `graph_json` / launch-config wire break, so assert the exact JSON shape
+    /// and that each variant round-trips back to itself.
+    #[test]
+    fn slot_binding_and_deferred_status_serde_contract() {
+        use serde_json::json;
+
+        let cases = [
+            (
+                SlotBinding::Pinned {
+                    producer_instance_id: "p1".to_string(),
+                },
+                json!({ "kind": "pinned", "producer_instance_id": "p1" }),
+            ),
+            (
+                SlotBinding::Deferred {
+                    producer_instance_id: "p2".to_string(),
+                },
+                json!({ "kind": "deferred", "producer_instance_id": "p2" }),
+            ),
+            (
+                SlotBinding::FromAnyBound {
+                    producer_instance_ids: vec!["p3".to_string(), "p4".to_string()],
+                },
+                json!({ "kind": "from_any_bound", "producer_instance_ids": ["p3", "p4"] }),
+            ),
+            (
+                SlotBinding::FromAnyUnbound,
+                json!({ "kind": "from_any_unbound" }),
+            ),
+        ];
+        for (value, expected) in cases {
+            let encoded = serde_json::to_value(&value).expect("serialize SlotBinding");
+            assert_eq!(encoded, expected, "SlotBinding JSON shape changed");
+            let decoded: SlotBinding =
+                serde_json::from_value(expected).expect("deserialize SlotBinding");
+            assert_eq!(decoded, value, "SlotBinding did not round-trip");
+        }
+
+        let status_cases = [
+            (DeferredStatus::Pending, json!("pending")),
+            (DeferredStatus::Active, json!("active")),
+            (DeferredStatus::NonConforming, json!("non_conforming")),
+        ];
+        for (value, expected) in status_cases {
+            let encoded = serde_json::to_value(value).expect("serialize DeferredStatus");
+            assert_eq!(encoded, expected, "DeferredStatus JSON shape changed");
+            let decoded: DeferredStatus =
+                serde_json::from_value(expected).expect("deserialize DeferredStatus");
+            assert_eq!(decoded, value, "DeferredStatus did not round-trip");
+        }
+    }
+
     #[test]
     fn rejects_invalid_instance_id() {
         let dir = TempDir::new().unwrap();
