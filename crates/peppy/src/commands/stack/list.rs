@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::runtime::SlotBinding;
+use config::runtime::{DeferredStatus, SlotBinding};
 use core_node_api::encoding::StackListRequest;
 use core_node_api::{
     InstanceState, SerializedEdge, SerializedInstance, SerializedNode, SerializedNodeGraph,
@@ -341,10 +341,15 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
         .slot_bindings
         .iter()
         .map(|(link_id, binding)| {
+            let deferred_status = instance.deferred_status.get(link_id).copied();
             format!(
                 "{} → {}",
                 paint(colorize, BINDING_COLOR, link_id),
-                paint(colorize, INSTANCE_COLOR, &format_slot_binding(binding)),
+                paint(
+                    colorize,
+                    INSTANCE_COLOR,
+                    &format_slot_binding(binding, deferred_status)
+                ),
             )
         })
         .collect()
@@ -353,12 +358,26 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
 /// Right-hand side of a `link_id -> …` binding line: the producer instance the
 /// slot resolves to. A `from_any` slot with explicit producers lists them
 /// comma-separated; a `from_any` slot left bindless — and the degenerate
-/// "bound to nothing" case — render as `(any)`.
-fn format_slot_binding(binding: &SlotBinding) -> String {
+/// "bound to nothing" case — render as `(any)`. A `Deferred` slot appends its
+/// status (`(deferred: pending|active|non-conforming)`) so an unfilled or
+/// mis-targeted deferred binding is visible rather than indistinguishable from
+/// a resolved pin; `deferred_status` is the value computed for this slot
+/// (`None` is treated as `pending`, e.g. a payload that predates the field).
+fn format_slot_binding(binding: &SlotBinding, deferred_status: Option<DeferredStatus>) -> String {
     match binding {
         SlotBinding::Pinned {
             producer_instance_id,
         } => producer_instance_id.clone(),
+        SlotBinding::Deferred {
+            producer_instance_id,
+        } => {
+            let label = match deferred_status.unwrap_or(DeferredStatus::Pending) {
+                DeferredStatus::Pending => "pending",
+                DeferredStatus::Active => "active",
+                DeferredStatus::NonConforming => "non-conforming",
+            };
+            format!("{producer_instance_id} (deferred: {label})")
+        }
         SlotBinding::FromAnyBound {
             producer_instance_ids,
         } if !producer_instance_ids.is_empty() => producer_instance_ids.join(", "),
@@ -484,6 +503,7 @@ mod tests {
                     state,
                     healthy: true,
                     slot_bindings: std::collections::BTreeMap::new(),
+                    deferred_status: std::collections::BTreeMap::new(),
                 })
                 .collect(),
         }
@@ -511,6 +531,7 @@ mod tests {
                         .into_iter()
                         .map(|(slot, binding)| (slot.to_string(), binding))
                         .collect(),
+                    deferred_status: std::collections::BTreeMap::new(),
                 })
                 .collect(),
         }
@@ -697,12 +718,14 @@ mod tests {
                     state: InstanceState::Running,
                     healthy: true,
                     slot_bindings: std::collections::BTreeMap::new(),
+                    deferred_status: std::collections::BTreeMap::new(),
                 },
                 SerializedInstance {
                     instance_id: "down-1".to_string(),
                     state: InstanceState::Running,
                     healthy: false,
                     slot_bindings: std::collections::BTreeMap::new(),
+                    deferred_status: std::collections::BTreeMap::new(),
                 },
             ],
         }];
@@ -827,6 +850,61 @@ mod tests {
         assert!(
             extra_at < sensors_at,
             "bindings should be sorted by link id:\n{out}"
+        );
+    }
+
+    /// A deferred slot renders its target plus its status, so a still-pending
+    /// or mis-targeted deferred binding is distinguishable from a resolved
+    /// pin. Builds the instance inline because `binding_node` cannot carry a
+    /// `deferred_status` map.
+    #[test]
+    fn bindings_table_renders_deferred_status() {
+        use std::collections::BTreeMap;
+        let deferred = |target: &str| SlotBinding::Deferred {
+            producer_instance_id: target.to_string(),
+        };
+        let slot_bindings: BTreeMap<String, SlotBinding> = [
+            ("active_slot".to_string(), deferred("ctrl_1")),
+            ("bad_slot".to_string(), deferred("wrong_1")),
+            ("pending_slot".to_string(), deferred("ghost")),
+        ]
+        .into_iter()
+        .collect();
+        let deferred_status: BTreeMap<String, DeferredStatus> = [
+            ("active_slot".to_string(), DeferredStatus::Active),
+            ("bad_slot".to_string(), DeferredStatus::NonConforming),
+            ("pending_slot".to_string(), DeferredStatus::Pending),
+        ]
+        .into_iter()
+        .collect();
+        let nodes = vec![SerializedNode {
+            name: "robot_arm".to_string(),
+            tag: "v1".to_string(),
+            config_path: "/tmp/robot_arm.json5".to_string(),
+            artifact_path: None,
+            stage: Some(NodeStage::Ready),
+            instances: vec![SerializedInstance {
+                instance_id: "arm_1".to_string(),
+                state: InstanceState::Running,
+                healthy: true,
+                slot_bindings,
+                deferred_status,
+            }],
+        }];
+        let out = format_stack_list(&nodes, &[], false);
+        let section = bindings_section(&out);
+
+        assert!(
+            section.contains("active_slot → ctrl_1 (deferred: active)"),
+            "active deferred slot missing:\n{out}"
+        );
+        assert!(
+            section.contains("bad_slot → wrong_1 (deferred: non-conforming)"),
+            "non-conforming deferred slot missing:\n{out}"
+        );
+        assert!(
+            section.contains("pending_slot → ghost (deferred: pending)"),
+            "pending deferred slot missing:\n{out}"
         );
     }
 

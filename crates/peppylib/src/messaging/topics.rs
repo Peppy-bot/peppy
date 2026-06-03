@@ -170,33 +170,6 @@ impl TopicMessenger {
         Ok(subscription)
     }
 
-    /// Consumes a topic from any publisher (external/unlinked topics).
-    ///
-    /// Unlike [`subscribe`], this does not target a specific publisher. The
-    /// transport translates the absent target into its match-any segments at
-    /// the wire layer.
-    pub async fn consume_external(
-        messenger: &MessengerHandle,
-        as_core_node: &str,
-        as_instance_id: &str,
-        to_topic: &str,
-        from_core_node: Option<&str>,
-        from_instance_id: Option<&str>,
-        qos: QoSProfile,
-    ) -> Result<Subscription> {
-        let recv = TopicWireReceiver::new(
-            as_core_node,
-            as_instance_id,
-            from_core_node,
-            from_instance_id,
-            None,
-            None,
-            to_topic,
-        )?;
-        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
-        Ok(Subscription::new(subscription))
-    }
-
     /// Publishes a payload to a topic. The producer advertises under the
     /// reserved default `_` segment; consumers pin a specific producer by
     /// `from_instance_id` derived from the consumer's binding map.

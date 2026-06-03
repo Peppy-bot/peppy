@@ -725,46 +725,34 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_topics) = &topic_interfaces.consumes
     {
         for consumed_topic in consumed_topics {
-            match consumed_topic {
-                config::node::ConsumedTopic::Linked(linked) => {
-                    let Some((message_format, dependency)) = resolve_consumed_offering(
-                        &dep_lookup,
-                        &node_dep_offerings,
-                        &iface_dep_contracts,
-                        &linked.link_id,
-                        linked.name.trim(),
-                        |offerings, name| {
-                            offerings
-                                .topics
-                                .get(name)
-                                .map(|(mf, origin)| (mf.clone(), origin.clone()))
-                        },
-                        |parsed, name| {
-                            parsed
-                                .interfaces
-                                .topics
-                                .iter()
-                                .find(|t| t.name.trim() == name)
-                                .and_then(|emitted| emitted.message_format.clone())
-                        },
-                    ) else {
-                        continue;
-                    };
-                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
-                        topic: consumed_topic.clone(),
-                        message_format,
-                        dependency,
-                    }));
-                }
-                config::node::ConsumedTopic::External(external) => {
-                    interfaces.push(DeploymentInterface::new(
-                        InterfaceVariant::ExternalConsumedTopic {
-                            name: external.name.clone(),
-                            message_format: external.message_format.clone(),
-                        },
-                    ));
-                }
-            }
+            let Some((message_format, dependency)) = resolve_consumed_offering(
+                &dep_lookup,
+                &node_dep_offerings,
+                &iface_dep_contracts,
+                &consumed_topic.link_id,
+                consumed_topic.name.trim(),
+                |offerings, name| {
+                    offerings
+                        .topics
+                        .get(name)
+                        .map(|(mf, origin)| (mf.clone(), origin.clone()))
+                },
+                |parsed, name| {
+                    parsed
+                        .interfaces
+                        .topics
+                        .iter()
+                        .find(|t| t.name.trim() == name)
+                        .and_then(|emitted| emitted.message_format.clone())
+                },
+            ) else {
+                continue;
+            };
+            interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
+                topic: consumed_topic.clone(),
+                message_format,
+                dependency,
+            }));
         }
     }
 

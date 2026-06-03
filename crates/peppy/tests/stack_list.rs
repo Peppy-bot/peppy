@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
-    ConsumedTopic, DependsOn, EmittedTopic, LinkedConsumedTopic, Name as ConfigName,
-    NodeConfigParser, NodeDependency, Toolchain, TopicInterfaces,
+    ConsumedTopic, DependsOn, EmittedTopic, Name as ConfigName, NodeConfigParser, NodeDependency,
+    Toolchain, TopicInterfaces,
 };
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -60,10 +60,10 @@ fn make_consumer_depend_on_provider(
     });
 
     consumer_cfg.interfaces.topics = Some(TopicInterfaces {
-        consumes: Some(vec![ConsumedTopic::Linked(LinkedConsumedTopic {
+        consumes: Some(vec![ConsumedTopic {
             link_id: provider_name.to_string(),
             name: topic_name.to_string(),
-        })]),
+        }]),
         ..Default::default()
     });
 
@@ -192,6 +192,7 @@ async fn node_list_command_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds_deferred: Vec::new(),
             binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
@@ -211,6 +212,7 @@ async fn node_list_command_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds_deferred: Vec::new(),
             binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
@@ -354,6 +356,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds_deferred: Vec::new(),
             binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
@@ -372,6 +375,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds_deferred: Vec::new(),
             binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,

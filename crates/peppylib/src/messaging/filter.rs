@@ -89,7 +89,14 @@ pub fn resolve_consumer_filter(
     let slot_name_tag = lookup_slot_name_tag(link_id, depends_on);
 
     match slot {
+        // A deferred slot pins to its target exactly like `Pinned`: routing
+        // bakes in the target `instance_id` and the transport delivers once
+        // the producer appears. The only difference from `Pinned` lives in
+        // validation/observability, not here.
         SlotBinding::Pinned {
+            producer_instance_id,
+        }
+        | SlotBinding::Deferred {
             producer_instance_id,
         } => ConsumerFilter::Pin(producer_instance_id.clone()),
         SlotBinding::FromAnyBound {
@@ -178,9 +185,16 @@ fn pinned_claims_for_name_tag<'a>(
         if from_any || dep_name != name || dep_tag != tag {
             continue;
         }
-        if let Some(SlotBinding::Pinned {
-            producer_instance_id,
-        }) = slot_bindings.get(dep_link_id)
+        // A deferred sibling claims its target for preemption purposes just
+        // like a pinned one — it routes as a pin.
+        if let Some(
+            SlotBinding::Pinned {
+                producer_instance_id,
+            }
+            | SlotBinding::Deferred {
+                producer_instance_id,
+            },
+        ) = slot_bindings.get(dep_link_id)
         {
             out.insert(producer_instance_id.as_str());
         }
@@ -205,7 +219,11 @@ fn all_sibling_claims_for_name_tag(
             continue;
         }
         match slot_bindings.get(dep_link_id) {
+            // A deferred sibling claims its target like a pinned one.
             Some(SlotBinding::Pinned {
+                producer_instance_id,
+            })
+            | Some(SlotBinding::Deferred {
                 producer_instance_id,
             }) => {
                 out.insert(producer_instance_id.clone());
@@ -261,6 +279,44 @@ mod tests {
         )]);
         let filter = resolve_consumer_filter("main", &bindings, Some(&depends_on));
         assert_eq!(filter, ConsumerFilter::Pin("cam1".to_string()));
+    }
+
+    /// A `Deferred` slot pins to its target exactly like `Pinned`: the wire
+    /// layer bakes in the `instance_id` and the transport delivers once the
+    /// producer appears.
+    #[test]
+    fn deferred_slot_resolves_to_pin() {
+        let depends_on = deps(vec![("camera", "v1", "main", false)]);
+        let bindings = slot_map(vec![(
+            "main",
+            SlotBinding::Deferred {
+                producer_instance_id: "cam1".to_string(),
+            },
+        )]);
+        let filter = resolve_consumer_filter("main", &bindings, Some(&depends_on));
+        assert_eq!(filter, ConsumerFilter::Pin("cam1".to_string()));
+    }
+
+    /// A deferred sibling claims its target for from_any preemption just like
+    /// a pinned one, so an unbound from_any slot on the same `(name, tag)`
+    /// excludes the deferred-claimed producer.
+    #[test]
+    fn from_any_unbound_excludes_deferred_claimed_sibling() {
+        let depends_on = deps(vec![
+            ("camera", "v1", "wrist_left", false),
+            ("camera", "v1", "extra", true),
+        ]);
+        let bindings = slot_map(vec![
+            (
+                "wrist_left",
+                SlotBinding::Deferred {
+                    producer_instance_id: "cam1".to_string(),
+                },
+            ),
+            ("extra", SlotBinding::FromAnyUnbound),
+        ]);
+        let filter = resolve_consumer_filter("extra", &bindings, Some(&depends_on));
+        assert_eq!(filter, ConsumerFilter::AnyExcept(vec!["cam1".to_string()]));
     }
 
     #[test]

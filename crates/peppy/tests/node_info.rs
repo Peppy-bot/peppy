@@ -88,6 +88,7 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
                 run: false,
                 args: Vec::new(),
                 instance_id: None,
+                binds_deferred: Vec::new(),
                 binds: Vec::new(),
                 idle_timeout: DEFAULTS.idle_secs,
                 max_timeout: DEFAULTS.max_secs,
@@ -111,6 +112,7 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
             run: false,
             args: Vec::new(),
             instance_id: None,
+            binds_deferred: Vec::new(),
             binds: Vec::new(),
             idle_timeout: DEFAULTS.idle_secs,
             max_timeout: DEFAULTS.max_secs,
@@ -296,9 +298,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     // `format_node_info` does when rendering the "Dependencies" section.
     let mut dependencies: BTreeSet<&str> = BTreeSet::new();
     for topic in topics {
-        if let config::node::ConsumedTopic::Linked(linked) = topic {
-            dependencies.insert(&linked.link_id);
-        }
+        dependencies.insert(&topic.link_id);
     }
     for service in services {
         dependencies.insert(&service.link_id);

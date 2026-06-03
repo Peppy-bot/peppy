@@ -12,6 +12,8 @@ from functions.cli import ReleaseError
 from functions.docs import (
     CheckResult,
     RequiredChange,
+    _CLAUDE_EFFORT,
+    _CLAUDE_MODEL,
     _is_code_path,
     _parse_check_response,
     _strip_code_fence,
@@ -19,6 +21,12 @@ from functions.docs import (
     check_docs,
     update_docs,
 )
+
+
+def _flag_value(cmd: list[str], flag: str) -> str:
+    """Return the argv element following ``flag`` in ``cmd``."""
+    assert flag in cmd, f"{flag} not in {cmd}"
+    return cmd[cmd.index(flag) + 1]
 
 
 # --- _is_code_path ---
@@ -266,3 +274,56 @@ def test_update_docs_invokes_claude_with_edit_permissions(tmp_path: Path) -> Non
     allowed = cmd[cmd.index("--allowed-tools") + 1]
     assert "Edit" in allowed
     assert "Write" in allowed
+
+
+# --- pinned model / effort (reproducibility) ---
+
+
+def _capture_claude_cmd(
+    fn, base: str, head: str, tmp_path: Path, result_text: str
+) -> list[str]:
+    """Invoke ``fn(base, head)`` with claude mocked and return its argv."""
+    captured: dict[str, list[str]] = {}
+
+    def _run(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
+        if cmd and cmd[0] == "claude":
+            captured["cmd"] = cmd
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = json.dumps({"type": "result", "result": result_text})
+        mock.stderr = ""
+        return mock
+
+    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
+         patch(
+             "functions.docs.get_code_diff",
+             return_value=("diff", ["crates/foo.rs"]),
+         ), \
+         patch("functions.docs.subprocess.run", side_effect=_run):
+        fn(base, head)
+    return captured["cmd"]
+
+
+def test_check_docs_pins_model_and_effort(tmp_path: Path) -> None:
+    cmd = _capture_claude_cmd(
+        check_docs, "BASE", "HEAD", tmp_path,
+        '{"up_to_date": true, "required_changes": []}',
+    )
+    assert _flag_value(cmd, "--model") == _CLAUDE_MODEL
+    assert _flag_value(cmd, "--effort") == _CLAUDE_EFFORT
+
+
+def test_update_docs_pins_model_and_effort(tmp_path: Path) -> None:
+    cmd = _capture_claude_cmd(
+        update_docs, "BASE", "HEAD", tmp_path, "edited 1 file",
+    )
+    assert _flag_value(cmd, "--model") == _CLAUDE_MODEL
+    assert _flag_value(cmd, "--effort") == _CLAUDE_EFFORT
+
+
+def test_claude_model_is_pinned_to_exact_id() -> None:
+    # A bare alias ("opus") would follow the moving "latest" pointer and
+    # defeat the reproducibility pin; require a full versioned id.
+    assert _CLAUDE_MODEL.startswith("claude-")
+    assert _CLAUDE_MODEL not in ("opus", "sonnet", "haiku")
+    assert _CLAUDE_EFFORT == "max"

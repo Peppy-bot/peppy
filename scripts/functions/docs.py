@@ -37,6 +37,24 @@ _EXCLUDE_PREFIXES: tuple[str, ...] = (
 
 _MAX_DIFF_BYTES = 400_000
 
+# Pinned for reproducibility. The prompt and its inputs (the base..head diff)
+# are already deterministic for a given pair of refs, so the only sources of
+# run-to-run drift are *which* model answers and at *what* effort. Pinning both
+# removes that systematic drift: the same code change feeds the same model at
+# the same effort every time, instead of silently changing behaviour whenever
+# the CLI's default model or effort is bumped.
+#
+# This is not bit-for-bit determinism — that is unattainable with an LLM
+# (sampling is never fully reproducible and temperature is not even
+# configurable on Opus 4.7+). The pipeline is built to tolerate the residual
+# variance: the check step is advisory (continue-on-error) and a stale verdict
+# only changes whether a follow-up docs PR is opened, never a hard CI failure.
+#
+# Use the full model id (not the "opus" alias) so the pin does not follow the
+# moving "latest" pointer. "max" is the highest effort tier ("ultracode").
+_CLAUDE_MODEL = "claude-opus-4-8"
+_CLAUDE_EFFORT = "max"
+
 
 @dataclass(frozen=True)
 class RequiredChange:
@@ -160,6 +178,10 @@ def _run_claude(
     cmd = [
         "claude",
         "-p",
+        "--model",
+        _CLAUDE_MODEL,
+        "--effort",
+        _CLAUDE_EFFORT,
         "--output-format",
         "json",
         "--permission-mode",
