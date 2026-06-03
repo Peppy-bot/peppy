@@ -116,6 +116,8 @@ pub struct DatastoreEntry {
 /// Store `value` (arbitrary bytes) under `key`, tagged with `encoding`, on the
 /// node's bound core node. Overwrites any existing value for `key`.
 ///
+/// `key` must use the node-name character set (ASCII letters, digits, `_` and
+/// `-`); an invalid key returns an error before any request is sent.
 /// `encoding` accepts any string or one of the [`Encoding`] constants (e.g.
 /// [`Encoding::APPLICATION_JSON`]).
 pub async fn datastore_store(
@@ -127,11 +129,12 @@ pub async fn datastore_store(
 ) -> Result<()> {
     let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
     let encoding: Encoding = encoding.into();
+    let request = DatastoreStoreRequest::new(key, value, encoding)?;
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
 
     poll_datastore_store(
-        &DatastoreStoreRequest::new(key, value, encoding),
+        &request,
         node_runner.messenger(),
         core_node,
         processor.bound_instance_id(),
@@ -145,17 +148,21 @@ pub async fn datastore_store(
 
 /// Retrieve the value stored under `key` from the node's bound core node.
 /// Returns `Ok(None)` when no value is stored for `key`.
+///
+/// `key` must use the node-name character set (ASCII letters, digits, `_` and
+/// `-`); an invalid key returns an error before any request is sent.
 pub async fn datastore_get(
     node_runner: &NodeRunner,
     key: impl Into<String>,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<Option<StoredValue>> {
     let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
+    let request = DatastoreGetRequest::new(key)?;
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
 
     let response = poll_datastore_get(
-        &DatastoreGetRequest::new(key),
+        &request,
         node_runner.messenger(),
         core_node,
         processor.bound_instance_id(),
@@ -206,17 +213,21 @@ pub async fn datastore_list(
 
 /// Remove (unset) `key` from the node's bound core node. Returns `Ok(true)` if
 /// the key existed and was removed, `Ok(false)` if it was already absent.
+///
+/// `key` must use the node-name character set (ASCII letters, digits, `_` and
+/// `-`); an invalid key returns an error before any request is sent.
 pub async fn datastore_remove(
     node_runner: &NodeRunner,
     key: impl Into<String>,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<bool> {
     let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
+    let request = DatastoreRemoveRequest::new(key)?;
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
 
     let response = poll_datastore_remove(
-        &DatastoreRemoveRequest::new(key),
+        &request,
         node_runner.messenger(),
         core_node,
         processor.bound_instance_id(),

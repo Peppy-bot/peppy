@@ -27,8 +27,9 @@ pub struct StoredValue {
 }
 
 /// Daemon-internal, in-memory key/value store shared by the datastore service
-/// handlers (`store`, `get`, `list`, `remove`). Keys are arbitrary strings
-/// (they ride inside the request payload, never a Zenoh keyexpr), values are
+/// handlers (`store`, `get`, `list`, `remove`). Keys use the node-name
+/// character set (ASCII letters, digits, `_` and `-`), validated when a request
+/// is decoded (see [`core_node_api::encoding::DatastoreKey`]); values are
 /// arbitrary bytes.
 #[derive(Debug, Default)]
 pub struct Datastore {
@@ -210,13 +211,13 @@ fn handle_store_request(store: &Datastore, context: &ServiceRequestContext) -> R
     debug!(
         "Received datastore store request from {} for key {:?} ({} bytes, encoding {:?})",
         last_modified_by,
-        request.key,
+        request.key.as_str(),
         request.value.len(),
         request.encoding,
     );
 
     store.store(
-        request.key,
+        request.key.into_string(),
         request.value,
         request.encoding,
         last_modified_by,
@@ -231,10 +232,10 @@ fn handle_get_request(store: &Datastore, context: &ServiceRequestContext) -> Res
     debug!(
         "Received datastore get request from {} for key {:?}",
         context.message().instance_id(),
-        request.key,
+        request.key.as_str(),
     );
 
-    let response = match store.get(&request.key) {
+    let response = match store.get(request.key.as_str()) {
         Some(stored) => {
             DatastoreGetResponse::found(stored.value, stored.encoding, stored.last_modified_by)
         }
@@ -264,12 +265,12 @@ fn handle_list_request(store: &Datastore, context: &ServiceRequestContext) -> Re
 fn handle_remove_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
     let request = DatastoreRemoveRequest::decode(context.message().payload().as_ref())?;
 
-    let removed = store.remove(&request.key);
+    let removed = store.remove(request.key.as_str());
 
     debug!(
         "Received datastore remove request from {} for key {:?} (removed: {})",
         context.message().instance_id(),
-        request.key,
+        request.key.as_str(),
         removed,
     );
 

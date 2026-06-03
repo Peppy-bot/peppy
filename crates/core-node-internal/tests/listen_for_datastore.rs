@@ -2,8 +2,8 @@
 //!
 //! These exercise the `datastore_store` / `datastore_get` endpoints end to end
 //! through `ServiceMessenger::poll`, covering the contract that matters for a
-//! key/value store: arbitrary byte values, arbitrary-character keys, missing
-//! keys, overwrite semantics, and empty values.
+//! key/value store: arbitrary byte values, node-name-style keys, missing keys,
+//! overwrite semantics, and empty values.
 
 mod common;
 
@@ -43,16 +43,15 @@ async fn store_then_get_round_trips_binary_value() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn store_then_get_round_trips_special_character_key() {
+async fn store_then_get_round_trips_node_name_key() {
     let started = start_core_node_with_mock_messenger().await;
 
-    // Keys ride inside the request payload (not a Zenoh keyexpr), so slashes,
-    // wildcards, whitespace and unicode are all valid.
-    let key = "a/b**c?{x} y\nz/日本語/*";
+    // Keys use the node-name character set: letters, digits, `_` and `-`.
+    let key = "robot_state-1";
     datastore_store(&started, key, b"value", "text/plain").await;
     let response = datastore_get(&started, key).await;
 
-    assert!(response.found, "special-character key should be found");
+    assert!(response.found, "node-name key should be found");
     assert_eq!(response.value, b"value");
 }
 

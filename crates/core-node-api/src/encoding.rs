@@ -15,9 +15,9 @@ mod stack;
 
 pub use clock::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
 pub use datastore::{
-    DatastoreGetRequest, DatastoreGetResponse, DatastoreListEntry, DatastoreListRequest,
-    DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse, DatastoreStoreRequest,
-    DatastoreStoreResponse,
+    DatastoreGetRequest, DatastoreGetResponse, DatastoreKey, DatastoreKeyError, DatastoreListEntry,
+    DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
+    DatastoreStoreRequest, DatastoreStoreResponse,
 };
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
 pub use node::builder::FeedbackStream;

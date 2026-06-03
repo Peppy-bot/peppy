@@ -72,6 +72,7 @@ async fn poll_datastore(started: &StartedCoreNode, service: &str, payload: Paylo
 /// store endpoint should always succeed for a well-formed request.
 pub async fn datastore_store(started: &StartedCoreNode, key: &str, value: &[u8], encoding: &str) {
     let payload = DatastoreStoreRequest::new(key, value.to_vec(), encoding)
+        .expect("test key should be a valid datastore key")
         .encode()
         .expect("encode store request should succeed");
     let response = poll_datastore(started, names::DATASTORE_STORE, payload).await;
@@ -82,6 +83,7 @@ pub async fn datastore_store(started: &StartedCoreNode, key: &str, value: &[u8],
 /// decoded response. Panics on any transport or decode failure.
 pub async fn datastore_get(started: &StartedCoreNode, key: &str) -> DatastoreGetResponse {
     let payload = DatastoreGetRequest::new(key)
+        .expect("test key should be a valid datastore key")
         .encode()
         .expect("encode get request should succeed");
     let response = poll_datastore(started, names::DATASTORE_GET, payload).await;
@@ -102,6 +104,7 @@ pub async fn datastore_list(started: &StartedCoreNode) -> DatastoreListResponse 
 /// whether the key existed. Panics on any transport or decode failure.
 pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
     let payload = DatastoreRemoveRequest::new(key)
+        .expect("test key should be a valid datastore key")
         .encode()
         .expect("encode remove request should succeed");
     let response = poll_datastore(started, names::DATASTORE_REMOVE, payload).await;
@@ -115,7 +118,7 @@ pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
 /// real-zenoh datastore tests — the latter exercises real cross-process
 /// serialization of the Cap'n Proto `Data` field.
 pub async fn assert_datastore_binary_round_trip(started: &StartedCoreNode) {
-    let key = "binary/key**?{1}";
+    let key = "binary_key_1";
     let value = vec![0u8, 255, 0x80, 0xFE, 0x00, 0x42];
     let encoding = "application/octet-stream";
 

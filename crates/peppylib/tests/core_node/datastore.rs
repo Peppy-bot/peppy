@@ -66,10 +66,10 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
                     let payload = request.message().payload();
                     let req = DatastoreStoreRequest::decode(payload.as_ref())
                         .expect("decode DatastoreStoreRequest");
-                    store_map
-                        .lock()
-                        .unwrap()
-                        .insert(req.key, (req.value, req.encoding, last_modified_by));
+                    store_map.lock().unwrap().insert(
+                        req.key.into_string(),
+                        (req.value, req.encoding, last_modified_by),
+                    );
                     Ok(DatastoreStoreResponse::new()
                         .encode()
                         .expect("encode DatastoreStoreResponse"))
@@ -97,7 +97,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
                     let payload = request.message().payload();
                     let req = DatastoreGetRequest::decode(payload.as_ref())
                         .expect("decode DatastoreGetRequest");
-                    let response = match store.lock().unwrap().get(&req.key) {
+                    let response = match store.lock().unwrap().get(req.key.as_str()) {
                         Some((value, encoding, last_modified_by)) => DatastoreGetResponse::found(
                             value.clone(),
                             encoding.clone(),
@@ -169,7 +169,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
                     let payload = request.message().payload();
                     let req = DatastoreRemoveRequest::decode(payload.as_ref())
                         .expect("decode DatastoreRemoveRequest");
-                    let removed = store.lock().unwrap().remove(&req.key).is_some();
+                    let removed = store.lock().unwrap().remove(req.key.as_str()).is_some();
                     Ok(DatastoreRemoveResponse::new(removed)
                         .encode()
                         .expect("encode DatastoreRemoveResponse"))
@@ -197,9 +197,9 @@ async fn setup_datastore_stub() -> (ZenohdInstance, TempDir, NodeRunner) {
 async fn store_then_get_round_trips_binary_value() {
     let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
 
-    // A non-UTF-8 value under an arbitrary-character key proves the wrappers
-    // carry raw bytes and don't constrain the key to a Zenoh keyexpr.
-    let key = "robot/state**{1}";
+    // A non-UTF-8 value under a node-name-style key proves the wrappers carry
+    // raw bytes intact while still requiring a valid key.
+    let key = "robot_state-1";
     let value = vec![0u8, 255, 0x80, 0xFE, 0x13];
 
     datastore_store(
@@ -224,6 +224,36 @@ async fn store_then_get_round_trips_binary_value() {
             // The stub records the caller's instance_id, just like the daemon.
             last_modified_by: CLIENT_INSTANCE.to_owned(),
         })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn store_rejects_invalid_key() {
+    let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
+
+    // A slash is outside the node-name character set, so the wrapper rejects
+    // the key locally, before any request reaches the core node.
+    let err = datastore_store(
+        &node_runner,
+        "robot/state",
+        b"value".to_vec(),
+        Encoding::TEXT_PLAIN,
+        Duration::from_secs(3),
+    )
+    .await
+    .expect_err("a key with a slash should be rejected");
+
+    assert!(
+        matches!(
+            err,
+            peppylib::PeppyError::CoreNodeApi(core_node_api::Error::InvalidDatastoreKey(
+                core_node_api::encoding::DatastoreKeyError::ForbiddenCharacter {
+                    character: '/',
+                    ..
+                }
+            ))
+        ),
+        "expected a forbidden-character (`/`) datastore key error, got: {err:?}"
     );
 }
 
