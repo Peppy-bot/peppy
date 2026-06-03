@@ -1,5 +1,5 @@
 use super::iface::PySenderTarget;
-use super::{PyMessengerHandle, to_py_err};
+use super::{PyMessengerHandle, future_into_py_unit, to_py_err};
 use crate::config::PyQoSProfile;
 use peppylib::messaging::{Subscription, TopicMessenger};
 use peppylib::types::{Message, Payload};
@@ -137,7 +137,7 @@ impl PyTopicMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_target = as_target.into_inner();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             TopicMessenger::emit(
                 &handle,
                 &as_core_node,

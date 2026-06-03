@@ -143,6 +143,7 @@ export default defineConfig({
 				},
 			},
 			title: 'PeppyOS',
+			favicon: '/favicon.png',
 			customCss: ['./src/styles/custom.css'],
 			components: {
 				ThemeSelect: './src/components/ThemeSelect.astro',

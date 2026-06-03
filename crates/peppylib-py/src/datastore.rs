@@ -10,7 +10,7 @@ use peppylib::core_node::datastore::StoredValue;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::messaging::{duration_from_secs_f64, encode_err, to_py_err};
+use crate::messaging::{duration_from_secs_f64, encode_err, future_into_py_unit, to_py_err};
 use crate::runtime::PyNodeRunner;
 
 /// Python wrapper for `core_node_api::encoding::DatastoreStoreResponse` — an
@@ -125,14 +125,13 @@ fn datastore_store<'py>(
     let timeout = response_timeout_secs
         .map(|s| duration_from_secs_f64("response_timeout_secs", s))
         .transpose()?;
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    // `future_into_py_unit` resolves to Python `None` — a store that succeeds
+    // has nothing to return (see the helper for why a bare `Ok(())` would not).
+    future_into_py_unit(py, async move {
         peppylib::datastore_store(&runner, key, value, encoding, timeout)
             .await
             .map_err(to_py_err)?;
-        // Resolve to Python `None` (not the empty tuple that a bare `Ok(())`
-        // produces under PyO3 0.28's `IntoPyObject`) — a store that succeeds
-        // has nothing to return, and `None` is the Pythonic contract for that.
-        Ok(Python::attach(|py| py.None()))
+        Ok(())
     })
 }
 
