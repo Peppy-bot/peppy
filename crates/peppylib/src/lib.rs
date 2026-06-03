@@ -18,7 +18,10 @@ pub use core_node::{
     clock::{
         ClockSubscription, ClockSync, PeppyClock, clock_for_node, subscribe_clock, synchronize,
     },
-    datastore::{Encoding, StoredValue, datastore_get, datastore_store},
+    datastore::{
+        DatastoreEntry, Encoding, StoredValue, datastore_get, datastore_list, datastore_remove,
+        datastore_store,
+    },
     info::info,
     stack::{StackList, stack_list},
 };

@@ -269,7 +269,7 @@ impl CoreNode {
         // In-memory key/value store shared by the two datastore endpoints.
         let datastore = Arc::new(datastore::Datastore::new());
         // Set up all listeners concurrently so startup latency is bounded by
-        // the slowest single listener, not the sum of all 19. They're
+        // the slowest single listener, not the sum of all 21. They're
         // independent — no listener depends on another being registered first.
         let setup: Vec<BoxFuture<'_, Result<JoinHandle<Result<()>>>>> = vec![
             ping::listen_for_ping(
@@ -325,6 +325,22 @@ impl CoreNode {
             )
             .boxed(),
             datastore::listen_for_datastore_get(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&datastore),
+            )
+            .boxed(),
+            datastore::listen_for_datastore_list(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&datastore),
+            )
+            .boxed(),
+            datastore::listen_for_datastore_remove(
                 &self.messenger,
                 core_node_name,
                 self.instance_id(),

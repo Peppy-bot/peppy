@@ -9,6 +9,7 @@ use core_node::nodes_repo_cache_path;
 use core_node::{CoreNode, CoreNodeArguments};
 use core_node_api::encoding::{
     ClockRequest, ClockResponse, ClockTick, DatastoreGetRequest, DatastoreGetResponse,
+    DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
     DatastoreStoreRequest, DatastoreStoreResponse, NodeAddFeedback, NodeAddGoal,
     NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse,
     NodeBuildResult, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, NodeSource,
@@ -95,6 +96,56 @@ pub async fn datastore_get(started: &StartedCoreNode, key: &str) -> DatastoreGet
     DatastoreGetResponse::decode(&response.payload()).expect("decode get response")
 }
 
+/// Sends a `datastore_list` request to the started core node and returns the
+/// decoded response. Panics on any transport or decode failure.
+pub async fn datastore_list(started: &StartedCoreNode) -> DatastoreListResponse {
+    let payload = DatastoreListRequest::new()
+        .encode()
+        .expect("encode list request should succeed");
+
+    let response = ServiceMessenger::poll(
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_target(&started.core_node_name),
+        names::DATASTORE_LIST,
+        Some(&started.core_node_name),
+        None,
+        payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("datastore list poll should succeed");
+
+    DatastoreListResponse::decode(&response.payload()).expect("decode list response")
+}
+
+/// Sends a `datastore_remove` request to the started core node and returns
+/// whether the key existed. Panics on any transport or decode failure.
+pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
+    let payload = DatastoreRemoveRequest::new(key)
+        .encode()
+        .expect("encode remove request should succeed");
+
+    let response = ServiceMessenger::poll(
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_target(&started.core_node_name),
+        names::DATASTORE_REMOVE,
+        Some(&started.core_node_name),
+        None,
+        payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("datastore remove poll should succeed");
+
+    DatastoreRemoveResponse::decode(&response.payload())
+        .expect("decode remove response")
+        .removed
+}
+
 /// Stores an arbitrary binary value, reads it back, and asserts the value and
 /// encoding survive the round trip. Shared between the mock-messenger and
 /// real-zenoh datastore tests — the latter exercises real cross-process
@@ -112,6 +163,10 @@ pub async fn assert_datastore_binary_round_trip(started: &StartedCoreNode) {
     assert_eq!(
         response.encoding, encoding,
         "encoding should survive round trip"
+    );
+    assert_eq!(
+        response.last_modified_by, CALLER_INSTANCE_ID,
+        "get should report the writer's instance_id"
     );
 }
 

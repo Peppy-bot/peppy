@@ -11,9 +11,13 @@ use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
 
-use core_node_api::encoding::{DatastoreGetRequest, DatastoreStoreRequest};
+use core_node_api::encoding::{
+    DatastoreGetRequest, DatastoreListRequest, DatastoreRemoveRequest, DatastoreStoreRequest,
+};
 
-use crate::core_node::transport::{poll_datastore_get, poll_datastore_store};
+use crate::core_node::transport::{
+    poll_datastore_get, poll_datastore_list, poll_datastore_remove, poll_datastore_store,
+};
 use crate::error::Result;
 use crate::runtime::NodeRunner;
 
@@ -86,13 +90,27 @@ impl PartialEq<&str> for Encoding {
     }
 }
 
-/// A value retrieved from the datastore: the raw bytes plus the Zenoh-style
-/// [`Encoding`] tag they were stored with. Mirrors Zenoh's `(payload, encoding)`
-/// value model.
+/// A value retrieved from the datastore: the raw bytes, the Zenoh-style
+/// [`Encoding`] tag they were stored with, and the `instance_id` of the node
+/// that last wrote the key. Mirrors Zenoh's `(payload, encoding)` value model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredValue {
     pub value: Vec<u8>,
     pub encoding: Encoding,
+    /// `instance_id` of the node that last wrote this key.
+    pub last_modified_by: String,
+}
+
+/// One key's metadata as returned by [`datastore_list`]: its key, the
+/// [`Encoding`] tag of its value, and the `instance_id` of the node that last
+/// wrote it. The value bytes are not included — fetch them with
+/// [`datastore_get`] when you need them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatastoreEntry {
+    pub key: String,
+    pub encoding: Encoding,
+    /// `instance_id` of the node that last wrote this key.
+    pub last_modified_by: String,
 }
 
 /// Store `value` (arbitrary bytes) under `key`, tagged with `encoding`, on the
@@ -149,7 +167,65 @@ pub async fn datastore_get(
     Ok(response.found.then_some(StoredValue {
         value: response.value,
         encoding: response.encoding.into(),
+        last_modified_by: response.last_modified_by,
     }))
+}
+
+/// List the metadata of every key currently in the datastore on the node's
+/// bound core node. Each [`DatastoreEntry`] carries the key, its encoding tag,
+/// and the `instance_id` of the node that last wrote it — but **not** the value
+/// bytes; fetch those with [`datastore_get`]. Order is unspecified.
+pub async fn datastore_list(
+    node_runner: &NodeRunner,
+    response_timeout: impl Into<Option<Duration>> + Send,
+) -> Result<Vec<DatastoreEntry>> {
+    let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
+    let processor = node_runner.processor();
+    let core_node = processor.bound_core_node();
+
+    let response = poll_datastore_list(
+        &DatastoreListRequest::new(),
+        node_runner.messenger(),
+        core_node,
+        processor.bound_instance_id(),
+        core_node,
+        timeout,
+    )
+    .await?;
+
+    Ok(response
+        .entries
+        .into_iter()
+        .map(|entry| DatastoreEntry {
+            key: entry.key,
+            encoding: entry.encoding.into(),
+            last_modified_by: entry.last_modified_by,
+        })
+        .collect())
+}
+
+/// Remove (unset) `key` from the node's bound core node. Returns `Ok(true)` if
+/// the key existed and was removed, `Ok(false)` if it was already absent.
+pub async fn datastore_remove(
+    node_runner: &NodeRunner,
+    key: impl Into<String>,
+    response_timeout: impl Into<Option<Duration>> + Send,
+) -> Result<bool> {
+    let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
+    let processor = node_runner.processor();
+    let core_node = processor.bound_core_node();
+
+    let response = poll_datastore_remove(
+        &DatastoreRemoveRequest::new(key),
+        node_runner.messenger(),
+        core_node,
+        processor.bound_instance_id(),
+        core_node,
+        timeout,
+    )
+    .await?;
+
+    Ok(response.removed)
 }
 
 #[cfg(test)]

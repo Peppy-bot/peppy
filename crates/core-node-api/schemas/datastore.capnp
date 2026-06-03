@@ -19,9 +19,39 @@ struct DatastoreGetRequest {
 }
 
 struct DatastoreGetResponse {
-    # Whether a value was found for the requested key. When false, `value`
-    # and `encoding` are empty.
-    found    @0 :Bool;
-    value    @1 :Data;
-    encoding @2 :Text;
+    # Whether a value was found for the requested key. When false, `value`,
+    # `encoding` and `lastModifiedBy` are empty.
+    found          @0 :Bool;
+    value          @1 :Data;
+    encoding       @2 :Text;
+    # instance_id of the node that last wrote this key (empty when not found).
+    lastModifiedBy @3 :Text;
+}
+
+# Lists every key currently in the store. Takes no arguments — the whole
+# keyspace is returned.
+struct DatastoreListRequest {
+}
+
+# A single key's metadata in a list response. The value bytes are intentionally
+# omitted (fetch them with DatastoreGetRequest); a list stays cheap regardless
+# of how large the stored values are.
+struct DatastoreListEntry {
+    key            @0 :Text;
+    encoding       @1 :Text;
+    lastModifiedBy @2 :Text;
+}
+
+struct DatastoreListResponse {
+    entries @0 :List(DatastoreListEntry);
+}
+
+# Removes (unsets) a single key.
+struct DatastoreRemoveRequest {
+    key @0 :Text;
+}
+
+struct DatastoreRemoveResponse {
+    # True if the key existed and was removed, false if it was already absent.
+    removed @0 :Bool;
 }

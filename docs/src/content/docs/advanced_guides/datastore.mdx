@@ -9,18 +9,22 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 Topics and services move data between nodes that are up at the same time. Sometimes you instead want a place to *leave* a value so another node can pick it up later, or so a node can read back what it wrote before it restarted. The **datastore** is that place: a small in-memory key/value store that lives in the core node and is shared by every node in the stack.
 
-`peppylib` exposes two helpers:
+`peppylib` exposes four helpers:
 
 - `datastore_store`: upsert a value under a key.
 - `datastore_get`: read the value back, or `None` if the key was never set.
+- `datastore_list`: list every key's metadata (encoding and last writer), without the value bytes.
+- `datastore_remove`: delete a key, reporting whether it existed.
 
 Each value is a pair of *raw bytes* and an *encoding tag* (a short string such as `"text/plain"`, `"application/json"`, or `"application/octet-stream"`). This mirrors Zenoh's `(payload, encoding)` value model: the store keeps your bytes verbatim and hands back the tag you chose, so any value type round-trips faithfully. The store never inspects either field.
 
+The store also records, for each key, the `instance_id` of the node that last wrote it. Both `datastore_get` (on the returned `StoredValue`) and `datastore_list` surface this as `last_modified_by`, so you can tell which node owns a value.
+
 `peppylib` ships an `Encoding` helper with constants for the common tags — `Encoding::TEXT_PLAIN`, `Encoding::APPLICATION_JSON`, `Encoding::APPLICATION_OCTET_STREAM` in Rust, and the same members on Python's `Encoding` (a `StrEnum`). Like Zenoh's own encoding, the set is **open**: the constants are a convenience, but any string is a valid tag, so you are never boxed in to the listed ones.
 
-Both are available from Rust as `peppylib::datastore_store`, `peppylib::datastore_get`, `peppylib::StoredValue`, and `peppylib::Encoding`, and from Python as `from peppylib import datastore_store, datastore_get, StoredValue, Encoding`. Like the other core node helpers, they are not re-exported by `peppygen`; import them from `peppylib` directly.
+They are available from Rust as `peppylib::datastore_store`, `peppylib::datastore_get`, `peppylib::datastore_list`, `peppylib::datastore_remove`, `peppylib::StoredValue`, `peppylib::DatastoreEntry`, and `peppylib::Encoding`, and from Python as `from peppylib import datastore_store, datastore_get, datastore_list, datastore_remove, StoredValue, DatastoreEntry, Encoding`. Like the other core node helpers, they are not re-exported by `peppygen`; import them from `peppylib` directly.
 
-Both take a `NodeRunner`, the same handle your node receives from `NodeBuilder::new().run(...)` (see the [services guide](/advanced_guides/services/) for a typical setup), and talk to the node's bound core node.
+Each takes a `NodeRunner`, the same handle your node receives from `NodeBuilder::new().run(...)` (see the [services guide](/advanced_guides/services/) for a typical setup), and talks to the node's bound core node.
 
 ## When to use this
 
@@ -92,10 +96,11 @@ The final argument is a response timeout. Rust accepts anything that converts to
 
 `datastore_get` reads the value stored under `key` from the node's bound core node. A key that was never stored (or that no node has stored yet) reads as `None` rather than an error: the helper folds the wire response's `found` flag into `Option::None` (Rust) / `None` (Python), so you never get back an empty `StoredValue` you have to second-guess.
 
-When the key is present you get a `StoredValue` with two fields:
+When the key is present you get a `StoredValue` with three fields:
 
 - `value`: the raw bytes, exactly as stored (`Vec<u8>` in Rust, `bytes` in Python).
 - `encoding`: the encoding tag they were stored with.
+- `last_modified_by`: the `instance_id` of the node that last wrote this key.
 
 The second argument is the same response timeout as above.
 
@@ -144,11 +149,111 @@ The second argument is the same response timeout as above.
   </TabItem>
 </Tabs>
 
+## `datastore_list`
+
+`datastore_list` returns the metadata of **every** key currently in the store: one entry per key carrying the `key`, its `encoding` tag, and `last_modified_by` (the `instance_id` of the node that last wrote it). The value bytes are deliberately **not** included — a list stays cheap no matter how large your values are; fetch the bytes for a specific key with `datastore_get`. The order is unspecified, and the result is a point-in-time snapshot (another node may store or remove keys immediately after).
+
+The only argument is the same response timeout as above.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python title="src/my_node/__main__.py"
+    from peppygen import NodeBuilder, NodeRunner
+    from peppygen.parameters import Parameters
+    from peppylib import datastore_list
+
+
+    async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
+        entries = await datastore_list(node_runner, 3.0)
+        for entry in entries:
+            print(f"{entry.key} ({entry.encoding}) last written by {entry.last_modified_by}")
+
+
+    def main():
+        NodeBuilder().run(setup)
+
+
+    if __name__ == "__main__":
+        main()
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust title="src/main.rs"
+    use std::time::Duration;
+
+    use peppygen::{NodeBuilder, Parameters, Result};
+    use peppylib::datastore_list;
+
+    fn main() -> Result<()> {
+        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+            for entry in datastore_list(&node_runner, Duration::from_secs(3)).await? {
+                println!(
+                    "{} ({}) last written by {}",
+                    entry.key, entry.encoding, entry.last_modified_by
+                );
+            }
+            Ok(())
+        })
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## `datastore_remove`
+
+`datastore_remove` deletes (unsets) `key` from the store. It returns a boolean: `true` if the key existed and was removed, `false` if it was already absent — so removing a missing key is a no-op, not an error.
+
+The second argument is the same response timeout as above.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python title="src/my_node/__main__.py"
+    from peppygen import NodeBuilder, NodeRunner
+    from peppygen.parameters import Parameters
+    from peppylib import datastore_remove
+
+
+    async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
+        removed = await datastore_remove(node_runner, "calibration/wrist_offset", 3.0)
+        print("removed" if removed else "key was already absent")
+
+
+    def main():
+        NodeBuilder().run(setup)
+
+
+    if __name__ == "__main__":
+        main()
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust title="src/main.rs"
+    use std::time::Duration;
+
+    use peppygen::{NodeBuilder, Parameters, Result};
+    use peppylib::datastore_remove;
+
+    fn main() -> Result<()> {
+        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+            let key = "calibration/wrist_offset";
+            if datastore_remove(&node_runner, key, Duration::from_secs(3)).await? {
+                println!("removed {key}");
+            } else {
+                println!("{key} was already absent");
+            }
+            Ok(())
+        })
+    }
+    ```
+  </TabItem>
+</Tabs>
+
 ## Behavior notes
 
 - **In-memory, never written to disk.** The store lives inside the core node process. Values last exactly as long as the core node does; restarting the core node starts from an empty store. Treat it as fast shared scratch space, not durable storage.
 - **Shared across the whole stack, with no namespacing.** Every node bound to the same core node reads and writes one flat keyspace. Coordinate on key names (a prefix convention like `calibration/...` works well) so two nodes do not clobber each other by accident.
 - **Keys are arbitrary strings.** A key rides inside the request payload, not as a Zenoh keyexpr, so any character is allowed: slashes, spaces, `*`, `{}`, anything. `"robot/state**{1}"` is a perfectly valid key.
-- **Store is an upsert; last writer wins.** A later store under an existing key overwrites both the value and the encoding. There is no atomic read-modify-write, so two nodes that both do get-then-store on the same key can race; design keys so a single writer owns each one when that matters.
+- **Store is an upsert; last writer wins.** A later store under an existing key overwrites the value, the encoding, and the recorded writer. The store records the storing node's `instance_id` on every write and surfaces it as `last_modified_by` on `datastore_get` and `datastore_list`. There is no atomic read-modify-write, so two nodes that both do get-then-store on the same key can race; design keys so a single writer owns each one when that matters.
+- **`datastore_list` is a metadata snapshot.** It returns every key's `encoding` and `last_modified_by` but never the value bytes (fetch those with `datastore_get`), in unspecified order, reflecting the store at the moment it was answered.
 - **The encoding tag is yours to interpret.** The store treats it as an opaque label and returns it unchanged. Reach for the `Encoding` constants for the common tags and pass any string for the rest (the Zenoh-style MIME-like tags are a good default), then have readers branch on it when you store more than one value type. A tag read back from `StoredValue.encoding` compares equal to its `Encoding` member, so `stored.encoding == Encoding.APPLICATION_JSON` works.
 - **Default timeout is 10 seconds.** Pass an explicit timeout from a latency-sensitive path so a slow or unreachable core node does not stall your node.
