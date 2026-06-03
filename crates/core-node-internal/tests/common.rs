@@ -8,9 +8,11 @@ use core_node::names;
 use core_node::nodes_repo_cache_path;
 use core_node::{CoreNode, CoreNodeArguments};
 use core_node_api::encoding::{
-    ClockRequest, ClockResponse, ClockTick, NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse,
-    NodeAddResult, NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
-    NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, NodeSource, wall_now_ns,
+    ClockRequest, ClockResponse, ClockTick, DatastoreGetRequest, DatastoreGetResponse,
+    DatastoreStoreRequest, DatastoreStoreResponse, NodeAddFeedback, NodeAddGoal,
+    NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse,
+    NodeBuildResult, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, NodeSource,
+    wall_now_ns,
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
@@ -42,6 +44,75 @@ pub fn test_node_target(name: &str) -> SenderTarget {
 /// `CORE_NODE_TAG`, not the `v1` used for ordinary test nodes.
 pub fn core_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, names::CORE_NODE_TAG).expect("core node target")
+}
+
+/// Sends a `datastore_store` request to the started core node and decodes the
+/// (empty) acknowledgement. Panics on any transport or decode failure — the
+/// store endpoint should always succeed for a well-formed request.
+pub async fn datastore_store(started: &StartedCoreNode, key: &str, value: &[u8], encoding: &str) {
+    let payload = DatastoreStoreRequest::new(key, value.to_vec(), encoding)
+        .encode()
+        .expect("encode store request should succeed");
+
+    let response = ServiceMessenger::poll(
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_target(&started.core_node_name),
+        names::DATASTORE_STORE,
+        Some(&started.core_node_name),
+        None,
+        payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("datastore store poll should succeed");
+
+    DatastoreStoreResponse::decode(&response.payload()).expect("decode store response");
+}
+
+/// Sends a `datastore_get` request to the started core node and returns the
+/// decoded response. Panics on any transport or decode failure.
+pub async fn datastore_get(started: &StartedCoreNode, key: &str) -> DatastoreGetResponse {
+    let payload = DatastoreGetRequest::new(key)
+        .encode()
+        .expect("encode get request should succeed");
+
+    let response = ServiceMessenger::poll(
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_target(&started.core_node_name),
+        names::DATASTORE_GET,
+        Some(&started.core_node_name),
+        None,
+        payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("datastore get poll should succeed");
+
+    DatastoreGetResponse::decode(&response.payload()).expect("decode get response")
+}
+
+/// Stores an arbitrary binary value, reads it back, and asserts the value and
+/// encoding survive the round trip. Shared between the mock-messenger and
+/// real-zenoh datastore tests — the latter exercises real cross-process
+/// serialization of the Cap'n Proto `Data` field.
+pub async fn assert_datastore_binary_round_trip(started: &StartedCoreNode) {
+    let key = "binary/key**?{1}";
+    let value = vec![0u8, 255, 0x80, 0xFE, 0x00, 0x42];
+    let encoding = "application/octet-stream";
+
+    datastore_store(started, key, &value, encoding).await;
+    let response = datastore_get(started, key).await;
+
+    assert!(response.found, "stored key should be found");
+    assert_eq!(response.value, value, "value should survive round trip");
+    assert_eq!(
+        response.encoding, encoding,
+        "encoding should survive round trip"
+    );
 }
 
 /// A wrapper around `TaskHandle` that aborts the task when dropped.

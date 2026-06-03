@@ -159,7 +159,7 @@ pub async fn clock_for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
     }
 
     let cache = Arc::new(AtomicU64::new(0));
-    let mut subscription = subscribe(node_runner).await?.into_inner();
+    let mut subscription = subscribe_clock(node_runner).await?.into_inner();
     let feeder_cache = Arc::clone(&cache);
     // The subscriber is detached: subscription drop happens via the
     // TaskHandle field on PeppyClock, which aborts the task and walks the
@@ -185,7 +185,7 @@ pub async fn clock_for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
 }
 
 /// Subscribe to the periodic `clock` topic on `node_runner`'s bound core node.
-pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
+pub async fn subscribe_clock(node_runner: &NodeRunner) -> Result<ClockSubscription> {
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
     let inner = TopicMessenger::subscribe(

@@ -7,7 +7,9 @@
 use std::sync::Arc;
 
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
-use peppylib::core_node::clock::{ClockSync, PeppyClock, clock_for_node, subscribe, synchronize};
+use peppylib::core_node::clock::{
+    ClockSync, PeppyClock, clock_for_node, subscribe_clock, synchronize,
+};
 use peppylib::messaging::Subscription;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -267,7 +269,10 @@ fn subscribe_clock_py<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let sub = subscribe(&runner).await.map_err(to_py_err)?.into_inner();
+        let sub = subscribe_clock(&runner)
+            .await
+            .map_err(to_py_err)?
+            .into_inner();
         Ok(PyClockSubscription {
             inner: Arc::new(Mutex::new(sub)),
         })

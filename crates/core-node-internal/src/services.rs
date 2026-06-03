@@ -1,5 +1,6 @@
 mod action_loop;
 mod clock;
+mod datastore;
 mod info;
 mod node;
 mod ping;
@@ -265,6 +266,8 @@ impl CoreNode {
         } else {
             Arc::new(WallClockSource)
         };
+        // In-memory key/value store shared by the two datastore endpoints.
+        let datastore = Arc::new(datastore::Datastore::new());
         // Set up all listeners concurrently so startup latency is bounded by
         // the slowest single listener, not the sum of all 19. They're
         // independent — no listener depends on another being registered first.
@@ -311,6 +314,22 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 self.start_time,
+            )
+            .boxed(),
+            datastore::listen_for_datastore_store(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&datastore),
+            )
+            .boxed(),
+            datastore::listen_for_datastore_get(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&datastore),
             )
             .boxed(),
             stack::listen_for_stack_launch(

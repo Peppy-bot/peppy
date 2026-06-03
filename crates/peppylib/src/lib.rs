@@ -16,8 +16,7 @@ pub mod types;
 // Core node functions
 pub use core_node::{
     clock::{
-        ClockSubscription, ClockSync, PeppyClock, clock_for_node, subscribe as subscribe_clock,
-        synchronize,
+        ClockSubscription, ClockSync, PeppyClock, clock_for_node, subscribe_clock, synchronize,
     },
     info::info,
     stack::{StackList, stack_list},
