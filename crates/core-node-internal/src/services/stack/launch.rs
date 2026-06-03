@@ -1035,7 +1035,6 @@ async fn validate_and_order_dependencies(
             env_vars: Default::default(),
             framework: Default::default(),
             bindings: Default::default(),
-            deferred_bindings: Default::default(),
         })
         .into_iter()
         .collect();

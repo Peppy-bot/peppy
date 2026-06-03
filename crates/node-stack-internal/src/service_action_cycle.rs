@@ -19,9 +19,8 @@
 //! cycle, every conforming provider gets an edge, so a config that a specific
 //! binding would keep acyclic can still be rejected. That is intentional: it is
 //! conservative-safe (it never lets a real deadlock through) and it catches the
-//! cycle the moment the second node is declared, including the deferred
-//! (`--bind-deferred`) case where the two nodes are added in separate
-//! invocations.
+//! cycle the moment the second node is declared, even when the two nodes are
+//! added in separate invocations.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -188,7 +187,7 @@ fn caller_driven_link_ids(interfaces: &Interfaces) -> BTreeMap<&str, InterfaceKi
 
 /// Does this node declare conformance to `(name, tag)`? Interface providers are
 /// matched solely by `conforms_to`, never by node-name identity, consistent
-/// with the binding validator's `producer_satisfies_slot`.
+/// with the binding validator's `slot_matches_producer`.
 fn node_conforms_to(node: &NodeConfig, name: &str, tag: &str) -> bool {
     node.interfaces
         .conforms_to
