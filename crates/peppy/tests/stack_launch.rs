@@ -1064,11 +1064,36 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     );
 }
 
-/// Writes a minimal `peppy_schema: "interface_v1"` document at `path`.
-/// Used by the conformance-binding integration tests to materialize the
-/// interface contract on disk alongside the producer/consumer node
-/// configs that reference it.
+/// Writes a minimal `peppy_schema: "interface_v1"` document at `path` with
+/// a single `video_stream` topic. Used by the conformance-binding
+/// integration tests to materialize the interface contract on disk
+/// alongside the producer/consumer node configs that reference it.
 fn write_interface_v1_doc(path: &Path, name: &str, tag: &str) {
+    write_interface_v1_doc_with_topic(
+        path,
+        name,
+        tag,
+        "video_stream",
+        r#"{
+                            width: "u32",
+                            height: "u32",
+                            encoding: "string"
+                        }"#,
+    );
+}
+
+/// Like [`write_interface_v1_doc`] but parameterized on the single topic
+/// name and its `message_format` body. The bidirectional `from_any` test
+/// uses this to materialize two distinct per-direction contracts
+/// (`joint_states` and `joint_commands`) rather than the default
+/// `video_stream` shape.
+fn write_interface_v1_doc_with_topic(
+    path: &Path,
+    name: &str,
+    tag: &str,
+    topic_name: &str,
+    message_format_json5: &str,
+) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("failed to create interface parent dir");
     }
@@ -1079,13 +1104,9 @@ fn write_interface_v1_doc(path: &Path, name: &str, tag: &str) {
             interfaces: {{
                 topics: [
                     {{
-                        name: "video_stream",
+                        name: "{topic_name}",
                         qos_profile: "sensor_data",
-                        message_format: {{
-                            width: "u32",
-                            height: "u32",
-                            encoding: "string"
-                        }}
+                        message_format: {message_format_json5}
                     }}
                 ]
             }}
@@ -1565,5 +1586,308 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
     assert!(
         err_msg.contains(&format!("{interface_name}:{consumer_wants_tag}")),
         "error should name the requested interface `{interface_name}:{consumer_wants_tag}`. Got:\n{err_msg}"
+    );
+}
+
+/// Bidirectional `from_any` is the optional, wildcard form of interface
+/// communication: two nodes each emit one interface (`conforms_to`) and
+/// consume the other through a `from_any: true` interface dep, launched
+/// with NO `--bind` on either side. Because neither slot pins a producer,
+/// the launcher must materialize each consumed slot as
+/// `SlotBinding::FromAnyUnbound` without raising
+/// `BindingInterfaceNotConformed`, and the stack must come up regardless
+/// of deployment order: no node depends on the other being present. This
+/// is the end-to-end counterpart to the unit-level binding validator tests
+/// and the wire-level flow test in `peppylib/tests/topics.rs`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_bidirectional_from_any_needs_no_binds() {
+    let serve = ServeCommandEmulation::with_zenoh()
+        .await
+        .expect("failed to create zenoh serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
+    let interface_repo_dir = tempfile::tempdir().expect("failed to create temp interface repo");
+    let controller_dump = dump_dir.path().join("arm_controller.json5");
+    let arm_dump = dump_dir.path().join("robot_arm.json5");
+
+    let state_interface = "joint_state_source";
+    let command_interface = "joint_command_source";
+    let interface_tag = "v1";
+    let controller_name = "arm_controller";
+    let arm_name = "robot_arm";
+    let node_tag = "v1";
+    let controller_instance_id = "ctrl_1";
+    let arm_instance_id = "arm_1";
+    // The consumed-interface slot link_id on each side (the direction it reads).
+    let controller_link_id = "arm"; // arm_controller consumes joint_states from the arm
+    let arm_link_id = "controller"; // robot_arm consumes joint_commands from the controller
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    // Two interface contracts, one per direction, both registered in the
+    // same fs repo so the consumer node-add can resolve each `(name, tag)`
+    // from cache even though nothing is bound.
+    write_interface_v1_doc_with_topic(
+        &interface_repo_dir
+            .path()
+            .join("joint_state_source/peppy.json5"),
+        state_interface,
+        interface_tag,
+        "joint_states",
+        r#"{
+                            positions: { $type: "array", $items: "f64", $length: 3 },
+                            velocities: { $type: "array", $items: "f64", $length: 3 },
+                            timestamp: "time"
+                        }"#,
+    );
+    write_interface_v1_doc_with_topic(
+        &interface_repo_dir
+            .path()
+            .join("joint_command_source/peppy.json5"),
+        command_interface,
+        interface_tag,
+        "joint_commands",
+        r#"{
+                            target_positions: { $type: "array", $items: "f64", $length: 3 },
+                            max_velocity: "f64"
+                        }"#,
+    );
+    let conf_dir = serve.temp_dir().join("conf");
+    fs::create_dir_all(&conf_dir).expect("create conf dir");
+    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
+        { "id": 1, "type": "fs", "path": interface_repo_dir.path().to_string_lossy() }
+    ]))
+    .expect("serialize repos");
+    fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+
+    // arm_controller: emits joint_commands (conforms_to joint_command_source),
+    // consumes joint_states from any conforming producer (from_any, unbound).
+    let controller_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
+            controller_dump.display()
+        ),
+    ];
+    let controller_depends_on = format!(
+        r#"{{
+            nodes: [],
+            interfaces: [{{
+                name: "{state_interface}",
+                tag: "{interface_tag}",
+                link_id: "{controller_link_id}",
+                from_any: true
+            }}]
+        }}"#
+    );
+    let controller_interfaces = format!(
+        r#"{{
+            conforms_to: [{{ name: "{command_interface}", tag: "{interface_tag}" }}]
+        }}"#
+    );
+    let controller_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        controller_name,
+        node_tag,
+        &git_hash,
+        &controller_run_cmd,
+        Some(&controller_depends_on),
+        Some(&controller_interfaces),
+    );
+
+    // robot_arm: emits joint_states (conforms_to joint_state_source),
+    // consumes joint_commands from any conforming producer (from_any, unbound).
+    let arm_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
+            arm_dump.display()
+        ),
+    ];
+    let arm_depends_on = format!(
+        r#"{{
+            nodes: [],
+            interfaces: [{{
+                name: "{command_interface}",
+                tag: "{interface_tag}",
+                link_id: "{arm_link_id}",
+                from_any: true
+            }}]
+        }}"#
+    );
+    let arm_interfaces = format!(
+        r#"{{
+            conforms_to: [{{ name: "{state_interface}", tag: "{interface_tag}" }}]
+        }}"#
+    );
+    let arm_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        arm_name,
+        node_tag,
+        &git_hash,
+        &arm_run_cmd,
+        Some(&arm_depends_on),
+        Some(&arm_interfaces),
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    RepoCommand {
+        command: RepoCommands::Refresh,
+    }
+    .execute(&ctx)
+    .expect("repo refresh should populate interface cache");
+
+    // The dummy `sh` subprocesses don't expose ready/health/shutdown, so
+    // impersonate them from the test process for both instances (the
+    // daemon's launch waits for each instance to report ready).
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let _ready_controller = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        controller_instance_id,
+        test_node_target(controller_name),
+    )
+    .await
+    .expect("controller ready service should start");
+    let _health_controller = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        controller_instance_id,
+        test_node_target(controller_name),
+    )
+    .await
+    .expect("controller health service should start");
+    let (_shutdown_controller, _) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        controller_instance_id,
+        test_node_target(controller_name),
+    )
+    .await
+    .expect("controller shutdown service should start");
+    let _ready_arm = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        arm_instance_id,
+        test_node_target(arm_name),
+    )
+    .await
+    .expect("arm ready service should start");
+    let _health_arm = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        arm_instance_id,
+        test_node_target(arm_name),
+    )
+    .await
+    .expect("arm health service should start");
+    let (_shutdown_arm, _) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        arm_instance_id,
+        test_node_target(arm_name),
+    )
+    .await
+    .expect("arm shutdown service should start");
+
+    // Launch BOTH deployments with NO `bindings` on either instance.
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {{
+                    source: {{ local: "{controller_path}" }},
+                    instances: [{{ instance_id: "{controller_instance_id}" }}]
+                }},
+                {{
+                    source: {{ local: "{arm_path}" }},
+                    instances: [{{ instance_id: "{arm_instance_id}" }}]
+                }}
+            ]
+        }}"#,
+        controller_path = controller_path.display(),
+        arm_path = arm_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect("launch should succeed with no binds on either bidirectional node");
+
+    // Both `sh` wrappers snapshot their runtime config before sleeping.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut controller_config: Option<config::runtime::RuntimeConfig> = None;
+    let mut arm_config: Option<config::runtime::RuntimeConfig> = None;
+    while Instant::now() < deadline {
+        if controller_config.is_none()
+            && let Ok(content) = fs::read_to_string(&controller_dump)
+            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+        {
+            controller_config = Some(cfg);
+        }
+        if arm_config.is_none()
+            && let Ok(content) = fs::read_to_string(&arm_dump)
+            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+        {
+            arm_config = Some(cfg);
+        }
+        if controller_config.is_some() && arm_config.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    for instance_id in [controller_instance_id, arm_instance_id] {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(&ctx);
+    }
+
+    let controller_config = controller_config.unwrap_or_else(|| {
+        panic!(
+            "arm_controller runtime config dump never appeared / parsed at {}",
+            controller_dump.display()
+        )
+    });
+    assert_eq!(
+        controller_config
+            .node_instance
+            .slot_bindings
+            .get(controller_link_id),
+        Some(&config::runtime::SlotBinding::FromAnyUnbound),
+        "arm_controller's `{controller_link_id}` interface slot should materialize as \
+         FromAnyUnbound when launched with no --bind",
+    );
+
+    let arm_config = arm_config.unwrap_or_else(|| {
+        panic!(
+            "robot_arm runtime config dump never appeared / parsed at {}",
+            arm_dump.display()
+        )
+    });
+    assert_eq!(
+        arm_config.node_instance.slot_bindings.get(arm_link_id),
+        Some(&config::runtime::SlotBinding::FromAnyUnbound),
+        "robot_arm's `{arm_link_id}` interface slot should materialize as \
+         FromAnyUnbound when launched with no --bind",
     );
 }

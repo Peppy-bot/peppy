@@ -1,11 +1,21 @@
 ---
 title: Bidirectional communication
-description: How to use interfaces for bidirectional data flow between two nodes without forming a dependency cycle
+description: Use from_any interfaces for optional, bidirectional data flow between two nodes, with no binding and no dependency cycle
 sidebar:
   order: 4
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+import jointStateInterface from '../guides/snippets/interfaces/joint_state_source/peppy.json5?raw';
+import jointCommandInterface from '../guides/snippets/interfaces/joint_command_source/peppy.json5?raw';
+import robotArmPythonConfig from '../guides/snippets/python/robot_arm/peppy.json5?raw';
+import robotArmRustConfig from '../guides/snippets/rust/robot_arm/peppy.json5?raw';
+import armControllerPythonConfig from '../guides/snippets/python/arm_controller/peppy.json5?raw';
+import armControllerRustConfig from '../guides/snippets/rust/arm_controller/peppy.json5?raw';
+import robotArmPython from '../guides/snippets/python/robot_arm/src/robot_arm/__main__.py?raw';
+import robotArmRust from '../guides/snippets/rust/robot_arm/src/main.rs?raw';
+import armControllerPython from '../guides/snippets/python/arm_controller/src/arm_controller/__main__.py?raw';
+import armControllerRust from '../guides/snippets/rust/arm_controller/src/main.rs?raw';
 
 In a standard PeppyOS setup, a node subscribes to topics from its declared dependencies using `link_id`.
 This creates a directed graph: if `arm_controller` depends on `robot_arm`, it can expect topics from `robot_arm`, but not the other way around, since a return dependency would make the graph circular.
@@ -15,8 +25,10 @@ Instead of one node depending on the other, each node *depends on* an interface 
 A dependency on an interface is not an edge in the node dependency graph, so two nodes can depend on each other's interfaces without ever forming a cycle.
 This is dependency inversion: each node relies on an abstract contract, not on the concrete node that happens to fulfil it.
 
+The recommended shape is a pair of **optional, wildcard, opt-in-per-direction streams** built on [`from_any: true`](/advanced_guides/interface_conformance/#from-any-interface-bindings) interface dependencies. Each side opts into the direction it consumes independently and accepts data from any conforming producer, with no `--bind` required: a `from_any` slot with zero producers materializes unbound and the node still boots. Neither node *requires* the other to run, and producers can come and go (including ones that join after launch) without editing a manifest or a launcher.
+
 :::note
-This guide assumes you are comfortable with [Interface conformance](/advanced_guides/interface_conformance): how a producer declares `conforms_to` and a consumer references an interface through `depends_on.interfaces`. Bidirectional communication is that same mechanism applied in both directions at once, so everything stays inside the standard [binding-driven routing model](/advanced_guides/topics/#bindings-and-routing). The pattern applies to **topics only**; see [Why topics only?](#why-topics-only) for why services and actions are excluded.
+This guide assumes you are comfortable with [Interface conformance](/advanced_guides/interface_conformance): how a producer declares `conforms_to`, how a consumer references an interface through `depends_on.interfaces`, and how a [`from_any` slot](/advanced_guides/interface_conformance/#from-any-interface-bindings) accepts any number of conforming producers. Bidirectional communication is that same mechanism applied in both directions at once, so everything stays inside the standard [binding-driven routing model](/advanced_guides/topics/#bindings-and-routing). The pattern applies to **topics only**; see [Why topics only?](#why-topics-only) for why services and actions are excluded.
 :::
 
 ## Example: robot arm control loop
@@ -42,194 +54,37 @@ Two interfaces model the two directions:
 - `joint_command_source` declares the `joint_commands` topic. `arm_controller` conforms to it (emits), and `robot_arm` depends on it (consumes).
 - `joint_state_source` declares the `joint_states` topic. `robot_arm` conforms to it (emits), and `arm_controller` depends on it (consumes).
 
-Neither node lists the other in `depends_on.nodes`, so there is no cycle to break.
+Neither node lists the other in `depends_on.nodes`, so there is no cycle to break. Each node declares the direction it consumes as a `from_any` slot, so the two directions are independent, opt-in streams: a controller with no arm yet, or an arm with no controller yet, still starts and simply receives nothing until a conforming producer appears.
 
 ## Define the two interfaces
 
 Each interface is a standalone `interface_v1` document in a repository peppy scans (see [Repositories](/advanced_guides/repositories)). The `message_format` lives here once, and both the producer and the consumer inherit it by reference.
 
-```json5 title="joint_state_source/peppy.json5"
-{
-  peppy_schema: "interface_v1",
-  manifest: {
-    name: "joint_state_source",
-    tag: "v1",
-  },
-  interfaces: {
-    topics: [
-      {
-        name: "joint_states",
-        qos_profile: "sensor_data",
-        message_format: {
-          positions: { $type: "array", $items: "f64", $length: 3 },
-          velocities: { $type: "array", $items: "f64", $length: 3 },
-          timestamp: "time",
-        },
-      },
-    ],
-  },
-}
-```
+<Code code={jointStateInterface} lang="json5" title="joint_state_source/peppy.json5" />
 
-```json5 title="joint_command_source/peppy.json5"
-{
-  peppy_schema: "interface_v1",
-  manifest: {
-    name: "joint_command_source",
-    tag: "v1",
-  },
-  interfaces: {
-    topics: [
-      {
-        name: "joint_commands",
-        qos_profile: "reliable",
-        message_format: {
-          target_positions: { $type: "array", $items: "f64", $length: 3 },
-          max_velocity: "f64",
-        },
-      },
-    ],
-  },
-}
-```
+<Code code={jointCommandInterface} lang="json5" title="joint_command_source/peppy.json5" />
 
 After `peppy repo refresh`, both interfaces are cached and addressable by `(name, tag)`.
 
 ## Configure the nodes
 
-Each node conforms to the interface it emits and depends on the interface it consumes. The consumed topic references its interface dependency through `link_id`, exactly like any linked topic.
+Each node conforms to the interface it emits and depends on the interface it consumes. The consumed dependency is declared `from_any: true`: it is optional and wildcard, so the node binds no specific producer and accepts every conforming one. The consumed topic references its interface dependency through `link_id`, exactly like any linked topic.
 
 <Tabs>
   <TabItem label="Python">
-    ```json5 title="robot_arm/peppy.json5"
-    {
-      peppy_schema: "node_v1",
-      manifest: {
-        name: "robot_arm",
-        tag: "v1",
-        depends_on: {
-          interfaces: [
-            { name: "joint_command_source", tag: "v1", link_id: "controller" },
-          ],
-        },
-      },
-      interfaces: {
-        // Emits joint_states by conforming to the interface (inherited by reference)
-        conforms_to: [
-          { name: "joint_state_source", tag: "v1" },
-        ],
-        topics: {
-          consumes: [
-            { name: "joint_commands", link_id: "controller" },
-          ],
-        },
-      },
-      execution: {
-        language: "python",
-        build_cmd: ["uv", "sync"],
-        run_cmd: ["uv", "run", "robot_arm"],
-      },
-    }
-    ```
+    <Code code={robotArmPythonConfig} lang="json5" title="robot_arm/peppy.json5" />
   </TabItem>
   <TabItem label="Rust">
-    ```json5 title="robot_arm/peppy.json5"
-    {
-      peppy_schema: "node_v1",
-      manifest: {
-        name: "robot_arm",
-        tag: "v1",
-        depends_on: {
-          interfaces: [
-            { name: "joint_command_source", tag: "v1", link_id: "controller" },
-          ],
-        },
-      },
-      interfaces: {
-        // Emits joint_states by conforming to the interface (inherited by reference)
-        conforms_to: [
-          { name: "joint_state_source", tag: "v1" },
-        ],
-        topics: {
-          consumes: [
-            { name: "joint_commands", link_id: "controller" },
-          ],
-        },
-      },
-      execution: {
-        language: "rust",
-        build_cmd: ["cargo", "build", "--release"],
-        run_cmd: ["./target/release/robot_arm"],
-      },
-    }
-    ```
+    <Code code={robotArmRustConfig} lang="json5" title="robot_arm/peppy.json5" />
   </TabItem>
 </Tabs>
 
 <Tabs>
   <TabItem label="Python">
-    ```json5 title="arm_controller/peppy.json5"
-    {
-      peppy_schema: "node_v1",
-      manifest: {
-        name: "arm_controller",
-        tag: "v1",
-        depends_on: {
-          interfaces: [
-            { name: "joint_state_source", tag: "v1", link_id: "arm" },
-          ],
-        },
-      },
-      interfaces: {
-        // Emits joint_commands by conforming to the interface (inherited by reference)
-        conforms_to: [
-          { name: "joint_command_source", tag: "v1" },
-        ],
-        topics: {
-          consumes: [
-            { name: "joint_states", link_id: "arm" },
-          ],
-        },
-      },
-      execution: {
-        language: "python",
-        build_cmd: ["uv", "sync"],
-        run_cmd: ["uv", "run", "arm_controller"],
-      },
-    }
-    ```
+    <Code code={armControllerPythonConfig} lang="json5" title="arm_controller/peppy.json5" />
   </TabItem>
   <TabItem label="Rust">
-    ```json5 title="arm_controller/peppy.json5"
-    {
-      peppy_schema: "node_v1",
-      manifest: {
-        name: "arm_controller",
-        tag: "v1",
-        depends_on: {
-          interfaces: [
-            { name: "joint_state_source", tag: "v1", link_id: "arm" },
-          ],
-        },
-      },
-      interfaces: {
-        // Emits joint_commands by conforming to the interface (inherited by reference)
-        conforms_to: [
-          { name: "joint_command_source", tag: "v1" },
-        ],
-        topics: {
-          consumes: [
-            { name: "joint_states", link_id: "arm" },
-          ],
-        },
-      },
-      execution: {
-        language: "rust",
-        build_cmd: ["cargo", "build", "--release"],
-        run_cmd: ["./target/release/arm_controller"],
-      },
-    }
-    ```
+    <Code code={armControllerRustConfig} lang="json5" title="arm_controller/peppy.json5" />
   </TabItem>
 </Tabs>
 
@@ -237,138 +92,55 @@ Each node plays two roles at once:
 
 | Node | Emits (via `conforms_to`) | Consumes (via `depends_on.interfaces`) |
 |---|---|---|
-| `robot_arm` | `joint_states` (conforms to `joint_state_source`) | `joint_commands` (`link_id: controller`) |
-| `arm_controller` | `joint_commands` (conforms to `joint_command_source`) | `joint_states` (`link_id: arm`) |
+| `robot_arm` | `joint_states` (conforms to `joint_state_source`) | `joint_commands` (`from_any`, `link_id: controller`) |
+| `arm_controller` | `joint_commands` (conforms to `joint_command_source`) | `joint_states` (`from_any`, `link_id: arm`) |
 
-## Launching with mutual bindings
+## Launching (any order, no `--bind`)
 
-Both interface dependencies are pinned (the default), so each one needs an explicit binding. The launcher resolves both deployments together, which is what lets the two instances point at each other without a chicken-and-egg ordering problem.
-
-```json5 title="peppy_launcher.json5"
-{
-  peppy_schema: "launcher_v1",
-  deployments: [
-    {
-      source: { name: "robot_arm:v1" },
-      instances: [
-        {
-          instance_id: "arm_1",
-          bindings: { controller: "ctrl_1" },   // controller slot <- arm_controller instance
-        },
-      ],
-    },
-    {
-      source: { name: "arm_controller:v1" },
-      instances: [
-        {
-          instance_id: "ctrl_1",
-          bindings: { arm: "arm_1" },            // arm slot <- robot_arm instance
-        },
-      ],
-    },
-  ],
-}
-```
-
-At binding time the launcher checks conformance in both directions: `ctrl_1` must run a node that conforms to `joint_command_source` (it runs `arm_controller:v1`, which does), and `arm_1` must conform to `joint_state_source` (it runs `robot_arm:v1`, which does). A binding to a non-conforming instance is rejected with `BindingInterfaceNotConformed`.
-
-Build the generated code and launch the stack with:
+Because every consumed dependency is `from_any`, no slot needs a binding. Sync each node with `-r` so its interface references resolve from the repository cache, then start the two nodes in any order with no `--bind`. Each one boots immediately, whether or not the other is up yet, and starts receiving as soon as a conforming producer publishes.
 
 ```sh
 peppy repo refresh
 peppy node sync -r ./robot_arm
 peppy node sync -r ./arm_controller
-peppy stack launch ./peppy_launcher.json5
+peppy node run robot_arm:v1        # boots with zero controllers bound
+peppy node run arm_controller:v1   # boots with zero arms bound
 ```
+
+The order does not matter: running `arm_controller:v1` first works just as well, since neither node depends on the other being present. You can also bring both up together with a launcher that lists the two deployments and no `bindings`:
+
+```json5 title="peppy_launcher.json5"
+{
+  peppy_schema: "launcher_v1",
+  deployments: [
+    { source: { name: "robot_arm:v1" }, instances: [{ instance_id: "arm_1" }] },
+    { source: { name: "arm_controller:v1" }, instances: [{ instance_id: "ctrl_1" }] },
+  ],
+}
+```
+
+Then `peppy stack launch ./peppy_launcher.json5`. There are no `bindings` to resolve, so the launcher brings both instances up regardless of order.
+
+:::caution[`from_any` makes the dependency optional, not the node's work]
+`from_any` makes a dependency optional *at the binding layer*: the node boots with zero producers and the launcher never rejects it for a missing bind. Whether the node then does useful work is up to its own code. The control loops below block on `await …on_next_message_received(...)`, so with no producer a node never receives, and therefore never emits either. Two such loops started together would each wait for the other's first message and neither would ever publish. If a node must run open-loop (emit before it has received anything), do not gate all of its output behind a never-arriving input: seed the first message from one side, drive emission from a timer, or use a receive timeout, so the loop can start on its own.
+:::
+
+:::note[Conformance is still enforced, just not up front]
+An unbound `from_any` slot gets no launch-time [`BindingInterfaceNotConformed`](/advanced_guides/interface_conformance/#pinned-interface-bindings) rejection, because nothing is bound to check against. That trades up-front validation for flexibility, not correctness: only nodes that `conforms_to` the interface ever publish on its topic, so every message the consumer receives is still conformant. A non-conforming node never appears on the wire for that interface in the first place.
+:::
 
 ## Receiving messages
 
 After `peppy node sync`, the code generator creates a module for each consumed topic under `peppygen.consumed_topics` (Python) / `peppygen::consumed_topics` (Rust), and a module for each emitted topic under `peppygen.emitted_topics`.
-Because both consumed topics arrive through an interface dependency with a `link_id`, their module names follow the linked convention `<link_id>_<topic_name>`: `controller_joint_commands` inside `robot_arm` and `arm_joint_states` inside `arm_controller`.
+Because both consumed topics arrive through an interface dependency with a `link_id`, their module names follow the linked convention `<link_id>_<topic_name>`: `controller_joint_commands` inside `robot_arm` and `arm_joint_states` inside `arm_controller`. The `from_any` flag does not change these names; it only widens the slot to accept every conforming producer.
 Emitted topics inherited through `conforms_to` nest under their interface as `<interface_name>.<interface_tag>.<topic_name>`: `joint_state_source.v1.joint_states` inside `robot_arm` and `joint_command_source.v1.joint_commands` inside `arm_controller`. (A topic emitted natively, declared in the node's own `topics.emits`, would instead be flat `<topic_name>`.)
 
 <Tabs>
   <TabItem label="Python">
-    ```python title="src/robot_arm/__main__.py"
-    import asyncio
-    import time
-
-    from peppygen import NodeBuilder, NodeRunner
-    from peppygen.parameters import Parameters
-    from peppygen.consumed_topics import controller_joint_commands
-    from peppygen.emitted_topics.joint_state_source.v1 import joint_states
-
-
-    async def handle_commands(node_runner: NodeRunner):
-        while True:
-            instance_id, command = await controller_joint_commands.on_next_message_received(
-                node_runner,
-            )
-
-            print(
-                f"received from {instance_id}: "
-                f"target={command.target_positions} max_vel={command.max_velocity}"
-            )
-
-            # Drive the joints, then report state
-            await joint_states.emit(
-                node_runner,
-                command.target_positions,
-                [0.0, 0.0, 0.0],
-                time.time(),
-            )
-
-
-    async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
-        return [asyncio.create_task(handle_commands(node_runner))]
-
-
-    def main():
-        NodeBuilder().run(setup)
-
-
-    if __name__ == "__main__":
-        main()
-    ```
+    <Code code={robotArmPython} lang="python" title="src/robot_arm/__main__.py" />
   </TabItem>
   <TabItem label="Rust">
-    ```rust title="src/main.rs"
-    use peppygen::consumed_topics::controller_joint_commands;
-    use peppygen::emitted_topics::joint_state_source::v1::joint_states;
-    use peppygen::{NodeBuilder, Parameters, Result};
-
-    fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
-            let node_runner_clone = node_runner.clone();
-            tokio::spawn(async move {
-                loop {
-                    let (instance_id, command) = controller_joint_commands::on_next_message_received(
-                        &node_runner_clone,
-                        None, // from_core_node (None = any)
-                    )
-                    .await
-                    .expect("failed to receive joint command");
-
-                    println!(
-                        "received from {}: target={:?} max_vel={}",
-                        instance_id, command.target_positions, command.max_velocity
-                    );
-
-                    // Drive the joints, then report state
-                    let _ = joint_states::emit(
-                        &node_runner_clone,
-                        command.target_positions,
-                        [0.0, 0.0, 0.0],
-                        std::time::SystemTime::now(),
-                    )
-                    .await;
-                }
-            });
-
-            Ok(())
-        })
-    }
-    ```
+    <Code code={robotArmRust} lang="rust" title="src/main.rs" />
   </TabItem>
 </Tabs>
 
@@ -376,91 +148,14 @@ On the other side, `arm_controller` consumes `joint_states` and emits `joint_com
 
 <Tabs>
   <TabItem label="Python">
-    ```python title="src/arm_controller/__main__.py"
-    import asyncio
-
-    from peppygen import NodeBuilder, NodeRunner
-    from peppygen.parameters import Parameters
-    from peppygen.consumed_topics import arm_joint_states
-    from peppygen.emitted_topics.joint_command_source.v1 import joint_commands
-
-
-    def compute_next_target(current: list[float]) -> list[float]:
-        # Trajectory planning logic
-        return [current[0] + 0.1, current[1], current[2]]
-
-
-    async def control_loop(node_runner: NodeRunner):
-        while True:
-            instance_id, state = await arm_joint_states.on_next_message_received(
-                node_runner,
-            )
-
-            # Compute next target based on current state
-            target = compute_next_target(state.positions)
-
-            await joint_commands.emit(
-                node_runner,
-                target,
-                1.0,  # max_velocity
-            )
-
-
-    async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
-        return [asyncio.create_task(control_loop(node_runner))]
-
-
-    def main():
-        NodeBuilder().run(setup)
-
-
-    if __name__ == "__main__":
-        main()
-    ```
+    <Code code={armControllerPython} lang="python" title="src/arm_controller/__main__.py" />
   </TabItem>
   <TabItem label="Rust">
-    ```rust title="src/main.rs"
-    use peppygen::consumed_topics::arm_joint_states;
-    use peppygen::emitted_topics::joint_command_source::v1::joint_commands;
-    use peppygen::{NodeBuilder, Parameters, Result};
-
-    fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
-            let node_runner_clone = node_runner.clone();
-            tokio::spawn(async move {
-                loop {
-                    let (instance_id, state) = arm_joint_states::on_next_message_received(
-                        &node_runner_clone,
-                        None,
-                    )
-                    .await
-                    .expect("failed to receive joint state");
-
-                    // Compute next target based on current state
-                    let target = compute_next_target(&state.positions);
-
-                    let _ = joint_commands::emit(
-                        &node_runner_clone,
-                        target,
-                        1.0, // max_velocity
-                    )
-                    .await;
-                }
-            });
-
-            Ok(())
-        })
-    }
-
-    fn compute_next_target(current: &[f64; 3]) -> [f64; 3] {
-        // Trajectory planning logic
-        [current[0] + 0.1, current[1], current[2]]
-    }
-    ```
+    <Code code={armControllerRust} lang="rust" title="src/main.rs" />
   </TabItem>
 </Tabs>
 
-Both directions use the standard linked consumed-topic API. `on_next_message_received` returns the producer's `instance_id` alongside the message, and the launcher binding steers the routing, so there is no special call-site API for bidirectional topics. A node that both emits and consumes is simply a node that `conforms_to` one interface and `depends_on` another.
+Both directions use the standard linked consumed-topic API. `on_next_message_received` returns the producer's `instance_id` alongside the message, so a `from_any` consumer tells its producers apart by that id: a single arm, several arms, or one that joins late all arrive through the same module, distinguished only by `instance_id`. There is no special call-site API for bidirectional topics: a node that both emits and consumes is simply a node that `conforms_to` one interface and `depends_on` another.
 
 ## Why topics only?
 
@@ -488,7 +183,7 @@ If two nodes need a request-response exchange rather than a stream, do not try t
 Reach for this interface-based pattern when:
 
 - **A dependency cycle would otherwise form**: two nodes need to exchange data, and modelling either direction as a `depends_on.nodes` link would make the graph circular. Pointing each direction at an interface breaks the cycle.
-- **The producer should be swappable**: the consumer binds any conforming producer at launch instead of hard-coding a node. A `robot_arm` can be driven by a teleoperation node, an autonomous planner, or a calibration script, as long as each conforms to `joint_command_source`. Use a [`from_any` interface slot](/advanced_guides/interface_conformance/#from-any-interface-bindings) to accept several controllers at once.
+- **The producer should be swappable**: the consumer accepts any conforming producer through a [`from_any` slot](/advanced_guides/interface_conformance/#from-any-interface-bindings) instead of hard-coding a node. A `robot_arm` can be driven by a teleoperation node, an autonomous planner, or a calibration script, as long as each conforms to `joint_command_source`, and several can drive it at once.
 - **Both directions run continuously**: each side publishes for the whole lifetime of the nodes, with no defined start or end.
 
 For a one-way producer-to-consumer link with no back-edge, you do not need any of this: a plain [linked consumed topic](/advanced_guides/topics) is simpler. Use the bidirectional pattern only when the return direction would otherwise create a cycle.

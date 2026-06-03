@@ -1,0 +1,30 @@
+{
+  peppy_schema: "node_v1",
+  manifest: {
+    name: "robot_arm",
+    tag: "v1",
+    depends_on: {
+      interfaces: [
+        // Optional, wildcard, opt-in-per-direction: consume joint_commands
+        // from any conforming controller, with no binding required.
+        { name: "joint_command_source", tag: "v1", link_id: "controller", from_any: true },
+      ],
+    },
+  },
+  interfaces: {
+    // Emits joint_states by conforming to the interface (inherited by reference)
+    conforms_to: [
+      { name: "joint_state_source", tag: "v1" },
+    ],
+    topics: {
+      consumes: [
+        { name: "joint_commands", link_id: "controller" },
+      ],
+    },
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync"],
+    run_cmd: ["uv", "run", "robot_arm"],
+  },
+}
