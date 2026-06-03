@@ -19,7 +19,7 @@ use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
 use peppylib::messaging::{MessengerHandle, ResultStatus, SenderTarget, TopicMessenger};
 use peppylib::runtime::{TaskHandle, spawn};
-use peppylib::{ActionMessenger, ServiceMessenger};
+use peppylib::{ActionMessenger, Message, Payload, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -47,6 +47,26 @@ pub fn core_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, names::CORE_NODE_TAG).expect("core node target")
 }
 
+/// Polls a datastore service on the started core node using the shared test
+/// routing and 5-second timeout, returning the response message. Panics on any
+/// transport failure — the datastore endpoints should always answer a
+/// well-formed request.
+async fn poll_datastore(started: &StartedCoreNode, service: &str, payload: Payload) -> Message {
+    ServiceMessenger::poll(
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_target(&started.core_node_name),
+        service,
+        Some(&started.core_node_name),
+        None,
+        payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("datastore {service} poll should succeed: {e}"))
+}
+
 /// Sends a `datastore_store` request to the started core node and decodes the
 /// (empty) acknowledgement. Panics on any transport or decode failure — the
 /// store endpoint should always succeed for a well-formed request.
@@ -54,21 +74,7 @@ pub async fn datastore_store(started: &StartedCoreNode, key: &str, value: &[u8],
     let payload = DatastoreStoreRequest::new(key, value.to_vec(), encoding)
         .encode()
         .expect("encode store request should succeed");
-
-    let response = ServiceMessenger::poll(
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(&started.core_node_name),
-        names::DATASTORE_STORE,
-        Some(&started.core_node_name),
-        None,
-        payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("datastore store poll should succeed");
-
+    let response = poll_datastore(started, names::DATASTORE_STORE, payload).await;
     DatastoreStoreResponse::decode(&response.payload()).expect("decode store response");
 }
 
@@ -78,21 +84,7 @@ pub async fn datastore_get(started: &StartedCoreNode, key: &str) -> DatastoreGet
     let payload = DatastoreGetRequest::new(key)
         .encode()
         .expect("encode get request should succeed");
-
-    let response = ServiceMessenger::poll(
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(&started.core_node_name),
-        names::DATASTORE_GET,
-        Some(&started.core_node_name),
-        None,
-        payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("datastore get poll should succeed");
-
+    let response = poll_datastore(started, names::DATASTORE_GET, payload).await;
     DatastoreGetResponse::decode(&response.payload()).expect("decode get response")
 }
 
@@ -102,21 +94,7 @@ pub async fn datastore_list(started: &StartedCoreNode) -> DatastoreListResponse 
     let payload = DatastoreListRequest::new()
         .encode()
         .expect("encode list request should succeed");
-
-    let response = ServiceMessenger::poll(
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(&started.core_node_name),
-        names::DATASTORE_LIST,
-        Some(&started.core_node_name),
-        None,
-        payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("datastore list poll should succeed");
-
+    let response = poll_datastore(started, names::DATASTORE_LIST, payload).await;
     DatastoreListResponse::decode(&response.payload()).expect("decode list response")
 }
 
@@ -126,21 +104,7 @@ pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
     let payload = DatastoreRemoveRequest::new(key)
         .encode()
         .expect("encode remove request should succeed");
-
-    let response = ServiceMessenger::poll(
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(&started.core_node_name),
-        names::DATASTORE_REMOVE,
-        Some(&started.core_node_name),
-        None,
-        payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("datastore remove poll should succeed");
-
+    let response = poll_datastore(started, names::DATASTORE_REMOVE, payload).await;
     DatastoreRemoveResponse::decode(&response.payload())
         .expect("decode remove response")
         .removed

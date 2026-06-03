@@ -266,10 +266,11 @@ impl CoreNode {
         } else {
             Arc::new(WallClockSource)
         };
-        // In-memory key/value store shared by the two datastore endpoints.
+        // In-memory key/value store shared by the four datastore endpoints
+        // (store, get, list, remove).
         let datastore = Arc::new(datastore::Datastore::new());
         // Set up all listeners concurrently so startup latency is bounded by
-        // the slowest single listener, not the sum of all 21. They're
+        // the slowest single listener, not the sum of all 24. They're
         // independent — no listener depends on another being registered first.
         let setup: Vec<BoxFuture<'_, Result<JoinHandle<Result<()>>>>> = vec![
             ping::listen_for_ping(

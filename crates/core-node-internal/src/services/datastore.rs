@@ -79,19 +79,26 @@ impl Datastore {
     }
 }
 
-pub async fn listen_for_datastore_store(
+/// Spawns a listener for one datastore service. Every datastore endpoint shares
+/// the same wiring (listen on the core node's service channel, then answer each
+/// request through `handler`), so they differ only by `service_name` and the
+/// per-request `handler`. Failures from `handler` are wrapped by
+/// [`into_service_response`].
+async fn spawn_datastore_listener(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
     node_name: &str,
+    service_name: &str,
     store: Arc<Datastore>,
+    handler: fn(&Datastore, &ServiceRequestContext) -> Result<Payload>,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::DATASTORE_STORE,
+        service_name,
     )
     .await?;
 
@@ -99,13 +106,32 @@ pub async fn listen_for_datastore_store(
         endpoint
             .handle_requests(move |context| {
                 let store = Arc::clone(&store);
-                async move { handle_store_request(store.as_ref(), context) }
+                async move { into_service_response(&context, handler(store.as_ref(), &context)) }
             })
             .await
             .map_err(Into::into)
     });
 
     Ok(handle)
+}
+
+pub async fn listen_for_datastore_store(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    instance_id: &str,
+    node_name: &str,
+    store: Arc<Datastore>,
+) -> Result<JoinHandle<Result<()>>> {
+    spawn_datastore_listener(
+        messenger,
+        core_node_name,
+        instance_id,
+        node_name,
+        names::DATASTORE_STORE,
+        store,
+        handle_store_request,
+    )
+    .await
 }
 
 pub async fn listen_for_datastore_get(
@@ -115,26 +141,16 @@ pub async fn listen_for_datastore_get(
     node_name: &str,
     store: Arc<Datastore>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
+    spawn_datastore_listener(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        node_name,
         names::DATASTORE_GET,
+        store,
+        handle_get_request,
     )
-    .await?;
-
-    let handle = tokio::spawn(async move {
-        endpoint
-            .handle_requests(move |context| {
-                let store = Arc::clone(&store);
-                async move { handle_get_request(store.as_ref(), context) }
-            })
-            .await
-            .map_err(Into::into)
-    });
-
-    Ok(handle)
+    .await
 }
 
 pub async fn listen_for_datastore_list(
@@ -144,26 +160,16 @@ pub async fn listen_for_datastore_list(
     node_name: &str,
     store: Arc<Datastore>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
+    spawn_datastore_listener(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        node_name,
         names::DATASTORE_LIST,
+        store,
+        handle_list_request,
     )
-    .await?;
-
-    let handle = tokio::spawn(async move {
-        endpoint
-            .handle_requests(move |context| {
-                let store = Arc::clone(&store);
-                async move { handle_list_request(store.as_ref(), context) }
-            })
-            .await
-            .map_err(Into::into)
-    });
-
-    Ok(handle)
+    .await
 }
 
 pub async fn listen_for_datastore_remove(
@@ -173,40 +179,31 @@ pub async fn listen_for_datastore_remove(
     node_name: &str,
     store: Arc<Datastore>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
+    spawn_datastore_listener(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        node_name,
         names::DATASTORE_REMOVE,
+        store,
+        handle_remove_request,
     )
-    .await?;
-
-    let handle = tokio::spawn(async move {
-        endpoint
-            .handle_requests(move |context| {
-                let store = Arc::clone(&store);
-                async move { handle_remove_request(store.as_ref(), context) }
-            })
-            .await
-            .map_err(Into::into)
-    });
-
-    Ok(handle)
+    .await
 }
 
-fn handle_store_request(store: &Datastore, context: ServiceRequestContext) -> PeppyResult<Payload> {
-    let instance_id = context.message().instance_id().to_string();
-    handle_store_request_inner(store, &context).map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: instance_id,
+/// Wraps a handler's `Result` into the wire-level `PeppyResult`, tagging any
+/// failure as an `InvalidServiceRequest` from the sending instance.
+fn into_service_response(
+    context: &ServiceRequestContext,
+    result: Result<Payload>,
+) -> PeppyResult<Payload> {
+    result.map_err(|e| PeppyError::InvalidServiceRequest {
+        identifier: context.message().instance_id().to_string(),
         reason: e.to_string(),
     })
 }
 
-fn handle_store_request_inner(
-    store: &Datastore,
-    context: &ServiceRequestContext,
-) -> Result<Payload> {
+fn handle_store_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
     let request = DatastoreStoreRequest::decode(context.message().payload().as_ref())?;
     let last_modified_by = context.message().instance_id().to_owned();
 
@@ -228,15 +225,7 @@ fn handle_store_request_inner(
     DatastoreStoreResponse::new().encode().map_err(Into::into)
 }
 
-fn handle_get_request(store: &Datastore, context: ServiceRequestContext) -> PeppyResult<Payload> {
-    let instance_id = context.message().instance_id().to_string();
-    handle_get_request_inner(store, &context).map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: instance_id,
-        reason: e.to_string(),
-    })
-}
-
-fn handle_get_request_inner(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
+fn handle_get_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
     let request = DatastoreGetRequest::decode(context.message().payload().as_ref())?;
 
     debug!(
@@ -255,18 +244,7 @@ fn handle_get_request_inner(store: &Datastore, context: &ServiceRequestContext) 
     response.encode().map_err(Into::into)
 }
 
-fn handle_list_request(store: &Datastore, context: ServiceRequestContext) -> PeppyResult<Payload> {
-    let instance_id = context.message().instance_id().to_string();
-    handle_list_request_inner(store, &context).map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: instance_id,
-        reason: e.to_string(),
-    })
-}
-
-fn handle_list_request_inner(
-    store: &Datastore,
-    context: &ServiceRequestContext,
-) -> Result<Payload> {
+fn handle_list_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
     // Decode to validate the (empty) request shape before answering.
     DatastoreListRequest::decode(context.message().payload().as_ref())?;
 
@@ -283,21 +261,7 @@ fn handle_list_request_inner(
         .map_err(Into::into)
 }
 
-fn handle_remove_request(
-    store: &Datastore,
-    context: ServiceRequestContext,
-) -> PeppyResult<Payload> {
-    let instance_id = context.message().instance_id().to_string();
-    handle_remove_request_inner(store, &context).map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: instance_id,
-        reason: e.to_string(),
-    })
-}
-
-fn handle_remove_request_inner(
-    store: &Datastore,
-    context: &ServiceRequestContext,
-) -> Result<Payload> {
+fn handle_remove_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
     let request = DatastoreRemoveRequest::decode(context.message().payload().as_ref())?;
 
     let removed = store.remove(&request.key);
