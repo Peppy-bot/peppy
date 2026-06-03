@@ -270,7 +270,7 @@ impl CoreNode {
         // (store, get, list, remove).
         let datastore = Arc::new(datastore::Datastore::new());
         // Set up all listeners concurrently so startup latency is bounded by
-        // the slowest single listener, not the sum of all 24. They're
+        // the slowest single listener, not the sum of all of them. They're
         // independent — no listener depends on another being registered first.
         let setup: Vec<BoxFuture<'_, Result<JoinHandle<Result<()>>>>> = vec![
             ping::listen_for_ping(
