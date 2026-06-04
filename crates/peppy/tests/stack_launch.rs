@@ -1075,10 +1075,10 @@ fn write_interface_v1_doc(path: &Path, name: &str, tag: &str) {
         tag,
         "video_stream",
         r#"{
-                            width: "u32",
-                            height: "u32",
-                            encoding: "string"
-                        }"#,
+            width: "u32",
+            height: "u32",
+            encoding: "string"
+        }"#,
     );
 }
 
@@ -1636,10 +1636,10 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
         interface_tag,
         "joint_states",
         r#"{
-                            positions: { $type: "array", $items: "f64", $length: 3 },
-                            velocities: { $type: "array", $items: "f64", $length: 3 },
-                            timestamp: "time"
-                        }"#,
+            positions: { $type: "array", $items: "f64", $length: 3 },
+            velocities: { $type: "array", $items: "f64", $length: 3 },
+            timestamp: "time"
+        }"#,
     );
     write_interface_v1_doc_with_topic(
         &interface_repo_dir
@@ -1649,9 +1649,9 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
         interface_tag,
         "joint_commands",
         r#"{
-                            target_positions: { $type: "array", $items: "f64", $length: 3 },
-                            max_velocity: "f64"
-                        }"#,
+            target_positions: { $type: "array", $items: "f64", $length: 3 },
+            max_velocity: "f64"
+        }"#,
     );
     let conf_dir = serve.temp_dir().join("conf");
     fs::create_dir_all(&conf_dir).expect("create conf dir");
