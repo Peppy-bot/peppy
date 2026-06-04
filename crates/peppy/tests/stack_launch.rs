@@ -20,7 +20,7 @@ use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
-use super::common::{TEST_NODE_TAG, test_node_target};
+use super::common::test_node_target;
 use peppylib::core_node::transport::poll_stack_list;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
@@ -128,7 +128,6 @@ async fn node_launch_command_succeed() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds_deferred: Vec::new(),
             binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
@@ -370,7 +369,6 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds_deferred: Vec::new(),
             binds: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
@@ -1066,11 +1064,36 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     );
 }
 
-/// Writes a minimal `peppy_schema: "interface_v1"` document at `path`.
-/// Used by the conformance-binding integration tests to materialize the
-/// interface contract on disk alongside the producer/consumer node
-/// configs that reference it.
+/// Writes a minimal `peppy_schema: "interface_v1"` document at `path` with
+/// a single `video_stream` topic. Used by the conformance-binding
+/// integration tests to materialize the interface contract on disk
+/// alongside the producer/consumer node configs that reference it.
 fn write_interface_v1_doc(path: &Path, name: &str, tag: &str) {
+    write_interface_v1_doc_with_topic(
+        path,
+        name,
+        tag,
+        "video_stream",
+        r#"{
+            width: "u32",
+            height: "u32",
+            encoding: "string"
+        }"#,
+    );
+}
+
+/// Like [`write_interface_v1_doc`] but parameterized on the single topic
+/// name and its `message_format` body. The bidirectional `from_any` test
+/// uses this to materialize two distinct per-direction contracts
+/// (`joint_states` and `joint_commands`) rather than the default
+/// `video_stream` shape.
+fn write_interface_v1_doc_with_topic(
+    path: &Path,
+    name: &str,
+    tag: &str,
+    topic_name: &str,
+    message_format_json5: &str,
+) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("failed to create interface parent dir");
     }
@@ -1081,13 +1104,9 @@ fn write_interface_v1_doc(path: &Path, name: &str, tag: &str) {
             interfaces: {{
                 topics: [
                     {{
-                        name: "video_stream",
+                        name: "{topic_name}",
                         qos_profile: "sensor_data",
-                        message_format: {{
-                            width: "u32",
-                            height: "u32",
-                            encoding: "string"
-                        }}
+                        message_format: {message_format_json5}
                     }}
                 ]
             }}
@@ -1570,475 +1589,70 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Deferred bindings (`peppy node run --bind-deferred`)
-//
-// These exercise the incremental CLI path that the bidirectional-communication
-// guide documents: a consumer pins a slot to a producer that is not running
-// yet, the binding is recorded as `SlotBinding::Deferred`, and its conformance
-// is verified late — surfaced as a per-slot `DeferredStatus` in `stack list`.
-// They drive `peppy node add -r --bind-deferred`, which shares the exact
-// `validate_and_run_instance` path as `peppy node run --bind-deferred`.
-// ---------------------------------------------------------------------------
+/// Bidirectional `from_any` is the optional, wildcard form of interface
+/// communication: two nodes each emit one interface (`conforms_to`) and
+/// consume the other through a `from_any: true` interface dep, launched
+/// with NO `--bind` on either side. Because neither slot pins a producer,
+/// the launcher must materialize each consumed slot as
+/// `SlotBinding::FromAnyUnbound` without raising
+/// `BindingInterfaceNotConformed`, and the stack must come up regardless
+/// of deployment order: no node depends on the other being present. This
+/// is the end-to-end counterpart to the unit-level binding validator tests
+/// and the wire-level flow test in `peppylib/tests/topics.rs`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_bidirectional_from_any_needs_no_binds() {
+    let serve = ServeCommandEmulation::with_zenoh()
+        .await
+        .expect("failed to create zenoh serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
 
-/// Writes a `joint_command_source`-style interface doc, registers its repo,
-/// and writes a consumer (pinned interface dep on `link_id`) plus a producer
-/// (`conforms_to` per `producer_conforms`, or none). Mirrors the
-/// `write_node_config_for_helper` shape used by the conformance tests above.
-/// Returns `(consumer_node_dir, producer_node_dir)`.
-#[allow(clippy::too_many_arguments)]
-fn write_deferred_fixture(
-    nodes_dir: &Path,
-    interface_repo_dir: &Path,
-    serve_temp: &Path,
-    git_hash: &str,
-    interface_name: &str,
-    interface_tag: &str,
-    consumer_name: &str,
-    producer_name: &str,
-    link_id: &str,
-    producer_conforms: bool,
-) -> (PathBuf, PathBuf) {
-    write_interface_v1_doc(
-        &interface_repo_dir.join("iface/peppy.json5"),
-        interface_name,
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
+    let interface_repo_dir = tempfile::tempdir().expect("failed to create temp interface repo");
+    let controller_dump = dump_dir.path().join("arm_controller.json5");
+    let arm_dump = dump_dir.path().join("robot_arm.json5");
+
+    let state_interface = "joint_state_source";
+    let command_interface = "joint_command_source";
+    let interface_tag = "v1";
+    let controller_name = "arm_controller";
+    let arm_name = "robot_arm";
+    let node_tag = "v1";
+    let controller_instance_id = "ctrl_1";
+    let arm_instance_id = "arm_1";
+    // The consumed-interface slot link_id on each side (the direction it reads).
+    let controller_link_id = "arm"; // arm_controller consumes joint_states from the arm
+    let arm_link_id = "controller"; // robot_arm consumes joint_commands from the controller
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    // Two interface contracts, one per direction, both registered in the
+    // same fs repo so the consumer node-add can resolve each `(name, tag)`
+    // from cache even though nothing is bound.
+    write_interface_v1_doc_with_topic(
+        &interface_repo_dir
+            .path()
+            .join("joint_state_source/peppy.json5"),
+        state_interface,
         interface_tag,
+        "joint_states",
+        r#"{
+            positions: { $type: "array", $items: "f64", $length: 3 },
+            velocities: { $type: "array", $items: "f64", $length: 3 },
+            timestamp: "time"
+        }"#,
     );
-    let conf_dir = serve_temp.join("conf");
-    fs::create_dir_all(&conf_dir).expect("create conf dir");
-    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
-        { "id": 1, "type": "fs", "path": interface_repo_dir.to_string_lossy() }
-    ]))
-    .expect("serialize repos");
-    fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
-
-    let sleep_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        "exec sleep 30".to_string(),
-    ];
-
-    let consumer_depends_on = format!(
-        r#"{{
-            nodes: [],
-            interfaces: [{{ name: "{interface_name}", tag: "{interface_tag}", link_id: "{link_id}" }}]
-        }}"#
+    write_interface_v1_doc_with_topic(
+        &interface_repo_dir
+            .path()
+            .join("joint_command_source/peppy.json5"),
+        command_interface,
+        interface_tag,
+        "joint_commands",
+        r#"{
+            target_positions: { $type: "array", $items: "f64", $length: 3 },
+            max_velocity: "f64"
+        }"#,
     );
-    let consumer_path = write_node_config_for_helper(
-        nodes_dir,
-        consumer_name,
-        TEST_NODE_TAG,
-        git_hash,
-        &sleep_cmd,
-        Some(&consumer_depends_on),
-        None,
-    );
-
-    let producer_interfaces = producer_conforms.then(|| {
-        format!(r#"{{ conforms_to: [{{ name: "{interface_name}", tag: "{interface_tag}" }}] }}"#)
-    });
-    let producer_path = write_node_config_for_helper(
-        nodes_dir,
-        producer_name,
-        TEST_NODE_TAG,
-        git_hash,
-        &sleep_cmd,
-        None,
-        producer_interfaces.as_deref(),
-    );
-
-    (consumer_path, producer_path)
-}
-
-/// Impersonate the `node_ready` / `node_health` / `shutdown` services a real
-/// node would expose, for one instance the daemon is about to spawn. The
-/// returned guards must be kept alive for the duration of the test (dropping
-/// them tears the services down); they are type-erased into a `Vec` because
-/// the caller only needs to hold them, not inspect them.
-async fn start_instance_services(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
-    instance_id: &str,
-    node_name: &str,
-) -> Vec<Box<dyn std::any::Any + Send>> {
-    let ready = listen_for_node_ready(
-        messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("ready service should start");
-    let health = listen_for_node_health(
-        messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("health service should start");
-    let (shutdown, _) = listen_for_shutdown(
-        messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("shutdown service should start");
-    vec![Box::new(ready), Box::new(health), Box::new(shutdown)]
-}
-
-/// Poll `stack list` until `extract` returns `Some`, or panic after ~8s.
-/// `deferred_status` is recomputed on every list call, so it tracks the live
-/// stack as instances appear.
-async fn poll_stack_until<T>(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
-    mut extract: impl FnMut(&SerializedNodeGraph) -> Option<T>,
-) -> T {
-    let deadline = Instant::now() + Duration::from_secs(8);
-    loop {
-        let resp = poll_stack_list(
-            &StackListRequest::new(false),
-            messenger,
-            core_node_name,
-            CALLER_INSTANCE_ID,
-            core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("stack list request should complete");
-        let graph: SerializedNodeGraph =
-            serde_json::from_str(&resp.graph_json).expect("graph_json should parse");
-        if let Some(value) = extract(&graph) {
-            return value;
-        }
-        if Instant::now() >= deadline {
-            panic!(
-                "stack-list condition not met before deadline:\n{}",
-                resp.graph_json
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// Look up one instance's deferred status for a slot in the serialized graph.
-fn deferred_status_of(
-    graph: &SerializedNodeGraph,
-    node_name: &str,
-    instance_id: &str,
-    link_id: &str,
-) -> Option<config::runtime::DeferredStatus> {
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == node_name && n.tag == TEST_NODE_TAG)?;
-    let instance = node
-        .instances
-        .iter()
-        .find(|i| i.instance_id == instance_id)?;
-    instance.deferred_status.get(link_id).copied()
-}
-
-/// Add+run a fake node via `node add -r`, optionally with deferred bindings.
-fn add_run_instance(
-    ctx: &Arc<AppContext>,
-    source: &Path,
-    instance_id: &str,
-    binds_deferred: Vec<(String, String)>,
-) -> Result<(), peppy::error::Error> {
-    NodeCommand {
-        command: NodeCommands::Add {
-            source: Some(source.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: false,
-            run: true,
-            args: Vec::new(),
-            instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            binds_deferred,
-            idle_timeout: 60,
-            max_timeout: 120,
-            force: false,
-        },
-    }
-    .execute(ctx)
-}
-
-/// A deferred binding to an absent producer launches successfully and shows
-/// up as `Deferred` / `Pending` in `stack list`; once a conforming producer
-/// appears under that `instance_id`, the slot's status flips to `Active`.
-/// This is the bidirectional guide's incremental two-command pattern.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn node_run_bind_deferred_pending_then_active_when_producer_appears() {
-    let serve = ServeCommandEmulation::with_mock()
-        .await
-        .expect("failed to create serve emulation");
-    let core_node_name = serve.core_node_name().to_string();
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
-
-    let nodes_dir = tempfile::tempdir().expect("temp nodes dir");
-    let interface_repo_dir = tempfile::tempdir().expect("temp interface repo");
-    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-
-    let interface_name = "joint_command_source";
-    let consumer_name = "robot_arm";
-    let producer_name = "arm_controller";
-    let link_id = "controller";
-
-    let (consumer_path, producer_path) = write_deferred_fixture(
-        nodes_dir.path(),
-        interface_repo_dir.path(),
-        serve.temp_dir(),
-        &git_hash,
-        interface_name,
-        "v1",
-        consumer_name,
-        producer_name,
-        link_id,
-        true, // producer conforms
-    );
-
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-    RepoCommand {
-        command: RepoCommands::Refresh,
-    }
-    .execute(&ctx)
-    .expect("repo refresh should populate interface cache");
-
-    let _arm_services =
-        start_instance_services(&node_messenger, &core_node_name, "arm_1", consumer_name).await;
-    let _ctrl_services =
-        start_instance_services(&node_messenger, &core_node_name, "ctrl_1", producer_name).await;
-
-    // 1. Launch the consumer first, deferring its `controller` slot to the
-    //    not-yet-running `ctrl_1`. Strict `--bind` would reject this.
-    add_run_instance(
-        &ctx,
-        &consumer_path,
-        "arm_1",
-        vec![(link_id.to_string(), "ctrl_1".to_string())],
-    )
-    .expect("consumer should launch with a deferred binding to an absent target");
-
-    // The slot is recorded as Deferred and reads Pending until ctrl_1 appears.
-    let (binding, status) = poll_stack_until(&node_messenger, &core_node_name, |g| {
-        let node = g
-            .nodes
-            .iter()
-            .find(|n| n.name == consumer_name && n.tag == TEST_NODE_TAG)?;
-        let inst = node.instances.iter().find(|i| i.instance_id == "arm_1")?;
-        let binding = inst.slot_bindings.get(link_id)?.clone();
-        Some((binding, inst.deferred_status.get(link_id).copied()))
-    })
-    .await;
-    assert_eq!(
-        binding,
-        config::runtime::SlotBinding::Deferred {
-            producer_instance_id: "ctrl_1".to_string()
-        },
-        "controller slot should be recorded as Deferred"
-    );
-    assert_eq!(
-        status,
-        Some(config::runtime::DeferredStatus::Pending),
-        "deferred slot should be Pending while ctrl_1 is absent"
-    );
-
-    // 2. Launch the conforming producer as ctrl_1. The deferred slot resolves.
-    add_run_instance(&ctx, &producer_path, "ctrl_1", Vec::new()).expect("producer should launch");
-
-    let status = poll_stack_until(
-        &node_messenger,
-        &core_node_name,
-        |g| match deferred_status_of(g, consumer_name, "arm_1", link_id) {
-            Some(config::runtime::DeferredStatus::Active) => {
-                Some(config::runtime::DeferredStatus::Active)
-            }
-            _ => None,
-        },
-    )
-    .await;
-    assert_eq!(status, config::runtime::DeferredStatus::Active);
-
-    for instance_id in ["arm_1", "ctrl_1"] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
-}
-
-/// When the deferred target appears but is the wrong node (does not conform),
-/// the slot is surfaced as `NonConforming` in `stack list` rather than
-/// silently accepted — the late counterpart of the strict bind's
-/// `BindingInterfaceNotConformed`. The consumer keeps running.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn node_run_bind_deferred_surfaces_nonconforming_target() {
-    let serve = ServeCommandEmulation::with_mock()
-        .await
-        .expect("failed to create serve emulation");
-    let core_node_name = serve.core_node_name().to_string();
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
-
-    let nodes_dir = tempfile::tempdir().expect("temp nodes dir");
-    let interface_repo_dir = tempfile::tempdir().expect("temp interface repo");
-    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-
-    let interface_name = "joint_command_source";
-    let consumer_name = "robot_arm";
-    let producer_name = "not_a_controller";
-    let link_id = "controller";
-
-    // Producer does NOT declare conforms_to for the interface.
-    let (consumer_path, producer_path) = write_deferred_fixture(
-        nodes_dir.path(),
-        interface_repo_dir.path(),
-        serve.temp_dir(),
-        &git_hash,
-        interface_name,
-        "v1",
-        consumer_name,
-        producer_name,
-        link_id,
-        false, // producer does not conform
-    );
-
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-    RepoCommand {
-        command: RepoCommands::Refresh,
-    }
-    .execute(&ctx)
-    .expect("repo refresh should populate interface cache");
-
-    let _arm_services =
-        start_instance_services(&node_messenger, &core_node_name, "arm_1", consumer_name).await;
-    let _ctrl_services =
-        start_instance_services(&node_messenger, &core_node_name, "ctrl_1", producer_name).await;
-
-    add_run_instance(
-        &ctx,
-        &consumer_path,
-        "arm_1",
-        vec![(link_id.to_string(), "ctrl_1".to_string())],
-    )
-    .expect("consumer should launch with a deferred binding");
-
-    // A non-conforming producer takes the deferred instance_id.
-    add_run_instance(&ctx, &producer_path, "ctrl_1", Vec::new())
-        .expect("non-conforming producer should still launch (its own bindings are valid)");
-
-    let status = poll_stack_until(
-        &node_messenger,
-        &core_node_name,
-        |g| match deferred_status_of(g, consumer_name, "arm_1", link_id) {
-            Some(config::runtime::DeferredStatus::NonConforming) => {
-                Some(config::runtime::DeferredStatus::NonConforming)
-            }
-            _ => None,
-        },
-    )
-    .await;
-    assert_eq!(status, config::runtime::DeferredStatus::NonConforming);
-
-    // The consumer is still running — a late conformance failure surfaces but
-    // does not tear the consumer down.
-    let consumer_running = poll_stack_until(&node_messenger, &core_node_name, |g| {
-        let node = g
-            .nodes
-            .iter()
-            .find(|n| n.name == consumer_name && n.tag == TEST_NODE_TAG)?;
-        node.instances
-            .iter()
-            .find(|i| i.instance_id == "arm_1")
-            .map(|i| i.state == core_node_api::InstanceState::Running)
-    })
-    .await;
-    assert!(
-        consumer_running,
-        "consumer should keep running after a late conformance failure"
-    );
-
-    for instance_id in ["arm_1", "ctrl_1"] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
-}
-
-/// Writes an `interface_v1` document exposing a single service, so a consumer
-/// can declare `services.consumes` against it and a producer can `conforms_to`
-/// it.
-fn write_service_interface_v1_doc(path: &Path, name: &str, tag: &str, service_name: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("failed to create interface parent dir");
-    }
-    let body = format!(
-        r#"{{
-            peppy_schema: "interface_v1",
-            manifest: {{ name: "{name}", tag: "{tag}" }},
-            interfaces: {{
-                services: [
-                    {{
-                        name: "{service_name}",
-                        request_message_format: {{ ping: "bool" }},
-                        response_message_format: {{ pong: "bool" }}
-                    }}
-                ]
-            }}
-        }}"#
-    );
-    fs::write(path, body).expect("failed to write service interface_v1 doc");
-}
-
-/// `--bind-deferred` must not be an escape hatch for service/action
-/// bidirectionality. `node_c` provides `iface_a` and consumes `iface_b`'s
-/// service; `node_p` provides `iface_b` and consumes `iface_a`'s service.
-/// Wiring both forms a request/response cycle. The consumer launches with a
-/// deferred binding to the absent producer (proving deferral works), but the
-/// moment the cycle-closing producer is added, the daemon rejects it with a
-/// service cycle error and leaves the stack untouched.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn bind_deferred_does_not_allow_service_cycle_through_interfaces() {
-    let serve = ServeCommandEmulation::with_mock()
-        .await
-        .expect("failed to create serve emulation");
-    let core_node_name = serve.core_node_name().to_string();
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
-
-    let nodes_dir = tempfile::tempdir().expect("temp nodes dir");
-    let interface_repo_dir = tempfile::tempdir().expect("temp interface repo");
-    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-
-    // Two service-bearing interfaces, one provided by each node.
-    write_service_interface_v1_doc(
-        &interface_repo_dir.path().join("iface_a/peppy.json5"),
-        "iface_a",
-        "v1",
-        "svc_a",
-    );
-    write_service_interface_v1_doc(
-        &interface_repo_dir.path().join("iface_b/peppy.json5"),
-        "iface_b",
-        "v1",
-        "svc_b",
-    );
-
-    // Register the interface repo so the daemon's node-add can resolve the
-    // interface docs from cache.
     let conf_dir = serve.temp_dir().join("conf");
     fs::create_dir_all(&conf_dir).expect("create conf dir");
     let repos_content = serde_json::to_string_pretty(&serde_json::json!([
@@ -2047,105 +1661,233 @@ async fn bind_deferred_does_not_allow_service_cycle_through_interfaces() {
     .expect("serialize repos");
     fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
 
-    let sleep_cmd = vec![
+    // arm_controller: emits joint_commands (conforms_to joint_command_source),
+    // consumes joint_states from any conforming producer (from_any, unbound).
+    let controller_run_cmd = vec![
         "sh".to_string(),
         "-c".to_string(),
-        "exec sleep 30".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
+            controller_dump.display()
+        ),
     ];
-
-    // node_c: conforms to iface_a, consumes iface_b's service.
-    let c_depends_on =
-        r#"{ nodes: [], interfaces: [{ name: "iface_b", tag: "v1", link_id: "to_b" }] }"#;
-    let c_interfaces = r#"{
-        conforms_to: [{ name: "iface_a", tag: "v1" }],
-        services: { consumes: [{ link_id: "to_b", name: "svc_b" }] }
-    }"#;
-    let c_path = write_node_config_for_helper(
+    let controller_depends_on = format!(
+        r#"{{
+            nodes: [],
+            interfaces: [{{
+                name: "{state_interface}",
+                tag: "{interface_tag}",
+                link_id: "{controller_link_id}",
+                from_any: true
+            }}]
+        }}"#
+    );
+    let controller_interfaces = format!(
+        r#"{{
+            conforms_to: [{{ name: "{command_interface}", tag: "{interface_tag}" }}]
+        }}"#
+    );
+    let controller_path = write_node_config_for_helper(
         nodes_dir.path(),
-        "node_c",
-        TEST_NODE_TAG,
+        controller_name,
+        node_tag,
         &git_hash,
-        &sleep_cmd,
-        Some(c_depends_on),
-        Some(c_interfaces),
+        &controller_run_cmd,
+        Some(&controller_depends_on),
+        Some(&controller_interfaces),
     );
 
-    // node_p: conforms to iface_b, consumes iface_a's service. Closes the cycle.
-    let p_depends_on =
-        r#"{ nodes: [], interfaces: [{ name: "iface_a", tag: "v1", link_id: "to_a" }] }"#;
-    let p_interfaces = r#"{
-        conforms_to: [{ name: "iface_b", tag: "v1" }],
-        services: { consumes: [{ link_id: "to_a", name: "svc_a" }] }
-    }"#;
-    let p_path = write_node_config_for_helper(
+    // robot_arm: emits joint_states (conforms_to joint_state_source),
+    // consumes joint_commands from any conforming producer (from_any, unbound).
+    let arm_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
+            arm_dump.display()
+        ),
+    ];
+    let arm_depends_on = format!(
+        r#"{{
+            nodes: [],
+            interfaces: [{{
+                name: "{command_interface}",
+                tag: "{interface_tag}",
+                link_id: "{arm_link_id}",
+                from_any: true
+            }}]
+        }}"#
+    );
+    let arm_interfaces = format!(
+        r#"{{
+            conforms_to: [{{ name: "{state_interface}", tag: "{interface_tag}" }}]
+        }}"#
+    );
+    let arm_path = write_node_config_for_helper(
         nodes_dir.path(),
-        "node_p",
-        TEST_NODE_TAG,
+        arm_name,
+        node_tag,
         &git_hash,
-        &sleep_cmd,
-        Some(p_depends_on),
-        Some(p_interfaces),
+        &arm_run_cmd,
+        Some(&arm_depends_on),
+        Some(&arm_interfaces),
     );
 
     let ctx = Arc::new(
         AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
+
     RepoCommand {
         command: RepoCommands::Refresh,
     }
     .execute(&ctx)
     .expect("repo refresh should populate interface cache");
 
-    let _c_services =
-        start_instance_services(&node_messenger, &core_node_name, "c_1", "node_c").await;
-
-    // 1. Launch node_c, deferring its service slot to the not-yet-present
-    //    node_p. Deferral is allowed; the consumer comes up.
-    add_run_instance(
-        &ctx,
-        &c_path,
-        "c_1",
-        vec![("to_b".to_string(), "p_1".to_string())],
-    )
-    .expect("consumer should launch with a deferred service binding to an absent producer");
-
-    // 2. Adding node_p closes the service cycle and must be rejected at add
-    //    time. `--bind-deferred` did not let the cycle through.
-    let err = add_run_instance(&ctx, &p_path, "p_1", Vec::new())
-        .expect_err("adding the cycle-closing producer must be rejected");
-    let msg = err.to_string().to_lowercase();
-    assert!(
-        msg.contains("cycle"),
-        "error should report a dependency cycle, got: {err}"
-    );
-
-    // The producer must not have entered the stack; the consumer stays.
-    let resp = poll_stack_list(
-        &StackListRequest::new(false),
+    // The dummy `sh` subprocesses don't expose ready/health/shutdown, so
+    // impersonate them from the test process for both instances (the
+    // daemon's launch waits for each instance to report ready).
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let _ready_controller = listen_for_node_ready(
         &node_messenger,
         &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
+        controller_instance_id,
+        test_node_target(controller_name),
     )
     .await
-    .expect("stack list should respond");
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&resp.graph_json).expect("graph_json should parse");
-    assert!(
-        !graph.nodes.iter().any(|n| n.name == "node_p"),
-        "rejected producer must not be in the stack"
-    );
-    assert!(
-        graph.nodes.iter().any(|n| n.name == "node_c"),
-        "consumer should remain in the stack"
-    );
+    .expect("controller ready service should start");
+    let _health_controller = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        controller_instance_id,
+        test_node_target(controller_name),
+    )
+    .await
+    .expect("controller health service should start");
+    let (_shutdown_controller, _) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        controller_instance_id,
+        test_node_target(controller_name),
+    )
+    .await
+    .expect("controller shutdown service should start");
+    let _ready_arm = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        arm_instance_id,
+        test_node_target(arm_name),
+    )
+    .await
+    .expect("arm ready service should start");
+    let _health_arm = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        arm_instance_id,
+        test_node_target(arm_name),
+    )
+    .await
+    .expect("arm health service should start");
+    let (_shutdown_arm, _) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        arm_instance_id,
+        test_node_target(arm_name),
+    )
+    .await
+    .expect("arm shutdown service should start");
 
-    let _ = NodeCommand {
-        command: NodeCommands::Stop {
-            instance_id: "c_1".to_string(),
+    // Launch BOTH deployments with NO `bindings` on either instance.
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher_v1",
+            deployments: [
+                {{
+                    source: {{ local: "{controller_path}" }},
+                    instances: [{{ instance_id: "{controller_instance_id}" }}]
+                }},
+                {{
+                    source: {{ local: "{arm_path}" }},
+                    instances: [{{ instance_id: "{arm_instance_id}" }}]
+                }}
+            ]
+        }}"#,
+        controller_path = controller_path.display(),
+        arm_path = arm_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
         },
     }
-    .execute(&ctx);
+    .execute(&ctx)
+    .expect("launch should succeed with no binds on either bidirectional node");
+
+    // Both `sh` wrappers snapshot their runtime config before sleeping.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut controller_config: Option<config::runtime::RuntimeConfig> = None;
+    let mut arm_config: Option<config::runtime::RuntimeConfig> = None;
+    while Instant::now() < deadline {
+        if controller_config.is_none()
+            && let Ok(content) = fs::read_to_string(&controller_dump)
+            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+        {
+            controller_config = Some(cfg);
+        }
+        if arm_config.is_none()
+            && let Ok(content) = fs::read_to_string(&arm_dump)
+            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+        {
+            arm_config = Some(cfg);
+        }
+        if controller_config.is_some() && arm_config.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    for instance_id in [controller_instance_id, arm_instance_id] {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(&ctx);
+    }
+
+    let controller_config = controller_config.unwrap_or_else(|| {
+        panic!(
+            "arm_controller runtime config dump never appeared / parsed at {}",
+            controller_dump.display()
+        )
+    });
+    assert_eq!(
+        controller_config
+            .node_instance
+            .slot_bindings
+            .get(controller_link_id),
+        Some(&config::runtime::SlotBinding::FromAnyUnbound),
+        "arm_controller's `{controller_link_id}` interface slot should materialize as \
+         FromAnyUnbound when launched with no --bind",
+    );
+
+    let arm_config = arm_config.unwrap_or_else(|| {
+        panic!(
+            "robot_arm runtime config dump never appeared / parsed at {}",
+            arm_dump.display()
+        )
+    });
+    assert_eq!(
+        arm_config.node_instance.slot_bindings.get(arm_link_id),
+        Some(&config::runtime::SlotBinding::FromAnyUnbound),
+        "robot_arm's `{arm_link_id}` interface slot should materialize as \
+         FromAnyUnbound when launched with no --bind",
+    );
 }

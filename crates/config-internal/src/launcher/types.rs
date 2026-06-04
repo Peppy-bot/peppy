@@ -118,17 +118,6 @@ pub struct DeploymentInstance {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub bindings: BTreeMap<String, String>,
-    /// `link_id`s in `bindings` that were flagged `--bind-deferred`: the
-    /// validator accepts them even when the target is not running yet,
-    /// resolving them to `SlotBinding::Deferred` instead of rejecting the
-    /// unknown instance. In-memory only and never (de)serialized: deferral
-    /// is a CLI-only affordance, so it has no place in the launcher's
-    /// on-disk schema (the declarative launcher resolves every binding
-    /// atomically and never needs deferral). The CLI populates this on the
-    /// synthesized instance it feeds the validator; launcher parsing leaves
-    /// it empty.
-    #[serde(skip)]
-    pub deferred_bindings: std::collections::BTreeSet<String>,
 }
 
 /// Each key is a `link_id` literal declared by the deployed node's

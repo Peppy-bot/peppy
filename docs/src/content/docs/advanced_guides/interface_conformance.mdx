@@ -163,6 +163,8 @@ If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, t
 
 A `from_any: true` interface slot accepts any number of conforming producers and accumulates them under the slot's `link_id`:
 
+A `from_any` slot also needs no binding at all. With zero producers it materializes unbound and the node still boots, accepting whichever conforming producers publish (including ones that join later). That property makes it the recommended shape for optional, [bidirectional communication](/advanced_guides/bidirectional_communication), where each side consumes the other's interface without requiring it to be present.
+
 ```json5
 manifest: {
   depends_on: {
@@ -478,7 +480,7 @@ Whichever node is added second is rejected at add time with a `ServiceActionInte
 service dependency cycle through interfaces involving localizer:v1 -> mapper:v1 (closing interface `obstacle_service:v1`). service request/response cycles deadlock and are not allowed; only topics may be bidirectional. If these providers are not actually cross-bound, pin the binding or split the interface.
 ```
 
-The same rejection applies however you wire it: directly through `depends_on.nodes`, through interfaces, through the launcher (`peppy stack launch`), or incrementally with [`--bind-deferred`](/advanced_guides/bidirectional_communication/#launching-incrementally-with-deferred-bindings). Deferral does not relax the rule: the first node launches because its provider is not present yet, but the moment the second node makes both directions resolvable, the daemon's stack-wide check sees the cycle and rejects that second node.
+The same rejection applies however you wire it: directly through `depends_on.nodes`, through interfaces, through the launcher (`peppy stack launch`), or incrementally across separate commands. Bringing the nodes up one at a time does not relax the rule: the first node is added because its provider is not present yet, but the moment the second node makes both directions resolvable, the daemon's stack-wide check sees the cycle and rejects that second node.
 
 ### Two properties of the check
 

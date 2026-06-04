@@ -43,11 +43,6 @@ impl From<&NodeEntity> for SerializedNode {
                     state: i.state(),
                     healthy: i.healthy(),
                     slot_bindings: i.slot_bindings().clone(),
-                    // Filled by `NodeStack::to_serialized_graph`, which has the
-                    // cross-instance view needed to resolve each deferred
-                    // slot's status. The per-entity `From` cannot see other
-                    // instances, so it leaves this empty.
-                    deferred_status: std::collections::BTreeMap::new(),
                 })
                 .collect(),
         }

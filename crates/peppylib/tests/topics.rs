@@ -184,3 +184,143 @@ async fn node_session_recovers_after_router_restart() {
          re-declare its subscription"
     );
 }
+
+/// Bidirectional `from_any` at the wire layer: two consumers each subscribe
+/// to the other's topic as a `from_any` wildcard (`is_from_any = true`,
+/// `ConsumerFilter::Any`), exactly as a generated `from_any` interface
+/// consumed-topic module does. Messages flow independently in both
+/// directions with no binding wiring the pair together, and a producer that
+/// joins *after* the consumer is already listening is picked up through the
+/// same subscription, distinguished only by its `instance_id`. This is the
+/// runtime counterpart to the launch-time `FromAnyUnbound` materialization
+/// checked in `crates/peppy/tests/stack_launch.rs`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bidirectional_from_any_topics_with_late_producer() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let core_node = "test_core";
+    // One topic per direction, mirroring the docs' robot arm control loop.
+    let joint_states = "joint_states"; // emitted by robot_arm, consumed by arm_controller
+    let joint_commands = "joint_commands"; // emitted by arm_controller, consumed by robot_arm
+
+    let controller_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("failed to create arm_controller handle");
+    let arm_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("failed to create robot_arm handle");
+
+    // arm_controller consumes joint_states from any robot_arm instance.
+    let mut controller_sub = TopicMessenger::subscribe(
+        &controller_handle,
+        core_node,
+        "ctrl_1",
+        Some(test_node_target("robot_arm")),
+        true, // from_any
+        joint_states,
+        None, // from any core node
+        &ConsumerFilter::Any,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("arm_controller subscription should succeed");
+
+    // robot_arm consumes joint_commands from any arm_controller instance.
+    let mut arm_sub = TopicMessenger::subscribe(
+        &arm_handle,
+        core_node,
+        "arm_1",
+        Some(test_node_target("arm_controller")),
+        true, // from_any
+        joint_commands,
+        None,
+        &ConsumerFilter::Any,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("robot_arm subscription should succeed");
+
+    // Allow both subscriptions to propagate.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Direction 1: robot_arm (arm_1) -> arm_controller.
+    let state_payload = Payload::from_static(b"joint_states@arm_1");
+    TopicMessenger::emit(
+        &arm_handle,
+        core_node,
+        "arm_1",
+        test_node_target("robot_arm"),
+        joint_states,
+        QoSProfile::Reliable,
+        state_payload.clone(),
+    )
+    .await
+    .expect("robot_arm emit should succeed");
+
+    let msg = tokio::time::timeout(Duration::from_secs(2), controller_sub.on_next_message())
+        .await
+        .expect("arm_controller should receive joint_states within timeout")
+        .expect("message should not be None");
+    assert_eq!(msg.payload(), &state_payload);
+    assert_eq!(msg.instance_id(), "arm_1");
+    assert_eq!(msg.core_node(), core_node);
+
+    // Direction 2: arm_controller (ctrl_1) -> robot_arm. The reverse stream
+    // flows independently; nothing bound the two nodes to each other.
+    let command_payload = Payload::from_static(b"joint_commands@ctrl_1");
+    TopicMessenger::emit(
+        &controller_handle,
+        core_node,
+        "ctrl_1",
+        test_node_target("arm_controller"),
+        joint_commands,
+        QoSProfile::Reliable,
+        command_payload.clone(),
+    )
+    .await
+    .expect("arm_controller emit should succeed");
+
+    let msg = tokio::time::timeout(Duration::from_secs(2), arm_sub.on_next_message())
+        .await
+        .expect("robot_arm should receive joint_commands within timeout")
+        .expect("message should not be None");
+    assert_eq!(msg.payload(), &command_payload);
+    assert_eq!(msg.instance_id(), "ctrl_1");
+
+    // A second robot_arm instance joins *after* arm_controller is already
+    // subscribed. With no binding to update, the wildcard subscription picks
+    // it up automatically; only the returned instance_id distinguishes it
+    // from the first producer.
+    let late_arm_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("failed to create late robot_arm handle");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let late_payload = Payload::from_static(b"joint_states@arm_2");
+    TopicMessenger::emit(
+        &late_arm_handle,
+        core_node,
+        "arm_2",
+        test_node_target("robot_arm"),
+        joint_states,
+        QoSProfile::Reliable,
+        late_payload.clone(),
+    )
+    .await
+    .expect("late robot_arm emit should succeed");
+
+    let msg = tokio::time::timeout(Duration::from_secs(2), controller_sub.on_next_message())
+        .await
+        .expect("arm_controller should receive the late producer within timeout")
+        .expect("message should not be None");
+    assert_eq!(msg.payload(), &late_payload);
+    assert_eq!(
+        msg.instance_id(),
+        "arm_2",
+        "the late producer must be picked up through the same subscription, \
+         distinguished only by its instance_id",
+    );
+}
