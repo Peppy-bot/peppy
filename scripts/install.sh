@@ -271,32 +271,71 @@ EOF
         fi
     }
 
-    # apply_sudo_fixes: execute accumulated fixes under sudo. Consent must
-    # already have been obtained. FIXES has trailing " && " stripped internally.
-    apply_sudo_fixes() {
-        _FIXES="${1% && }"
-        _SUCCESS_MSG="$2"
+    # cache_sudo_credentials: prime sudo's credential cache so later privileged
+    # calls (including retries) do not each re-prompt for a password. No-op when
+    # already root or when sudo is not installed.
+    cache_sudo_credentials() {
+        if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+            sudo -v
+        fi
+    }
 
+    # run_privileged: run a shell command string as root, via sudo when not
+    # already root. Returns the command's own exit status. Callers handle
+    # consent (prompt_sudo_consent) and caching (cache_sudo_credentials).
+    run_privileged() {
         if [ "$(id -u)" -eq 0 ]; then
-            if ! sh -c "$_FIXES"; then
-                echo "" >&2
-                echo "error: failed to apply system changes." >&2
-                exit 1
-            fi
+            sh -c "$1"
         elif command -v sudo >/dev/null 2>&1; then
-            sudo -v # cache credentials for this and subsequent sudo calls
-            if ! sudo sh -c "$_FIXES"; then
-                echo "" >&2
-                echo "error: failed to apply system changes." >&2
-                exit 1
-            fi
+            sudo sh -c "$1"
         else
             echo "" >&2
             echo "error: sudo is required to apply system changes (not running as root)." >&2
             echo "       Either run this script as root or install sudo." >&2
             exit 1
         fi
+    }
+
+    # apply_sudo_fixes: execute accumulated package fixes as root. Consent must
+    # already have been obtained. FIXES has trailing " && " stripped internally.
+    apply_sudo_fixes() {
+        _FIXES="${1% && }"
+        _SUCCESS_MSG="$2"
+
+        cache_sudo_credentials
+        if ! run_privileged "$_FIXES"; then
+            echo "" >&2
+            echo "error: failed to apply system changes." >&2
+            exit 1
+        fi
         echo "$_SUCCESS_MSG"
+    }
+
+    # enable_linger: enable systemd linger for a user, retrying briefly. logind
+    # can be momentarily unreachable right after dbus-user-session is installed
+    # (the system bus and the user manager are still settling), which makes a
+    # single `loginctl enable-linger` time out. enable-linger is idempotent, so
+    # retrying is safe.
+    enable_linger() {
+        _LINGER_USER="$1"
+        _LINGER_ATTEMPT=1
+        _LINGER_MAX_ATTEMPTS=5
+
+        cache_sudo_credentials
+        while :; do
+            if run_privileged "loginctl enable-linger ${_LINGER_USER}"; then
+                echo "Enabled systemd linger for ${_LINGER_USER}."
+                return 0
+            fi
+            if [ "$_LINGER_ATTEMPT" -ge "$_LINGER_MAX_ATTEMPTS" ]; then
+                echo "" >&2
+                echo "error: could not enable systemd linger for ${_LINGER_USER} after ${_LINGER_MAX_ATTEMPTS} attempts." >&2
+                echo "       Enable it manually: sudo loginctl enable-linger ${_LINGER_USER}" >&2
+                exit 1
+            fi
+            _LINGER_ATTEMPT=$((_LINGER_ATTEMPT + 1))
+            sleep 2
+        done
     }
 
     # ---- Linux system dependency helpers ----------------------------------------
@@ -375,6 +414,7 @@ EOF
         else
             # ---------- normal mode: prompt for pre-download sudo changes -----
             PREDOWNLOAD_FIXES=""
+            ENABLE_LINGER_USER=""
             ALL_LABELS=""
 
             if ! $IN_CONTAINER; then
@@ -389,10 +429,11 @@ EOF
                     ALL_LABELS="${ALL_LABELS}  - Install D-Bus user session support (required for peppy background service)\n"
                 fi
 
+                # Tracked separately from PREDOWNLOAD_FIXES so it can be applied
+                # on its own, before the package installs (see the apply block).
                 if ! check_linger_enabled; then
-                    CURRENT_USER="$(id -un)"
-                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}loginctl enable-linger ${CURRENT_USER} && "
-                    ALL_LABELS="${ALL_LABELS}  - Enable systemd linger for user ${CURRENT_USER} (allows peppy daemon to run after SSH disconnect)\n"
+                    ENABLE_LINGER_USER="$(id -un)"
+                    ALL_LABELS="${ALL_LABELS}  - Enable systemd linger for user ${ENABLE_LINGER_USER} (allows peppy daemon to run after SSH disconnect)\n"
                 fi
             fi
 
@@ -415,9 +456,15 @@ EOF
                 ALL_LABELS="${ALL_LABELS}  - Install curl (required to download peppy)\n"
             fi
 
-            # Prompt and execute pre-download fixes (dbus, linger, curl)
+            # Prompt once for all changes, then apply. Enable linger first, while
+            # logind is still healthy: installing dbus-user-session can restart
+            # the system bus and leave logind briefly unreachable, which would
+            # otherwise stall an immediately-following `loginctl enable-linger`.
             if [ -n "$ALL_LABELS" ]; then
                 prompt_sudo_consent "$ALL_LABELS"
+            fi
+            if [ -n "$ENABLE_LINGER_USER" ]; then
+                enable_linger "$ENABLE_LINGER_USER"
             fi
             if [ -n "$PREDOWNLOAD_FIXES" ]; then
                 apply_sudo_fixes "$PREDOWNLOAD_FIXES" "Pre-download dependencies configured."
