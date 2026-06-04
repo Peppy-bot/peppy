@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 mod clock;
 mod config;
 mod core_node;
+mod datastore;
 mod messaging;
 mod names;
 mod runtime;

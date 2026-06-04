@@ -1,6 +1,6 @@
 """Pre-bound clock for the generated peppygen module.
 
-Wraps :func:`peppylib.clock_for_node` so user code can read the
+Wraps :func:`peppylib.clock.for_node` so user code can read the
 daemon-resolved time with a single call::
 
     await peppygen.clock.init(node_runner)
@@ -20,7 +20,7 @@ from typing import Optional
 
 import peppylib
 
-_clock: Optional["peppylib.PeppyClock"] = None
+_clock: Optional["peppylib.clock.PeppyClock"] = None
 _clock_lock = asyncio.Lock()
 
 
@@ -32,7 +32,7 @@ async def init(node_runner: "peppylib.NodeRunner") -> None:
     async with _clock_lock:
         if _clock is not None:
             return
-        _clock = await peppylib.clock_for_node(node_runner)
+        _clock = await peppylib.clock.for_node(node_runner)
 
 
 def now_ns() -> int:

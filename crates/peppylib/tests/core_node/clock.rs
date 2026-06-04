@@ -3,8 +3,8 @@ use std::time::Duration;
 use config::node::QoSProfile;
 use core_node_api::encoding::{ClockResponse, ClockTick};
 use core_node_api::names;
+use peppylib::clock;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger, TopicMessenger};
-use peppylib::{subscribe_clock, synchronize};
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
@@ -56,7 +56,7 @@ async fn synchronize_returns_typed_clock_sync() {
 
     let (_router, _temp_dir, node_runner) = setup_synchronize_stub(response.clone()).await;
 
-    let sync = synchronize(&node_runner, Some(Duration::from_secs(3)))
+    let sync = clock::synchronize(&node_runner, Some(Duration::from_secs(3)))
         .await
         .expect("synchronize should succeed");
 
@@ -77,7 +77,7 @@ async fn subscribe_clock_yields_typed_ticks() {
     // first tick can land before zenoh discovery routes the subscription, and
     // the test races against propagation. With the subscription up first, any
     // tick published after the await point is delivered.
-    let mut sub = subscribe_clock(&node_runner)
+    let mut sub = clock::subscribe(&node_runner)
         .await
         .expect("subscribe_clock should succeed");
 

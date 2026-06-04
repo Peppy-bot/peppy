@@ -151,6 +151,10 @@ macro_rules! send_goal {
 poll_service!(pub poll_clock, ClockRequest, ClockResponse, names::CLOCK);
 poll_service!(pub poll_info, InfoRequest, InfoResponse, names::INFO);
 poll_service!(pub poll_stack_list, StackListRequest, StackListResponse, names::STACK_LIST);
+poll_service!(pub poll_datastore_store, DatastoreStoreRequest, DatastoreStoreResponse, names::DATASTORE_STORE);
+poll_service!(pub poll_datastore_get, DatastoreGetRequest, DatastoreGetResponse, names::DATASTORE_GET);
+poll_service!(pub poll_datastore_list, DatastoreListRequest, DatastoreListResponse, names::DATASTORE_LIST);
+poll_service!(pub poll_datastore_remove, DatastoreRemoveRequest, DatastoreRemoveResponse, names::DATASTORE_REMOVE);
 poll_service!(pub poll_node_reset, NodeResetRequest, NodeResetResponse, names::STACK_RESET);
 poll_service!(pub poll_node_init, NodeInitRequest, NodeInitResponse, names::NODE_INIT);
 poll_service!(pub poll_node_remove, NodeRemoveRequest, NodeRemoveResponse, names::NODE_REMOVE);

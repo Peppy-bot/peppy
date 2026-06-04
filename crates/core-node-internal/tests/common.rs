@@ -8,15 +8,18 @@ use core_node::names;
 use core_node::nodes_repo_cache_path;
 use core_node::{CoreNode, CoreNodeArguments};
 use core_node_api::encoding::{
-    ClockRequest, ClockResponse, ClockTick, NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse,
-    NodeAddResult, NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
-    NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, NodeSource, wall_now_ns,
+    ClockRequest, ClockResponse, ClockTick, DatastoreGetRequest, DatastoreGetResponse,
+    DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
+    DatastoreStoreRequest, DatastoreStoreResponse, NodeAddFeedback, NodeAddGoal,
+    NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse,
+    NodeBuildResult, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, NodeSource,
+    wall_now_ns,
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
 use peppylib::messaging::{MessengerHandle, ResultStatus, SenderTarget, TopicMessenger};
 use peppylib::runtime::{TaskHandle, spawn};
-use peppylib::{ActionMessenger, ServiceMessenger};
+use peppylib::{ActionMessenger, Message, Payload, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -42,6 +45,96 @@ pub fn test_node_target(name: &str) -> SenderTarget {
 /// `CORE_NODE_TAG`, not the `v1` used for ordinary test nodes.
 pub fn core_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, names::CORE_NODE_TAG).expect("core node target")
+}
+
+/// Polls a datastore service on the started core node using the shared test
+/// routing and 5-second timeout, returning the response message. Panics on any
+/// transport failure — the datastore endpoints should always answer a
+/// well-formed request.
+async fn poll_datastore(started: &StartedCoreNode, service: &str, payload: Payload) -> Message {
+    ServiceMessenger::poll(
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_target(&started.core_node_name),
+        service,
+        Some(&started.core_node_name),
+        None,
+        payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("datastore {service} poll should succeed: {e}"))
+}
+
+/// Sends a `datastore_store` request to the started core node and decodes the
+/// (empty) acknowledgement. Panics on any transport or decode failure — the
+/// store endpoint should always succeed for a well-formed request.
+pub async fn datastore_store(started: &StartedCoreNode, key: &str, value: &[u8], encoding: &str) {
+    let payload = DatastoreStoreRequest::new(key, value.to_vec(), encoding)
+        .expect("test key should be a valid datastore key")
+        .encode()
+        .expect("encode store request should succeed");
+    let response = poll_datastore(started, names::DATASTORE_STORE, payload).await;
+    DatastoreStoreResponse::decode(&response.payload()).expect("decode store response");
+}
+
+/// Sends a `datastore_get` request to the started core node and returns the
+/// decoded response. Panics on any transport or decode failure.
+pub async fn datastore_get(started: &StartedCoreNode, key: &str) -> DatastoreGetResponse {
+    let payload = DatastoreGetRequest::new(key)
+        .expect("test key should be a valid datastore key")
+        .encode()
+        .expect("encode get request should succeed");
+    let response = poll_datastore(started, names::DATASTORE_GET, payload).await;
+    DatastoreGetResponse::decode(&response.payload()).expect("decode get response")
+}
+
+/// Sends a `datastore_list` request to the started core node and returns the
+/// decoded response. Panics on any transport or decode failure.
+pub async fn datastore_list(started: &StartedCoreNode) -> DatastoreListResponse {
+    let payload = DatastoreListRequest::new()
+        .encode()
+        .expect("encode list request should succeed");
+    let response = poll_datastore(started, names::DATASTORE_LIST, payload).await;
+    DatastoreListResponse::decode(&response.payload()).expect("decode list response")
+}
+
+/// Sends a `datastore_remove` request to the started core node and returns
+/// whether the key existed. Panics on any transport or decode failure.
+pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
+    let payload = DatastoreRemoveRequest::new(key)
+        .expect("test key should be a valid datastore key")
+        .encode()
+        .expect("encode remove request should succeed");
+    let response = poll_datastore(started, names::DATASTORE_REMOVE, payload).await;
+    DatastoreRemoveResponse::decode(&response.payload())
+        .expect("decode remove response")
+        .removed
+}
+
+/// Stores an arbitrary binary value, reads it back, and asserts the value and
+/// encoding survive the round trip. Shared between the mock-messenger and
+/// real-zenoh datastore tests — the latter exercises real cross-process
+/// serialization of the Cap'n Proto `Data` field.
+pub async fn assert_datastore_binary_round_trip(started: &StartedCoreNode) {
+    let key = "binary_key_1";
+    let value = vec![0u8, 255, 0x80, 0xFE, 0x00, 0x42];
+    let encoding = "application/octet-stream";
+
+    datastore_store(started, key, &value, encoding).await;
+    let response = datastore_get(started, key).await;
+
+    assert!(response.found, "stored key should be found");
+    assert_eq!(response.value, value, "value should survive round trip");
+    assert_eq!(
+        response.encoding, encoding,
+        "encoding should survive round trip"
+    );
+    assert_eq!(
+        response.last_modified_by, CALLER_INSTANCE_ID,
+        "get should report the writer's instance_id"
+    );
 }
 
 /// A wrapper around `TaskHandle` that aborts the task when dropped.

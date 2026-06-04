@@ -22,7 +22,6 @@ from . import _peppylib  # type: ignore[import-not-found]
 sys.modules["peppylib.messaging"] = _peppylib.messaging
 sys.modules["peppylib.messaging.services"] = _peppylib.messaging.services
 sys.modules["peppylib.messaging.actions"] = _peppylib.messaging.actions
-sys.modules["peppylib.core_node"] = _peppylib.core_node
 
 # Internal/native module aliases
 sys.modules["peppylib._peppylib.messaging"] = _peppylib.messaging
@@ -53,18 +52,19 @@ from ._peppylib.runtime import (  # noqa: E402  # type: ignore[import-not-found]
     NodeRunner,
     CancellationToken,
 )
+# `info` is the one core-node helper that stays flat (a single verb-less call),
+# so it and its response types live at the top level. The datastore, clock, and
+# stack helpers are namespaced in their own submodules (imported below).
 from ._peppylib.core_node import (  # noqa: E402  # type: ignore[import-not-found]
-    ClockRequest,
-    ClockResponse,
-    ClockSubscription,
-    ClockSync,
-    ClockTick,
-    StackList,
+    ContainerInfo,
+    InfoResponse,
     info,
-    stack_list,
-    subscribe_clock,
-    synchronize,
 )
+
+# Namespaced core-node helper modules: `peppylib.datastore`, `peppylib.clock`,
+# `peppylib.stack`. Imported after the sys.modules aliasing above so their
+# `from ._peppylib.core_node import ...` re-exports resolve.
+from . import datastore, clock, stack  # noqa: E402
 
 __all__ = [
     "SenderTarget",
@@ -81,16 +81,12 @@ __all__ = [
     "StandaloneConfig",
     "NodeRunner",
     "CancellationToken",
-    "StackList",
     "info",
-    "stack_list",
-    "ClockRequest",
-    "ClockResponse",
-    "ClockSubscription",
-    "ClockSync",
-    "ClockTick",
-    "subscribe_clock",
-    "synchronize",
+    "InfoResponse",
+    "ContainerInfo",
+    "datastore",
+    "clock",
+    "stack",
     "messaging",
     "encoding",
     "__version__",

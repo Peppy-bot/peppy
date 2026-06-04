@@ -10,6 +10,7 @@ use peppylib::messaging::MessengerHandle;
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -51,6 +52,24 @@ pub(crate) fn encode_err(what: &str, err: core_node_api::Error) -> PyErr {
 /// don't match the expected wire schema.
 pub(crate) fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
     PyValueError::new_err(format!("failed to decode {what}: {err}"))
+}
+
+/// Drive a void async binding and resolve it to Python `None`.
+///
+/// `pyo3_async_runtimes::tokio::future_into_py` converts the future's `Ok`
+/// value via `IntoPyObject`, and under PyO3 0.28 a bare `()` converts to an
+/// empty tuple rather than `None`. Routing void async methods through this
+/// helper gives them the Pythonic `None` return without repeating the
+/// GIL-reacquire dance at every call site. The `Output = PyResult<()>` bound
+/// also means the compiler rejects any non-void future passed here by mistake.
+pub(crate) fn future_into_py_unit<'py, F>(py: Python<'py>, fut: F) -> PyResult<Bound<'py, PyAny>>
+where
+    F: Future<Output = PyResult<()>> + Send + 'static,
+{
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        fut.await?;
+        Ok(Python::attach(|py| py.None()))
+    })
 }
 
 /// Python wrapper for ZenohdInstance - an ephemeral zenohd router for testing.
@@ -113,7 +132,7 @@ impl PyZenohdInstance {
     /// but can be called manually for deterministic cleanup.
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             let mut guard = inner.lock().await;
             if let Some(mut instance) = guard.take() {
                 instance.take_messenger().stop_router().await.map_err(|e| {

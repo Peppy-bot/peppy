@@ -3,6 +3,7 @@
 //! This module provides utilities for encoding and decoding Cap'n Proto messages
 //! used in the core-node services.
 mod clock;
+mod datastore;
 mod info;
 mod node;
 mod ping;
@@ -13,6 +14,11 @@ mod stack;
 // now lives at `node::builder` alongside `node::add`.
 
 pub use clock::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
+pub use datastore::{
+    DatastoreGetRequest, DatastoreGetResponse, DatastoreKey, DatastoreKeyError, DatastoreListEntry,
+    DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
+    DatastoreStoreRequest, DatastoreStoreResponse,
+};
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
 pub use node::builder::FeedbackStream;
 pub use node::{

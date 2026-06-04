@@ -43,8 +43,9 @@ async def test_messenger_communication():
         # Allow subscription to propagate
         await asyncio.sleep(0.05)
 
-        # Emit a message
-        await TopicMessenger.emit(
+        # Emit a message. Void async bindings resolve to `None` (not the empty
+        # tuple a bare `Ok(())` would yield under PyO3 0.28).
+        emit_result = await TopicMessenger.emit(
             sender_handle,
             core_node,
             instance_id,
@@ -53,6 +54,7 @@ async def test_messenger_communication():
             qos,
             payload,
         )
+        assert emit_result is None
 
         # Receive the message with a timeout
         message = await asyncio.wait_for(

@@ -8,7 +8,7 @@ use core_node_api::{
 };
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::runtime::NodeRunner;
-use peppylib::stack_list;
+use peppylib::stack;
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
@@ -99,7 +99,7 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
 
     let (_router, _temp_dir, node_runner) = setup_stub(graph.clone(), "digraph {}").await;
 
-    let result = stack_list(&node_runner, true, Duration::from_secs(3))
+    let result = stack::list(&node_runner, true, Duration::from_secs(3))
         .await
         .expect("stack_list should succeed");
 
@@ -150,7 +150,7 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
 
     let (_router, _temp_dir, node_runner) = setup_stub(graph.clone(), "digraph {}").await;
 
-    let result = stack_list(&node_runner, false, Duration::from_secs(3))
+    let result = stack::list(&node_runner, false, Duration::from_secs(3))
         .await
         .expect("stack_list should succeed");
 

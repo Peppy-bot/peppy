@@ -1,4 +1,4 @@
-"""Integration tests for `peppylib.stack_list`.
+"""Integration tests for `peppylib.stack.list`.
 
 Python equivalent of `crates/peppylib/tests/core_node/stack.rs`.
 """
@@ -7,8 +7,8 @@ import json
 
 import pytest
 
-from peppylib import stack_list
-from peppylib.core_node import StackListResponse
+from peppylib import stack
+from peppylib.stack import StackListResponse
 
 from .common import spawn_stub_listener, start_router_and_runner, wait_until_reachable
 
@@ -40,7 +40,7 @@ def _sample_graph_json() -> str:
 
 @pytest.mark.asyncio
 async def test_stack_list_parses_graph_and_includes_dot_graph_when_requested(tmp_path):
-    """`stack_list(..., with_dot_graph=True)` returns both graph and dot_graph."""
+    """`stack.list(..., with_dot_graph=True)` returns both graph and dot_graph."""
     graph_json = _sample_graph_json()
     response_bytes = StackListResponse(graph_json, "digraph {}").encode()
 
@@ -51,7 +51,7 @@ async def test_stack_list_parses_graph_and_includes_dot_graph_when_requested(tmp
         )
         await wait_until_reachable(node_runner.messenger(), "stack_list")
 
-        result = await stack_list(node_runner, True, 3.0)
+        result = await stack.list(node_runner, True, 3.0)
 
         await handler
     finally:
@@ -72,7 +72,7 @@ async def test_stack_list_parses_graph_and_includes_dot_graph_when_requested(tmp
 
 @pytest.mark.asyncio
 async def test_stack_list_returns_none_dot_graph_when_not_requested(tmp_path):
-    """`stack_list(..., with_dot_graph=False)` leaves dot_graph as None."""
+    """`stack.list(..., with_dot_graph=False)` leaves dot_graph as None."""
     graph_json = _sample_graph_json()
     response_bytes = StackListResponse(graph_json, None).encode()
 
@@ -83,7 +83,7 @@ async def test_stack_list_returns_none_dot_graph_when_not_requested(tmp_path):
         )
         await wait_until_reachable(node_runner.messenger(), "stack_list")
 
-        result = await stack_list(node_runner, False, 3.0)
+        result = await stack.list(node_runner, False, 3.0)
 
         await handler
     finally:
@@ -129,7 +129,7 @@ async def _stack_list_with_mixed_state(tmp_path):
             server_handle, "stack_list", response_bytes
         )
         await wait_until_reachable(node_runner.messenger(), "stack_list")
-        result = await stack_list(node_runner, False, 3.0)
+        result = await stack.list(node_runner, False, 3.0)
         await handler
     finally:
         await router.stop()
@@ -138,7 +138,7 @@ async def _stack_list_with_mixed_state(tmp_path):
 
 @pytest.mark.asyncio
 async def test_running_instance_ids_by_node_returns_running_only(tmp_path):
-    """`StackList.running_instance_ids_by_node` filters out `starting` entries."""
+    """`stack.StackList.running_instance_ids_by_node` filters out `starting` entries."""
     result = await _stack_list_with_mixed_state(tmp_path)
     assert result.running_instance_ids_by_node("router", "v1") == ["r1", "r2"]
 

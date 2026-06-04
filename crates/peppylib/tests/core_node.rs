@@ -4,6 +4,9 @@ mod common;
 #[path = "core_node/clock.rs"]
 mod clock;
 
+#[path = "core_node/datastore.rs"]
+mod datastore;
+
 #[path = "core_node/info.rs"]
 mod info;
 

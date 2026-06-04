@@ -23,5 +23,8 @@ pub enum Error {
     Encoding(String),
 
     #[error(transparent)]
+    InvalidDatastoreKey(#[from] crate::encoding::DatastoreKeyError),
+
+    #[error(transparent)]
     ParsingError(#[from] config::ParsingError),
 }

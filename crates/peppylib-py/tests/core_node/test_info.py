@@ -5,8 +5,7 @@ Python equivalent of `crates/peppylib/tests/core_node/info.rs`.
 
 import pytest
 
-from peppylib import info
-from peppylib.core_node import ContainerInfo, InfoResponse
+from peppylib import ContainerInfo, InfoResponse, info
 
 from .common import spawn_stub_listener, start_router_and_runner, wait_until_reachable
 
