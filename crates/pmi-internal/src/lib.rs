@@ -24,6 +24,10 @@ pub use wire::{
 pub use adapters::mock::{MockAdapter, MockInstance};
 
 #[cfg(feature = "zenoh")]
-pub use adapters::zenoh::{RouterHealthChecker, ZenohAdapter, ZenohdInstance};
+pub use adapters::zenoh::ZenohAdapter;
+#[cfg(feature = "router")]
+pub use adapters::zenoh::ZenohdInstance;
+#[cfg(feature = "router")]
+pub use zenohd::RouterHealthChecker;
 #[cfg(feature = "zenoh")]
 pub use zenohd::ZenohNetProtocol;

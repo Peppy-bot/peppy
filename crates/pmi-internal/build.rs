@@ -3,7 +3,6 @@ mod zenoh_build {
     use std::collections::HashMap;
     use std::env;
     use std::path::{Path, PathBuf};
-    use std::process::Command;
 
     fn find_cargo_lock(start_dir: &Path) -> Option<PathBuf> {
         let mut current = Some(start_dir);
@@ -216,13 +215,9 @@ mod zenoh_build {
 
                 let zip_path = cache_dir.join(format!("zenoh-{}-{}.zip", release_tag, target));
 
-                // Download
-                let status = Command::new("curl")
-                    .args(["-fSL", "-o", zip_path.to_str().unwrap(), &url])
-                    .status();
-
-                if status.is_err() || !status.as_ref().unwrap().success() {
-                    std::fs::remove_file(&zip_path).ok();
+                // Download (build_helpers::download_file removes the partial
+                // file on failure so a retry starts clean).
+                if !build_helpers::download_file(&url, &zip_path) {
                     panic!(
                         "Failed to download zenohd from {}. \
                          Install zenohd manually and set PEPPY_ZENOHD_PATH instead.",
@@ -244,14 +239,9 @@ mod zenoh_build {
                 let extract_dir = cache_dir.join("zenoh-extract");
                 std::fs::create_dir_all(&extract_dir).ok();
 
-                let file = std::fs::File::open(&zip_path).expect("Failed to open zenoh zip");
-                let mut archive = zip::ZipArchive::new(file).expect("Failed to read zenoh zip");
-                let mut entry = archive.by_name("zenohd").expect("zenohd not found in zip");
-                let mut buf = Vec::with_capacity(entry.size() as usize);
-                std::io::Read::read_to_end(&mut entry, &mut buf)
-                    .expect("Failed to read zenohd from zip");
                 let extracted_binary = extract_dir.join("zenohd");
-                std::fs::write(&extracted_binary, &buf).expect("Failed to write extracted zenohd");
+                build_helpers::extract_zip_entry(&zip_path, "zenohd", &extracted_binary)
+                    .expect("Failed to extract zenohd from zip");
 
                 // Cache the binary
                 std::fs::copy(&extracted_binary, &cached_zenoh_path)
@@ -290,15 +280,7 @@ mod zenoh_build {
 
             // Ensure the binary is executable (std::fs::write / std::fs::copy do not
             // preserve the execute bit from the zip archive).
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(
-                    &zenoh_binary_path,
-                    std::fs::Permissions::from_mode(0o755),
-                )
-                .expect("Failed to set zenohd executable permission");
-            }
+            build_helpers::set_executable(Path::new(&zenoh_binary_path));
 
             println!("cargo:rustc-env=ZENOHD_BINARY_PATH={}", zenoh_binary_path);
         }

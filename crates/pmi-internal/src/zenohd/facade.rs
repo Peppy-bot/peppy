@@ -1,32 +1,11 @@
 use super::super::error::{Error, Result};
+use super::ZenohNetProtocol;
+use std::env;
 use std::fs::File;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::{env, fmt};
 use zenoh::config::Config;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-#[derive(Default)]
-pub enum ZenohNetProtocol {
-    #[default]
-    Tcp,
-    Udp,
-    Quic,
-    Ws,
-}
-
-impl fmt::Display for ZenohNetProtocol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ZenohNetProtocol::Tcp => write!(f, "tcp"),
-            ZenohNetProtocol::Udp => write!(f, "udp"),
-            ZenohNetProtocol::Quic => write!(f, "quic"),
-            ZenohNetProtocol::Ws => write!(f, "ws"),
-        }
-    }
-}
 
 /// This structure stores the Zenoh endpoint to be reused by clients by extracting it from the config file
 pub struct ZenohEndpoint {

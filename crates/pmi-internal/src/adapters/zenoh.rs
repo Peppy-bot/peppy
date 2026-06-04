@@ -34,11 +34,14 @@ use crate::wire::{
     TopicWireReceiver, TopicWireSender,
 };
 use crate::zenohd::{self, ZenohNetProtocol};
-use crate::{Messenger, MessengerAdapter, MessengerBackend, Subscription};
+#[cfg(feature = "router")]
+use crate::{Messenger, MessengerAdapter};
+use crate::{MessengerBackend, Subscription};
 use askama::Template;
 
-use std::net::{SocketAddr, TcpListener};
-use std::path::PathBuf;
+use std::net::SocketAddr;
+#[cfg(feature = "router")]
+use std::net::TcpListener;
 use std::sync::Arc;
 use tracing::info;
 
@@ -78,6 +81,7 @@ impl From<PublisherQoS> for ZenohQoS {
 
 /// Reserves an ephemeral port by binding to port 0 and returning the assigned port.
 /// The returned `TcpListener` holds the port until dropped.
+#[cfg(feature = "router")]
 fn reserve_ephemeral_port() -> std::io::Result<(u16, TcpListener)> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
@@ -87,12 +91,14 @@ fn reserve_ephemeral_port() -> std::io::Result<(u16, TcpListener)> {
 /// Result of starting a zenohd router process.
 ///
 /// The router is automatically stopped when this instance is dropped.
+#[cfg(feature = "router")]
 pub struct ZenohdInstance {
     messenger: Option<Messenger>,
     pub host: String,
     pub port: u16,
 }
 
+#[cfg(feature = "router")]
 impl ZenohdInstance {
     /// Returns a mutable reference to the messenger.
     pub fn messenger(&mut self) -> &mut Messenger {
@@ -107,6 +113,7 @@ impl ZenohdInstance {
     }
 }
 
+#[cfg(feature = "router")]
 impl Drop for ZenohdInstance {
     fn drop(&mut self) {
         let Some(mut messenger) = self.messenger.take() else {
@@ -193,24 +200,6 @@ pub struct ZenohProbeClientConfigTemplate {
     pub protocol: ZenohNetProtocol,
 }
 
-#[derive(Template)]
-#[template(
-    source = r#"{
-    "mode": "router",
-    "listen": {
-        "endpoints": {
-            "router": ["{{ protocol }}/{{ host }}:{{ port }}"]
-        }
-    }
-}"#,
-    ext = "txt"
-)]
-pub struct ZenohRouterConfigTemplate {
-    pub host: String,
-    pub port: u16,
-    pub protocol: ZenohNetProtocol,
-}
-
 pub struct ZenohClientConfig {
     zenoh_config: zenoh::config::Config,
     host: String,
@@ -219,6 +208,7 @@ pub struct ZenohClientConfig {
 }
 
 pub struct ZenohAdapter {
+    #[cfg(feature = "router")]
     zenohd: Option<zenohd::ZenohdFacade>,
     client_config: ZenohClientConfig,
     session: Option<Arc<zenoh::Session>>,
@@ -230,8 +220,9 @@ pub struct ZenohAdapter {
 impl ZenohAdapter {
     /// Creates a ZenohAdapter that owns and manages its own zenohd router.
     /// Use this when you need to start a new router instance.
+    #[cfg(feature = "router")]
     pub fn with_router(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
-        let zenohd_config_path = Self::get_zenohd_config_path(protocol, host, port)?;
+        let zenohd_config_path = zenohd::router_config_path(protocol, host, port)?;
         let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
         let client_config = Self::derive_client_config_from_zenohd(&facade);
 
@@ -249,6 +240,7 @@ impl ZenohAdapter {
         let client_config = Self::create_client_config(protocol, host, port, false);
 
         Ok(Self {
+            #[cfg(feature = "router")]
             zenohd: None,
             client_config,
             session: None,
@@ -274,6 +266,7 @@ impl ZenohAdapter {
     /// attempts exactly once with that port.
     ///
     /// Returns a [`ZenohdInstance`] that automatically stops the router when dropped.
+    #[cfg(feature = "router")]
     pub async fn start_router_ephemeral(host: &str, port: Option<u16>) -> Result<ZenohdInstance> {
         let max_attempts = if port.is_some() { 1 } else { 32 };
 
@@ -341,7 +334,8 @@ impl ZenohAdapter {
     /// Builds a lock-free [`RouterHealthChecker`] bound to this adapter's router
     /// endpoint, for the router watchdog to probe liveness without holding the
     /// central messenger lock.
-    pub fn router_health_checker(&self) -> RouterHealthChecker {
+    #[cfg(feature = "router")]
+    pub fn router_health_checker(&self) -> zenohd::RouterHealthChecker {
         let probe_str = ZenohProbeClientConfigTemplate {
             host: self.client_config.host.clone(),
             port: self.client_config.port,
@@ -351,7 +345,7 @@ impl ZenohAdapter {
         .expect("Failed to render probe client config template");
         let probe_config = zenoh::config::Config::from_json5(&probe_str)
             .expect("Failed to create probe client config");
-        RouterHealthChecker { probe_config }
+        zenohd::RouterHealthChecker::new(probe_config)
     }
 
     fn create_client_config(
@@ -399,6 +393,7 @@ impl ZenohAdapter {
         }
     }
 
+    #[cfg(feature = "router")]
     fn derive_client_config_from_zenohd(zenohd: &zenohd::ZenohdFacade) -> ZenohClientConfig {
         // Fail-fast: this config also backs the ephemeral readiness probe in
         // `start_router_ephemeral`, which relies on `zenoh::open` erroring
@@ -410,35 +405,6 @@ impl ZenohAdapter {
             zenohd.zenoh_endpoint.port,
             false,
         )
-    }
-
-    fn get_zenohd_config_path(
-        protocol: ZenohNetProtocol,
-        host: &str,
-        messaging_port: u16,
-    ) -> Result<PathBuf> {
-        if let Ok(config_path) = std::env::var("ZENOH_CONFIG") {
-            return Ok(PathBuf::from(config_path));
-        }
-
-        let config_path =
-            std::env::temp_dir().join(format!("zenohd_config_{}.json5", messaging_port));
-
-        let template = ZenohRouterConfigTemplate {
-            host: host.to_string(),
-            port: messaging_port,
-            protocol,
-        };
-
-        let config_content = template.render().map_err(|e| {
-            Error::ConfigurationError(format!("Failed to render zenohd config template: {}", e))
-        })?;
-
-        std::fs::write(&config_path, config_content).map_err(|e| {
-            Error::ConfigurationError(format!("Failed to write zenohd config: {}", e))
-        })?;
-
-        Ok(config_path)
     }
 }
 
@@ -658,21 +624,37 @@ impl MessengerBackend for ZenohAdapter {
     }
 
     async fn start_router(&mut self) -> Result<()> {
-        let zenohd = self
-            .zenohd
-            .as_mut()
-            .ok_or(Error::ZenohDConfigurationNotFound)?;
-        zenohd.start_router()?;
-        Ok(())
+        #[cfg(feature = "router")]
+        {
+            let zenohd = self
+                .zenohd
+                .as_mut()
+                .ok_or(Error::ZenohDConfigurationNotFound)?;
+            zenohd.start_router()?;
+            Ok(())
+        }
+        // Client-only build: router management was not compiled in.
+        #[cfg(not(feature = "router"))]
+        {
+            Err(Error::ZenohDConfigurationNotFound)
+        }
     }
 
     async fn stop_router(&mut self) -> Result<()> {
-        let zenohd = self
-            .zenohd
-            .as_mut()
-            .ok_or(Error::ZenohDConfigurationNotFound)?;
-        zenohd.stop_router()?;
-        Ok(())
+        #[cfg(feature = "router")]
+        {
+            let zenohd = self
+                .zenohd
+                .as_mut()
+                .ok_or(Error::ZenohDConfigurationNotFound)?;
+            zenohd.stop_router()?;
+            Ok(())
+        }
+        // Client-only build: router management was not compiled in.
+        #[cfg(not(feature = "router"))]
+        {
+            Err(Error::ZenohDConfigurationNotFound)
+        }
     }
 
     fn get_host(&self) -> SocketAddr {
@@ -924,37 +906,6 @@ impl ZenohPublisher {
                 topic: e.to_string(),
             })?;
         Ok(())
-    }
-}
-
-/// Lock-free handle for probing whether the Zenoh router is responsive.
-///
-/// Holds a fail-fast probe config (scouting disabled, single connect attempt to
-/// the router endpoint). [`Self::is_router_responsive`] opens a throwaway
-/// session bounded by `timeout` — the same operation a CLI client performs — so
-/// it detects a wedged router that still accepts TCP connections but never
-/// completes the Zenoh session handshake. Obtain one via
-/// [`crate::Messenger::router_health_checker`] and probe without holding the
-/// central messenger lock.
-pub struct RouterHealthChecker {
-    probe_config: zenoh::config::Config,
-}
-
-impl RouterHealthChecker {
-    /// Returns `true` if a fresh session to the router completes within
-    /// `timeout`; `false` otherwise (timed out, connection refused, …).
-    pub async fn is_router_responsive(&self, timeout: std::time::Duration) -> bool {
-        match tokio::time::timeout(timeout, zenoh::open(self.probe_config.clone())).await {
-            Ok(Ok(session)) => {
-                // We only needed the handshake. Close the probe session, but
-                // don't let a slow close stall the watchdog.
-                let _ =
-                    tokio::time::timeout(std::time::Duration::from_secs(1), session.close()).await;
-                true
-            }
-            // Open errored, or our timeout elapsed before the handshake settled.
-            _ => false,
-        }
     }
 }
 
