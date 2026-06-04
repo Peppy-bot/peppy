@@ -152,15 +152,15 @@ export default defineConfig({
 				{ slug: 'index' },
 				{
 					label: 'Guides',
-					autogenerate: { directory: 'guides' },
+					items: [{ autogenerate: { directory: 'guides' } }],
 				},
 				{
 					label: 'Advanced Guides',
-					autogenerate: { directory: 'advanced_guides' },
+					items: [{ autogenerate: { directory: 'advanced_guides' } }],
 				},
 				{
 					label: 'Reference',
-					autogenerate: { directory: 'reference' },
+					items: [{ autogenerate: { directory: 'reference' } }],
 				},
 			],
 		}),

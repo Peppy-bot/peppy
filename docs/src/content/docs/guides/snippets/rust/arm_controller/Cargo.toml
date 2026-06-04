@@ -1,0 +1,12 @@
+[package]
+name = "arm_controller"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+peppygen = { path = ".peppy/libs/peppygen" }
+peppylib = { path = ".peppy/libs/peppylib" }
+tokio = { version = "1", features = ["rt"] }
+tracing = "0.1"
+
+[workspace]

@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "@astrojs/rss": "^4.0.18",
-    "@astrojs/starlight": "^0.38.2",
-    "astro": "^6.0.0",
+    "@astrojs/starlight": "^0.39.3",
+    "astro": "^6.4.4",
     "entities": "^8.0.0",
     "marked": "^17.0.1",
     "remark-gfm": "^4.0.1",

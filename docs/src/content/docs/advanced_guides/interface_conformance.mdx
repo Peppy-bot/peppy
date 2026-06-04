@@ -163,6 +163,8 @@ If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, t
 
 A `from_any: true` interface slot accepts any number of conforming producers and accumulates them under the slot's `link_id`:
 
+A `from_any` slot also needs no binding at all. With zero producers it materializes unbound and the node still boots, accepting whichever conforming producers publish (including ones that join later). That property makes it the recommended shape for optional, [bidirectional communication](/advanced_guides/bidirectional_communication), where each side consumes the other's interface without requiring it to be present.
+
 ```json5
 manifest: {
   depends_on: {
