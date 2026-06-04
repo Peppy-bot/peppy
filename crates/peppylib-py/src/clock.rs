@@ -2,14 +2,12 @@
 //! `synchronize` helper.
 //!
 //! Mirrors `core_node_api::encoding::clock::{ClockRequest, ClockResponse,
-//! ClockTick}` and `peppylib::core_node::clock::{ClockSync, synchronize}`.
+//! ClockTick}` and `peppylib::clock::{ClockSync, synchronize}`.
 
 use std::sync::Arc;
 
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
-use peppylib::core_node::clock::{
-    ClockSync, PeppyClock, clock_for_node, subscribe_clock, synchronize,
-};
+use peppylib::clock::{ClockSync, PeppyClock, for_node, subscribe, synchronize};
 use peppylib::messaging::Subscription;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -171,7 +169,7 @@ impl PyClockTick {
 
 /// Result of an NTP-style clock-sync exchange.
 ///
-/// Mirrors [`peppylib::core_node::clock::ClockSync`]. `synchronize` does not
+/// Mirrors [`peppylib::clock::ClockSync`]. `synchronize` does not
 /// adjust the local clock — it only measures.
 #[pyclass(name = "ClockSync", skip_from_py_object)]
 #[derive(Clone)]
@@ -210,7 +208,7 @@ impl PyClockSync {
 /// Perform an NTP-style clock-sync exchange with `node_runner`'s bound core
 /// node.
 ///
-/// Python equivalent of `peppylib::core_node::clock::synchronize`.
+/// Python equivalent of `peppylib::clock::synchronize`.
 #[pyfunction]
 #[pyo3(name = "synchronize", signature = (node_runner, response_timeout_secs=None))]
 fn synchronize_clock<'py>(
@@ -260,7 +258,7 @@ impl PyClockSubscription {
 /// Subscribe to the periodic `/clock` topic on `node_runner`'s bound core
 /// node.
 ///
-/// Python equivalent of `peppylib::core_node::clock::subscribe`.
+/// Python equivalent of `peppylib::clock::subscribe`.
 #[pyfunction]
 #[pyo3(name = "subscribe_clock")]
 fn subscribe_clock_py<'py>(
@@ -269,10 +267,7 @@ fn subscribe_clock_py<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let sub = subscribe_clock(&runner)
-            .await
-            .map_err(to_py_err)?
-            .into_inner();
+        let sub = subscribe(&runner).await.map_err(to_py_err)?.into_inner();
         Ok(PyClockSubscription {
             inner: Arc::new(Mutex::new(sub)),
         })
@@ -280,7 +275,7 @@ fn subscribe_clock_py<'py>(
 }
 
 /// User-facing clock handle. Mirrors
-/// [`peppylib::core_node::clock::PeppyClock`]: hides whether the node was
+/// [`peppylib::clock::PeppyClock`]: hides whether the node was
 /// launched in wall or sim mode and exposes a sync `now_ns()` for hot paths.
 ///
 /// Build via [`clock_for_node_py`]. In sim mode the constructor opens the
@@ -311,7 +306,7 @@ fn clock_for_node_py<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let clock = clock_for_node(&runner).await.map_err(to_py_err)?;
+        let clock = for_node(&runner).await.map_err(to_py_err)?;
         Ok(PyPeppyClock { inner: clock })
     })
 }

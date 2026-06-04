@@ -1,18 +1,18 @@
 //! Python bindings for the datastore wire types and the high-level
-//! `datastore_store` / `datastore_get` / `datastore_list` / `datastore_remove`
-//! helpers.
+//! `datastore::store` / `datastore::get` / `datastore::list` /
+//! `datastore::remove` helpers.
 //!
 //! Mirrors `core_node_api::encoding::{DatastoreStoreResponse,
 //! DatastoreGetResponse, DatastoreListEntry, DatastoreListResponse,
 //! DatastoreRemoveResponse}` and
-//! `peppylib::core_node::datastore::{StoredValue, DatastoreEntry,
-//! datastore_store, datastore_get, datastore_list, datastore_remove}`.
+//! `peppylib::datastore::{StoredValue, DatastoreEntry, store, get, list,
+//! remove}`.
 
 use core_node_api::encoding::{
     DatastoreGetResponse, DatastoreListEntry, DatastoreListResponse, DatastoreRemoveResponse,
     DatastoreStoreResponse,
 };
-use peppylib::core_node::datastore::{DatastoreEntry, StoredValue};
+use peppylib::datastore::{DatastoreEntry, StoredValue};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
@@ -157,8 +157,8 @@ impl PyDatastoreRemoveResponse {
     }
 }
 
-/// Python wrapper for `peppylib::core_node::datastore::StoredValue` — the
-/// value returned by [`datastore_get`]: the raw bytes plus their Zenoh-style
+/// Python wrapper for `peppylib::datastore::StoredValue` — the
+/// value returned by [`datastore::get`]: the raw bytes plus their Zenoh-style
 /// encoding tag. The `encoding` getter returns a plain `str` (the open set of
 /// tags means an arbitrary value may come back); it compares equal to the
 /// `peppylib.Encoding` members.
@@ -192,10 +192,10 @@ impl PyStoredValue {
     }
 }
 
-/// Python wrapper for `peppylib::core_node::datastore::DatastoreEntry` — one
-/// key's metadata returned by [`datastore_list`]: its key, the encoding tag of
+/// Python wrapper for `peppylib::datastore::DatastoreEntry` — one
+/// key's metadata returned by [`datastore::list`]: its key, the encoding tag of
 /// its value, and the `instance_id` of the node that last wrote it. The value
-/// bytes are not included; fetch them with [`datastore_get`].
+/// bytes are not included; fetch them with [`datastore::get`].
 #[pyclass(name = "DatastoreEntry", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyDatastoreEntry {
@@ -229,7 +229,7 @@ impl PyDatastoreEntry {
 /// Store `value` under `key` (tagged with `encoding`) on `node_runner`'s
 /// bound core node. Overwrites any existing value for `key`.
 ///
-/// Python equivalent of `peppylib::datastore_store`.
+/// Python equivalent of `peppylib::datastore::store`.
 #[pyfunction]
 #[pyo3(signature = (node_runner, key, value, encoding, response_timeout_secs=None))]
 fn datastore_store<'py>(
@@ -247,7 +247,7 @@ fn datastore_store<'py>(
     // `future_into_py_unit` resolves to Python `None` — a store that succeeds
     // has nothing to return (see the helper for why a bare `Ok(())` would not).
     future_into_py_unit(py, async move {
-        peppylib::datastore_store(&runner, key, value, encoding, timeout)
+        peppylib::datastore::store(&runner, key, value, encoding, timeout)
             .await
             .map_err(to_py_err)?;
         Ok(())
@@ -257,7 +257,7 @@ fn datastore_store<'py>(
 /// Retrieve the value stored under `key` from `node_runner`'s bound core
 /// node. Resolves to `None` when no value is stored for `key`.
 ///
-/// Python equivalent of `peppylib::datastore_get`.
+/// Python equivalent of `peppylib::datastore::get`.
 #[pyfunction]
 #[pyo3(signature = (node_runner, key, response_timeout_secs=None))]
 fn datastore_get<'py>(
@@ -271,7 +271,7 @@ fn datastore_get<'py>(
         .map(|s| duration_from_secs_f64("response_timeout_secs", s))
         .transpose()?;
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let value = peppylib::datastore_get(&runner, key, timeout)
+        let value = peppylib::datastore::get(&runner, key, timeout)
             .await
             .map_err(to_py_err)?;
         Ok(value.map(PyStoredValue::from))
@@ -280,9 +280,9 @@ fn datastore_get<'py>(
 
 /// List the metadata of every key in `node_runner`'s bound core node datastore.
 /// Resolves to a list of `DatastoreEntry` (key, encoding, last_modified_by) —
-/// the value bytes are not included; fetch them with `datastore_get`.
+/// the value bytes are not included; fetch them with `datastore::get`.
 ///
-/// Python equivalent of `peppylib::datastore_list`.
+/// Python equivalent of `peppylib::datastore::list`.
 #[pyfunction]
 #[pyo3(signature = (node_runner, response_timeout_secs=None))]
 fn datastore_list<'py>(
@@ -295,7 +295,7 @@ fn datastore_list<'py>(
         .map(|s| duration_from_secs_f64("response_timeout_secs", s))
         .transpose()?;
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let entries = peppylib::datastore_list(&runner, timeout)
+        let entries = peppylib::datastore::list(&runner, timeout)
             .await
             .map_err(to_py_err)?;
         Ok(entries
@@ -308,7 +308,7 @@ fn datastore_list<'py>(
 /// Remove (unset) `key` from `node_runner`'s bound core node. Resolves to `True`
 /// if the key existed and was removed, `False` if it was already absent.
 ///
-/// Python equivalent of `peppylib::datastore_remove`.
+/// Python equivalent of `peppylib::datastore::remove`.
 #[pyfunction]
 #[pyo3(signature = (node_runner, key, response_timeout_secs=None))]
 fn datastore_remove<'py>(
@@ -322,15 +322,15 @@ fn datastore_remove<'py>(
         .map(|s| duration_from_secs_f64("response_timeout_secs", s))
         .transpose()?;
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let removed = peppylib::datastore_remove(&runner, key, timeout)
+        let removed = peppylib::datastore::remove(&runner, key, timeout)
             .await
             .map_err(to_py_err)?;
         Ok(removed)
     })
 }
 
-/// Add the datastore wire-type wrappers and the `datastore_store` /
-/// `datastore_get` / `datastore_list` / `datastore_remove` helpers to the
+/// Add the datastore wire-type wrappers and the `datastore::store` /
+/// `datastore::get` / `datastore::list` / `datastore::remove` helpers to the
 /// parent `core_node` Python submodule.
 pub(crate) fn register_into(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDatastoreStoreResponse>()?;

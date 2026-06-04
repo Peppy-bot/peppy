@@ -1,8 +1,8 @@
 //! Python bindings for the `core_node` high-level service wrappers.
 //!
-//! Mirrors `pub use core_node::{info::info, stack::{StackList, stack_list}};`
-//! from `crates/peppylib/src/lib.rs` — takes a `NodeRunner` directly and
-//! returns fully-typed responses.
+//! Mirrors `pub use core_node::{info::info, stack};` from
+//! `crates/peppylib/src/lib.rs`: takes a `NodeRunner` directly and returns
+//! fully-typed responses.
 
 use std::time::Duration;
 
@@ -185,7 +185,7 @@ impl PyStackListResponse {
     }
 }
 
-/// Python wrapper for `peppylib::StackList`.
+/// Python wrapper for `peppylib::stack::StackList`.
 ///
 /// `graph` is returned as a Python dict via `pythonize` — the nested
 /// `SerializedNodeGraph` types all derive `Serialize`/`Deserialize`, so a
@@ -248,7 +248,7 @@ fn info<'py>(
 
 /// Poll the `STACK_LIST` service for `node_runner`'s bound core node.
 ///
-/// Python equivalent of `peppylib::stack_list`.
+/// Python equivalent of `peppylib::stack::list`.
 #[pyfunction]
 #[pyo3(signature = (node_runner, with_dot_graph, response_timeout_secs=None))]
 fn stack_list<'py>(
@@ -260,7 +260,7 @@ fn stack_list<'py>(
     let runner = node_runner.inner.clone();
     let timeout = optional_timeout("response_timeout_secs", response_timeout_secs)?;
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let result = peppylib::stack_list(&runner, with_dot_graph, timeout)
+        let result = peppylib::stack::list(&runner, with_dot_graph, timeout)
             .await
             .map_err(to_py_err)?;
         Ok(PyStackList {

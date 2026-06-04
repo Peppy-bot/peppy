@@ -99,7 +99,7 @@ impl ClockSubscription {
 /// it now" without knowing whether the node was launched in wall or sim
 /// mode. `now_ns` is sync, allocation-free, and safe to call repeatedly.
 ///
-/// Build via [`clock_for_node`]; the constructor decides which underlying
+/// Build via [`for_node`]; the constructor decides which underlying
 /// source to install based on the daemon's resolved
 /// `framework.use_sim_time`. The generator emits a pre-bound
 /// `peppygen::clock::now_ns()` free function so user code never has to
@@ -151,7 +151,7 @@ impl PeppyClock {
 /// the first `now_ns()` call after a tick has been published returns
 /// immediately without setup latency. The async surface is part of the
 /// constructor so the hot-path read stays sync.
-pub async fn clock_for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
+pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
     if !node_runner.processor().use_sim_time() {
         return Ok(PeppyClock {
             inner: PeppyClockInner::Wall,
@@ -159,7 +159,7 @@ pub async fn clock_for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
     }
 
     let cache = Arc::new(AtomicU64::new(0));
-    let mut subscription = subscribe_clock(node_runner).await?.into_inner();
+    let mut subscription = subscribe(node_runner).await?.into_inner();
     let feeder_cache = Arc::clone(&cache);
     // The subscriber is detached: subscription drop happens via the
     // TaskHandle field on PeppyClock, which aborts the task and walks the
@@ -185,7 +185,7 @@ pub async fn clock_for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
 }
 
 /// Subscribe to the periodic `clock` topic on `node_runner`'s bound core node.
-pub async fn subscribe_clock(node_runner: &NodeRunner) -> Result<ClockSubscription> {
+pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
     let inner = TopicMessenger::subscribe(
@@ -236,7 +236,7 @@ mod tests {
     #[tokio::test]
     async fn peppy_clock_sim_reports_not_ready_until_first_tick() {
         // Construct a sim clock without spawning a real subscriber by
-        // skipping `clock_for_node`. The feeder slot is filled with a
+        // skipping `for_node`. The feeder slot is filled with a
         // parked task that keeps the type signature consistent.
         let cache = Arc::new(AtomicU64::new(0));
         let cache_clone = Arc::clone(&cache);

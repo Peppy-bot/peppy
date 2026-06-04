@@ -1,6 +1,6 @@
 //! Integration tests for the `datastore` client wrappers
-//! ([`datastore_store`] / [`datastore_get`] / [`datastore_list`] /
-//! [`datastore_remove`]).
+//! (`datastore::store` / `datastore::get` / `datastore::list` /
+//! `datastore::remove`).
 //!
 //! peppylib can't depend on the core-node daemon crate (that would be a
 //! dependency cycle), so the stub here stands in for the daemon: it holds a
@@ -20,12 +20,9 @@ use core_node_api::encoding::{
     DatastoreStoreResponse,
 };
 use core_node_api::names;
+use peppylib::datastore::{self, DatastoreEntry, Encoding, StoredValue};
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::runtime::NodeRunner;
-use peppylib::{
-    DatastoreEntry, Encoding, StoredValue, datastore_get, datastore_list, datastore_remove,
-    datastore_store,
-};
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
@@ -202,7 +199,7 @@ async fn store_then_get_round_trips_binary_value() {
     let key = "robot_state-1";
     let value = vec![0u8, 255, 0x80, 0xFE, 0x13];
 
-    datastore_store(
+    datastore::store(
         &node_runner,
         key,
         value.clone(),
@@ -212,7 +209,7 @@ async fn store_then_get_round_trips_binary_value() {
     .await
     .expect("store should succeed");
 
-    let got = datastore_get(&node_runner, key, Duration::from_secs(3))
+    let got = datastore::get(&node_runner, key, Duration::from_secs(3))
         .await
         .expect("get should succeed");
 
@@ -233,7 +230,7 @@ async fn store_rejects_invalid_key() {
 
     // A slash is outside the node-name character set, so the wrapper rejects
     // the key locally, before any request reaches the core node.
-    let err = datastore_store(
+    let err = datastore::store(
         &node_runner,
         "robot/state",
         b"value".to_vec(),
@@ -261,7 +258,7 @@ async fn store_rejects_invalid_key() {
 async fn get_missing_key_returns_none() {
     let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
 
-    let got = datastore_get(&node_runner, "never-stored", Duration::from_secs(3))
+    let got = datastore::get(&node_runner, "never-stored", Duration::from_secs(3))
         .await
         .expect("get should succeed");
 
@@ -272,7 +269,7 @@ async fn get_missing_key_returns_none() {
 async fn store_overwrites_existing_key() {
     let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
 
-    datastore_store(
+    datastore::store(
         &node_runner,
         "k",
         b"first".to_vec(),
@@ -281,7 +278,7 @@ async fn store_overwrites_existing_key() {
     )
     .await
     .expect("first store should succeed");
-    datastore_store(
+    datastore::store(
         &node_runner,
         "k",
         b"second".to_vec(),
@@ -291,7 +288,7 @@ async fn store_overwrites_existing_key() {
     .await
     .expect("second store should succeed");
 
-    let got = datastore_get(&node_runner, "k", Duration::from_secs(3))
+    let got = datastore::get(&node_runner, "k", Duration::from_secs(3))
         .await
         .expect("get should succeed")
         .expect("key should be present");
@@ -304,7 +301,7 @@ async fn store_overwrites_existing_key() {
 async fn list_returns_entries_with_modifier() {
     let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
 
-    datastore_store(
+    datastore::store(
         &node_runner,
         "alpha",
         b"one".to_vec(),
@@ -313,7 +310,7 @@ async fn list_returns_entries_with_modifier() {
     )
     .await
     .expect("store alpha should succeed");
-    datastore_store(
+    datastore::store(
         &node_runner,
         "beta",
         b"two".to_vec(),
@@ -323,7 +320,7 @@ async fn list_returns_entries_with_modifier() {
     .await
     .expect("store beta should succeed");
 
-    let mut entries = datastore_list(&node_runner, Duration::from_secs(3))
+    let mut entries = datastore::list(&node_runner, Duration::from_secs(3))
         .await
         .expect("list should succeed");
     entries.sort_by(|l, r| l.key.cmp(&r.key));
@@ -349,7 +346,7 @@ async fn list_returns_entries_with_modifier() {
 async fn remove_deletes_key_and_reports_existence() {
     let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
 
-    datastore_store(
+    datastore::store(
         &node_runner,
         "doomed",
         b"bye".to_vec(),
@@ -359,17 +356,17 @@ async fn remove_deletes_key_and_reports_existence() {
     .await
     .expect("store should succeed");
 
-    let removed = datastore_remove(&node_runner, "doomed", Duration::from_secs(3))
+    let removed = datastore::remove(&node_runner, "doomed", Duration::from_secs(3))
         .await
         .expect("remove should succeed");
     assert!(removed, "removing an existing key returns true");
 
-    let got = datastore_get(&node_runner, "doomed", Duration::from_secs(3))
+    let got = datastore::get(&node_runner, "doomed", Duration::from_secs(3))
         .await
         .expect("get should succeed");
     assert_eq!(got, None, "removed key should be gone");
 
-    let removed_again = datastore_remove(&node_runner, "doomed", Duration::from_secs(3))
+    let removed_again = datastore::remove(&node_runner, "doomed", Duration::from_secs(3))
         .await
         .expect("remove should succeed");
     assert!(!removed_again, "removing an absent key returns false");

@@ -1,6 +1,6 @@
 //! Pre-bound clock for the generated peppygen module.
 //!
-//! Wraps `peppylib::clock_for_node` so user code can read the
+//! Wraps `peppylib::clock::for_node` so user code can read the
 //! daemon-resolved time with a single call:
 //!
 //! ```ignore
@@ -14,8 +14,9 @@
 
 use std::sync::OnceLock;
 
+use peppylib::clock::{self, PeppyClock};
 use peppylib::runtime::NodeRunner;
-use peppylib::{PeppyClock, PeppyError, PeppyResult, clock_for_node};
+use peppylib::{PeppyError, PeppyResult};
 
 static CLOCK: OnceLock<PeppyClock> = OnceLock::new();
 
@@ -28,8 +29,8 @@ pub async fn init(node_runner: &NodeRunner) -> PeppyResult<()> {
     if CLOCK.get().is_some() {
         return Ok(());
     }
-    let clock = clock_for_node(node_runner).await?;
-    let _ = CLOCK.set(clock);
+    let resolved = clock::for_node(node_runner).await?;
+    let _ = CLOCK.set(resolved);
     Ok(())
 }
 

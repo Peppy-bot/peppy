@@ -13,18 +13,11 @@ pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMes
 pub mod config;
 pub mod types;
 
-// Core node functions
-pub use core_node::{
-    clock::{
-        ClockSubscription, ClockSync, PeppyClock, clock_for_node, subscribe_clock, synchronize,
-    },
-    datastore::{
-        DatastoreEntry, Encoding, StoredValue, datastore_get, datastore_list, datastore_remove,
-        datastore_store,
-    },
-    info::info,
-    stack::{StackList, stack_list},
-};
+// Core node helpers, namespaced by subsystem: `peppylib::datastore::store`,
+// `peppylib::clock::subscribe`, `peppylib::stack::list`, and their types.
+// `info` is a single verb-less call, so it stays flat.
+pub use core_node::info::info;
+pub use core_node::{clock, datastore, stack};
 
 pub use types::{Message, Payload};
 

@@ -101,10 +101,9 @@ pub struct StoredValue {
     pub last_modified_by: String,
 }
 
-/// One key's metadata as returned by [`datastore_list`]: its key, the
-/// [`Encoding`] tag of its value, and the `instance_id` of the node that last
-/// wrote it. The value bytes are not included — fetch them with
-/// [`datastore_get`] when you need them.
+/// One key's metadata as returned by [`list`]: its key, the [`Encoding`] tag
+/// of its value, and the `instance_id` of the node that last wrote it. The
+/// value bytes are not included; fetch them with [`get`] when you need them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatastoreEntry {
     pub key: String,
@@ -120,7 +119,7 @@ pub struct DatastoreEntry {
 /// `-`); an invalid key returns an error before any request is sent.
 /// `encoding` accepts any string or one of the [`Encoding`] constants (e.g.
 /// [`Encoding::APPLICATION_JSON`]).
-pub async fn datastore_store(
+pub async fn store(
     node_runner: &NodeRunner,
     key: impl Into<String>,
     value: impl Into<Vec<u8>>,
@@ -151,7 +150,7 @@ pub async fn datastore_store(
 ///
 /// `key` must use the node-name character set (ASCII letters, digits, `_` and
 /// `-`); an invalid key returns an error before any request is sent.
-pub async fn datastore_get(
+pub async fn get(
     node_runner: &NodeRunner,
     key: impl Into<String>,
     response_timeout: impl Into<Option<Duration>> + Send,
@@ -181,8 +180,8 @@ pub async fn datastore_get(
 /// List the metadata of every key currently in the datastore on the node's
 /// bound core node. Each [`DatastoreEntry`] carries the key, its encoding tag,
 /// and the `instance_id` of the node that last wrote it — but **not** the value
-/// bytes; fetch those with [`datastore_get`]. Order is unspecified.
-pub async fn datastore_list(
+/// bytes; fetch those with [`get`]. Order is unspecified.
+pub async fn list(
     node_runner: &NodeRunner,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<Vec<DatastoreEntry>> {
@@ -216,7 +215,7 @@ pub async fn datastore_list(
 ///
 /// `key` must use the node-name character set (ASCII letters, digits, `_` and
 /// `-`); an invalid key returns an error before any request is sent.
-pub async fn datastore_remove(
+pub async fn remove(
     node_runner: &NodeRunner,
     key: impl Into<String>,
     response_timeout: impl Into<Option<Duration>> + Send,
