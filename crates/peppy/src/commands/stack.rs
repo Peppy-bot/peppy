@@ -1,3 +1,4 @@
+mod benchmark;
 mod launch;
 mod list;
 
@@ -37,6 +38,28 @@ pub enum StackCommands {
         /// If specified, will save a dotgraph representation at the given path
         dot_graph_path: Option<PathBuf>,
     },
+    /// Benchmark the latency of every interface wiring each node to its direct
+    /// dependencies, measured against the already-running stack.
+    ///
+    /// Service/action numbers are messaging-path round-trips (the user handler is
+    /// never invoked); topic numbers are real producer→consumer delivery latency
+    /// (exact on a single host; cross-host needs PTP/NTP); the optional synthetic
+    /// baseline is a transport-path proxy. Benchmarking never triggers a real
+    /// handler or creates a goal.
+    Benchmark {
+        /// Timed samples per interface (after warmup).
+        #[arg(long, default_value_t = 200)]
+        samples: u32,
+        /// Warmup samples per interface, discarded before measuring.
+        #[arg(long, default_value_t = 20)]
+        warmup: u32,
+        /// Skip the synthetic transport baseline (real probe/delivery only).
+        #[arg(long)]
+        no_synthetic: bool,
+        /// Per-sample probe/observe timeout in milliseconds.
+        #[arg(long, default_value_t = 2000)]
+        per_sample_timeout_ms: u64,
+    },
 }
 
 pub struct StackCommand {
@@ -63,6 +86,15 @@ impl Command for StackCommand {
                     node_run_idle_timeout_secs,
                     max_timeout_secs,
                 )
+            }
+            StackCommands::Benchmark {
+                samples,
+                warmup,
+                no_synthetic,
+                per_sample_timeout_ms,
+            } => {
+                info!("Benchmarking stack...");
+                benchmark::benchmark(ctx, samples, warmup, !no_synthetic, per_sample_timeout_ms)
             }
         }
     }

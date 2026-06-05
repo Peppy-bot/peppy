@@ -627,6 +627,12 @@ pub struct TopicMessage {
     core_node: String,
     link_id: String,
     payload: Payload,
+    /// Producer-stamped send time, in nanoseconds since the Unix epoch, when the
+    /// transport carried one (Zenoh source timestamp with timestamping enabled).
+    /// `None` on paths that do not carry a wire timestamp (service replies, the
+    /// mock adapter, or when timestamping is disabled). Read by the live latency
+    /// benchmark to compute producer → consumer delivery latency.
+    source_timestamp_nanos: Option<u64>,
 }
 
 impl TopicMessage {
@@ -638,6 +644,7 @@ impl TopicMessage {
             core_node: parsed.core_node,
             link_id: parsed.link_id,
             payload: payload.into(),
+            source_timestamp_nanos: None,
         })
     }
 
@@ -655,12 +662,21 @@ impl TopicMessage {
             core_node,
             link_id: String::new(),
             payload: payload.into(),
+            source_timestamp_nanos: None,
         }
     }
 
     #[cfg(feature = "zenoh")]
     pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
         Self::new(key_expr, Payload::from_zbytes(zbytes))
+    }
+
+    /// Attach a producer-stamped send time (ns since the Unix epoch), as carried
+    /// by the transport. Builder form so the subscribe path can set it after
+    /// parsing the keyexpr without widening the common constructors.
+    pub fn with_source_timestamp_nanos(mut self, source_timestamp_nanos: Option<u64>) -> Self {
+        self.source_timestamp_nanos = source_timestamp_nanos;
+        self
     }
 
     pub fn instance_id(&self) -> &str {
@@ -683,6 +699,12 @@ impl TopicMessage {
 
     pub fn payload(&self) -> &Payload {
         &self.payload
+    }
+
+    /// Producer-stamped send time in nanoseconds since the Unix epoch, when the
+    /// transport carried one. See the field docs on [`TopicMessage`].
+    pub fn source_timestamp_nanos(&self) -> Option<u64> {
+        self.source_timestamp_nanos
     }
 
     pub fn into_payload(self) -> Payload {

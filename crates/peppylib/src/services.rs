@@ -1,3 +1,4 @@
+pub mod clock_offset;
 pub mod health;
 pub mod ready;
 pub mod shutdown;

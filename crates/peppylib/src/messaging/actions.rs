@@ -409,6 +409,45 @@ impl ActionMessenger {
         }
     }
 
+    /// Measure the round-trip latency of a single `Probe`-kind query to an
+    /// action's **goal service** (actions are built on the goal/cancel/result
+    /// services). As with [`Self::is_reachable`], the probe is auto-handled by
+    /// the shared service request loop, so **no `PendingGoal` is created and the
+    /// action engine never runs** — this measures only the messaging/routing
+    /// path. Clock-independent (single-clock round-trip).
+    ///
+    /// Returns the elapsed time on a clean reply; propagates the error otherwise.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn probe_latency(
+        messenger: &MessengerHandle,
+        bound_core_node: &str,
+        as_instance_id: &str,
+        to_target: SenderTarget,
+        to_action_name: &str,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
+        response_timeout: Duration,
+    ) -> Result<Duration> {
+        let sender = ActionWireSender::new(
+            bound_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
+            to_target,
+            to_action_name,
+        )?;
+        let started = Instant::now();
+        messenger
+            .poll_service(
+                &sender.goal_service(),
+                Payload::new(),
+                ServiceQueryKind::Probe,
+                response_timeout,
+            )
+            .await?;
+        Ok(started.elapsed())
+    }
+
     /// Send a goal to an action server. Generates a fresh `goal_id`,
     /// wraps `user_payload` in the per-goal envelope, subscribes to the
     /// matching feedback topic, and polls the goal service.

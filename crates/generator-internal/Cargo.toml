@@ -27,6 +27,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 bytes = "1"
 config = { path = "../config-internal", features = ["test_helpers"] }
 pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
+latency-report = { path = "../latency-report" }
 serde_json5 = "0.2.1"
 tempfile = "3.10"
 peppylib = { path = "../peppylib" }

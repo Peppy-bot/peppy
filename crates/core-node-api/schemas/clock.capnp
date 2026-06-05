@@ -29,3 +29,18 @@ struct ClockResponse {
 struct ClockTick {
     time @0 :UInt64;
 }
+
+# Request to a node's `clock_offset` service. The node, on receipt, performs a
+# ClockRequest/ClockResponse exchange against the core node and reports the
+# result. The request itself is empty.
+struct ClockOffsetRequest {
+}
+
+# A node's measured clock offset relative to the core node, from an NTP-style
+# exchange. `offsetNs` is signed: `node_local + offsetNs ≈ core_node_time`.
+# `roundTripDelayNs` is the measured RTT, used to bound the offset's accuracy
+# and to self-diagnose (a large delay means a low-confidence offset).
+struct ClockOffsetResponse {
+    offsetNs @0 :Int64;
+    roundTripDelayNs @1 :UInt64;
+}

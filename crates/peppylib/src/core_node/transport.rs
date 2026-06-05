@@ -170,6 +170,7 @@ send_goal!(pub send_node_add, NodeAddGoal, names::NODE_ADD_ACTION);
 send_goal!(pub send_node_run, NodeRunGoal, names::NODE_RUN_ACTION);
 send_goal!(pub send_node_build, NodeBuildGoal, names::NODE_BUILD_ACTION);
 send_goal!(pub send_repo_refresh, RepoRefreshGoal, names::REPO_REFRESH_ACTION);
+send_goal!(pub send_stack_benchmark, StackBenchmarkGoal, names::STACK_BENCHMARK_ACTION);
 
 /// `node_stop` is the only service whose listener may be hosted by a
 /// per-instance node rather than the daemon, so it routes by an explicit

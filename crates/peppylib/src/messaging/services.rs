@@ -457,4 +457,47 @@ impl ServiceMessenger {
             Err(e) => Err(e),
         }
     }
+
+    /// Measure the round-trip latency of a single `Probe`-kind query to a
+    /// service: caller → router → producer's queryable → the framework's empty
+    /// probe reply → back. Like [`Self::is_reachable`], the probe is auto-handled
+    /// by the service request loop and the **user handler is never invoked**, so
+    /// this measures only the messaging/routing path, not handler execution. The
+    /// result is therefore clock-independent (a single-clock round-trip).
+    ///
+    /// Returns the elapsed time on a clean reply; propagates the error otherwise
+    /// (an unreachable producer or a probe that did not return within
+    /// `response_timeout` is not a usable latency sample, and the caller should
+    /// drop it rather than record the timeout as latency).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn probe_latency(
+        messenger: &MessengerHandle,
+        bound_core_node: &str,
+        as_instance_id: &str,
+        to_target: SenderTarget,
+        to_service_name: &str,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
+        response_timeout: Duration,
+    ) -> Result<Duration> {
+        let sender = ServiceWireSender::new(
+            bound_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
+            to_target,
+            to_service_name,
+            ServiceKind::Service,
+        )?;
+        let started = Instant::now();
+        messenger
+            .poll_service(
+                &sender,
+                Payload::new(),
+                ServiceQueryKind::Probe,
+                response_timeout,
+            )
+            .await?;
+        Ok(started.elapsed())
+    }
 }

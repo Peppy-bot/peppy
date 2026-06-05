@@ -1,0 +1,116 @@
+---
+title: Stack benchmark
+description: Measure the messaging latency of every interface in your running stack
+sidebar:
+  order: 12
+---
+
+`peppy stack benchmark` reports the **latency** of the topics, services, and
+actions that wire each node to its **direct dependencies**, measured against the
+**already-running** stack. It prints a per-interface table of p50 / p90 / mean so
+you can see, edge by edge, how much the messaging layer adds.
+
+Use it to answer questions like "is this service round-trip as fast as I expect?",
+"how long does a frame take to reach its consumer?", or "did my last change make a
+hot path slower?" (each run is compared against the previous run on the same
+machine).
+
+## Running it
+
+The daemon must be running with a launched stack (see
+[Core node functions](/advanced_guides/core_node_functions/)).
+
+```shell
+# Benchmark every dependency edge with the defaults (200 samples, 20 warmup).
+peppy stack benchmark
+
+# Tune the sample counts and per-sample timeout.
+peppy stack benchmark --samples 500 --warmup 50 --per-sample-timeout-ms 1000
+
+# Skip the synthetic transport baseline (real probe/delivery rows only).
+peppy stack benchmark --no-synthetic
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--samples` | `200` | Timed samples per interface, after warmup. |
+| `--warmup` | `20` | Warmup samples per interface, discarded before measuring. |
+| `--no-synthetic` | off | Skip the synthetic transport baseline. |
+| `--per-sample-timeout-ms` | `2000` | Per-sample probe/observe timeout. |
+
+## Reading the table
+
+```
+edge                          measure    clock      p50      p90      mean     n    Δp50    note
+planner:v1 → camera:v1/frames delivery   same-host  1.20ms   1.80ms   1.31ms   200  -3.1%
+planner:v1 → arm:v1/move      act-probe  —          240µs    310µs    255µs    200  +0.4%
+planner:v1 → state:v1/get     svc-probe  —          180µs    220µs    191µs    200  —
+planner:v1 → camera:v1/frames synthetic  —          90µs     140µs    98µs     200          256B fixed payload, sensor_data QoS
+```
+
+- **edge** — `consumer:tag → producer:tag/interface`.
+- **measure** — how the row was measured (see below).
+- **clock** — clock-alignment confidence for one-way topic delivery (`—` for
+  round-trip and synthetic rows, which need no clock alignment).
+- **p50 / p90 / mean** — the latency distribution, in ns / µs / ms.
+- **n** — how many samples were collected (an unreachable or idle edge shows `0`).
+- **Δp50** — change in the median versus the previous run **on this machine**
+  (baselines are machine-local, so numbers are never compared across machines).
+- **note** — extra context (e.g. why a value was suppressed, or that a topic had
+  no live traffic).
+
+## What each metric means — and does not
+
+- **`svc-probe` / `act-probe` (services and actions)** — the round-trip time of a
+  framework **probe** to the endpoint: caller → router → producer → an empty
+  framework reply → back. This is the **messaging-path** latency and **excludes
+  the handler's own execution time**. It is clock-independent (a single-clock
+  round-trip), so it is trustworthy regardless of host or clock sync.
+- **`delivery` (topics)** — the **real** producer → consumer one-way delivery
+  latency on live traffic (`receive_time − source_time`). It is **exact when the
+  producer and the core node share a host**. Across hosts it depends on clock
+  synchronization (see below).
+- **`synthetic` (topics, optional)** — a **transport-path proxy**: the benchmark
+  publishes a fixed-size payload to a reserved, benchmark-only key and times
+  publish → receive on its own subscriber, tagged with the topic's QoS. It
+  isolates router / QoS cost from node scheduling and is clock-independent. It is
+  **not** a real edge measurement — payloads are opaque, so it uses a
+  representative fixed size rather than the topic's actual payload size.
+
+## Clocks and cross-host timing
+
+One-way **topic delivery** is the only measurement that depends on clocks:
+
+- **Same host** — `receive − source` is exact. The `clock` column reads
+  `same-host`.
+- **Multiple hosts** — the two hosts' clock offset can equal or exceed
+  sub-millisecond latencies. The benchmark handles this in layers:
+  - With **PTP** (gPTP / IEEE-1588) deployed on your network, the system clocks
+    are disciplined to each other and cross-host numbers are trustworthy with no
+    extra work — peppy benefits transparently.
+  - Otherwise, the benchmark asks each producer for its measured offset to the
+    core node (an NTP-style exchange) and **corrects** the number. The `clock`
+    column reads `corrected`. Accuracy is roughly the LAN sync asymmetry (tens of
+    µs to sub-ms); running NTP/chrony keeps this bounded.
+  - If a corrected delta still comes back **negative or implausibly large**, the
+    clocks are not adequately synchronized: the number is **suppressed** and the
+    `clock` column reads `flagged`. Rely on the round-trip probe and synthetic
+    rows for that edge, and deploy PTP or NTP.
+
+The round-trip probe and synthetic baseline never depend on clocks, so they are
+always reported.
+
+## Safety: benchmarking never triggers your handlers
+
+A benchmark message can **never** run the real handler of any topic, service, or
+action, by construction:
+
+- Services and actions are measured only with framework **probe** queries, which
+  the framework auto-answers — your service handler is never called, and probing
+  an action's goal service **does not create a goal** or start the action engine.
+- Real topic latency is **observe-only**: the benchmark subscribes but never
+  publishes onto a real topic.
+- The synthetic baseline publishes only to a reserved key that no real
+  subscription can match.
+
+So you can safely benchmark a live, production stack without side effects.

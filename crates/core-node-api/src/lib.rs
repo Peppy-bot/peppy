@@ -39,6 +39,11 @@ pub(crate) mod launch_capnp {
 }
 
 #[allow(clippy::all)]
+pub(crate) mod benchmark_capnp {
+    include!(concat!(env!("OUT_DIR"), "/benchmark_capnp.rs"));
+}
+
+#[allow(clippy::all)]
 pub(crate) mod node_capnp {
     include!(concat!(env!("OUT_DIR"), "/node_capnp.rs"));
 }

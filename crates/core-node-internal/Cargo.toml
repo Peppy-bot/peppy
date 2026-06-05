@@ -11,6 +11,7 @@ node-stack = { path = "../node-stack-internal" }
 peppylib = { path = "../peppylib" }
 core-node-api = { path = "../core-node-api" }
 generator = { path = "../generator-internal" }
+latency-report = { path = "../latency-report" }
 containers = { path = "../containers-internal" }
 bytes = "1.10"
 chrono = "0.4"

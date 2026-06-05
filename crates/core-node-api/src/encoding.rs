@@ -13,7 +13,9 @@ mod stack;
 // Note: there used to be a top-level `builder` module here. Build encoding
 // now lives at `node::builder` alongside `node::add`.
 
-pub use clock::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
+pub use clock::{
+    ClockOffsetRequest, ClockOffsetResponse, ClockRequest, ClockResponse, ClockTick, wall_now_ns,
+};
 pub use datastore::{
     DatastoreGetRequest, DatastoreGetResponse, DatastoreKey, DatastoreKeyError, DatastoreListEntry,
     DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
@@ -37,6 +39,10 @@ pub use repo::{
     RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoRefreshFeedback, RepoRefreshGoal,
     RepoRefreshGoalResponse, RepoRefreshResult, RepoRemoveRequest, RepoRemoveResponse, RepoSource,
     RepoSourceKind,
+};
+pub use stack::benchmark::{
+    BenchmarkFeedbackStep, ClockConfidence, InterfaceKind, InterfaceLatency, MeasurementKind,
+    StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,

@@ -137,6 +137,9 @@ use zenoh::sample::SampleFields;
     "mode": "client",
     "connect": {
         "endpoints": ["{{ protocol }}/{{ host }}:{{ port }}"]
+    },
+    "timestamping": {
+        "enabled": { "client": true }
     }
 }"#,
     ext = "txt"
@@ -165,6 +168,9 @@ pub struct ZenohClientConfigTemplate {
             "period_max_ms": 4000,
             "period_increase_factor": 2.0
         }
+    },
+    "timestamping": {
+        "enabled": { "client": true }
     }
 }"#,
     ext = "txt"
@@ -190,6 +196,9 @@ pub struct ZenohReconnectingClientConfigTemplate {
         "multicast": {
             "enabled": false
         }
+    },
+    "timestamping": {
+        "enabled": { "client": true }
     }
 }"#,
     ext = "txt"
@@ -765,6 +774,7 @@ impl ZenohAdapter {
                     key_expr,
                     payload,
                     attachment,
+                    timestamp,
                     ..
                 } = sample.into();
                 if drop_secondary {
@@ -776,10 +786,15 @@ impl ZenohAdapter {
                         return;
                     }
                 }
+                // Producer-stamped send time (NTP64 → ns since the Unix epoch),
+                // present when session/router timestamping is enabled. Surfaced
+                // so consumers can measure real delivery latency.
+                let source_timestamp_nanos = timestamp.as_ref().map(|ts| ts.get_time().as_nanos());
                 let key_expr = key_expr.as_str();
                 match TopicMessage::from_zbytes(key_expr, payload) {
                     Ok(message) => {
-                        let _ = tx.send(message);
+                        let _ =
+                            tx.send(message.with_source_timestamp_nanos(source_timestamp_nanos));
                     }
                     Err(err) => {
                         tracing::error!(
