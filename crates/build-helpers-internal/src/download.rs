@@ -1,6 +1,5 @@
 //! Downloading files and extracting entries from zip archives.
 
-use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
@@ -34,9 +33,9 @@ pub fn extract_zip_entry(zip_path: &Path, entry: &str, dest: &Path) -> std::io::
     let mut zip_entry = archive
         .by_name(entry)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
-    let mut buf = Vec::with_capacity(zip_entry.size() as usize);
-    zip_entry.read_to_end(&mut buf)?;
-    std::fs::write(dest, &buf)
+    let mut dest_file = std::fs::File::create(dest)?;
+    std::io::copy(&mut zip_entry, &mut dest_file)?;
+    Ok(())
 }
 
 #[cfg(test)]

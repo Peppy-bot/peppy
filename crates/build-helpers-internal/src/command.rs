@@ -68,7 +68,17 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
 
     let stdout_captured = stdout_thread.join().unwrap_or_default();
     let stderr_captured = stderr_thread.join().unwrap_or_default();
-    let status = child.wait().expect("Failed to wait for child process");
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(e) => {
+            println!("cargo:warning=[{label}] Failed to wait for child process: {e}");
+            return CommandOutput {
+                success: false,
+                stdout: stdout_captured,
+                stderr: stderr_captured,
+            };
+        }
+    };
 
     if !status.success() {
         println!("cargo:warning=[{label}] Command failed with exit status: {status}");

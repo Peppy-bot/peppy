@@ -8,6 +8,12 @@ use crate::command::run_command_streaming;
 use crate::fs::CleanupDir;
 
 /// Returns the Rust target triple for the current build from cargo env vars.
+///
+/// Must be called from a build script. It reads `CARGO_CFG_TARGET_ARCH`,
+/// `CARGO_CFG_TARGET_OS`, and `CARGO_CFG_TARGET_ENV`, which cargo only sets
+/// while running `build.rs`. The arch and OS reads `unwrap()` on purpose: their
+/// absence means the function was called outside that context, which is a
+/// programming error rather than a recoverable runtime condition.
 pub fn build_target_triple() -> String {
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
@@ -112,6 +118,10 @@ pub fn cargo_install_binary(
     let _target_guard = CleanupDir(cargo_target_dir.clone());
 
     let crate_spec = format!("{name}@{version}");
+    let Some(install_root_str) = install_root.to_str() else {
+        println!("cargo:warning=Install root path is not valid UTF-8: {install_root:?}");
+        return None;
+    };
     let mut cmd = Command::new("cargo");
     cmd.args([
         "install",
@@ -119,7 +129,7 @@ pub fn cargo_install_binary(
         "--target",
         target,
         "--root",
-        install_root.to_str().unwrap(),
+        install_root_str,
     ])
     .env("CARGO_TARGET_DIR", &cargo_target_dir);
 
