@@ -1051,11 +1051,19 @@ async fn service_communication_poll_wrong_node() {
             service_ready_tx.send(()).unwrap();
             let handled = tokio::time::timeout(service_wait_timeout, handler).await;
 
-            // Timeout is expected since the service should not receive a request
-            assert!(
-                handled.is_err(),
-                "service handler should have timed out waiting for request"
-            );
+            // The service is targeted at the wrong node, so the user handler
+            // must never run. A correct run either leaves the handler parked
+            // until `service_wait_timeout` fires (`Err(Elapsed)`) or finds the
+            // request stream already closed (`Ok(false)`); both mean no request
+            // was delivered. Only `Ok(true)` — a request actually reaching the
+            // handler — is a failure. `call_count == 0` below is the
+            // authoritative guarantee that nothing was processed.
+            match handled {
+                Err(_) | Ok(Ok(false)) | Ok(Err(_)) => {}
+                Ok(Ok(true)) => {
+                    panic!("service handler processed a request despite the wrong target")
+                }
+            }
 
             Ok::<(), Error>(())
         })
@@ -1183,11 +1191,19 @@ async fn service_communication_poll_wrong_core_node() {
             service_ready_tx.send(()).unwrap();
             let handled = tokio::time::timeout(service_wait_timeout, handler).await;
 
-            // Timeout is expected since the service should not receive a request
-            assert!(
-                handled.is_err(),
-                "service handler should have timed out waiting for request"
-            );
+            // The service is targeted at the wrong node, so the user handler
+            // must never run. A correct run either leaves the handler parked
+            // until `service_wait_timeout` fires (`Err(Elapsed)`) or finds the
+            // request stream already closed (`Ok(false)`); both mean no request
+            // was delivered. Only `Ok(true)` — a request actually reaching the
+            // handler — is a failure. `call_count == 0` below is the
+            // authoritative guarantee that nothing was processed.
+            match handled {
+                Err(_) | Ok(Ok(false)) | Ok(Err(_)) => {}
+                Ok(Ok(true)) => {
+                    panic!("service handler processed a request despite the wrong target")
+                }
+            }
 
             Ok::<(), Error>(())
         })
@@ -1243,6 +1259,15 @@ async fn service_communication_poll_wrong_core_node() {
         .expect("service task should finish within timeout")
         .expect("service task panicked")
         .expect("service task returned error");
+
+    // Authoritative check that the user handler never ran for the wrong core
+    // node — independent of whether the listener timed out or its stream
+    // closed first.
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        0,
+        "service callback should not have been called"
+    );
 
     tokio::time::timeout(service_task_timeout, router.shutdown())
         .await
@@ -1320,14 +1345,23 @@ async fn service_communication_fails_service_timeouts() {
     let call_count = Arc::new(AtomicUsize::new(0));
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
-    let service_wait_timeout = Duration::from_millis(1500);
-    let service_task_timeout = service_wait_timeout * 2 + Duration::from_millis(500);
+    // Gate that holds back the *second* request's response. The listener ACKs
+    // that request (which tells the caller it is reachable) and then parks on
+    // this gate, emitting no response until the main task fires it — which it
+    // does only after observing the `ServiceTimeout`. The response is absent
+    // for the entire failure budget, so the caller deterministically times out
+    // waiting for it; the budget only needs to outlast a single ACK round-trip.
+    let (release_response_tx, release_response_rx) = oneshot::channel::<()>();
     let service_ready_timeout = Duration::from_secs(1);
+    // Safety nets only: they bound how long the listener task may run if the
+    // test itself wedges (a request never arrives, or the release gate is never
+    // fired). Sized well above any real round-trip; correctness does not depend
+    // on their exact value.
+    let service_op_timeout = Duration::from_secs(10);
+    let service_task_timeout = Duration::from_secs(15);
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
-        let response_delay = Duration::from_millis(200);
-
         let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
@@ -1341,33 +1375,53 @@ async fn service_communication_fails_service_timeouts() {
 
         let response_payload = response_payload.clone();
         let call_count = Arc::clone(&call_count);
-        let expected_requests = 2;
 
         tokio::spawn(async move {
             service_ready_tx.send(()).unwrap();
 
-            for _ in 0..expected_requests {
+            // First request: reply immediately so the success poll completes in
+            // a single round-trip.
+            {
                 let response_payload = response_payload.clone();
                 let call_count = Arc::clone(&call_count);
-
                 let handled = tokio::time::timeout(
-                    service_wait_timeout,
-                    service.handle_next_request(|request| async move {
+                    service_op_timeout,
+                    service.handle_next_request(move |request| async move {
                         assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                         assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        tokio::time::sleep(response_delay).await;
                         Ok(response_payload)
                     }),
                 )
                 .await
-                .expect("service handler timed out")
-                .expect("service should receive expected number of requests");
+                .expect("first service handler hung")
+                .expect("first service request errored");
+                assert!(handled, "service subscription closed before first request");
+            }
 
-                assert!(
-                    handled,
-                    "service subscription closed before handling request"
-                );
+            // Second request: the framework auto-ACKs the moment the request
+            // arrives — that ACK is what makes the caller classify the outcome
+            // as `ServiceTimeout` rather than `ServiceUnreachable`. The handler
+            // then parks on the release gate and emits no response until the
+            // main task fires it, after the timeout has been observed.
+            {
+                let response_payload = response_payload.clone();
+                let call_count = Arc::clone(&call_count);
+                let handled = tokio::time::timeout(
+                    service_op_timeout,
+                    service.handle_next_request(move |request| async move {
+                        assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
+                        assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
+                        call_count.fetch_add(1, Ordering::SeqCst);
+                        // Park until the main task confirms it saw the timeout.
+                        let _ = release_response_rx.await;
+                        Ok(response_payload)
+                    }),
+                )
+                .await
+                .expect("second service handler hung")
+                .expect("second service request errored");
+                assert!(handled, "service subscription closed before second request");
             }
 
             Ok::<(), Error>(())
@@ -1385,8 +1439,15 @@ async fn service_communication_fails_service_timeouts() {
     // The caller node has its own scope (emulates a separate node running on a different instance)
     let err = {
         let request_payload = Payload::from_static(b"enable=true");
-        let caller_success_timeout = Duration::from_millis(500);
-        let caller_failure_timeout = Duration::from_millis(50);
+        // Both polls run wildcard discover-then-pin, so each budget covers a
+        // probe round-trip plus the real request. The success handler replies
+        // immediately, so the success poll completes well inside its budget;
+        // the failure handler's response is gated off, so the failure poll runs
+        // to its deadline and reports `ServiceTimeout`. The failure budget is
+        // the test's wall-clock cost for the timeout case, kept modest while
+        // still well above a single ACK round-trip.
+        let caller_success_timeout = Duration::from_secs(5);
+        let caller_failure_timeout = Duration::from_millis(1000);
 
         let caller_handle = router.messenger().await;
 
@@ -1448,6 +1509,10 @@ async fn service_communication_fails_service_timeouts() {
          so the timeout error carries the discovered instance_id",
     );
     assert_eq!(err_service_name.as_str(), listener_service_name);
+
+    // The timeout has been observed; release the parked handler so the listener
+    // task can finish and we can confirm both requests were actually processed.
+    let _ = release_response_tx.send(());
 
     tokio::time::timeout(service_task_timeout, service_task)
         .await
