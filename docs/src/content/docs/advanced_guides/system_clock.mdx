@@ -11,10 +11,12 @@ Every node in a peppy stack runs against its own OS wall clock.
 That's fine on a single host. The trouble starts when two nodes need to compare timestamps. For example, matching a sensor reading to the controller command that triggered it, or merging logs from multiple machines into a single timeline. 
 Their clocks drift independently, so "1.7 s ago" on one node no longer points to the same instant as "1.7 s ago" on another.
 
-`peppylib` exposes two helpers that let any node measure the offset between its local clock and the core node's clock:
+`peppylib::clock` exposes two helpers that let any node measure the offset between its local clock and the core node's clock:
 
 - `synchronize`: a one-shot NTP-style request/response. Returns the offset and the observed round-trip delay.
-- `subscribe_clock`: a long-lived subscription to the periodic `clock` topic the core node publishes. Each `ClockTick` carries the core node's clock at emission.
+- `subscribe`: a long-lived subscription to the periodic `clock` topic the core node publishes. Each `ClockTick` carries the core node's clock at emission.
+
+They are available from Rust as `peppylib::clock::synchronize` and `peppylib::clock::subscribe`, and from Python as `from peppylib.clock import synchronize, subscribe`.
 
 :::note
 Neither helper adjusts the local OS clock. They measure and report; aligning a timestamp is left to the caller (`local_now() + sync.offset_ns`).
@@ -22,7 +24,7 @@ Neither helper adjusts the local OS clock. They measure and report; aligning a t
 
 ## When to use each
 
-| | `synchronize` | `subscribe_clock` |
+| | `synchronize` | `subscribe` |
 |---|---|---|
 | Pattern | Request/response | Topic subscription |
 | Result | Offset **and** observed RTT | Snapshot of the core node's clock |
@@ -30,7 +32,7 @@ Neither helper adjusts the local OS clock. They measure and report; aligning a t
 | Cost per use | One round trip | Passive (ticks arrive at 10 Hz) |
 | Use when | You need a precise offset before stamping a recorded artifact | You want continuous correlation, e.g. driving a status display |
 
-If unsure, start with `synchronize`; it gives you both numbers and you can call it once at startup. Reach for `subscribe_clock` when you need the steady drumbeat.
+If unsure, start with `synchronize`; it gives you both numbers and you can call it once at startup. Reach for `subscribe` when you need the steady drumbeat.
 
 ## `synchronize`
 
@@ -49,7 +51,7 @@ The second argument is a response timeout. Rust accepts `Option<Duration>`; Pyth
 
     from peppygen import NodeBuilder, NodeRunner
     from peppygen.parameters import Parameters
-    from peppylib import synchronize
+    from peppylib.clock import synchronize
 
 
     async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
@@ -76,7 +78,7 @@ The second argument is a response timeout. Rust accepts `Option<Duration>`; Pyth
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use peppygen::{NodeBuilder, Parameters, Result};
-    use peppylib::synchronize;
+    use peppylib::clock::synchronize;
 
     fn main() -> Result<()> {
         NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
@@ -99,9 +101,9 @@ The second argument is a response timeout. Rust accepts `Option<Duration>`; Pyth
   </TabItem>
 </Tabs>
 
-## `subscribe_clock`
+## `subscribe`
 
-`subscribe_clock` opens a long-lived subscription to the core node's `clock` topic and returns a `ClockSubscription`.
+`subscribe` opens a long-lived subscription to the core node's `clock` topic and returns a `ClockSubscription`.
 Call `on_next_tick` in a loop to receive each tick; it returns `None` when the subscription closes (typically because the core node went away).
 
 The core node publishes ticks at **10 Hz** (every 100 ms) by default: high enough to correlate logs across nodes, low enough not to flood the bus. The rate is set on the core node side via `CoreNodeArguments.clock_publish_interval`.
@@ -115,11 +117,11 @@ Each `ClockTick` carries a single field, `time` (`u64`): nanoseconds since the U
 
     from peppygen import NodeBuilder, NodeRunner
     from peppygen.parameters import Parameters
-    from peppylib import subscribe_clock
+    from peppylib.clock import subscribe
 
 
     async def follow_clock(node_runner: NodeRunner) -> None:
-        sub = await subscribe_clock(node_runner)
+        sub = await subscribe(node_runner)
         while True:
             tick = await sub.on_next_tick()
             if tick is None:
@@ -143,14 +145,14 @@ Each `ClockTick` carries a single field, `time` (`u64`): nanoseconds since the U
   <TabItem label="Rust">
     ```rust title="src/main.rs"
     use peppygen::{NodeBuilder, Parameters, Result};
-    use peppylib::subscribe_clock;
+    use peppylib::clock::subscribe;
 
     fn main() -> Result<()> {
         NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
             tokio::spawn(async move {
-                let mut sub = subscribe_clock(&node_runner)
+                let mut sub = subscribe(&node_runner)
                     .await
-                    .expect("subscribe_clock should succeed");
+                    .expect("subscribe should succeed");
 
                 while let Some(tick) = sub
                     .on_next_tick()
@@ -214,7 +216,7 @@ Omit `framework` (or omit `use_sim_time` inside it) to fall through to the daemo
 
 ### `PeppyClock` and `peppygen::clock`
 
-For hot-path code that just wants "what time is it now" without caring whether the node was launched in wall or sim mode, peppylib exposes `PeppyClock` and the generator emits a pre-bound `peppygen::clock` module:
+For hot-path code that just wants "what time is it now" without caring whether the node was launched in wall or sim mode, peppylib exposes `PeppyClock` (in `peppylib::clock`) and the generator emits a pre-bound `peppygen::clock` module:
 
 - `init(node_runner)`: async; opens a `clock` subscription in sim mode (a no-op in wall mode) so the first `now_ns` after a tick lands returns immediately. Idempotent. Call it once at the top of your setup function.
 - `now_ns()`: sync; reads the current core-node-aligned time. Returns `Err(PeppyError::ClockNotReady)` (Rust) or raises `RuntimeError` (Python) before `init`, and in sim mode before any `ClockTick` has been observed.
@@ -277,4 +279,4 @@ For hot-path code that just wants "what time is it now" without caring whether t
   </TabItem>
 </Tabs>
 
-Prefer `synchronize` over `PeppyClock` when you need a bounded-staleness offset, since it observes a round trip and reports the RTT. `subscribe_clock` is the right pick if you want every raw tick. For everything else, reach for `peppygen::clock::now_ns`.
+Prefer `synchronize` over `PeppyClock` when you need a bounded-staleness offset, since it observes a round trip and reports the RTT. `subscribe` is the right pick if you want every raw tick. For everything else, reach for `peppygen::clock::now_ns`.

@@ -8,7 +8,7 @@ inside a topic subscriber loop and `ClockResponse.decode(payload)` after a
 
 import pytest
 
-from peppylib import ClockRequest, ClockResponse, ClockTick
+from peppylib.clock import ClockRequest, ClockResponse, ClockTick
 
 
 def test_clock_request_round_trip() -> None:

@@ -13,7 +13,9 @@ use tokio::sync::Mutex;
 
 use super::iface::PySenderTarget;
 use super::services::PyServiceEndpoint;
-use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
+use super::{
+    PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, future_into_py_unit, to_py_err,
+};
 use crate::config::PyQoSProfile;
 
 // ---------------------------------------------------------------------------
@@ -42,7 +44,7 @@ impl PyActionFeedbackPublisher {
                 "feedback payload must be non-empty; empty is reserved for publish_end()",
             )
         })?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             publisher.publish(payload).await.map_err(to_py_err)?;
             Ok(())
         })
@@ -52,7 +54,7 @@ impl PyActionFeedbackPublisher {
     /// `on_next_feedback` call resolves with `ActionFeedbackChannelClosed`.
     fn publish_end<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let publisher = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             publisher.publish_end().await.map_err(to_py_err)?;
             Ok(())
         })
@@ -607,7 +609,7 @@ impl PyPendingGoal {
     /// context is produced.
     fn reject<'py>(&self, py: Python<'py>, response: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             let pending =
                 inner.lock().await.take().ok_or_else(|| {
                     PyValueError::new_err("PendingGoal already accepted or rejected")
@@ -656,7 +658,7 @@ impl PyGoalContext {
                 "feedback payload must be non-empty; empty is reserved for end-of-stream",
             )
         })?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             inner.publish_feedback(payload).await.map_err(to_py_err)?;
             Ok(())
         })
@@ -665,7 +667,7 @@ impl PyGoalContext {
     /// Resolves when a cancel request arrives for this goal.
     fn cancel_signal<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             inner.cancel_signal().await;
             Ok(())
         })
@@ -679,7 +681,7 @@ impl PyGoalContext {
     /// Deliver the final result. Idempotent: the first call wins.
     fn complete<'py>(&self, py: Python<'py>, result: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             inner
                 .complete(Payload::from(result))
                 .await
@@ -696,7 +698,7 @@ impl PyGoalContext {
         result: Vec<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             inner
                 .complete_cancelled(Payload::from(result))
                 .await

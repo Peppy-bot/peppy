@@ -1,4 +1,4 @@
-"""Integration tests for `peppylib.synchronize` and `peppylib.subscribe_clock`.
+"""Integration tests for `peppylib.clock.synchronize` and `peppylib.clock.subscribe`.
 
 Python equivalent of `crates/peppylib/tests/core_node/clock.rs`, exercised
 through the high-level Python helpers.
@@ -8,15 +8,7 @@ import asyncio
 
 import pytest
 
-from peppylib import (
-    ClockResponse,
-    ClockTick,
-    QoSProfile,
-    SenderTarget,
-    TopicMessenger,
-    subscribe_clock,
-    synchronize,
-)
+from peppylib import QoSProfile, SenderTarget, TopicMessenger, clock
 
 from .common import (
     CORE_NODE,
@@ -30,7 +22,7 @@ from .common import (
 
 @pytest.mark.asyncio
 async def test_synchronize_computes_offset_and_delay(tmp_path):
-    """`synchronize()` performs the NTP exchange and returns a typed ClockSync.
+    """`clock.synchronize()` performs the NTP exchange and returns a typed ClockSync.
 
     The stub listener replies with a hand-picked (t1, t2) so we can assert the
     NTP math without depending on real wall-clock readings. Symmetric link with
@@ -40,7 +32,7 @@ async def test_synchronize_computes_offset_and_delay(tmp_path):
     # Plausible nanosecond timestamps. The exact t0 the client stamps is racy,
     # so we set t1 / t2 to values *much* larger than any realistic offset would
     # produce — the assertions below check structure, not exact magnitudes.
-    canned_response = ClockResponse(
+    canned_response = clock.ClockResponse(
         client_send_time=0,  # echoed t0 — ignored by `synchronize`, which uses the live one
         server_recv_time=2_000_000_000_000,
         server_send_time=2_000_000_000_005,
@@ -53,7 +45,7 @@ async def test_synchronize_computes_offset_and_delay(tmp_path):
         handler = await spawn_stub_listener(server_handle, "clock", canned_response.encode())
         await wait_until_reachable(node_runner.messenger(), "clock")
 
-        sync = await synchronize(node_runner, 3.0)
+        sync = await clock.synchronize(node_runner, 3.0)
 
         await handler
     finally:
@@ -74,7 +66,7 @@ async def test_synchronize_computes_offset_and_delay(tmp_path):
 
 @pytest.mark.asyncio
 async def test_subscribe_clock_yields_typed_ticks(tmp_path):
-    """`subscribe_clock(node_runner)` decodes published ClockTicks for the caller.
+    """`clock.subscribe(node_runner)` decodes published ClockTicks for the caller.
 
     Mirrors `subscribe_clock_yields_typed_ticks` from the Rust integration
     test. Subscribes via the helper *before* publishing so the subscription is
@@ -82,11 +74,11 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
     """
     router, node_runner, server_handle = await start_router_and_runner(tmp_path)
     try:
-        sub = await subscribe_clock(node_runner)
+        sub = await clock.subscribe(node_runner)
         # Brief settle for zenoh discovery — same idiom as test_topics.py.
         await asyncio.sleep(0.05)
 
-        canned = ClockTick(time=1_700_000_000_123_456_789)
+        canned = clock.ClockTick(time=1_700_000_000_123_456_789)
         await TopicMessenger.emit(
             server_handle,
             CORE_NODE,

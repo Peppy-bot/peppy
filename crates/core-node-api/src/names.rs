@@ -10,6 +10,11 @@ pub const CLOCK: &str = "clock";
 pub const INFO: &str = "info";
 pub const PING: &str = "ping";
 
+pub const DATASTORE_STORE: &str = "datastore_store";
+pub const DATASTORE_GET: &str = "datastore_get";
+pub const DATASTORE_LIST: &str = "datastore_list";
+pub const DATASTORE_REMOVE: &str = "datastore_remove";
+
 pub const STACK_LAUNCH_ACTION: &str = "stack_launch";
 pub const STACK_RESET: &str = "stack_reset";
 pub const STACK_LIST: &str = "stack_list";

@@ -123,39 +123,17 @@ pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> ValidatedBindin
                     continue;
                 }
 
-                let is_deferred = instance.deferred_bindings.contains(binding_key.as_str());
-
                 if let Some(slot) = declared_pinned.get(binding_key.as_str()).copied() {
                     // Rule 2: KEY matches a declared pinned link_id.
                     pinned_keys_seen.insert(binding_key.as_str());
                     let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
-                        // Target is not in the snapshot. A `--bind-deferred`
-                        // slot tolerates this: record it as `Deferred` and
-                        // leave conformance/identity to the daemon's
-                        // late check when the target appears. A strict
-                        // `--bind` still fails fast.
-                        if is_deferred {
-                            resolved.insert(
-                                binding_key.clone(),
-                                SlotBinding::Deferred {
-                                    producer_instance_id: target_id.clone(),
-                                },
-                            );
-                        } else {
-                            out.errors.push(ParsingError::UnknownInstanceId {
-                                owner_instance_id: instance.instance_id.to_string(),
-                                binding: binding_key.clone(),
-                                instance_id: target_id.clone(),
-                            });
-                        }
+                        out.errors.push(ParsingError::UnknownInstanceId {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            binding: binding_key.clone(),
+                            instance_id: target_id.clone(),
+                        });
                         continue;
                     };
-                    // Target is present. Validate conformance now even for a
-                    // deferred binding — deferral only relaxes the
-                    // unknown-instance rejection, never the conformance check
-                    // when the producer is actually running, so a
-                    // present-but-non-conforming target never slips through
-                    // silently. A successful check resolves to `Pinned`.
                     if !slot_matches_producer(&slot, target_item) {
                         out.errors.push(match slot.kind {
                             SlotKind::Node => ParsingError::BindingTargetMismatch(Box::new(
@@ -192,21 +170,9 @@ pub fn validate_bindings(items: &[BindingValidationItem<'_>]) -> ValidatedBindin
                     continue;
                 }
 
-                // KEY is not a pinned link_id. Deferral is only meaningful
-                // for a pinned slot — a `from_any` slot accepts any
-                // conforming producer and cannot be resolved without the
-                // target's `conforms_to`, which an absent deferred target
-                // cannot provide. Reject rather than fall through.
-                if is_deferred {
-                    out.errors.push(ParsingError::DeferredBindingNotPinned {
-                        owner_instance_id: instance.instance_id.to_string(),
-                        binding: binding_key.clone(),
-                    });
-                    continue;
-                }
-
-                // Try to attach to a from_any slot. Node slots match by
-                // `(name, tag)`; interface slots match against the producer's
+                // KEY does not match a pinned link_id. Try to attach to a
+                // from_any slot. Node slots match by `(name, tag)`;
+                // interface slots match against the producer's
                 // `conforms_to` claim.
                 let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
                     out.errors.push(ParsingError::UnknownInstanceId {
@@ -385,64 +351,14 @@ fn collect_declared_slots(
 /// `conforms_to`. sha256 is not cross-checked here — each side
 /// independently verifies its own declared sha256 against the on-disk
 /// interface document at cache resolution time.
-///
-/// Shared by the launcher validator, the daemon's late-validation log
-/// hook (when a deferred target appears), and the `stack list`
-/// deferred-status computation, so all three agree on what "satisfies"
-/// means. The plain-args shape lets callers that hold raw config pieces
-/// (not a `BindingValidationItem`) reuse it.
-pub fn producer_satisfies_slot(
-    kind: SlotKind,
-    slot_name: &str,
-    slot_tag: &str,
-    producer_node_name: &str,
-    producer_node_tag: &str,
-    producer_conforms_to: &[ConformsToItem],
-) -> bool {
-    match kind {
-        SlotKind::Node => producer_node_name == slot_name && producer_node_tag == slot_tag,
-        SlotKind::Interface => producer_conforms_to
-            .iter()
-            .any(|item| item.name.as_str() == slot_name && item.tag.as_str() == slot_tag),
-    }
-}
-
 fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'_>) -> bool {
-    producer_satisfies_slot(
-        slot.kind,
-        slot.name,
-        slot.tag,
-        producer.node_name,
-        producer.node_tag,
-        producer.conforms_to,
-    )
-}
-
-/// Resolve a `link_id` to its declared slot `(kind, name, tag)` from a
-/// consumer's `depends_on`. Node deps are searched before interface deps;
-/// `link_id`s are unique across both lists (enforced at manifest parse
-/// time), so order does not affect the result. Returns `None` when the
-/// `link_id` is not declared.
-///
-/// Used by the daemon to recover the interface a deferred slot requires
-/// when verifying a target that appears later, and by the `stack list`
-/// status computation.
-pub fn slot_meta_for_link_id<'a>(
-    depends_on: Option<&'a DependsOn>,
-    link_id: &str,
-) -> Option<(SlotKind, &'a str, &'a str)> {
-    let deps = depends_on?;
-    for dep in &deps.nodes {
-        if dep.link_id == link_id {
-            return Some((SlotKind::Node, dep.name.as_str(), dep.tag.as_str()));
-        }
+    match slot.kind {
+        SlotKind::Node => producer.node_name == slot.name && producer.node_tag == slot.tag,
+        SlotKind::Interface => producer
+            .conforms_to
+            .iter()
+            .any(|item| item.name.as_str() == slot.name && item.tag.as_str() == slot.tag),
     }
-    for dep in &deps.interfaces {
-        if dep.link_id == link_id {
-            return Some((SlotKind::Interface, dep.name.as_str(), dep.tag.as_str()));
-        }
-    }
-    None
 }
 
 fn format_declared_keys(pinned: &DeclaredSlots<'_>, from_any: &DeclaredSlots<'_>) -> String {
@@ -1371,196 +1287,6 @@ mod tests {
         assert_eq!(
             slot_binding(&out, "cons1", "slot_b"),
             Some(SlotBinding::FromAnyUnbound)
-        );
-    }
-
-    /// Parse instances, then flag some of their binding keys as deferred —
-    /// `deferred_bindings` is `#[serde(skip)]`, so it cannot be expressed in
-    /// the JSON5 fixture and must be set after parsing (as the CLI does).
-    fn with_deferred(
-        mut instances: Vec<DeploymentInstance>,
-        deferred: &[&str],
-    ) -> Vec<DeploymentInstance> {
-        let set: std::collections::BTreeSet<String> =
-            deferred.iter().map(|s| (*s).to_string()).collect();
-        for inst in &mut instances {
-            inst.deferred_bindings = set.clone();
-        }
-        instances
-    }
-
-    /// A deferred pinned interface binding whose target is not in the
-    /// snapshot resolves to `SlotBinding::Deferred` with no error — Rule 1 is
-    /// satisfied (the slot is bound) and the unknown-instance rejection is
-    /// suppressed.
-    #[test]
-    fn deferred_binding_to_absent_target_resolves_to_deferred() {
-        let cons_instances = with_deferred(
-            parse_instances(r#"[{ instance_id: "arm_1", bindings: { controller: "ctrl_1" } }]"#),
-            &["controller"],
-        );
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [],
-                interfaces: [{ name: "joint_command_source", tag: "v1", link_id: "controller" }]
-            }"#,
-        );
-        // ctrl_1 is NOT present in the snapshot.
-        let items = vec![item("robot_arm", "v1", &cons_instances, Some(&depends_on))];
-        let out = validate_bindings(&items);
-        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
-        assert_eq!(
-            slot_binding(&out, "arm_1", "controller"),
-            Some(SlotBinding::Deferred {
-                producer_instance_id: "ctrl_1".to_string()
-            })
-        );
-    }
-
-    /// A deferred binding whose target IS present and conforming resolves to
-    /// `Pinned`, exactly like a strict bind: deferral only relaxes the
-    /// unknown-instance rejection.
-    #[test]
-    fn deferred_binding_to_present_conforming_target_resolves_to_pinned() {
-        let cons_instances = with_deferred(
-            parse_instances(r#"[{ instance_id: "arm_1", bindings: { controller: "ctrl_1" } }]"#),
-            &["controller"],
-        );
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [],
-                interfaces: [{ name: "joint_command_source", tag: "v1", link_id: "controller" }]
-            }"#,
-        );
-        let prod_instances = parse_instances(r#"[{ instance_id: "ctrl_1" }]"#);
-        let prod_conforms = parse_conforms_to(r#"[{ name: "joint_command_source", tag: "v1" }]"#);
-        let items = vec![
-            item("robot_arm", "v1", &cons_instances, Some(&depends_on)),
-            item_with_conforms_to(
-                "arm_controller",
-                "v1",
-                &prod_instances,
-                None,
-                &prod_conforms,
-            ),
-        ];
-        let out = validate_bindings(&items);
-        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
-        assert_eq!(
-            slot_binding(&out, "arm_1", "controller"),
-            Some(SlotBinding::Pinned {
-                producer_instance_id: "ctrl_1".to_string()
-            })
-        );
-    }
-
-    /// A deferred binding whose target is present but does NOT conform fails
-    /// fast, the same as a strict bind — a running-but-wrong target is never
-    /// silently accepted just because the bind was deferred.
-    #[test]
-    fn deferred_binding_to_present_nonconforming_target_fails_fast() {
-        let cons_instances = with_deferred(
-            parse_instances(r#"[{ instance_id: "arm_1", bindings: { controller: "ctrl_1" } }]"#),
-            &["controller"],
-        );
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [],
-                interfaces: [{ name: "joint_command_source", tag: "v1", link_id: "controller" }]
-            }"#,
-        );
-        let prod_instances = parse_instances(r#"[{ instance_id: "ctrl_1" }]"#);
-        // Conforms to a different interface — does not satisfy the slot.
-        let prod_conforms = parse_conforms_to(r#"[{ name: "something_else", tag: "v1" }]"#);
-        let items = vec![
-            item("robot_arm", "v1", &cons_instances, Some(&depends_on)),
-            item_with_conforms_to(
-                "arm_controller",
-                "v1",
-                &prod_instances,
-                None,
-                &prod_conforms,
-            ),
-        ];
-        let out = validate_bindings(&items);
-        assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::BindingInterfaceNotConformed(info) = &out.errors[0] else {
-            panic!(
-                "expected BindingInterfaceNotConformed, got {:?}",
-                out.errors[0]
-            );
-        };
-        assert_eq!(info.binding, "controller");
-        assert_eq!(info.target_instance_id, "ctrl_1");
-    }
-
-    /// A deferred binding on a non-pinned key (here a `from_any` slot) is
-    /// rejected: deferral is only defined for pinned slots.
-    #[test]
-    fn deferred_binding_on_non_pinned_key_is_rejected() {
-        let cons_instances = with_deferred(
-            parse_instances(r#"[{ instance_id: "cons1", bindings: { extra: "ghost" } }]"#),
-            &["extra"],
-        );
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [],
-                interfaces: [{ name: "depth_camera", tag: "v1", link_id: "extra", from_any: true }]
-            }"#,
-        );
-        let items = vec![item("cons", "v1", &cons_instances, Some(&depends_on))];
-        let out = validate_bindings(&items);
-        assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::DeferredBindingNotPinned {
-            owner_instance_id,
-            binding,
-        } = &out.errors[0]
-        else {
-            panic!("expected DeferredBindingNotPinned, got {:?}", out.errors[0]);
-        };
-        assert_eq!(owner_instance_id, "cons1");
-        assert_eq!(binding, "extra");
-    }
-
-    /// Regression: a strict (non-deferred) binding to an absent target still
-    /// fails fast with `UnknownInstanceId`, even when a sibling slot on the
-    /// same instance is deferred.
-    #[test]
-    fn strict_binding_to_absent_target_still_fails_when_a_sibling_is_deferred() {
-        let cons_instances = with_deferred(
-            parse_instances(
-                r#"[{
-                    instance_id: "arm_1",
-                    bindings: { controller: "ctrl_1", clock: "missing_clock" }
-                }]"#,
-            ),
-            &["controller"],
-        );
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [{ name: "clock", tag: "v1", link_id: "clock" }],
-                interfaces: [{ name: "joint_command_source", tag: "v1", link_id: "controller" }]
-            }"#,
-        );
-        let items = vec![item("robot_arm", "v1", &cons_instances, Some(&depends_on))];
-        let out = validate_bindings(&items);
-        assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::UnknownInstanceId {
-            binding,
-            instance_id,
-            ..
-        } = &out.errors[0]
-        else {
-            panic!("expected UnknownInstanceId, got {:?}", out.errors[0]);
-        };
-        assert_eq!(binding, "clock");
-        assert_eq!(instance_id, "missing_clock");
-        // The deferred sibling resolved fine.
-        assert_eq!(
-            slot_binding(&out, "arm_1", "controller"),
-            Some(SlotBinding::Deferred {
-                producer_instance_id: "ctrl_1".to_string()
-            })
         );
     }
 }

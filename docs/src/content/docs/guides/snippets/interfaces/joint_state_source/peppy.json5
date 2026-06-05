@@ -1,0 +1,20 @@
+{
+  peppy_schema: "interface_v1",
+  manifest: {
+    name: "joint_state_source",
+    tag: "v1",
+  },
+  interfaces: {
+    topics: [
+      {
+        name: "joint_states",
+        qos_profile: "sensor_data",
+        message_format: {
+          positions: { $type: "array", $items: "f64", $length: 3 },
+          velocities: { $type: "array", $items: "f64", $length: 3 },
+          timestamp: "time",
+        },
+      },
+    ],
+  },
+}

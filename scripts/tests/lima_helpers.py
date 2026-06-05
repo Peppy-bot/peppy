@@ -304,8 +304,78 @@ def setup_lima_guest(config: VMConfig, *, test_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Run once per Ubuntu guest before the install tests. Debian/Ubuntu cloud
+# images ship without dbus-user-session and without linger, so they have no
+# user D-Bus session bus. We install the package, enable linger, then wait for
+# the user bus to come up so install.sh's checks see the baseline a configured
+# Ubuntu host would have. Fedora and Arch already ship a working user session
+# bus, so they need no provisioning.
+_UBUNTU_PROVISION_SCRIPT = """
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+
+# Enable linger while logind is healthy, before the dbus install can restart
+# the system bus. Retry briefly in case logind is momentarily busy.
+for attempt in 1 2 3 4 5; do
+    if sudo loginctl enable-linger "$(id -un)"; then
+        break
+    fi
+    if [ "$attempt" -eq 5 ]; then
+        echo "provision: could not enable linger after 5 attempts" >&2
+        exit 1
+    fi
+    sleep 2
+done
+
+sudo apt-get update -qq
+sudo apt-get install -y -qq dbus-user-session
+
+# Best-effort wait for the user session bus to come up so install.sh's no-root
+# D-Bus check sees it in later sessions.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if busctl --user status >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+"""
+
+
+def provision_guest(config: VMConfig, env: dict[str, str]) -> None:
+    """Bring the guest to the baseline a properly-configured host would have.
+
+    On Ubuntu this installs the user D-Bus session bus and enables linger,
+    which install.sh's no-root mode requires and which a real Ubuntu user
+    running the peppy service would already have set up. Other distros are
+    left untouched (their cloud images already provide a user session bus).
+    """
+    if config.distro != "ubuntu":
+        return
+
+    result = subprocess.run(
+        [
+            "limactl",
+            "shell",
+            config.instance_name,
+            "--",
+            "bash",
+            "-c",
+            _UBUNTU_PROVISION_SCRIPT,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            f"Ubuntu guest provisioning failed for {config.pytest_id()}"
+            f"{diagnostic(result)}"
+        )
+
+
 def lima_vm_lifecycle(request: pytest.FixtureRequest) -> Generator[VMConfig, None, None]:
-    """Shared VM lifecycle: create, yield, teardown."""
+    """Shared VM lifecycle: create, provision, yield, teardown."""
     config: VMConfig = request.param
     instance = config.instance_name
     template = config.template
@@ -408,20 +478,41 @@ def lima_vm_lifecycle(request: pytest.FixtureRequest) -> Generator[VMConfig, Non
             )
             _start_lima_vm()
 
+    provision_guest(config, env)
+
     yield config
 
-    subprocess.run(
-        ["limactl", "stop", instance],
-        env=env,
-        capture_output=True,
-        timeout=60,
-    )
-    subprocess.run(
-        ["limactl", "delete", instance],
-        env=env,
-        capture_output=True,
-        timeout=60,
-    )
+    # Teardown: a guest whose systemd/D-Bus is wedged can ignore the ACPI power
+    # button, so `limactl stop` hangs. Escalate to a forced stop, then always
+    # force-delete. Teardown must never raise: one bad VM must not error out the
+    # next module's setup.
+    try:
+        subprocess.run(
+            ["limactl", "stop", instance],
+            env=env,
+            capture_output=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        try:
+            subprocess.run(
+                ["limactl", "stop", "--force", instance],
+                env=env,
+                capture_output=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            pass
+
+    try:
+        subprocess.run(
+            ["limactl", "delete", "--force", instance],
+            env=env,
+            capture_output=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        pass
 
 
 # ---------------------------------------------------------------------------

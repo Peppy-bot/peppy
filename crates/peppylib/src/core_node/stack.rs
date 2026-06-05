@@ -25,7 +25,7 @@ pub struct StackList {
     pub dot_graph: Option<String>,
 }
 
-pub async fn stack_list(
+pub async fn list(
     node_runner: &NodeRunner,
     with_dot_graph: bool,
     response_timeout: impl Into<Option<Duration>> + Send,

@@ -1,0 +1,19 @@
+{
+  peppy_schema: "interface_v1",
+  manifest: {
+    name: "joint_command_source",
+    tag: "v1",
+  },
+  interfaces: {
+    topics: [
+      {
+        name: "joint_commands",
+        qos_profile: "reliable",
+        message_format: {
+          target_positions: { $type: "array", $items: "f64", $length: 3 },
+          max_velocity: "f64",
+        },
+      },
+    ],
+  },
+}

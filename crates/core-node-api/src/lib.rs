@@ -47,3 +47,8 @@ pub(crate) mod node_capnp {
 pub(crate) mod repo_capnp {
     include!(concat!(env!("OUT_DIR"), "/repo_capnp.rs"));
 }
+
+#[allow(clippy::all)]
+pub(crate) mod datastore_capnp {
+    include!(concat!(env!("OUT_DIR"), "/datastore_capnp.rs"));
+}

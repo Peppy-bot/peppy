@@ -5,8 +5,11 @@
 //! drifted from the example files — either the code or the examples need updating.
 
 use config::consts::NODE_CONFIG_FILE;
+use config::interface::PeppyInterfaceParser;
 use config::launcher::PeppyLauncherParser;
 use config::node::NodeConfigParser;
+use config::schema::PeppySchema;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// Walk `root` recursively and collect every file named `peppy.json5`.
@@ -22,6 +25,49 @@ fn find_node_configs(root: &Path) -> Vec<PathBuf> {
         })
         .map(|e| e.into_path())
         .collect()
+}
+
+/// The schema tag a config declares, read without parsing the whole document.
+/// Snippet `peppy.json5` files mix node and interface schemas, so the test must
+/// peek the tag and dispatch each file to the parser that matches it.
+#[derive(Deserialize)]
+struct SchemaPeek {
+    peppy_schema: PeppySchema,
+}
+
+/// Parse `path` with the typed parser matching its declared `peppy_schema` and
+/// assert it succeeds. This keeps interface snippets covered by the same
+/// schema-sync guarantee as node snippets instead of skipping them.
+fn assert_parses_with_matching_schema(path: &Path) {
+    let content = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let peek: SchemaPeek = serde_json5::from_str(&content)
+        .unwrap_or_else(|e| panic!("missing peppy_schema in {}: {e}", path.display()));
+
+    match peek.peppy_schema {
+        PeppySchema::NodeV1 => {
+            let result = NodeConfigParser::from_path(path);
+            assert!(
+                result.is_ok(),
+                "failed to parse node {}: {:?}",
+                path.display(),
+                result.unwrap_err()
+            );
+        }
+        PeppySchema::InterfaceV1 => {
+            let result = PeppyInterfaceParser::from_path(path);
+            assert!(
+                result.is_ok(),
+                "failed to parse interface {}: {:?}",
+                path.display(),
+                result.unwrap_err()
+            );
+        }
+        PeppySchema::LauncherV1 => panic!(
+            "unexpected launcher_v1 among node/interface snippets: {}",
+            path.display()
+        ),
+    }
 }
 
 #[test]
@@ -77,13 +123,7 @@ fn test_docs_snippet_configs_parse() {
     );
 
     for path in &configs {
-        let result = NodeConfigParser::from_path(path);
-        assert!(
-            result.is_ok(),
-            "failed to parse {}: {:?}",
-            path.display(),
-            result.unwrap_err()
-        );
+        assert_parses_with_matching_schema(path);
     }
 }
 

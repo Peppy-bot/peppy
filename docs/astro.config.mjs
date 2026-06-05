@@ -143,6 +143,7 @@ export default defineConfig({
 				},
 			},
 			title: 'PeppyOS',
+			favicon: '/favicon.png',
 			customCss: ['./src/styles/custom.css'],
 			components: {
 				ThemeSelect: './src/components/ThemeSelect.astro',
@@ -152,15 +153,15 @@ export default defineConfig({
 				{ slug: 'index' },
 				{
 					label: 'Guides',
-					autogenerate: { directory: 'guides' },
+					items: [{ autogenerate: { directory: 'guides' } }],
 				},
 				{
 					label: 'Advanced Guides',
-					autogenerate: { directory: 'advanced_guides' },
+					items: [{ autogenerate: { directory: 'advanced_guides' } }],
 				},
 				{
 					label: 'Reference',
-					autogenerate: { directory: 'reference' },
+					items: [{ autogenerate: { directory: 'reference' } }],
 				},
 			],
 		}),

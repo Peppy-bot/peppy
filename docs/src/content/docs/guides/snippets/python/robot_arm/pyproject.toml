@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "robot_arm"
+version = "0.1.0"
+description = "robot_arm peppy node"
+requires-python = ">=3.11,<3.14"
+dependencies = ["peppygen"]
+
+[project.scripts]
+robot_arm = "robot_arm.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robot_arm"]
+
+[dependency-groups]
+dev = []
+
+[tool.uv.sources]
+peppygen = { path = ".peppy/libs/peppygen" }
