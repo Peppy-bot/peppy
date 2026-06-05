@@ -194,6 +194,13 @@ impl SerializedNode {
 pub struct SerializedEdge {
     pub from: SerializedNode,
     pub to: SerializedNode,
+    /// `Some("name:tag")` when this edge is a dependency resolved through
+    /// interface conformance (the consumer declares `depends_on.interfaces` and
+    /// `to` is a node that `conforms_to` that interface); `None` for a direct
+    /// `depends_on.nodes` edge. Defaulted on decode so payloads from producers
+    /// that predate this field still parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_interface: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

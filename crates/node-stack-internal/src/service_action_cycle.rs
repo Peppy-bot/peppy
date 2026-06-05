@@ -24,7 +24,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use config::node::{InterfaceKind, Interfaces, NodeConfig};
+use config::node::{InterfaceKind, Interfaces, NodeConfig, node_conforms_to};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 
@@ -183,18 +183,6 @@ fn caller_driven_link_ids(interfaces: &Interfaces) -> BTreeMap<&str, InterfaceKi
     }
 
     link_ids
-}
-
-/// Does this node declare conformance to `(name, tag)`? Interface providers are
-/// matched solely by `conforms_to`, never by node-name identity, consistent
-/// with the binding validator's `slot_matches_producer`.
-fn node_conforms_to(node: &NodeConfig, name: &str, tag: &str) -> bool {
-    node.interfaces
-        .conforms_to
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .any(|item| item.name.as_str() == name && item.tag == tag)
 }
 
 /// Turn one strongly-connected component into a [`ServiceActionCycle`], or

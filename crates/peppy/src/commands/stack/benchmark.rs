@@ -242,6 +242,14 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
                 fmt_duration(Duration::from_nanos(ns))
             }
         };
+        // Prefix interface-conformance rows with the interface they route
+        // through, then append any measurement diagnostic note.
+        let note = match (&row.via_interface, &row.note) {
+            (Some(iface), Some(n)) => format!("via {iface} conformance; {n}"),
+            (Some(iface), None) => format!("via {iface} conformance"),
+            (None, Some(n)) => n.clone(),
+            (None, None) => String::new(),
+        };
         rows.push(vec![
             row.edge_label(),
             row.link_id.clone(),
@@ -252,7 +260,7 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
             dur(row.mean_ns),
             row.count.to_string(),
             delta,
-            row.note.clone().unwrap_or_default(),
+            note,
         ]);
     }
 
@@ -262,7 +270,9 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
     );
     println!("{}", format::render_table(&headers, &rows));
     println!(
-        "\nmeasure: svc/act-probe = messaging round-trip (handler NOT run); \
+        "\nedge: `→` a direct `depends_on.nodes` dependency; `➔` resolved through interface \
+         conformance (see the note for the interface).\n\
+         measure: svc/act-probe = messaging round-trip (handler NOT run); \
          delivery = real producer→consumer latency; synthetic = transport proxy.\n\
          binding: the dependency binding this edge was measured through — a node can consume the \
          same interface from the same producer via multiple bindings.\n\

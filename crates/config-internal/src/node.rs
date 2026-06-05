@@ -15,4 +15,7 @@ pub use types::{
     ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, extract_parameter_refs,
     is_blocked_mount_source,
 };
-pub use validation::{DependencySpec, collect_dependency_specs, validate_dependency_specs};
+pub use validation::{
+    DependencySpec, InterfaceConformanceEdge, collect_dependency_specs,
+    collect_interface_conformance_edges, node_conforms_to, validate_dependency_specs,
+};

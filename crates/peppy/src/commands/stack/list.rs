@@ -128,11 +128,22 @@ pub fn format_stack_list(
         let _ = writeln!(out, "  (none)");
     } else {
         for edge in edges {
+            // An interface-conformance edge is annotated with the interface it
+            // routes through, so it reads distinctly from a direct node dep. The
+            // interface name is tinted the same as the node labels it relates.
+            let via = match &edge.via_interface {
+                Some(iface) => format!(
+                    " (via {} interface conformance)",
+                    paint(colorize, NODE_COLOR, iface)
+                ),
+                None => String::new(),
+            };
             let _ = writeln!(
                 out,
-                "  {} ➔ {}",
+                "  {} ➔ {}{}",
                 paint(colorize, NODE_COLOR, &edge.from.label()),
                 paint(colorize, NODE_COLOR, &edge.to.label()),
+                via,
             );
         }
     }
@@ -585,11 +596,29 @@ mod tests {
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),
+            via_interface: None,
         }];
         let out = format_stack_list(&[from, to], &edges, false);
         assert!(
             out.contains("brain:v1 ➔ sensor:v1"),
             "edge line missing:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn interface_conformance_edge_renders_annotation() {
+        let consumer = node("brain", "v1", NodeStage::Ready, vec![]);
+        let provider = node("camera_mock", "v1", NodeStage::Ready, vec![]);
+        let edges = vec![SerializedEdge {
+            from: consumer.clone(),
+            to: provider.clone(),
+            via_interface: Some("uvc_camera:v1".to_string()),
+        }];
+        let out = format_stack_list(&[consumer, provider], &edges, false);
+        assert!(
+            out.contains("brain:v1 ➔ camera_mock:v1 (via uvc_camera:v1 interface conformance)"),
+            "interface-conformance edge annotation missing:\n{}",
             out
         );
     }
@@ -1032,6 +1061,7 @@ mod tests {
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),
+            via_interface: None,
         }];
 
         let plain = format_stack_list(&nodes, &edges, false);

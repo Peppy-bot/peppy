@@ -18,7 +18,9 @@ use crate::Result;
 use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::gate::{Admission, ConcurrencyGate};
-use config::node::{DependsOn, NodeConfig, QoSProfile};
+use crate::services::node::resolve_interface_doc;
+use config::consts::PeppyDirs;
+use config::node::{DependsOn, NodeConfig, QoSProfile, node_conforms_to};
 use core_node_api::encoding::{
     BenchmarkFeedbackStep, ClockConfidence, ClockOffsetRequest, ClockOffsetResponse, InterfaceKind,
     InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
@@ -66,6 +68,7 @@ pub async fn listen_for_stack_benchmark(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ConcurrentAction::expose(
         messenger,
@@ -83,6 +86,7 @@ pub async fn listen_for_stack_benchmark(
             messenger: messenger.clone(),
             bound_core_node: core_node_name.to_string(),
             core_instance_id: instance_id.to_string(),
+            peppy_dirs,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -103,6 +107,9 @@ struct BenchmarkActionContext {
     messenger: MessengerHandle,
     bound_core_node: String,
     core_instance_id: String,
+    /// Interface cache root, used to resolve a conformed topic's QoS from its
+    /// interface contract (a conformed producer has no native `emits` to read).
+    peppy_dirs: PeppyDirs,
 }
 
 fn encode_accepted() -> PeppyResult<Payload> {
@@ -189,8 +196,8 @@ impl GoalHandler for StackBenchmarkGoalHandler {
     }
 }
 
-/// A direct-dependency edge to measure: a consumer's wired interface to a
-/// specific producer.
+/// A dependency edge to measure: a consumer's wired interface to a specific
+/// producer.
 struct Edge {
     from_node: String,
     from_tag: String,
@@ -200,9 +207,34 @@ struct Edge {
     /// The consumer's `depends_on` link this interface was wired through. Two
     /// edges can share producer + interface but differ only by this link.
     link_id: String,
+    /// `Some((iface_name, iface_tag))` when this edge is resolved through
+    /// interface conformance — the producer emits/serves the artifact under the
+    /// interface-keyed wire path, so measurement must target the interface, not
+    /// the node. `None` for a direct `depends_on.nodes` edge.
+    origin: Option<(String, String)>,
     kind: InterfaceKind,
     /// Producer-declared QoS for topic edges (used by delivery + synthetic).
     qos: QoSProfile,
+}
+
+impl Edge {
+    /// The wire target to probe/subscribe this edge through. Conformed artifacts
+    /// ride the interface-keyed path (`SenderTarget::interface`); native ones the
+    /// node-keyed path (`SenderTarget::node`). Using the wrong one silently never
+    /// matches on the wire.
+    fn target(&self) -> std::result::Result<SenderTarget, peppylib::messaging::SenderTargetError> {
+        match &self.origin {
+            Some((name, tag)) => SenderTarget::interface(name, tag),
+            None => SenderTarget::node(&self.to_node, &self.to_tag),
+        }
+    }
+
+    /// `Some("name:tag")` of the interface this edge routes through, for the row.
+    fn via_interface(&self) -> Option<String> {
+        self.origin
+            .as_ref()
+            .map(|(name, tag)| format!("{name}:{tag}"))
+    }
 }
 
 fn emit_feedback(
@@ -213,15 +245,52 @@ fn emit_feedback(
     let _ = tx.send(StackBenchmarkFeedback::stdout(line, step));
 }
 
-/// Resolve a consumed interface's `link_id` to the producer `(name, tag)` via
-/// the consumer's `depends_on.nodes`.
-fn resolve_dep(depends_on: Option<&DependsOn>, link_id: &str) -> Option<(String, String)> {
-    let depends_on = depends_on?;
-    depends_on
-        .nodes
-        .iter()
-        .find(|d| d.link_id == link_id)
-        .map(|d| (d.name.as_str().to_string(), d.tag.clone()))
+/// A producer a consumed `link_id` resolves to, with the wire origin.
+struct ResolvedProducer {
+    name: String,
+    tag: String,
+    /// `Some((iface_name, iface_tag))` for an interface-conformance edge; `None`
+    /// for a direct node dependency.
+    origin: Option<(String, String)>,
+}
+
+/// Resolve a consumed interface's `link_id` to its producer(s):
+/// - a `depends_on.nodes` entry resolves to exactly that node (`origin = None`);
+/// - a `depends_on.interfaces` entry resolves to **every** config in `configs`
+///   that `conforms_to` the interface (`origin = Some`), since any of them can
+///   satisfy the dependency.
+fn resolve_link(
+    depends_on: Option<&DependsOn>,
+    link_id: &str,
+    configs: &[NodeConfig],
+) -> Vec<ResolvedProducer> {
+    let Some(depends_on) = depends_on else {
+        return Vec::new();
+    };
+
+    if let Some(d) = depends_on.nodes.iter().find(|d| d.link_id == link_id) {
+        return vec![ResolvedProducer {
+            name: d.name.as_str().to_string(),
+            tag: d.tag.clone(),
+            origin: None,
+        }];
+    }
+
+    if let Some(dep) = depends_on.interfaces.iter().find(|d| d.link_id == link_id) {
+        let iface_name = dep.name.as_str();
+        let iface_tag = dep.tag.as_str();
+        return configs
+            .iter()
+            .filter(|c| node_conforms_to(c, iface_name, iface_tag))
+            .map(|c| ResolvedProducer {
+                name: c.manifest.name.as_str().to_string(),
+                tag: c.manifest.tag.clone(),
+                origin: Some((iface_name.to_string(), iface_tag.to_string())),
+            })
+            .collect();
+    }
+
+    Vec::new()
 }
 
 /// Producer-declared QoS for `topic_name`, defaulting to [`QoSProfile::Standard`].
@@ -234,7 +303,12 @@ fn producer_topic_qos(producer: Option<&NodeConfig>, topic_name: &str) -> QoSPro
         .unwrap_or_default()
 }
 
-/// Walk every node's consumed interfaces and resolve each to a producer edge.
+/// Walk every node's consumed interfaces and resolve each to one edge per
+/// producer. A direct node dep yields one edge; an interface dep yields one per
+/// conforming producer. Topic QoS for interface-conformance edges is left at the
+/// default here and resolved from the interface contract by
+/// [`resolve_conformed_topic_qos`] (the conformed producer has no native `emits`
+/// to read it from).
 fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
     let by_key: HashMap<(&str, &str), &NodeConfig> = configs
         .iter()
@@ -247,58 +321,96 @@ fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
         let from_tag = config.manifest.tag.clone();
         let depends_on = config.manifest.depends_on.as_ref();
 
+        let push_edges = |name: &str, link_id: &str, kind: InterfaceKind, edges: &mut Vec<Edge>| {
+            for producer in resolve_link(depends_on, link_id, configs) {
+                let qos = if kind == InterfaceKind::Topic && producer.origin.is_none() {
+                    let p = by_key
+                        .get(&(producer.name.as_str(), producer.tag.as_str()))
+                        .copied();
+                    producer_topic_qos(p, name)
+                } else {
+                    QoSProfile::default()
+                };
+                edges.push(Edge {
+                    from_node: from_node.clone(),
+                    from_tag: from_tag.clone(),
+                    to_node: producer.name,
+                    to_tag: producer.tag,
+                    interface: name.to_string(),
+                    link_id: link_id.to_string(),
+                    origin: producer.origin,
+                    kind,
+                    qos,
+                });
+            }
+        };
+
         if let Some(topics) = config.interfaces.topics.as_ref() {
             for c in topics.consumes.iter().flatten() {
-                if let Some((to_node, to_tag)) = resolve_dep(depends_on, &c.link_id) {
-                    let producer = by_key.get(&(to_node.as_str(), to_tag.as_str())).copied();
-                    let qos = producer_topic_qos(producer, &c.name);
-                    edges.push(Edge {
-                        from_node: from_node.clone(),
-                        from_tag: from_tag.clone(),
-                        to_node,
-                        to_tag,
-                        interface: c.name.clone(),
-                        link_id: c.link_id.clone(),
-                        kind: InterfaceKind::Topic,
-                        qos,
-                    });
-                }
+                push_edges(&c.name, &c.link_id, InterfaceKind::Topic, &mut edges);
             }
         }
         if let Some(services) = config.interfaces.services.as_ref() {
             for c in services.consumes.iter().flatten() {
-                if let Some((to_node, to_tag)) = resolve_dep(depends_on, &c.link_id) {
-                    edges.push(Edge {
-                        from_node: from_node.clone(),
-                        from_tag: from_tag.clone(),
-                        to_node,
-                        to_tag,
-                        interface: c.name.clone(),
-                        link_id: c.link_id.clone(),
-                        kind: InterfaceKind::Service,
-                        qos: QoSProfile::default(),
-                    });
-                }
+                push_edges(&c.name, &c.link_id, InterfaceKind::Service, &mut edges);
             }
         }
         if let Some(actions) = config.interfaces.actions.as_ref() {
             for c in actions.consumes.iter().flatten() {
-                if let Some((to_node, to_tag)) = resolve_dep(depends_on, &c.link_id) {
-                    edges.push(Edge {
-                        from_node: from_node.clone(),
-                        from_tag: from_tag.clone(),
-                        to_node,
-                        to_tag,
-                        interface: c.name.clone(),
-                        link_id: c.link_id.clone(),
-                        kind: InterfaceKind::Action,
-                        qos: QoSProfile::default(),
-                    });
-                }
+                push_edges(&c.name, &c.link_id, InterfaceKind::Action, &mut edges);
             }
         }
     }
     edges
+}
+
+/// Fill in topic QoS for interface-conformance edges from the interface
+/// contract. The conformed producer declares no native `emits`, so the QoS lives
+/// in the `(iface_name, iface_tag)` contract. On any cache miss / parse failure
+/// the edge keeps the default QoS and is left to measure on a best-effort basis
+/// rather than aborting the benchmark.
+fn resolve_conformed_topic_qos(
+    edges: &mut [Edge],
+    peppy_dirs: &PeppyDirs,
+    tx: &UnboundedSender<StackBenchmarkFeedback>,
+) {
+    let mut cache: HashMap<(String, String), Option<config::interface::PeppyInterface>> =
+        HashMap::new();
+    for edge in edges.iter_mut() {
+        if edge.kind != InterfaceKind::Topic {
+            continue;
+        }
+        let Some((iface_name, iface_tag)) = edge.origin.clone() else {
+            continue;
+        };
+        let doc = cache
+            .entry((iface_name.clone(), iface_tag.clone()))
+            .or_insert_with(|| {
+                match resolve_interface_doc(peppy_dirs, &iface_name, &iface_tag, None, &|_| {}) {
+                    Ok(doc) => Some(doc),
+                    Err(e) => {
+                        emit_feedback(
+                            tx,
+                            BenchmarkFeedbackStep::Enumerating,
+                            format!(
+                                "Could not resolve QoS for `{iface_name}:{iface_tag}` \
+                                 (defaulting): {e}"
+                            ),
+                        );
+                        None
+                    }
+                }
+            });
+        if let Some(doc) = doc
+            && let Some(topic) = doc
+                .interfaces
+                .topics
+                .iter()
+                .find(|t| t.name == edge.interface)
+        {
+            edge.qos = topic.qos_profile.clone();
+        }
+    }
 }
 
 fn qos_label(qos: &QoSProfile) -> &'static str {
@@ -327,7 +439,8 @@ async fn run_benchmark(
         .iter()
         .map(|h| h.read().config().clone())
         .collect();
-    let edges = enumerate_edges(&configs);
+    let mut edges = enumerate_edges(&configs);
+    resolve_conformed_topic_qos(&mut edges, &ctx.peppy_dirs, tx);
 
     let topics = edges
         .iter()
@@ -389,8 +502,9 @@ async fn run_benchmark(
 }
 
 fn edge_label(edge: &Edge) -> String {
+    let arrow = if edge.origin.is_some() { "➔" } else { "→" };
     format!(
-        "{}:{} → {}:{}/{} (binding: {})",
+        "{}:{} {arrow} {}:{}/{} (binding: {})",
         edge.from_node, edge.from_tag, edge.to_node, edge.to_tag, edge.interface, edge.link_id
     )
 }
@@ -410,6 +524,7 @@ fn row_from_samples(
         to_tag: edge.to_tag.clone(),
         interface_name: edge.interface.clone(),
         link_id: edge.link_id.clone(),
+        via_interface: edge.via_interface(),
         kind: edge.kind,
         measurement,
         clock_confidence,
@@ -435,7 +550,7 @@ async fn measure_probe(
         InterfaceKind::Action => MeasurementKind::ActionProbe,
         _ => MeasurementKind::ServiceProbe,
     };
-    let target = match SenderTarget::node(&edge.to_node, &edge.to_tag) {
+    let target = match edge.target() {
         Ok(t) => t,
         Err(e) => {
             return row_from_samples(
@@ -572,7 +687,7 @@ async fn measure_topic_delivery(
 ) -> InterfaceLatency {
     let offset = poll_producer_offset(ctx, &edge.to_node, &edge.to_tag, per_sample_timeout).await;
 
-    let target = match SenderTarget::node(&edge.to_node, &edge.to_tag) {
+    let target = match edge.target() {
         Ok(t) => t,
         Err(e) => {
             return row_from_samples(
@@ -802,4 +917,126 @@ async fn measure_synthetic(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::node::NodeConfigParser;
+
+    fn parse(content: &str) -> NodeConfig {
+        NodeConfigParser::from_content(content).expect("parse node config")
+    }
+
+    /// Consumer depending on the `uvc_camera:v1` interface (topic + service) and
+    /// on a concrete `arm:v1` node (action).
+    fn consumer() -> NodeConfig {
+        parse(
+            r#"{
+                peppy_schema: "node_v1",
+                manifest: {
+                    name: "brain", tag: "v1",
+                    depends_on: {
+                        interfaces: [ { name: "uvc_camera", tag: "v1", link_id: "camera" } ],
+                        nodes: [ { name: "arm", tag: "v1", link_id: "robot_controller" } ]
+                    }
+                },
+                execution: { language: "rust", run_cmd: ["brain"] },
+                interfaces: {
+                    topics: { consumes: [ { link_id: "camera", name: "video_stream" } ] },
+                    services: { consumes: [ { link_id: "camera", name: "video_stream_info" } ] },
+                    actions: { consumes: [ { link_id: "robot_controller", name: "move_arm" } ] }
+                }
+            }"#,
+        )
+    }
+
+    fn camera_mock() -> NodeConfig {
+        parse(
+            r#"{
+                peppy_schema: "node_v1",
+                manifest: { name: "uvc_camera_python_mock", tag: "v1" },
+                execution: { language: "rust", run_cmd: ["camera"] },
+                interfaces: { conforms_to: [ { name: "uvc_camera", tag: "v1" } ] }
+            }"#,
+        )
+    }
+
+    fn arm() -> NodeConfig {
+        parse(
+            r#"{
+                peppy_schema: "node_v1",
+                manifest: { name: "arm", tag: "v1" },
+                execution: { language: "rust", run_cmd: ["arm"] },
+                interfaces: { actions: { exposes: [ { name: "move_arm" } ] } }
+            }"#,
+        )
+    }
+
+    fn find<'a>(edges: &'a [Edge], iface: &str) -> &'a Edge {
+        edges
+            .iter()
+            .find(|e| e.interface == iface)
+            .unwrap_or_else(|| panic!("no edge for `{iface}`"))
+    }
+
+    #[test]
+    fn enumerate_resolves_interface_deps_to_conforming_producer() {
+        let configs = vec![consumer(), camera_mock(), arm()];
+        let edges = enumerate_edges(&configs);
+
+        // Two interface-conformance edges (topic + service) + one direct action.
+        assert_eq!(edges.len(), 3, "edges: {}", edges.len());
+
+        let video = find(&edges, "video_stream");
+        assert_eq!(video.kind, InterfaceKind::Topic);
+        assert_eq!(video.to_node, "uvc_camera_python_mock");
+        assert_eq!(
+            video.origin,
+            Some(("uvc_camera".to_string(), "v1".to_string()))
+        );
+        assert_eq!(video.via_interface(), Some("uvc_camera:v1".to_string()));
+
+        let info = find(&edges, "video_stream_info");
+        assert_eq!(info.kind, InterfaceKind::Service);
+        assert_eq!(
+            info.origin,
+            Some(("uvc_camera".to_string(), "v1".to_string()))
+        );
+
+        let move_arm = find(&edges, "move_arm");
+        assert_eq!(move_arm.kind, InterfaceKind::Action);
+        assert_eq!(move_arm.to_node, "arm");
+        assert_eq!(move_arm.origin, None);
+        assert_eq!(move_arm.via_interface(), None);
+    }
+
+    #[test]
+    fn edge_target_picks_interface_vs_node() {
+        let configs = vec![consumer(), camera_mock(), arm()];
+        let edges = enumerate_edges(&configs);
+
+        // Conformed artifacts must target the interface-keyed wire path.
+        let video = find(&edges, "video_stream");
+        let target = video.target().expect("interface target");
+        assert!(target.is_interface());
+        assert_eq!(target.name(), "uvc_camera");
+        assert_eq!(target.tag(), "v1");
+
+        // Direct node deps must target the node-keyed wire path.
+        let move_arm = find(&edges, "move_arm");
+        let target = move_arm.target().expect("node target");
+        assert!(target.is_node());
+        assert_eq!(target.name(), "arm");
+    }
+
+    #[test]
+    fn enumerate_skips_interface_dep_without_provider() {
+        // No conforming provider in the set → the interface edges drop out, but
+        // the direct action edge survives.
+        let configs = vec![consumer(), arm()];
+        let edges = enumerate_edges(&configs);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].interface, "move_arm");
+    }
 }

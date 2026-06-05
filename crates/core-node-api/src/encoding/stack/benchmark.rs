@@ -353,6 +353,10 @@ pub struct InterfaceLatency {
     /// The consumer's dependency link this edge was measured through. Two rows
     /// can share producer + interface but differ only by this link.
     pub link_id: String,
+    /// `Some("name:tag")` when this edge was resolved through interface
+    /// conformance (consumer `depends_on.interfaces`, producer `conforms_to`);
+    /// `None` for a direct `depends_on.nodes` edge.
+    pub via_interface: Option<String>,
     pub kind: InterfaceKind,
     pub measurement: MeasurementKind,
     pub clock_confidence: ClockConfidence,
@@ -365,10 +369,17 @@ pub struct InterfaceLatency {
 }
 
 impl InterfaceLatency {
-    /// A short `from:tag → to:tag/interface` label for rendering.
+    /// A short `from:tag {arrow} to:tag/interface` label for rendering. The
+    /// arrow distinguishes the dependency kind: `➔` for an interface-conformance
+    /// edge (matching `stack list`), `→` for a direct node dependency.
     pub fn edge_label(&self) -> String {
+        let arrow = if self.via_interface.is_some() {
+            "➔"
+        } else {
+            "→"
+        };
         format!(
-            "{}:{} → {}:{}/{}",
+            "{}:{} {arrow} {}:{}/{}",
             self.from_node, self.from_tag, self.to_node, self.to_tag, self.interface_name
         )
     }
@@ -419,6 +430,9 @@ impl StackBenchmarkResult {
                 r.set_to_tag(&row.to_tag);
                 r.set_interface_name(&row.interface_name);
                 r.set_link_id(&row.link_id);
+                if let Some(ref via) = row.via_interface {
+                    r.set_via_interface(via);
+                }
                 r.set_kind(row.kind.to_capnp());
                 r.set_measurement(row.measurement.to_capnp());
                 r.set_clock_confidence(row.clock_confidence.to_capnp());
@@ -460,6 +474,7 @@ impl StackBenchmarkResult {
                 to_tag: r.get_to_tag()?.to_str()?.to_owned(),
                 interface_name: r.get_interface_name()?.to_str()?.to_owned(),
                 link_id: r.get_link_id()?.to_str()?.to_owned(),
+                via_interface: optional_text(r.get_via_interface()?.to_str()?),
                 kind: InterfaceKind::from_capnp(r.get_kind()?),
                 measurement: MeasurementKind::from_capnp(r.get_measurement()?),
                 clock_confidence: ClockConfidence::from_capnp(r.get_clock_confidence()?),
@@ -546,6 +561,7 @@ mod tests {
             to_tag: "v2".to_string(),
             interface_name: "frames".to_string(),
             link_id: "prov".to_string(),
+            via_interface: Some("camera_iface:v2".to_string()),
             kind: InterfaceKind::Topic,
             measurement: MeasurementKind::TopicDelivery,
             clock_confidence: ClockConfidence::SameHost,
@@ -566,6 +582,7 @@ mod tests {
                 kind: InterfaceKind::Service,
                 measurement: MeasurementKind::ServiceProbe,
                 clock_confidence: ClockConfidence::NotApplicable,
+                via_interface: None,
                 samples_ns: vec![],
                 note: None,
                 ..sample_row()
