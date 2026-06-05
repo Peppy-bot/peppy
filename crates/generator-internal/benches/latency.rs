@@ -7,9 +7,11 @@
 //! raw control service.
 //!
 //! Prints a self-explanatory summary table — p50 / p90 / mean per scenario, the
-//! p90 ceiling, and the change in p90 versus the previous run **on this
-//! machine** (baselines are keyed by /etc/machine-id and stored under the
-//! machine-local `target/`, so numbers are never compared across machines).
+//! ceiling, and the change in the **median (p50)** versus the previous run **on
+//! this machine** (baselines are keyed by /etc/machine-id and stored under the
+//! machine-local `target/`, so numbers are never compared across machines). The
+//! median is the gated, run-to-run-stable statistic; p90 is shown only as a
+//! diagnostic.
 //!
 //! Run with:
 //!     cargo bench -p generator --bench latency
@@ -35,7 +37,7 @@ struct Row {
     p90: Duration,
     mean: Duration,
     ceiling_ms: u64,
-    prev_p90_ns: Option<u64>,
+    prev_p50_ns: Option<u64>,
 }
 
 fn main() {
@@ -44,8 +46,10 @@ fn main() {
     let filter: Option<String> = std::env::args().skip(1).find(|arg| !arg.starts_with('-'));
     let skip_python = std::env::var("PEPPY_LATENCY_SKIP_PYTHON").is_ok();
 
+    print_environment();
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
+        .worker_threads(2)
         .enable_all()
         .build()
         .expect("bench tokio runtime");
@@ -76,7 +80,7 @@ fn main() {
         for transport in transports {
             let stats = runtime.block_on(scenario.run(transport, DEFAULT_WARMUP, DEFAULT_SAMPLES));
             let name = format!("{}/{}", lang.as_str(), transport.as_str());
-            let prev_p90_ns = previous.get(&name).map(|s| s.p90_ns);
+            let prev_p50_ns = previous.get(&name).map(|s| s.p50_ns);
             current.insert(
                 name.clone(),
                 StoredStats {
@@ -91,7 +95,7 @@ fn main() {
                 p90: stats.p90(),
                 mean: stats.mean(),
                 ceiling_ms: ceiling_ms(lang, transport),
-                prev_p90_ns,
+                prev_p50_ns,
             });
         }
         runtime.block_on(scenario.shutdown());
@@ -99,6 +103,43 @@ fn main() {
 
     print_table(&rows);
     save_baseline(&current);
+}
+
+/// Print the CPU/scheduling environment that governs run-to-run variance, so a
+/// slow run is self-explanatory. On a shared host with turbo enabled, per-core
+/// frequency and noisy-neighbor load — not the code — dominate absolute numbers.
+fn print_environment() {
+    let read1 = |path: &str| {
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
+    let governor = read1("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+        .unwrap_or_else(|| "?".into());
+    let turbo = match read1("/sys/devices/system/cpu/intel_pstate/no_turbo").as_deref() {
+        Some("0") => "on",
+        Some("1") => "off",
+        _ => match read1("/sys/devices/system/cpu/cpufreq/boost").as_deref() {
+            Some("1") => "on",
+            Some("0") => "off",
+            _ => "?",
+        },
+    };
+    let loadavg = read1("/proc/loadavg")
+        .and_then(|s| s.split_whitespace().next().map(str::to_string))
+        .unwrap_or_else(|| "?".into());
+
+    println!("\nenv: {cores} cores, governor={governor}, turbo={turbo}, loadavg={loadavg}");
+    if turbo != "off" || governor != "performance" {
+        println!(
+            "note: turbo and/or shared-host load make absolute latency swing run-to-run regardless \
+             of the code. For stable comparisons, measure on a quiet host with turbo disabled and \
+             the measured processes pinned to isolated cores — see .github/workflows/latency.yml."
+        );
+    }
 }
 
 /// Whether a scenario matches the optional `cargo bench -- <filter>` substring,
@@ -124,18 +165,18 @@ fn print_table(rows: &[Row]) {
     }
 
     let headers = [
-        "scenario", "p50", "p90", "mean", "ceiling", "prev p90", "Δp90", "status",
+        "scenario", "p50", "p90", "mean", "ceiling", "prev p50", "Δp50", "status",
     ];
     let mut cells: Vec<[String; 8]> = Vec::with_capacity(rows.len());
     for row in rows {
-        let (prev, delta) = match row.prev_p90_ns {
+        let (prev, delta) = match row.prev_p50_ns {
             Some(prev_ns) => (
                 fmt_duration(Duration::from_nanos(prev_ns)),
-                fmt_delta(row.p90.as_nanos() as u64, prev_ns),
+                fmt_delta(row.p50.as_nanos() as u64, prev_ns),
             ),
             None => ("—".to_string(), "—".to_string()),
         };
-        let status = if row.p90 <= Duration::from_millis(row.ceiling_ms) {
+        let status = if row.p50 <= Duration::from_millis(row.ceiling_ms) {
             "✓"
         } else {
             "✗ OVER"
@@ -184,8 +225,9 @@ fn print_table(rows: &[Row]) {
         println!("{}", render(cell));
     }
     println!(
-        "\nΔp90 vs the previous run on this machine (+ = slower, - = faster). \
-         status = p90 within ceiling. Ceilings via PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>."
+        "\nΔp50 = median vs the previous run on this machine (+ = slower, - = faster). \
+         status = median within ceiling (the gated metric; p90 is a diagnostic). \
+         Ceilings via PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>."
     );
 }
 

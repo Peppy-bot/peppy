@@ -37,6 +37,15 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
+      # The guard asserts the MEDIAN against generous ceilings, so it does not
+      # flake on ordinary jitter. The *absolute* numbers, however, swing with CPU
+      # turbo frequency and shared-host load — both environmental, not code. To
+      # get tight, trustworthy numbers (and to allow tighter ceilings), set up the
+      # runner for a stable clock (needs root; the test does not do this itself):
+      #   - performance governor:  cpupower frequency-set -g performance
+      #   - disable turbo:         echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
+      #   - reserve cores:         boot with isolcpus=<cores>, then run the test under
+      #                            taskset -c <cores> on an otherwise-idle box
       # The Python responder scenarios need `uv`; set PEPPY_LATENCY_SKIP_PYTHON=1
       # on the runner (or here) to run only the Rust scenarios if it is absent.
       - name: Roundtrip latency threshold tests (real nodes)

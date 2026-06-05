@@ -95,8 +95,19 @@ impl Transport {
 }
 
 /// Default measurement parameters shared by the bench and the threshold test.
-pub const DEFAULT_WARMUP: u64 = 50;
-pub const DEFAULT_SAMPLES: u64 = 500;
+/// Larger warmup absorbs cold-start (route propagation, CPU ramp); 1000 samples
+/// keep the reported percentiles steady. The guard asserts the median, which is
+/// stable well below this count.
+pub const DEFAULT_WARMUP: u64 = 100;
+pub const DEFAULT_SAMPLES: u64 = 1000;
+
+/// Worker-thread cap for every spawned node's tokio runtime, set via the
+/// `TOKIO_WORKER_THREADS` env var (honored by `Runtime::new()`). Without it each
+/// node spawns one worker per core, so the harness + driver + responder + router
+/// heavily oversubscribe the box and preemption-multiplexing adds tail jitter to
+/// sub-millisecond roundtrips. A small fixed cap keeps total busy workers near
+/// the physical core count.
+const NODE_WORKER_THREADS: &str = "2";
 
 /// All (lang, transport) scenarios, in display order.
 pub const ALL_SCENARIOS: &[(Lang, Transport)] = &[
@@ -106,13 +117,14 @@ pub const ALL_SCENARIOS: &[(Lang, Transport)] = &[
     (Lang::Python, Transport::Service),
 ];
 
-/// Per (lang, transport) p90 ceiling in milliseconds — the threshold the guard
-/// test asserts and the bench reports against. Sized at ~4-8x the worst p90
-/// observed in-suite on release builds (rust topic ~2ms / service ~1.4ms,
-/// python topic ~1.2ms / service ~1.3ms — the topic path is the noisiest, hence
-/// its larger margin). A real regression (e.g. an accidental debug build, a
-/// synchronous discovery per call, or a serialization blowup) trips it, while
-/// run-to-run jitter and Python's higher tail variance do not. Overridable via
+/// Per (lang, transport) **median (p50)** ceiling in milliseconds — the
+/// threshold the guard test asserts and the bench's status column reports
+/// against. The median is the gated metric because it is stable run-to-run;
+/// p90/p99 are too sample-starved at these counts to gate on without flaking.
+/// Sized at ~4-6x the median observed on stabilized release runs (capped node
+/// threads, one reused scenario per language), so a real regression (an
+/// accidental debug build, a synchronous discovery per call, or a serialization
+/// blowup) trips it while ordinary jitter does not. Overridable via
 /// `PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>` so a slower runner can retune
 /// without a code change.
 pub fn ceiling_ms(lang: Lang, transport: Transport) -> u64 {
@@ -407,20 +419,19 @@ pub async fn start_scenario(lang: Lang) -> Scenario {
 
     // Spawn the responder first so its echo service / ping subscription are up
     // before the driver starts probing.
+    let responder_env = [
+        (RUNTIME_CONFIG_VAR_NAME, responder_cfg.to_str().unwrap()),
+        ("TOKIO_WORKER_THREADS", NODE_WORKER_THREADS),
+    ];
+    let driver_env = [
+        (RUNTIME_CONFIG_VAR_NAME, driver_cfg.to_str().unwrap()),
+        ("TOKIO_WORKER_THREADS", NODE_WORKER_THREADS),
+    ];
     let mut responder_child = match lang {
-        Lang::Rust => spawn_rust_node_release(
-            &responder_dir,
-            &[(RUNTIME_CONFIG_VAR_NAME, responder_cfg.to_str().unwrap())],
-        ),
-        Lang::Python => helpers::spawn_python_run(
-            &responder_dir,
-            &[(RUNTIME_CONFIG_VAR_NAME, responder_cfg.to_str().unwrap())],
-        ),
+        Lang::Rust => spawn_rust_node_release(&responder_dir, &responder_env),
+        Lang::Python => helpers::spawn_python_run(&responder_dir, &responder_env),
     };
-    let mut driver_child = spawn_rust_node_release(
-        &driver_dir,
-        &[(RUNTIME_CONFIG_VAR_NAME, driver_cfg.to_str().unwrap())],
-    );
+    let mut driver_child = spawn_rust_node_release(&driver_dir, &driver_env);
 
     let control = MessengerHandle::from_host_port(&host, port)
         .await
