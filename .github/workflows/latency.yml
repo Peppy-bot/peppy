@@ -1,0 +1,45 @@
+name: Latency
+
+# Mirrors docs-drift.yml: runs only for the release PR that merges `dev` into
+# `main`. The base-branch filter restricts to PRs targeting `main`; the
+# job-level `if` further restricts the head to `dev`, so routine PRs into `dev`
+# (and any PR into other branches) never trigger these heavy real-node tests.
+# The latency tests are `#[ignore]` by default, so the normal `cargo test`
+# step in tests.yml never runs them — they run only here, via `--ignored`.
+on:
+  pull_request:
+    types: [opened, reopened]
+    branches: [ main ]
+
+concurrency:
+  group: latency-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  latency:
+    if: github.head_ref == 'dev'
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      # p90 ceilings (milliseconds) — override here without code changes once
+      # baselines from the first runs are known.
+      PEPPY_LATENCY_MAX_MS_RUST_TOPIC: "20"
+      PEPPY_LATENCY_MAX_MS_RUST_SERVICE: "25"
+      PEPPY_LATENCY_MAX_MS_PYTHON_TOPIC: "40"
+      PEPPY_LATENCY_MAX_MS_PYTHON_SERVICE: "50"
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # The Python responder scenarios need `uv`; set PEPPY_LATENCY_SKIP_PYTHON=1
+      # on the runner (or here) to run only the Rust scenarios if it is absent.
+      - name: Roundtrip latency threshold tests (real nodes)
+        run: cargo test -p generator --test latency -- --ignored --test-threads 1 --nocapture
