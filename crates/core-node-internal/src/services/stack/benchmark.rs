@@ -758,7 +758,7 @@ async fn measure_synthetic(
     // Let the subscription route establish before the first publish.
     tokio::time::sleep(SUBSCRIBE_SETTLE).await;
 
-    let payload_bytes = vec![0u8; SYNTHETIC_PAYLOAD_BYTES];
+    let payload = Payload::from(vec![0u8; SYNTHETIC_PAYLOAD_BYTES]);
     let total = warmup.saturating_add(samples);
     let mut out = Vec::new();
     let mut received_any = false;
@@ -771,7 +771,7 @@ async fn measure_synthetic(
             publisher_target.clone(),
             SYNTHETIC_BENCHMARK_TOPIC,
             qos.clone(),
-            Payload::from(payload_bytes.clone()),
+            payload.clone(),
         )
         .await
         .is_err()
