@@ -1121,18 +1121,21 @@ async fn service_communication_poll_wrong_node() {
         );
     }
 
-    // Ensure the service callback was not called at all
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
-        0,
-        "service callback should not have been called"
-    );
-
     tokio::time::timeout(service_task_timeout, service_task)
         .await
         .expect("service task should finish within timeout")
         .expect("service task panicked")
         .expect("service task returned error");
+
+    // Authoritative check that the user handler never ran — independent of
+    // whether the listener timed out or its stream closed first. Asserting only
+    // after the service task has joined guarantees the handler future is fully
+    // resolved, so a late increment cannot slip past this check.
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        0,
+        "service callback should not have been called"
+    );
 
     tokio::time::timeout(service_task_timeout, router.shutdown())
         .await

@@ -34,7 +34,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 # Roundtrip latency benchmark: spins up two real peppy nodes (a Rust driver +
 # a Rust or Python responder), measures topic/service roundtrip latency, and
-# prints a summary table comparing p90 against the previous run on this machine.
+# prints a summary table comparing the median (p50) against the previous run on
+# this machine.
 # Self-contained (no libtest harness); run with:
 #   cargo bench -p generator --bench latency
 # The matching threshold guard lives in tests/latency.rs (ignored by default).

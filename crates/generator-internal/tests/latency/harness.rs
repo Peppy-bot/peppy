@@ -523,7 +523,17 @@ impl Scenario {
         .await
         .expect("bench_control poll");
 
-        LatencyStats::decode(response.payload().as_ref())
+        let stats = LatencyStats::decode(response.payload().as_ref());
+        // A short count means the driver's measured loop ended early (e.g. the
+        // pong stream closed mid-run), which would silently report percentiles
+        // over a truncated sample set. Fail loudly instead of trusting it.
+        assert_eq!(
+            stats.count(),
+            iters,
+            "short sample count from driver: expected {iters} measured samples, got {} (stream closed early?)",
+            stats.count()
+        );
+        stats
     }
 
     pub async fn shutdown(mut self) {
@@ -557,6 +567,21 @@ impl Scenario {
             Some(Duration::from_secs(15)),
             &self.responder_dir,
         );
+    }
+}
+
+impl Drop for Scenario {
+    /// Panic-safe backstop: `std::process::Child` does not kill on drop, so a
+    /// test that panics before `shutdown()` would otherwise orphan the driver +
+    /// responder. Kill and reap both here. This is a no-op after a normal
+    /// `shutdown()` (the children are already reaped, so `kill()` returns `Ok`
+    /// without signaling and `wait()` returns the cached status); errors are
+    /// ignored so cleanup never panics during unwinding.
+    fn drop(&mut self) {
+        let _ = self.driver_child.kill();
+        let _ = self.driver_child.wait();
+        let _ = self.responder_child.kill();
+        let _ = self.responder_child.wait();
     }
 }
 

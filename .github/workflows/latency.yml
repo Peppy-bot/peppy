@@ -8,7 +8,7 @@ name: Latency
 # step in tests.yml never runs them — they run only here, via `--ignored`.
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, synchronize]
     branches: [ main ]
 
 concurrency:
@@ -36,6 +36,9 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
+          # This job only checks out and runs the code; no step needs the
+          # runner's git credentials, so don't leave the token in .git/config.
+          persist-credentials: false
 
       # The guard asserts the MEDIAN against generous ceilings, so it does not
       # flake on ordinary jitter. The *absolute* numbers, however, swing with CPU
