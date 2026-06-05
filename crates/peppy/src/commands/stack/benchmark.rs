@@ -260,18 +260,7 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
     let mut table = String::new();
     render_table(&mut table, &BENCHMARK_HEADERS, &[rows]);
     print!("{table}");
-    println!(
-        "edge: `→` a direct `depends_on.nodes` dependency; `➔` resolved through interface \
-         conformance — the note names the interface.\n\
-         measure: svc/act-probe = messaging round-trip (handler NOT run); \
-         delivery = real producer→consumer latency; synthetic = transport proxy.\n\
-         binding: the dependency binding this edge was measured through — a node can consume the \
-         same interface from the same producer via multiple bindings.\n\
-         clock: same-host = exact; corrected = cross-host adjusted via the producer's \
-         measured offset; flagged = implausible, suppressed (deploy PTP/NTP).\n\
-         Δp50 = median vs the previous run on this machine. Benchmarking never triggers \
-         a real handler or creates a goal."
-    );
+    println!("{BENCHMARK_LEGEND}");
 
     // Persist this run's stats as the same-machine baseline for the next run's
     // Δp50 column. Only rows that actually measured (count > 0) update it.
@@ -295,6 +284,26 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
 const BENCHMARK_HEADERS: [&str; 10] = [
     "edge", "binding", "measure", "clock", "p50", "p90", "mean", "n", "Δp50", "note",
 ];
+
+/// Footnote legend beneath the table — one category per block, its variants
+/// aligned on their own lines so a reader can scan each meaning instead of
+/// parsing a run-on sentence. The leading `\` swallows the newline after the
+/// opening quote so the text starts at `Legend:`.
+const BENCHMARK_LEGEND: &str = "\
+Legend:
+  edge       →  direct dependency (depends_on.nodes)
+             ➔  resolved through interface conformance — the note names the interface
+  measure    svc/act-probe  messaging round-trip (the handler is NOT run)
+             delivery       real producer→consumer latency on live traffic
+             synthetic      transport-path proxy on a reserved key
+  binding    the dependency binding this edge was measured through; a node can
+             consume the same interface from one producer via several bindings
+  clock      same-host  exact (producer shares this host's clock)
+             corrected  cross-host, adjusted via the producer's measured offset
+             flagged    implausible delta, suppressed (deploy PTP/NTP)
+  Δp50       median vs the previous run on this machine
+
+Benchmarking never triggers a real handler or creates a goal.";
 
 /// Build the box-table data rows (one per measured row), tinted with the shared
 /// `stack` palette and with the wide `edge`/`note` cells wrapped. `previous`
