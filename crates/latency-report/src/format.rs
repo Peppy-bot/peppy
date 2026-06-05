@@ -24,10 +24,41 @@ pub fn fmt_delta(now_ns: u64, prev_ns: u64) -> String {
     format!("{pct:+.1}%")
 }
 
+/// Visible length of `value` in columns: the `µ`/`Δ`/`✓` glyphs count as one
+/// column each, and ANSI SGR color escapes count as zero (they occupy no display
+/// columns). Keeps a colored cell measuring the same as its plain text so the
+/// table stays aligned whether or not the caller tints cells.
+fn visible_len(value: &str) -> usize {
+    if !value.as_bytes().contains(&0x1b) {
+        return value.chars().count();
+    }
+    let mut len = 0;
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip a CSI escape: an optional `[`, then bytes up to and including
+            // a final byte in `@`..=`~` (the `[` itself is in that range, so it
+            // must be consumed first).
+            if chars.clone().next() == Some('[') {
+                chars.next();
+            }
+            for f in chars.by_ref() {
+                if ('@'..='~').contains(&f) {
+                    break;
+                }
+            }
+        } else {
+            len += 1;
+        }
+    }
+    len
+}
+
 /// Pad `value` on the right to `width`, counting the wide `µ`/`Δ`/`✓` glyphs as
-/// one column each (so columns stay aligned in a monospace terminal).
+/// one column each and ANSI color escapes as zero (so columns stay aligned in a
+/// monospace terminal whether or not the cell is colored).
 pub fn pad(value: &str, width: usize) -> String {
-    let len = value.chars().count();
+    let len = visible_len(value);
     if len >= width {
         value.to_string()
     } else {
@@ -49,7 +80,7 @@ pub fn render_table(headers: &[&str], rows: &[Vec<String>]) -> String {
     }
     for row in rows {
         for (i, value) in row.iter().take(cols).enumerate() {
-            widths[i] = widths[i].max(value.chars().count());
+            widths[i] = widths[i].max(visible_len(value));
         }
     }
 
@@ -108,5 +139,35 @@ mod tests {
         assert_eq!(lines[1].len(), "name    p50 ".len());
         assert_eq!(lines[2], "a       1ms ");
         assert_eq!(lines[3], "longer  12ms");
+    }
+
+    #[test]
+    fn pad_counts_visible_columns_only() {
+        // A cyan-painted "a" occupies one display column; the ANSI escapes are
+        // zero-width, so it pads to the same width as a plain "a".
+        let colored = "\x1b[36ma\x1b[0m";
+        assert_eq!(pad(colored, 4), format!("{colored}   "));
+        assert_eq!(visible_len(colored), 1);
+    }
+
+    #[test]
+    fn render_table_alignment_is_unaffected_by_color_codes() {
+        let headers = ["name", "p50"];
+        // The wider cell is colored; the column width must track its visible
+        // text ("longer"), not the byte length inflated by escape codes.
+        let plain = vec![
+            vec!["a".to_string(), "1ms".to_string()],
+            vec!["longer".to_string(), "12ms".to_string()],
+        ];
+        let colored = vec![
+            vec!["a".to_string(), "1ms".to_string()],
+            vec!["\x1b[36mlonger\x1b[0m".to_string(), "12ms".to_string()],
+        ];
+        // Stripping the escapes from the colored render reproduces the plain one.
+        let strip = |s: String| s.replace("\x1b[36m", "").replace("\x1b[0m", "");
+        assert_eq!(
+            strip(render_table(&headers, &colored)),
+            render_table(&headers, &plain)
+        );
     }
 }

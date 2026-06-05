@@ -28,6 +28,7 @@ use peppylib::core_node::transport::send_stack_benchmark;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
 
+use super::colors::{BINDING_COLOR, NODE_COLOR, paint};
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -195,7 +196,35 @@ fn measurement_label(kind: MeasurementKind) -> &'static str {
     }
 }
 
+/// The `edge` cell, tinted with the shared `stack` palette: node labels in
+/// cyan (as `stack list` colors them) around the kind arrow — `➔` for an
+/// interface-conformance edge, `→` for a direct one — with the consumed
+/// interface name left plain. Mirrors [`InterfaceLatency::edge_label`] but
+/// colored; the plain `edge_label` still backs the baseline key.
+fn edge_cell(row: &InterfaceLatency, colorize: bool) -> String {
+    let arrow = if row.via_interface.is_some() {
+        "➔"
+    } else {
+        "→"
+    };
+    format!(
+        "{} {arrow} {}/{}",
+        paint(
+            colorize,
+            NODE_COLOR,
+            &format!("{}:{}", row.from_node, row.from_tag)
+        ),
+        paint(
+            colorize,
+            NODE_COLOR,
+            &format!("{}:{}", row.to_node, row.to_tag)
+        ),
+        row.interface_name,
+    )
+}
+
 fn render_report(result: &StackBenchmarkResult, samples: u32) {
+    let colorize = crate::terminal::colors_enabled();
     let env = CpuEnvironment::detect();
     println!("\nenv: {}", env.summary_line());
     if env.is_noisy() {
@@ -243,16 +272,21 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
             }
         };
         // Prefix interface-conformance rows with the interface they route
-        // through, then append any measurement diagnostic note.
-        let note = match (&row.via_interface, &row.note) {
+        // through (tinted like the node labels it relates), then append any
+        // measurement diagnostic note.
+        let iface = row
+            .via_interface
+            .as_deref()
+            .map(|i| paint(colorize, NODE_COLOR, i));
+        let note = match (&iface, &row.note) {
             (Some(iface), Some(n)) => format!("via {iface} conformance; {n}"),
             (Some(iface), None) => format!("via {iface} conformance"),
             (None, Some(n)) => n.clone(),
             (None, None) => String::new(),
         };
         rows.push(vec![
-            row.edge_label(),
-            row.link_id.clone(),
+            edge_cell(row, colorize),
+            paint(colorize, BINDING_COLOR, &row.link_id),
             measurement_label(row.measurement).to_string(),
             row.clock_confidence.as_str().to_string(),
             dur(row.p50_ns),

@@ -1,4 +1,5 @@
 mod benchmark;
+mod colors;
 mod launch;
 mod list;
 

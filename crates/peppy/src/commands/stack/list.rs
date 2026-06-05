@@ -151,29 +151,14 @@ pub fn format_stack_list(
     out
 }
 
-// ANSI SGR codes used to tint the tables, applied only when `colorize` is set.
-// `col_width` strips these before measuring, so a colored cell occupies the
-// same display columns as its plain text and the box stays aligned.
-const NODE_COLOR: &str = "\x1b[36m"; // cyan — node labels
-const COUNT_COLOR: &str = "\x1b[32m"; // green — per-node instance counts
-const INSTANCE_COLOR: &str = "\x1b[35m"; // magenta — instance ids
-const BINDING_COLOR: &str = "\x1b[33m"; // yellow — slot bindings
-const STATUS_RUNNING_COLOR: &str = "\x1b[32m"; // green — a running instance
-const STATUS_STARTING_COLOR: &str = "\x1b[33m"; // yellow — a starting instance
-const HEALTH_HEALTHY_COLOR: &str = "\x1b[32m"; // green — a healthy instance
-const HEALTH_UNHEALTHY_COLOR: &str = "\x1b[31m"; // red — an unhealthy instance
-const RESET: &str = "\x1b[0m";
-
-/// Wraps `s` in `code`/reset when `colorize` is set, otherwise returns it
-/// unchanged. Empty input is left untouched so blank continuation cells don't
-/// carry dangling escape codes.
-fn paint(colorize: bool, code: &str, s: &str) -> String {
-    if colorize && !s.is_empty() {
-        format!("{code}{s}{RESET}")
-    } else {
-        s.to_string()
-    }
-}
+// The tables are tinted with the shared `stack` color palette so `stack list`
+// and `stack benchmark` color the same things the same way. `col_width` strips
+// these codes before measuring, so a colored cell occupies the same display
+// columns as its plain text and the box stays aligned.
+use super::colors::{
+    BINDING_COLOR, COUNT_COLOR, HEALTH_HEALTHY_COLOR, HEALTH_UNHEALTHY_COLOR, INSTANCE_COLOR,
+    NODE_COLOR, STATUS_RUNNING_COLOR, STATUS_STARTING_COLOR, paint,
+};
 
 /// Terminal display width of a cell. Column widths, box-drawing borders, and
 /// cell padding must all measure the same way or the table skews on non-ASCII
