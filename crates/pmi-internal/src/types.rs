@@ -13,7 +13,9 @@ use std::net::SocketAddr;
 use zenoh::bytes::ZBytes;
 
 #[cfg(feature = "zenoh")]
-use super::adapters::zenoh::{RouterHealthChecker, ZenohAdapter, ZenohPublisher};
+use super::adapters::zenoh::{ZenohAdapter, ZenohPublisher};
+#[cfg(feature = "router")]
+use super::zenohd::RouterHealthChecker;
 
 /// QoS settings for publishing messages
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -722,7 +724,7 @@ impl Messenger {
 
     /// Returns a lock-free [`RouterHealthChecker`] for the router watchdog, or
     /// `None` for backends without a restartable router (e.g. the mock).
-    #[cfg(feature = "zenoh")]
+    #[cfg(feature = "router")]
     pub fn router_health_checker(&self) -> Option<RouterHealthChecker> {
         match &self.adapter {
             MessengerAdapter::Zenoh(adapter) => Some(adapter.router_health_checker()),
