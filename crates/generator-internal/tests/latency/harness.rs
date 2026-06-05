@@ -22,6 +22,7 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -106,10 +107,14 @@ pub const ALL_SCENARIOS: &[(Lang, Transport)] = &[
 ];
 
 /// Per (lang, transport) p90 ceiling in milliseconds — the threshold the guard
-/// test asserts and the bench reports against. Order-of-magnitude guards (fail
-/// only on a ~10x regression). Overridable via
-/// `PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>` so CI / a runner can retune without
-/// code changes.
+/// test asserts and the bench reports against. Sized at ~4-8x the worst p90
+/// observed in-suite on release builds (rust topic ~2ms / service ~1.4ms,
+/// python topic ~1.2ms / service ~1.3ms — the topic path is the noisiest, hence
+/// its larger margin). A real regression (e.g. an accidental debug build, a
+/// synchronous discovery per call, or a serialization blowup) trips it, while
+/// run-to-run jitter and Python's higher tail variance do not. Overridable via
+/// `PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>` so a slower runner can retune
+/// without a code change.
 pub fn ceiling_ms(lang: Lang, transport: Transport) -> u64 {
     let key = format!(
         "PEPPY_LATENCY_MAX_MS_{}_{}",
@@ -122,10 +127,10 @@ pub fn ceiling_ms(lang: Lang, transport: Transport) -> u64 {
         return parsed;
     }
     match (lang, transport) {
-        (Lang::Rust, Transport::Topic) => 20,
-        (Lang::Rust, Transport::Service) => 25,
-        (Lang::Python, Transport::Topic) => 40,
-        (Lang::Python, Transport::Service) => 50,
+        (Lang::Rust, Transport::Topic) => 8,
+        (Lang::Rust, Transport::Service) => 8,
+        (Lang::Python, Transport::Topic) => 6,
+        (Lang::Python, Transport::Service) => 10,
     }
 }
 
@@ -203,6 +208,71 @@ fn ensure_peppylib_dep(user_node: &Path) {
     std::fs::write(&cargo_toml, updated).expect("write node Cargo.toml");
 }
 
+/// Shared incremental target dir for node builds (so the vendored
+/// peppylib/zenoh stack is compiled once and reused across scenarios).
+fn shared_target_dir() -> PathBuf {
+    config::consts::PeppyDirs::default()
+        .root()
+        .join("cache/rust/test-targets")
+}
+
+/// Build a node crate in **release**. This is deliberate: production peppy nodes
+/// run release (`build_cmd: ["cargo","build","--release"]`), and a debug build
+/// of the vendored peppylib + zenoh stack is ~10x slower, which would make the
+/// measured latency meaningless (and unfairly slower than the Python responder,
+/// whose peppylib extension is always built in release). Builds into the shared
+/// target dir under a lock, then copies the binary into the node's own dir so it
+/// can be spawned without holding the cargo lock.
+fn compile_rust_node_release(dir: &Path) {
+    let target = shared_target_dir();
+    std::fs::create_dir_all(&target).expect("create shared target dir");
+
+    let lock_file = std::fs::File::create(target.join(".compile-release.lock"))
+        .expect("create compile lock file");
+    lock_file.lock().expect("acquire compile lock");
+
+    let output = Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .env("CARGO_NET_OFFLINE", "true")
+        .env("CARGO_TARGET_DIR", &target)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .output()
+        .expect("invoke cargo build --release on node crate");
+    assert!(
+        output.status.success(),
+        "release build failed for node at {} (status {:?})\nstdout:\n{}\nstderr:\n{}",
+        dir.display(),
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let binary = target.join("release").join("user_node");
+    if binary.exists() {
+        let local_dir = dir.join("target").join("release");
+        std::fs::create_dir_all(&local_dir).expect("create local release dir");
+        std::fs::copy(&binary, local_dir.join("user_node")).expect("copy release binary");
+    }
+    // Lock released on drop.
+}
+
+/// Spawn a release-built Rust node binary directly (mirrors
+/// `helpers::spawn_cargo_run` but for `target/release/user_node`).
+fn spawn_rust_node_release(dir: &Path, env_vars: &[(&str, &str)]) -> std::process::Child {
+    let binary = dir.join("target").join("release").join("user_node");
+    let mut command = Command::new(&binary);
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir(dir);
+    for &(key, value) in env_vars {
+        command.env(key, value);
+    }
+    command.spawn().expect("spawn release node binary")
+}
+
 /// Codegen an (interface-less) peppygen library + fingerprint into a fresh node
 /// dir so the process is a real peppygen node, write `main`, and build it.
 /// Returns the built node directory. The `TempDir` is intentionally leaked so
@@ -224,7 +294,7 @@ fn build_rust_node(main_src: &str) -> PathBuf {
     helpers::init_cargo_user_node(&user_node);
     ensure_peppylib_dep(&user_node);
     std::fs::write(user_node.join("src").join("main.rs"), main_src).expect("write main.rs");
-    helpers::compile_project(&user_node);
+    compile_rust_node_release(&user_node);
 
     std::mem::forget(temp_dir);
     user_node
@@ -338,7 +408,7 @@ pub async fn start_scenario(lang: Lang) -> Scenario {
     // Spawn the responder first so its echo service / ping subscription are up
     // before the driver starts probing.
     let mut responder_child = match lang {
-        Lang::Rust => helpers::spawn_cargo_run(
+        Lang::Rust => spawn_rust_node_release(
             &responder_dir,
             &[(RUNTIME_CONFIG_VAR_NAME, responder_cfg.to_str().unwrap())],
         ),
@@ -347,7 +417,7 @@ pub async fn start_scenario(lang: Lang) -> Scenario {
             &[(RUNTIME_CONFIG_VAR_NAME, responder_cfg.to_str().unwrap())],
         ),
     };
-    let mut driver_child = helpers::spawn_cargo_run(
+    let mut driver_child = spawn_rust_node_release(
         &driver_dir,
         &[(RUNTIME_CONFIG_VAR_NAME, driver_cfg.to_str().unwrap())],
     );

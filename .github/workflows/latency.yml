@@ -25,14 +25,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    env:
-      # p90 ceilings (milliseconds) — override here without code changes once
-      # baselines from the first runs are known.
-      PEPPY_LATENCY_MAX_MS_RUST_TOPIC: "20"
-      PEPPY_LATENCY_MAX_MS_RUST_SERVICE: "25"
-      PEPPY_LATENCY_MAX_MS_PYTHON_TOPIC: "40"
-      PEPPY_LATENCY_MAX_MS_PYTHON_SERVICE: "50"
-
+    # p90 ceilings come from ceiling_ms() in tests/latency/harness.rs (the single
+    # source of truth). If this runner is slower than a dev box and trips a
+    # ceiling on jitter, loosen per scenario here without a code change, e.g.:
+    #   env:
+    #     PEPPY_LATENCY_MAX_MS_RUST_TOPIC: "10"
+    #     PEPPY_LATENCY_MAX_MS_PYTHON_SERVICE: "20"
     steps:
       - uses: actions/checkout@v6
         with:
