@@ -178,7 +178,12 @@ async fn benchmark_async(
 
 /// Stable per-row key for the same-machine baseline.
 fn row_key(row: &InterfaceLatency) -> String {
-    format!("{}|{}", row.edge_label(), row.measurement.as_str())
+    format!(
+        "{}|{}|{}",
+        row.edge_label(),
+        row.link_id,
+        row.measurement.as_str()
+    )
 }
 
 fn measurement_label(kind: MeasurementKind) -> &'static str {
@@ -210,7 +215,7 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
     let mut current: BTreeMap<String, StoredStats> = previous.clone();
 
     let headers = [
-        "edge", "measure", "clock", "p50", "p90", "mean", "n", "Δp50", "note",
+        "edge", "binding", "measure", "clock", "p50", "p90", "mean", "n", "Δp50", "note",
     ];
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(result.rows.len());
     for row in &result.rows {
@@ -239,6 +244,7 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
         };
         rows.push(vec![
             row.edge_label(),
+            row.link_id.clone(),
             measurement_label(row.measurement).to_string(),
             row.clock_confidence.as_str().to_string(),
             dur(row.p50_ns),
@@ -258,6 +264,8 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
     println!(
         "\nmeasure: svc/act-probe = messaging round-trip (handler NOT run); \
          delivery = real producer→consumer latency; synthetic = transport proxy.\n\
+         binding: the dependency binding this edge was measured through — a node can consume the \
+         same interface from the same producer via multiple bindings.\n\
          clock: same-host = exact; corrected = cross-host adjusted via the producer's \
          measured offset; flagged = implausible, suppressed (deploy PTP/NTP).\n\
          Δp50 = median vs the previous run on this machine. Benchmarking never triggers \

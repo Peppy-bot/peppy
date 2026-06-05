@@ -170,6 +170,7 @@ async fn stack_benchmark_enumerates_wired_service_edge() {
         .expect("the wired service edge should be measured");
     assert_eq!(svc_row.from_node, "bench_consumer");
     assert_eq!(svc_row.to_node, "bench_provider");
+    assert_eq!(svc_row.link_id, "prov");
     assert_eq!(svc_row.kind, InterfaceKind::Service);
     assert_eq!(svc_row.measurement, MeasurementKind::ServiceProbe);
     // No producer instance is running, so the probe is unreachable.
@@ -182,5 +183,76 @@ async fn stack_benchmark_enumerates_wired_service_edge() {
             .contains("unreachable"),
         "expected an unreachable note, got {:?}",
         svc_row.note
+    );
+}
+
+/// A consumer that wires the *same* interface from the *same* producer via two
+/// distinct `depends_on` links produces two separate rows — identical in
+/// producer/interface but differing only by `link_id`. Regression guard for the
+/// duplicate, indistinguishable rows that prompted carrying `link_id` end-to-end.
+fn two_link_consumer_config() -> &'static str {
+    r#"{
+        peppy_schema: "node_v1",
+        manifest: {
+            name: "bench_consumer",
+            tag: "v1",
+            depends_on: { nodes: [
+                { name: "bench_provider", tag: "v1", link_id: "left" },
+                { name: "bench_provider", tag: "v1", link_id: "right" }
+            ] }
+        },
+        interfaces: { services: { consumes: [
+            { link_id: "left", name: "bench_svc" },
+            { link_id: "right", name: "bench_svc" }
+        ] } },
+        execution: { language: "rust", run_cmd: ["sleep", "10"] }
+    }"#
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_benchmark_distinguishes_edges_by_link_id() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let provider = NodeConfigParser::from_content(provider_config()).expect("provider parses");
+    started
+        .node_stack
+        .push_config(provider, false, "/tmp/bench_provider")
+        .expect("push provider");
+    let consumer =
+        NodeConfigParser::from_content(two_link_consumer_config()).expect("consumer parses");
+    started
+        .node_stack
+        .push_config(consumer, false, "/tmp/bench_consumer")
+        .expect("push consumer");
+
+    let goal = StackBenchmarkGoal::new(2, 0, false, 200);
+    let (result, _) = run_benchmark_goal(&started, goal).await;
+
+    assert!(result.success, "benchmark should succeed");
+    let svc_rows: Vec<_> = result
+        .rows
+        .iter()
+        .filter(|r| r.interface_name == "bench_svc")
+        .collect();
+    assert_eq!(
+        svc_rows.len(),
+        2,
+        "each wired link is a separate row, got {} rows",
+        svc_rows.len()
+    );
+
+    // Both rows share producer + interface but are distinguished only by link_id.
+    for row in &svc_rows {
+        assert_eq!(row.from_node, "bench_consumer");
+        assert_eq!(row.to_node, "bench_provider");
+        assert_eq!(row.interface_name, "bench_svc");
+        assert_eq!(row.measurement, MeasurementKind::ServiceProbe);
+    }
+    let mut links: Vec<&str> = svc_rows.iter().map(|r| r.link_id.as_str()).collect();
+    links.sort_unstable();
+    assert_eq!(
+        links,
+        ["left", "right"],
+        "the two links must be distinguishable by link_id"
     );
 }

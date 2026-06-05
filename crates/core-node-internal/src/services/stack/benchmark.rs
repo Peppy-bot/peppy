@@ -197,6 +197,9 @@ struct Edge {
     to_node: String,
     to_tag: String,
     interface: String,
+    /// The consumer's `depends_on` link this interface was wired through. Two
+    /// edges can share producer + interface but differ only by this link.
+    link_id: String,
     kind: InterfaceKind,
     /// Producer-declared QoS for topic edges (used by delivery + synthetic).
     qos: QoSProfile,
@@ -255,6 +258,7 @@ fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
                         to_node,
                         to_tag,
                         interface: c.name.clone(),
+                        link_id: c.link_id.clone(),
                         kind: InterfaceKind::Topic,
                         qos,
                     });
@@ -270,6 +274,7 @@ fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
                         to_node,
                         to_tag,
                         interface: c.name.clone(),
+                        link_id: c.link_id.clone(),
                         kind: InterfaceKind::Service,
                         qos: QoSProfile::default(),
                     });
@@ -285,6 +290,7 @@ fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
                         to_node,
                         to_tag,
                         interface: c.name.clone(),
+                        link_id: c.link_id.clone(),
                         kind: InterfaceKind::Action,
                         qos: QoSProfile::default(),
                     });
@@ -384,8 +390,8 @@ async fn run_benchmark(
 
 fn edge_label(edge: &Edge) -> String {
     format!(
-        "{}:{} → {}:{}/{}",
-        edge.from_node, edge.from_tag, edge.to_node, edge.to_tag, edge.interface
+        "{}:{} → {}:{}/{} (binding: {})",
+        edge.from_node, edge.from_tag, edge.to_node, edge.to_tag, edge.interface, edge.link_id
     )
 }
 
@@ -403,6 +409,7 @@ fn row_from_samples(
         to_node: edge.to_node.clone(),
         to_tag: edge.to_tag.clone(),
         interface_name: edge.interface.clone(),
+        link_id: edge.link_id.clone(),
         kind: edge.kind,
         measurement,
         clock_confidence,

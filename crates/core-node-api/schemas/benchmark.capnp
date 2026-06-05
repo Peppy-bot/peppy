@@ -85,6 +85,9 @@ struct InterfaceLatency {
     samplesNs @12 :List(UInt64);
     # Optional human-readable note (e.g. why a cross-host delta was flagged).
     note @13 :Text;
+    # The consumer's dependency link this edge was measured through. Disambiguates
+    # rows that share the same producer + interface but are wired via distinct links.
+    linkId @14 :Text;
 }
 
 struct StackBenchmarkResult {

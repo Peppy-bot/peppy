@@ -350,6 +350,9 @@ pub struct InterfaceLatency {
     pub to_node: String,
     pub to_tag: String,
     pub interface_name: String,
+    /// The consumer's dependency link this edge was measured through. Two rows
+    /// can share producer + interface but differ only by this link.
+    pub link_id: String,
     pub kind: InterfaceKind,
     pub measurement: MeasurementKind,
     pub clock_confidence: ClockConfidence,
@@ -415,6 +418,7 @@ impl StackBenchmarkResult {
                 r.set_to_node(&row.to_node);
                 r.set_to_tag(&row.to_tag);
                 r.set_interface_name(&row.interface_name);
+                r.set_link_id(&row.link_id);
                 r.set_kind(row.kind.to_capnp());
                 r.set_measurement(row.measurement.to_capnp());
                 r.set_clock_confidence(row.clock_confidence.to_capnp());
@@ -455,6 +459,7 @@ impl StackBenchmarkResult {
                 to_node: r.get_to_node()?.to_str()?.to_owned(),
                 to_tag: r.get_to_tag()?.to_str()?.to_owned(),
                 interface_name: r.get_interface_name()?.to_str()?.to_owned(),
+                link_id: r.get_link_id()?.to_str()?.to_owned(),
                 kind: InterfaceKind::from_capnp(r.get_kind()?),
                 measurement: MeasurementKind::from_capnp(r.get_measurement()?),
                 clock_confidence: ClockConfidence::from_capnp(r.get_clock_confidence()?),
@@ -540,6 +545,7 @@ mod tests {
             to_node: "camera".to_string(),
             to_tag: "v2".to_string(),
             interface_name: "frames".to_string(),
+            link_id: "prov".to_string(),
             kind: InterfaceKind::Topic,
             measurement: MeasurementKind::TopicDelivery,
             clock_confidence: ClockConfidence::SameHost,
