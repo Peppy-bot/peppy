@@ -2,6 +2,7 @@
 
 use std::io::{BufRead, Read};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Runs a command and prints a cargo warning on failure. Returns `true` on success.
 pub fn run_command(command: &mut Command, description: &str) -> bool {
@@ -91,6 +92,81 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
     }
 }
 
+/// Runs a command with a timeout, capturing stdout/stderr without forwarding it
+/// live. If the command does not finish within `timeout`, the child is killed
+/// and `success` is `false`.
+///
+/// Intended for short probes (for example, checking whether a VM guest is
+/// reachable over SSH) that must never hang a build. Both pipes are drained on
+/// background threads so the child can never block on a full pipe buffer while
+/// we poll for exit.
+pub fn run_command_with_timeout(command: &mut Command, timeout: Duration) -> CommandOutput {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = match command.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return CommandOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: e.to_string(),
+            };
+        }
+    };
+
+    fn drain(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
+        std::thread::spawn(move || {
+            let mut captured = String::new();
+            pipe.read_to_string(&mut captured).ok();
+            captured
+        })
+    }
+    let stdout_thread = drain(child.stdout.take().unwrap());
+    let stderr_thread = drain(child.stderr.take().unwrap());
+
+    let deadline = Instant::now() + timeout;
+    let exit_status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() >= deadline => {
+                child.kill().ok();
+                child.wait().ok();
+                break None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => {
+                child.kill().ok();
+                child.wait().ok();
+                break None;
+            }
+        }
+    };
+
+    // Killing the child closes its pipes, so the drain threads reach EOF.
+    let stdout = stdout_thread.join().unwrap_or_default();
+    let stderr = stderr_thread.join().unwrap_or_default();
+
+    match exit_status {
+        Some(status) => CommandOutput {
+            success: status.success(),
+            stdout,
+            stderr,
+        },
+        None => {
+            let timed_out = if stderr.trim().is_empty() {
+                format!("command timed out after {timeout:?}")
+            } else {
+                format!("command timed out after {timeout:?}: {stderr}")
+            };
+            CommandOutput {
+                success: false,
+                stdout,
+                stderr: timed_out,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +203,36 @@ mod tests {
         assert!(output.success);
         assert!(output.stdout.contains("out-line"));
         assert!(output.stderr.contains("err-line"));
+    }
+
+    #[test]
+    fn timeout_runner_succeeds_for_fast_command() {
+        let output = run_command_with_timeout(&mut Command::new("true"), Duration::from_secs(5));
+        assert!(output.success);
+    }
+
+    #[test]
+    fn timeout_runner_reports_command_failure() {
+        let output = run_command_with_timeout(&mut Command::new("false"), Duration::from_secs(5));
+        assert!(!output.success);
+    }
+
+    #[test]
+    fn timeout_runner_captures_stdout() {
+        let output =
+            run_command_with_timeout(Command::new("echo").arg("probe-ok"), Duration::from_secs(5));
+        assert!(output.success);
+        assert!(output.stdout.contains("probe-ok"));
+    }
+
+    #[test]
+    fn timeout_runner_kills_command_that_exceeds_timeout() {
+        let start = Instant::now();
+        let output =
+            run_command_with_timeout(Command::new("sleep").arg("10"), Duration::from_millis(200));
+        assert!(!output.success);
+        // The child must be killed rather than waited out for the full 10s.
+        assert!(start.elapsed() < Duration::from_secs(3));
+        assert!(output.stderr.contains("timed out"));
     }
 }

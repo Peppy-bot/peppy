@@ -2,13 +2,14 @@ mod apptainer_build {
     use std::env;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::time::Duration;
 
-    const APPTAINER_VERSION: &str = "1.5.0";
+    const APPTAINER_VERSION: &str = "1.5.1";
     /// SHA-256 of `apptainer-{APPTAINER_VERSION}.tar.gz` from the GitHub release.
     /// Bump alongside `APPTAINER_VERSION`; both `verify_apptainer_checksum`
     /// call sites (host build, Lima guest build) consume this constant.
     const APPTAINER_SHA256: &str =
-        "36d67d57ef959397fa4f59169cf7deb92220537160e761e0c1cff84624ad81e3";
+        "ae00a6a2f1949a8f245c082660fd2990d61a6543159c9a28eede7966d89efe62";
 
     /// Pinned gocryptfs version. Apptainer auto-discovers gocryptfs in
     /// `${prefix}/libexec/apptainer/bin/` (ahead of `$PATH`) and uses it for
@@ -22,9 +23,9 @@ mod apptainer_build {
     const GOCRYPTFS_ARM64_SHA256: &str =
         "64576d550ab8af3f1dc729e93779540c5ecc00967d0185aae51a29a3755d86d0";
 
-    const LIMA_VERSION: &str = "2.1.1";
+    const LIMA_VERSION: &str = "2.1.2";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
-        "b6b0e6701189cd8c4e549cc39e6d054dc681487798b9b774ad2cbd30c08b2bd8";
+        "7081d03d01511f20c4a3b38d8120428ef1c66e4b21ec9b54017bc65da60b031f";
     const LIMA_INSTANCE: &str = "peppy";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
     /// Guest-side installation path for apptainer inside the Lima VM.
@@ -96,7 +97,7 @@ mod apptainer_build {
 
     fn lima_archive_sha256(version: &str, os: &str, arch: &str) -> Option<&'static str> {
         match (version, os, arch) {
-            ("2.1.1", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
+            ("2.1.2", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
             _ => None,
         }
     }
@@ -245,68 +246,123 @@ mod apptainer_build {
     // Lima instance management (macOS)
     // -----------------------------------------------------------------------
 
-    /// Ensure the peppy Lima instance exists and is running.
+    /// Maximum time to wait for the guest reachability probe before treating
+    /// the instance as unusable. A healthy guest answers in about a second; the
+    /// generous budget only matters for a wedged guest we are about to recreate.
+    const LIMA_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// Ensure the peppy Lima instance exists and its guest is reachable.
     ///
     /// * If the instance does not exist, create and start it with `template`.
     /// * If it exists but is stopped, start it.
-    /// * If it is already running, this is a no-op.
+    /// * If it is running (or just started) but its guest is unreachable, delete
+    ///   it and recreate it from scratch.
+    ///
+    /// The last case matters because a `limactl start` that times out on guest
+    /// networking leaves the VM process alive, so the instance reports `Running`
+    /// while its guest never finished booting. A plain status check would treat
+    /// that corpse as usable, so we verify reachability with an SSH probe and
+    /// recreate any instance that fails it.
     ///
     /// When `arch` is `Some`, an `--arch=<value>` flag is passed to
     /// `limactl start` so the VM runs under QEMU emulation for a
     /// non-native architecture.
     fn ensure_lima_instance(lima: &LimaConfig, template: &str, arch: Option<&str>) -> bool {
-        // Query instance status using Go template output — avoids brittle JSON parsing.
-        let list_output = lima
-            .lima_command()
-            .args(["list", "--format", "{{.Status}}", lima.instance])
-            .output();
-
-        let instance_status = match &list_output {
-            Ok(o) if o.status.success() => {
-                let status = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if status.is_empty() {
-                    None
-                } else {
-                    Some(status)
-                }
+        let started = match lima_instance_status(lima) {
+            None => return create_lima_instance(lima, template, arch),
+            Some(status) if status == "Running" => true,
+            Some(_) => {
+                println!("cargo:warning=Starting Lima {} instance...", lima.instance);
+                start_existing_lima_instance(lima)
             }
-            _ => None,
         };
 
-        match instance_status.as_deref() {
-            Some("Running") => true,
-            Some(_status) => {
-                // Instance exists but is not running — start it.
-                println!("cargo:warning=Starting Lima {} instance...", lima.instance);
-                let mut cmd = lima.lima_command();
-                cmd.args(["start", lima.instance]);
-                let label = format!("lima-start-{}", lima.instance);
-                build_helpers::run_command_streaming(&mut cmd, &label).success
-            }
-            None => {
-                // Instance does not exist — create and start it.
-                println!(
-                    "cargo:warning=Creating Lima {} instance with {} (this may take a few minutes on first run)...",
-                    lima.instance, template
-                );
-                let name_flag = format!("--name={}", lima.instance);
-                let mut cmd = lima.lima_command();
-                cmd.args([
-                    "start",
-                    &name_flag,
-                    "--tty=false",
-                    "--mount-writable",
-                    "--containerd=none",
-                    "--memory=12",
-                ]);
-                if let Some(a) = arch {
-                    cmd.arg(format!("--arch={}", a));
-                }
-                cmd.arg(template);
-                let label = format!("lima-create-{}", lima.instance);
-                build_helpers::run_command_streaming(&mut cmd, &label).success
-            }
+        // A successful start (or a `Running` status) does not guarantee the
+        // guest is up. Probe it; a reachable guest is ready to use.
+        if started && lima_guest_reachable(lima) {
+            return true;
         }
+
+        println!(
+            "cargo:warning=Lima {} instance is unusable (guest unreachable); deleting and recreating it from scratch...",
+            lima.instance
+        );
+        delete_lima_instance(lima);
+        create_lima_instance(lima, template, arch)
+    }
+
+    /// Query an instance's status via Go-template output (avoids brittle JSON
+    /// parsing). Returns `None` when the instance does not exist or the query
+    /// itself fails.
+    fn lima_instance_status(lima: &LimaConfig) -> Option<String> {
+        let output = lima
+            .lima_command()
+            .args(["list", "--format", "{{.Status}}", lima.instance])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!status.is_empty()).then_some(status)
+    }
+
+    /// Check whether the guest is actually reachable by running a trivial
+    /// command over Lima's SSH connection. A failed or timed-out probe means
+    /// the instance is up at the hypervisor level but its guest never came up.
+    fn lima_guest_reachable(lima: &LimaConfig) -> bool {
+        let mut cmd = lima.lima_command();
+        cmd.args(["shell", lima.instance, "--", "true"]);
+        build_helpers::run_command_with_timeout(&mut cmd, LIMA_PROBE_TIMEOUT).success
+    }
+
+    /// Start an existing, stopped instance.
+    fn start_existing_lima_instance(lima: &LimaConfig) -> bool {
+        let mut cmd = lima.lima_command();
+        cmd.args(["start", lima.instance]);
+        let label = format!("lima-start-{}", lima.instance);
+        build_helpers::run_command_streaming(&mut cmd, &label).success
+    }
+
+    /// Force-delete an instance (stops it first if running). Best-effort: a
+    /// failure is logged but not fatal, since the following create is what
+    /// determines success.
+    fn delete_lima_instance(lima: &LimaConfig) {
+        let mut cmd = lima.lima_command();
+        cmd.args(["delete", "--force", lima.instance]);
+        let label = format!("lima-delete-{}", lima.instance);
+        if !build_helpers::run_command_streaming(&mut cmd, &label).success {
+            println!(
+                "cargo:warning=Failed to delete Lima {} instance; recreate may fail",
+                lima.instance
+            );
+        }
+    }
+
+    /// Create and start a fresh instance. A successful `limactl start` only
+    /// returns once Lima has seen the guest come up, so the result needs no
+    /// extra reachability probe.
+    fn create_lima_instance(lima: &LimaConfig, template: &str, arch: Option<&str>) -> bool {
+        println!(
+            "cargo:warning=Creating Lima {} instance with {} (this may take a few minutes on first run)...",
+            lima.instance, template
+        );
+        let name_flag = format!("--name={}", lima.instance);
+        let mut cmd = lima.lima_command();
+        cmd.args([
+            "start",
+            &name_flag,
+            "--tty=false",
+            "--mount-writable",
+            "--containerd=none",
+            "--memory=12",
+        ]);
+        if let Some(a) = arch {
+            cmd.arg(format!("--arch={}", a));
+        }
+        cmd.arg(template);
+        let label = format!("lima-create-{}", lima.instance);
+        build_helpers::run_command_streaming(&mut cmd, &label).success
     }
 
     // -----------------------------------------------------------------------
