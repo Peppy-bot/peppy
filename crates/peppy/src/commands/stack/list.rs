@@ -2,16 +2,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::commands::{CALLER_INSTANCE_ID, health_label};
+use crate::context::AppContext;
+use crate::error::{Error, Result};
 use config::runtime::SlotBinding;
 use core_node_api::encoding::StackListRequest;
 use core_node_api::{
     InstanceState, SerializedEdge, SerializedInstance, SerializedNode, SerializedNodeGraph,
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-use crate::commands::{CALLER_INSTANCE_ID, health_label};
-use crate::context::AppContext;
-use crate::error::{Error, Result};
 
 use peppylib::core_node::transport::poll_stack_list;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -159,83 +157,11 @@ use super::colors::{
     BINDING_COLOR, COUNT_COLOR, HEALTH_HEALTHY_COLOR, HEALTH_UNHEALTHY_COLOR, INSTANCE_COLOR,
     NODE_COLOR, STATUS_RUNNING_COLOR, STATUS_STARTING_COLOR, paint,
 };
-
-/// Terminal display width of a cell. Column widths, box-drawing borders, and
-/// cell padding must all measure the same way or the table skews on non-ASCII
-/// content — a wide CJK glyph or a Unicode path in the `PATH` column counts as
-/// more bytes than display columns, and a combining mark as fewer. Routing
-/// every measurement through this keeps the three in agreement.
-///
-/// ANSI SGR escapes (the color codes `paint` injects) occupy zero display
-/// columns, so they are skipped here; otherwise a colored cell would measure
-/// wider than its plain text and skew the box against the borders.
-fn col_width(s: &str) -> usize {
-    if !s.as_bytes().contains(&0x1b) {
-        return UnicodeWidthStr::width(s);
-    }
-    let mut width = 0;
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            skip_csi(&mut chars);
-        } else {
-            width += UnicodeWidthChar::width(c).unwrap_or(0);
-        }
-    }
-    width
-}
-
-/// Advances past a CSI escape sequence whose leading `\x1b` has already been
-/// consumed: an optional `[` introducer, then bytes up to and including a final
-/// byte in `@`..=`~`. The `[` itself falls in that range, so it must be skipped
-/// first or the scan would stop one char too early. Shared by [`col_width`]
-/// (which measures around the codes) and the tests' `strip_ansi` (which drops
-/// them) so the two never disagree on what an escape sequence is.
-fn skip_csi(chars: &mut std::str::Chars<'_>) {
-    if chars.clone().next() == Some('[') {
-        chars.next();
-    }
-    for f in chars.by_ref() {
-        if ('@'..='~').contains(&f) {
-            break;
-        }
-    }
-}
+use super::table::render_table;
 
 /// Column headers kept in one place so widths stay consistent between the
 /// separator and data rows.
 const HEADERS: [&str; 4] = ["NODE", "STAGE", "INSTANCES", "PATH"];
-
-/// Renders a box-drawing table from a header row and one or more row blocks. A
-/// horizontal rule separates consecutive blocks, so the nodes table passes a
-/// single block (no internal rules) and the bindings table one block per node
-/// group. Column widths are measured across every cell with `col_width`, which
-/// strips ANSI so a colored cell aligns with its plain text.
-fn render_table(out: &mut String, headers: &[&str], blocks: &[Vec<Vec<String>>]) {
-    use std::fmt::Write as _;
-
-    let mut widths: Vec<usize> = headers.iter().copied().map(col_width).collect();
-    for row in blocks.iter().flatten() {
-        for (i, cell) in row.iter().enumerate() {
-            widths[i] = widths[i].max(col_width(cell));
-        }
-    }
-
-    write_border(out, &widths, '┌', '┬', '┐');
-    let header_row: Vec<String> = headers.iter().copied().map(String::from).collect();
-    write_row(out, &header_row, &widths);
-    write_border(out, &widths, '├', '┼', '┤');
-    for (block_idx, block) in blocks.iter().enumerate() {
-        if block_idx > 0 {
-            write_border(out, &widths, '├', '┼', '┤');
-        }
-        for row in block {
-            write_row(out, row, &widths);
-        }
-    }
-    write_border(out, &widths, '└', '┴', '┘');
-    let _ = writeln!(out);
-}
 
 fn render_nodes_table(out: &mut String, nodes: &[SerializedNode], colorize: bool) {
     let rows: Vec<Vec<String>> = nodes
@@ -365,31 +291,6 @@ fn format_slot_binding(binding: &SlotBinding) -> String {
     }
 }
 
-fn write_border(out: &mut String, widths: &[usize], left: char, sep: char, right: char) {
-    use std::fmt::Write as _;
-    let _ = write!(out, "{}", left);
-    for (i, w) in widths.iter().enumerate() {
-        for _ in 0..(w + 2) {
-            let _ = write!(out, "─");
-        }
-        let _ = write!(out, "{}", if i + 1 == widths.len() { right } else { sep });
-    }
-    let _ = writeln!(out);
-}
-
-fn write_row(out: &mut String, cells: &[String], widths: &[usize]) {
-    use std::fmt::Write as _;
-    let _ = write!(out, "│");
-    for (cell, w) in cells.iter().zip(widths.iter()) {
-        // Pad by display columns, not `char` count: `{:<width$}` would
-        // mis-pad wide/zero-width glyphs and skew the box against the
-        // `col_width`-based widths and borders.
-        let pad = w.saturating_sub(col_width(cell));
-        let _ = write!(out, " {}{} │", cell, " ".repeat(pad));
-    }
-    let _ = writeln!(out);
-}
-
 /// Compact per-node instance summary. Detailed per-instance info is
 /// intentionally deferred to `peppy node info` — the list view is meant to
 /// fit one node per row.
@@ -458,8 +359,10 @@ fn shorten_home_with(path: &str, home: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::table::skip_csi;
     use super::*;
     use core_node_api::{NodeStage, SerializedInstance};
+    use unicode_width::UnicodeWidthStr;
 
     fn node(
         name: &str,
