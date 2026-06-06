@@ -36,6 +36,14 @@ impl Message {
     pub fn link_id(&self) -> &str {
         self.0.link_id()
     }
+
+    /// Producer-stamped send time in nanoseconds since the Unix epoch, when the
+    /// transport carried one (Zenoh source timestamp with timestamping enabled).
+    /// `None` for the mock adapter, service-reply paths, or when timestamping is
+    /// disabled. Used by `peppy stack benchmark` to compute delivery latency.
+    pub fn source_timestamp_nanos(&self) -> Option<u64> {
+        self.0.source_timestamp_nanos()
+    }
 }
 
 impl From<pmi::TopicMessage> for Message {

@@ -1,0 +1,187 @@
+---
+title: Stack benchmark
+description: Measure the messaging latency of every interface in your running stack
+sidebar:
+  order: 12
+---
+
+`peppy stack benchmark` reports the **latency** of the topics, services, and
+actions that wire each node to its dependencies, measured against the
+**already-running** stack. It prints a per-interface table of p50 / p90 / mean so
+you can see, edge by edge, how much the messaging layer adds.
+
+It covers **both** ways a node can depend on another:
+
+- **direct** dependencies (`depends_on.nodes`), drawn with a light arrow `→`; and
+- dependencies resolved through **interface conformance** (`depends_on.interfaces`
+  matched by a producer's `interfaces.conforms_to`), drawn with a heavy arrow `➔`.
+  See [Interface conformance](/advanced_guides/interface_conformance/).
+
+Use it to answer questions like "is this service round-trip as fast as I expect?",
+"how long does a frame take to reach its consumer?", or "did my last change make a
+hot path slower?" (each run is compared against the previous run on the same
+machine).
+
+## Running it
+
+The daemon must be running with a launched stack (see
+[Core node functions](/advanced_guides/core_node_functions/)).
+
+```shell
+# Benchmark every dependency edge with the defaults (200 samples, 20 warmup).
+peppy stack benchmark
+
+# Tune the sample counts and per-sample timeout.
+peppy stack benchmark --samples 500 --warmup 50 --per-sample-timeout-ms 1000
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--samples` | `200` | Timed samples per interface, after warmup. |
+| `--warmup` | `20` | Warmup samples per interface, discarded before measuring. |
+| `--per-sample-timeout-ms` | `2000` | Per-sample probe/observe timeout. |
+
+## Reading the table
+
+One row is emitted **per consumed artifact** (each topic, service, or action a
+consumer is wired to), so a node that consumes the same producer as both a topic
+and a service gets one row for each. The `edge` and `binding` columns together
+keep rows distinct even when several share a producer.
+
+```
+┌──────────────────┬──────────┬───────────┬───────────┬────────┬────────┬────────┬─────┬──────┬────────────────────┐
+│ edge             │ binding  │ measure   │ clock     │ p50    │ p90    │ mean   │ n   │ Δp50 │ note               │
+├──────────────────┼──────────┼───────────┼───────────┼────────┼────────┼────────┼─────┼──────┼────────────────────┤
+│ brain:v1         │ left_arm │ act-probe │ —         │ 240µs  │ 310µs  │ 255µs  │ 200 │ —    │ payload 32B → 16B  │
+│ → arm:v1         │          │           │           │        │        │        │     │      │                    │
+│   /move_arm      │          │           │           │        │        │        │     │      │                    │
+│ brain:v1         │ camera   │ delivery  │ same-host │ 1.20ms │ 1.80ms │ 1.31ms │ 200 │ —    │ camera:v1          │
+│ ➔ camera_mock:v1 │          │           │           │        │        │        │     │      │                    │
+│   /frames        │          │           │           │        │        │        │     │      │                    │
+│ brain:v1         │ camera   │ svc-probe │ —         │ 180µs  │ 220µs  │ 191µs  │ 200 │ —    │ camera:v1; payload │
+│ ➔ camera_mock:v1 │          │           │           │        │        │        │     │      │ 0B → ≥32B          │
+│   /frame_info    │          │           │           │        │        │        │     │      │                    │
+└──────────────────┴──────────┴───────────┴───────────┴────────┴────────┴────────┴─────┴──────┴────────────────────┘
+```
+
+- **edge**: the dependency, wrapped over three lines: the **consumer**, then the
+  kind arrow + **producer**, then the consumed `/interface` (topic, service, or
+  action name). `→` is a direct `depends_on.nodes` edge; `➔` is one resolved
+  through interface conformance (the `note` names the interface).
+- **binding**: the dependency binding (`link_id`) this edge was measured through.
+  A node can consume the same interface from one producer via several bindings;
+  this column tells those rows apart.
+- **measure**: how the row was measured, color-coded in the terminal for a quick
+  scan: **svc-probe** (service round-trip, blue), **act-probe** (action
+  round-trip, magenta), and **delivery** (live topic traffic, green). What each
+  one measures is detailed below.
+- **clock**: clock-alignment confidence for one-way topic delivery (`—` for
+  round-trip probe rows, which need no clock alignment).
+- **p50 / p90 / mean**: the latency distribution, in ns / µs / ms.
+- **n**: how many samples were collected (an unreachable or idle edge shows `0`).
+- **Δp50**: change in the median versus the previous run **on this machine**
+  (baselines are machine-local, so numbers are never compared across machines).
+- **note**: for `➔` rows, the interface the edge was resolved through; for
+  `svc/act-probe` rows, the measured payload sizes (see
+  [Payload sizing](#payload-sizing)); plus any diagnostic (e.g. a suppressed
+  cross-host value, or a topic with no live traffic).
+
+A legend repeating all of this prints beneath the table:
+
+```
+Legend:
+  edge       →  direct dependency (depends_on.nodes)
+             ➔  resolved through interface conformance (the note names the interface)
+  measure    svc-probe  round-trip to a service, real-payload-sized (handler NOT run)
+             act-probe  round-trip to an action's goal service (no goal is created)
+             delivery   real producer→consumer latency on live traffic
+  binding    the dependency binding this edge was measured through; a node can
+             consume the same interface from one producer via several bindings
+  clock      same-host  exact (producer shares this host's clock)
+             corrected  cross-host, adjusted via the producer's measured offset
+             flagged    implausible delta, suppressed (deploy PTP/NTP)
+  note       the interface (➔ edges) and, for svc/act-probe, the measured
+             payload sizes (request → response; `≥` = schema lower bound)
+  Δp50       median vs the previous run on this machine
+
+Benchmarking never triggers a real handler or creates a goal.
+```
+
+## What each metric means (and what it does not)
+
+- **`svc-probe` / `act-probe` (services and actions)**: the round-trip time of a
+  framework **probe** to the endpoint: caller → router → producer → framework
+  reply → back. The probe carries a **real-payload-sized** request and asks the
+  producer to reply with a real-payload-sized body, so the round-trip reflects
+  real serialization and transport. But the framework answers it **before** your
+  handler runs, so it **excludes the handler's own execution time** (and probing
+  an action's goal service **does not create a goal**). It is clock-independent (a
+  single-clock round-trip), so it is trustworthy regardless of host or clock sync.
+- **`delivery` (topics)**: the **real** producer → consumer one-way delivery
+  latency on live traffic (`receive_time − source_time`). This is observe-only:
+  the benchmark subscribes to the producer's actual stream and times real
+  messages, so for a camera it reflects the cost of moving a full frame, not a
+  token-sized probe. It is **exact when the producer and the core node share a
+  host**. Across hosts it depends on clock synchronization (see below).
+
+Because these measure different things, comparing them directly is apples to
+oranges: a one-way `delivery` row carrying a multi-megabyte frame can easily read
+higher than a round-trip `act-probe` carrying a few bytes, because the probe
+deliberately excludes the handler and carries only a real-payload-*sized* body,
+while delivery carries the real, full message.
+
+### Payload sizing
+
+`svc/act-probe` rows note the payload they measured in a `payload request →
+response` form (for example `payload 32B → 16B`), sized from the interface's
+message schema:
+
+- A `≥` prefix (e.g. `≥32B`) marks a **schema lower bound**: the format has a
+  variable-length field (a string, bytes, or unbounded array), so the real message
+  is at least that big.
+- `payload 0B → …` means the request side carries no schema fields (the probe
+  still sends a tiny framing header on the wire).
+
+If a row adds **`(rebuild producer for sized replies)`**, the producer node never
+returned the requested response size, because it is built against a framework
+version that predates sized probes, so its response side wasn't really measured. Rebuild
+that producer node and re-run. (The daemon and CLI versions don't matter for this;
+it's keyed off the *producer node's* framework version.)
+
+## Clocks and cross-host timing
+
+One-way **topic delivery** is the only measurement that depends on clocks:
+
+- **Same host**: `receive − source` is exact. The `clock` column reads
+  `same-host`.
+- **Multiple hosts**: the two hosts' clock offset can equal or exceed
+  sub-millisecond latencies. The benchmark handles this in layers:
+  - With **PTP** (gPTP / IEEE-1588) deployed on your network, the system clocks
+    are disciplined to each other and cross-host numbers are trustworthy with no
+    extra work, so peppy benefits transparently.
+  - Otherwise, the benchmark asks each producer for its measured offset to the
+    core node (an NTP-style exchange) and **corrects** the number. The `clock`
+    column reads `corrected`. Accuracy is roughly the LAN sync asymmetry (tens of
+    µs to sub-ms); running NTP/chrony keeps this bounded.
+  - If a corrected delta still comes back **negative or implausibly large**, the
+    clocks are not adequately synchronized: the number is **suppressed** and the
+    `clock` column reads `flagged`. Rely on the round-trip probe rows for that
+    edge, and deploy PTP or NTP.
+
+The round-trip probe rows never depend on clocks, so they are always reported.
+
+## Safety: benchmarking never triggers your handlers
+
+A benchmark message can **never** run the real handler of any topic, service, or
+action, by construction:
+
+- Services and actions are measured only with framework **probe** queries, which
+  the framework auto-answers, so your service handler is never called, and probing
+  an action's goal service **does not create a goal** or start the action engine.
+  The probe carries a real-payload-sized body purely to size the transport; the
+  framework reads only its small size header to shape the reply and never decodes
+  the body into a request or passes it to your handler.
+- Real topic latency is **observe-only**: the benchmark subscribes but never
+  publishes onto a real topic.
+
+So you can safely benchmark a live, production stack without side effects.

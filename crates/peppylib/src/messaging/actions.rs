@@ -409,6 +409,55 @@ impl ActionMessenger {
         }
     }
 
+    /// Measure the round-trip latency of a single `Probe`-kind query to an
+    /// action's **goal service** (actions are built on the goal/cancel/result
+    /// services). As with [`Self::is_reachable`], the probe is auto-handled by
+    /// the shared service request loop, so **no `PendingGoal` is created and the
+    /// action engine never runs** — this measures only the messaging/routing
+    /// path. Clock-independent (single-clock round-trip).
+    ///
+    /// `request_size`/`response_size` make the probe carry a real-payload-sized
+    /// goal body and ask the producer to reply with `response_size` bytes (the
+    /// goal request/response sizes), so the round-trip reflects real-sized
+    /// messages — still without creating a goal or running the action. A
+    /// producer built before sized probes replies empty (returned size 0).
+    ///
+    /// Returns `(elapsed, response_bytes_received)` on a clean reply; propagates
+    /// the error otherwise.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn probe_latency(
+        messenger: &MessengerHandle,
+        bound_core_node: &str,
+        as_instance_id: &str,
+        to_target: SenderTarget,
+        to_action_name: &str,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
+        response_timeout: Duration,
+        request_size: usize,
+        response_size: u32,
+    ) -> Result<(Duration, usize)> {
+        let sender = ActionWireSender::new(
+            bound_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
+            to_target,
+            to_action_name,
+        )?;
+        let request = super::probe::build_sized_probe_request(request_size, response_size);
+        let started = Instant::now();
+        let reply = messenger
+            .poll_service(
+                &sender.goal_service(),
+                request,
+                ServiceQueryKind::Probe,
+                response_timeout,
+            )
+            .await?;
+        Ok((started.elapsed(), reply.payload().as_ref().len()))
+    }
+
     /// Send a goal to an action server. Generates a fresh `goal_id`,
     /// wraps `user_payload` in the per-goal envelope, subscribes to the
     /// matching feedback topic, and polls the goal service.

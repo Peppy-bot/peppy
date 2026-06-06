@@ -1,0 +1,55 @@
+name: Latency
+
+# Mirrors docs-drift.yml: runs only for the release PR that merges `dev` into
+# `main`. The base-branch filter restricts to PRs targeting `main`; the
+# job-level `if` further restricts the head to `dev`, so routine PRs into `dev`
+# (and any PR into other branches) never trigger these heavy real-node tests.
+# The latency tests are `#[ignore]` by default, so the normal `cargo test`
+# step in tests.yml never runs them — they run only here, via `--ignored`.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [ main ]
+
+concurrency:
+  group: latency-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  latency:
+    if: github.head_ref == 'dev'
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      pull-requests: read
+    # p50 (median) ceilings come from ceiling_ms() in tests/latency/harness.rs
+    # (the single source of truth). If this runner is slower than a dev box and trips a
+    # ceiling on jitter, loosen per scenario here without a code change, e.g.:
+    #   env:
+    #     PEPPY_LATENCY_MAX_MS_RUST_TOPIC: "10"
+    #     PEPPY_LATENCY_MAX_MS_PYTHON_SERVICE: "20"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          # This job only checks out and runs the code; no step needs the
+          # runner's git credentials, so don't leave the token in .git/config.
+          persist-credentials: false
+
+      # The guard asserts the MEDIAN against generous ceilings, so it does not
+      # flake on ordinary jitter. The *absolute* numbers, however, swing with CPU
+      # turbo frequency and shared-host load — both environmental, not code. To
+      # get tight, trustworthy numbers (and to allow tighter ceilings), set up the
+      # runner for a stable clock (needs root; the test does not do this itself):
+      #   - performance governor:  cpupower frequency-set -g performance
+      #   - disable turbo:         echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
+      #   - reserve cores:         boot with isolcpus=<cores>, then run the test under
+      #                            taskset -c <cores> on an otherwise-idle box
+      # The Python responder scenarios need `uv`; set PEPPY_LATENCY_SKIP_PYTHON=1
+      # on the runner (or here) to run only the Rust scenarios if it is absent.
+      - name: Roundtrip latency threshold tests (real nodes)
+        run: cargo test -p core-node --test latency -- --ignored --test-threads 1 --nocapture

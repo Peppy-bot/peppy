@@ -10,7 +10,10 @@ pub use entity::{
 
 use crate::error::{Error, Result};
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
-use config::node::{Name, NodeConfig, collect_dependency_specs, validate_dependency_specs};
+use config::node::{
+    Name, NodeConfig, collect_dependency_specs, collect_interface_conformance_edges,
+    validate_dependency_specs,
+};
 use core_node_api::{InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph};
 use names_generator2::get_random;
 use parking_lot::RwLock;
@@ -631,13 +634,14 @@ impl NodeStackInner {
         // cannot drift apart.
         let serialize_entity = |entity: &NodeEntity| SerializedNode::from(entity);
 
-        let nodes = self
+        let nodes: Vec<SerializedNode> = self
             .graph
             .node_weights()
             .map(|handle| serialize_entity(&handle.read()))
             .collect();
 
-        let edges = self
+        // Direct `depends_on.nodes` edges, taken straight from the DAG.
+        let mut edges: Vec<SerializedEdge> = self
             .graph
             .edge_indices()
             .filter_map(|edge_idx| {
@@ -647,9 +651,38 @@ impl NodeStackInner {
                 Some(SerializedEdge {
                     from: serialize_entity(&src_handle.read()),
                     to: serialize_entity(&dst_handle.read()),
+                    via_interface: None,
                 })
             })
             .collect();
+
+        // Interface-conformance edges (`depends_on.interfaces` → a `conforms_to`
+        // provider) are deliberately kept out of the DAG so they never constrain
+        // launch ordering, but they are real dependencies — surface them in the
+        // display graph, annotated with the interface they route through.
+        let configs: Vec<NodeConfig> = self
+            .graph
+            .node_weights()
+            .map(|handle| handle.read().config().clone())
+            .collect();
+        let config_refs: Vec<&NodeConfig> = configs.iter().collect();
+        let node_by_key: HashMap<(&str, &str), &SerializedNode> = nodes
+            .iter()
+            .map(|n| ((n.name.as_str(), n.tag.as_str()), n))
+            .collect();
+        for edge in collect_interface_conformance_edges(&config_refs) {
+            let (Some(from), Some(to)) = (
+                node_by_key.get(&(edge.consumer_name.as_str(), edge.consumer_tag.as_str())),
+                node_by_key.get(&(edge.provider_name.as_str(), edge.provider_tag.as_str())),
+            ) else {
+                continue;
+            };
+            edges.push(SerializedEdge {
+                from: (*from).clone(),
+                to: (*to).clone(),
+                via_interface: Some(format!("{}:{}", edge.interface_name, edge.interface_tag)),
+            });
+        }
 
         SerializedNodeGraph { nodes, edges }
     }

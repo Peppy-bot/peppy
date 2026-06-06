@@ -18,6 +18,7 @@ pub const DATASTORE_REMOVE: &str = "datastore_remove";
 pub const STACK_LAUNCH_ACTION: &str = "stack_launch";
 pub const STACK_RESET: &str = "stack_reset";
 pub const STACK_LIST: &str = "stack_list";
+pub const STACK_BENCHMARK_ACTION: &str = "stack_benchmark";
 
 pub const NODE_ADD_ACTION: &str = "node_add";
 pub const NODE_BUILD_ACTION: &str = "node_build";

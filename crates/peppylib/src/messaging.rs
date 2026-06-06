@@ -3,6 +3,7 @@ mod tests;
 
 mod actions;
 mod discovery;
+mod probe;
 mod services;
 mod topics;
 
@@ -56,6 +57,11 @@ use tokio::{
 pub const NODE_HEALTH_SERVICE: &str = "node_health";
 pub const NODE_READY_SERVICE: &str = "node_ready";
 pub const SHUTDOWN_SERVICE: &str = "shutdown";
+/// Framework service every node exposes: on request, the node performs a clock
+/// exchange against the core node and reports its measured offset. Used by
+/// `peppy stack benchmark` to normalize cross-host producer timestamps. Like
+/// `node_health`, this triggers no user code.
+pub const CLOCK_OFFSET_SERVICE: &str = "clock_offset";
 
 /// Timeout for reachability probes sent by `is_reachable`.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);

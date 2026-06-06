@@ -10,6 +10,7 @@ use crate::error::{Error, Result};
 use crate::runtime::TaskHandle;
 use crate::runtime::node_runner::NodeRunner;
 use crate::runtime::processor::Processor;
+use crate::services::clock_offset::listen_for_clock_offset;
 use crate::services::health::listen_for_node_health;
 use crate::services::ready::listen_for_node_ready;
 use crate::services::shutdown::listen_for_shutdown;
@@ -474,11 +475,22 @@ async fn run_post_setup_services(
         node_runner.messenger(),
         processor.bound_core_node(),
         processor.bound_instance_id(),
-        as_identity,
+        as_identity.clone(),
     )
     .await?;
 
-    let handles = vec![ready_handle, health_handle, shutdown_handle];
+    // `clock_offset` lets `peppy stack benchmark` read this node's measured
+    // offset to the core node to normalize cross-host topic timestamps. It runs
+    // an on-demand clock exchange; no user code is involved.
+    let clock_offset_handle =
+        listen_for_clock_offset(Arc::clone(&node_runner), as_identity).await?;
+
+    let handles = vec![
+        ready_handle,
+        health_handle,
+        clock_offset_handle,
+        shutdown_handle,
+    ];
 
     tokio::select! {
         result = wait_for_handles(handles) => {

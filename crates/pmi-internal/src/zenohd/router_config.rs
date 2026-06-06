@@ -15,6 +15,10 @@ use std::path::PathBuf;
         "endpoints": {
             "router": ["{{ protocol }}/{{ host }}:{{ port }}"]
         }
+    },
+    "timestamping": {
+        "enabled": { "router": true },
+        "drop_future_timestamp": false
     }
 }"#,
     ext = "txt"

@@ -87,6 +87,67 @@ impl ClockResponse {
     }
 }
 
+/// Request to a node's `clock_offset` service. Empty on the wire — the node
+/// performs the NTP exchange against the core node on receipt.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClockOffsetRequest;
+
+impl ClockOffsetRequest {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        builder.init_root::<clock_capnp::clock_offset_request::Builder>();
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        reader.get_root::<clock_capnp::clock_offset_request::Reader>()?;
+        Ok(Self)
+    }
+}
+
+/// A node's measured clock offset relative to the core node, from an NTP-style
+/// exchange. `offset_ns` is signed (`node_local + offset_ns ≈ core_node_time`);
+/// `round_trip_delay_ns` is the measured RTT, used to bound the offset's
+/// accuracy and self-diagnose low-confidence corrections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockOffsetResponse {
+    pub offset_ns: i64,
+    pub round_trip_delay_ns: u64,
+}
+
+impl ClockOffsetResponse {
+    pub fn new(offset_ns: i64, round_trip_delay_ns: u64) -> Self {
+        Self {
+            offset_ns,
+            round_trip_delay_ns,
+        }
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut response = builder.init_root::<clock_capnp::clock_offset_response::Builder>();
+            response.set_offset_ns(self.offset_ns);
+            response.set_round_trip_delay_ns(self.round_trip_delay_ns);
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let response = reader.get_root::<clock_capnp::clock_offset_response::Reader>()?;
+        Ok(Self {
+            offset_ns: response.get_offset_ns(),
+            round_trip_delay_ns: response.get_round_trip_delay_ns(),
+        })
+    }
+}
+
 /// One-way snapshot tick published on the `clock` topic. Use [`ClockResponse`]
 /// (the request/response service) when you need to bound the staleness with an
 /// NTP-style round-trip exchange.
@@ -115,5 +176,27 @@ impl ClockTick {
         Ok(Self {
             time: tick.get_time(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_offset_request_roundtrips() {
+        let req = ClockOffsetRequest::new();
+        let bytes = req.encode().expect("encode");
+        assert_eq!(ClockOffsetRequest::decode(&bytes).expect("decode"), req);
+    }
+
+    #[test]
+    fn clock_offset_response_roundtrips_positive_and_negative() {
+        for offset in [0i64, 1_234_567, -987_654] {
+            let resp = ClockOffsetResponse::new(offset, 42_000);
+            let bytes = resp.encode().expect("encode");
+            let decoded = ClockOffsetResponse::decode(&bytes).expect("decode");
+            assert_eq!(decoded, resp);
+        }
     }
 }
