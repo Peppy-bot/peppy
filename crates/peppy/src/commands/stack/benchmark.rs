@@ -344,9 +344,9 @@ fn display_rows(
                 .via_interface
                 .as_deref()
                 .map(|i| paint(colorize, NODE_COLOR, i));
-            let note = match (&iface, &row.note) {
+            let note = match (iface, &row.note) {
                 (Some(iface), Some(n)) => format!("{iface}; {n}"),
-                (Some(iface), None) => iface.clone(),
+                (Some(iface), None) => iface,
                 (None, Some(n)) => n.clone(),
                 (None, None) => String::new(),
             };
