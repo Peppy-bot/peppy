@@ -954,7 +954,17 @@ async fn measure_topic_delivery(
         match tokio::time::timeout(per_sample_timeout, subscription.on_next_message()).await {
             Ok(Some(msg)) => {
                 let Some(src) = msg.source_timestamp_nanos() else {
+                    // No timestamp to measure against, but still advance
+                    // progress like any other observed message (respecting
+                    // warmup) so a continuous stream of timestamp-less messages
+                    // can't spin forever — the loop terminates once `measured`
+                    // reaches `samples`. Only valid samples reach `out`, so the
+                    // reported count/percentiles stay clean.
                     had_missing_ts = true;
+                    seen += 1;
+                    if seen > warmup {
+                        measured += 1;
+                    }
                     continue;
                 };
                 seen += 1;
