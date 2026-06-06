@@ -17,13 +17,15 @@
 //! `peppy stack benchmark` via the `latency-report` crate.
 //!
 //! Run with:
-//!     cargo bench -p generator --bench latency
-//!     cargo bench -p generator --bench latency -- rust    # filter scenarios
+//!     cargo bench -p core-node --bench latency
+//!     cargo bench -p core-node --bench latency -- rust    # filter scenarios
 //! Set PEPPY_LATENCY_SKIP_PYTHON=1 to skip the Python responder (no `uv`).
 
 #[path = "../tests/latency/harness.rs"]
 mod harness;
-#[path = "../tests/helpers.rs"]
+// Codegen + build + spawn scaffolding stays with the generator's codegen tests
+// (see tests/latency.rs for the rationale); reached cross-crate.
+#[path = "../../generator-internal/tests/helpers.rs"]
 mod helpers;
 
 use std::time::Duration;

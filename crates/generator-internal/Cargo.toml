@@ -27,22 +27,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 bytes = "1"
 config = { path = "../config-internal", features = ["test_helpers"] }
 pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
-latency-report = { path = "../latency-report" }
 serde_json5 = "0.2.1"
 tempfile = "3.10"
 peppylib = { path = "../peppylib" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-
-# Roundtrip latency benchmark: spins up two real peppy nodes (a Rust driver +
-# a Rust or Python responder), measures topic/service roundtrip latency, and
-# prints a summary table comparing the median (p50) against the previous run on
-# this machine.
-# Self-contained (no libtest harness); run with:
-#   cargo bench -p generator --bench latency
-# The matching threshold guard lives in tests/latency.rs (ignored by default).
-[[bench]]
-name = "latency"
-harness = false
-# Keep `cargo test` from building/running this bench (it spawns real nodes); it
-# is exercised only by `cargo bench` and the dedicated dev->main latency.yml.
-test = false

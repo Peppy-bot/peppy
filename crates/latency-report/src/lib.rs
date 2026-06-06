@@ -1,7 +1,7 @@
 //! Shared latency-reporting utilities.
 //!
 //! These pieces were originally private to the offline latency benchmark
-//! (`generator-internal/benches/latency.rs`). They are factored out here so the
+//! (`core-node-internal/benches/latency.rs`). They are factored out here so the
 //! offline bench and the live `peppy stack benchmark` command compute and render
 //! latency the same way, from a single source of truth.
 //!

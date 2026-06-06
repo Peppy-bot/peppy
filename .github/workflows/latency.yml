@@ -52,4 +52,4 @@ jobs:
       # The Python responder scenarios need `uv`; set PEPPY_LATENCY_SKIP_PYTHON=1
       # on the runner (or here) to run only the Rust scenarios if it is absent.
       - name: Roundtrip latency threshold tests (real nodes)
-        run: cargo test -p generator --test latency -- --ignored --test-threads 1 --nocapture
+        run: cargo test -p core-node --test latency -- --ignored --test-threads 1 --nocapture

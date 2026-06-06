@@ -14,7 +14,7 @@
 //! These tests are `#[ignore]` by default (they spawn node processes and build
 //! Rust/Python projects); they run only in the dedicated `dev` -> `main`
 //! `latency.yml` workflow. Run locally with:
-//!     cargo test -p generator --test latency -- --ignored --test-threads 1
+//!     cargo test -p core-node --test latency -- --ignored --test-threads 1
 //!
 //! Ceilings are env-overridable (`PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>`) and
 //! the Python scenarios can be skipped where `uv` is unavailable
@@ -22,6 +22,12 @@
 
 #[path = "latency/harness.rs"]
 mod harness;
+// The node codegen + build + spawn scaffolding lives with the generator's own
+// codegen tests (`rust.rs` / `python.rs` include the same file), so it has to
+// stay in generator-internal. The latency harness reaches it cross-crate
+// instead of duplicating ~500 lines; `#[allow(dead_code)]` at its top tolerates
+// each consumer using only a subset.
+#[path = "../../generator-internal/tests/helpers.rs"]
 mod helpers;
 
 use std::time::Duration;
