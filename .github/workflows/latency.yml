@@ -25,8 +25,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    # p90 ceilings come from ceiling_ms() in tests/latency/harness.rs (the single
-    # source of truth). If this runner is slower than a dev box and trips a
+    # p50 (median) ceilings come from ceiling_ms() in tests/latency/harness.rs
+    # (the single source of truth). If this runner is slower than a dev box and trips a
     # ceiling on jitter, loosen per scenario here without a code change, e.g.:
     #   env:
     #     PEPPY_LATENCY_MAX_MS_RUST_TOPIC: "10"
