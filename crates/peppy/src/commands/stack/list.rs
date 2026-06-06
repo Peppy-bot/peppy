@@ -2,16 +2,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::commands::{CALLER_INSTANCE_ID, health_label};
+use crate::context::AppContext;
+use crate::error::{Error, Result};
 use config::runtime::SlotBinding;
 use core_node_api::encoding::StackListRequest;
 use core_node_api::{
     InstanceState, SerializedEdge, SerializedInstance, SerializedNode, SerializedNodeGraph,
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-use crate::commands::{CALLER_INSTANCE_ID, health_label};
-use crate::context::AppContext;
-use crate::error::{Error, Result};
 
 use peppylib::core_node::transport::poll_stack_list;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -128,11 +126,22 @@ pub fn format_stack_list(
         let _ = writeln!(out, "  (none)");
     } else {
         for edge in edges {
+            // An interface-conformance edge is annotated with the interface it
+            // routes through, so it reads distinctly from a direct node dep. The
+            // interface name is tinted the same as the node labels it relates.
+            let via = match &edge.via_interface {
+                Some(iface) => format!(
+                    " (via {} interface conformance)",
+                    paint(colorize, NODE_COLOR, iface)
+                ),
+                None => String::new(),
+            };
             let _ = writeln!(
                 out,
-                "  {} ➔ {}",
+                "  {} ➔ {}{}",
                 paint(colorize, NODE_COLOR, &edge.from.label()),
                 paint(colorize, NODE_COLOR, &edge.to.label()),
+                via,
             );
         }
     }
@@ -140,106 +149,19 @@ pub fn format_stack_list(
     out
 }
 
-// ANSI SGR codes used to tint the tables, applied only when `colorize` is set.
-// `col_width` strips these before measuring, so a colored cell occupies the
-// same display columns as its plain text and the box stays aligned.
-const NODE_COLOR: &str = "\x1b[36m"; // cyan — node labels
-const COUNT_COLOR: &str = "\x1b[32m"; // green — per-node instance counts
-const INSTANCE_COLOR: &str = "\x1b[35m"; // magenta — instance ids
-const BINDING_COLOR: &str = "\x1b[33m"; // yellow — slot bindings
-const STATUS_RUNNING_COLOR: &str = "\x1b[32m"; // green — a running instance
-const STATUS_STARTING_COLOR: &str = "\x1b[33m"; // yellow — a starting instance
-const HEALTH_HEALTHY_COLOR: &str = "\x1b[32m"; // green — a healthy instance
-const HEALTH_UNHEALTHY_COLOR: &str = "\x1b[31m"; // red — an unhealthy instance
-const RESET: &str = "\x1b[0m";
-
-/// Wraps `s` in `code`/reset when `colorize` is set, otherwise returns it
-/// unchanged. Empty input is left untouched so blank continuation cells don't
-/// carry dangling escape codes.
-fn paint(colorize: bool, code: &str, s: &str) -> String {
-    if colorize && !s.is_empty() {
-        format!("{code}{s}{RESET}")
-    } else {
-        s.to_string()
-    }
-}
-
-/// Terminal display width of a cell. Column widths, box-drawing borders, and
-/// cell padding must all measure the same way or the table skews on non-ASCII
-/// content — a wide CJK glyph or a Unicode path in the `PATH` column counts as
-/// more bytes than display columns, and a combining mark as fewer. Routing
-/// every measurement through this keeps the three in agreement.
-///
-/// ANSI SGR escapes (the color codes `paint` injects) occupy zero display
-/// columns, so they are skipped here; otherwise a colored cell would measure
-/// wider than its plain text and skew the box against the borders.
-fn col_width(s: &str) -> usize {
-    if !s.as_bytes().contains(&0x1b) {
-        return UnicodeWidthStr::width(s);
-    }
-    let mut width = 0;
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            skip_csi(&mut chars);
-        } else {
-            width += UnicodeWidthChar::width(c).unwrap_or(0);
-        }
-    }
-    width
-}
-
-/// Advances past a CSI escape sequence whose leading `\x1b` has already been
-/// consumed: an optional `[` introducer, then bytes up to and including a final
-/// byte in `@`..=`~`. The `[` itself falls in that range, so it must be skipped
-/// first or the scan would stop one char too early. Shared by [`col_width`]
-/// (which measures around the codes) and the tests' `strip_ansi` (which drops
-/// them) so the two never disagree on what an escape sequence is.
-fn skip_csi(chars: &mut std::str::Chars<'_>) {
-    if chars.clone().next() == Some('[') {
-        chars.next();
-    }
-    for f in chars.by_ref() {
-        if ('@'..='~').contains(&f) {
-            break;
-        }
-    }
-}
+// The tables are tinted with the shared `stack` color palette so `stack list`
+// and `stack benchmark` color the same things the same way. `col_width` strips
+// these codes before measuring, so a colored cell occupies the same display
+// columns as its plain text and the box stays aligned.
+use super::colors::{
+    BINDING_COLOR, COUNT_COLOR, HEALTH_HEALTHY_COLOR, HEALTH_UNHEALTHY_COLOR, INSTANCE_COLOR,
+    NODE_COLOR, STATUS_RUNNING_COLOR, STATUS_STARTING_COLOR, paint,
+};
+use super::table::render_table;
 
 /// Column headers kept in one place so widths stay consistent between the
 /// separator and data rows.
 const HEADERS: [&str; 4] = ["NODE", "STAGE", "INSTANCES", "PATH"];
-
-/// Renders a box-drawing table from a header row and one or more row blocks. A
-/// horizontal rule separates consecutive blocks, so the nodes table passes a
-/// single block (no internal rules) and the bindings table one block per node
-/// group. Column widths are measured across every cell with `col_width`, which
-/// strips ANSI so a colored cell aligns with its plain text.
-fn render_table(out: &mut String, headers: &[&str], blocks: &[Vec<Vec<String>>]) {
-    use std::fmt::Write as _;
-
-    let mut widths: Vec<usize> = headers.iter().copied().map(col_width).collect();
-    for row in blocks.iter().flatten() {
-        for (i, cell) in row.iter().enumerate() {
-            widths[i] = widths[i].max(col_width(cell));
-        }
-    }
-
-    write_border(out, &widths, '┌', '┬', '┐');
-    let header_row: Vec<String> = headers.iter().copied().map(String::from).collect();
-    write_row(out, &header_row, &widths);
-    write_border(out, &widths, '├', '┼', '┤');
-    for (block_idx, block) in blocks.iter().enumerate() {
-        if block_idx > 0 {
-            write_border(out, &widths, '├', '┼', '┤');
-        }
-        for row in block {
-            write_row(out, row, &widths);
-        }
-    }
-    write_border(out, &widths, '└', '┴', '┘');
-    let _ = writeln!(out);
-}
 
 fn render_nodes_table(out: &mut String, nodes: &[SerializedNode], colorize: bool) {
     let rows: Vec<Vec<String>> = nodes
@@ -369,31 +291,6 @@ fn format_slot_binding(binding: &SlotBinding) -> String {
     }
 }
 
-fn write_border(out: &mut String, widths: &[usize], left: char, sep: char, right: char) {
-    use std::fmt::Write as _;
-    let _ = write!(out, "{}", left);
-    for (i, w) in widths.iter().enumerate() {
-        for _ in 0..(w + 2) {
-            let _ = write!(out, "─");
-        }
-        let _ = write!(out, "{}", if i + 1 == widths.len() { right } else { sep });
-    }
-    let _ = writeln!(out);
-}
-
-fn write_row(out: &mut String, cells: &[String], widths: &[usize]) {
-    use std::fmt::Write as _;
-    let _ = write!(out, "│");
-    for (cell, w) in cells.iter().zip(widths.iter()) {
-        // Pad by display columns, not `char` count: `{:<width$}` would
-        // mis-pad wide/zero-width glyphs and skew the box against the
-        // `col_width`-based widths and borders.
-        let pad = w.saturating_sub(col_width(cell));
-        let _ = write!(out, " {}{} │", cell, " ".repeat(pad));
-    }
-    let _ = writeln!(out);
-}
-
 /// Compact per-node instance summary. Detailed per-instance info is
 /// intentionally deferred to `peppy node info` — the list view is meant to
 /// fit one node per row.
@@ -462,8 +359,10 @@ fn shorten_home_with(path: &str, home: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::table::skip_csi;
     use super::*;
     use core_node_api::{NodeStage, SerializedInstance};
+    use unicode_width::UnicodeWidthStr;
 
     fn node(
         name: &str,
@@ -585,11 +484,29 @@ mod tests {
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),
+            via_interface: None,
         }];
         let out = format_stack_list(&[from, to], &edges, false);
         assert!(
             out.contains("brain:v1 ➔ sensor:v1"),
             "edge line missing:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn interface_conformance_edge_renders_annotation() {
+        let consumer = node("brain", "v1", NodeStage::Ready, vec![]);
+        let provider = node("camera_mock", "v1", NodeStage::Ready, vec![]);
+        let edges = vec![SerializedEdge {
+            from: consumer.clone(),
+            to: provider.clone(),
+            via_interface: Some("uvc_camera:v1".to_string()),
+        }];
+        let out = format_stack_list(&[consumer, provider], &edges, false);
+        assert!(
+            out.contains("brain:v1 ➔ camera_mock:v1 (via uvc_camera:v1 interface conformance)"),
+            "interface-conformance edge annotation missing:\n{}",
             out
         );
     }
@@ -1032,6 +949,7 @@ mod tests {
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),
+            via_interface: None,
         }];
 
         let plain = format_stack_list(&nodes, &edges, false);

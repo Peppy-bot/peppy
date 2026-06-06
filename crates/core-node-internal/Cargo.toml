@@ -11,6 +11,7 @@ node-stack = { path = "../node-stack-internal" }
 peppylib = { path = "../peppylib" }
 core-node-api = { path = "../core-node-api" }
 generator = { path = "../generator-internal" }
+latency-report = { path = "../latency-report" }
 containers = { path = "../containers-internal" }
 bytes = "1.10"
 chrono = "0.4"
@@ -61,3 +62,18 @@ httptest = "0.16.3"
 
 [features]
 container_e2e = []
+
+# Roundtrip latency benchmark: spins up two real peppy nodes (a Rust driver +
+# a Rust or Python responder), measures topic/service roundtrip latency, and
+# prints a summary table comparing the median (p50) against the previous run on
+# this machine. The node codegen + build + spawn scaffolding is reused
+# cross-crate from generator-internal/tests/helpers.rs.
+# Self-contained (no libtest harness); run with:
+#   cargo bench -p core-node --bench latency
+# The matching threshold guard lives in tests/latency.rs (ignored by default).
+[[bench]]
+name = "latency"
+harness = false
+# Keep `cargo test` from building/running this bench (it spawns real nodes); it
+# is exercised only by `cargo bench` and the dedicated dev->main latency.yml.
+test = false

@@ -375,6 +375,15 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
             )
             .boxed(),
+            stack::listen_for_stack_benchmark(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
+            )
+            .boxed(),
             stack::listen_for_stack_reset(
                 &self.messenger,
                 core_node_name,
