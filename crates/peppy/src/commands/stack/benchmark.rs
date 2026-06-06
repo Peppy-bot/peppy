@@ -2,13 +2,12 @@
 //! action on the daemon and renders the per-interface latency table.
 //!
 //! What the numbers mean (and don't):
-//! - **service / action** rows are messaging-path *round-trips* to the endpoint,
-//!   excluding the handler's own execution time. Clock-independent.
+//! - **service / action** rows are messaging-path *round-trips* carrying a
+//!   real-payload-sized request/response, excluding the handler's own execution
+//!   time. Clock-independent.
 //! - **topic (delivery)** rows are the real producer→consumer one-way latency on
 //!   live traffic. Exact on a single host; cross-host needs PTP or NTP (the row's
 //!   `clock` column says how it was treated).
-//! - **topic (synthetic)** rows are a transport-path proxy on a reserved key —
-//!   not a real edge measurement. Clock-independent.
 //!
 //! Benchmarking never triggers a real handler or creates a goal.
 
@@ -48,33 +47,20 @@ pub fn benchmark(
     ctx: &Arc<AppContext>,
     samples: u32,
     warmup: u32,
-    include_synthetic_baseline: bool,
     per_sample_timeout_ms: u64,
 ) -> Result<()> {
-    crate::commands::block_on(benchmark_async(
-        ctx,
-        samples,
-        warmup,
-        include_synthetic_baseline,
-        per_sample_timeout_ms,
-    ))
+    crate::commands::block_on(benchmark_async(ctx, samples, warmup, per_sample_timeout_ms))
 }
 
 async fn benchmark_async(
     ctx: &Arc<AppContext>,
     samples: u32,
     warmup: u32,
-    include_synthetic_baseline: bool,
     per_sample_timeout_ms: u64,
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let goal = StackBenchmarkGoal::new(
-        samples,
-        warmup,
-        include_synthetic_baseline,
-        per_sample_timeout_ms,
-    );
+    let goal = StackBenchmarkGoal::new(samples, warmup, per_sample_timeout_ms);
 
     info!(
         "Benchmarking stack on daemon '{}' ({} samples, {} warmup per interface)",
@@ -193,12 +179,11 @@ fn measurement_label(kind: MeasurementKind) -> &'static str {
         MeasurementKind::ServiceProbe => "svc-probe",
         MeasurementKind::ActionProbe => "act-probe",
         MeasurementKind::TopicDelivery => "delivery",
-        MeasurementKind::TopicSynthetic => "synthetic",
     }
 }
 
 /// How wide the `note` column may grow before its text wraps to a new physical
-/// line within the box cell. Keeps a long note (the synthetic baseline detail)
+/// line within the box cell. Keeps a long note (e.g. a probe's payload summary)
 /// from widening the whole table on a narrow terminal.
 const NOTE_WRAP_COLS: usize = 18;
 
@@ -293,14 +278,15 @@ const BENCHMARK_LEGEND: &str = "\
 Legend:
   edge       →  direct dependency (depends_on.nodes)
              ➔  resolved through interface conformance — the note names the interface
-  measure    svc/act-probe  messaging round-trip (the handler is NOT run)
+  measure    svc/act-probe  real-payload-sized round-trip (the handler is NOT run)
              delivery       real producer→consumer latency on live traffic
-             synthetic      transport-path proxy on a reserved key
   binding    the dependency binding this edge was measured through; a node can
              consume the same interface from one producer via several bindings
   clock      same-host  exact (producer shares this host's clock)
              corrected  cross-host, adjusted via the producer's measured offset
              flagged    implausible delta, suppressed (deploy PTP/NTP)
+  note       the interface (➔ edges) and, for svc/act-probe, the measured
+             payload sizes (request → response; `≥` = schema lower bound)
   Δp50       median vs the previous run on this machine
 
 Benchmarking never triggers a real handler or creates a goal.";
@@ -328,8 +314,8 @@ fn display_rows(
             };
             // The `➔` arrow + legend already say "via interface conformance",
             // so the note only names the interface (tinted like the labels it
-            // relates), followed by any measurement diagnostic. Wrapped so a long
-            // note (the synthetic baseline detail) doesn't widen the whole table.
+            // relates), followed by any measurement diagnostic / payload summary.
+            // Wrapped so a long note doesn't widen the whole table.
             let iface = row
                 .via_interface
                 .as_deref()
@@ -395,7 +381,8 @@ mod tests {
     }
 
     /// Rows mirroring the real stack: a direct action edge, an interface-
-    /// conformance delivery edge, and its synthetic baseline (longest note).
+    /// conformance delivery edge, and an interface-conformance service-probe edge
+    /// whose payload note is long enough to exercise wrapping.
     fn sample_rows() -> Vec<InterfaceLatency> {
         vec![
             row(
@@ -421,15 +408,15 @@ mod tests {
                 None,
             ),
             row(
-                "uvc_camera_video_reconstruction",
+                "my_python_robot_brain",
                 "uvc_camera_python_mock",
-                "video_stream",
+                "video_stream_info",
                 "camera",
                 Some("uvc_camera:v1"),
-                InterfaceKind::Topic,
-                MeasurementKind::TopicSynthetic,
+                InterfaceKind::Service,
+                MeasurementKind::ServiceProbe,
                 ClockConfidence::NotApplicable,
-                Some("256B fixed payload, sensor_data QoS"),
+                Some("payload 64B → 4.0KB (rebuild producer for sized replies)"),
             ),
         ]
     }
@@ -453,19 +440,19 @@ mod tests {
     }
 
     #[test]
-    fn note_names_interface_and_wraps_long_synthetic_detail() {
+    fn note_names_interface_and_wraps_long_payload_note() {
         let rows = display_rows(&sample_rows(), &BTreeMap::new(), false);
         // Delivery row's note is just the interface name.
         assert_eq!(rows[1][9], "uvc_camera:v1");
-        // Synthetic row's note leads with the interface, then the wrapped detail.
-        let synthetic_note = &rows[2][9];
-        assert!(synthetic_note.starts_with("uvc_camera:v1;"));
-        assert!(synthetic_note.contains('\n'), "long note should wrap");
+        // The svc-probe row's note leads with the interface, then the wrapped
+        // payload summary.
+        let note = &rows[2][9];
+        assert!(note.starts_with("uvc_camera:v1;"));
+        assert!(note.contains('\n'), "long note should wrap");
         assert!(
-            synthetic_note
-                .lines()
+            note.lines()
                 .all(|l| UnicodeWidthStr::width(l) <= NOTE_WRAP_COLS),
-            "every note line within wrap width:\n{synthetic_note}"
+            "every note line within wrap width:\n{note}"
         );
     }
 

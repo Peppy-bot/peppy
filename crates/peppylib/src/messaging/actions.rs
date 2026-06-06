@@ -416,7 +416,14 @@ impl ActionMessenger {
     /// action engine never runs** — this measures only the messaging/routing
     /// path. Clock-independent (single-clock round-trip).
     ///
-    /// Returns the elapsed time on a clean reply; propagates the error otherwise.
+    /// `request_size`/`response_size` make the probe carry a real-payload-sized
+    /// goal body and ask the producer to reply with `response_size` bytes (the
+    /// goal request/response sizes), so the round-trip reflects real-sized
+    /// messages — still without creating a goal or running the action. A
+    /// producer built before sized probes replies empty (returned size 0).
+    ///
+    /// Returns `(elapsed, response_bytes_received)` on a clean reply; propagates
+    /// the error otherwise.
     #[allow(clippy::too_many_arguments)]
     pub async fn probe_latency(
         messenger: &MessengerHandle,
@@ -427,7 +434,9 @@ impl ActionMessenger {
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
         response_timeout: Duration,
-    ) -> Result<Duration> {
+        request_size: usize,
+        response_size: u32,
+    ) -> Result<(Duration, usize)> {
         let sender = ActionWireSender::new(
             bound_core_node,
             as_instance_id,
@@ -436,16 +445,17 @@ impl ActionMessenger {
             to_target,
             to_action_name,
         )?;
+        let request = super::probe::build_sized_probe_request(request_size, response_size);
         let started = Instant::now();
-        messenger
+        let reply = messenger
             .poll_service(
                 &sender.goal_service(),
-                Payload::new(),
+                request,
                 ServiceQueryKind::Probe,
                 response_timeout,
             )
             .await?;
-        Ok(started.elapsed())
+        Ok((started.elapsed(), reply.payload().as_ref().len()))
     }
 
     /// Send a goal to an action server. Generates a fresh `goal_id`,

@@ -4,15 +4,14 @@
 //! acts as a messaging *client* to probe producers.
 //!
 //! ## No-trigger guarantee (by construction)
-//! - Services / actions are measured only with `Probe`-kind queries
-//!   ([`ServiceMessenger::probe_latency`] / [`ActionMessenger::probe_latency`]),
-//!   which the framework auto-answers; no user handler runs and no goal is
-//!   created.
-//! - Real topic latency is *observe-only*: we subscribe but never publish onto a
-//!   real topic key.
-//! - The synthetic baseline publishes only to a reserved key
-//!   ([`SYNTHETIC_BENCHMARK_TOPIC`]) that is verified not to collide with any
-//!   real topic, so only the benchmark's own subscriber receives it.
+//! - Services / actions are measured with `Probe`-kind queries
+//!   ([`ServiceMessenger::probe_latency`] / [`ActionMessenger::probe_latency`])
+//!   that carry a real-payload-sized body and ask the producer to reply with a
+//!   real-sized response (sizes estimated from the message schema), so the
+//!   round-trip reflects real serialization + transport. The framework still
+//!   auto-answers them: no user handler runs and no goal is created.
+//! - Real topic latency is *observe-only*: we subscribe to the producer's live
+//!   traffic and never publish onto a real topic key.
 
 use crate::Result;
 use crate::names;
@@ -20,7 +19,10 @@ use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_ac
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_interface_doc;
 use config::consts::PeppyDirs;
-use config::node::{DependsOn, NodeConfig, QoSProfile, node_conforms_to};
+use config::node::{
+    DependsOn, MessageSizeEstimate, NodeConfig, QoSProfile, estimate_serialized_size,
+    node_conforms_to,
+};
 use core_node_api::encoding::{
     BenchmarkFeedbackStep, ClockConfidence, ClockOffsetRequest, ClockOffsetResponse, InterfaceKind,
     InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
@@ -40,27 +42,25 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
 use tracing::debug;
 
 /// Gate budget: rejects a concurrent benchmark goal with a remaining-time hint.
 const BENCHMARK_GATE_TIMEOUT_SECS: u64 = 1800;
-/// A measured producer offset at or below this magnitude is treated as same-host
-/// (the producer and the core node share a clock); the one-way number is exact.
+/// Absolute floor below which a measured producer offset is treated as same-host
+/// regardless of the round trip: at this magnitude the clocks share a host and
+/// the one-way number is exact. The dominant same-host test is RTT-relative (see
+/// [`classify_clock`]); this floor only covers the degenerate case of a
+/// near-instant round trip whose half is itself under the threshold.
 const SAME_HOST_OFFSET_NS: u64 = 100_000;
+/// Number of NTP exchanges to take when measuring a producer's clock offset. The
+/// estimate is biased by half the round-trip *asymmetry*, so a single sample on a
+/// busy producer (or loaded host) is noisy; keeping the sample with the smallest
+/// round trip — the one least perturbed by scheduling/queue delay — is the
+/// standard NTP defense. See [`poll_producer_offset`].
+const OFFSET_SAMPLES: u32 = 5;
 /// A corrected one-way delta larger than this (or negative) is implausible and
 /// is suppressed — it means the clocks are not adequately synchronized.
 const IMPLAUSIBLE_DELIVERY_NS: i128 = 5_000_000_000;
-/// Reserved topic name for the synthetic transport baseline. Double-underscore
-/// sentinel; verified at runtime not to collide with any real topic.
-const SYNTHETIC_BENCHMARK_TOPIC: &str = "__peppy_benchmark_synthetic__";
-/// Fixed payload size for the synthetic baseline. Real payloads are opaque
-/// (no runtime schema), so a representative fixed size is used; the row measures
-/// the transport path for the topic's QoS, not its exact byte cost.
-const SYNTHETIC_PAYLOAD_BYTES: usize = 256;
-/// How long to wait for the synthetic subscription to establish before the first
-/// publish (Zenoh route propagation).
-const SUBSCRIBE_SETTLE: Duration = Duration::from_millis(100);
 
 pub async fn listen_for_stack_benchmark(
     messenger: &MessengerHandle,
@@ -213,8 +213,19 @@ struct Edge {
     /// the node. `None` for a direct `depends_on.nodes` edge.
     origin: Option<(String, String)>,
     kind: InterfaceKind,
-    /// Producer-declared QoS for topic edges (used by delivery + synthetic).
+    /// Producer-declared QoS for topic edges; the delivery subscription matches
+    /// it so it receives the producer's frames.
     qos: QoSProfile,
+    /// For service/action edges: estimated serialized size (bytes) of the real
+    /// request and response messages, so the probe carries real-sized payloads
+    /// instead of an empty sentinel. `0` when the message schema is unavailable
+    /// (falls back to an empty probe). The `*_variable` flags mark a schema with
+    /// variable-length fields (string/bytes/unbounded array), so the size is a
+    /// lower bound. Always `0`/`false` for topic edges.
+    probe_request_size: usize,
+    probe_response_size: usize,
+    request_variable: bool,
+    response_variable: bool,
 }
 
 impl Edge {
@@ -341,6 +352,11 @@ fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
                     origin: producer.origin,
                     kind,
                     qos,
+                    // Filled in for service/action edges by resolve_probe_sizes.
+                    probe_request_size: 0,
+                    probe_response_size: 0,
+                    request_variable: false,
+                    response_variable: false,
                 });
             }
         };
@@ -413,13 +429,168 @@ fn resolve_conformed_topic_qos(
     }
 }
 
-fn qos_label(qos: &QoSProfile) -> &'static str {
-    match qos {
-        QoSProfile::SensorData => "sensor_data",
-        QoSProfile::Standard => "standard",
-        QoSProfile::Reliable => "reliable",
-        QoSProfile::Critical => "critical",
+/// Estimate the real request/response payload sizes for each service/action edge
+/// from the producer's message schema, so probes can carry real-sized payloads.
+/// Resolves the request/response `MessageFormat` from the producer's node config
+/// (direct deps) or interface contract (conformance deps), then estimates a
+/// lower-bound serialized size. Leaves an edge at `0` (empty probe) when the
+/// schema can't be resolved — never aborts.
+fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &PeppyDirs) {
+    let by_key: HashMap<(&str, &str), &NodeConfig> = configs
+        .iter()
+        .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
+        .collect();
+    let mut iface_cache: HashMap<(String, String), Option<config::interface::PeppyInterface>> =
+        HashMap::new();
+
+    for edge in edges.iter_mut() {
+        if !matches!(edge.kind, InterfaceKind::Service | InterfaceKind::Action) {
+            continue;
+        }
+        let (req, resp) = match &edge.origin {
+            None => {
+                let producer = by_key
+                    .get(&(edge.to_node.as_str(), edge.to_tag.as_str()))
+                    .copied();
+                formats_from_node(producer, edge.kind, &edge.interface)
+            }
+            Some((name, tag)) => {
+                let doc = iface_cache
+                    .entry((name.clone(), tag.clone()))
+                    .or_insert_with(|| {
+                        resolve_interface_doc(peppy_dirs, name, tag, None, &|_| {}).ok()
+                    });
+                formats_from_interface(doc.as_ref(), edge.kind, &edge.interface)
+            }
+        };
+        if let Some(r) = req {
+            edge.probe_request_size = r.bytes;
+            edge.request_variable = r.has_variable;
+        }
+        if let Some(r) = resp {
+            edge.probe_response_size = r.bytes;
+            edge.response_variable = r.has_variable;
+        }
     }
+}
+
+/// Request/response size estimates for a service/action exposed by a node config.
+fn formats_from_node(
+    node: Option<&NodeConfig>,
+    kind: InterfaceKind,
+    name: &str,
+) -> (Option<MessageSizeEstimate>, Option<MessageSizeEstimate>) {
+    let Some(node) = node else {
+        return (None, None);
+    };
+    match kind {
+        InterfaceKind::Service => {
+            let svc = node
+                .interfaces
+                .services
+                .as_ref()
+                .and_then(|s| s.exposes.as_ref())
+                .and_then(|v| v.iter().find(|e| e.name == name));
+            (
+                svc.and_then(|s| s.request_message_format.as_ref())
+                    .map(estimate_serialized_size),
+                svc.and_then(|s| s.response_message_format.as_ref())
+                    .map(estimate_serialized_size),
+            )
+        }
+        InterfaceKind::Action => {
+            let goal = node
+                .interfaces
+                .actions
+                .as_ref()
+                .and_then(|a| a.exposes.as_ref())
+                .and_then(|v| v.iter().find(|e| e.name == name))
+                .and_then(|a| a.goal_service.as_ref());
+            (
+                goal.and_then(|g| g.request_message_format.as_ref())
+                    .map(estimate_serialized_size),
+                goal.and_then(|g| g.response_message_format.as_ref())
+                    .map(estimate_serialized_size),
+            )
+        }
+        InterfaceKind::Topic => (None, None),
+    }
+}
+
+/// Request/response size estimates for a service/action declared in an interface
+/// contract.
+fn formats_from_interface(
+    doc: Option<&config::interface::PeppyInterface>,
+    kind: InterfaceKind,
+    name: &str,
+) -> (Option<MessageSizeEstimate>, Option<MessageSizeEstimate>) {
+    let Some(doc) = doc else {
+        return (None, None);
+    };
+    match kind {
+        InterfaceKind::Service => {
+            let svc = doc.interfaces.services.iter().find(|e| e.name == name);
+            (
+                svc.and_then(|s| s.request_message_format.as_ref())
+                    .map(estimate_serialized_size),
+                svc.and_then(|s| s.response_message_format.as_ref())
+                    .map(estimate_serialized_size),
+            )
+        }
+        InterfaceKind::Action => {
+            let goal = doc
+                .interfaces
+                .actions
+                .iter()
+                .find(|e| e.name == name)
+                .and_then(|a| a.goal_service.as_ref());
+            (
+                goal.and_then(|g| g.request_message_format.as_ref())
+                    .map(estimate_serialized_size),
+                goal.and_then(|g| g.response_message_format.as_ref())
+                    .map(estimate_serialized_size),
+            )
+        }
+        InterfaceKind::Topic => (None, None),
+    }
+}
+
+/// Human-readable byte count (decimal units, matching the rest of the output).
+fn human_bytes(n: usize) -> String {
+    let f = n as f64;
+    if n < 1_000 {
+        format!("{n}B")
+    } else if f < 1e6 {
+        format!("{:.1}KB", f / 1e3)
+    } else if f < 1e9 {
+        format!("{:.1}MB", f / 1e6)
+    } else {
+        format!("{:.1}GB", f / 1e9)
+    }
+}
+
+/// The probe row note describing the real request→response payload sizes it
+/// measured. A `≥` prefix marks a schema-derived lower bound (the format has a
+/// variable-length field). `honored_full` is whether the producer **ever**
+/// replied with the full requested response size — honoring sized replies is a
+/// binary property of the producer's framework version, so a single full reply
+/// proves it. Only a producer that never honored (predates sized probes, always
+/// replies empty) is flagged; this is deliberately robust to a transient short
+/// reply, which is otherwise position-dependent and would flicker the note.
+fn payload_note(edge: &Edge, honored_full: bool) -> String {
+    let side = |bytes: usize, variable: bool| {
+        let s = human_bytes(bytes);
+        if variable { format!("≥{s}") } else { s }
+    };
+    let mut note = format!(
+        "payload {} → {}",
+        side(edge.probe_request_size, edge.request_variable),
+        side(edge.probe_response_size, edge.response_variable),
+    );
+    if edge.probe_response_size > 0 && !honored_full {
+        note.push_str(" (rebuild producer for sized replies)");
+    }
+    note
 }
 
 /// The benchmark executor. Returns a result even on partial failure; per-edge
@@ -441,6 +612,7 @@ async fn run_benchmark(
         .collect();
     let mut edges = enumerate_edges(&configs);
     resolve_conformed_topic_qos(&mut edges, &ctx.peppy_dirs, tx);
+    resolve_probe_sizes(&mut edges, &configs, &ctx.peppy_dirs);
 
     let topics = edges
         .iter()
@@ -484,13 +656,6 @@ async fn run_benchmark(
                 rows.push(measure_topic_delivery(ctx, edge, warmup, samples, timeout).await);
             }
         }
-    }
-
-    if goal.include_synthetic_baseline
-        && let Some(synthetic) =
-            synthetic_rows(ctx, &configs, &edges, warmup, samples, timeout, tx).await
-    {
-        rows.extend(synthetic);
     }
 
     emit_feedback(
@@ -563,10 +728,22 @@ async fn measure_probe(
         }
     };
 
+    // Carry a real-payload-sized request and ask the producer to reply with the
+    // real response size, so the round-trip reflects real serialization +
+    // transport — still without running the handler.
+    let request_size = edge.probe_request_size;
+    let response_size = edge.probe_response_size.min(u32::MAX as usize) as u32;
+
     let total = warmup.saturating_add(samples);
     let mut out = Vec::new();
     let mut any_success = false;
     let mut consecutive_errors: u32 = 0;
+    // Whether the producer EVER returned the full requested response size.
+    // Honoring sized replies is a binary property of the producer's framework
+    // version, so one full reply proves it — keep it robust to a transient short
+    // reply (e.g. an empty first/discovery reply) rather than trusting any single
+    // sample, which would make the note flicker depending on ordering.
+    let mut honored_full = false;
     for i in 0..total {
         let result = match edge.kind {
             InterfaceKind::Action => {
@@ -579,6 +756,8 @@ async fn measure_probe(
                     Some(&ctx.bound_core_node),
                     None,
                     timeout,
+                    request_size,
+                    response_size,
                 )
                 .await
             }
@@ -592,14 +771,17 @@ async fn measure_probe(
                     Some(&ctx.bound_core_node),
                     None,
                     timeout,
+                    request_size,
+                    response_size,
                 )
                 .await
             }
         };
         match result {
-            Ok(d) => {
+            Ok((d, resp_bytes)) => {
                 any_success = true;
                 consecutive_errors = 0;
+                honored_full |= resp_bytes >= edge.probe_response_size;
                 if i >= warmup {
                     out.push(d.as_nanos() as u64);
                 }
@@ -617,37 +799,59 @@ async fn measure_probe(
 
     let note = if out.is_empty() {
         Some("unreachable (no producer instance responded)".to_string())
+    } else if edge.probe_request_size == 0 && edge.probe_response_size == 0 {
+        // No schema resolved → this was an empty probe; say so rather than
+        // claiming a 0-byte payload measurement.
+        Some("payload size unknown (no message schema)".to_string())
     } else {
-        None
+        Some(payload_note(edge, honored_full))
     };
     row_from_samples(edge, measurement, ClockConfidence::NotApplicable, out, note)
 }
 
 /// Poll a producer's `clock_offset` service to get its measured offset to the
 /// core node, used to normalize cross-host topic timestamps.
+///
+/// A single NTP exchange's offset is biased by half the round-trip *asymmetry*,
+/// which on a busy producer is hundreds of µs. We take [`OFFSET_SAMPLES`]
+/// exchanges and keep the one with the smallest round trip: the least-delayed
+/// sample is the least perturbed by scheduling/queue asymmetry, so its offset is
+/// the closest to the true clock difference. Returns the best `(offset_ns,
+/// round_trip_delay_ns)`, or `None` if every exchange failed.
 async fn poll_producer_offset(
     ctx: &BenchmarkActionContext,
     to_node: &str,
     to_tag: &str,
     timeout: Duration,
 ) -> Option<(i64, u64)> {
-    let request = ClockOffsetRequest::new().encode().ok()?;
     let target = SenderTarget::node(to_node, to_tag).ok()?;
-    let reply = ServiceMessenger::poll(
-        &ctx.messenger,
-        &ctx.bound_core_node,
-        &ctx.core_instance_id,
-        target,
-        CLOCK_OFFSET_SERVICE,
-        Some(&ctx.bound_core_node),
-        None,
-        request,
-        timeout,
-    )
-    .await
-    .ok()?;
-    let decoded = ClockOffsetResponse::decode(reply.payload().as_ref()).ok()?;
-    Some((decoded.offset_ns, decoded.round_trip_delay_ns))
+    let mut best: Option<(i64, u64)> = None;
+    for _ in 0..OFFSET_SAMPLES {
+        let Ok(request) = ClockOffsetRequest::new().encode() else {
+            continue;
+        };
+        let reply = ServiceMessenger::poll(
+            &ctx.messenger,
+            &ctx.bound_core_node,
+            &ctx.core_instance_id,
+            target.clone(),
+            CLOCK_OFFSET_SERVICE,
+            Some(&ctx.bound_core_node),
+            None,
+            request,
+            timeout,
+        )
+        .await;
+        let Ok(reply) = reply else { continue };
+        let Ok(decoded) = ClockOffsetResponse::decode(reply.payload().as_ref()) else {
+            continue;
+        };
+        let sample = (decoded.offset_ns, decoded.round_trip_delay_ns);
+        if best.is_none_or(|(_, best_rtt)| sample.1 < best_rtt) {
+            best = Some(sample);
+        }
+    }
+    best
 }
 
 fn classify_clock(
@@ -659,7 +863,7 @@ fn classify_clock(
             ClockConfidence::CrossHostFlagged,
             Some(
                 "some deltas were negative or implausibly large (cross-host clock skew); \
-                 deploy PTP or NTP and rely on the probe/synthetic numbers — see the guide"
+                 deploy PTP or NTP and rely on the probe numbers — see the guide"
                     .to_string(),
             ),
         );
@@ -669,10 +873,21 @@ fn classify_clock(
             ClockConfidence::SameHost,
             Some("producer clock offset unavailable; treated as same-host".to_string()),
         ),
-        Some((o, _)) if o.unsigned_abs() <= SAME_HOST_OFFSET_NS => {
-            (ClockConfidence::SameHost, None)
+        Some((o, rtt)) => {
+            // The offset estimate is only accurate to ±(asymmetry)/2, and the
+            // asymmetry is bounded by the round trip — so an offset within half
+            // the RTT is indistinguishable from zero and means same-host. The
+            // absolute floor covers a near-instant round trip whose half is
+            // itself below the noise we expect from co-located clocks. Without
+            // this, a busy producer's hundreds-of-µs scheduling asymmetry
+            // misreads a same-host edge as cross-host `corrected`.
+            let same_host_bound = (rtt / 2).max(SAME_HOST_OFFSET_NS);
+            if o.unsigned_abs() <= same_host_bound {
+                (ClockConfidence::SameHost, None)
+            } else {
+                (ClockConfidence::CrossHostCorrected, None)
+            }
         }
-        Some(_) => (ClockConfidence::CrossHostCorrected, None),
     }
 }
 
@@ -769,154 +984,6 @@ async fn measure_topic_delivery(
         });
     }
     row_from_samples(edge, MeasurementKind::TopicDelivery, confidence, out, note)
-}
-
-/// Synthetic transport baseline: for each distinct QoS in use, time
-/// publish→own-receive on the reserved key, then attach a synthetic row to each
-/// topic edge of that QoS. Clock-independent (single-clock round-trip).
-async fn synthetic_rows(
-    ctx: &BenchmarkActionContext,
-    configs: &[NodeConfig],
-    edges: &[Edge],
-    warmup: u32,
-    samples: u32,
-    per_sample_timeout: Duration,
-    tx: &UnboundedSender<StackBenchmarkFeedback>,
-) -> Option<Vec<InterfaceLatency>> {
-    // Safety: the reserved key must not collide with any real topic a node emits
-    // or consumes.
-    if topic_name_in_use(configs, SYNTHETIC_BENCHMARK_TOPIC) {
-        emit_feedback(
-            tx,
-            BenchmarkFeedbackStep::Synthetic,
-            format!(
-                "Skipping synthetic baseline: reserved topic `{SYNTHETIC_BENCHMARK_TOPIC}` is in use"
-            ),
-        );
-        return None;
-    }
-
-    // Measure once per distinct QoS profile among topic edges.
-    let mut by_qos: HashMap<&'static str, Vec<u64>> = HashMap::new();
-    for edge in edges.iter().filter(|e| e.kind == InterfaceKind::Topic) {
-        let label = qos_label(&edge.qos);
-        if by_qos.contains_key(label) {
-            continue;
-        }
-        emit_feedback(
-            tx,
-            BenchmarkFeedbackStep::Synthetic,
-            format!("Synthetic transport baseline ({label})"),
-        );
-        let samples_ns =
-            measure_synthetic(ctx, &edge.qos, warmup, samples, per_sample_timeout).await;
-        by_qos.insert(label, samples_ns);
-    }
-
-    let mut rows = Vec::new();
-    for edge in edges.iter().filter(|e| e.kind == InterfaceKind::Topic) {
-        let label = qos_label(&edge.qos);
-        let samples_ns = by_qos.get(label).cloned().unwrap_or_default();
-        let note = if samples_ns.is_empty() {
-            Some("synthetic baseline produced no samples".to_string())
-        } else {
-            Some(format!(
-                "{SYNTHETIC_PAYLOAD_BYTES}B fixed payload, {label} QoS"
-            ))
-        };
-        rows.push(row_from_samples(
-            edge,
-            MeasurementKind::TopicSynthetic,
-            ClockConfidence::NotApplicable,
-            samples_ns,
-            note,
-        ));
-    }
-    Some(rows)
-}
-
-fn topic_name_in_use(configs: &[NodeConfig], name: &str) -> bool {
-    configs.iter().any(|c| {
-        c.interfaces.topics.as_ref().is_some_and(|t| {
-            t.emits.iter().flatten().any(|e| e.name == name)
-                || t.consumes.iter().flatten().any(|c| c.name == name)
-        })
-    })
-}
-
-async fn measure_synthetic(
-    ctx: &BenchmarkActionContext,
-    qos: &QoSProfile,
-    warmup: u32,
-    samples: u32,
-    per_sample_timeout: Duration,
-) -> Vec<u64> {
-    let publisher_target = match SenderTarget::node(&ctx.bound_core_node, names::CORE_NODE_TAG) {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
-    let subscribe_target = match SenderTarget::node(&ctx.bound_core_node, names::CORE_NODE_TAG) {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut subscription = match TopicMessenger::subscribe(
-        &ctx.messenger,
-        &ctx.bound_core_node,
-        &ctx.core_instance_id,
-        Some(subscribe_target),
-        false,
-        SYNTHETIC_BENCHMARK_TOPIC,
-        Some(&ctx.bound_core_node),
-        &ConsumerFilter::Any,
-        qos.clone(),
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-
-    // Let the subscription route establish before the first publish.
-    tokio::time::sleep(SUBSCRIBE_SETTLE).await;
-
-    let payload = Payload::from(vec![0u8; SYNTHETIC_PAYLOAD_BYTES]);
-    let total = warmup.saturating_add(samples);
-    let mut out = Vec::new();
-    let mut received_any = false;
-    for i in 0..total {
-        let start = Instant::now();
-        if TopicMessenger::emit(
-            &ctx.messenger,
-            &ctx.bound_core_node,
-            &ctx.core_instance_id,
-            publisher_target.clone(),
-            SYNTHETIC_BENCHMARK_TOPIC,
-            qos.clone(),
-            payload.clone(),
-        )
-        .await
-        .is_err()
-        {
-            continue;
-        }
-        match tokio::time::timeout(per_sample_timeout, subscription.on_next_message()).await {
-            Ok(Some(_)) => {
-                received_any = true;
-                if i >= warmup {
-                    out.push(start.elapsed().as_nanos() as u64);
-                }
-            }
-            // Dropped (e.g. SensorData) or timed out — skip this sample, but bail
-            // early if the self-subscription never receives anything.
-            Ok(None) | Err(_) => {
-                if !received_any && i >= 5 {
-                    break;
-                }
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -1038,5 +1105,110 @@ mod tests {
         let edges = enumerate_edges(&configs);
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].interface, "move_arm");
+    }
+
+    #[test]
+    fn classify_clock_treats_offset_within_half_rtt_as_same_host() {
+        // The regression: a busy same-host producer's single-sample offset
+        // (200µs) sits well inside half the round trip (1ms RTT → 500µs bound),
+        // so it must read same-host, not cross-host `corrected`.
+        let (confidence, note) = classify_clock(Some((200_000, 1_000_000)), false);
+        assert_eq!(confidence, ClockConfidence::SameHost);
+        assert!(note.is_none());
+    }
+
+    #[test]
+    fn classify_clock_flags_offset_beyond_half_rtt_as_cross_host() {
+        // A 2ms offset on a 1ms round trip cannot come from asymmetry alone —
+        // it's a genuine clock difference, so correct it.
+        let (confidence, _) = classify_clock(Some((2_000_000, 1_000_000)), false);
+        assert_eq!(confidence, ClockConfidence::CrossHostCorrected);
+    }
+
+    #[test]
+    fn classify_clock_absolute_floor_covers_near_instant_round_trip() {
+        // Tiny RTT (20µs → 10µs half) but a 50µs offset: the absolute floor
+        // keeps it same-host rather than over-reacting to sub-100µs noise.
+        let (confidence, _) = classify_clock(Some((50_000, 20_000)), false);
+        assert_eq!(confidence, ClockConfidence::SameHost);
+    }
+
+    #[test]
+    fn classify_clock_implausible_is_flagged_and_unavailable_is_same_host() {
+        assert_eq!(
+            classify_clock(Some((123, 456)), true).0,
+            ClockConfidence::CrossHostFlagged
+        );
+        assert_eq!(classify_clock(None, false).0, ClockConfidence::SameHost);
+    }
+
+    #[test]
+    fn human_bytes_uses_decimal_units() {
+        assert_eq!(human_bytes(512), "512B");
+        assert_eq!(human_bytes(1500), "1.5KB");
+        assert_eq!(human_bytes(6_220_800), "6.2MB");
+    }
+
+    #[test]
+    fn formats_from_node_resolves_service_request_response_sizes() {
+        let provider = parse(
+            r#"{
+                peppy_schema: "node_v1",
+                manifest: { name: "arm", tag: "v1" },
+                execution: { language: "rust", run_cmd: ["arm"] },
+                interfaces: { services: { exposes: [ {
+                    name: "move_arm",
+                    request_message_format: { x: "f64", y: "f64", z: "f64" },
+                    response_message_format: { ok: "bool" }
+                } ] } }
+            }"#,
+        );
+        let (req, resp) = formats_from_node(Some(&provider), InterfaceKind::Service, "move_arm");
+        let req = req.expect("request sized");
+        let resp = resp.expect("response sized");
+        assert!(req.bytes > resp.bytes, "3×f64 request > a bool response");
+        assert!(!req.has_variable && !resp.has_variable);
+        // An unknown service name resolves to no sizes (→ empty probe).
+        assert_eq!(
+            formats_from_node(Some(&provider), InterfaceKind::Service, "nope").0,
+            None
+        );
+    }
+
+    fn probe_edge(req: usize, resp: usize, req_var: bool, resp_var: bool) -> Edge {
+        Edge {
+            from_node: "c".into(),
+            from_tag: "v1".into(),
+            to_node: "p".into(),
+            to_tag: "v1".into(),
+            interface: "svc".into(),
+            link_id: "l".into(),
+            origin: None,
+            kind: InterfaceKind::Service,
+            qos: QoSProfile::default(),
+            probe_request_size: req,
+            probe_response_size: resp,
+            request_variable: req_var,
+            response_variable: resp_var,
+        }
+    }
+
+    #[test]
+    fn payload_note_marks_variable_and_degraded() {
+        let edge = probe_edge(64, 4000, false, true);
+        // The response side is a schema lower bound (`≥`); the producer honored
+        // sized replies (returned the full size at least once), so no marker.
+        assert_eq!(payload_note(&edge, true), "payload 64B → ≥4.0KB");
+        // A producer that never honored the requested size predates sized
+        // probes — flag it.
+        assert!(payload_note(&edge, false).contains("rebuild producer"));
+    }
+
+    #[test]
+    fn payload_note_no_marker_when_no_response_expected() {
+        // An empty response schema (size 0) can't be "unhonored" — never flag it,
+        // even if the producer replied empty.
+        let edge = probe_edge(64, 0, false, false);
+        assert!(!payload_note(&edge, false).contains("rebuild producer"));
     }
 }

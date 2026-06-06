@@ -9,10 +9,8 @@ struct StackBenchmarkGoal {
     samples @0 :UInt32;
     # Warmup samples per interface, discarded before measuring (0 = none).
     warmup @1 :UInt32;
-    # Whether to also run the clock-independent synthetic topic transport baseline.
-    includeSyntheticBaseline @2 :Bool;
     # Per-sample probe/observe timeout in milliseconds. 0 = daemon default.
-    perSampleTimeoutMs @3 :UInt64;
+    perSampleTimeoutMs @2 :UInt64;
 }
 
 struct StackBenchmarkGoalResponse {
@@ -26,8 +24,7 @@ enum BenchmarkFeedbackStep {
     enumerating @0;
     probing @1;
     topicDelivery @2;
-    synthetic @3;
-    aggregating @4;
+    aggregating @3;
 }
 
 struct StackBenchmarkFeedback {
@@ -52,12 +49,10 @@ enum MeasurementKind {
     actionProbe @1;
     # Real producer -> consumer one-way delivery latency on live traffic.
     topicDelivery @2;
-    # Synthetic transport-path proxy on a reserved benchmark-only key.
-    topicSynthetic @3;
 }
 
 enum ClockConfidence {
-    # Not a one-way measurement (round-trip probe or synthetic baseline).
+    # Not a one-way measurement (round-trip service/action probe).
     notApplicable @0;
     # Producer shares the core node's host; one-way latency is exact.
     sameHost @1;

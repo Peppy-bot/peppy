@@ -34,23 +34,15 @@ pub struct StackBenchmarkGoal {
     pub samples: u32,
     /// Warmup samples per interface, discarded before measuring (0 = none).
     pub warmup: u32,
-    /// Whether to also run the synthetic topic transport baseline.
-    pub include_synthetic_baseline: bool,
     /// Per-sample probe/observe timeout in milliseconds.
     pub per_sample_timeout_ms: u64,
 }
 
 impl StackBenchmarkGoal {
-    pub fn new(
-        samples: u32,
-        warmup: u32,
-        include_synthetic_baseline: bool,
-        per_sample_timeout_ms: u64,
-    ) -> Self {
+    pub fn new(samples: u32, warmup: u32, per_sample_timeout_ms: u64) -> Self {
         Self {
             samples,
             warmup,
-            include_synthetic_baseline,
             per_sample_timeout_ms,
         }
     }
@@ -61,7 +53,6 @@ impl StackBenchmarkGoal {
             let mut goal = builder.init_root::<benchmark_capnp::stack_benchmark_goal::Builder>();
             goal.set_samples(self.samples);
             goal.set_warmup(self.warmup);
-            goal.set_include_synthetic_baseline(self.include_synthetic_baseline);
             goal.set_per_sample_timeout_ms(self.per_sample_timeout_ms);
         }
         encode_message(&builder)
@@ -73,7 +64,6 @@ impl StackBenchmarkGoal {
         Ok(Self {
             samples: with_default(goal.get_samples(), 0, DEFAULT_SAMPLES),
             warmup: goal.get_warmup(),
-            include_synthetic_baseline: goal.get_include_synthetic_baseline(),
             per_sample_timeout_ms: with_default(
                 goal.get_per_sample_timeout_ms(),
                 0,
@@ -142,7 +132,6 @@ pub enum BenchmarkFeedbackStep {
     Enumerating,
     Probing,
     TopicDelivery,
-    Synthetic,
     Aggregating,
 }
 
@@ -153,7 +142,6 @@ impl BenchmarkFeedbackStep {
             Self::Enumerating => W::Enumerating,
             Self::Probing => W::Probing,
             Self::TopicDelivery => W::TopicDelivery,
-            Self::Synthetic => W::Synthetic,
             Self::Aggregating => W::Aggregating,
         }
     }
@@ -164,7 +152,6 @@ impl BenchmarkFeedbackStep {
             W::Enumerating => Self::Enumerating,
             W::Probing => Self::Probing,
             W::TopicDelivery => Self::TopicDelivery,
-            W::Synthetic => Self::Synthetic,
             W::Aggregating => Self::Aggregating,
         }
     }
@@ -268,7 +255,6 @@ pub enum MeasurementKind {
     ServiceProbe,
     ActionProbe,
     TopicDelivery,
-    TopicSynthetic,
 }
 
 impl MeasurementKind {
@@ -277,7 +263,6 @@ impl MeasurementKind {
             Self::ServiceProbe => "service-probe",
             Self::ActionProbe => "action-probe",
             Self::TopicDelivery => "topic-delivery",
-            Self::TopicSynthetic => "topic-synthetic",
         }
     }
 
@@ -287,7 +272,6 @@ impl MeasurementKind {
             Self::ServiceProbe => W::ServiceProbe,
             Self::ActionProbe => W::ActionProbe,
             Self::TopicDelivery => W::TopicDelivery,
-            Self::TopicSynthetic => W::TopicSynthetic,
         }
     }
 
@@ -297,7 +281,6 @@ impl MeasurementKind {
             W::ServiceProbe => Self::ServiceProbe,
             W::ActionProbe => Self::ActionProbe,
             W::TopicDelivery => Self::TopicDelivery,
-            W::TopicSynthetic => Self::TopicSynthetic,
         }
     }
 }
@@ -501,14 +484,14 @@ mod tests {
 
     #[test]
     fn goal_roundtrips() {
-        let goal = StackBenchmarkGoal::new(500, 50, true, 1_500);
+        let goal = StackBenchmarkGoal::new(500, 50, 1_500);
         let bytes = goal.encode().expect("encode");
         assert_eq!(StackBenchmarkGoal::decode(&bytes).expect("decode"), goal);
     }
 
     #[test]
     fn goal_applies_defaults_for_zero_fields() {
-        let goal = StackBenchmarkGoal::new(0, 0, false, 0);
+        let goal = StackBenchmarkGoal::new(0, 0, 0);
         let bytes = goal.encode().expect("encode");
         let decoded = StackBenchmarkGoal::decode(&bytes).expect("decode");
         assert_eq!(decoded.samples, DEFAULT_SAMPLES);
@@ -539,7 +522,6 @@ mod tests {
             BenchmarkFeedbackStep::Enumerating,
             BenchmarkFeedbackStep::Probing,
             BenchmarkFeedbackStep::TopicDelivery,
-            BenchmarkFeedbackStep::Synthetic,
             BenchmarkFeedbackStep::Aggregating,
         ] {
             let fb = StackBenchmarkFeedback::stdout("measuring", step);

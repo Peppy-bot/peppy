@@ -1330,6 +1330,92 @@ async fn service_communication_fails_service_not_started() {
     router.shutdown().await;
 }
 
+/// A benchmark "sized probe" must round-trip a real-sized response (the producer
+/// honors the requested size) while still NOT invoking the user handler.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn sized_probe_gets_sized_reply_without_running_the_handler() {
+    let router = TestRouterContext::start().await;
+
+    let listener_node_name = "camera";
+    let listener_service_name = "video_stream_info";
+    let listener_core_node = "listener_core_node";
+    let listener_instance_id = "listener_instance";
+    const CALLER_CORE_NODE: &str = "caller_core_node";
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
+
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let wait = Duration::from_millis(1000);
+
+    let service_task = {
+        let handle = router.messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &handle,
+            listener_core_node,
+            listener_instance_id,
+            test_node_target(listener_node_name),
+            listener_service_name,
+        )
+        .await
+        .expect("service should start");
+
+        let call_count = Arc::clone(&call_count);
+        tokio::spawn(async move {
+            let handler = service.handle_next_request(|_request| {
+                let call_count = Arc::clone(&call_count);
+                async move {
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(Payload::from_static(b"real-response"))
+                }
+            });
+            ready_tx.send(()).unwrap();
+            // A probe is auto-answered inside the request loop, so the handler
+            // never fires — it parks until the timeout.
+            let _ = tokio::time::timeout(wait, handler).await;
+            Ok::<(), Error>(())
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), ready_rx)
+        .await
+        .expect("service should signal readiness")
+        .expect("service should signal readiness");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    {
+        let caller = router.messenger().await;
+        let (_elapsed, response_bytes) = ServiceMessenger::probe_latency(
+            &caller,
+            CALLER_CORE_NODE,
+            CALLER_INSTANCE_ID,
+            test_node_target(listener_node_name),
+            listener_service_name,
+            None,
+            None,
+            Duration::from_secs(1),
+            128, // request_size
+            256, // response_size
+        )
+        .await
+        .expect("sized probe should round-trip");
+
+        // The producer auto-answered with exactly the requested response size...
+        assert_eq!(
+            response_bytes, 256,
+            "producer should honor the requested response size"
+        );
+        // ...and the user handler never ran (it was a probe, not a request).
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            0,
+            "sized probe must not invoke the user handler"
+        );
+    }
+
+    let _ = tokio::time::timeout(wait + Duration::from_millis(500), service_task).await;
+    router.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_fails_service_timeouts() {
     let router = TestRouterContext::start().await;

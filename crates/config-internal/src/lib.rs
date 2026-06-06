@@ -85,11 +85,12 @@ pub mod node {
         CallbackNameError, ConformsToItem, ConsumedAction, ConsumedService, ConsumedTopic,
         ContainerConfig, DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction,
         ExposedService, InterfaceConformanceEdge, InterfaceKind, Interfaces, Manifest,
-        MessageFormat, Name, NodeConfig, NodeConfigCreator, NodeConfigParser, NodeDependency,
-        ObjectKind, ObjectSchema, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType,
-        ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, collect_dependency_specs,
-        collect_interface_conformance_edges, extract_parameter_refs, is_blocked_mount_source,
-        load_standalone_node_config, node_conforms_to, validate_dependency_specs,
+        MessageFormat, MessageSizeEstimate, Name, NodeConfig, NodeConfigCreator, NodeConfigParser,
+        NodeDependency, ObjectKind, ObjectSchema, PeppygenLanguage, PrimitiveSchema, QoSProfile,
+        SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken,
+        collect_dependency_specs, collect_interface_conformance_edges, estimate_serialized_size,
+        extract_parameter_refs, is_blocked_mount_source, load_standalone_node_config,
+        node_conforms_to, validate_dependency_specs,
     };
 }
 

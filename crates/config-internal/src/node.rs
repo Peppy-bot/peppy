@@ -1,10 +1,12 @@
 mod create;
+mod message_size;
 mod parse;
 mod types;
 mod validation;
 
 // Re-export functions
 pub use create::NodeConfigCreator;
+pub use message_size::{MessageSizeEstimate, estimate_serialized_size};
 pub use parse::{NodeConfigParser, load_standalone_node_config};
 pub use types::{
     ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,

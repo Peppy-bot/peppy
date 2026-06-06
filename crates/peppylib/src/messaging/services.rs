@@ -211,17 +211,25 @@ impl ServiceEndpoint {
                 Ok(incoming) => {
                     match incoming.kind {
                         ServiceQueryKind::Probe => {
-                            // Auto-handle probes: reply with `Response` kind
-                            // and an empty payload, never invoking the user
-                            // handler. **Critical**: probes do NOT get an
-                            // ACK — the consumer's poll loop pins the
-                            // responder's identity off the first non-Ack
-                            // reply, so an Ack-kind probe reply would
+                            // Auto-handle probes: reply with `Response` kind,
+                            // never invoking the user handler. A benchmark
+                            // "sized probe" carries a desired response size in
+                            // its body so `stack benchmark` can measure real
+                            // -payload round-trips without running the handler;
+                            // every other probe (liveness, discovery, node
+                            // removal) sends an empty body and still gets an
+                            // empty reply, exactly as before. **Critical**:
+                            // probes do NOT get an ACK — the consumer's poll
+                            // loop pins the responder's identity off the first
+                            // non-Ack reply, so an Ack-kind probe reply would
                             // deadlock the wildcard discover-then-pin flow.
-                            if let Err(err) = incoming
-                                .token
-                                .respond_response(bytes::Bytes::new().into())
-                                .await
+                            let probe_body = incoming.payload.as_bytes();
+                            let response =
+                                match super::probe::parse_sized_probe_request(&probe_body) {
+                                    Some(size) => bytes::Bytes::from(vec![0u8; size as usize]),
+                                    None => bytes::Bytes::new(),
+                                };
+                            if let Err(err) = incoming.token.respond_response(response.into()).await
                             {
                                 warn!(%err, "failed to publish probe response");
                             }
@@ -459,16 +467,26 @@ impl ServiceMessenger {
     }
 
     /// Measure the round-trip latency of a single `Probe`-kind query to a
-    /// service: caller → router → producer's queryable → the framework's empty
-    /// probe reply → back. Like [`Self::is_reachable`], the probe is auto-handled
-    /// by the service request loop and the **user handler is never invoked**, so
+    /// service: caller → router → producer's queryable → the framework's probe
+    /// reply → back. Like [`Self::is_reachable`], the probe is auto-handled by
+    /// the service request loop and the **user handler is never invoked**, so
     /// this measures only the messaging/routing path, not handler execution. The
     /// result is therefore clock-independent (a single-clock round-trip).
     ///
-    /// Returns the elapsed time on a clean reply; propagates the error otherwise
-    /// (an unreachable producer or a probe that did not return within
-    /// `response_timeout` is not a usable latency sample, and the caller should
-    /// drop it rather than record the timeout as latency).
+    /// `request_size`/`response_size` make the probe carry a real-payload-sized
+    /// body and ask the producer to reply with `response_size` bytes, so the
+    /// round-trip reflects serializing+moving real-sized messages rather than an
+    /// empty sentinel — still without running the handler. A producer built
+    /// before sized probes ignores the request body and replies empty, so the
+    /// returned response size will be 0; pass `0`/`0` to fall back to the old
+    /// empty probe.
+    ///
+    /// Returns `(elapsed, response_bytes_received)` on a clean reply, where
+    /// `response_bytes_received` is the actual reply payload length (lets the
+    /// caller detect a producer that did not honor `response_size`). Propagates
+    /// the error otherwise (an unreachable producer or a probe that did not
+    /// return within `response_timeout` is not a usable latency sample, and the
+    /// caller should drop it rather than record the timeout as latency).
     #[allow(clippy::too_many_arguments)]
     pub async fn probe_latency(
         messenger: &MessengerHandle,
@@ -479,7 +497,9 @@ impl ServiceMessenger {
         target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
         response_timeout: Duration,
-    ) -> Result<Duration> {
+        request_size: usize,
+        response_size: u32,
+    ) -> Result<(Duration, usize)> {
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
@@ -489,15 +509,11 @@ impl ServiceMessenger {
             to_service_name,
             ServiceKind::Service,
         )?;
+        let request = super::probe::build_sized_probe_request(request_size, response_size);
         let started = Instant::now();
-        messenger
-            .poll_service(
-                &sender,
-                Payload::new(),
-                ServiceQueryKind::Probe,
-                response_timeout,
-            )
+        let reply = messenger
+            .poll_service(&sender, request, ServiceQueryKind::Probe, response_timeout)
             .await?;
-        Ok(started.elapsed())
+        Ok((started.elapsed(), reply.payload().as_ref().len()))
     }
 }

@@ -84,7 +84,7 @@ async fn run_benchmark_goal(
 async fn stack_benchmark_empty_stack_completes() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let goal = StackBenchmarkGoal::new(2, 0, false, 200);
+    let goal = StackBenchmarkGoal::new(2, 0, 200);
     let (result, feedback_count) = run_benchmark_goal(&started, goal).await;
 
     assert!(result.success, "benchmark should succeed on an empty stack");
@@ -109,7 +109,7 @@ async fn stack_benchmark_runs_repeatedly() {
 
     // Two sequential runs must both succeed (the gate is released between them).
     for _ in 0..2 {
-        let goal = StackBenchmarkGoal::new(1, 0, false, 200);
+        let goal = StackBenchmarkGoal::new(1, 0, 200);
         let (result, _) = run_benchmark_goal(&started, goal).await;
         assert!(result.success);
         assert!(result.rows.is_empty());
@@ -159,7 +159,7 @@ async fn stack_benchmark_enumerates_wired_service_edge() {
         .push_config(consumer, false, "/tmp/bench_consumer")
         .expect("push consumer");
 
-    let goal = StackBenchmarkGoal::new(2, 0, false, 200);
+    let goal = StackBenchmarkGoal::new(2, 0, 200);
     let (result, _) = run_benchmark_goal(&started, goal).await;
 
     assert!(result.success, "benchmark should succeed");
@@ -225,7 +225,7 @@ async fn stack_benchmark_distinguishes_edges_by_link_id() {
         .push_config(consumer, false, "/tmp/bench_consumer")
         .expect("push consumer");
 
-    let goal = StackBenchmarkGoal::new(2, 0, false, 200);
+    let goal = StackBenchmarkGoal::new(2, 0, 200);
     let (result, _) = run_benchmark_goal(&started, goal).await;
 
     assert!(result.success, "benchmark should succeed");

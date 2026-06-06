@@ -3,6 +3,7 @@ mod tests;
 
 mod actions;
 mod discovery;
+mod probe;
 mod services;
 mod topics;
 
