@@ -27,7 +27,10 @@ use peppylib::core_node::transport::send_stack_benchmark;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
 
-use super::colors::{BINDING_COLOR, NODE_COLOR, paint};
+use super::colors::{
+    BINDING_COLOR, MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR, MEASURE_SERVICE_COLOR, NODE_COLOR,
+    paint,
+};
 use super::table::{render_table, wrap_ansi};
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
@@ -182,6 +185,17 @@ fn measurement_label(kind: MeasurementKind) -> &'static str {
     }
 }
 
+/// Distinct color per measurement kind so the `measure` column reads at a glance:
+/// blue service-probe, magenta action-probe, green live delivery. The legend
+/// paints the same labels the same way as a key.
+fn measurement_color(kind: MeasurementKind) -> &'static str {
+    match kind {
+        MeasurementKind::ServiceProbe => MEASURE_SERVICE_COLOR,
+        MeasurementKind::ActionProbe => MEASURE_ACTION_COLOR,
+        MeasurementKind::TopicDelivery => MEASURE_DELIVERY_COLOR,
+    }
+}
+
 /// How wide the `note` column may grow before its text wraps to a new physical
 /// line within the box cell. Keeps a long note (e.g. a probe's payload summary)
 /// from widening the whole table on a narrow terminal.
@@ -245,7 +259,7 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
     let mut table = String::new();
     render_table(&mut table, &BENCHMARK_HEADERS, &[rows]);
     print!("{table}");
-    println!("{BENCHMARK_LEGEND}");
+    println!("{}", benchmark_legend(colorize));
 
     // Persist this run's stats as the same-machine baseline for the next run's
     // Δp50 column. Only rows that actually measured (count > 0) update it.
@@ -272,14 +286,22 @@ const BENCHMARK_HEADERS: [&str; 10] = [
 
 /// Footnote legend beneath the table — one category per block, its variants
 /// aligned on their own lines so a reader can scan each meaning instead of
-/// parsing a run-on sentence. The leading `\` swallows the newline after the
-/// opening quote so the text starts at `Legend:`.
-const BENCHMARK_LEGEND: &str = "\
+/// parsing a run-on sentence. The three `measure` labels are painted in the same
+/// colors as the `measure` column so the legend doubles as a color key. The
+/// leading `\` swallows the newline after the opening quote so the text starts at
+/// `Legend:`.
+fn benchmark_legend(colorize: bool) -> String {
+    let svc = paint(colorize, MEASURE_SERVICE_COLOR, "svc-probe");
+    let act = paint(colorize, MEASURE_ACTION_COLOR, "act-probe");
+    let delivery = paint(colorize, MEASURE_DELIVERY_COLOR, "delivery ");
+    format!(
+        "\
 Legend:
   edge       →  direct dependency (depends_on.nodes)
-             ➔  resolved through interface conformance — the note names the interface
-  measure    svc/act-probe  real-payload-sized round-trip (the handler is NOT run)
-             delivery       real producer→consumer latency on live traffic
+             ➔  resolved through interface conformance (the note names the interface)
+  measure    {svc}  round-trip to a service, real-payload-sized (handler NOT run)
+             {act}  round-trip to an action's goal service (no goal is created)
+             {delivery}  real producer→consumer latency on live traffic
   binding    the dependency binding this edge was measured through; a node can
              consume the same interface from one producer via several bindings
   clock      same-host  exact (producer shares this host's clock)
@@ -289,7 +311,9 @@ Legend:
              payload sizes (request → response; `≥` = schema lower bound)
   Δp50       median vs the previous run on this machine
 
-Benchmarking never triggers a real handler or creates a goal.";
+Benchmarking never triggers a real handler or creates a goal."
+    )
+}
 
 /// Build the box-table data rows (one per measured row), tinted with the shared
 /// `stack` palette and with the wide `edge`/`note` cells wrapped. `previous`
@@ -329,7 +353,11 @@ fn display_rows(
             vec![
                 edge_cell(row, colorize),
                 paint(colorize, BINDING_COLOR, &row.link_id),
-                measurement_label(row.measurement).to_string(),
+                paint(
+                    colorize,
+                    measurement_color(row.measurement),
+                    measurement_label(row.measurement),
+                ),
                 row.clock_confidence.as_str().to_string(),
                 dur(row.p50_ns),
                 dur(row.p90_ns),
@@ -454,6 +482,44 @@ mod tests {
                 .all(|l| UnicodeWidthStr::width(l) <= NOTE_WRAP_COLS),
             "every note line within wrap width:\n{note}"
         );
+    }
+
+    #[test]
+    fn measure_column_is_colored_per_kind() {
+        let rows = sample_rows();
+        // Without color the cell is the plain label.
+        let plain = display_rows(&rows, &BTreeMap::new(), false);
+        assert_eq!(plain[0][2], "act-probe"); // action edge
+        assert_eq!(plain[1][2], "delivery"); // topic delivery edge
+        assert_eq!(plain[2][2], "svc-probe"); // service edge
+        // With color each kind carries its own distinct code.
+        let colored = display_rows(&rows, &BTreeMap::new(), true);
+        assert!(colored[0][2].starts_with(MEASURE_ACTION_COLOR));
+        assert!(colored[1][2].starts_with(MEASURE_DELIVERY_COLOR));
+        assert!(colored[2][2].starts_with(MEASURE_SERVICE_COLOR));
+        // The three colors are mutually distinct.
+        assert_ne!(MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR);
+        assert_ne!(MEASURE_ACTION_COLOR, MEASURE_SERVICE_COLOR);
+        assert_ne!(MEASURE_DELIVERY_COLOR, MEASURE_SERVICE_COLOR);
+    }
+
+    #[test]
+    fn legend_color_key_stays_aligned_and_plain_when_uncolored() {
+        // Painting the labels must not shift their printed width: the colored and
+        // plain legends agree once escape codes are stripped, and the plain legend
+        // carries none. (The renderer strips ANSI before measuring, so equal
+        // visible width = aligned.)
+        let plain = benchmark_legend(false);
+        assert!(
+            !plain.contains('\x1b'),
+            "no-color legend must be escape-free"
+        );
+        let stripped = benchmark_legend(true)
+            .replace(MEASURE_SERVICE_COLOR, "")
+            .replace(MEASURE_ACTION_COLOR, "")
+            .replace(MEASURE_DELIVERY_COLOR, "")
+            .replace(super::super::colors::RESET, "");
+        assert_eq!(stripped, plain, "color codes must be width-neutral");
     }
 
     #[test]
