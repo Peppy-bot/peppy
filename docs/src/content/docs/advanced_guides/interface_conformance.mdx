@@ -367,7 +367,7 @@ A launcher can wire the three slots to any mix of conforming producers:
 
 Swapping `realsense_d405:v1` for `mujoco_depth_camera_sim:v1` in the launcher requires no change to the consumer node, since both producers conform to the same interface and the binding works unchanged.
 
-Once the stack is running, these conformance-resolved dependencies surface in the tooling alongside direct ones. `peppy stack list` includes them in its **Dependencies** section, annotated `(via depth_camera:v1 interface conformance)`, and [`peppy stack benchmark`](/advanced_guides/stack_benchmark/) measures each consumed topic and service across the resolved edge. Both draw a heavy `➔` arrow for a conformance edge to distinguish it from a direct `depends_on.nodes` edge (`→`).
+Once the stack is running, these conformance-resolved dependencies surface in the tooling alongside direct ones. `peppy stack list` includes them in its **Dependencies** section, annotated `(via depth_camera:v1 interface conformance)`, and [`peppy stack benchmark`](/advanced_guides/stack_benchmark/) measures each consumed topic, service, and action across the resolved edge. Both draw a heavy `➔` arrow for a conformance edge to distinguish it from a direct `depends_on.nodes` edge (`→`).
 
 ## Caller-driven cycles are rejected
 
