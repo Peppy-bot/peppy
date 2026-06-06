@@ -6,7 +6,6 @@ edition.workspace = true
 
 [dependencies]
 config = { path = "../config-internal" }
-askama = "0.16"
 bytes = "1"
 serde_json = "1.0"
 tokio = { version = "1", features = ["sync", "rt"] }

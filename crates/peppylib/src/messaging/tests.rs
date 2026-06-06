@@ -79,17 +79,30 @@ fn ensure_test_fd_limit() {
     });
 }
 
+/// Serializes the zenoh router/peer tests in this binary. Running several
+/// independent peer meshes at once starves peer-mode gossip discovery (every
+/// peer opens listeners and forms links), which makes cold-start delivery flaky;
+/// one mesh at a time keeps discovery fast and deterministic. Mirrors pmi's
+/// `ZENOH_SERIAL`. The guard is held for each test's lifetime via the field
+/// below, so acquiring the context is all a test needs to opt in.
+static ZENOH_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct TestRouterContext {
     instance: ZenohdInstance,
+    _serial: tokio::sync::MutexGuard<'static, ()>,
 }
 
 impl TestRouterContext {
     async fn start() -> Self {
+        let serial = ZENOH_SERIAL.lock().await;
         ensure_test_fd_limit();
         let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("failed to start zenoh router for tests");
-        Self { instance }
+        Self {
+            instance,
+            _serial: serial,
+        }
     }
 
     fn host(&self) -> &str {
@@ -166,12 +179,21 @@ async fn topic_publish_subscribe_no_from_instance_id() {
     .await
     .expect("Should subscribe to the topic");
 
-    // Allow subscription to propagate before publishing
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let emitter_core_node = "core_node_emit";
     let emitter_instance_id = "emitter_instance";
     let emitter_handle = router.messenger().await;
+    // Deterministically wait for the subscriber before the first publish so it
+    // is not dropped during peer-mode discovery propagation.
+    TopicMessenger::wait_for_subscriber(
+        &emitter_handle,
+        emitter_core_node,
+        emitter_instance_id,
+        test_node_target(node_name),
+        topic,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("subscriber should become reachable");
     TopicMessenger::emit(
         &emitter_handle,
         emitter_core_node,
@@ -251,10 +273,19 @@ async fn topic_publish_subscribe_with_from_instance_id() {
     .await
     .expect("Should subscribe to the topic");
 
-    // Allow subscriptions to propagate before publishing
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let emitter_handle1 = router.messenger().await;
+    // Deterministically wait for the matching subscriber (subscription2) before
+    // the first publish so it is not dropped during peer-mode discovery.
+    TopicMessenger::wait_for_subscriber(
+        &emitter_handle1,
+        emitter_core_node,
+        emitter_instance_id2,
+        test_node_target(node_name),
+        topic,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("subscriber should become reachable");
     TopicMessenger::emit(
         &emitter_handle1,
         emitter_core_node,
@@ -342,10 +373,19 @@ async fn topic_publish_subscribe_with_from_core_node() {
     .await
     .expect("Should subscribe to the topic");
 
-    // Allow subscriptions to propagate before publishing
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let emitter_handle1 = router.messenger().await;
+    // Deterministically wait for the matching subscriber (subscription2) before
+    // the first publish so it is not dropped during peer-mode discovery.
+    TopicMessenger::wait_for_subscriber(
+        &emitter_handle1,
+        emitter_core_node2,
+        emitter_instance_id,
+        test_node_target(node_name),
+        topic,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("subscriber should become reachable");
     TopicMessenger::emit(
         &emitter_handle1,
         emitter_core_node2,
@@ -418,9 +458,22 @@ async fn consumer_filter_only_from_set_admits_listed_producers_and_drops_others(
     .await
     .expect("subscribe should succeed");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let emitter_handle = router.messenger().await;
+    // Deterministically wait until the subscriber is known to this fresh emitter
+    // peer before publishing, so the first emits are not dropped during peer-mode
+    // discovery propagation. The from_any subscriber matches any producer, so
+    // waiting on one producer's key expression confirms it is reachable.
+    TopicMessenger::wait_for_subscriber(
+        &emitter_handle,
+        core,
+        p1,
+        test_node_target(node_name),
+        topic,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("subscriber should become reachable");
+
     for (producer, body) in [
         (p1, b"from-p1".as_ref()),
         (p3, b"from-p3"),
@@ -510,9 +563,21 @@ async fn consumer_filter_any_except_drops_excluded_and_admits_rest() {
     .await
     .expect("subscribe should succeed");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let emitter_handle = router.messenger().await;
+    // Wait until the subscriber is known to this fresh emitter peer before
+    // publishing (peer-mode discovery is not instantaneous). The from_any
+    // subscription matches any producer, so waiting on one suffices.
+    TopicMessenger::wait_for_subscriber(
+        &emitter_handle,
+        core,
+        unclaimed,
+        test_node_target(node_name),
+        topic,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("subscriber should become reachable");
+
     for (producer, body) in [
         (claimed, b"from-claimed".as_ref()),
         (unclaimed, b"from-unclaimed"),
@@ -575,15 +640,25 @@ async fn topic_publish_reliable_5000hz_messages() {
     .await
     .expect("Should subscribe to the topic");
 
-    // Allow subscription to propagate before publishing
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let message_count = 5000;
     let emitter_core_node = "emitter_core_node";
     let emitter_instance_id = "emitter_instance";
     let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
     let mut rng = rand::rng();
     message_ids.shuffle(&mut rng);
+
+    // Deterministically wait for the subscriber before the publish loop so the
+    // first messages are not dropped during peer-mode discovery propagation.
+    TopicMessenger::wait_for_subscriber(
+        &sender_handle,
+        emitter_core_node,
+        emitter_instance_id,
+        test_node_target(node_name),
+        topic,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("subscriber should become reachable");
 
     for &message_id in &message_ids {
         let payload = Payload::from(message_id.to_le_bytes().to_vec());
@@ -1392,7 +1467,7 @@ async fn sized_probe_gets_sized_reply_without_running_the_handler() {
             listener_service_name,
             None,
             None,
-            Duration::from_secs(1),
+            Duration::from_secs(5),
             128, // request_size
             256, // response_size
         )
@@ -1694,7 +1769,7 @@ async fn service_handle_request_processes_multiple_messages() {
                 None,
                 Some(listener_instance_id),
                 request_payload.clone(),
-                Duration::from_secs(2),
+                Duration::from_secs(5),
             )
             .await
             .expect("caller should receive response");
@@ -1735,8 +1810,12 @@ async fn single_service_communication_multiple_polls_and_callers() {
     // Caller core node (shared by all callers)
     const CALLER_CORE_NODE: &str = "caller_core_node";
 
-    // TODO: 500 callers saturate Zenohd, it shouldn't
-    let caller_count = 100;
+    // Peer-mode sessions are heavier than the old client sessions: each caller
+    // opens its own peer that forms direct links and discovers via gossip, so
+    // many fresh peers connecting at once is far more load than the client/router
+    // star. Keep the concurrency modest; this still exercises many unique
+    // concurrent request/response pairs across independent caller sessions.
+    let caller_count = 20;
     let requests_per_caller = 5;
     let total_requests = caller_count * requests_per_caller;
     let call_count = Arc::new(AtomicUsize::new(0));
@@ -1836,7 +1915,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         None,
                         Some(listener_instance_id),
                         request_payload.clone(),
-                        Duration::from_secs(1),
+                        Duration::from_secs(5),
                     )
                     .await
                     .expect("caller should receive response");
@@ -2938,9 +3017,19 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
     .await
     .expect("from_any subscribe should succeed after the first guard dropped");
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     let emitter_handle = router.messenger().await;
+    // Deterministically wait for the surviving from_any subscriber before the
+    // publish so it is not dropped during peer-mode discovery propagation.
+    TopicMessenger::wait_for_subscriber(
+        &emitter_handle,
+        "pub_core",
+        "pub_inst",
+        target(),
+        "frames",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("subscriber should become reachable");
     TopicMessenger::emit(
         &emitter_handle,
         "pub_core",

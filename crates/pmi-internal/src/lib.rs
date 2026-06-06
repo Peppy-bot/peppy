@@ -5,6 +5,8 @@ mod error;
 mod types;
 mod wire;
 #[cfg(feature = "zenoh")]
+mod zenoh_config;
+#[cfg(feature = "zenoh")]
 mod zenohd;
 
 pub use error::Error as PeppyMessagingInterfaceError;

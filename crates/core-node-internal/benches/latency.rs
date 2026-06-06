@@ -120,6 +120,10 @@ fn main() {
 fn print_environment() {
     let env = CpuEnvironment::detect();
     println!("\nenv: {}", env.summary_line());
+    // Nodes run as Zenoh peers: after gossip via the seed router they exchange
+    // data over direct peer-to-peer links rather than relaying through the
+    // router. Shared memory is not yet wired into the publish path.
+    println!("transport: peer (gossip discovery, shm=off)");
     if env.is_noisy() {
         println!(
             "note: turbo and/or shared-host load make absolute latency swing run-to-run regardless \

@@ -185,6 +185,98 @@ mod zenoh_tests {
         );
     }
 
+    /// Proves peer-to-peer data flow: two `peer` sessions that share a router
+    /// discover each other via gossip and form a direct link, and topic
+    /// delivery between them survives the router being stopped. If data still
+    /// relayed through the router, stopping it would cut delivery; that delivery
+    /// continues shows the router hop is gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn peers_keep_delivering_after_router_stops() {
+        const TOPIC: &str = "direct_link_topic";
+        let _lock = ZENOH_SERIAL.lock().await;
+
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("Failed to start zenohd process");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        // Two non-reconnecting peers seeded by the router: a subscriber and a
+        // publisher. `connect_to` opens peer-mode sessions.
+        let mut subscriber = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port)
+            .expect("subscriber adapter");
+        subscriber
+            .start_session()
+            .await
+            .expect("subscriber start_session");
+        let mut subscription = subscriber
+            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .await
+            .expect("subscribe");
+
+        let mut publisher = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port)
+            .expect("publisher adapter");
+        publisher
+            .start_session()
+            .await
+            .expect("publisher start_session");
+
+        // Baseline delivery, then give gossip ample time to establish the direct
+        // peer-to-peer link before the router is removed.
+        wait_for_subscriber_discovery().await;
+        publisher
+            .publish_topic(
+                &sender(TOPIC),
+                Payload::from_bytes(Bytes::from_static(b"before-stop")),
+                PublisherQoS::Standard,
+                true,
+            )
+            .await
+            .expect("baseline publish");
+        let baseline = recv_or_timeout(&mut subscription.rx, "baseline").await;
+        assert_eq!(baseline.payload(), &Bytes::from_static(b"before-stop"));
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        // Remove the router. Any delivery from here on is over the direct link.
+        instance
+            .messenger()
+            .stop_router()
+            .await
+            .expect("stop_router");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // Poll-publish until a post-stop payload arrives (or give up). Only an
+        // `after-stop-*` payload counts; a stale relayed `before-stop` must not.
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut attempt = 0u32;
+        let mut delivered = false;
+        while Instant::now() < deadline {
+            attempt += 1;
+            let body = Bytes::from(format!("after-stop-{attempt}"));
+            let _ = publisher
+                .publish_topic(
+                    &sender(TOPIC),
+                    Payload::from_bytes(body),
+                    PublisherQoS::Standard,
+                    true,
+                )
+                .await;
+            if let Ok(Ok(msg)) =
+                tokio::time::timeout(Duration::from_millis(500), subscription.rx.recv_async()).await
+                && msg.payload().as_bytes().starts_with(b"after-stop-")
+            {
+                delivered = true;
+                break;
+            }
+        }
+
+        assert!(
+            delivered,
+            "no message was delivered after the router was stopped: data was relaying through the \
+             router instead of flowing peer-to-peer"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_publish_before_start_session_fails() {
         let _lock = ZENOH_SERIAL.lock().await;

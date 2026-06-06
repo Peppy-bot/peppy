@@ -1,5 +1,5 @@
 use super::discovery::discover_producer;
-use super::{MessengerHandle, PROBE_TIMEOUT, generate_short_id};
+use super::{DISCOVERY_TIMEOUT, MessengerHandle, PROBE_TIMEOUT, generate_short_id};
 use crate::error::{Error, Result};
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
@@ -368,13 +368,14 @@ impl ServiceMessenger {
                     to_service_name,
                     ServiceKind::Service,
                 )?;
-                // Discovery is capped at PROBE_TIMEOUT or the caller's response
-                // budget, whichever is shorter; this preserves the user contract
-                // that a tight `response_timeout` fails fast against unreachable
-                // targets.
+                // Discovery is capped at DISCOVERY_TIMEOUT or the caller's
+                // response budget, whichever is shorter; a tight
+                // `response_timeout` still fails fast against unreachable
+                // targets, while a generous one lets peer-mode gossip discovery
+                // settle (see `discover_producer`).
                 let discovery_timeout = response_timeout
-                    .map(|t| t.min(PROBE_TIMEOUT))
-                    .unwrap_or(PROBE_TIMEOUT);
+                    .map(|t| t.min(DISCOVERY_TIMEOUT))
+                    .unwrap_or(DISCOVERY_TIMEOUT);
                 let (core, inst) =
                     discover_producer(messenger, &probe_sender, discovery_timeout).await?;
                 (Some(core), Some(inst))

@@ -3156,7 +3156,6 @@ dependencies = [
 name = "pmi"
 version = "0.0.1"
 dependencies = [
- "askama",
  "build-helpers",
  "bytes",
  "config",

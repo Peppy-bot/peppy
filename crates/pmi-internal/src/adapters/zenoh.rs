@@ -33,11 +33,14 @@ use crate::wire::{
     ActionWireReceiver, ActionWireSender, ServiceQueryKind, ServiceWireReceiver, ServiceWireSender,
     TopicWireReceiver, TopicWireSender,
 };
+use crate::zenoh_config::{
+    SessionMode, ZenohConfigSpec, connectable_host, loopback_listen_endpoint, render_config,
+    render_probe_config,
+};
 use crate::zenohd::{self, ZenohNetProtocol};
 #[cfg(feature = "router")]
 use crate::{Messenger, MessengerAdapter};
 use crate::{MessengerBackend, Subscription};
-use askama::Template;
 
 use std::net::SocketAddr;
 #[cfg(feature = "router")]
@@ -131,89 +134,18 @@ impl Drop for ZenohdInstance {
 use zenoh::qos::{CongestionControl, Priority};
 use zenoh::sample::SampleFields;
 
-#[derive(Template)]
-#[template(
-    source = r#"{
-    "mode": "client",
-    "connect": {
-        "endpoints": ["{{ protocol }}/{{ host }}:{{ port }}"]
-    },
-    "timestamping": {
-        "enabled": { "client": true }
-    }
-}"#,
-    ext = "txt"
-)]
-pub struct ZenohClientConfigTemplate {
-    pub host: String,
-    pub port: u16,
-    pub protocol: zenohd::ZenohNetProtocol,
-}
-
-/// Client config for the daemon's long-lived session. Unlike the fail-fast
-/// default, this retries the connection forever (`timeout_ms: -1`,
-/// `exit_on_failure: false`) so the session re-establishes — and re-declares
-/// its subscriptions/queryables — if the router is restarted under it (e.g. by
-/// the router watchdog respawning zenohd).
-#[derive(Template)]
-#[template(
-    source = r#"{
-    "mode": "client",
-    "connect": {
-        "endpoints": ["{{ protocol }}/{{ host }}:{{ port }}"],
-        "timeout_ms": -1,
-        "exit_on_failure": false,
-        "retry": {
-            "period_init_ms": 1000,
-            "period_max_ms": 4000,
-            "period_increase_factor": 2.0
-        }
-    },
-    "timestamping": {
-        "enabled": { "client": true }
-    }
-}"#,
-    ext = "txt"
-)]
-pub struct ZenohReconnectingClientConfigTemplate {
-    pub host: String,
-    pub port: u16,
-    pub protocol: ZenohNetProtocol,
-}
-
-/// Client config for the router watchdog's liveness probe. Scouting is
-/// disabled so the probe only ever tries the configured router endpoint (never
-/// a multicast-discovered peer), making "is *our* router responsive?" a
-/// deterministic question.
-#[derive(Template)]
-#[template(
-    source = r#"{
-    "mode": "client",
-    "connect": {
-        "endpoints": ["{{ protocol }}/{{ host }}:{{ port }}"]
-    },
-    "scouting": {
-        "multicast": {
-            "enabled": false
-        }
-    },
-    "timestamping": {
-        "enabled": { "client": true }
-    }
-}"#,
-    ext = "txt"
-)]
-pub struct ZenohProbeClientConfigTemplate {
-    pub host: String,
-    pub port: u16,
-    pub protocol: ZenohNetProtocol,
-}
-
+/// Resolved config for a node/daemon peer session, plus the inputs needed to
+/// rebuild it (the reconnecting session is re-derived on every
+/// [`start_session`](MessengerBackend::start_session)).
 pub struct ZenohClientConfig {
     zenoh_config: zenoh::config::Config,
     host: String,
     port: u16,
     protocol: ZenohNetProtocol,
+    /// Resolved gossip seed endpoints (defaults to the router endpoint).
+    seed_peers: Vec<String>,
+    /// Whether gossip-based direct peer linking is enabled for this session.
+    gossip: bool,
 }
 
 pub struct ZenohAdapter {
@@ -243,10 +175,26 @@ impl ZenohAdapter {
         })
     }
 
-    /// Creates a ZenohAdapter that connects to an existing zenohd router.
-    /// Use this when you want to connect to a router that's already running.
+    /// Creates a ZenohAdapter that joins the mesh seeded by an existing zenohd
+    /// router, using the default discovery (gossip on, seed = `host:port`). The
+    /// session runs in `peer` mode so data forms direct links instead of
+    /// relaying through the router.
     pub fn connect_to(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
-        let client_config = Self::create_client_config(protocol, host, port, false);
+        Self::connect_to_with_discovery(protocol, host, port, Vec::new(), true)
+    }
+
+    /// Like [`connect_to`](Self::connect_to) but with an explicit gossip seed
+    /// list and gossip toggle. The node runtime passes its `DiscoveryConfig`
+    /// here. An empty `seed_peers` falls back to the single `host:port` seed.
+    pub fn connect_to_with_discovery(
+        protocol: ZenohNetProtocol,
+        host: &str,
+        port: u16,
+        seed_peers: Vec<String>,
+        gossip: bool,
+    ) -> Result<Self> {
+        let client_config =
+            Self::create_client_config(protocol, host, port, false, seed_peers, gossip);
 
         Ok(Self {
             #[cfg(feature = "router")]
@@ -290,7 +238,9 @@ impl ZenohAdapter {
             };
 
             let adapter = Self::with_router(ZenohNetProtocol::Tcp, host, port)?;
-            let probe_config = adapter.client_config.zenoh_config.clone();
+            // A lightweight client probe (no listener, no peer discovery) is the
+            // cheapest reliable "router accepts sessions yet?" check.
+            let probe_config = render_probe_config(ZenohNetProtocol::Tcp, host, port);
             let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
 
             // Drop the port reservation before starting the router so zenohd can bind to it
@@ -345,74 +295,73 @@ impl ZenohAdapter {
     /// central messenger lock.
     #[cfg(feature = "router")]
     pub fn router_health_checker(&self) -> zenohd::RouterHealthChecker {
-        let probe_str = ZenohProbeClientConfigTemplate {
-            host: self.client_config.host.clone(),
-            port: self.client_config.port,
-            protocol: self.client_config.protocol,
-        }
-        .render()
-        .expect("Failed to render probe client config template");
-        let probe_config = zenoh::config::Config::from_json5(&probe_str)
-            .expect("Failed to create probe client config");
+        let probe_config = render_probe_config(
+            self.client_config.protocol,
+            &self.client_config.host,
+            self.client_config.port,
+        );
         zenohd::RouterHealthChecker::new(probe_config)
     }
 
+    /// Builds a peer-session config seeded by `host:port` (or `seed_peers` when
+    /// non-empty). An operator can override the whole session config without a
+    /// rebuild via `ZENOH_SESSION_CONFIG` (mirrors the router's `ZENOH_CONFIG`).
     fn create_client_config(
         protocol: ZenohNetProtocol,
         host: &str,
         port: u16,
         reconnect: bool,
+        seed_peers: Vec<String>,
+        gossip: bool,
     ) -> ZenohClientConfig {
-        let connect_host = if host == "0.0.0.0" {
-            "127.0.0.1".to_string()
+        let connect_host = connectable_host(host);
+        let seeds = if seed_peers.is_empty() {
+            vec![format!("{protocol}/{connect_host}:{port}")]
         } else {
-            host.to_string()
+            seed_peers
         };
 
-        // The long-lived daemon session uses the reconnecting template so it
-        // survives a router restart; everything else (CLI connects, readiness
-        // probes) uses the fail-fast template so a down router errors quickly
-        // instead of blocking on retries.
-        let client_config_str = if reconnect {
-            ZenohReconnectingClientConfigTemplate {
-                host: connect_host.clone(),
-                port,
-                protocol,
-            }
-            .render()
-            .expect("Failed to render reconnecting client config template")
-        } else {
-            ZenohClientConfigTemplate {
-                host: connect_host.clone(),
-                port,
-                protocol,
-            }
-            .render()
-            .expect("Failed to render client config template")
+        let zenoh_config = match std::env::var("ZENOH_SESSION_CONFIG") {
+            Ok(path) if !path.trim().is_empty() => zenoh::config::Config::from_file(path.trim())
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "ZENOH_SESSION_CONFIG ({}) is not a readable zenoh config: {e}",
+                        path.trim()
+                    )
+                }),
+            _ => render_config(&ZenohConfigSpec {
+                mode: SessionMode::Peer,
+                connect_endpoints: seeds.clone(),
+                listen_endpoints: vec![loopback_listen_endpoint(protocol)],
+                reconnect,
+                gossip,
+            }),
         };
-
-        let client_config = zenoh::config::Config::from_json5(&client_config_str)
-            .expect("Failed to create client config");
 
         ZenohClientConfig {
-            zenoh_config: client_config,
+            zenoh_config,
             host: connect_host,
             port,
             protocol,
+            seed_peers: seeds,
+            gossip,
         }
     }
 
     #[cfg(feature = "router")]
     fn derive_client_config_from_zenohd(zenohd: &zenohd::ZenohdFacade) -> ZenohClientConfig {
-        // Fail-fast: this config also backs the ephemeral readiness probe in
-        // `start_router_ephemeral`, which relies on `zenoh::open` erroring
-        // quickly. The daemon's reconnecting session is built separately in
-        // `start_session` when `reconnect_session` is set.
+        // The daemon joins the mesh it hosts as a peer, seeded by its own router,
+        // so peers can reach its core-node/daemon services directly. Its
+        // long-lived session is rebuilt as reconnecting in `start_session` when
+        // `reconnect_session` is set; the readiness probe in
+        // `start_router_ephemeral` builds its own client probe config.
         Self::create_client_config(
             zenohd.zenoh_endpoint.protocol,
             &zenohd.zenoh_endpoint.host,
             zenohd.zenoh_endpoint.port,
             false,
+            Vec::new(),
+            true,
         )
     }
 }
@@ -429,6 +378,8 @@ impl MessengerBackend for ZenohAdapter {
                 &self.client_config.host,
                 self.client_config.port,
                 true,
+                self.client_config.seed_peers.clone(),
+                self.client_config.gossip,
             )
             .zenoh_config
         } else {
@@ -718,6 +669,78 @@ impl ZenohAdapter {
         })
     }
 
+    /// Waits until a subscriber whose key expression matches `keyexpr` is known
+    /// to this session, or `timeout` elapses; returns whether a match was seen.
+    ///
+    /// Peer-mode gossip discovery is not instantaneous, so a freshly-connected
+    /// publisher may not yet know about an existing subscriber and would drop
+    /// its first send. Awaiting Zenoh's matching status (event-driven via the
+    /// matching listener) makes that first reliable send deterministic. A
+    /// short-lived publisher is declared purely to observe matching; the publish
+    /// path itself is unchanged.
+    pub async fn wait_for_matching_subscriber(
+        &self,
+        keyexpr: &str,
+        timeout: std::time::Duration,
+    ) -> Result<bool> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let publisher = session
+            .declare_publisher(keyexpr.to_string())
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+
+        if publisher
+            .matching_status()
+            .await
+            .map_err(|e| Error::BackendError(e.to_string()))?
+            .matching()
+        {
+            return Ok(true);
+        }
+        // Subscribe to changes, then re-check once: this closes the race where a
+        // matching subscriber appears between the first query and the listener
+        // being installed.
+        let listener = publisher
+            .matching_listener()
+            .await
+            .map_err(|e| Error::BackendError(e.to_string()))?;
+        if publisher
+            .matching_status()
+            .await
+            .map_err(|e| Error::BackendError(e.to_string()))?
+            .matching()
+        {
+            return Ok(true);
+        }
+
+        let matched = tokio::time::timeout(timeout, async {
+            loop {
+                match listener.recv_async().await {
+                    Ok(status) if status.matching() => return true,
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        Ok(matched)
+    }
+
+    /// [`wait_for_matching_subscriber`](Self::wait_for_matching_subscriber) for a
+    /// topic, building the publish key expression from `sender`.
+    pub async fn wait_for_topic_subscriber(
+        &self,
+        sender: &TopicWireSender,
+        timeout: std::time::Duration,
+    ) -> Result<bool> {
+        self.wait_for_matching_subscriber(&ZenohWireFormat::topic_publish(sender), timeout)
+            .await
+    }
+
     async fn publish_keyexpr(
         &self,
         keyexpr: &str,
@@ -929,26 +952,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reconnecting_and_probe_configs_parse() {
-        // Guards the JSON5 schemas: a malformed connect/scouting block would
-        // otherwise panic at daemon startup inside `create_client_config` /
-        // `router_health_checker` (both `.expect()` on parse).
-        let reconnecting =
-            ZenohAdapter::create_client_config(ZenohNetProtocol::Tcp, "0.0.0.0", 7448, true);
-        // `0.0.0.0` must be rewritten to a connectable loopback host.
+    fn create_client_config_rewrites_wildcard_host_and_defaults_the_seed() {
+        // `0.0.0.0` must be rewritten to a connectable loopback host, and an
+        // empty seed list falls back to the single `host:port` endpoint. A
+        // malformed config would panic here (parse is `.expect()`).
+        let reconnecting = ZenohAdapter::create_client_config(
+            ZenohNetProtocol::Tcp,
+            "0.0.0.0",
+            7448,
+            true,
+            Vec::new(),
+            true,
+        );
         assert_eq!(reconnecting.host, "127.0.0.1");
+        assert_eq!(
+            reconnecting.seed_peers,
+            vec!["tcp/127.0.0.1:7448".to_string()]
+        );
+        assert!(reconnecting.gossip);
+    }
 
-        let fail_fast =
-            ZenohAdapter::create_client_config(ZenohNetProtocol::Tcp, "127.0.0.1", 7448, false);
-        assert_eq!(fail_fast.port, 7448);
-
-        let probe_str = ZenohProbeClientConfigTemplate {
-            host: "127.0.0.1".to_string(),
-            port: 7448,
-            protocol: ZenohNetProtocol::Tcp,
-        }
-        .render()
-        .expect("probe template renders");
-        zenoh::config::Config::from_json5(&probe_str).expect("probe config parses");
+    #[test]
+    fn create_client_config_honors_an_explicit_seed_list() {
+        let cfg = ZenohAdapter::create_client_config(
+            ZenohNetProtocol::Tcp,
+            "127.0.0.1",
+            7448,
+            false,
+            vec!["tcp/10.0.0.2:7448".to_string()],
+            false,
+        );
+        assert_eq!(cfg.seed_peers, vec!["tcp/10.0.0.2:7448".to_string()]);
+        assert!(!cfg.gossip);
     }
 }

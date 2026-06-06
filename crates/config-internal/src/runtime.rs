@@ -74,6 +74,45 @@ pub struct ResolvedFramework {
     pub use_sim_time: bool,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// Peer-discovery settings for a node's messaging session.
+///
+/// Nodes open a `peer` session that connects to a seed (the router) and then
+/// forms direct peer-to-peer links with peers discovered via gossip, so data
+/// stops relaying through the router. Discovery is gossip-only; there is no
+/// multicast (it would bridge otherwise-independent peer groups on a shared
+/// host, and a known seed already covers discovery).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoveryConfig {
+    /// Gossip seed endpoints (full Zenoh endpoints, e.g. `"tcp/127.0.0.1:7448"`).
+    /// Empty means "derive the router endpoint from `messaging_host:messaging_port`".
+    #[serde(default)]
+    pub seed_peers: Vec<String>,
+    /// Enable gossip so peers form direct links. Setting this to `false` forces
+    /// all traffic through the router (a rollback switch without a rebuild).
+    #[serde(default = "default_true")]
+    pub gossip: bool,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            seed_peers: Vec::new(),
+            gossip: true,
+        }
+    }
+}
+
+impl DiscoveryConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Configuration for the launcher to know how to configure spawned nodes' messaging.
 /// This is passed as part of a LauncherRequest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +150,11 @@ pub struct RuntimeConfig {
     pub node_tag: Name,
     pub bound_core_node: Name,
     pub node_instance: NodeInstanceConfig,
+    /// Peer-discovery settings. Defaulted (and omitted from serialized configs)
+    /// for the common case, so launch configs written before this field existed
+    /// still parse.
+    #[serde(default, skip_serializing_if = "DiscoveryConfig::is_default")]
+    pub discovery: DiscoveryConfig,
 }
 
 impl RuntimeConfig {
@@ -129,6 +173,7 @@ impl RuntimeConfig {
             node_name: Name::new(node_name.into())?,
             node_tag: Name::new(node_tag.into())?,
             bound_core_node: Name::new(bound_core_node.into())?,
+            discovery: DiscoveryConfig::default(),
         })
     }
 
@@ -213,6 +258,47 @@ mod tests {
 
         let legacy = runtime_config_from_json("camera_front").unwrap();
         assert!(!legacy.node_instance.framework.use_sim_time);
+    }
+
+    /// A launch config written before `discovery` existed (no `discovery` key)
+    /// parses with the gossip-on default, an explicit discovery block
+    /// round-trips, and a default discovery is omitted from the serialized form
+    /// so existing configs stay byte-identical.
+    #[test]
+    fn discovery_config_default_and_round_trip() {
+        let legacy = runtime_config_from_json("camera_front").unwrap();
+        assert_eq!(legacy.discovery, DiscoveryConfig::default());
+        assert!(legacy.discovery.gossip);
+        assert!(legacy.discovery.seed_peers.is_empty());
+
+        // Default discovery is skipped on serialize.
+        let serialized = serde_json5::to_string(&legacy).unwrap();
+        assert!(
+            !serialized.contains("discovery"),
+            "default discovery should not be serialized: {serialized}"
+        );
+
+        let custom: RuntimeConfig = serde_json5::from_str(
+            r#"{
+                messaging_host: "127.0.0.1",
+                messaging_port: 7448,
+                node_instance: { instance_id: "camera_front" },
+                node_name: "camera",
+                node_tag: "v1",
+                bound_core_node: "core_node",
+                discovery: { seed_peers: ["tcp/10.0.0.2:7448"], gossip: false }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            custom.discovery.seed_peers,
+            vec!["tcp/10.0.0.2:7448".to_string()]
+        );
+        assert!(!custom.discovery.gossip);
+
+        let reparsed: RuntimeConfig =
+            serde_json5::from_str(&serde_json5::to_string(&custom).unwrap()).unwrap();
+        assert_eq!(reparsed.discovery, custom.discovery);
     }
 
     #[test]
