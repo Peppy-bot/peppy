@@ -78,13 +78,26 @@ fn default_true() -> bool {
     true
 }
 
-/// Peer-discovery settings for a node's messaging session.
+fn default_standard_buffer_size() -> usize {
+    crate::peppy_config::DEFAULT_STANDARD_BUFFER_SIZE
+}
+
+fn default_high_throughput_buffer_size() -> usize {
+    crate::peppy_config::DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
+}
+
+/// Messaging-session settings the daemon resolves once and ships to a node.
 ///
 /// Nodes open a `peer` session that connects to a seed (the router) and then
 /// forms direct peer-to-peer links with peers discovered via gossip, so data
 /// stops relaying through the router. Discovery is gossip-only; there is no
 /// multicast (it would bridge otherwise-independent peer groups on a shared
 /// host, and a known seed already covers discovery).
+///
+/// The subscriber buffer sizes live here too. They are a subscriber-channel
+/// concern rather than a discovery one, but co-locating them keeps a single
+/// struct (and a single serialized block) travelling the daemon-to-node path,
+/// since this is already the value threaded into the node's session at startup.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveryConfig {
@@ -96,6 +109,12 @@ pub struct DiscoveryConfig {
     /// all traffic through the router (a rollback switch without a rebuild).
     #[serde(default = "default_true")]
     pub gossip: bool,
+    /// Subscriber channel buffer for the `Standard` QoS tier (in-flight messages).
+    #[serde(default = "default_standard_buffer_size")]
+    pub standard_buffer_size: usize,
+    /// Subscriber channel buffer for the `HighThroughput` QoS tier (e.g. sensor data).
+    #[serde(default = "default_high_throughput_buffer_size")]
+    pub high_throughput_buffer_size: usize,
 }
 
 impl Default for DiscoveryConfig {
@@ -103,6 +122,8 @@ impl Default for DiscoveryConfig {
         Self {
             seed_peers: Vec::new(),
             gossip: true,
+            standard_buffer_size: crate::peppy_config::DEFAULT_STANDARD_BUFFER_SIZE,
+            high_throughput_buffer_size: crate::peppy_config::DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
         }
     }
 }
@@ -270,6 +291,10 @@ mod tests {
         assert_eq!(legacy.discovery, DiscoveryConfig::default());
         assert!(legacy.discovery.gossip);
         assert!(legacy.discovery.seed_peers.is_empty());
+        // A launch config written before the buffer fields existed still parses
+        // and gets the built-in defaults.
+        assert_eq!(legacy.discovery.standard_buffer_size, 128);
+        assert_eq!(legacy.discovery.high_throughput_buffer_size, 1024);
 
         // Default discovery is skipped on serialize.
         let serialized = serde_json5::to_string(&legacy).unwrap();
@@ -278,7 +303,8 @@ mod tests {
             "default discovery should not be serialized: {serialized}"
         );
 
-        let custom: RuntimeConfig = serde_json5::from_str(
+        // A discovery block that omits the buffer keys still parses (defaults).
+        let no_buffers: RuntimeConfig = serde_json5::from_str(
             r#"{
                 messaging_host: "127.0.0.1",
                 messaging_port: 7448,
@@ -291,10 +317,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            custom.discovery.seed_peers,
+            no_buffers.discovery.seed_peers,
             vec!["tcp/10.0.0.2:7448".to_string()]
         );
-        assert!(!custom.discovery.gossip);
+        assert!(!no_buffers.discovery.gossip);
+        assert_eq!(no_buffers.discovery.standard_buffer_size, 128);
+        assert_eq!(no_buffers.discovery.high_throughput_buffer_size, 1024);
+
+        // Explicit buffer sizes round-trip.
+        let custom: RuntimeConfig = serde_json5::from_str(
+            r#"{
+                messaging_host: "127.0.0.1",
+                messaging_port: 7448,
+                node_instance: { instance_id: "camera_front" },
+                node_name: "camera",
+                node_tag: "v1",
+                bound_core_node: "core_node",
+                discovery: {
+                    seed_peers: ["tcp/10.0.0.2:7448"],
+                    gossip: false,
+                    standard_buffer_size: 64,
+                    high_throughput_buffer_size: 4096
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(custom.discovery.standard_buffer_size, 64);
+        assert_eq!(custom.discovery.high_throughput_buffer_size, 4096);
 
         let reparsed: RuntimeConfig =
             serde_json5::from_str(&serde_json5::to_string(&custom).unwrap()).unwrap();

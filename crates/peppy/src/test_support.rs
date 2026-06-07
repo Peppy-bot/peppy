@@ -183,6 +183,7 @@ impl ServeCommandEmulation {
             },
             temp_dir.path().to_path_buf(),
             peppy_dirs,
+            config::peppy_config::PeppyConfig::default(),
         );
         let core_node_name = core_node.node_name().to_string();
 

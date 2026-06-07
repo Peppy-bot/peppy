@@ -26,7 +26,8 @@
 use crate::error::{Error, Result};
 use crate::types::{
     IncomingRequest, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
-    ServiceQueryable, ServiceReply, SubscriberQoS, TopicMessage, ZenohResponseToken,
+    ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, TopicMessage,
+    ZenohResponseToken,
 };
 use crate::wire::zenoh_format::{ServiceReplyAttachment, TopicAttachment, ZenohWireFormat};
 use crate::wire::{
@@ -146,6 +147,8 @@ pub struct ZenohClientConfig {
     seed_peers: Vec<String>,
     /// Whether gossip-based direct peer linking is enabled for this session.
     gossip: bool,
+    /// Per-QoS subscriber channel buffer sizes for this session.
+    buffer_sizes: SubscriberBufferSizes,
 }
 
 pub struct ZenohAdapter {
@@ -160,12 +163,21 @@ pub struct ZenohAdapter {
 
 impl ZenohAdapter {
     /// Creates a ZenohAdapter that owns and manages its own zenohd router.
-    /// Use this when you need to start a new router instance.
+    /// Use this when you need to start a new router instance. `gossip` selects
+    /// the daemon session's own routing model (peer vs router-relay) and
+    /// `buffer_sizes` its subscriber channel capacities, both resolved from
+    /// `peppy_config.json5`.
     #[cfg(feature = "router")]
-    pub fn with_router(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
+    pub fn with_router(
+        protocol: ZenohNetProtocol,
+        host: &str,
+        port: u16,
+        gossip: bool,
+        buffer_sizes: SubscriberBufferSizes,
+    ) -> Result<Self> {
         let zenohd_config_path = zenohd::router_config_path(protocol, host, port)?;
         let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
-        let client_config = Self::derive_client_config_from_zenohd(&facade);
+        let client_config = Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes);
 
         Ok(Self {
             zenohd: Some(facade),
@@ -176,25 +188,41 @@ impl ZenohAdapter {
     }
 
     /// Creates a ZenohAdapter that joins the mesh seeded by an existing zenohd
-    /// router, using the default discovery (gossip on, seed = `host:port`). The
-    /// session runs in `peer` mode so data forms direct links instead of
-    /// relaying through the router.
+    /// router, using the default discovery (gossip on, seed = `host:port`) and
+    /// default subscriber buffers. The session runs in `peer` mode so data forms
+    /// direct links instead of relaying through the router.
     pub fn connect_to(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
-        Self::connect_to_with_discovery(protocol, host, port, Vec::new(), true)
+        Self::connect_to_with_discovery(
+            protocol,
+            host,
+            port,
+            Vec::new(),
+            true,
+            SubscriberBufferSizes::default(),
+        )
     }
 
     /// Like [`connect_to`](Self::connect_to) but with an explicit gossip seed
-    /// list and gossip toggle. The node runtime passes its `DiscoveryConfig`
-    /// here. An empty `seed_peers` falls back to the single `host:port` seed.
+    /// list, gossip toggle, and subscriber buffer sizes. The node runtime passes
+    /// its `DiscoveryConfig` here. An empty `seed_peers` falls back to the single
+    /// `host:port` seed.
     pub fn connect_to_with_discovery(
         protocol: ZenohNetProtocol,
         host: &str,
         port: u16,
         seed_peers: Vec<String>,
         gossip: bool,
+        buffer_sizes: SubscriberBufferSizes,
     ) -> Result<Self> {
-        let client_config =
-            Self::create_client_config(protocol, host, port, false, seed_peers, gossip);
+        let client_config = Self::create_client_config(
+            protocol,
+            host,
+            port,
+            false,
+            seed_peers,
+            gossip,
+            buffer_sizes,
+        );
 
         Ok(Self {
             #[cfg(feature = "router")]
@@ -217,6 +245,18 @@ impl ZenohAdapter {
     }
 
     /// Starts a zenohd router with an ephemeral port, retrying on bind failures.
+    /// The hosted session is a peer with default subscriber buffers; use
+    /// [`start_router_ephemeral_in_mode`](Self::start_router_ephemeral_in_mode)
+    /// to pick the session's gossip mode and buffer sizes.
+    #[cfg(feature = "router")]
+    pub async fn start_router_ephemeral(host: &str, port: Option<u16>) -> Result<ZenohdInstance> {
+        Self::start_router_ephemeral_in_mode(host, port, true, SubscriberBufferSizes::default())
+            .await
+    }
+
+    /// Like [`start_router_ephemeral`](Self::start_router_ephemeral) but the
+    /// hosted session's `gossip` (peer vs router-relay) and subscriber buffer
+    /// sizes are explicit. Used by tests to exercise both messaging modes.
     ///
     /// When `port` is `None`, automatically selects an available port and retries
     /// up to 32 times if the port becomes unavailable. When `port` is `Some`,
@@ -224,7 +264,12 @@ impl ZenohAdapter {
     ///
     /// Returns a [`ZenohdInstance`] that automatically stops the router when dropped.
     #[cfg(feature = "router")]
-    pub async fn start_router_ephemeral(host: &str, port: Option<u16>) -> Result<ZenohdInstance> {
+    pub async fn start_router_ephemeral_in_mode(
+        host: &str,
+        port: Option<u16>,
+        gossip: bool,
+        buffer_sizes: SubscriberBufferSizes,
+    ) -> Result<ZenohdInstance> {
         let max_attempts = if port.is_some() { 1 } else { 32 };
 
         for attempt in 0..max_attempts {
@@ -237,7 +282,8 @@ impl ZenohAdapter {
                 }
             };
 
-            let adapter = Self::with_router(ZenohNetProtocol::Tcp, host, port)?;
+            let adapter =
+                Self::with_router(ZenohNetProtocol::Tcp, host, port, gossip, buffer_sizes)?;
             // A lightweight client probe (no listener, no peer discovery) is the
             // cheapest reliable "router accepts sessions yet?" check.
             let probe_config = render_probe_config(ZenohNetProtocol::Tcp, host, port);
@@ -313,6 +359,7 @@ impl ZenohAdapter {
         reconnect: bool,
         seed_peers: Vec<String>,
         gossip: bool,
+        buffer_sizes: SubscriberBufferSizes,
     ) -> ZenohClientConfig {
         let connect_host = connectable_host(host);
         let seeds = if seed_peers.is_empty() {
@@ -321,6 +368,11 @@ impl ZenohAdapter {
             seed_peers
         };
 
+        // `ZENOH_SESSION_CONFIG` overrides the generated zenoh session config
+        // wholesale, including the `gossip`/mode rendering below, so the operator
+        // file wins on routing model. It does NOT affect `buffer_sizes`, which
+        // are applied later at the flume/mpsc layer (subscribe / listen / call),
+        // so peer-mode buffer tuning from `peppy_config.json5` still takes effect.
         let zenoh_config = match std::env::var("ZENOH_SESSION_CONFIG") {
             Ok(path) if !path.trim().is_empty() => zenoh::config::Config::from_file(path.trim())
                 .unwrap_or_else(|e| {
@@ -360,23 +412,32 @@ impl ZenohAdapter {
             protocol,
             seed_peers: seeds,
             gossip,
+            buffer_sizes,
         }
     }
 
     #[cfg(feature = "router")]
-    fn derive_client_config_from_zenohd(zenohd: &zenohd::ZenohdFacade) -> ZenohClientConfig {
-        // The daemon joins the mesh it hosts as a peer, seeded by its own router,
-        // so peers can reach its core-node/daemon services directly. Its
-        // long-lived session is rebuilt as reconnecting in `start_session` when
-        // `reconnect_session` is set; the readiness probe in
-        // `start_router_ephemeral` builds its own client probe config.
+    fn derive_client_config_from_zenohd(
+        zenohd: &zenohd::ZenohdFacade,
+        gossip: bool,
+        buffer_sizes: SubscriberBufferSizes,
+    ) -> ZenohClientConfig {
+        // The daemon joins the mesh it hosts, seeded by its own router, so peers
+        // can reach its core-node/daemon services. `gossip` (from
+        // `peppy_config.json5`) selects whether that session is a peer (direct
+        // links) or a client (router relay); router mode makes the daemon a
+        // plain client of its own loopback router. Its long-lived session is
+        // rebuilt as reconnecting in `start_session` when `reconnect_session` is
+        // set; the readiness probe in `start_router_ephemeral` builds its own
+        // client probe config.
         Self::create_client_config(
             zenohd.zenoh_endpoint.protocol,
             &zenohd.zenoh_endpoint.host,
             zenohd.zenoh_endpoint.port,
             false,
             Vec::new(),
-            true,
+            gossip,
+            buffer_sizes,
         )
     }
 }
@@ -395,6 +456,7 @@ impl MessengerBackend for ZenohAdapter {
                 true,
                 self.client_config.seed_peers.clone(),
                 self.client_config.gossip,
+                self.client_config.buffer_sizes,
             )
             .zenoh_config
         } else {
@@ -476,7 +538,11 @@ impl MessengerBackend for ZenohAdapter {
             .as_ref()
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
 
-        let (tx, rx) = flume::bounded::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
+        let (tx, rx) = flume::bounded::<IncomingRequest>(
+            self.client_config
+                .buffer_sizes
+                .size_for(SubscriberQoS::Standard),
+        );
 
         // One queryable per listen call. The declared keyexpr has `*` at the
         // link_id slot so a single queryable absorbs every bound link_id —
@@ -518,8 +584,11 @@ impl MessengerBackend for ZenohAdapter {
 
         let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
 
-        let (tx, rx) =
-            tokio::sync::mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
+        let (tx, rx) = tokio::sync::mpsc::channel::<ServiceReply>(
+            self.client_config
+                .buffer_sizes
+                .size_for(SubscriberQoS::Standard),
+        );
 
         // `try_send` (not `send`) because the callback runs synchronously on
         // a zenoh worker thread that we must not block. Two drop conditions
@@ -527,7 +596,7 @@ impl MessengerBackend for ZenohAdapter {
         //   1. receiver dropped — caller has the first valid reply and has
         //      released the `ReplyStream`; sibling producers' late replies
         //      go nowhere, which is intentional;
-        //   2. channel full (capacity = `SubscriberQoS::Standard.channel_size`)
+        //   2. channel full (capacity = the Standard subscriber buffer size)
         //      — would only happen if the consumer's `poll_service` loop
         //      stalls for thousands of replies; in practice the consumer
         //      drains the channel as fast as zenoh fills it, so this branch
@@ -792,7 +861,7 @@ impl ZenohAdapter {
         qos: SubscriberQoS,
         drop_secondary: bool,
     ) -> Result<Subscription> {
-        let (tx, rx) = flume::bounded(qos.channel_size());
+        let (tx, rx) = flume::bounded(self.client_config.buffer_sizes.size_for(qos));
 
         let session = self
             .session
@@ -978,6 +1047,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            SubscriberBufferSizes::default(),
         );
         assert_eq!(reconnecting.host, "127.0.0.1");
         assert_eq!(
@@ -988,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn create_client_config_honors_an_explicit_seed_list() {
+    fn create_client_config_honors_an_explicit_seed_list_and_buffer_sizes() {
         let cfg = ZenohAdapter::create_client_config(
             ZenohNetProtocol::Tcp,
             "127.0.0.1",
@@ -996,8 +1066,14 @@ mod tests {
             false,
             vec!["tcp/10.0.0.2:7448".to_string()],
             false,
+            SubscriberBufferSizes {
+                standard: 64,
+                high_throughput: 4096,
+            },
         );
         assert_eq!(cfg.seed_peers, vec!["tcp/10.0.0.2:7448".to_string()]);
         assert!(!cfg.gossip);
+        assert_eq!(cfg.buffer_sizes.standard, 64);
+        assert_eq!(cfg.buffer_sizes.high_throughput, 4096);
     }
 }

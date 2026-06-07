@@ -11,6 +11,7 @@ use crate::services::node::{
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
 use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
+use config::peppy_config::{Mode, PeerConfig};
 use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
@@ -79,6 +80,10 @@ pub struct StackLaunchTimeouts {
 pub struct StackLaunchDefaults {
     pub timeouts: StackLaunchTimeouts,
     pub use_sim_time: bool,
+    /// Daemon-global messaging mode, injected into every launched node.
+    pub messaging_mode: Mode,
+    /// Daemon-global peer buffer sizes, injected into every launched node.
+    pub peer_buffer: PeerConfig,
 }
 
 pub async fn listen_for_stack_launch(
@@ -103,6 +108,8 @@ pub async fn listen_for_stack_launch(
     let StackLaunchDefaults {
         timeouts,
         use_sim_time: daemon_use_sim_time,
+        messaging_mode,
+        peer_buffer,
     } = defaults;
     let handler = LaunchGoalHandler {
         context: LaunchActionContext {
@@ -113,6 +120,8 @@ pub async fn listen_for_stack_launch(
             peppy_dirs,
             timeouts,
             daemon_use_sim_time,
+            messaging_mode,
+            peer_buffer,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -161,6 +170,10 @@ struct ProcessLaunchContext {
     /// Daemon-wide default for `framework.use_sim_time` applied to instances
     /// that omit the per-instance override.
     daemon_use_sim_time: bool,
+    /// Daemon-global messaging mode, injected into every launched node.
+    messaging_mode: Mode,
+    /// Daemon-global peer buffer sizes, injected into every launched node.
+    peer_buffer: PeerConfig,
 }
 
 #[derive(Clone)]
@@ -172,6 +185,8 @@ struct LaunchActionContext {
     peppy_dirs: PeppyDirs,
     timeouts: StackLaunchTimeouts,
     daemon_use_sim_time: bool,
+    messaging_mode: Mode,
+    peer_buffer: PeerConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -685,6 +700,8 @@ async fn start_node_directly(
         peppy_dirs: ctx.peppy_dirs.clone(),
         health_monitor_interval: ctx.timeouts.health_monitor_interval,
         health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
+        messaging_mode: ctx.messaging_mode,
+        peer_buffer: ctx.peer_buffer,
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -1531,6 +1548,8 @@ async fn handle_goal_request(
             peppy_dirs,
             timeouts,
             daemon_use_sim_time,
+            messaging_mode,
+            peer_buffer,
         } = action_context;
         let env_vars = goal.env_vars.clone();
         // Compute the launch deadline once. `None` => no overall deadline (idle-only).
@@ -1555,6 +1574,8 @@ async fn handle_goal_request(
                 run: Duration::from_secs(goal.node_run_idle_timeout_secs),
             },
             daemon_use_sim_time,
+            messaging_mode,
+            peer_buffer,
         };
         // Catch panics so a panic inside the launch sequence still completes the
         // goal with a failure result, rather than leaving the client to wait out

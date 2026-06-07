@@ -15,7 +15,8 @@ pub use types::ZenohResponseToken;
 pub use types::{
     IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
     MockResponseToken, Payload, PayloadSlices, PublisherQoS, ReplyStream, ResponseToken,
-    ServiceQueryable, ServiceReply, SubscriberQoS, Subscription, TopicMessage,
+    ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, Subscription,
+    TopicMessage,
 };
 pub use wire::{
     ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, InterfaceIdentifier, NodeIdentifier,

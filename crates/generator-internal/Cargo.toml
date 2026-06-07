@@ -31,3 +31,4 @@ serde_json5 = "0.2.1"
 tempfile = "3.10"
 peppylib = { path = "../peppylib" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+rstest = { workspace = true }

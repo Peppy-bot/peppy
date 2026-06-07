@@ -8,8 +8,8 @@ mod zenoh_tests {
     };
     use bytes::Bytes;
     use pmi::{
-        MessengerBackend, Payload, PublisherQoS, SubscriberQoS, TopicWireReceiver, TopicWireSender,
-        ZenohAdapter, ZenohNetProtocol,
+        MessengerBackend, Payload, PublisherQoS, SubscriberBufferSizes, SubscriberQoS,
+        TopicWireReceiver, TopicWireSender, ZenohAdapter, ZenohNetProtocol,
     };
     use std::time::{Duration, Instant};
 
@@ -277,6 +277,135 @@ mod zenoh_tests {
         );
     }
 
+    /// Router mode (gossip off → plain client sessions) still delivers, with the
+    /// traffic relayed through the running zenohd router. Positive companion to
+    /// `peers_keep_delivering_after_router_stops`, which proves the peer path;
+    /// here the router is required and kept alive for the whole test.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn router_mode_delivers_through_router() {
+        const TOPIC: &str = "router_mode_topic";
+        let _lock = ZENOH_SERIAL.lock().await;
+
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("Failed to start zenohd process");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        // gossip=false → plain client sessions with no peer listener, so all
+        // traffic routes through the central router.
+        let mut subscriber = ZenohAdapter::connect_to_with_discovery(
+            ZenohNetProtocol::Tcp,
+            &host,
+            port,
+            Vec::new(),
+            false,
+            SubscriberBufferSizes::default(),
+        )
+        .expect("subscriber adapter");
+        subscriber
+            .start_session()
+            .await
+            .expect("subscriber start_session");
+        let mut subscription = subscriber
+            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .await
+            .expect("subscribe");
+
+        let mut publisher = ZenohAdapter::connect_to_with_discovery(
+            ZenohNetProtocol::Tcp,
+            &host,
+            port,
+            Vec::new(),
+            false,
+            SubscriberBufferSizes::default(),
+        )
+        .expect("publisher adapter");
+        publisher
+            .start_session()
+            .await
+            .expect("publisher start_session");
+
+        wait_for_subscriber_discovery().await;
+        publisher
+            .publish_topic(
+                &sender(TOPIC),
+                Payload::from_bytes(Bytes::from_static(b"router-mode")),
+                PublisherQoS::Standard,
+                true,
+            )
+            .await
+            .expect("publish");
+        let msg = recv_or_timeout(&mut subscription.rx, "router-mode").await;
+        assert_eq!(msg.payload(), &Bytes::from_static(b"router-mode"));
+
+        // Keep the router alive until the end: client-mode delivery depends on it.
+        drop(instance);
+    }
+
+    /// A peer session built with custom (tiny) subscriber buffers still delivers
+    /// end-to-end. This pins that the buffer sizes are threaded through
+    /// `connect_to_with_discovery` without breaking delivery; exact-capacity
+    /// backpressure is covered by the `SubscriberBufferSizes` unit tests.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn peer_session_uses_custom_buffer_sizes() {
+        const TOPIC: &str = "custom_buffer_topic";
+        let _lock = ZENOH_SERIAL.lock().await;
+
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("Failed to start zenohd process");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        let tiny = SubscriberBufferSizes {
+            standard: 2,
+            high_throughput: 2,
+        };
+        let mut subscriber = ZenohAdapter::connect_to_with_discovery(
+            ZenohNetProtocol::Tcp,
+            &host,
+            port,
+            Vec::new(),
+            true,
+            tiny,
+        )
+        .expect("subscriber adapter");
+        subscriber
+            .start_session()
+            .await
+            .expect("subscriber start_session");
+        let mut subscription = subscriber
+            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .await
+            .expect("subscribe");
+
+        let mut publisher = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port)
+            .expect("publisher adapter");
+        publisher
+            .start_session()
+            .await
+            .expect("publisher start_session");
+
+        wait_for_subscriber_discovery().await;
+        // Publish and drain one at a time so the tiny buffer never overflows.
+        for i in 0..5 {
+            let body = Bytes::from(format!("msg-{i}"));
+            publisher
+                .publish_topic(
+                    &sender(TOPIC),
+                    Payload::from_bytes(body.clone()),
+                    PublisherQoS::Standard,
+                    true,
+                )
+                .await
+                .expect("publish");
+            let msg = recv_or_timeout(&mut subscription.rx, "custom-buffer").await;
+            assert_eq!(msg.payload(), &body);
+        }
+        drop(instance);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_publish_before_start_session_fails() {
         let _lock = ZENOH_SERIAL.lock().await;
@@ -503,7 +632,14 @@ mod zenoh_tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let adapter = ZenohAdapter::with_router(ZenohNetProtocol::Tcp, "127.0.0.1", port).unwrap();
+        let adapter = ZenohAdapter::with_router(
+            ZenohNetProtocol::Tcp,
+            "127.0.0.1",
+            port,
+            true,
+            SubscriberBufferSizes::default(),
+        )
+        .unwrap();
         let (host, adapter_port) = adapter.client_endpoint();
         assert_eq!(host, "127.0.0.1");
         assert_eq!(adapter_port, port);

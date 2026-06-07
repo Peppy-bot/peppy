@@ -2,7 +2,8 @@ use super::super::error::{Error, Result};
 use super::super::types::{
     AbortOnDrop, IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend,
     MockResponseToken, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
-    ServiceQueryable, ServiceReply, SubscriberQoS, Subscription, TopicMessage,
+    ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, Subscription,
+    TopicMessage,
 };
 use super::super::wire::zenoh_format::ZenohWireFormat;
 use super::super::wire::{
@@ -161,7 +162,9 @@ impl MessengerBackend for MockAdapter {
             });
         }
 
-        let (tx, rx) = flume::bounded::<IncomingRequest>(SubscriberQoS::Standard.channel_size());
+        let (tx, rx) = flume::bounded::<IncomingRequest>(
+            SubscriberBufferSizes::default().size_for(SubscriberQoS::Standard),
+        );
 
         // One queryable per listen call (see `ZenohAdapter::listen_service`
         // for the rationale — the same shape applies here so peppylib tests
@@ -196,8 +199,9 @@ impl MessengerBackend for MockAdapter {
         let attachment = ZenohWireFormat::service_get_selector_attachment(sender, kind);
         let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
 
-        let (reply_tx, mut reply_rx) =
-            mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
+        let (reply_tx, mut reply_rx) = mpsc::channel::<ServiceReply>(
+            SubscriberBufferSizes::default().size_for(SubscriberQoS::Standard),
+        );
 
         // Snapshot matching queryable channels under the map lock, then dispatch
         // outside the lock so async send doesn't hold a sync mutex across await.
@@ -225,8 +229,9 @@ impl MessengerBackend for MockAdapter {
         // dropped — typically after the user handler's final `respond` call.
         drop(reply_tx);
 
-        let (output_tx, output_rx) =
-            mpsc::channel::<ServiceReply>(SubscriberQoS::Standard.channel_size());
+        let (output_tx, output_rx) = mpsc::channel::<ServiceReply>(
+            SubscriberBufferSizes::default().size_for(SubscriberQoS::Standard),
+        );
         let pump_task = tokio::spawn(async move {
             let _ = tokio::time::timeout(timeout, async move {
                 while let Some(msg) = reply_rx.recv().await {
@@ -446,7 +451,8 @@ impl MockAdapter {
     /// closed senders rather than garbage-collecting them, mirroring the
     /// topic [`SubscriptionMap`] convention.
     fn declare_queryable_keyexpr(&self, declared_keyexpr: String) -> mpsc::Receiver<MockQuery> {
-        let (tx, rx) = mpsc::channel(SubscriberQoS::Standard.channel_size());
+        let (tx, rx) =
+            mpsc::channel(SubscriberBufferSizes::default().size_for(SubscriberQoS::Standard));
         let mut queryables = self.queryables.lock().unwrap();
         queryables.entry(declared_keyexpr).or_default().push(tx);
         rx
@@ -464,7 +470,7 @@ impl MockAdapter {
             });
         }
 
-        let (tx, rx) = flume::bounded(qos.channel_size());
+        let (tx, rx) = flume::bounded(SubscriberBufferSizes::default().size_for(qos));
 
         {
             let mut subscriptions = self.subscriptions.lock().unwrap();

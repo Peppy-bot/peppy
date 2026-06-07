@@ -189,7 +189,17 @@ pub struct ServeCommand {
 
 impl Command for ServeCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
+        // Read the daemon-global config once at startup, creating it with
+        // defaults if missing. Resolved from `PeppyDirs::default()` (the same
+        // ~/.peppy the core node uses), and applied to the daemon's own session
+        // and every spawned node. Fails loud on a malformed config.
+        let peppy_dirs = config::consts::PeppyDirs::default();
+        let peppy_config = config::peppy_config::load_or_create(&peppy_dirs).map_err(|e| {
+            Error::ExecutionFailed(format!("Failed to load peppy_config.json5: {e}"))
+        })?;
+
         let mut builder = ServeCommandBuilder::new(&ctx.root_dir)?
+            .with_peppy_config(peppy_config)
             .with_messaging_router(self.messaging_engine)?
             .with_core_node(self.core_node_name, self.clock_source)?;
 

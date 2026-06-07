@@ -7,10 +7,14 @@
 
 mod common;
 
-use common::{assert_datastore_binary_round_trip, start_core_node_with_real_messenger};
+use common::{assert_datastore_binary_round_trip, start_core_node_with_real_messenger_mode};
+use config::peppy_config::Mode;
 
+#[rstest::rstest]
+#[case::peer(Mode::Peer)]
+#[case::router(Mode::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn datastore_round_trip_over_real_zenoh() {
-    let started = start_core_node_with_real_messenger().await;
+async fn datastore_round_trip_over_real_zenoh(#[case] mode: Mode) {
+    let started = start_core_node_with_real_messenger_mode(mode).await;
     assert_datastore_binary_round_trip(&started).await;
 }

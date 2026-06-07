@@ -27,6 +27,22 @@ pub fn test_peppy_dirs() -> PeppyDirs {
 
 pub const TEST_NODE_TAG: &str = "v1";
 
+/// Re-exported so the communication test files can name the messaging mode for
+/// their `#[case]` parameterization without reaching into the internal path.
+pub use config::peppy_config::Mode;
+
+/// Applies a messaging mode to a node's runtime config before it is written and
+/// handed to a spawned node. This is the single seam the dual-mode communication
+/// tests use to run the same body under both peer (gossip on) and router (gossip
+/// off) mode without duplicating the body.
+pub fn apply_mode(
+    mut config: config::runtime::RuntimeConfig,
+    mode: Mode,
+) -> config::runtime::RuntimeConfig {
+    config.discovery.gossip = mode.gossip();
+    config
+}
+
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
 /// invalid names — tests use known-good values only.
 pub fn test_node_target(name: &str) -> SenderTarget {
