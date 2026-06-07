@@ -106,6 +106,9 @@ pub struct CoreNode {
     health_monitor_timeout: Duration,
     clock_publish_interval: Duration,
     daemon_use_sim_time: bool,
+    /// Daemon-global messaging mode + peer buffer sizes, read once at startup.
+    /// Injected into every spawned node's runtime config (see `node::run`).
+    peppy_config: config::peppy_config::PeppyConfig,
 }
 
 /// Pre-flight checks that run once at daemon startup. Exits with a
@@ -127,6 +130,7 @@ impl CoreNode {
         node_arguments: CoreNodeArguments,
         root_dir: P,
         peppy_dirs: PeppyDirs,
+        peppy_config: config::peppy_config::PeppyConfig,
     ) -> Self {
         let manifest_name = match node_name {
             Some(name) => Name::new(name).unwrap(),
@@ -209,6 +213,7 @@ impl CoreNode {
             health_monitor_timeout,
             clock_publish_interval,
             daemon_use_sim_time,
+            peppy_config,
         }
     }
 
@@ -364,6 +369,8 @@ impl CoreNode {
                         health_monitor_timeout: self.health_monitor_timeout,
                     },
                     use_sim_time: self.daemon_use_sim_time,
+                    messaging_mode: self.peppy_config.mode,
+                    peer_buffer: self.peppy_config.peer,
                 },
             )
             .boxed(),
@@ -440,6 +447,8 @@ impl CoreNode {
                     peppy_dirs: self.peppy_dirs.clone(),
                     health_monitor_interval: self.health_monitor_interval,
                     health_monitor_timeout: self.health_monitor_timeout,
+                    messaging_mode: self.peppy_config.mode,
+                    peer_buffer: self.peppy_config.peer,
                 },
             )
             .boxed(),

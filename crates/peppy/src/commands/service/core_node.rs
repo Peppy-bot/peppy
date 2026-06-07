@@ -26,6 +26,7 @@ pub struct CoreNodeRunner {
 }
 
 impl CoreNodeRunner {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         messenger: Arc<Mutex<Messenger>>,
         core_node_name: Option<String>,
@@ -34,6 +35,7 @@ impl CoreNodeRunner {
         root_dir: PathBuf,
         messaging_ready: Option<watch::Receiver<bool>>,
         clock_source: super::ClockSource,
+        peppy_config: config::peppy_config::PeppyConfig,
     ) -> Self {
         let node_arguments = CoreNodeArguments {
             node_startup_timeout,
@@ -52,6 +54,7 @@ impl CoreNodeRunner {
             node_arguments,
             root_dir,
             peppy_dirs,
+            peppy_config,
         );
         Self {
             core_node,

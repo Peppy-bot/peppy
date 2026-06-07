@@ -1353,6 +1353,7 @@ pub async fn start_core_node_with_mock_messenger() -> StartedCoreNode {
         default_node_arguments(),
         data_dir,
         peppy_dirs,
+        config::peppy_config::PeppyConfig::default(),
     )
     .await
 }
@@ -1366,7 +1367,14 @@ pub async fn start_core_node_with_sim_clock() -> StartedCoreNode {
     let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
     args.daemon_use_sim_time = true;
-    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
+    start_core_node_with_messenger(
+        shared_messenger,
+        args,
+        data_dir,
+        peppy_dirs,
+        config::peppy_config::PeppyConfig::default(),
+    )
+    .await
 }
 
 pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
@@ -1377,14 +1385,49 @@ pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
     .await
 }
 
+/// Convenience wrapper over [`start_core_node_with_real_messenger_in_mode`] with
+/// the default timeouts, for the dual-mode e2e tests parameterized over the mode.
+pub async fn start_core_node_with_real_messenger_mode(
+    mode: config::peppy_config::Mode,
+) -> StartedCoreNode {
+    start_core_node_with_real_messenger_in_mode(
+        Duration::from_secs(10),
+        Duration::from_secs(30),
+        mode,
+    )
+    .await
+}
+
 pub async fn start_core_node_with_real_messenger_and_timeouts(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> StartedCoreNode {
+    start_core_node_with_real_messenger_in_mode(
+        node_startup_timeout,
+        node_start_health_timeout,
+        config::peppy_config::Mode::Peer,
+    )
+    .await
+}
+
+/// Like [`start_core_node_with_real_messenger_and_timeouts`] but the messaging
+/// `mode` (peer vs router) is explicit. The core node's own session is built in
+/// that mode, and its `PeppyConfig` carries it so spawned nodes are injected with
+/// the same mode (faithful to production). Used by the dual-mode e2e tests.
+pub async fn start_core_node_with_real_messenger_in_mode(
+    node_startup_timeout: Duration,
+    node_start_health_timeout: Duration,
+    mode: config::peppy_config::Mode,
+) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
-    let mut instance = pmi::ZenohAdapter::start_router_ephemeral(DEFAULT_MESSAGING_HOST, None)
-        .await
-        .expect("failed to start zenoh router for test");
+    let mut instance = pmi::ZenohAdapter::start_router_ephemeral_in_mode(
+        DEFAULT_MESSAGING_HOST,
+        None,
+        mode.gossip(),
+        pmi::SubscriberBufferSizes::default(),
+    )
+    .await
+    .expect("failed to start zenoh router for test");
     instance
         .messenger()
         .start_session()
@@ -1394,7 +1437,11 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
     let mut args = default_node_arguments();
     args.node_startup_timeout = node_startup_timeout;
     args.node_start_health_timeout = node_start_health_timeout;
-    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
+    let peppy_config = config::peppy_config::PeppyConfig {
+        mode,
+        ..Default::default()
+    };
+    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs, peppy_config).await
 }
 
 pub async fn start_core_node_with_health_timeout(
@@ -1404,7 +1451,14 @@ pub async fn start_core_node_with_health_timeout(
     let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
     args.node_start_health_timeout = node_start_health_timeout;
-    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
+    start_core_node_with_messenger(
+        shared_messenger,
+        args,
+        data_dir,
+        peppy_dirs,
+        config::peppy_config::PeppyConfig::default(),
+    )
+    .await
 }
 
 pub async fn start_core_node_with_health_monitor(
@@ -1416,7 +1470,14 @@ pub async fn start_core_node_with_health_monitor(
     let mut args = default_node_arguments();
     args.health_monitor_interval = health_monitor_interval;
     args.health_monitor_timeout = health_monitor_timeout;
-    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
+    start_core_node_with_messenger(
+        shared_messenger,
+        args,
+        data_dir,
+        peppy_dirs,
+        config::peppy_config::PeppyConfig::default(),
+    )
+    .await
 }
 
 async fn start_core_node_with_messenger(
@@ -1424,6 +1485,7 @@ async fn start_core_node_with_messenger(
     node_arguments: CoreNodeArguments,
     data_dir: TempDir,
     peppy_dirs: PeppyDirs,
+    peppy_config: config::peppy_config::PeppyConfig,
 ) -> StartedCoreNode {
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let root_dir = std::env::current_dir().expect("failed to get current directory");
@@ -1433,6 +1495,7 @@ async fn start_core_node_with_messenger(
         node_arguments,
         root_dir,
         peppy_dirs.clone(),
+        peppy_config,
     );
     let core_node_name = core_node.node_name().to_string();
     let core_node_tag = core_node.node_config().manifest.tag.clone();

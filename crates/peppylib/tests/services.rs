@@ -298,6 +298,7 @@ async fn service_from_any_poll_runs_handler_on_winner_only() {
         spec: ProducerSpec,
         handler_count: Arc<AtomicUsize>,
         ready: oneshot::Sender<()>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {
         let handle = MessengerHandle::from_host_port(&host, port)
             .await
@@ -314,18 +315,23 @@ async fn service_from_any_poll_runs_handler_on_winner_only() {
             .expect("listen should succeed");
             ready.send(()).expect("ready signal");
 
-            let _ = tokio::time::timeout(Duration::from_millis(1500), async {
-                endpoint
-                    .handle_next_request(|_req| {
-                        let counter = Arc::clone(&handler_count);
-                        async move {
-                            counter.fetch_add(1, Ordering::SeqCst);
-                            Ok(Payload::from(spec.inst.as_bytes().to_vec()))
-                        }
-                    })
-                    .await
-            })
-            .await;
+            // The winner handles the request; the loser only ever sees the
+            // (server-filtered) discovery probe and is released by `shutdown`
+            // once the winner has been serviced. An explicit signal rather than
+            // a fixed timeout keeps the test deterministic regardless of how
+            // long peer-mode discovery takes to settle.
+            tokio::select! {
+                res = endpoint.handle_next_request(|_req| {
+                    let counter = Arc::clone(&handler_count);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        Ok(Payload::from(spec.inst.as_bytes().to_vec()))
+                    }
+                }) => {
+                    let _ = res;
+                }
+                _ = shutdown.changed() => {}
+            }
         })
     }
 
@@ -333,6 +339,7 @@ async fn service_from_any_poll_runs_handler_on_winner_only() {
     let handler_b = Arc::new(AtomicUsize::new(0));
     let (ready_a_tx, ready_a_rx) = oneshot::channel();
     let (ready_b_tx, ready_b_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let task_a = spawn_producer(
         host.clone(),
@@ -345,6 +352,7 @@ async fn service_from_any_poll_runs_handler_on_winner_only() {
         },
         Arc::clone(&handler_a),
         ready_a_tx,
+        shutdown_rx.clone(),
     )
     .await;
     let task_b = spawn_producer(
@@ -358,17 +366,21 @@ async fn service_from_any_poll_runs_handler_on_winner_only() {
         },
         Arc::clone(&handler_b),
         ready_b_tx,
+        shutdown_rx,
     )
     .await;
 
     ready_a_rx.await.expect("producer A ready");
     ready_b_rx.await.expect("producer B ready");
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let caller_handle = MessengerHandle::from_host_port(&host, port)
         .await
         .expect("caller connect");
 
+    // poll performs a from_any discover-then-pin internally. In peer mode
+    // discover_producer re-probes within its budget until the producers'
+    // queryables propagate to this freshly-connected caller, so no external
+    // readiness gate is needed — this exercises that cold-start retry directly.
     let response = ServiceMessenger::poll(
         &caller_handle,
         "caller_core",
@@ -378,10 +390,13 @@ async fn service_from_any_poll_runs_handler_on_winner_only() {
         None, // wildcard target_core_node
         None, // wildcard target_instance_id
         Payload::from_static(b"go"),
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await
     .expect("wildcard poll should succeed");
+
+    // Winner has been serviced; release the loser from its request wait.
+    shutdown_tx.send(true).expect("signal producers to stop");
 
     let winner_inst = response.instance_id().to_string();
     assert!(

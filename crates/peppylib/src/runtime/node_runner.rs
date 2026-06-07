@@ -30,10 +30,12 @@ impl NodeRunner {
     ) -> Result<Self> {
         // Nodes are long-lived: use a reconnecting session so a router restart
         // (e.g. the daemon's watchdog respawning zenohd) is recovered
-        // transparently instead of leaving the node off the bus.
-        let messenger = MessengerHandle::from_host_port_reconnecting(
+        // transparently instead of leaving the node off the bus. The session is
+        // a peer that forms direct links per the node's discovery settings.
+        let messenger = MessengerHandle::from_host_port_reconnecting_with_discovery(
             processor.messaging_host(),
             processor.messaging_port(),
+            processor.discovery(),
         )
         .await?;
 

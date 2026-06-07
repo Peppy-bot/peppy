@@ -945,7 +945,6 @@ async fn measure_topic_delivery(
     let mut measured: u32 = 0;
     let mut out = Vec::new();
     let mut had_implausible = false;
-    let mut had_missing_ts = false;
 
     loop {
         if measured >= samples {
@@ -953,20 +952,14 @@ async fn measure_topic_delivery(
         }
         match tokio::time::timeout(per_sample_timeout, subscription.on_next_message()).await {
             Ok(Some(msg)) => {
-                let Some(src) = msg.source_timestamp_nanos() else {
-                    // No timestamp to measure against, but still advance
-                    // progress like any other observed message (respecting
-                    // warmup) so a continuous stream of timestamp-less messages
-                    // can't spin forever — the loop terminates once `measured`
-                    // reaches `samples`. Only valid samples reach `out`, so the
-                    // reported count/percentiles stay clean.
-                    had_missing_ts = true;
-                    seen += 1;
-                    if seen > warmup {
-                        measured += 1;
-                    }
-                    continue;
-                };
+                // Every session enables timestamping for its own role (see
+                // `pmi::zenoh_config`), so a delivered sample is always stamped.
+                // A missing timestamp means a session disabled it out-of-band
+                // (e.g. a custom `ZENOH_SESSION_CONFIG`) — an invariant break,
+                // surfaced loudly rather than silently dropped.
+                let src = msg.source_timestamp_nanos().expect(
+                    "delivery sample missing its producer timestamp; sessions enable timestamping",
+                );
                 seen += 1;
                 if seen <= warmup {
                     continue;
@@ -987,11 +980,7 @@ async fn measure_topic_delivery(
 
     let (confidence, mut note) = classify_clock(offset, had_implausible);
     if out.is_empty() && !had_implausible {
-        note = Some(if had_missing_ts {
-            "no source timestamps on samples (timestamping disabled?)".to_string()
-        } else {
-            "no live traffic observed within the timeout".to_string()
-        });
+        note = Some("no live traffic observed within the timeout".to_string());
     }
     row_from_samples(edge, MeasurementKind::TopicDelivery, confidence, out, note)
 }

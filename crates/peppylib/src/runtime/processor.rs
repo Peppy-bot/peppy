@@ -180,6 +180,11 @@ impl Processor {
         self.runtime_config.messaging_port
     }
 
+    /// Peer-discovery settings for this node's messaging session.
+    pub(crate) fn discovery(&self) -> &config::runtime::DiscoveryConfig {
+        &self.runtime_config.discovery
+    }
+
     /// Daemon-resolved framework `use_sim_time` flag for this instance.
     /// Read by [`crate::core_node::clock::clock_for_node`] to pick between
     /// the wall-time and sim-time `PeppyClock` implementations.

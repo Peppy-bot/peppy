@@ -1,7 +1,10 @@
 use super::discovery::discover_producer;
 use super::generate_short_id;
 use super::topics::Subscription;
-use super::{MessengerHandle, PROBE_TIMEOUT, ServiceEndpoint, ServiceResponder, TopicPublisher};
+use super::{
+    DISCOVERY_TIMEOUT, MessengerHandle, PROBE_TIMEOUT, ServiceEndpoint, ServiceResponder,
+    TopicPublisher,
+};
 use crate::error::{Error, Result};
 use crate::runtime::{CancellationToken, TaskHandle, spawn};
 use crate::types::{Message, Payload};
@@ -507,10 +510,11 @@ impl ActionMessenger {
                     to_target.clone(),
                     to_action_name,
                 )?;
-                // Cap discovery at PROBE_TIMEOUT or the caller's goal budget,
-                // whichever is shorter, so a tight `goal_timeout` still fails
-                // fast against unreachable producers.
-                let discovery_timeout = goal_timeout.min(PROBE_TIMEOUT);
+                // Cap discovery at DISCOVERY_TIMEOUT or the caller's goal budget,
+                // whichever is shorter: a tight `goal_timeout` still fails fast
+                // against unreachable producers, while a generous one lets
+                // peer-mode gossip discovery settle (see `discover_producer`).
+                let discovery_timeout = goal_timeout.min(DISCOVERY_TIMEOUT);
                 let (core, inst) =
                     discover_producer(messenger, &probe_sender.goal_service(), discovery_timeout)
                         .await?;

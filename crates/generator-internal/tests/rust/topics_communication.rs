@@ -69,9 +69,13 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
-/// Creates 2 projects in separate directory and check if they can send/receive topics
+/// Creates 2 projects in separate directory and check if they can send/receive topics.
+/// Runs under both peer (gossip on) and router (gossip off) messaging modes.
+#[rstest::rstest]
+#[case::peer(crate::helpers::Mode::Peer)]
+#[case::router(crate::helpers::Mode::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topics_communication() {
+async fn topics_communication(#[case] mode: crate::helpers::Mode) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -111,6 +115,7 @@ async fn topics_communication() {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let receiver_runtime_config = crate::helpers::apply_mode(receiver_runtime_config, mode);
     let receiver_runtime_config_path = temp_dir_proj2.path().join("peppy_runtime.json5");
     receiver_runtime_config
         .save_json5_launch_config(&receiver_runtime_config_path)
@@ -179,6 +184,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let emitter_runtime_config = crate::helpers::apply_mode(emitter_runtime_config, mode);
     let emitter_runtime_config_path = temp_dir_proj1.path().join("peppy_runtime.json5");
     emitter_runtime_config
         .save_json5_launch_config(&emitter_runtime_config_path)

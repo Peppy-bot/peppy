@@ -190,6 +190,30 @@ impl TopicMessenger {
         Ok(())
     }
 
+    /// Waits until a subscriber for this topic is known to the publisher's
+    /// session, or `timeout` elapses; returns whether a match was observed.
+    ///
+    /// In peer mode a freshly-connected publisher learns about existing
+    /// subscribers through gossip, which is not instantaneous, so its first
+    /// [`emit`](Self::emit) can be dropped before discovery propagates. Call
+    /// this first when the very first publish must reach an already-running
+    /// subscriber; it returns as soon as a match is observed (no fixed sleep).
+    /// A `false` return means no subscriber appeared within `timeout`.
+    pub async fn wait_for_subscriber(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_target: SenderTarget,
+        as_topic_name: &str,
+        timeout: std::time::Duration,
+    ) -> Result<bool> {
+        let sender =
+            TopicWireSender::new(as_core_node, as_instance_id, as_target, None, as_topic_name)?;
+        messenger
+            .wait_for_matching_subscriber(&sender, timeout)
+            .await
+    }
+
     /// Pre-binds a topic publisher under a single producer-side link_id,
     /// bypassing the central `Messenger` mutex on every subsequent publish.
     /// Use this in publish loops; use [`emit`] for one-shot publishes.

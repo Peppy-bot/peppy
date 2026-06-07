@@ -50,7 +50,7 @@ use std::sync::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{
     sync::Mutex,
-    time::{Duration, Instant, timeout},
+    time::{Duration, Instant, sleep, timeout},
 };
 
 // services
@@ -63,8 +63,16 @@ pub const SHUTDOWN_SERVICE: &str = "shutdown";
 /// `node_health`, this triggers no user code.
 pub const CLOCK_OFFSET_SERVICE: &str = "clock_offset";
 
-/// Timeout for reachability probes sent by `is_reachable`.
+/// Timeout for a single reachability probe sent by `is_reachable`.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Budget for the wildcard / from_any discover-then-pin step (capped by the
+/// caller's own timeout). Larger than [`PROBE_TIMEOUT`] because a
+/// freshly-connected peer learns producers' queryables via gossip, which is not
+/// instantaneous like the old client/router star — `discover_producer` re-probes
+/// within this budget so a from_any `poll`/`send_goal` waits for discovery to
+/// settle instead of failing the moment it runs ahead of it.
+pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Key in [`MessengerHandle::active_from_any_topics`]. Two from_any topic
 /// subscriptions conflict only when they would observe the same producer
@@ -257,6 +265,33 @@ impl MessengerHandle {
         })
     }
 
+    /// Like [`from_host_port_reconnecting`](Self::from_host_port_reconnecting)
+    /// but applies the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig):
+    /// an explicit gossip seed list (falling back to `host:port`) and the gossip
+    /// toggle. Used by the node runtime so peers form direct links per the
+    /// daemon-supplied discovery settings.
+    pub async fn from_host_port_reconnecting_with_discovery(
+        host: &str,
+        port: u16,
+        discovery: &config::runtime::DiscoveryConfig,
+    ) -> Result<Self> {
+        let buffer_sizes = pmi::SubscriberBufferSizes::from(discovery);
+        let adapter = ZenohAdapter::connect_to_with_discovery(
+            ZenohNetProtocol::Tcp,
+            host,
+            port,
+            discovery.seed_peers.clone(),
+            discovery.gossip,
+            buffer_sizes,
+        )?
+        .with_session_reconnect();
+        let messenger = Self::new_session(adapter).await?;
+        Ok(Self {
+            messenger: Arc::new(Mutex::new(messenger)),
+            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
+        })
+    }
+
     async fn new_session(adapter: ZenohAdapter) -> Result<Messenger> {
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
         messenger
@@ -293,6 +328,29 @@ impl MessengerHandle {
             .map_err(Error::PeppyMessagingInterface)
     }
 
+    /// Waits (deterministically, via Zenoh matching status) until a subscriber
+    /// for `sender`'s topic is known to this session, or `timeout` elapses;
+    /// returns whether a match was observed. A freshly-connected peer learns
+    /// remote subscriptions through gossip, which is not instantaneous, so its
+    /// first reliable publish can be dropped before discovery propagates; awaiting
+    /// a match closes that window without a fixed sleep. The mock backend has no
+    /// propagation delay and returns `true` immediately.
+    pub(crate) async fn wait_for_matching_subscriber(
+        &self,
+        sender: &TopicWireSender,
+        timeout: Duration,
+    ) -> Result<bool> {
+        let messenger = self.messenger.lock().await;
+        match &messenger.adapter {
+            #[cfg(feature = "zenoh")]
+            MessengerAdapter::Zenoh(adapter) => adapter
+                .wait_for_topic_subscriber(sender, timeout)
+                .await
+                .map_err(Error::PeppyMessagingInterface),
+            _ => Ok(true),
+        }
+    }
+
     pub(crate) async fn expose_service(
         &self,
         recv: &ServiceWireReceiver,
@@ -316,27 +374,6 @@ impl MessengerHandle {
     ) -> Result<Message> {
         let response_timeout: Option<Duration> = response_timeout.into();
 
-        let mut response_subscription = {
-            let messenger = self.messenger.lock().await;
-            messenger
-                .call_service(
-                    sender,
-                    request_payload.into_inner().into(),
-                    kind,
-                    response_timeout,
-                )
-                .await
-                .map_err(Error::PeppyMessagingInterface)?
-        };
-
-        // Wait for the response, filtering replies by their attachment-side
-        // `ServiceReplyKind`. The producer sends `Ack` immediately on receiving
-        // a real user request (before the handler runs) and a terminal
-        // `Response` or `HandlerError` once the handler returns. With a
-        // timeout, ack-without-response → ServiceTimeout, no ack at all →
-        // ServiceUnreachable. Probes get a single `Response` reply with an
-        // empty payload (no ACK), so a probe consumer is guaranteed to break
-        // the loop on the first reply.
         let to_service_name = sender.to_service_name().to_string();
         let target_instance_id = sender.target_instance_id().map(str::to_string);
         let unreachable = || Error::ServiceUnreachable {
@@ -348,52 +385,101 @@ impl MessengerHandle {
             service_name: to_service_name.clone(),
         };
 
-        let reply = match response_timeout {
-            Some(response_timeout) => {
-                let deadline = Instant::now() + response_timeout;
-                let mut received_ack = false;
+        // Re-issue the query (cheap `Bytes` clone per attempt) on a cold-start
+        // miss; see the retry rationale below.
+        let request_bytes = request_payload.into_inner();
+        const COLD_START_BACKOFF: Duration = Duration::from_millis(50);
+        let deadline = response_timeout.map(|t| Instant::now() + t);
 
-                loop {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        return Err(if received_ack {
-                            timed_out()
-                        } else {
-                            unreachable()
-                        });
-                    }
+        // Each attempt issues the query and waits for its first terminal reply.
+        // The producer sends `Ack` immediately on receiving a real user request
+        // (before the handler runs) and a terminal `Response` / `HandlerError`
+        // once the handler returns. Probes get a single `Response` (no Ack).
+        //
+        // Cold-start retry (peer mode): a freshly-connected caller may not have
+        // learned the target's queryable yet, so the query finalizes with no
+        // reply (`Ok(None)`) the instant it runs ahead of discovery. When that
+        // happens *before any Ack* — the target was never reached — re-issue the
+        // query within the caller's remaining budget so the call deterministically
+        // waits for discovery to settle instead of failing immediately. Once an
+        // Ack arrives the target is reachable, so a later miss is a genuine
+        // `ServiceTimeout`, never a retry. This adds no happy-path overhead:
+        // retries only fire on an actual cold-start miss.
+        let reply = 'attempts: loop {
+            if let Some(deadline) = deadline
+                && Instant::now() >= deadline
+            {
+                return Err(unreachable());
+            }
 
-                    match timeout(remaining, response_subscription.rx.recv()).await {
-                        Ok(Some(reply)) => match reply.kind() {
-                            ServiceReplyKind::Ack => {
-                                received_ack = true;
-                                continue;
-                            }
-                            ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
-                                break reply;
-                            }
-                        },
-                        Ok(None) | Err(_) => {
+            let attempt_timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+            let mut response_subscription = {
+                let messenger = self.messenger.lock().await;
+                messenger
+                    .call_service(sender, request_bytes.clone().into(), kind, attempt_timeout)
+                    .await
+                    .map_err(Error::PeppyMessagingInterface)?
+            };
+
+            let mut received_ack = false;
+            loop {
+                let received = match deadline {
+                    Some(deadline) => {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
                             return Err(if received_ack {
                                 timed_out()
                             } else {
                                 unreachable()
                             });
                         }
+                        match timeout(remaining, response_subscription.rx.recv()).await {
+                            Ok(maybe) => maybe,
+                            // Deadline elapsed with the query still open: a real
+                            // timeout (slow/absent target), not a cold-start miss.
+                            Err(_) => {
+                                return Err(if received_ack {
+                                    timed_out()
+                                } else {
+                                    unreachable()
+                                });
+                            }
+                        }
+                    }
+                    None => response_subscription.rx.recv().await,
+                };
+
+                match received {
+                    Some(reply) => match reply.kind() {
+                        ServiceReplyKind::Ack => {
+                            received_ack = true;
+                            continue;
+                        }
+                        ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
+                            break 'attempts reply;
+                        }
+                    },
+                    // Query finalized with no reply.
+                    None => {
+                        if received_ack {
+                            return Err(timed_out());
+                        }
+                        // Cold-start retry only makes sense against a bounded
+                        // budget. With no timeout there is nothing to bound the
+                        // retry, so fail fast (matching the pre-retry behavior)
+                        // rather than re-probing forever.
+                        let Some(deadline) = deadline else {
+                            return Err(unreachable());
+                        };
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            return Err(unreachable());
+                        }
+                        sleep(COLD_START_BACKOFF.min(remaining)).await;
+                        continue 'attempts;
                     }
                 }
             }
-            None => loop {
-                match response_subscription.rx.recv().await {
-                    Some(reply) => match reply.kind() {
-                        ServiceReplyKind::Ack => continue,
-                        ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
-                            break reply;
-                        }
-                    },
-                    None => return Err(unreachable()),
-                }
-            },
         };
 
         let kind = reply.kind();

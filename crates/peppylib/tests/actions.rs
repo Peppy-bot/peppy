@@ -1278,6 +1278,7 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
         spec: ProducerSpec,
         goal_count: Arc<AtomicUsize>,
         ready: oneshot::Sender<()>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {
         let handle = MessengerHandle::from_host_port(&host, port)
             .await
@@ -1295,22 +1296,23 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
             let mut goal_service = action.goal_service;
             ready.send(()).expect("ready signal");
 
-            // The loser must time out here; the winner returns immediately.
-            match tokio::time::timeout(
-                Duration::from_millis(1000),
-                goal_service.recv_next_request(),
-            )
-            .await
-            {
-                Ok(Ok(Some((_ctx, responder)))) => {
-                    goal_count.fetch_add(1, Ordering::SeqCst);
-                    responder
-                        .respond(Payload::from(spec.inst.as_bytes().to_vec()))
-                        .await
-                        .expect("goal respond");
+            // The winner receives the goal and responds; the loser never does
+            // (the caller pins to one producer) and is released by `shutdown`
+            // once the winner has been serviced. Using an explicit signal rather
+            // than a fixed timeout keeps the test deterministic regardless of
+            // how long peer-mode discovery takes to settle.
+            tokio::select! {
+                res = goal_service.recv_next_request() => {
+                    if let Ok(Some((_ctx, responder))) = res {
+                        goal_count.fetch_add(1, Ordering::SeqCst);
+                        responder
+                            .respond(Payload::from(spec.inst.as_bytes().to_vec()))
+                            .await
+                            .expect("goal respond");
+                    }
                 }
-                _ => {
-                    // Loser of the discovery race — expected outcome.
+                _ = shutdown.changed() => {
+                    // Loser of the discovery race — released without a goal.
                 }
             }
         })
@@ -1320,6 +1322,7 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
     let goal_b = Arc::new(AtomicUsize::new(0));
     let (ready_a_tx, ready_a_rx) = oneshot::channel();
     let (ready_b_tx, ready_b_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let task_a = spawn_producer(
         host.clone(),
@@ -1332,6 +1335,7 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
         },
         Arc::clone(&goal_a),
         ready_a_tx,
+        shutdown_rx.clone(),
     )
     .await;
     let task_b = spawn_producer(
@@ -1345,17 +1349,21 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
         },
         Arc::clone(&goal_b),
         ready_b_tx,
+        shutdown_rx,
     )
     .await;
 
     ready_a_rx.await.expect("producer A ready");
     ready_b_rx.await.expect("producer B ready");
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let caller_handle = MessengerHandle::from_host_port(&host, port)
         .await
         .expect("caller connect");
 
+    // send_goal performs a from_any discover-then-pin internally. In peer mode
+    // discover_producer re-probes within its budget until the producers'
+    // queryables propagate to this freshly-connected caller, so no external
+    // readiness gate is needed — this exercises that cold-start retry directly.
     let goal_handle = ActionMessenger::send_goal(
         &caller_handle,
         "caller_core",
@@ -1366,10 +1374,13 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
         None,
         Payload::from_static(b"go"),
         QoSProfile::Reliable,
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await
     .expect("send_goal should succeed");
+
+    // Winner has been serviced; release the loser from its `recv_next_request`.
+    shutdown_tx.send(true).expect("signal producers to stop");
 
     let winner_inst = goal_handle.goal_response().instance_id().to_string();
     assert!(

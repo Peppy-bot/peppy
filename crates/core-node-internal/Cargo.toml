@@ -58,6 +58,7 @@ node-stack = { path = "../node-stack-internal" }
 config = { path = "../config-internal", features = ["test_helpers"] }
 tempfile = "3.10"
 tokio = { version = "1", features = ["full", "test-util"] }
+rstest = { workspace = true }
 httptest = "0.16.3"
 
 [features]
