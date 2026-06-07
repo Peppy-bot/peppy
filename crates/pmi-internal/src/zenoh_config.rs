@@ -80,10 +80,15 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
     }
 
     if !spec.listen_endpoints.is_empty() {
-        let role = if spec.mode == SessionMode::Router {
-            "router"
-        } else {
-            "peer"
+        // Zenoh reads `listen.endpoints` against the session's OWN mode, so the
+        // key must match `mode` above — the same per-role-map rule as
+        // `timestamping` below. Deriving it exhaustively (rather than
+        // `else => "peer"`) keeps a client's endpoints from being silently
+        // misfiled under `peer` if one ever listens.
+        let role = match spec.mode {
+            SessionMode::Router => "router",
+            SessionMode::Peer => "peer",
+            SessionMode::Client => "client",
         };
         config["listen"] = json!({ "endpoints": { role: spec.listen_endpoints } });
     }
@@ -220,6 +225,25 @@ mod tests {
         assert_eq!(cfg["timestamping"]["enabled"]["client"], true);
         // A client never listens for inbound peers.
         assert!(cfg.get("listen").is_none());
+    }
+
+    #[test]
+    fn client_listen_endpoints_land_under_the_client_key() {
+        // Clients do not listen today, so this guards the per-role-map rule
+        // directly: were a client ever given a listen endpoint, it must land
+        // under its own `client` key, not be silently misfiled under `peer`
+        // (the same mismatch that left peer-mode samples unstamped).
+        let cfg = build_zenoh_config(&ZenohConfigSpec {
+            mode: SessionMode::Client,
+            connect_endpoints: vec!["tcp/127.0.0.1:7448".to_string()],
+            listen_endpoints: vec!["tcp/127.0.0.1:0".to_string()],
+            reconnect: false,
+            gossip: false,
+        });
+
+        assert_eq!(cfg["mode"], "client");
+        assert_eq!(cfg["listen"]["endpoints"]["client"][0], "tcp/127.0.0.1:0");
+        assert!(cfg["listen"]["endpoints"].get("peer").is_none());
     }
 
     #[test]
