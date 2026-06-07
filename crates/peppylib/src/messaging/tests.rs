@@ -660,20 +660,29 @@ async fn topic_publish_reliable_5000hz_messages() {
     .await
     .expect("subscriber should become reachable");
 
-    for &message_id in &message_ids {
-        let payload = Payload::from(message_id.to_le_bytes().to_vec());
-        TopicMessenger::emit(
-            &sender_handle,
-            emitter_core_node,
-            emitter_instance_id,
-            test_node_target(node_name),
-            topic,
-            qos.clone(),
-            payload,
-        )
-        .await
-        .expect("Should send the payload");
-    }
+    // Drain concurrently with publishing. Peer mode removes the router buffer
+    // that used to sit between publisher and subscriber, so publishing all
+    // messages before draining would block a Reliable (Block-congestion)
+    // publisher once the subscriber's bounded channel fills. A real stream is
+    // drained continuously, so emit in a background task while the main task
+    // receives.
+    let emit_ids = message_ids.clone();
+    let emitter = tokio::spawn(async move {
+        for &message_id in &emit_ids {
+            let payload = Payload::from(message_id.to_le_bytes().to_vec());
+            TopicMessenger::emit(
+                &sender_handle,
+                emitter_core_node,
+                emitter_instance_id,
+                test_node_target(node_name),
+                topic,
+                qos.clone(),
+                payload,
+            )
+            .await
+            .expect("Should send the payload");
+        }
+    });
 
     // Identity check runs once on the first received message — the wire-format
     // contract is pinned in `pmi::wire::zenoh_format::tests`, so this loop only needs
@@ -706,6 +715,8 @@ async fn topic_publish_reliable_5000hz_messages() {
 
         received_ids.push(received_id);
     }
+
+    emitter.await.expect("emitter task should not panic");
 
     assert_eq!(
         received_ids.len(),

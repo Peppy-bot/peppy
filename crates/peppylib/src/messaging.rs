@@ -462,16 +462,18 @@ impl MessengerHandle {
                         if received_ack {
                             return Err(timed_out());
                         }
-                        match deadline {
-                            Some(deadline) => {
-                                let remaining = deadline.saturating_duration_since(Instant::now());
-                                if remaining.is_zero() {
-                                    return Err(unreachable());
-                                }
-                                sleep(COLD_START_BACKOFF.min(remaining)).await;
-                            }
-                            None => sleep(COLD_START_BACKOFF).await,
+                        // Cold-start retry only makes sense against a bounded
+                        // budget. With no timeout there is nothing to bound the
+                        // retry, so fail fast (matching the pre-retry behavior)
+                        // rather than re-probing forever.
+                        let Some(deadline) = deadline else {
+                            return Err(unreachable());
+                        };
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            return Err(unreachable());
                         }
+                        sleep(COLD_START_BACKOFF.min(remaining)).await;
                         continue 'attempts;
                     }
                 }
