@@ -23,7 +23,7 @@ edition = "2024"
 parking_lot = "0.12"
 # Parameterized tests: messaging e2e suites run each body under both peer and
 # router mode via `#[case]` (see crates/*/tests). Test-only.
-rstest = "0.23"
+rstest = "0.26"
 
 # Optionally define workspace-wide lints or profiles.
 # [workspace.lints.rust]
