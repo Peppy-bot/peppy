@@ -100,6 +100,27 @@ impl SubscriberBufferSizes {
     }
 }
 
+// The daemon resolves buffer sizes as config types (config-internal must not
+// depend on pmi), so the field mapping lives here on pmi's side of the boundary
+// instead of being re-inlined at each session-construction call site.
+impl From<config::peppy_config::PeerConfig> for SubscriberBufferSizes {
+    fn from(peer: config::peppy_config::PeerConfig) -> Self {
+        Self {
+            standard: peer.standard_buffer_size,
+            high_throughput: peer.high_throughput_buffer_size,
+        }
+    }
+}
+
+impl From<&config::runtime::DiscoveryConfig> for SubscriberBufferSizes {
+    fn from(discovery: &config::runtime::DiscoveryConfig) -> Self {
+        Self {
+            standard: discovery.standard_buffer_size,
+            high_throughput: discovery.high_throughput_buffer_size,
+        }
+    }
+}
+
 impl From<QoSProfile> for SubscriberQoS {
     fn from(qos: QoSProfile) -> Self {
         match qos {

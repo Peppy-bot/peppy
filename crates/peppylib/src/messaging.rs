@@ -275,12 +275,7 @@ impl MessengerHandle {
         port: u16,
         discovery: &config::runtime::DiscoveryConfig,
     ) -> Result<Self> {
-        // Convert the daemon-resolved buffer sizes to pmi's type at this
-        // boundary (config-internal must not depend on pmi).
-        let buffer_sizes = pmi::SubscriberBufferSizes {
-            standard: discovery.standard_buffer_size,
-            high_throughput: discovery.high_throughput_buffer_size,
-        };
+        let buffer_sizes = pmi::SubscriberBufferSizes::from(discovery);
         let adapter = ZenohAdapter::connect_to_with_discovery(
             ZenohNetProtocol::Tcp,
             host,

@@ -74,10 +74,7 @@ impl ServeCommandBuilder {
                 // core node's services) instead of going silent. The session's
                 // mode (peer vs router-relay) and buffer sizes come from the
                 // daemon-global config read at startup.
-                let buffer_sizes = SubscriberBufferSizes {
-                    standard: self.peppy_config.peer.standard_buffer_size,
-                    high_throughput: self.peppy_config.peer.high_throughput_buffer_size,
-                };
+                let buffer_sizes = SubscriberBufferSizes::from(self.peppy_config.peer);
                 let adapter = ZenohAdapter::with_router(
                     ZenohNetProtocol::Tcp,
                     "0.0.0.0",

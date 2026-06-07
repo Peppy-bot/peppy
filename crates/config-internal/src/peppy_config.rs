@@ -78,21 +78,16 @@ impl Mode {
     }
 }
 
-fn default_standard_buffer_size() -> usize {
-    DEFAULT_STANDARD_BUFFER_SIZE
-}
-
-fn default_high_throughput_buffer_size() -> usize {
-    DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
-}
-
 /// Peer-mode tuning knobs. Buffer sizes are the per-QoS subscriber channel
 /// capacities used when nodes peer directly (no router relay to absorb bursts).
+///
+/// `#[serde(default)]` fills any field a partial `peer` block omits from
+/// [`PeerConfig::default`], so every per-field default flows from the single
+/// `Default` impl below rather than parallel `default = "fn"` helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PeerConfig {
-    #[serde(default = "default_standard_buffer_size")]
     pub standard_buffer_size: usize,
-    #[serde(default = "default_high_throughput_buffer_size")]
     pub high_throughput_buffer_size: usize,
 }
 
