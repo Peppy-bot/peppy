@@ -37,14 +37,15 @@ pub const DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE: usize = 1024;
 /// the template can never drift from the [`PeerConfig::default`] the parser falls
 /// back to when the `peer` block is absent.
 const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
-    r#"{
-  // Messaging mode for this peppy daemon. Takes effect after a daemon restart.
+    r#"// Read once when the peppy daemon starts, so any edit below (mode or buffer
+// sizes) takes effect only after you restart the daemon.
+{
   //   "peer"   - Zenoh peer sessions with gossip: nodes form direct
   //              peer-to-peer links and data stops relaying through the router.
   //   "router" - gossip off: all traffic relays through the central zenohd
   //              router.
-  // Container nodes in a separate network namespace always use the router path
-  // regardless of this setting.
+  // Container nodes in a separate network namespace (Lima on macOS) always use 
+  // the router path regardless of this setting.
   mode: "peer",
 
   // Subscriber channel buffer sizes (number of in-flight messages) per QoS
