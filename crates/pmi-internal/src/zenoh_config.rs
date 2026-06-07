@@ -88,10 +88,19 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
         config["listen"] = json!({ "endpoints": { role: spec.listen_endpoints } });
     }
 
-    config["timestamping"] = if spec.mode == SessionMode::Router {
-        json!({ "enabled": { "router": true }, "drop_future_timestamp": false })
-    } else {
-        json!({ "enabled": { "client": true } })
+    // Stamp data at the producer so consumers can measure real delivery latency.
+    // Zenoh matches `enabled` against the session's OWN mode, so the key must
+    // match `mode` above — a `peer` session ignores an `enabled.client` entry.
+    // Stamping at the source keeps peer mode (no router in the direct path) on
+    // par with router mode, where the client/router already stamps.
+    config["timestamping"] = match spec.mode {
+        SessionMode::Router => {
+            json!({ "enabled": { "router": true }, "drop_future_timestamp": false })
+        }
+        SessionMode::Peer => json!({ "enabled": { "peer": true }, "drop_future_timestamp": false }),
+        SessionMode::Client => {
+            json!({ "enabled": { "client": true }, "drop_future_timestamp": false })
+        }
     };
 
     config
@@ -167,7 +176,12 @@ mod tests {
         // Discovery is gossip-only.
         assert_eq!(cfg["scouting"]["multicast"]["enabled"], false);
         assert_eq!(cfg["scouting"]["gossip"]["enabled"], true);
-        assert_eq!(cfg["timestamping"]["enabled"]["client"], true);
+        // A peer session stamps under its own role, not `client` — Zenoh reads
+        // `enabled` against the session's mode, so an `enabled.client` entry here
+        // would be silently ignored and leave samples unstamped.
+        assert_eq!(cfg["timestamping"]["enabled"]["peer"], true);
+        assert_eq!(cfg["timestamping"]["drop_future_timestamp"], false);
+        assert!(cfg["timestamping"]["enabled"].get("client").is_none());
         // Fail-fast: no infinite-retry connect block.
         assert!(cfg["connect"].get("timeout_ms").is_none());
     }
@@ -201,6 +215,9 @@ mod tests {
 
         assert_eq!(cfg["mode"], "client");
         assert_eq!(cfg["scouting"]["multicast"]["enabled"], false);
+        // A client stamps under its own role so its outgoing data carries a
+        // source timestamp without depending on the router to add one.
+        assert_eq!(cfg["timestamping"]["enabled"]["client"], true);
         // A client never listens for inbound peers.
         assert!(cfg.get("listen").is_none());
     }

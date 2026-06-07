@@ -343,6 +343,92 @@ mod zenoh_tests {
         drop(instance);
     }
 
+    /// Source timestamps must be present on delivered samples in BOTH peer and
+    /// router mode. The benchmark's `delivery` measurement reads
+    /// `source_timestamp_nanos()` off each sample, so a session that fails to
+    /// stamp its outgoing data silently zeroes those rows. `gossip=true`
+    /// exercises the direct peer path (the regression); `gossip=false` the
+    /// router relay.
+    async fn assert_topic_carries_source_timestamp(gossip: bool) {
+        const TOPIC: &str = "source_timestamp_topic";
+        let _lock = ZENOH_SERIAL.lock().await;
+
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("Failed to start zenohd process");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        let mut subscriber = ZenohAdapter::connect_to_with_discovery(
+            ZenohNetProtocol::Tcp,
+            &host,
+            port,
+            Vec::new(),
+            gossip,
+            SubscriberBufferSizes::default(),
+        )
+        .expect("subscriber adapter");
+        subscriber
+            .start_session()
+            .await
+            .expect("subscriber start_session");
+        let mut subscription = subscriber
+            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .await
+            .expect("subscribe");
+
+        let mut publisher = ZenohAdapter::connect_to_with_discovery(
+            ZenohNetProtocol::Tcp,
+            &host,
+            port,
+            Vec::new(),
+            gossip,
+            SubscriberBufferSizes::default(),
+        )
+        .expect("publisher adapter");
+        publisher
+            .start_session()
+            .await
+            .expect("publisher start_session");
+
+        wait_for_subscriber_discovery().await;
+        publisher
+            .publish_topic(
+                &sender(TOPIC),
+                Payload::from_bytes(Bytes::from_static(b"stamped")),
+                PublisherQoS::Standard,
+                true,
+            )
+            .await
+            .expect("publish");
+        let msg = recv_or_timeout(&mut subscription.rx, "stamped").await;
+        assert_eq!(msg.payload(), &Bytes::from_static(b"stamped"));
+        assert!(
+            msg.source_timestamp_nanos().is_some(),
+            "delivered sample must carry a source timestamp (gossip={gossip}): the producing \
+             session did not stamp its outgoing data, so delivery latency can't be measured"
+        );
+
+        // Keep the router alive until the end: client-mode delivery depends on it.
+        drop(instance);
+    }
+
+    /// Peer mode (gossip on → direct peer links) stamps outgoing samples. This is
+    /// the regression guard for the peer-mode timestamping fix: before it, the
+    /// peer session enabled timestamping under the wrong role and samples arrived
+    /// unstamped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn peer_mode_samples_carry_source_timestamp() {
+        assert_topic_carries_source_timestamp(true).await;
+    }
+
+    /// Router mode (gossip off → client sessions relayed through zenohd) stamps
+    /// outgoing samples too. Companion to the peer-mode guard, pinning parity.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn router_mode_samples_carry_source_timestamp() {
+        assert_topic_carries_source_timestamp(false).await;
+    }
+
     /// A peer session built with custom (tiny) subscriber buffers still delivers
     /// end-to-end. This pins that the buffer sizes are threaded through
     /// `connect_to_with_discovery` without breaking delivery; exact-capacity
