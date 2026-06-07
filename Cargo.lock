@@ -580,6 +580,7 @@ dependencies = [
  "capnp",
  "capnpc",
  "clap",
+ "const_format",
  "dirs 6.0.0",
  "git2",
  "indexmap 2.14.0",

@@ -26,6 +26,9 @@ tempfile = "3.8"
 indexmap = { version = "2.2", features = ["serde"] }
 git2 = { version = "0.21", optional = true }
 dirs = "6"
+# Compile-time string concatenation so the bundled peppy_config template splices
+# in the buffer-size constants instead of duplicating the literals.
+const_format = "0.2"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }

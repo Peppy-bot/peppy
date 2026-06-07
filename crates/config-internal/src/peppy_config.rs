@@ -31,7 +31,13 @@ pub const DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE: usize = 1024;
 /// `config-internal` is vendored into every generated node as `src/` only, with
 /// no sibling `assets/` directory, so an external include would fail to compile
 /// inside a node build.
-const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = r#"{
+///
+/// The two buffer-size values are spliced in from [`DEFAULT_STANDARD_BUFFER_SIZE`]
+/// and [`DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE`] at compile time via `concatcp!`, so
+/// the template can never drift from the [`PeerConfig::default`] the parser falls
+/// back to when the `peer` block is absent.
+const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
+    r#"{
   // Messaging mode for this peppy daemon. Takes effect after a daemon restart.
   //   "peer"   - Zenoh peer sessions with gossip: nodes form direct
   //              peer-to-peer links and data stops relaying through the router.
@@ -46,11 +52,16 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = r#"{
   // publisher and a subscriber. Defaults match peppy's built-in behavior; only
   // edit to tune backpressure.
   peer: {
-    standard_buffer_size: 128,
-    high_throughput_buffer_size: 1024,
+    standard_buffer_size: "#,
+    DEFAULT_STANDARD_BUFFER_SIZE,
+    r#",
+    high_throughput_buffer_size: "#,
+    DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
+    r#",
   },
 }
-"#;
+"#
+);
 
 /// The messaging topology the daemon runs in.
 ///
@@ -111,6 +122,32 @@ pub struct PeppyConfig {
     pub peer: PeerConfig,
 }
 
+impl PeppyConfig {
+    /// Rejects user-tunable numeric fields that serde cannot constrain.
+    ///
+    /// Buffer sizes feed bounded channel constructors downstream: a 0 capacity
+    /// panics `tokio::sync::mpsc::channel` and degrades `flume::bounded` into a
+    /// rendezvous channel that stalls every send. A hand-edited 0 must fail loud
+    /// at load time rather than crash or wedge a running mesh.
+    fn validate(&self) -> Result<()> {
+        let buffer_sizes = [
+            ("standard_buffer_size", self.peer.standard_buffer_size),
+            (
+                "high_throughput_buffer_size",
+                self.peer.high_throughput_buffer_size,
+            ),
+        ];
+        for (field, value) in buffer_sizes {
+            if value == 0 {
+                return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+                    "invalid peer buffer size: {field} must be > 0"
+                ))));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Reads the global config from `~/.peppy/conf/peppy_config.json5`, creating it
 /// from the bundled default template (verbatim, so comments survive) when it
 /// does not exist.
@@ -124,21 +161,26 @@ pub fn load_or_create(peppy_dirs: &PeppyDirs) -> Result<PeppyConfig> {
     std::fs::create_dir_all(&conf_dir)?;
     let path = conf_dir.join(PEPPY_CONFIG_FILE);
 
-    if !path.exists() {
+    let config: PeppyConfig = if !path.exists() {
         std::fs::write(&path, DEFAULT_PEPPY_CONFIG_TEMPLATE)?;
         // The bundled template is a compile-time invariant; a parse failure here
         // means the shipped asset is broken, not the user's file.
-        return serde_json5::from_str(DEFAULT_PEPPY_CONFIG_TEMPLATE).map_err(|e| {
+        serde_json5::from_str(DEFAULT_PEPPY_CONFIG_TEMPLATE).map_err(|e| {
             Error::Serialize(format!("bundled default peppy_config is invalid: {e}"))
-        });
-    }
+        })?
+    } else {
+        let content = std::fs::read_to_string(&path)?;
+        serde_json5::from_str(&content).map_err(|e| {
+            Error::Parsing(ParsingError::CannotParseConfig(format!(
+                "{PEPPY_CONFIG_FILE}: {e}"
+            )))
+        })?
+    };
 
-    let content = std::fs::read_to_string(&path)?;
-    serde_json5::from_str(&content).map_err(|e| {
-        Error::Parsing(ParsingError::CannotParseConfig(format!(
-            "{PEPPY_CONFIG_FILE}: {e}"
-        )))
-    })
+    // serde parses any numeric field, so a hand-edited 0 buffer size survives
+    // the steps above; reject it before it reaches a bounded channel downstream.
+    config.validate()?;
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -259,5 +301,60 @@ mod tests {
             matches!(err, Error::Parsing(ParsingError::CannotParseConfig(_))),
             "expected a parse error, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn zero_standard_buffer_size_fails_loud() {
+        let tmp = tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(
+            conf_dir.join(PEPPY_CONFIG_FILE),
+            r#"{ peer: { standard_buffer_size: 0 } }"#,
+        )
+        .unwrap();
+
+        let err = load_or_create(&peppy_dirs).unwrap_err();
+        assert!(
+            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("standard_buffer_size")),
+            "expected a buffer-size validation error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn zero_high_throughput_buffer_size_fails_loud() {
+        let tmp = tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(
+            conf_dir.join(PEPPY_CONFIG_FILE),
+            r#"{ peer: { high_throughput_buffer_size: 0 } }"#,
+        )
+        .unwrap();
+
+        let err = load_or_create(&peppy_dirs).unwrap_err();
+        assert!(
+            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("high_throughput_buffer_size")),
+            "expected a buffer-size validation error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_minimal_nonzero_buffer_sizes() {
+        let tmp = tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(
+            conf_dir.join(PEPPY_CONFIG_FILE),
+            r#"{ peer: { standard_buffer_size: 1, high_throughput_buffer_size: 1 } }"#,
+        )
+        .unwrap();
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.peer.standard_buffer_size, 1);
+        assert_eq!(cfg.peer.high_throughput_buffer_size, 1);
     }
 }
