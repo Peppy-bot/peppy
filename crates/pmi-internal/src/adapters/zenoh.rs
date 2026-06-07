@@ -329,12 +329,27 @@ impl ZenohAdapter {
                         path.trim()
                     )
                 }),
-            _ => render_config(&ZenohConfigSpec {
+            // `gossip` selects the routing model. Enabled: a `peer` that binds a
+            // loopback listener and forms direct peer-to-peer links via gossip.
+            // Disabled: a plain `client` that routes only through the router (no
+            // listener, no peer discovery). Nodes that cannot form direct
+            // loopback links with their peers (e.g. container nodes in a
+            // separate network namespace) use the client path so they reach the
+            // rest of the system through the router instead of advertising an
+            // unreachable loopback locator and churning on failed autoconnects.
+            _ if gossip => render_config(&ZenohConfigSpec {
                 mode: SessionMode::Peer,
                 connect_endpoints: seeds.clone(),
                 listen_endpoints: vec![loopback_listen_endpoint(protocol)],
                 reconnect,
-                gossip,
+                gossip: true,
+            }),
+            _ => render_config(&ZenohConfigSpec {
+                mode: SessionMode::Client,
+                connect_endpoints: seeds.clone(),
+                listen_endpoints: Vec::new(),
+                reconnect,
+                gossip: false,
             }),
         };
 

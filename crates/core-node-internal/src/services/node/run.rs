@@ -676,8 +676,18 @@ async fn process_node_run(
         }
     };
 
-    // Container nodes need their runtime config rewritten with the apptainer
-    // host_gateway so that requests inside the container can reach the daemon.
+    // A container's transport depends on whether it shares the host network
+    // namespace, which `host_gateway()` reports:
+    //
+    //  - Lima (macOS): `Some(gateway)` — the container runs in a VM, a separate
+    //    namespace. It reaches the host router only through the Lima gateway,
+    //    and a loopback peer locator advertised inside the guest is unreachable
+    //    from the host (and vice versa), so it cannot form direct peer links.
+    //    Rewrite `messaging_host` to the gateway and route it through the router
+    //    as a client (`discovery.gossip = false`).
+    //  - Native (Linux): `None` — Apptainer shares the host network namespace,
+    //    so `127.0.0.1` already reaches the host router and the node forms
+    //    direct peer links exactly like a process node. Leave it in peer mode.
     let runtime_config_json5 = if is_container {
         let apptainer = match tokio::task::spawn_blocking(containers::Apptainer::new).await {
             Ok(Ok(a)) => a,
@@ -696,6 +706,7 @@ async fn process_node_run(
             Some(gateway) => {
                 let mut cfg = runtime_config.clone();
                 cfg.messaging_host = gateway.to_string();
+                cfg.discovery.gossip = false;
                 match serde_json5::to_string(&cfg) {
                     Ok(json) => json,
                     Err(e) => {
