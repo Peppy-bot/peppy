@@ -734,6 +734,7 @@ impl NodeEntity {
                 spawn_container_node(SpawnContainerInputs {
                     sif_path: &artifact_path,
                     working_dir: &instance_dir,
+                    instance_id: instance_id_str,
                     runtime_config_json5: ctx.runtime_config_json5,
                     env_vars: ctx.env_vars,
                     mount_paths: ctx.mount_paths_resolved,

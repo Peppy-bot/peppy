@@ -100,7 +100,7 @@ pub(super) struct ContainerBuildInputs<'a> {
     /// Fired when a `--force` build supersedes this one. On Linux the
     /// host process-group SIGKILL is enough; on macOS the guest-side apptainer
     /// (and its `%post` children) live in a separate kernel and are killed via
-    /// [`containers::Apptainer::kill_inflight_build`].
+    /// [`containers::Apptainer::kill_guest_process_group`].
     pub cancel_token: &'a CancellationToken,
 }
 
@@ -146,7 +146,7 @@ pub(super) async fn build_container_image(
     // `limactl shell` does not reach the guest `apptainer build` or its
     // `%post` children. The facade therefore runs the guest build as a
     // process-group leader and records its PGID to a guest-native file keyed by
-    // this build key, which `kill_inflight_build` (called with the same key)
+    // this build key, which `kill_guest_process_group` (called with the same key)
     // uses on cancel to SIGKILL the whole guest group. The working-dir basename
     // is a unique, filesystem-safe key. A no-op on the native backend.
     let build_key = inputs
@@ -196,7 +196,7 @@ pub(super) async fn build_container_image(
         && let Some(key) = build_key
     {
         let _ = tokio::task::spawn_blocking(move || {
-            let _ = apptainer.kill_inflight_build(&key);
+            let _ = apptainer.kill_guest_process_group(&key);
         })
         .await;
     }

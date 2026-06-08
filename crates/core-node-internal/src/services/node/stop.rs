@@ -382,6 +382,12 @@ struct DoomedInstance {
     node_tag: String,
     instance_id: Name,
     pid: Option<u32>,
+    /// `true` when this instance is a container node. On macOS the workload runs
+    /// inside the Lima VM, so the host process-group SIGKILL only reaches the
+    /// `limactl` client; the force phase additionally SIGKILLs the in-VM group
+    /// keyed by `instance_id`. Always `false` for process nodes (the host group
+    /// kill covers them) and a no-op for containers on Linux.
+    is_container: bool,
 }
 
 /// Force every non-root node out of the stack on a catchable daemon shutdown
@@ -429,7 +435,9 @@ pub async fn teardown_all_instances(
 
     // Phase 2 (force): SIGKILL the process group of anything still alive. The
     // negative-pid kill reaches the node's whole group (it was spawned as a
-    // group leader), so descendants die too.
+    // group leader), so descendants die too. For container nodes, also record the
+    // instance id so the in-VM group can be killed below (macOS only).
+    let mut container_kill_keys: Vec<String> = Vec::new();
     for d in &doomed {
         if let Some(pid) = d.pid
             && is_process_running(pid)
@@ -440,7 +448,33 @@ pub async fn teardown_all_instances(
                 pid
             );
             kill_process_group(pid);
+            if d.is_container {
+                container_kill_keys.push(d.instance_id.as_str().to_owned());
+            }
         }
+    }
+
+    // Phase 2b (macOS): for container nodes the host group kill above only reached
+    // the `limactl` client; the workload runs inside the Lima VM. Reach into the
+    // VM and SIGKILL each still-running container's recorded guest process group
+    // (keyed by instance id, matching the `cancel_pgid` set at spawn). Skipped on
+    // Linux, where the host kill already reached the shared-namespace container.
+    // Best-effort: a facade-init failure must not block teardown (the host kill
+    // already ran, and a non-responsive node is backstopped by its in-container
+    // daemon-liveness watchdog). Runs on a blocking thread because the guest kill
+    // shells out to `limactl`.
+    if cfg!(target_os = "macos") && !container_kill_keys.is_empty() {
+        let _ = tokio::task::spawn_blocking(move || match containers::Apptainer::new() {
+            Ok(apptainer) => {
+                for key in &container_kill_keys {
+                    let _ = apptainer.kill_guest_process_group(key);
+                }
+            }
+            Err(e) => {
+                debug!("Skipping in-VM container teardown (apptainer init failed): {e}");
+            }
+        })
+        .await;
     }
 
     // Phase 3 (bounded reap): let the killed groups die while the daemon is
@@ -462,12 +496,14 @@ fn collect_doomed_instances(node_stack: &Arc<NodeStack>) -> Vec<DoomedInstance> 
         let guard = handle.read();
         let node_name = guard.config().manifest.name.as_str().to_owned();
         let node_tag = guard.config().manifest.tag.clone();
+        let is_container = guard.config().execution.container.is_some();
         for inst in guard.instances() {
             doomed.push(DoomedInstance {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),
                 instance_id: inst.instance_id().clone(),
                 pid: inst.pid(),
+                is_container,
             });
         }
     }

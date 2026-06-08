@@ -250,6 +250,11 @@ pub(super) fn collect_container_binds(
 pub(super) struct SpawnContainerInputs<'a> {
     pub sif_path: &'a Path,
     pub working_dir: &'a Path,
+    /// Unique, filesystem-safe identity of this instance. Used as the guest
+    /// PGID key (via `cancel_pgid`) so the daemon can SIGKILL the in-VM workload
+    /// on macOS teardown. Must match the key the teardown path passes to
+    /// `kill_guest_process_group`.
+    pub instance_id: &'a str,
     pub runtime_config_json5: &'a str,
     pub env_vars: &'a [(String, String)],
     pub mount_paths: &'a [String],
@@ -270,6 +275,7 @@ pub(super) async fn spawn_container_node(
     let SpawnContainerInputs {
         sif_path,
         working_dir,
+        instance_id,
         runtime_config_json5,
         env_vars,
         mount_paths,
@@ -330,7 +336,13 @@ pub(super) async fn spawn_container_node(
     // Build apptainer run command. Environment variables are passed into the
     // container via --env flags (not host-side process env) so they are
     // visible inside the container.
-    let mut apptainer_cmd = apptainer.run(sif_str);
+    //
+    // `cancel_pgid` records the in-VM workload's process group under a guest-native
+    // file keyed by this instance id, so the daemon's teardown can SIGKILL the
+    // whole guest group via `kill_guest_process_group` (same key). A no-op on the
+    // native backend (Linux), where the host group kill already reaches the
+    // shared-namespace container directly.
+    let mut apptainer_cmd = apptainer.run(sif_str).cancel_pgid(instance_id);
     for arg in apptainer_run_extra_args {
         apptainer_cmd = apptainer_cmd.raw_flag(arg);
     }
@@ -392,10 +404,12 @@ pub(super) async fn spawn_container_node(
     // apptainer launcher's whole tree on shutdown. On Linux (native apptainer,
     // shared namespace) this reaches the container's processes directly. On macOS
     // the workload runs inside the Lima VM, so a host process-group kill only
-    // reaches the `limactl` client; the in-VM node is instead stopped by the
-    // daemon's cooperative `SHUTDOWN_SERVICE` on a clean shutdown and, as a
-    // backstop for a non-responsive node, by its own in-container daemon-liveness
-    // watchdog — so it never lingers as a permanent orphan.
+    // reaches the `limactl` client; the in-VM group is killed separately by the
+    // daemon's teardown via `kill_guest_process_group` (keyed by this instance's
+    // `cancel_pgid` above). A clean shutdown still goes through the cooperative
+    // `SHUTDOWN_SERVICE`, and a non-responsive node that outlives even that is
+    // reaped by its own in-container daemon-liveness watchdog, so it never lingers
+    // as a permanent orphan.
     #[cfg(unix)]
     command.process_group(0);
 
