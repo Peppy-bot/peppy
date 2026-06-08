@@ -56,7 +56,6 @@ test-support = ["dep:tempfile", "dep:parking_lot", "config/test_helpers"]
 
 [dev-dependencies]
 tempfile = "3.8"
-libc = "0.2"
 
 [[test]]
 name = "integration"

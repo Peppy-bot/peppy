@@ -498,7 +498,11 @@ impl Apptainer {
     /// (macOS) the guest `apptainer` process and its children (a build's `%post`
     /// steps, a run's container workload) live in a separate kernel; this reaches
     /// into the VM and kills the whole group. Best-effort: a missing or
-    /// already-dead group is not an error.
+    /// already-dead group is not an error. A `limactl`-level failure (for example
+    /// the VM being unreachable) is surfaced as an error, since the guest-side
+    /// kill itself always exits zero (`lima_kill_pgid_argv` swallows a missing or
+    /// already-dead group), so a non-zero exit means the invocation, not the
+    /// group, failed.
     pub fn kill_guest_process_group(&self, key: &str) -> Result<()> {
         match &self.backend {
             Backend::Native { .. } => Ok(()),
@@ -508,7 +512,7 @@ impl Apptainer {
                 ..
             } => {
                 let guest_pgid = lima::guest_pgid_path(key);
-                Command::new(limactl_path)
+                let status = Command::new(limactl_path)
                     .env("LIMA_HOME", lima_home)
                     .arg("shell")
                     .arg(lima::LIMA_INSTANCE)
@@ -516,6 +520,13 @@ impl Apptainer {
                     .args(lima::lima_kill_pgid_argv(&guest_pgid))
                     .status()
                     .map_err(Error::from)?;
+                if !status.success() {
+                    return Err(Error::LimaInstanceError(format!(
+                        "failed to kill guest process group (pgid file {}): limactl exited with {}",
+                        guest_pgid.display(),
+                        status
+                    )));
+                }
                 Ok(())
             }
         }

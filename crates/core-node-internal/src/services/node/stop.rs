@@ -433,15 +433,16 @@ pub async fn teardown_all_instances(
     })
     .await;
 
-    // Phase 2 (force): SIGKILL the process group of anything still alive. The
-    // negative-pid kill reaches the node's whole group (it was spawned as a
-    // group leader), so descendants die too. For container nodes, also record the
-    // instance id so the in-VM group can be killed below (macOS only).
+    // Phase 2 (force): SIGKILL each recorded process group. We deliberately do
+    // not pre-check whether the leader is still alive: a process group can
+    // outlive its leader (the leader exits but a descendant it spawned keeps
+    // running), and the negative-pid kill reaches the whole group (each node is
+    // spawned as a group leader), so descendants die too. An already-dead group
+    // yields ESRCH, which kill_process_group ignores. For container nodes, also
+    // record the instance id so the in-VM group can be killed below (macOS only).
     let mut container_kill_keys: Vec<String> = Vec::new();
     for d in &doomed {
-        if let Some(pid) = d.pid
-            && is_process_running(pid)
-        {
+        if let Some(pid) = d.pid {
             debug!(
                 "Force-killing process group for node instance '{}' (pid {})",
                 d.instance_id.as_str(),
@@ -510,13 +511,17 @@ fn collect_doomed_instances(node_stack: &Arc<NodeStack>) -> Vec<DoomedInstance> 
     doomed
 }
 
-/// Polls until every instance with a known pid has exited.
+/// Polls until every instance with a known pid has exited. Builds a single
+/// process snapshot per poll and checks all pids against it, rather than one
+/// snapshot per pid (which would rescan every process on the machine N times a
+/// poll for N instances).
 async fn wait_until_all_gone(doomed: &[DoomedInstance]) {
     loop {
+        let system = process_snapshot();
         if doomed
             .iter()
             .filter_map(|d| d.pid)
-            .all(|pid| !is_process_running(pid))
+            .all(|pid| !pid_running_in(&system, pid))
         {
             return;
         }
@@ -557,13 +562,26 @@ async fn wait_for_process_termination(pid: u32) -> bool {
     !is_process_running(pid)
 }
 
-/// Checks if a process with the given PID is still running.
-fn is_process_running(pid: u32) -> bool {
-    let system = sysinfo::System::new_with_specifics(
+/// Snapshots the machine's processes (existence + status only). Building this is
+/// not free (it rescans every process), so poll loops over many pids should take
+/// one snapshot and reuse it via [`pid_running_in`] rather than calling
+/// [`is_process_running`] per pid.
+fn process_snapshot() -> sysinfo::System {
+    sysinfo::System::new_with_specifics(
         sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
-    );
+    )
+}
+
+/// Whether `pid` is present and not a zombie in an already-taken `system`
+/// snapshot.
+fn pid_running_in(system: &sysinfo::System, pid: u32) -> bool {
     match system.process(sysinfo::Pid::from_u32(pid)) {
         Some(process) => process.status() != sysinfo::ProcessStatus::Zombie,
         None => false,
     }
+}
+
+/// Checks if a process with the given PID is still running.
+fn is_process_running(pid: u32) -> bool {
+    pid_running_in(&process_snapshot(), pid)
 }

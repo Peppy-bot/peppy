@@ -195,10 +195,11 @@ pub(super) async fn build_container_image(
     if inputs.cancel_token.is_cancelled()
         && let Some(key) = build_key
     {
-        let _ = tokio::task::spawn_blocking(move || {
-            let _ = apptainer.kill_guest_process_group(&key);
-        })
-        .await;
+        match tokio::task::spawn_blocking(move || apptainer.kill_guest_process_group(&key)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => debug!("Failed to kill guest process group on build cancellation: {e}"),
+            Err(e) => debug!("Guest-kill task failed on build cancellation: {e}"),
+        }
     }
 
     let (status, stderr_tail) = stream_result?;

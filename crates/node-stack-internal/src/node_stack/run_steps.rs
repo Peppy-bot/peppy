@@ -116,6 +116,20 @@ pub(super) fn extract_node_archive(
     Ok(instance_dir)
 }
 
+/// Make `command` spawn as its own process-group leader (PGID == its PID) so the
+/// daemon can later SIGKILL the whole group, the node and every descendant it
+/// spawns, in one signal on shutdown instead of orphaning them. It also insulates
+/// the node from a terminal's SIGINT to the daemon's group, so the daemon's
+/// explicit teardown is the single authoritative kill path. `setpgid(0,0)`
+/// semantics are identical on Linux and macOS; a no-op off unix.
+#[cfg(unix)]
+fn spawn_as_process_group_leader(command: &mut Command) {
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn spawn_as_process_group_leader(_command: &mut Command) {}
+
 /// Runs a process node using its `run_cmd` and passes the
 /// `PEPPY_RUNTIME_CONFIG` as an env var. Returns the spawned child on success.
 ///
@@ -161,14 +175,9 @@ pub(super) fn spawn_process_node(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Make the node its own process-group leader (PGID == its PID) so the daemon
-    // can later kill the whole group — the node AND any descendants it spawns
-    // (a Python child, a shell wrapper) — in one signal on shutdown, instead of
-    // orphaning them. `setpgid(0,0)` semantics are identical on Linux and macOS.
-    // It also insulates the node from a terminal's SIGINT to the daemon's group,
-    // so the daemon's explicit teardown is the single authoritative kill path.
-    #[cfg(unix)]
-    command.process_group(0);
+    // Process-group leader so the daemon's shutdown can kill the node and any
+    // descendants it spawns (a Python child, a shell wrapper) in one signal.
+    spawn_as_process_group_leader(&mut command);
     for (key, value) in env_vars {
         command.env(key, value);
     }
@@ -400,18 +409,13 @@ pub(super) async fn spawn_container_node(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Process-group leader, like the process-node path: lets the daemon kill the
-    // apptainer launcher's whole tree on shutdown. On Linux (native apptainer,
-    // shared namespace) this reaches the container's processes directly. On macOS
-    // the workload runs inside the Lima VM, so a host process-group kill only
-    // reaches the `limactl` client; the in-VM group is killed separately by the
-    // daemon's teardown via `kill_guest_process_group` (keyed by this instance's
-    // `cancel_pgid` above). A clean shutdown still goes through the cooperative
-    // `SHUTDOWN_SERVICE`, and a non-responsive node that outlives even that is
-    // reaped by its own in-container daemon-liveness watchdog, so it never lingers
-    // as a permanent orphan.
-    #[cfg(unix)]
-    command.process_group(0);
+    // Process-group leader, like the process-node path. On Linux (native
+    // apptainer, shared namespace) the host group kill reaches the container's
+    // processes directly. On macOS the workload runs inside the Lima VM, so a
+    // host group kill only reaches the `limactl` client; the in-VM group is
+    // killed separately by the daemon's teardown via `kill_guest_process_group`
+    // (keyed by this instance's `cancel_pgid` above).
+    spawn_as_process_group_leader(&mut command);
 
     let child = command.spawn().map_err(|e| {
         std::io::Error::other(format!(
