@@ -28,7 +28,7 @@ pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
 pub use remove::listen_for_node_remove;
 pub use run::{NodeRunServiceConfig, listen_for_node_run};
-pub use stop::listen_for_node_stop;
+pub use stop::{listen_for_node_stop, teardown_all_instances};
 pub use sync::listen_for_node_sync;
 
 pub(crate) use add::{NodeAddActionContext, log_label_from_source, run_node_add};

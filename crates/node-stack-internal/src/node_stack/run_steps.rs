@@ -161,6 +161,14 @@ pub(super) fn spawn_process_node(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Make the node its own process-group leader (PGID == its PID) so the daemon
+    // can later kill the whole group — the node AND any descendants it spawns
+    // (a Python child, a shell wrapper) — in one signal on shutdown, instead of
+    // orphaning them. `setpgid(0,0)` semantics are identical on Linux and macOS.
+    // It also insulates the node from a terminal's SIGINT to the daemon's group,
+    // so the daemon's explicit teardown is the single authoritative kill path.
+    #[cfg(unix)]
+    command.process_group(0);
     for (key, value) in env_vars {
         command.env(key, value);
     }
@@ -380,6 +388,16 @@ pub(super) async fn spawn_container_node(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Process-group leader, like the process-node path: lets the daemon kill the
+    // apptainer launcher's whole tree on shutdown. On Linux (native apptainer,
+    // shared namespace) this reaches the container's processes directly. On macOS
+    // the workload runs inside the Lima VM, so a host process-group kill only
+    // reaches the `limactl` client; the in-VM node is instead stopped by the
+    // daemon's cooperative `SHUTDOWN_SERVICE` on a clean shutdown and, as a
+    // backstop for a non-responsive node, by its own in-container daemon-liveness
+    // watchdog — so it never lingers as a permanent orphan.
+    #[cfg(unix)]
+    command.process_group(0);
 
     let child = command.spawn().map_err(|e| {
         std::io::Error::other(format!(

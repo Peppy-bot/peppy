@@ -1341,6 +1341,9 @@ fn default_node_arguments() -> CoreNodeArguments {
         // Faster than the production default (100 ms) so publish_clock tests
         // observe several ticks within a small fixed budget without flaking.
         clock_publish_interval: Duration::from_millis(50),
+        // Faster than production (5 s) so the heartbeat test observes beats
+        // quickly without flaking.
+        heartbeat_interval: Duration::from_millis(200),
         daemon_use_sim_time: false,
     }
 }

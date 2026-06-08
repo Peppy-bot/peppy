@@ -7,6 +7,12 @@
 pub const CORE_NODE_TAG: &str = "core";
 
 pub const CLOCK: &str = "clock";
+/// Topic the daemon publishes a periodic liveness beat on. Each spawned node
+/// subscribes via its daemon-liveness watchdog and shuts itself down if the
+/// beat goes silent past the configured grace period (uncatchable-death safety
+/// net). Keyed by the core-node name (deterministic per machine), so a
+/// restarted daemon resumes on the same key and nodes survive the restart.
+pub const DAEMON_HEARTBEAT: &str = "daemon_heartbeat";
 pub const INFO: &str = "info";
 pub const PING: &str = "ping";
 

@@ -26,6 +26,15 @@ pub const DEFAULT_STANDARD_BUFFER_SIZE: usize = 128;
 /// sensor-data streams). Mirrors the historical hardcoded value.
 pub const DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE: usize = 1024;
 
+/// Default daemon-liveness grace period, in seconds (180 = 3 minutes). A
+/// spawned node that sees no daemon heartbeat for this long shuts itself down
+/// to avoid lingering as an orphan after an uncatchable daemon death.
+pub const DEFAULT_DAEMON_GRACE_SECS: u64 = 180;
+/// Minimum accepted grace period, in seconds. Must comfortably exceed the
+/// heartbeat interval and the router-watchdog restart window so a brief daemon
+/// blip never trips a node's watchdog.
+pub const MIN_DAEMON_GRACE_SECS: u64 = 30;
+
 /// The bundled default config, written verbatim on first create so its comments
 /// survive. Kept inline (not `include_str!` from an asset file) because
 /// `config-internal` is vendored into every generated node as `src/` only, with
@@ -58,6 +67,19 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     r#",
     high_throughput_buffer_size: "#,
     DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
+    r#",
+  },
+
+  // Node lifecycle safety net. Each spawned node listens for a periodic
+  // heartbeat from the daemon. A clean ctrl+C or `systemctl stop` kills the
+  // nodes immediately and does NOT wait for this timer. This grace period only
+  // governs an *uncatchable* daemon death (crash / OOM / SIGKILL): if the
+  // daemon does not return within this many seconds, each node shuts itself
+  // down so it does not linger as an orphan. A briefer outage (shorter than
+  // this) leaves peer-mode nodes running so they survive a daemon restart.
+  lifecycle: {
+    daemon_grace_secs: "#,
+    DEFAULT_DAEMON_GRACE_SECS,
     r#",
   },
 }
@@ -112,6 +134,27 @@ impl Default for PeerConfig {
     }
 }
 
+/// Node lifecycle knobs. `daemon_grace_secs` is the grace period a spawned node
+/// waits, after the daemon's heartbeat goes silent, before shutting itself down
+/// to avoid orphaning. A clean ctrl+C / `systemctl stop` is immediate and does
+/// not consult this value; it only governs an uncatchable daemon death.
+///
+/// `#[serde(default)]` fills any field a partial `lifecycle` block omits from
+/// [`LifecycleConfig::default`], matching the `PeerConfig` pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LifecycleConfig {
+    pub daemon_grace_secs: u64,
+}
+
+impl Default for LifecycleConfig {
+    fn default() -> Self {
+        Self {
+            daemon_grace_secs: DEFAULT_DAEMON_GRACE_SECS,
+        }
+    }
+}
+
 /// The whole `peppy_config.json5` document. Every field is serde-defaulted so a
 /// partial or older file still parses; extra unknown keys are tolerated (this is
 /// a user-edited file, forward-compat beats strictness here).
@@ -121,6 +164,8 @@ pub struct PeppyConfig {
     pub mode: Mode,
     #[serde(default)]
     pub peer: PeerConfig,
+    #[serde(default)]
+    pub lifecycle: LifecycleConfig,
 }
 
 impl PeppyConfig {
@@ -144,6 +189,15 @@ impl PeppyConfig {
                     "invalid peer buffer size: {field} must be > 0"
                 ))));
             }
+        }
+
+        // The grace period must comfortably exceed the heartbeat interval and a
+        // router restart, or a brief daemon blip would trip every node's
+        // watchdog. Reject a hand-edited too-small value loud at load time.
+        if self.lifecycle.daemon_grace_secs < MIN_DAEMON_GRACE_SECS {
+            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+                "invalid lifecycle.daemon_grace_secs: must be >= {MIN_DAEMON_GRACE_SECS}"
+            ))));
         }
         Ok(())
     }
@@ -200,6 +254,45 @@ mod tests {
         assert_eq!(
             cfg.peer.high_throughput_buffer_size,
             DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
+        );
+        assert_eq!(cfg.lifecycle.daemon_grace_secs, DEFAULT_DAEMON_GRACE_SECS);
+    }
+
+    #[test]
+    fn parses_partial_lifecycle_block() {
+        let tmp = tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(
+            conf_dir.join(PEPPY_CONFIG_FILE),
+            r#"{ lifecycle: { daemon_grace_secs: 600 } }"#,
+        )
+        .unwrap();
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.lifecycle.daemon_grace_secs, 600);
+        // Omitted blocks still fall back to their defaults.
+        assert_eq!(cfg.mode, Mode::Peer);
+        assert_eq!(cfg.peer, PeerConfig::default());
+    }
+
+    #[test]
+    fn sub_minimum_grace_fails_loud() {
+        let tmp = tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(
+            conf_dir.join(PEPPY_CONFIG_FILE),
+            r#"{ lifecycle: { daemon_grace_secs: 5 } }"#,
+        )
+        .unwrap();
+
+        let err = load_or_create(&peppy_dirs).unwrap_err();
+        assert!(
+            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("daemon_grace_secs")),
+            "expected a grace-period validation error, got: {err:?}"
         );
     }
 
@@ -266,6 +359,9 @@ mod tests {
             peer: PeerConfig {
                 standard_buffer_size: 64,
                 high_throughput_buffer_size: 4096,
+            },
+            lifecycle: LifecycleConfig {
+                daemon_grace_secs: 240,
             },
         };
         let serialized = serde_json5::to_string(&custom).unwrap();

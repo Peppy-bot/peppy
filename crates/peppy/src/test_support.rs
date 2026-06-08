@@ -179,6 +179,7 @@ impl ServeCommandEmulation {
                 health_monitor_interval: Duration::from_secs(5),
                 health_monitor_timeout: Duration::from_secs(3),
                 clock_publish_interval: Duration::from_millis(100),
+                heartbeat_interval: Duration::from_secs(5),
                 daemon_use_sim_time: false,
             },
             temp_dir.path().to_path_buf(),

@@ -84,6 +84,8 @@ pub struct StackLaunchDefaults {
     pub messaging_mode: Mode,
     /// Daemon-global peer buffer sizes, injected into every launched node.
     pub peer_buffer: PeerConfig,
+    /// Daemon-liveness grace period (seconds), injected into every launched node.
+    pub daemon_grace_secs: u64,
 }
 
 pub async fn listen_for_stack_launch(
@@ -110,6 +112,7 @@ pub async fn listen_for_stack_launch(
         use_sim_time: daemon_use_sim_time,
         messaging_mode,
         peer_buffer,
+        daemon_grace_secs,
     } = defaults;
     let handler = LaunchGoalHandler {
         context: LaunchActionContext {
@@ -122,6 +125,7 @@ pub async fn listen_for_stack_launch(
             daemon_use_sim_time,
             messaging_mode,
             peer_buffer,
+            daemon_grace_secs,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -174,6 +178,8 @@ struct ProcessLaunchContext {
     messaging_mode: Mode,
     /// Daemon-global peer buffer sizes, injected into every launched node.
     peer_buffer: PeerConfig,
+    /// Daemon-liveness grace period (seconds), injected into every launched node.
+    daemon_grace_secs: u64,
 }
 
 #[derive(Clone)]
@@ -187,6 +193,7 @@ struct LaunchActionContext {
     daemon_use_sim_time: bool,
     messaging_mode: Mode,
     peer_buffer: PeerConfig,
+    daemon_grace_secs: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -702,6 +709,7 @@ async fn start_node_directly(
         health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
         messaging_mode: ctx.messaging_mode,
         peer_buffer: ctx.peer_buffer,
+        daemon_grace_secs: ctx.daemon_grace_secs,
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -1550,6 +1558,7 @@ async fn handle_goal_request(
             daemon_use_sim_time,
             messaging_mode,
             peer_buffer,
+            daemon_grace_secs,
         } = action_context;
         let env_vars = goal.env_vars.clone();
         // Compute the launch deadline once. `None` => no overall deadline (idle-only).
@@ -1576,6 +1585,7 @@ async fn handle_goal_request(
             daemon_use_sim_time,
             messaging_mode,
             peer_buffer,
+            daemon_grace_secs,
         };
         // Catch panics so a panic inside the launch sequence still completes the
         // goal with a failure result, rather than leaving the client to wait out

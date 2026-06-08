@@ -150,7 +150,7 @@ impl Serve {
                         info!("Waiting for serve handlers to finish...");
                         break;
                     }
-                    signal = tokio::signal::ctrl_c() => {
+                    signal = super::shutdown_signal::shutdown_signal() => {
                         match signal {
                             Ok(_) => {
                                 info!("Shutdown signal received");

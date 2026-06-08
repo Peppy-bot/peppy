@@ -368,6 +368,143 @@ pub(super) async fn stop_instance(
     remove_instance_from_registry(node_stack, node_name, node_tag, instance_id)
 }
 
+/// Grace window for the cooperative phase of a full teardown. Nodes that don't
+/// exit within this on a catchable daemon shutdown get SIGKILLed by process
+/// group. Short on purpose: ctrl+C / `systemctl stop` should feel immediate.
+const TEARDOWN_GRACEFUL_BUDGET: Duration = Duration::from_secs(3);
+/// Bounded wait for SIGKILLed groups to be reaped before the daemon exits, so
+/// they don't briefly linger as zombies parented to the still-alive daemon.
+const TEARDOWN_REAP_BUDGET: Duration = Duration::from_secs(2);
+
+/// A non-root node instance to terminate during a full teardown.
+struct DoomedInstance {
+    node_name: String,
+    node_tag: String,
+    instance_id: Name,
+    pid: Option<u32>,
+}
+
+/// Force every non-root node out of the stack on a catchable daemon shutdown
+/// (ctrl+C / SIGTERM), so no node — or any descendant it spawned — outlives the
+/// daemon as an orphan.
+///
+/// Graceful-then-force: first asks each node to shut down cooperatively (the
+/// same `SHUTDOWN_SERVICE` path as `peppy node stop`, so robot nodes can stop
+/// actuators cleanly), gives them a short shared budget to exit, then SIGKILLs
+/// the process group of anything still alive. The root (core) node is skipped —
+/// its pid is the daemon itself. This does NOT wait the uncatchable-death grace
+/// period; that timer only governs a daemon that died without running cleanup.
+pub async fn teardown_all_instances(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    core_instance_id: &str,
+    node_stack: &Arc<NodeStack>,
+) {
+    let doomed = collect_doomed_instances(node_stack);
+    if doomed.is_empty() {
+        return;
+    }
+    debug!(
+        "Tearing down {} node instance(s) on daemon shutdown",
+        doomed.len()
+    );
+
+    // Phase 1 (graceful, bounded): ask every node to shut down cooperatively,
+    // concurrently, then poll until they're all gone or the budget elapses.
+    let _ = tokio::time::timeout(TEARDOWN_GRACEFUL_BUDGET, async {
+        let sends = doomed.iter().map(|d| {
+            send_shutdown_signal(
+                messenger,
+                core_node_name,
+                core_instance_id,
+                &d.node_name,
+                &d.node_tag,
+                &d.instance_id,
+            )
+        });
+        let _ = futures::future::join_all(sends).await;
+        wait_until_all_gone(&doomed).await;
+    })
+    .await;
+
+    // Phase 2 (force): SIGKILL the process group of anything still alive. The
+    // negative-pid kill reaches the node's whole group (it was spawned as a
+    // group leader), so descendants die too.
+    for d in &doomed {
+        if let Some(pid) = d.pid
+            && is_process_running(pid)
+        {
+            debug!(
+                "Force-killing process group for node instance '{}' (pid {})",
+                d.instance_id.as_str(),
+                pid
+            );
+            kill_process_group(pid);
+        }
+    }
+
+    // Phase 3 (bounded reap): let the killed groups die while the daemon is
+    // still alive so they don't show as zombies; any straggler reparents to
+    // init/launchd and is reaped there.
+    let _ = tokio::time::timeout(TEARDOWN_REAP_BUDGET, wait_until_all_gone(&doomed)).await;
+}
+
+/// Snapshot every non-root instance (both `Running` and `Starting` — a
+/// `Starting` instance already has a live child) with its routing identity and
+/// pid. Skips the root entity by pointer identity.
+fn collect_doomed_instances(node_stack: &Arc<NodeStack>) -> Vec<DoomedInstance> {
+    let root = node_stack.root();
+    let mut doomed = Vec::new();
+    for handle in node_stack.snapshot() {
+        if Arc::ptr_eq(&handle, &root) {
+            continue;
+        }
+        let guard = handle.read();
+        let node_name = guard.config().manifest.name.as_str().to_owned();
+        let node_tag = guard.config().manifest.tag.clone();
+        for inst in guard.instances() {
+            doomed.push(DoomedInstance {
+                node_name: node_name.clone(),
+                node_tag: node_tag.clone(),
+                instance_id: inst.instance_id().clone(),
+                pid: inst.pid(),
+            });
+        }
+    }
+    doomed
+}
+
+/// Polls until every instance with a known pid has exited.
+async fn wait_until_all_gone(doomed: &[DoomedInstance]) {
+    loop {
+        if doomed
+            .iter()
+            .filter_map(|d| d.pid)
+            .all(|pid| !is_process_running(pid))
+        {
+            return;
+        }
+        tokio::time::sleep(PROCESS_POLL_INTERVAL).await;
+    }
+}
+
+/// SIGKILLs the entire process group led by `pid`. Nodes are spawned as group
+/// leaders (PGID == PID; see `node_stack::run_steps::spawn_process_node`), so a
+/// negative-pid signal reaches the node and every descendant in its group.
+/// `setpgid`/`killpg` semantics are identical on Linux and macOS.
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    // SAFETY: a plain `kill(2)` syscall with no memory effects. A negative pid
+    // targets the process group `pid`. An already-dead group yields ESRCH,
+    // which we ignore.
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: u32) {}
+
 /// Waits for a process to terminate, polling at regular intervals.
 /// Returns `true` if the process has terminated, `false` if it's still running after the timeout.
 async fn wait_for_process_termination(pid: u32) -> bool {

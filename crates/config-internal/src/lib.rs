@@ -98,16 +98,17 @@ pub mod node {
 // -- runtime --
 pub mod runtime {
     pub use crate::internal::runtime::{
-        DiscoveryConfig, LauncherRuntimeConfig, NodeInstanceConfig, ResolvedFramework,
-        RuntimeConfig, SlotBinding,
+        DiscoveryConfig, LauncherRuntimeConfig, LifecycleRuntimeConfig, NodeInstanceConfig,
+        ResolvedFramework, RuntimeConfig, SlotBinding,
     };
 }
 
 // -- peppy_config --
 pub mod peppy_config {
     pub use crate::internal::peppy_config::{
-        DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE, DEFAULT_STANDARD_BUFFER_SIZE, Mode, PEPPY_CONFIG_FILE,
-        PeerConfig, PeppyConfig, load_or_create,
+        DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
+        DEFAULT_STANDARD_BUFFER_SIZE, LifecycleConfig, MIN_DAEMON_GRACE_SECS, Mode,
+        PEPPY_CONFIG_FILE, PeerConfig, PeppyConfig, load_or_create,
     };
 }
 

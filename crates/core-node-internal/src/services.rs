@@ -10,6 +10,7 @@ mod stack;
 use clock::{ClockSource, SimClockSource, WallClockSource};
 
 pub use node::FORBIDDEN_ENV_KEYS;
+pub use node::teardown_all_instances;
 
 use crate::Result;
 use config::{
@@ -60,6 +61,9 @@ pub struct CoreNodeArguments {
     pub health_monitor_interval: Duration,
     pub health_monitor_timeout: Duration,
     pub clock_publish_interval: Duration,
+    /// Cadence of the daemon-liveness heartbeat (small and fixed; the
+    /// configurable grace period is many multiples of it).
+    pub heartbeat_interval: Duration,
     /// Daemon-wide default for the framework `use_sim_time` flag. Per-instance
     /// launcher overrides win over this; when an instance omits the override,
     /// the spawned node's `framework.use_sim_time` is set to this value.
@@ -105,6 +109,7 @@ pub struct CoreNode {
     health_monitor_interval: Duration,
     health_monitor_timeout: Duration,
     clock_publish_interval: Duration,
+    heartbeat_interval: Duration,
     daemon_use_sim_time: bool,
     /// Daemon-global messaging mode + peer buffer sizes, read once at startup.
     /// Injected into every spawned node's runtime config (see `node::run`).
@@ -173,6 +178,7 @@ impl CoreNode {
         let health_monitor_interval = node_arguments.health_monitor_interval;
         let health_monitor_timeout = node_arguments.health_monitor_timeout;
         let clock_publish_interval = node_arguments.clock_publish_interval;
+        let heartbeat_interval = node_arguments.heartbeat_interval;
         let daemon_use_sim_time = node_arguments.daemon_use_sim_time;
 
         let node_config = NodeConfig {
@@ -212,6 +218,7 @@ impl CoreNode {
             health_monitor_interval,
             health_monitor_timeout,
             clock_publish_interval,
+            heartbeat_interval,
             daemon_use_sim_time,
             peppy_config,
         }
@@ -223,6 +230,22 @@ impl CoreNode {
 
     pub fn set_node_stack(&mut self, node_stack: NodeStack) {
         self.node_stack = Arc::new(node_stack);
+    }
+
+    /// Tear down every spawned node on a catchable daemon shutdown (ctrl+C /
+    /// SIGTERM): cooperatively stop them, then SIGKILL the process group of any
+    /// straggler so none outlives the daemon as an orphan. Takes `&self` so the
+    /// serve runner can call it after its shutdown-signal branch fires while the
+    /// core node's own future is still pinned. See
+    /// [`node::teardown_all_instances`].
+    pub async fn teardown_node_stack(&self) {
+        node::teardown_all_instances(
+            &self.messenger,
+            self.node_name(),
+            self.instance_id(),
+            &self.node_stack,
+        )
+        .await;
     }
 
     pub fn node_config(&self) -> &NodeConfig {
@@ -313,6 +336,16 @@ impl CoreNode {
                 )
                 .boxed()
             },
+            // Liveness beacon for spawned nodes' watchdogs. Unconditional (both
+            // wall and sim mode), unlike the clock above which is wall-only.
+            clock::publish_daemon_heartbeat(
+                self.messenger.clone(),
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.heartbeat_interval,
+            )
+            .boxed(),
             info::listen_for_info(
                 &self.messenger,
                 core_node_name,
@@ -371,6 +404,7 @@ impl CoreNode {
                     use_sim_time: self.daemon_use_sim_time,
                     messaging_mode: self.peppy_config.mode,
                     peer_buffer: self.peppy_config.peer,
+                    daemon_grace_secs: self.peppy_config.lifecycle.daemon_grace_secs,
                 },
             )
             .boxed(),
@@ -449,6 +483,7 @@ impl CoreNode {
                     health_monitor_timeout: self.health_monitor_timeout,
                     messaging_mode: self.peppy_config.mode,
                     peer_buffer: self.peppy_config.peer,
+                    daemon_grace_secs: self.peppy_config.lifecycle.daemon_grace_secs,
                 },
             )
             .boxed(),

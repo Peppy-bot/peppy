@@ -202,6 +202,61 @@ async fn run_clock_publisher(
     }
 }
 
+/// Spawns a task that emits a liveness beat on the `daemon_heartbeat` topic at
+/// every `interval`, in BOTH wall and sim mode (liveness must not depend on the
+/// clock topology — in sim mode the daemon does not publish the clock at all).
+///
+/// Each spawned node runs a watchdog subscribed to this topic; if the beats go
+/// silent past the configured grace period the node shuts itself down, so an
+/// uncatchable daemon death (SIGKILL / OOM / crash) does not leave orphans. The
+/// payload is a `ClockTick` reused purely as a cheap one-`u64` carrier — the
+/// node only cares that a message arrived, not its value.
+///
+/// `SensorData` QoS (best-effort, newest-wins, no back-pressure) is correct for
+/// a beacon: a missed beat is harmless as long as the next arrives inside grace.
+pub async fn publish_daemon_heartbeat(
+    messenger: MessengerHandle,
+    core_node_name: &str,
+    instance_id: &str,
+    node_name: &str,
+    interval: Duration,
+) -> Result<JoinHandle<Result<()>>> {
+    let publisher = TopicMessenger::declare_publisher(
+        &messenger,
+        core_node_name,
+        instance_id,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        None,
+        names::DAEMON_HEARTBEAT,
+        QoSProfile::SensorData,
+    )
+    .await?;
+    Ok(tokio::spawn(run_heartbeat_publisher(publisher, interval)))
+}
+
+async fn run_heartbeat_publisher(publisher: TopicPublisher, interval: Duration) -> Result<()> {
+    let mut ticker = tokio::time::interval(interval);
+    // A late beat is uninteresting; skip catch-up bursts after a stall.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        ticker.tick().await;
+        // The value is never read by the node; fall back to 0 if the wall clock
+        // is unavailable rather than skipping the beat (a missed beat could
+        // wrongly trip a node's watchdog).
+        let payload = match ClockTick::new(wall_now_ns().unwrap_or(0)).encode() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("daemon heartbeat encode failed: {e}");
+                continue;
+            }
+        };
+        if let Err(e) = publisher.publish(payload).await {
+            warn!("daemon heartbeat emit failed: {e}");
+        }
+    }
+}
+
 /// Subscribes to the `clock` topic and feeds the latest observed timestamp
 /// into `cache`. Spawned in sim mode in lieu of [`publish_clock`]: the daemon
 /// is one of many subscribers to the external simulator's tick stream, and

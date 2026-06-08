@@ -65,6 +65,9 @@ pub struct NodeRunServiceConfig {
     pub messaging_mode: Mode,
     /// Daemon-global peer buffer sizes, injected into every spawned node.
     pub peer_buffer: PeerConfig,
+    /// Daemon-liveness grace period (seconds), injected into every spawned node
+    /// so its watchdog knows how long to tolerate a silent daemon.
+    pub daemon_grace_secs: u64,
 }
 
 #[derive(Clone)]
@@ -80,6 +83,7 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) health_monitor_timeout: Duration,
     pub(crate) messaging_mode: Mode,
     pub(crate) peer_buffer: PeerConfig,
+    pub(crate) daemon_grace_secs: u64,
 }
 
 /// Applies the daemon-global messaging mode and peer buffer sizes to a node's
@@ -136,6 +140,7 @@ pub async fn listen_for_node_run(
             health_monitor_timeout: config.health_monitor_timeout,
             messaging_mode: config.messaging_mode,
             peer_buffer: config.peer_buffer,
+            daemon_grace_secs: config.daemon_grace_secs,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -734,6 +739,9 @@ async fn process_node_run(
         ctx.action.peer_buffer,
         container_gateway.is_some(),
     );
+    // Ship the daemon-resolved liveness grace period so the spawned node's
+    // watchdog self-terminates if this daemon dies and stays gone.
+    launch_config.lifecycle.daemon_grace_secs = ctx.action.daemon_grace_secs;
     if let Some(gateway) = &container_gateway {
         launch_config.messaging_host = gateway.to_string();
     }
