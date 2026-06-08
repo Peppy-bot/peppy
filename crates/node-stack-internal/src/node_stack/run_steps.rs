@@ -130,20 +130,24 @@ fn spawn_as_process_group_leader(command: &mut Command) {
 #[cfg(not(unix))]
 fn spawn_as_process_group_leader(_command: &mut Command) {}
 
-/// Runs a process node using its `run_cmd` and passes the
-/// `PEPPY_RUNTIME_CONFIG` as an env var. Returns the spawned child on success.
+/// Builds the [`Command`] for a process node from its `run_cmd`, with
+/// `PEPPY_RUNTIME_CONFIG` set as an env var and the process-group-leader flag
+/// applied. Returns the unspawned command plus the path of the runtime config
+/// temp file it wrote. The caller forks it under the entity write lock, so the
+/// child's pid is recorded atomically with the spawn, and owns the temp file's
+/// cleanup on spawn failure.
 ///
 /// Used by [`super::entity::NodeEntity::prepare_and_spawn`] for process nodes.
 /// The runtime config is written to a unique temp file under
 /// `peppy_dirs.runtime_config_dir()` (see [`write_runtime_config_temp`]).
-pub(super) fn spawn_process_node(
+pub(super) fn build_process_command(
     config: &NodeConfig,
     working_dir: &Path,
     runtime_config_json5: &str,
     env_vars: &[(String, String)],
     log_file: &Arc<StdMutex<File>>,
     peppy_dirs: &PeppyDirs,
-) -> std::io::Result<(Child, PathBuf)> {
+) -> std::io::Result<(Command, PathBuf)> {
     let manifest = &config.manifest;
     let run_cmd = config
         .execution
@@ -194,15 +198,7 @@ pub(super) fn spawn_process_node(
         command.env("PYTHONUNBUFFERED", "1");
     }
 
-    let child = command.spawn().map_err(|e| {
-        // Spawn failed: the temp runtime config file we just wrote will
-        // never be owned by `StartedInstanceCtx`, so clean it up here to
-        // avoid orphaning `runtime_config_*.json5` under the peppy tmp dir.
-        let _ = std::fs::remove_file(&runtime_config_path);
-        let full_cmd = run_cmd.join(" ");
-        std::io::Error::other(format!("failed to execute run_cmd `{}`: {}", full_cmd, e))
-    })?;
-    Ok((child, runtime_config_path))
+    Ok((command, runtime_config_path))
 }
 
 /// Describes a bind mount for a container node.
@@ -274,13 +270,18 @@ pub(super) struct SpawnContainerInputs<'a> {
     pub peppy_dirs: &'a PeppyDirs,
 }
 
-/// Starts a container node using the Apptainer runtime.
+/// Builds the Apptainer-runtime [`Command`] for a container node. Runs all the
+/// async/expensive setup (Apptainer/Lima init, host mounts, command
+/// construction) but NOT the spawn.
 ///
-/// Returns a tokio [`Child`] with piped stdout/stderr for async output
-/// capture plus the path of the written runtime config temp file.
-pub(super) async fn spawn_container_node(
+/// Returns the unspawned tokio [`Command`] (stdout/stderr piped, process-group
+/// leader flag applied) plus the path of the written runtime config temp file.
+/// The caller forks it under the entity write lock, so the child's pid is
+/// recorded atomically with the spawn, and owns the temp file's cleanup on spawn
+/// failure.
+pub(super) async fn build_container_command(
     inputs: SpawnContainerInputs<'_>,
-) -> std::io::Result<(Child, PathBuf)> {
+) -> std::io::Result<(Command, PathBuf)> {
     let SpawnContainerInputs {
         sif_path,
         working_dir,
@@ -417,15 +418,11 @@ pub(super) async fn spawn_container_node(
     // (keyed by this instance's `cancel_pgid` above).
     spawn_as_process_group_leader(&mut command);
 
-    let child = command.spawn().map_err(|e| {
-        std::io::Error::other(format!(
-            "failed to execute apptainer run for `{}`: {}",
-            sif_path.display(),
-            e
-        ))
-    })?;
+    // The runtime config temp file now belongs to the caller, which transfers
+    // it to `StartedInstanceCtx` on a successful spawn or cleans it up if the
+    // fork fails. Defuse so the build-time guard doesn't delete it on return.
     runtime_config_guard.defuse();
-    Ok((child, runtime_config_path))
+    Ok((command, runtime_config_path))
 }
 
 /// Ensures every bind mount source path is usable by the container runtime.

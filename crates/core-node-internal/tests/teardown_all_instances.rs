@@ -12,8 +12,8 @@
 mod common;
 
 use common::{
-    build_staged_node, send_node_add_and_wait, spawn_real_stuck_instance,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    build_staged_node, send_node_add_and_wait, spawn_real_starting_instance,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
 use peppylib::messaging::MessengerHandle;
@@ -144,4 +144,107 @@ async fn teardown_force_kills_whole_process_group() {
         is_process_running(std::process::id()),
         "teardown must never kill the root/core node (the daemon itself)"
     );
+}
+
+/// Teardown must also force-kill a node caught mid-launch (`Starting`): the
+/// child is spawned and its pid recorded inside `prepare_and_spawn`, before
+/// `commit_started` runs. Regression guard for the `Starting`-window orphan and
+/// for keeping `Starting` instances in `collect_doomed_instances`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn teardown_force_kills_instance_still_in_starting() {
+    const NODE_NAME: &str = "starting_node";
+    const NODE_TAG: &str = "v1";
+    const INSTANCE_ID: &str = "starting_instance";
+
+    let started = start_core_node_with_mock_messenger().await;
+    let node_stack = Arc::new(started.node_stack.clone());
+
+    let source_dir = tempfile::tempdir().expect("temp source dir");
+    // Same group-leader-with-two-grandchildren shape as the Running test.
+    let peppy_json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: { name: "{NAME}", tag: "{TAG}" },
+            execution: {
+                language: "rust",
+                run_cmd: ["sh", "-c", "sleep 1000 & sleep 1000 & wait"]
+            }
+        }"#
+    .replace("{NAME}", NODE_NAME)
+    .replace("{TAG}", NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+    assert!(add_response.success, "node_add failed: {add_response:?}");
+    build_staged_node(&started, NODE_NAME, NODE_TAG).await;
+
+    let instance_id = Name::new(INSTANCE_ID).expect("valid instance id");
+    // Drive prepare_and_spawn WITHOUT commit_started: the instance stays in
+    // `Starting` with a live child — the mid-launch state that, before the fix,
+    // carried no pid in the registry and so was skipped by the force phase.
+    let starting = spawn_real_starting_instance(&started, NODE_NAME, NODE_TAG, &instance_id).await;
+    let node_pid = starting.pid;
+
+    // The instance really is in `Starting`, and already carries the pid the
+    // force phase needs (recorded inside prepare_and_spawn under the entity lock).
+    {
+        let handle = started
+            .node_stack
+            .find(NODE_NAME, NODE_TAG)
+            .expect("entity should exist");
+        let guard = handle.read();
+        let inst = guard
+            .instances()
+            .iter()
+            .find(|i| i.instance_id() == &instance_id)
+            .expect("starting instance should be registered");
+        assert_eq!(
+            inst.state(),
+            node_stack::InstanceState::Starting,
+            "instance must still be Starting (commit_started was not called)"
+        );
+        assert_eq!(
+            inst.pid(),
+            Some(node_pid),
+            "Starting instance must carry the spawned child's pid"
+        );
+    }
+
+    // Wait for the two grandchildren to appear, then snapshot their pids.
+    assert!(
+        poll_until(Duration::from_secs(5), || children_of(node_pid).len() >= 2),
+        "expected the node to fork two grandchildren"
+    );
+    let grandchildren = children_of(node_pid);
+    assert!(
+        is_process_running(node_pid),
+        "Starting node {node_pid} should be running before teardown"
+    );
+
+    // System under test: teardown force-kills the whole group of a Starting node.
+    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    core_node::teardown_all_instances(&messenger, &started.core_node_name, "core", &node_stack)
+        .await;
+
+    assert!(
+        !is_process_running(node_pid),
+        "Starting node {node_pid} should be gone after teardown"
+    );
+    for &gc in &grandchildren {
+        assert!(
+            poll_until(Duration::from_secs(5), || !is_process_running(gc)),
+            "grandchild {gc} should be gone after teardown (group kill)"
+        );
+    }
+
+    // Drop the guard explicitly (its best-effort group kill is now a no-op).
+    drop(starting);
 }

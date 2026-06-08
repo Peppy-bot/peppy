@@ -1688,6 +1688,79 @@ async fn spawn_real_running_instance_inner(
     }
 }
 
+/// RAII guard for a test-spawned instance deliberately left in `Starting`:
+/// `prepare_and_spawn` was driven but `commit_started` was NOT, so the instance
+/// is registered as `Starting` with a live child, exactly the state a node is in
+/// mid-launch. Holds the `Child` and `StartedInstanceCtx` so the launch is
+/// neither committed nor aborted. On drop it SIGKILLs the child's whole process
+/// group (negative pid) so the held `sleep`s don't leak past the test.
+#[must_use = "guard keeps the half-started child alive; drop it to clean up"]
+pub struct TestStartingInstance {
+    pub pid: u32,
+    pub instance_id: config::node::Name,
+    _child: tokio::process::Child,
+    _started_ctx: node_stack::StartedInstanceCtx,
+    _feedback_drain: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for TestStartingInstance {
+    fn drop(&mut self) {
+        // Best-effort: by the time a test drops this, teardown has usually
+        // already reaped the group, so silence the expected ESRCH/EPERM noise.
+        let _ = std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(format!("-{}", self.pid))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        self._feedback_drain.abort();
+    }
+}
+
+/// Drives a real `prepare_and_spawn` on the entity at `(name, tag)` (which must
+/// already be in `Ready`) but intentionally does NOT call `commit_started`,
+/// leaving the instance in `Starting` with a live child. Used to prove that a
+/// daemon teardown during the start window force-kills the `Starting`-window
+/// child instead of orphaning it. The caller is responsible for ensuring the
+/// node config's `run_cmd` is spawnable in the test environment.
+pub async fn spawn_real_starting_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::node::Name,
+) -> TestStartingInstance {
+    let handle = started
+        .node_stack
+        .find(name, tag)
+        .expect("spawn_real_starting_instance: entity should exist");
+    let (output_sinks, _feedback_tx, drain) =
+        make_real_output_sinks(&started.peppy_dirs, instance_id);
+
+    let (child, started_ctx) = node_stack::NodeEntity::prepare_and_spawn(
+        &handle,
+        node_stack::StartContext {
+            instance_id,
+            runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
+            env_vars: &[],
+            mount_paths_resolved: &[],
+            peppy_dirs: &started.peppy_dirs,
+            output_sinks,
+        },
+    )
+    .await
+    .expect("prepare_and_spawn should succeed on Ready entity");
+    let pid = child.id().expect("child should have pid");
+
+    TestStartingInstance {
+        pid,
+        instance_id: instance_id.clone(),
+        _child: child,
+        _started_ctx: started_ctx,
+        _feedback_drain: drain,
+    }
+}
+
 /// For tests that push a config directly (bypassing `process_node_add`): drives
 /// the real `NodeEntity::build` (process-node archive path, no container) and
 /// then a real `prepare_and_spawn` + `commit_started`. Replaces the old
