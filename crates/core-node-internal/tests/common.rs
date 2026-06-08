@@ -17,8 +17,11 @@ use core_node_api::encoding::{
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
-use peppylib::messaging::{MessengerHandle, ResultStatus, SenderTarget, TopicMessenger};
+use peppylib::messaging::{
+    ActionGoalHandle, MessengerHandle, ResultStatus, SenderTarget, TopicMessenger,
+};
 use peppylib::runtime::{TaskHandle, spawn};
+use peppylib::services::health::listen_for_node_health;
 use peppylib::{ActionMessenger, Message, Payload, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::{Path, PathBuf};
@@ -424,6 +427,115 @@ pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_r
     encoder.finish().expect("failed to finalize zstd stream");
 }
 
+/// Why [`drain_node_run_feedback`] returned.
+enum FeedbackDrainOutcome {
+    /// `stop_when` became true after a feedback line was collected.
+    Predicate,
+    /// The server closed the feedback stream, i.e. the action completed.
+    Closed,
+    /// The absolute or idle deadline elapsed before either of the above.
+    TimedOut,
+}
+
+/// Sends a `node_run` goal and returns the live action handle plus its decoded
+/// goal response. Split out so tests that interleave work between the goal and
+/// the result (e.g. bringing up a delayed health responder once startup output
+/// has streamed) share one goal-send implementation with the plain wait helper.
+#[allow(clippy::too_many_arguments)]
+async fn send_node_run_goal(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    runtime_config_json5: &str,
+    node_name: &str,
+    tag: &str,
+    goal_timeout: Duration,
+    result_secs: u64,
+    env_vars: Vec<(String, String)>,
+) -> Result<(ActionGoalHandle, NodeRunGoalResponse), String> {
+    let goal =
+        NodeRunGoal::new(runtime_config_json5, node_name, tag, result_secs).with_env_vars(env_vars);
+    let goal_payload = goal
+        .encode()
+        .map_err(|e| format!("Failed to encode goal: {}", e))?;
+
+    let action_handle = ActionMessenger::send_goal(
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_target(core_node_name),
+        names::NODE_RUN_ACTION,
+        Some(core_node_name),
+        None,
+        goal_payload,
+        QoSProfile::default(),
+        goal_timeout,
+    )
+    .await
+    .map_err(|e| format!("Failed to send goal: {}", e))?;
+
+    let goal_response = NodeRunGoalResponse::decode(&action_handle.goal_response().payload())
+        .map_err(|e| format!("Failed to decode goal response: {}", e))?;
+    Ok((action_handle, goal_response))
+}
+
+/// Drains feedback from a live `node_run` action handle, appending each decoded
+/// line to `collected` and forwarding it to `feedback_tx` when present. Returns
+/// as soon as `stop_when(&collected)` holds, the server closes the stream, or a
+/// deadline elapses. The plain wait helper passes a never-true predicate to
+/// drain to close; gated tests stop once the output they expect has streamed,
+/// while the start is still blocked waiting on a not-yet-answered health check.
+async fn drain_node_run_feedback(
+    action_handle: &mut ActionGoalHandle,
+    feedback_tx: Option<&UnboundedSender<NodeRunFeedback>>,
+    collected: &mut Vec<NodeRunFeedback>,
+    absolute_deadline: tokio::time::Instant,
+    idle_timeout: Duration,
+    stop_when: impl Fn(&[NodeRunFeedback]) -> bool,
+) -> FeedbackDrainOutcome {
+    let mut last_activity = tokio::time::Instant::now();
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= absolute_deadline || now.duration_since(last_activity) >= idle_timeout {
+            return FeedbackDrainOutcome::TimedOut;
+        }
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
+                let feedback = NodeRunFeedback::decode(msg.payload().as_ref())
+                    .expect("failed to decode NodeRunFeedback");
+                if let Some(tx) = feedback_tx {
+                    let _ = tx.send(feedback.clone());
+                }
+                collected.push(feedback);
+                if stop_when(collected) {
+                    return FeedbackDrainOutcome::Predicate;
+                }
+            }
+            Ok(Err(_)) => return FeedbackDrainOutcome::Closed,
+            Err(_) => {}
+        }
+    }
+}
+
+/// Fetches the buffered result of a completed `node_run` action and decodes it.
+async fn fetch_node_run_result(
+    messenger: &MessengerHandle,
+    action_handle: &ActionGoalHandle,
+    fetch_timeout: Duration,
+) -> Result<NodeRunResult, String> {
+    match ActionMessenger::request_result(messenger, action_handle, fetch_timeout).await {
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                NodeRunResult::decode(reply.body.as_ref())
+                    .map_err(|err| format!("Failed to decode result: {}", err))
+            }
+            other => Err(format!("action did not complete with a result: {other:?}")),
+        },
+        Err(err) => Err(format!("Failed to get result: {}", err)),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn send_node_run_and_wait_internal(
     messenger: &MessengerHandle,
@@ -435,82 +547,134 @@ async fn send_node_run_and_wait_internal(
     feedback_tx: Option<UnboundedSender<NodeRunFeedback>>,
     env_vars: Vec<(String, String)>,
 ) -> Result<NodeRunTestResponse, String> {
-    let goal = NodeRunGoal::new(
+    let (mut action_handle, goal_response) = send_node_run_goal(
+        messenger,
+        core_node_name,
         runtime_config_json5,
         node_name,
         tag,
-        timeouts.result.as_secs(),
-    )
-    .with_env_vars(env_vars);
-    let goal_payload = goal
-        .encode()
-        .map_err(|e| format!("Failed to encode goal: {}", e))?;
-
-    let mut action_handle = ActionMessenger::send_goal(
-        messenger,
-        core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(core_node_name),
-        names::NODE_RUN_ACTION,
-        Some(core_node_name),
-        None,
-        goal_payload,
-        QoSProfile::default(),
         timeouts.goal,
+        timeouts.result.as_secs(),
+        env_vars,
     )
-    .await
-    .map_err(|e| format!("Failed to send goal: {}", e))?;
-
-    // Decode the goal response to get log_path
-    let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeRunGoalResponse::decode(&goal_response_payload)
-        .map_err(|e| format!("Failed to decode goal response: {}", e))?;
+    .await?;
 
     let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
-    let mut last_activity = tokio::time::Instant::now();
-    let feedback_tx = feedback_tx.as_ref();
-
+    let mut collected = Vec::new();
     // Drain feedback until the server closes the stream on completion, honoring
     // the idle / max-timeout budgets, then fetch the buffered result once.
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= absolute_deadline {
-            return Err("Timeout waiting for node_run result".to_string());
-        }
-        if now.duration_since(last_activity) >= timeouts.result {
-            return Err("Timeout waiting for node_run result (idle)".to_string());
-        }
-        let drain_timeout = Duration::from_millis(50);
-        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                last_activity = tokio::time::Instant::now();
-                let payload = msg.payload();
-                let feedback = NodeRunFeedback::decode(payload.as_ref())
-                    .expect("failed to decode NodeRunFeedback");
-                if let Some(tx) = feedback_tx {
-                    let _ = tx.send(feedback);
-                }
-            }
-            Ok(Err(_)) => break,
-            Err(_) => {}
-        }
+    if let FeedbackDrainOutcome::TimedOut = drain_node_run_feedback(
+        &mut action_handle,
+        feedback_tx.as_ref(),
+        &mut collected,
+        absolute_deadline,
+        timeouts.result,
+        |_| false,
+    )
+    .await
+    {
+        return Err("Timeout waiting for node_run result".to_string());
     }
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
-    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
-        Ok(reply) => match reply.status {
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                let result = NodeRunResult::decode(reply.body.as_ref())
-                    .map_err(|err| format!("Failed to decode result: {}", err))?;
-                Ok(NodeRunTestResponse {
-                    goal_response,
-                    result,
-                })
-            }
-            other => Err(format!("action did not complete with a result: {other:?}")),
-        },
-        Err(err) => Err(format!("Failed to get result: {}", err)),
+    let result = fetch_node_run_result(messenger, &action_handle, fetch_timeout).await?;
+    Ok(NodeRunTestResponse {
+        goal_response,
+        result,
+    })
+}
+
+/// Drives a `node_run` goal with a deliberately delayed health responder so a
+/// feedback-streaming assertion is deterministic instead of racing the daemon's
+/// start-success stream close.
+///
+/// The node's ready responder must already be live so the start advances past
+/// the ready wait into the health wait. This helper sends the goal, then drains
+/// feedback while the start blocks on the not-yet-answered health check (output
+/// streams live throughout). Once `expected_output(&collected)` holds, it brings
+/// up the health responder, which lets the health check pass and the start
+/// complete; it then drains the remaining feedback, fetches the result, and
+/// returns it alongside every feedback line observed. The health responder is
+/// kept alive until the result is fetched so health stays answered through
+/// commit.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_node_run_with_delayed_health(
+    caller_messenger: &MessengerHandle,
+    node_messenger: &MessengerHandle,
+    core_node_name: &str,
+    runtime_config_json5: &str,
+    node_name: &str,
+    tag: &str,
+    instance_id: &str,
+    timeouts: &NodeRunTestTimeouts,
+    expected_output: impl Fn(&[NodeRunFeedback]) -> bool,
+) -> Result<(NodeRunTestResponse, Vec<NodeRunFeedback>), String> {
+    let (mut action_handle, goal_response) = send_node_run_goal(
+        caller_messenger,
+        core_node_name,
+        runtime_config_json5,
+        node_name,
+        tag,
+        timeouts.goal,
+        timeouts.result.as_secs(),
+        Vec::new(),
+    )
+    .await?;
+
+    let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
+    let mut feedback = Vec::new();
+    match drain_node_run_feedback(
+        &mut action_handle,
+        None,
+        &mut feedback,
+        absolute_deadline,
+        timeouts.result,
+        &expected_output,
+    )
+    .await
+    {
+        FeedbackDrainOutcome::Predicate => {}
+        FeedbackDrainOutcome::Closed => {
+            return Err("feedback stream closed before the expected output streamed".to_string());
+        }
+        FeedbackDrainOutcome::TimedOut => {
+            return Err("timed out waiting for the expected output to stream".to_string());
+        }
     }
+
+    // Release the start: the health check now succeeds, so commit + drain run and
+    // the action completes. The expected output was already published (we waited
+    // for it on the stream), so the daemon's own drain cannot drop it.
+    let _health = AbortOnDrop(
+        listen_for_node_health(
+            node_messenger,
+            core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .map_err(|e| format!("failed to start node health service: {e}"))?,
+    );
+
+    drain_node_run_feedback(
+        &mut action_handle,
+        None,
+        &mut feedback,
+        absolute_deadline,
+        timeouts.result,
+        |_| false,
+    )
+    .await;
+
+    let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
+    let result = fetch_node_run_result(caller_messenger, &action_handle, fetch_timeout).await?;
+    Ok((
+        NodeRunTestResponse {
+            goal_response,
+            result,
+        },
+        feedback,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -308,15 +308,9 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
     let started = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    // The node prints each marker once, then floods both pipes with wide filler
-    // lines (40 x ~4 KB = ~160 KB per stream, well past the 64 KB OS pipe buffer)
-    // before sleeping. The flood applies pipe backpressure: the child cannot
-    // finish writing until the daemon's output reader drains the pipe, which
-    // forces the reader to read and publish the leading markers before it can go
-    // idle and let the start-success feedback drain close the stream. Capture is
-    // guaranteed by pipe semantics rather than by the reader winning a timing
-    // window, which is what made this test flaky under load. The trailing sleep
-    // keeps the node alive long enough to pass the health check.
+    // The node prints both markers immediately, then sleeps so it stays alive
+    // while the gated start waits on the delayed health responder. The sleep just
+    // needs to outlast that wait; teardown kills the node well before it elapses.
     let peppy_json5 = r#"{
             peppy_schema: "node_v1",
             manifest: {
@@ -325,7 +319,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
             },
             execution: {
                 language: "rust",
-                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; i=0; while [ $i -lt 40 ]; do printf '%4000s' ''; echo; printf '%4000s' '' 1>&2; echo 1>&2; i=$((i+1)); done; sleep 30"]
+                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 30"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -350,6 +344,11 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
         add_response.error_message
     );
 
+    // Bring up only the ready responder. The health responder is deliberately
+    // delayed by `send_node_run_with_delayed_health` until both markers have
+    // streamed: that keeps the action's feedback stream open until the output is
+    // captured, instead of racing the daemon's start-success stream close (which
+    // can fire before a process even emits its first line under load).
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let _ready_task = AbortOnDrop(
         listen_for_node_ready(
@@ -361,18 +360,8 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
         .await
         .expect("node ready service should start"),
     );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
 
-    // Allow ready/health services to establish listeners.
+    // Allow the ready service to establish its listener.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let runtime_config_json5 = common::default_runtime_config_json5(
@@ -382,18 +371,29 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
         TARGET_INSTANCE_ID,
     );
 
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeRunFeedback>();
-    let start_response = send_node_run_and_wait(
+    let markers_present = |feedback: &[NodeRunFeedback]| {
+        let saw_stdout = feedback
+            .iter()
+            .any(|entry| entry.is_stdout() && entry.line.trim() == STDOUT_MARKER);
+        let saw_stderr = feedback
+            .iter()
+            .any(|entry| entry.is_stderr() && entry.line.trim() == STDERR_MARKER);
+        saw_stdout && saw_stderr
+    };
+
+    let (start_response, feedback) = common::send_node_run_with_delayed_health(
         &started.caller_handle,
+        &node_messenger,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
+        TARGET_INSTANCE_ID,
         &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
-            result: Duration::from_secs(10),
+            result: Duration::from_secs(30),
         },
-        Some(feedback_tx),
+        markers_present,
     )
     .await
     .expect("node_run action should complete");
@@ -410,19 +410,11 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
         "node_run should return a PID on success"
     );
 
-    let mut feedback = Vec::new();
-    while let Ok(entry) = feedback_rx.try_recv() {
-        feedback.push(entry);
-    }
-    let saw_stdout = feedback
-        .iter()
-        .any(|entry| entry.is_stdout() && entry.line.trim() == STDOUT_MARKER);
-    let saw_stderr = feedback
-        .iter()
-        .any(|entry| entry.is_stderr() && entry.line.trim() == STDERR_MARKER);
-
-    assert!(saw_stdout, "stdout feedback should include marker");
-    assert!(saw_stderr, "stderr feedback should include marker");
+    assert!(
+        markers_present(&feedback),
+        "feedback should include both the stdout and stderr markers, got: {:?}",
+        feedback
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
