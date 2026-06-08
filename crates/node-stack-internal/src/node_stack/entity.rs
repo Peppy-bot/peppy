@@ -23,8 +23,8 @@ use super::build_steps::{
     run_build_cmd,
 };
 use super::run_steps::{
-    SpawnContainerInputs, build_container_command, build_process_command, create_instance_dir,
-    extract_node_archive, kill_and_collect_error,
+    SpawnCommand, SpawnContainerInputs, build_container_command, build_process_command,
+    create_instance_dir, extract_node_archive, kill_and_collect_error,
 };
 
 impl From<&NodeEntity> for SerializedNode {
@@ -744,52 +744,55 @@ impl NodeEntity {
         // All the expensive setup (Apptainer/Lima init, archive extraction,
         // mounts, command construction) runs here without holding any lock; the
         // returned command is forked under the entity write lock in Phase 3b.
-        let (mut command, runtime_config_path) =
-            if let Some(container) = node_config.execution.container.as_ref() {
-                let apptainer_run_extra_args = container
-                    .apptainer_run_extra_args
-                    .as_deref()
-                    .unwrap_or_default();
-                let lima_shell_extra_args = container
-                    .lima_shell_extra_args
-                    .as_deref()
-                    .unwrap_or_default();
-                build_container_command(SpawnContainerInputs {
-                    sif_path: &artifact_path,
-                    working_dir: &instance_dir,
-                    instance_id: instance_id_str,
-                    runtime_config_json5: ctx.runtime_config_json5,
-                    env_vars: ctx.env_vars,
-                    mount_paths: ctx.mount_paths_resolved,
-                    apptainer_run_extra_args,
-                    lima_shell_extra_args,
-                    log_file: &ctx.output_sinks.log_file,
-                    feedback_tx: &ctx.output_sinks.feedback_tx,
-                    peppy_dirs: ctx.peppy_dirs,
-                })
-                .await
-            } else {
-                build_process_command(
-                    &node_config,
-                    &instance_dir,
-                    ctx.runtime_config_json5,
-                    ctx.env_vars,
-                    &ctx.output_sinks.log_file,
-                    ctx.peppy_dirs,
-                )
+        let SpawnCommand {
+            mut command,
+            runtime_config_path,
+            description: spawn_description,
+        } = if let Some(container) = node_config.execution.container.as_ref() {
+            let apptainer_run_extra_args = container
+                .apptainer_run_extra_args
+                .as_deref()
+                .unwrap_or_default();
+            let lima_shell_extra_args = container
+                .lima_shell_extra_args
+                .as_deref()
+                .unwrap_or_default();
+            build_container_command(SpawnContainerInputs {
+                sif_path: &artifact_path,
+                working_dir: &instance_dir,
+                instance_id: instance_id_str,
+                runtime_config_json5: ctx.runtime_config_json5,
+                env_vars: ctx.env_vars,
+                mount_paths: ctx.mount_paths_resolved,
+                apptainer_run_extra_args,
+                lima_shell_extra_args,
+                log_file: &ctx.output_sinks.log_file,
+                feedback_tx: &ctx.output_sinks.feedback_tx,
+                peppy_dirs: ctx.peppy_dirs,
+            })
+            .await
+        } else {
+            build_process_command(
+                &node_config,
+                &instance_dir,
+                ctx.runtime_config_json5,
+                ctx.env_vars,
+                &ctx.output_sinks.log_file,
+                ctx.peppy_dirs,
+            )
+        }
+        .map_err(|e| {
+            // Best-effort cleanup of the instance dir we just materialized.
+            // The child never spawned, so nothing else references it; the
+            // build helper already cleaned up its own runtime config temp.
+            let _ = std::fs::remove_dir_all(&instance_dir);
+            Self::remove_starting_instance(handle, ctx.instance_id);
+            Error::StartFailed {
+                node_name: node_name.clone(),
+                node_tag: node_tag.clone(),
+                reason: format!("failed to build spawn command: {}", e),
             }
-            .map_err(|e| {
-                // Best-effort cleanup of the instance dir we just materialized.
-                // The child never spawned, so nothing else references it; the
-                // build helper already cleaned up its own runtime config temp.
-                let _ = std::fs::remove_dir_all(&instance_dir);
-                Self::remove_starting_instance(handle, ctx.instance_id);
-                Error::StartFailed {
-                    node_name: node_name.clone(),
-                    node_tag: node_tag.clone(),
-                    reason: format!("failed to build spawn command: {}", e),
-                }
-            })?;
+        })?;
 
         // ---- Phase 3b: fork the child and record its pid atomically ----
         // Fork and record the pid in a single critical section under the entity
@@ -815,7 +818,7 @@ impl NodeEntity {
             Error::StartFailed {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),
-                reason: format!("failed to spawn child: {}", e),
+                reason: format!("failed to spawn `{}`: {}", spawn_description, e),
             }
         })?;
 

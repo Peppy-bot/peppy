@@ -308,6 +308,15 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
     let started = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    // The node prints each marker once, then floods both pipes with wide filler
+    // lines (40 x ~4 KB = ~160 KB per stream, well past the 64 KB OS pipe buffer)
+    // before sleeping. The flood applies pipe backpressure: the child cannot
+    // finish writing until the daemon's output reader drains the pipe, which
+    // forces the reader to read and publish the leading markers before it can go
+    // idle and let the start-success feedback drain close the stream. Capture is
+    // guaranteed by pipe semantics rather than by the reader winning a timing
+    // window, which is what made this test flaky under load. The trailing sleep
+    // keeps the node alive long enough to pass the health check.
     let peppy_json5 = r#"{
             peppy_schema: "node_v1",
             manifest: {
@@ -316,7 +325,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
             },
             execution: {
                 language: "rust",
-                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
+                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; i=0; while [ $i -lt 40 ]; do printf '%4000s' ''; echo; printf '%4000s' '' 1>&2; echo 1>&2; i=$((i+1)); done; sleep 30"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)

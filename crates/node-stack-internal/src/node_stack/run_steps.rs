@@ -130,6 +130,20 @@ fn spawn_as_process_group_leader(command: &mut Command) {
 #[cfg(not(unix))]
 fn spawn_as_process_group_leader(_command: &mut Command) {}
 
+/// An unspawned start command plus the metadata its caller needs after the fork.
+///
+/// `build_process_command` / `build_container_command` return this so the caller
+/// can fork the child under the entity write lock (recording the pid atomically
+/// with the spawn) while still owning the runtime config temp file's cleanup and
+/// having a human-readable command description for spawn-failure errors.
+pub(super) struct SpawnCommand {
+    pub(super) command: Command,
+    pub(super) runtime_config_path: PathBuf,
+    /// What the command runs (the joined `run_cmd`, or the Apptainer invocation),
+    /// surfaced in the spawn-failure error so a bad `run_cmd` is identifiable.
+    pub(super) description: String,
+}
+
 /// Builds the [`Command`] for a process node from its `run_cmd`, with
 /// `PEPPY_RUNTIME_CONFIG` set as an env var and the process-group-leader flag
 /// applied. Returns the unspawned command plus the path of the runtime config
@@ -147,7 +161,7 @@ pub(super) fn build_process_command(
     env_vars: &[(String, String)],
     log_file: &Arc<StdMutex<File>>,
     peppy_dirs: &PeppyDirs,
-) -> std::io::Result<(Command, PathBuf)> {
+) -> std::io::Result<SpawnCommand> {
     let manifest = &config.manifest;
     let run_cmd = config
         .execution
@@ -198,7 +212,11 @@ pub(super) fn build_process_command(
         command.env("PYTHONUNBUFFERED", "1");
     }
 
-    Ok((command, runtime_config_path))
+    Ok(SpawnCommand {
+        command,
+        runtime_config_path,
+        description: run_cmd.join(" "),
+    })
 }
 
 /// Describes a bind mount for a container node.
@@ -281,7 +299,7 @@ pub(super) struct SpawnContainerInputs<'a> {
 /// failure.
 pub(super) async fn build_container_command(
     inputs: SpawnContainerInputs<'_>,
-) -> std::io::Result<(Command, PathBuf)> {
+) -> std::io::Result<SpawnCommand> {
     let SpawnContainerInputs {
         sif_path,
         working_dir,
@@ -422,7 +440,11 @@ pub(super) async fn build_container_command(
     // it to `StartedInstanceCtx` on a successful spawn or cleans it up if the
     // fork fails. Defuse so the build-time guard doesn't delete it on return.
     runtime_config_guard.defuse();
-    Ok((command, runtime_config_path))
+    Ok(SpawnCommand {
+        command,
+        runtime_config_path,
+        description: format!("apptainer run {}", sif_path.display()),
+    })
 }
 
 /// Ensures every bind mount source path is usable by the container runtime.
