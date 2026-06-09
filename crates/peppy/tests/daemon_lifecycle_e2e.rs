@@ -14,6 +14,7 @@
 //! `peppylib`'s `daemon_watchdog` tests; this file proves the signal wiring in
 //! the shipped binary.
 
+use peppy::test_support::wait_for_log;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -63,21 +64,6 @@ fn spawn_daemon(home: &std::path::Path) -> (DaemonGuard, Arc<Mutex<String>>) {
     (DaemonGuard(child), logs)
 }
 
-/// Block until `marker` appears in the captured logs, or panic after `timeout`.
-fn wait_for_log(logs: &Arc<Mutex<String>>, marker: &str, timeout: Duration) {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if logs.lock().unwrap().contains(marker) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    panic!(
-        "daemon did not log {marker:?} within {timeout:?}. Logs so far:\n{}",
-        logs.lock().unwrap()
-    );
-}
-
 /// Wait for the child to exit, returning its status, or panic after `timeout`.
 fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::ExitStatus {
     let start = Instant::now();
@@ -95,7 +81,11 @@ fn run_shutdown_signal_case(signal: libc::c_int) {
     let (mut guard, logs) = spawn_daemon(home.path());
 
     // Wait until the serve loop is fully up before signaling.
-    wait_for_log(&logs, "Serve command initialized!", Duration::from_secs(60));
+    wait_for_log(
+        || logs.lock().unwrap().clone(),
+        "Serve command initialized!",
+        Duration::from_secs(60),
+    );
 
     // SAFETY: kill(2) with a real signal to our own child; no memory effects.
     let pid = guard.0.id() as libc::pid_t;

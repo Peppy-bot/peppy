@@ -103,18 +103,21 @@ impl Write for LogCaptureWriter {
     }
 }
 
-pub fn wait_for_log(log_capture: &LogCapture, needle: &str, timeout: Duration) {
+/// Blocks until `needle` appears in the snapshot returned by `logs`, or panics
+/// after `timeout` with the final snapshot. `logs` abstracts the log source:
+/// pass `|| capture.logs()` for an in-process [`LogCapture`], or a clone of a
+/// buffer drained from a child process's pipes (the daemon-lifecycle e2e test).
+pub fn wait_for_log(logs: impl Fn() -> String, needle: &str, timeout: Duration) {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if log_capture.logs().contains(needle) {
+        if logs().contains(needle) {
             return;
         }
         thread::sleep(Duration::from_millis(50));
     }
     panic!(
-        "Timeout waiting for log entry '{}'. Last logs:\n{}",
-        needle,
-        log_capture.logs()
+        "Timeout ({timeout:?}) waiting for log entry '{needle}'. Last logs:\n{}",
+        logs()
     );
 }
 
