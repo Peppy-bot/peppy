@@ -3,9 +3,8 @@
 [workspace]
 members = ["crates/*", "docs/tests/integration"]
 
-# Those ones are examples that use user facing libraries as if they were uploaded to crates.io.
-# third-party/zenoh is a vendored dependency consumed via [patch.crates-io], not a member.
-exclude = ["crates/peppylib/examples/*", "third-party/zenoh"]
+# Those ones are examples that use user facing libraries as if they were uploaded to crates.io
+exclude = ["crates/peppylib/examples/*"]
 resolver = "3"
 
 # Only build/test the main crates by default (integration tests are slow).
@@ -36,10 +35,3 @@ rstest = "0.26"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-
-# Vendored zenoh 1.9.0 with a fix for a routing-layer deadlock under peer churn
-# (upstream issue https://github.com/eclipse-zenoh/zenoh/issues/2581, still open).
-# See third-party/zenoh/README.PEPPY.md for the analysis, the exact patch, and
-# the removal criteria. Drop this once upstream ships a fixed release.
-[patch.crates-io]
-zenoh = { path = "third-party/zenoh" }
