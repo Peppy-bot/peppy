@@ -203,8 +203,12 @@ impl CoreNode {
 
         let messenger = MessengerHandle::from_shared(messenger);
         let instance_id = Name::new(get_random(rng())).unwrap();
-        // The core node is the root of the node stack
-        let node_stack = NodeStack::new(node_config.clone(), None, root_dir);
+        // The core node is the root of the node stack. Resolve the cooperative
+        // shutdown grace from config once and pin it on the stack so every stop
+        // path (teardown, node_stop, overwrite) reads the same value.
+        let node_stack = NodeStack::new(node_config.clone(), None, root_dir).with_shutdown_grace(
+            Duration::from_secs(peppy_config.lifecycle.shutdown_grace_secs),
+        );
 
         Self {
             node_stack: Arc::new(node_stack),

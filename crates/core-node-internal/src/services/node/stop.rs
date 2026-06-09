@@ -189,7 +189,14 @@ async fn handle_node_stop_request_inner(
         pid,
         is_container,
     };
-    let outcome = force_stop_instance(messenger, core_node_node, core_instance_id, &target).await;
+    let outcome = force_stop_instance(
+        messenger,
+        core_node_node,
+        core_instance_id,
+        &target,
+        node_stack.shutdown_grace(),
+    )
+    .await;
 
     // Process is gone (properly or improperly). Finalize the registry removal.
     remove_instance_from_registry(&node_stack, &node_name, &node_tag, &instance_id);
@@ -276,8 +283,9 @@ enum StopOutcome {
 ///    and ignored. A non-responsive node must still be force-killed, never
 ///    surfaced as an error (this is what makes a stuck node a success, not a
 ///    failure-with-the-process-left-alive).
-/// 2. Bounded graceful wait ([`TEARDOWN_GRACEFUL_BUDGET`]) for the OS process to
-///    exit on its own.
+/// 2. Bounded graceful wait (`graceful_budget`, from
+///    `peppy_config.lifecycle.shutdown_grace_secs`) for the OS process to exit
+///    on its own.
 /// 3. If still alive, `kill_process_group(pid)` (SIGKILL the whole group — nodes
 ///    are spawned as group leaders) plus, on macOS for container nodes, the
 ///    in-VM guest group kill.
@@ -288,19 +296,20 @@ enum StopOutcome {
 /// exited gracefully or had to be force-killed. `target.pid == None` means there
 /// is no OS process to terminate (the cooperative send is still attempted
 /// best-effort) and yields [`StopOutcome::NoProcess`]. Takes NO lock — the
-/// caller resolves the [`DoomedInstance`] fields up front, so nothing is held
-/// across an await.
+/// caller resolves the [`DoomedInstance`] fields and `graceful_budget` up front,
+/// so nothing is held across an await.
 async fn force_stop_instance(
     messenger: &MessengerHandle,
     core_node_node: &str,
     core_instance_id: &str,
     target: &DoomedInstance,
+    graceful_budget: Duration,
 ) -> StopOutcome {
     let instance_id = &target.instance_id;
 
     // Phase 1 (graceful, bounded): cooperative shutdown, then wait for exit.
     // Best-effort send: ignore failure/timeout and fall through to force-kill.
-    let _ = tokio::time::timeout(TEARDOWN_GRACEFUL_BUDGET, async {
+    let _ = tokio::time::timeout(graceful_budget, async {
         if let Err(e) = send_shutdown_signal(
             messenger,
             core_node_node,
@@ -338,7 +347,7 @@ async fn force_stop_instance(
             "Node instance '{}' did not exit within the {}s shutdown grace period; \
              force-killing its process group (pid {})",
             instance_id.as_str(),
-            TEARDOWN_GRACEFUL_BUDGET.as_secs(),
+            graceful_budget.as_secs(),
             pid
         );
         StopOutcome::ForceKilled
@@ -459,18 +468,24 @@ pub(super) async fn stop_instance(
     // force_stop_instance warns (daemon-side) when it has to force-kill, which
     // is the right surface for this overwrite path (the user sees node_add's
     // feedback stream; node_stop additionally relays force-kill to the CLI).
-    force_stop_instance(messenger, core_node_node, core_instance_id, &target).await;
+    force_stop_instance(
+        messenger,
+        core_node_node,
+        core_instance_id,
+        &target,
+        node_stack.shutdown_grace(),
+    )
+    .await;
 
     remove_instance_from_registry(node_stack, node_name, node_tag, instance_id);
     Ok(())
 }
 
-/// Grace window for the cooperative phase of a full teardown. Nodes that don't
-/// exit within this on a catchable daemon shutdown get SIGKILLed by process
-/// group. Short on purpose: ctrl+C / `systemctl stop` should feel immediate.
-const TEARDOWN_GRACEFUL_BUDGET: Duration = Duration::from_secs(3);
 /// Bounded wait for SIGKILLed groups to be reaped before the daemon exits, so
 /// they don't briefly linger as zombies parented to the still-alive daemon.
+/// (The cooperative-phase grace window is configurable via
+/// `peppy_config.lifecycle.shutdown_grace_secs` and carried on the `NodeStack`;
+/// only this reap budget is a fixed internal constant.)
 const TEARDOWN_REAP_BUDGET: Duration = Duration::from_secs(2);
 
 /// A non-root node instance to terminate — the routing identity + process info
@@ -514,6 +529,9 @@ pub async fn teardown_all_instances(
     if doomed.is_empty() {
         return;
     }
+    // Configurable cooperative-shutdown grace (peppy_config.lifecycle
+    // .shutdown_grace_secs), pinned on the stack at daemon startup.
+    let graceful_budget = node_stack.shutdown_grace();
     debug!(
         "Tearing down {} node instance(s) on daemon shutdown",
         doomed.len()
@@ -521,7 +539,7 @@ pub async fn teardown_all_instances(
 
     // Phase 1 (graceful, bounded): ask every node to shut down cooperatively,
     // concurrently, then poll until they're all gone or the budget elapses.
-    let _ = tokio::time::timeout(TEARDOWN_GRACEFUL_BUDGET, async {
+    let _ = tokio::time::timeout(graceful_budget, async {
         let sends = doomed.iter().map(|d| {
             send_shutdown_signal(
                 messenger,
@@ -557,7 +575,7 @@ pub async fn teardown_all_instances(
                     "Node instance '{}' did not exit within the {}s shutdown grace period; \
                      force-killing its process group (pid {})",
                     d.instance_id.as_str(),
-                    TEARDOWN_GRACEFUL_BUDGET.as_secs(),
+                    graceful_budget.as_secs(),
                     pid
                 );
             } else {

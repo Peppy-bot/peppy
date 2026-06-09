@@ -10,7 +10,12 @@ use core_node_api::names::CORE_NODE_TAG;
 use peppylib::core_node::transport::poll_node_stop;
 use peppylib::messaging::SenderTarget;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Time allowed beyond the daemon's configured shutdown grace, covering the
+/// daemon's bounded reap budget and the messaging round-trip. The CLI must wait
+/// slightly longer than the daemon can possibly take to cooperatively stop, then
+/// force-kill and reap a stuck node, or it would report a timeout for a stop
+/// that actually succeeded.
+const STOP_TIMEOUT_MARGIN: Duration = Duration::from_secs(7);
 
 pub fn stop_node(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
     crate::commands::block_on(stop_node_async(ctx, instance_id))
@@ -24,6 +29,11 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
         instance_id, conn.core_node_name
     );
 
+    // Wait long enough to outlast the daemon's configured cooperative grace plus
+    // its force-kill + reap window; otherwise a deliberately long grace would
+    // make the CLI give up before the (successful) stop returns.
+    let request_timeout = Duration::from_secs(conn.shutdown_grace_secs) + STOP_TIMEOUT_MARGIN;
+
     let stop_request = NodeStopRequest::new(instance_id.clone());
     let stop_response = poll_node_stop(
         &stop_request,
@@ -33,7 +43,7 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
         SenderTarget::node(&conn.core_node_name, CORE_NODE_TAG)
             .map_err(|e| Error::ExecutionFailed(format!("Failed to build sender target: {e}")))?,
         &conn.core_node_name,
-        REQUEST_TIMEOUT,
+        request_timeout,
     )
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_stop service: {}", e)))?;

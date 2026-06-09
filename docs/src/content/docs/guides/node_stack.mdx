@@ -180,11 +180,11 @@ Each health transition (a `running` instance going `unhealthy`, or recovering af
 
 Spawned nodes are child processes of the daemon, so peppy takes care to ensure that no node (or any process a node itself spawned) is ever left running after the daemon goes away.
 
-**Clean shutdown (`Ctrl+C`, `systemctl stop`, `SIGTERM`).** Before it exits, the daemon tears down every spawned node: it asks each node to shut down cooperatively, waits a short shared grace window, then force-kills the process group of anything still alive. This is immediate: it does **not** wait the daemon-liveness grace period described below, so stopping the daemon feels instant while still guaranteeing nothing is orphaned. It's the same graceful-then-forced sequence [`peppy node stop`](#stopping-your-node) runs for a single instance.
+**Clean shutdown (`Ctrl+C`, `systemctl stop`, `SIGTERM`).** Before it exits, the daemon tears down every spawned node: it asks each node to shut down cooperatively, waits a short shared **shutdown grace period** (`shutdown_grace_secs`, **3 seconds** by default), then force-kills the process group of anything still alive. This is immediate: it does **not** wait the daemon-liveness grace period described below, so stopping the daemon feels instant while still guaranteeing nothing is orphaned. It's the same graceful-then-forced sequence [`peppy node stop`](#stopping-your-node) runs for a single instance, which uses the same `shutdown_grace_secs` window.
 
 **Unclean daemon death (crash, OOM, `SIGKILL`).** When the daemon dies without the chance to run that cleanup, it can't tear its nodes down. Instead, each spawned node runs a watchdog that listens for a periodic heartbeat from the daemon. If it sees no heartbeat for the **daemon grace period**, `daemon_grace_secs` (**180 seconds / 3 minutes** by default), the node shuts itself down rather than lingering as an orphan. The period is deliberately generous so a brief daemon blip or a quick restart doesn't tear your nodes down: a node started in peer mode survives a daemon restart that completes within the window.
 
-You can tune the grace period in `~/.peppy/conf/peppy_config.json5`:
+Both grace periods are configured in `~/.peppy/conf/peppy_config.json5` and take effect after a daemon restart:
 
 ```json5
 // peppy_config.json5
@@ -193,12 +193,17 @@ You can tune the grace period in `~/.peppy/conf/peppy_config.json5`:
     // Seconds a node waits without a daemon heartbeat before it self-terminates
     // to avoid orphaning. Default: 180 (3 minutes). Minimum: 30.
     daemon_grace_secs: 180,
+
+    // Seconds a clean shutdown and `peppy node stop` wait for a node to exit
+    // cooperatively before force-killing it. Raise it for nodes that need longer
+    // to park actuators or release hardware. Default: 3. Minimum: 1.
+    shutdown_grace_secs: 3,
   },
 }
 ```
 
 :::caution
-`daemon_grace_secs` must be at least 30 seconds; a smaller value is rejected when the config is loaded. It has to comfortably exceed the heartbeat interval and a router restart, or a momentary daemon hiccup would trip every node's watchdog.
+`daemon_grace_secs` must be at least 30 seconds (a smaller value is rejected when the config is loaded): it has to comfortably exceed the heartbeat interval and a router restart, or a momentary daemon hiccup would trip every node's watchdog. `shutdown_grace_secs` must be at least 1 second.
 :::
 
 ## Inspecting a node with `peppy node info`
@@ -262,7 +267,7 @@ This stops **one instance** of the `hello_world:v1` node, but the node itself st
 
 Stopping is a **graceful-then-forced** operation, and the command blocks until the instance's process has actually exited:
 
-1. The daemon asks the instance to shut down cooperatively and gives it a short grace period to stop cleanly. For a robot node this is its chance to park actuators, release hardware, and flush state.
+1. The daemon asks the instance to shut down cooperatively and gives it a grace period (`shutdown_grace_secs`, 3 seconds by default; see [Daemon shutdown and orphan prevention](#daemon-shutdown-and-orphan-prevention)) to stop cleanly. For a robot node this is its chance to park actuators, release hardware, and flush state.
 2. If the instance doesn't exit within that window, the daemon **force-kills its whole process group** (the node and any child processes it spawned), so nothing is left running.
 
 If the instance had to be force-killed, `peppy node stop` warns you instead of reporting a clean stop:

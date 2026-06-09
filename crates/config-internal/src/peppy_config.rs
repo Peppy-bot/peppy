@@ -35,6 +35,16 @@ pub const DEFAULT_DAEMON_GRACE_SECS: u64 = 180;
 /// blip never trips a node's watchdog.
 pub const MIN_DAEMON_GRACE_SECS: u64 = 30;
 
+/// Default cooperative-shutdown grace period, in seconds. How long the daemon
+/// (on a clean ctrl+C / `systemctl stop`) and `peppy node stop` wait for a node
+/// to exit on its own before force-killing its process group.
+pub const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 3;
+/// Minimum accepted cooperative-shutdown grace period, in seconds. At least 1 so
+/// the cooperative shutdown signal is actually given a chance to land before the
+/// force-kill (a 0 would cancel the in-flight send and amount to an immediate
+/// SIGKILL).
+pub const MIN_SHUTDOWN_GRACE_SECS: u64 = 1;
+
 /// The bundled default config, written verbatim on first create so its comments
 /// survive. Kept inline (not `include_str!` from an asset file) because
 /// `config-internal` is vendored into every generated node as `src/` only, with
@@ -80,6 +90,14 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
   lifecycle: {
     daemon_grace_secs: "#,
     DEFAULT_DAEMON_GRACE_SECS,
+    r#",
+
+    // How long a clean shutdown (ctrl+C / `systemctl stop`) and `peppy node
+    // stop` wait for a node to exit cooperatively before force-killing its
+    // process group. Seconds; minimum 1. A robot node uses this window to park
+    // actuators and release hardware before it is killed.
+    shutdown_grace_secs: "#,
+    DEFAULT_SHUTDOWN_GRACE_SECS,
     r#",
   },
 }
@@ -145,12 +163,19 @@ impl Default for PeerConfig {
 #[serde(default)]
 pub struct LifecycleConfig {
     pub daemon_grace_secs: u64,
+    /// Cooperative-shutdown grace period, in seconds: how long a clean daemon
+    /// shutdown and `peppy node stop` wait for a node to exit on its own before
+    /// force-killing its process group. Unlike `daemon_grace_secs` (the
+    /// uncatchable-death watchdog), this governs the catchable/explicit stop
+    /// paths.
+    pub shutdown_grace_secs: u64,
 }
 
 impl Default for LifecycleConfig {
     fn default() -> Self {
         Self {
             daemon_grace_secs: DEFAULT_DAEMON_GRACE_SECS,
+            shutdown_grace_secs: DEFAULT_SHUTDOWN_GRACE_SECS,
         }
     }
 }
@@ -197,6 +222,11 @@ impl PeppyConfig {
         if self.lifecycle.daemon_grace_secs < MIN_DAEMON_GRACE_SECS {
             return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
                 "invalid lifecycle.daemon_grace_secs: must be >= {MIN_DAEMON_GRACE_SECS}"
+            ))));
+        }
+        if self.lifecycle.shutdown_grace_secs < MIN_SHUTDOWN_GRACE_SECS {
+            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+                "invalid lifecycle.shutdown_grace_secs: must be >= {MIN_SHUTDOWN_GRACE_SECS}"
             ))));
         }
         Ok(())
@@ -256,6 +286,10 @@ mod tests {
             DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
         );
         assert_eq!(cfg.lifecycle.daemon_grace_secs, DEFAULT_DAEMON_GRACE_SECS);
+        assert_eq!(
+            cfg.lifecycle.shutdown_grace_secs,
+            DEFAULT_SHUTDOWN_GRACE_SECS
+        );
     }
 
     #[test]
@@ -272,9 +306,33 @@ mod tests {
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.lifecycle.daemon_grace_secs, 600);
+        // A field omitted from a partial lifecycle block falls back to its default.
+        assert_eq!(
+            cfg.lifecycle.shutdown_grace_secs,
+            DEFAULT_SHUTDOWN_GRACE_SECS
+        );
         // Omitted blocks still fall back to their defaults.
         assert_eq!(cfg.mode, Mode::Peer);
         assert_eq!(cfg.peer, PeerConfig::default());
+    }
+
+    #[test]
+    fn sub_minimum_shutdown_grace_fails_loud() {
+        let tmp = tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(
+            conf_dir.join(PEPPY_CONFIG_FILE),
+            r#"{ lifecycle: { shutdown_grace_secs: 0 } }"#,
+        )
+        .unwrap();
+
+        let err = load_or_create(&peppy_dirs).unwrap_err();
+        assert!(
+            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("shutdown_grace_secs")),
+            "expected a shutdown-grace validation error, got: {err:?}"
+        );
     }
 
     #[test]
@@ -362,6 +420,7 @@ mod tests {
             },
             lifecycle: LifecycleConfig {
                 daemon_grace_secs: 240,
+                shutdown_grace_secs: 5,
             },
         };
         let serialized = serde_json5::to_string(&custom).unwrap();

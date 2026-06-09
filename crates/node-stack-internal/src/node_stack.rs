@@ -24,7 +24,7 @@ use petgraph::{
     visit::EdgeRef,
 };
 use rand::rng;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 /// Shared handle to a `NodeEntity` stored inside a `NodeStack`. All readers
 /// and writers go through the inner `RwLock`; the same `Arc` is held by the
@@ -699,6 +699,15 @@ pub struct NodeStack {
     /// daemon-only cache (not persisted) so it lives here rather than on
     /// `NodeEntity`, which is a pure lifecycle/config model.
     add_log_paths: Arc<parking_lot::Mutex<HashMap<(String, String), PathBuf>>>,
+    /// How long a clean daemon shutdown and `peppy node stop` wait for a node to
+    /// exit cooperatively before force-killing its process group. Daemon-only
+    /// state resolved once from `peppy_config.json5`
+    /// (`lifecycle.shutdown_grace_secs`); like `add_log_paths` it lives here, the
+    /// shared context every stop path already holds, rather than threading a
+    /// `Duration` through each one. Defaults to
+    /// `config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS` for constructors
+    /// (mostly tests) that don't set it explicitly.
+    shutdown_grace: Duration,
 }
 
 impl NodeStack {
@@ -732,7 +741,23 @@ impl NodeStack {
         Self {
             shared: Arc::new(RwLock::new(NodeStackInner::new(root_entity))),
             add_log_paths: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            shutdown_grace: Duration::from_secs(config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS),
         }
+    }
+
+    /// Sets the cooperative-shutdown grace period (from
+    /// `peppy_config.lifecycle.shutdown_grace_secs`). Builder form so the daemon
+    /// can configure it at construction without changing [`NodeStack::new`]'s
+    /// signature for the many (mostly test) call sites that take the default.
+    pub fn with_shutdown_grace(mut self, grace: Duration) -> Self {
+        self.shutdown_grace = grace;
+        self
+    }
+
+    /// The cooperative-shutdown grace period a clean daemon shutdown and
+    /// `peppy node stop` wait before force-killing a node's process group.
+    pub fn shutdown_grace(&self) -> Duration {
+        self.shutdown_grace
     }
 
     /// Records the add-log path for a `(name, tag)` key. Called by the

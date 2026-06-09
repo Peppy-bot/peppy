@@ -202,7 +202,12 @@ impl ServeCommandEmulation {
         std::fs::write(&repos_path, "[]")
             .expect("failed to reset repositories.json5 after daemon startup");
 
-        let daemon_state = DaemonState::new(&core_node_name, port, "test-git-hash");
+        let daemon_state = DaemonState::new(
+            &core_node_name,
+            port,
+            "test-git-hash",
+            config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
+        );
         DaemonState::write_to(&daemon_state_path, &daemon_state)
             .expect("failed to write daemon state");
 
