@@ -1750,6 +1750,31 @@ pub async fn start_core_node_with_real_messenger_in_mode(
     start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs, peppy_config).await
 }
 
+/// Variant of [`start_core_node_with_mock_messenger`] with a custom
+/// cooperative-shutdown grace period (`peppy_config.lifecycle
+/// .shutdown_grace_secs`). For tests that assert timing around the grace
+/// window and need wider margins than the 3s default gives under parallel
+/// test load.
+pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> StartedCoreNode {
+    let (data_dir, peppy_dirs) = init_test_data_dir();
+    let shared_messenger = create_mock_messenger().await;
+    let peppy_config = config::peppy_config::PeppyConfig {
+        lifecycle: config::peppy_config::LifecycleConfig {
+            shutdown_grace_secs,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    start_core_node_with_messenger(
+        shared_messenger,
+        default_node_arguments(),
+        data_dir,
+        peppy_dirs,
+        peppy_config,
+    )
+    .await
+}
+
 pub async fn start_core_node_with_health_timeout(
     node_start_health_timeout: Duration,
 ) -> StartedCoreNode {

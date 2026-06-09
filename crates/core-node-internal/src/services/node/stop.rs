@@ -223,8 +223,9 @@ fn instance_is_in_starting(node_stack: &Arc<NodeStack>, instance_id: &Name) -> b
 
 /// Sends a `SHUTDOWN_SERVICE` request and returns once the receiver
 /// acknowledges. Does NOT touch the entity's instances list — that is done
-/// only after [`force_stop_instance`] has confirmed the OS process is gone, so
-/// retries can still find the live instance during an in-flight shutdown.
+/// only after [`force_stop_instances`] has confirmed the OS processes are
+/// gone, so retries can still find the live instance during an in-flight
+/// shutdown.
 async fn send_shutdown_signal(
     messenger: &MessengerHandle,
     core_node_node: &str,
@@ -275,9 +276,8 @@ enum StopOutcome {
 }
 
 /// Cooperative-then-force termination of a single instance: the one-element
-/// form of [`force_stop_instances`], used by `peppy node stop` and the
-/// `node add` overwrite path so they behave identically to the SIGINT teardown
-/// ("properly OR improperly stopped").
+/// form of [`force_stop_instances`], used by `peppy node stop` so it behaves
+/// identically to the SIGINT teardown ("properly OR improperly stopped").
 ///
 /// Returns a [`StopOutcome`] so the caller can tell the user whether the node
 /// exited gracefully or had to be force-killed. Takes NO lock — the caller
@@ -459,62 +459,73 @@ fn remove_instance_from_registry(
     }
 }
 
-/// Cooperative-then-force stop of a single running node instance, then removes
-/// it from the node stack. The entity remains in the graph with zero instances,
-/// preserving dependency edges so that a subsequent `push_config` call can
-/// correctly validate interface changes against dependents.
+/// Cooperative-then-force stop of the given running instances of one entity,
+/// then removes them from the node stack. The entity remains in the graph with
+/// zero instances, preserving dependency edges so that a subsequent
+/// `push_config` call can correctly validate interface changes against
+/// dependents.
 ///
-/// Shares [`force_stop_instance`] with `handle_node_stop_request_inner` and the
-/// SIGINT teardown, so a stuck instance is force-killed (not left alive behind a
-/// timeout error): the cooperative shutdown is attempted first, then the process
-/// group is SIGKILLed if the node ignores it, and the call returns only once the
-/// process is gone. Infallible.
-pub(super) async fn stop_instance(
+/// Shares [`force_stop_instances`] with `handle_node_stop_request_inner` and
+/// the SIGINT teardown, so a stuck instance is force-killed (not left alive
+/// behind a timeout error) — and, like the teardown, the whole batch is stopped
+/// together: every cooperative shutdown is sent concurrently and the instances
+/// share ONE grace budget, so an overwrite of an entity with several stuck
+/// instances costs one grace window, not one per instance. Returns only once
+/// every process is gone. Infallible.
+pub(super) async fn stop_instances(
     messenger: &MessengerHandle,
     core_node_node: &str,
     core_instance_id: &str,
     node_stack: &Arc<NodeStack>,
     node_name: &str,
     node_tag: &str,
-    instance_id: &Name,
+    instance_ids: &[Name],
 ) {
-    // Resolve pid + is_container from the live entry under one short read lock,
-    // not held across the await below. Reading the pid up front (rather than
-    // after shutdown) avoids a race with any concurrent registry mutation.
-    let (pid, is_container) = match node_stack.find(node_name, node_tag) {
+    if instance_ids.is_empty() {
+        return;
+    }
+    // Resolve pid + is_container for every instance under ONE short read lock,
+    // not held across the await below. Reading the pids up front (rather than
+    // after shutdown) avoids a race with any concurrent registry mutation. An
+    // instance that is no longer tracked resolves to a pid-less target: the
+    // cooperative send is still attempted, and there is nothing to kill.
+    let doomed: Vec<DoomedInstance> = match node_stack.find(node_name, node_tag) {
         Some(handle) => {
             let guard = handle.read();
             let is_container = guard.config().execution.container.is_some();
-            let pid = guard
-                .instances()
+            instance_ids
                 .iter()
-                .find(|inst| inst.instance_id() == instance_id)
-                .and_then(|inst| inst.pid());
-            (pid, is_container)
+                .map(|instance_id| DoomedInstance {
+                    node_name: node_name.to_owned(),
+                    node_tag: node_tag.to_owned(),
+                    instance_id: instance_id.clone(),
+                    pid: guard
+                        .instances()
+                        .iter()
+                        .find(|inst| inst.instance_id() == instance_id)
+                        .and_then(|inst| inst.pid()),
+                    is_container,
+                })
+                .collect()
         }
         None => return, // Entity already gone; nothing to stop.
     };
 
-    let target = DoomedInstance {
-        node_name: node_name.to_owned(),
-        node_tag: node_tag.to_owned(),
-        instance_id: instance_id.clone(),
-        pid,
-        is_container,
-    };
-    // force_stop_instance warns (daemon-side) when it has to force-kill, which
+    // force_stop_instances warns (daemon-side) when it has to force-kill, which
     // is the right surface for this overwrite path (the user sees node_add's
     // feedback stream; node_stop additionally relays force-kill to the CLI).
-    force_stop_instance(
+    force_stop_instances(
         messenger,
         core_node_node,
         core_instance_id,
-        &target,
+        &doomed,
         node_stack.shutdown_grace(),
     )
     .await;
 
-    remove_instance_from_registry(node_stack, node_name, node_tag, instance_id);
+    for instance_id in instance_ids {
+        remove_instance_from_registry(node_stack, node_name, node_tag, instance_id);
+    }
 }
 
 /// Bounded wait for SIGKILLed groups to be reaped before the daemon exits, so
@@ -528,8 +539,8 @@ pub const TEARDOWN_REAP_BUDGET: Duration = Duration::from_secs(2);
 
 /// A non-root node instance to terminate — the routing identity + process info
 /// needed to stop one instance. Fed to [`force_stop_instances`] in a batch by
-/// [`teardown_all_instances`] and one at a time by [`force_stop_instance`]
-/// (`peppy node stop` / overwrite).
+/// [`teardown_all_instances`] and [`stop_instances`] (the `node add` overwrite
+/// path), and one at a time by [`force_stop_instance`] (`peppy node stop`).
 struct DoomedInstance {
     node_name: String,
     node_tag: String,

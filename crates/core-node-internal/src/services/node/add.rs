@@ -1109,7 +1109,7 @@ async fn shutdown_existing_instances(
         if guard.instances().is_empty() {
             return Ok(());
         }
-        // Fail fast if any instance is mid-start: stop_instance cannot reach
+        // Fail fast if any instance is mid-start: stop_instances cannot reach
         // it (no messenger subscriptions yet) and proceeding to push_config
         // could leave the node partially down. The caller can retry once the
         // start has either committed (Running) or aborted.
@@ -1131,27 +1131,33 @@ async fn shutdown_existing_instances(
             .collect::<Vec<_>>()
     };
 
-    for instance_id in instances {
-        let instance_id_str = instance_id.as_str().to_owned();
-        debug!(
-            "Shutting down existing node instance {}, node={}:{}",
-            instance_id_str, node_name, node_tag
-        );
+    debug!(
+        "Shutting down {} existing node instance(s), node={}:{}",
+        instances.len(),
+        node_name,
+        node_tag
+    );
 
-        super::stop::stop_instance(
-            &ctx.action.messenger,
-            &ctx.action.bound_core_node,
-            &ctx.action.core_instance_id,
-            &ctx.action.node_stack,
-            node_name,
-            node_tag,
-            &instance_id,
-        )
-        .await;
+    // Batched like the SIGINT teardown: every cooperative shutdown is sent
+    // concurrently and the instances share one grace budget, so overwriting an
+    // entity with several stuck instances costs one grace window, not one per
+    // instance. Per-instance graceful/force-killed logging happens daemon-side
+    // inside the stop; the feedback lines below only confirm completion.
+    super::stop::stop_instances(
+        &ctx.action.messenger,
+        &ctx.action.bound_core_node,
+        &ctx.action.core_instance_id,
+        &ctx.action.node_stack,
+        node_name,
+        node_tag,
+        &instances,
+    )
+    .await;
 
+    for instance_id in &instances {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
-            line: format!("{instance_id_str} has been stopped"),
+            line: format!("{} has been stopped", instance_id.as_str()),
         });
     }
 

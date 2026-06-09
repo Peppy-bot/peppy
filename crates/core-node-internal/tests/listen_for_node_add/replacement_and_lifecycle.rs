@@ -1301,7 +1301,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
 }
 /// When a running node instance does not respond to SHUTDOWN_SERVICE (e.g. the
 /// process is frozen), the overwrite path must behave like the SIGINT teardown:
-/// after the cooperative shutdown times out, `stop_instance` force-kills the
+/// after the cooperative shutdown times out, `stop_instances` force-kills the
 /// instance's process group, waits for it to die, and the add proceeds. The
 /// stuck instance must be removed (not orphaned) and the dependent preserved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1495,4 +1495,114 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
         || (!is_process_running(stuck_pid)).then_some(()),
     )
     .await;
+}
+
+/// Overwriting an entity with SEVERAL stuck running instances must stop them as
+/// one batch — every cooperative shutdown sent concurrently, one shared grace
+/// budget — exactly like the SIGINT teardown, not one full grace window per
+/// instance. Locks in both halves of `stop_instances`: correctness (both
+/// process groups force-killed and removed, no orphans) and the shared-budget
+/// timing (a per-instance loop would burn at least 2 × grace in stuck-grace
+/// alone before the second force-kill even fired).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
+    const NODE_NAME: &str = "lidar_two_stuck";
+    const NODE_TAG: &str = "v1";
+    // Wider than the 3s default so the timing window below has comfortable
+    // margins on both sides even under parallel-test CI load: batched ≈ one
+    // grace window (~6.3s), serial ≥ two (12s+), bound at 2 × grace (12s).
+    const SHUTDOWN_GRACE_SECS: u64 = 6;
+
+    let started_core_node = common::start_core_node_with_shutdown_grace(SHUTDOWN_GRACE_SECS).await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // v1: a real spawnable node (forks two grandchildren in its group).
+    let _source_dir_v1 = add_and_build_forking_node(&started_core_node, NODE_NAME, NODE_TAG).await;
+
+    // Two stuck instances of the same entity: neither installs a shutdown
+    // listener, so the overwrite's cooperative phase can never succeed and the
+    // full grace window is burned before the force phase.
+    let id_a = config::node::Name::new("two_stuck_a").expect("valid instance id");
+    let id_b = config::node::Name::new("two_stuck_b").expect("valid instance id");
+    let inst_a = spawn_real_stuck_instance(&started_core_node, NODE_NAME, NODE_TAG, &id_a).await;
+    let inst_b = spawn_real_stuck_instance(&started_core_node, NODE_NAME, NODE_TAG, &id_b).await;
+    let pid_a = inst_a.pid;
+    let pid_b = inst_b.pid;
+    // Assert liveness BEFORE forgetting the guards, so a failure here still
+    // reaps the children via the guards' drop instead of leaking them.
+    assert!(
+        is_process_running(pid_a) && is_process_running(pid_b),
+        "both stuck instances should be running before the overwrite"
+    );
+    // Drop the guards' stop-on-drop so only the overwrite path kills them.
+    std::mem::forget(inst_a);
+    std::mem::forget(inst_b);
+
+    // v2 with the same name/tag triggers the overwrite path.
+    let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5_v2 = r#"{
+            peppy_schema: "node_v1",
+            manifest: { name: "{NAME}", tag: "{TAG}" },
+            execution: {
+                language: "rust",
+                run_cmd: ["sleep", "10"]
+            }
+        }"#
+    .replace("{NAME}", NODE_NAME)
+    .replace("{TAG}", NODE_TAG);
+    write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
+
+    let grace = Duration::from_secs(SHUTDOWN_GRACE_SECS);
+    let overwrite_started = std::time::Instant::now();
+    let add_v2 = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        source_dir_v2.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+    let elapsed = overwrite_started.elapsed();
+
+    assert!(
+        add_v2.success,
+        "node_add should force-kill both stuck instances and succeed: {:?}",
+        add_v2.error_message
+    );
+
+    // Lower bound: the stuck instances really did sit out a full grace window
+    // (neither answers SHUTDOWN_SERVICE). Pins the test's premise — if a future
+    // change short-circuits the grace on an unreachable/failed cooperative
+    // send, this fires instead of the upper bound passing vacuously.
+    assert!(
+        elapsed >= grace,
+        "stuck instances should burn the full grace window, took only {elapsed:?}"
+    );
+    // Upper bound (shared budget): the whole batch burns ONE stuck-grace
+    // window (plus the bounded reap and the add's own staging work —
+    // comfortably under a second grace window). A per-instance loop burns
+    // ≥ 2 × grace in stuck-grace alone, so it cannot finish under this bound.
+    assert!(
+        elapsed < grace * 2,
+        "overwrite of two stuck instances should share one grace budget, \
+         took {elapsed:?} (a per-instance loop would take at least {:?})",
+        grace * 2
+    );
+
+    // Both stuck instances must be removed (force-killed, not orphaned).
+    assert_eq!(
+        entity_instance_count(&node_stack, NODE_NAME, NODE_TAG),
+        0,
+        "both stuck instances should be removed after the overwrite"
+    );
+    for pid in [pid_a, pid_b] {
+        poll_until(
+            Duration::from_secs(5),
+            &format!("stuck instance process {pid} should be force-killed, not orphaned"),
+            || (!is_process_running(pid)).then_some(()),
+        )
+        .await;
+    }
 }
