@@ -316,10 +316,6 @@ mod tests {
         assert!(!legacy.node_instance.framework.use_sim_time);
     }
 
-    /// A launch config written before `discovery` existed (no `discovery` key)
-    /// parses with the gossip-on default, an explicit discovery block
-    /// round-trips, and a default discovery is omitted from the serialized form
-    /// so existing configs stay byte-identical.
     /// A launch config written before `lifecycle` existed parses with the
     /// default grace period, an explicit block round-trips, and a default
     /// lifecycle is omitted from the serialized form so existing configs stay
@@ -359,6 +355,10 @@ mod tests {
         assert_eq!(reparsed.lifecycle, custom.lifecycle);
     }
 
+    /// A launch config written before `discovery` existed (no `discovery` key)
+    /// parses with the gossip-on default, an explicit discovery block
+    /// round-trips, and a default discovery is omitted from the serialized form
+    /// so existing configs stay byte-identical.
     #[test]
     fn discovery_config_default_and_round_trip() {
         let legacy = runtime_config_from_json("camera_front").unwrap();

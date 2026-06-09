@@ -89,7 +89,7 @@ async fn topics_communication(#[case] mode: crate::helpers::Mode) {
 
     // --- Receiver project
     let receiver_instance_id = RECEIVER_INSTANCE_ID;
-    let temp_dir_proj2 = TempDir::new().unwrap();
+    let temp_dir_proj2 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_topic: ConsumedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
@@ -170,7 +170,7 @@ if __name__ == "__main__":
 
     // --- Emitter project
     let emitter_instance_id = EMITTER_INSTANCE_ID;
-    let temp_dir_proj1 = TempDir::new().unwrap();
+    let temp_dir_proj1 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let emitted_topic: EmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, emitter_dir, user_node_emitter, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_proj1, STUB_PYTHON_NODE_CONFIG);

@@ -1,9 +1,9 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, build_staged_node, send_node_add_and_wait,
-    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
-    write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, add_and_build_forking_node, build_staged_node, children_of,
+    is_process_running, poll_until, send_node_add_and_wait, spawn_real_running_instance,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
 use core_node_api::encoding::NodeStopRequest;
@@ -11,46 +11,7 @@ use peppylib::core_node::transport::poll_node_stop;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-/// True if a process exists and is not a zombie — matches the daemon's own
-/// `is_process_running` definition (sysinfo, status != Zombie), so the test
-/// agrees with what `node_stop`/teardown consider "gone". A libc `kill(pid, 0)`
-/// check would report a reaped-but-unwaited zombie as still running.
-fn is_process_running(pid: u32) -> bool {
-    let system = sysinfo::System::new_with_specifics(
-        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
-    );
-    match system.process(sysinfo::Pid::from_u32(pid)) {
-        Some(process) => process.status() != sysinfo::ProcessStatus::Zombie,
-        None => false,
-    }
-}
-
-/// PIDs of live children of `parent_pid`, via sysinfo's parent links.
-fn children_of(parent_pid: u32) -> Vec<u32> {
-    let system = sysinfo::System::new_with_specifics(
-        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::everything()),
-    );
-    let parent = sysinfo::Pid::from_u32(parent_pid);
-    system
-        .processes()
-        .values()
-        .filter(|p| p.parent() == Some(parent))
-        .map(|p| p.pid().as_u32())
-        .collect()
-}
-
-fn poll_until(deadline: Duration, mut cond: impl FnMut() -> bool) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < deadline {
-        if cond() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    cond()
-}
+use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_stop_success() {
@@ -245,33 +206,7 @@ async fn node_stop_force_kills_whole_process_group() {
     // instance is visible to the node_stop handler and we can assert removal.
     let node_stack = started.node_stack.clone();
 
-    let source_dir = tempfile::tempdir().expect("temp source dir");
-    // The node forks two grandchildren and waits; all three share the node's
-    // process group (the node is spawned as group leader).
-    let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
-            manifest: { name: "{NAME}", tag: "{TAG}" },
-            execution: {
-                language: "rust",
-                run_cmd: ["sh", "-c", "sleep 1000 & sleep 1000 & wait"]
-            }
-        }"#
-    .replace("{NAME}", NODE_NAME)
-    .replace("{TAG}", NODE_TAG);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let add_response = send_node_add_and_wait(
-        &started.caller_handle,
-        &started.core_node_name,
-        source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-        None,
-    )
-    .await
-    .expect("node_add should complete");
-    assert!(add_response.success, "node_add failed: {add_response:?}");
-    build_staged_node(&started, NODE_NAME, NODE_TAG).await;
+    let _source_dir = add_and_build_forking_node(&started, NODE_NAME, NODE_TAG).await;
 
     let instance_id = Name::new(INSTANCE_ID).expect("valid instance id");
     // "stuck": installs NO shutdown listener, so the node never answers
@@ -282,10 +217,12 @@ async fn node_stop_force_kills_whole_process_group() {
     std::mem::forget(running);
 
     // Wait for the two grandchildren to appear, then snapshot their pids.
-    assert!(
-        poll_until(Duration::from_secs(5), || children_of(node_pid).len() >= 2),
-        "expected the node to fork two grandchildren"
-    );
+    poll_until(
+        Duration::from_secs(5),
+        "expected the node to fork two grandchildren",
+        || (children_of(node_pid).len() >= 2).then_some(()),
+    )
+    .await;
     let grandchildren = children_of(node_pid);
     assert!(
         is_process_running(node_pid),
@@ -334,15 +271,19 @@ async fn node_stop_force_kills_whole_process_group() {
     // No orphans: the node and every grandchild must be gone. Poll rather than
     // assert synchronously — the reap is best-effort under a bounded timeout, so
     // success may be reported a beat before the kernel finishes the teardown.
-    assert!(
-        poll_until(Duration::from_secs(5), || !is_process_running(node_pid)),
-        "node process {node_pid} should be gone after node_stop"
-    );
+    poll_until(
+        Duration::from_secs(5),
+        &format!("node process {node_pid} should be gone after node_stop"),
+        || (!is_process_running(node_pid)).then_some(()),
+    )
+    .await;
     for &gc in &grandchildren {
-        assert!(
-            poll_until(Duration::from_secs(5), || !is_process_running(gc)),
-            "grandchild {gc} should be gone after node_stop (group kill)"
-        );
+        poll_until(
+            Duration::from_secs(5),
+            &format!("grandchild {gc} should be gone after node_stop (group kill)"),
+            || (!is_process_running(gc)).then_some(()),
+        )
+        .await;
     }
 
     // The instance must be removed from the registry (find_by_instance_id

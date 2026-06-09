@@ -22,9 +22,12 @@ pub(crate) const HEALTH_MONITOR_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Cadence of the daemon-liveness heartbeat each spawned node's watchdog
 /// listens for. Small and fixed; the configurable grace period
-/// (`peppy_config.lifecycle.daemon_grace_secs`, min 30s) is many multiples of
-/// it, so a couple of dropped beats never trip a node's watchdog.
-pub(crate) const DAEMON_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+/// (`peppy_config.lifecycle.daemon_grace_secs`) is many multiples of it, so a
+/// couple of dropped beats never trip a node's watchdog. The seconds value is
+/// defined next to the grace-period floor in `config::peppy_config`, where a
+/// compile-time assert enforces that margin.
+pub(crate) const DAEMON_HEARTBEAT_INTERVAL: Duration =
+    Duration::from_secs(config::peppy_config::DAEMON_HEARTBEAT_INTERVAL_SECS);
 
 pub struct CoreNodeRunner {
     core_node: CoreNode,

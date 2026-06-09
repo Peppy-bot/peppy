@@ -510,24 +510,64 @@ impl Apptainer {
                 limactl_path,
                 lima_home,
                 ..
-            } => {
-                let guest_pgid = lima::guest_pgid_path(key);
-                let status = Command::new(limactl_path)
-                    .env("LIMA_HOME", lima_home)
-                    .arg("shell")
-                    .arg(lima::LIMA_INSTANCE)
-                    .arg("--")
-                    .args(lima::lima_kill_pgid_argv(&guest_pgid))
-                    .status()
-                    .map_err(Error::from)?;
-                if !status.success() {
-                    return Err(Error::LimaInstanceError(format!(
-                        "failed to kill guest process group (pgid file {}): limactl exited with {}",
-                        guest_pgid.display(),
-                        status
-                    )));
-                }
-                Ok(())
+            } => Self::kill_guest_pgid(limactl_path, lima_home, key),
+        }
+    }
+
+    /// Issues the in-VM group kill for `key` via `limactl shell`. Shared by
+    /// [`kill_guest_process_group`](Self::kill_guest_process_group) (facade
+    /// instance) and
+    /// [`kill_guest_process_groups_best_effort`](Self::kill_guest_process_groups_best_effort)
+    /// (no facade).
+    fn kill_guest_pgid(limactl_path: &Path, lima_home: &Path, key: &str) -> Result<()> {
+        let guest_pgid = lima::guest_pgid_path(key);
+        let status = Command::new(limactl_path)
+            .env("LIMA_HOME", lima_home)
+            .arg("shell")
+            .arg(lima::LIMA_INSTANCE)
+            .arg("--")
+            .args(lima::lima_kill_pgid_argv(&guest_pgid))
+            .status()
+            .map_err(Error::from)?;
+        if !status.success() {
+            return Err(Error::LimaInstanceError(format!(
+                "failed to kill guest process group (pgid file {}): limactl exited with {}",
+                guest_pgid.display(),
+                status
+            )));
+        }
+        Ok(())
+    }
+
+    /// Best-effort batch form of
+    /// [`kill_guest_process_group`](Self::kill_guest_process_group) for node
+    /// stop / daemon teardown. Owns the platform gate so callers need no
+    /// `cfg!(target_os = "macos")` checks: a no-op on non-macOS hosts (the host
+    /// process-group SIGKILL already reached the shared-namespace workload) and
+    /// when the Lima VM is not running (its guest processes died with it —
+    /// never boot a VM just to kill processes inside it, which a full
+    /// [`Apptainer::new`] readiness preflight could do). Failures are logged at
+    /// debug level, never returned: a guest-kill problem must not block a stop.
+    ///
+    /// Synchronous — it shells out to `limactl` — so call it from a blocking
+    /// context (e.g. `tokio::task::spawn_blocking`).
+    pub fn kill_guest_process_groups_best_effort(keys: &[String]) {
+        if !cfg!(target_os = "macos") || keys.is_empty() {
+            return;
+        }
+        let (limactl_path, lima_home) = match (lima::resolve_lima_dir(), lima::resolve_lima_home())
+        {
+            (Ok(lima_dir), Ok(lima_home)) => (lima_dir.join("bin/limactl"), lima_home),
+            // No resolvable Lima installation means no VM, hence no guest
+            // processes to kill.
+            _ => return,
+        };
+        if !lima::is_lima_instance_running(&limactl_path, &lima_home) {
+            return;
+        }
+        for key in keys {
+            if let Err(e) = Self::kill_guest_pgid(&limactl_path, &lima_home, key) {
+                tracing::debug!("In-VM guest group kill failed for '{key}': {e}");
             }
         }
     }

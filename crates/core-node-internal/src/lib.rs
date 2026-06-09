@@ -10,4 +10,6 @@ pub use services::repo::cache::{
     repositories_list_path,
 };
 pub use services::repo::{InitOutcome, ensure_default_repos};
-pub use services::{CoreNode, CoreNodeArguments, FORBIDDEN_ENV_KEYS, teardown_all_instances};
+pub use services::{
+    CoreNode, CoreNodeArguments, FORBIDDEN_ENV_KEYS, TEARDOWN_REAP_BUDGET, teardown_all_instances,
+};

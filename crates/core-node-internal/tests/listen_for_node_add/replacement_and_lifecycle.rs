@@ -1299,19 +1299,6 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         );
     }
 }
-/// True if `pid` exists and is not a zombie (sysinfo; matches the daemon's own
-/// `is_process_running` definition). Used to prove a force-killed instance is
-/// gone rather than orphaned.
-fn pid_alive(pid: u32) -> bool {
-    let system = sysinfo::System::new_with_specifics(
-        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
-    );
-    match system.process(sysinfo::Pid::from_u32(pid)) {
-        Some(p) => p.status() != sysinfo::ProcessStatus::Zombie,
-        None => false,
-    }
-}
-
 /// When a running node instance does not respond to SHUTDOWN_SERVICE (e.g. the
 /// process is frozen), the overwrite path must behave like the SIGINT teardown:
 /// after the cooperative shutdown times out, `stop_instance` force-kills the
@@ -1502,16 +1489,10 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
 
     // The real process must be gone — no orphan. Poll: the reap is bounded and
     // best-effort, so the OS may finish teardown a beat after the add returns.
-    let mut gone = false;
-    for _ in 0..100 {
-        if !pid_alive(stuck_pid) {
-            gone = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        gone,
-        "stuck instance process {stuck_pid} should be force-killed, not orphaned"
-    );
+    poll_until(
+        Duration::from_secs(5),
+        &format!("stuck instance process {stuck_pid} should be force-killed, not orphaned"),
+        || (!is_process_running(stuck_pid)).then_some(()),
+    )
+    .await;
 }

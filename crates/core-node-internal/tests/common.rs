@@ -171,6 +171,34 @@ pub async fn poll_until<T>(
     }
 }
 
+/// True if a process exists and is not a zombie — matches the daemon's own
+/// liveness definition (sysinfo, status != Zombie), so tests agree with what
+/// `node_stop`/teardown consider "gone". A libc `kill(pid, 0)` check would
+/// report a reaped-but-unwaited zombie as still running.
+pub fn is_process_running(pid: u32) -> bool {
+    let system = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+    );
+    match system.process(sysinfo::Pid::from_u32(pid)) {
+        Some(process) => process.status() != sysinfo::ProcessStatus::Zombie,
+        None => false,
+    }
+}
+
+/// PIDs of live children of `parent_pid`, via sysinfo's parent links.
+pub fn children_of(parent_pid: u32) -> Vec<u32> {
+    let system = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+    );
+    let parent = sysinfo::Pid::from_u32(parent_pid);
+    system
+        .processes()
+        .values()
+        .filter(|p| p.parent() == Some(parent))
+        .map(|p| p.pid().as_u32())
+        .collect()
+}
+
 /// Polls `ServiceMessenger::is_reachable` until the named service responds or
 /// `deadline` expires. Replaces fixed sleeps used as broker-propagation
 /// barriers in tests that spawn a `handle_requests` task and then need to
@@ -300,14 +328,67 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
 }
 
 fn init_test_data_dir() -> (TempDir, PeppyDirs) {
-    // Place test data under $HOME so paths are visible inside the Lima VM on macOS.
-    // Lima 2.0+ only mounts ~ into the guest; system temp (/var/folders/...) is inaccessible.
-    let home = std::env::var("HOME").expect("HOME must be set");
-    let test_tmp_root = std::path::PathBuf::from(&home).join(".peppy/test-tmp");
-    std::fs::create_dir_all(&test_tmp_root).expect("create ~/.peppy/test-tmp/");
-    let dir = TempDir::new_in(&test_tmp_root).expect("test data dir");
+    let dir = TempDir::new_in(test_tmp_root()).expect("test data dir");
     let peppy_dirs = PeppyDirs::new(dir.path());
     (dir, peppy_dirs)
+}
+
+/// Root for all test scratch directories, placed under `$HOME` rather than the
+/// system temp dir for two reasons:
+/// 1. On macOS, Lima 2.0+ only mounts `~` into the guest VM, so node paths must
+///    live under `$HOME` to be visible inside the VM (system temp such as
+///    `/var/folders/...` is inaccessible).
+/// 2. On Linux dev/CI machines `/tmp` is frequently a size-quota'd `tmpfs`;
+///    building a node there (the cargo `target/` alone is ~2 GB) trips the
+///    per-user quota. `$HOME` lives on the roomy backing disk instead.
+///
+/// Every scratch dir handed out from here is a [`TempDir`], so it is removed
+/// when its guard drops — normal completion and panics both clean up, and
+/// nothing is carried over to the next run. As a backstop for runs that were
+/// hard-killed before their guards could run, the first call per test binary
+/// reclaims leftovers older than [`STALE_TEST_TMP_AGE`]; that age floor keeps
+/// concurrently-running test binaries from deleting each other's live dirs.
+fn test_tmp_root() -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let root = PathBuf::from(home).join(".peppy/test-tmp");
+    std::fs::create_dir_all(&root).expect("create ~/.peppy/test-tmp/");
+
+    static RECLAIM: std::sync::Once = std::sync::Once::new();
+    RECLAIM.call_once(|| reclaim_stale_test_tmp(&root));
+
+    root
+}
+
+/// Scratch older than this is treated as abandoned by an earlier run and is
+/// safe to delete. Far longer than any real test run (which finishes in
+/// minutes), so an in-flight run is never affected.
+const STALE_TEST_TMP_AGE: Duration = Duration::from_secs(60 * 60);
+
+/// Best-effort removal of stale leftovers directly under `root`. Errors are
+/// ignored on purpose: reclaiming scratch must never fail a test.
+fn reclaim_stale_test_tmp(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let too_old = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= STALE_TEST_TMP_AGE);
+        if !too_old {
+            continue;
+        }
+        if metadata.is_dir() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        } else {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
@@ -1260,6 +1341,43 @@ pub async fn send_node_add_then_build<'a>(
     Ok(result)
 }
 
+/// Adds and builds a node whose `run_cmd` forks two grandchild `sleep`s and
+/// waits — all three processes share the node's process group (nodes are
+/// spawned as group leaders). Used by the force-kill tests to prove a group
+/// kill reaps descendants, not just the leader. Returns the source dir guard.
+pub async fn add_and_build_forking_node(
+    started: &StartedCoreNode,
+    node_name: &str,
+    node_tag: &str,
+) -> TempDir {
+    let source_dir = tempfile::tempdir().expect("temp source dir");
+    let peppy_json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: { name: "{NAME}", tag: "{TAG}" },
+            execution: {
+                language: "rust",
+                run_cmd: ["sh", "-c", "sleep 1000 & sleep 1000 & wait"]
+            }
+        }"#
+    .replace("{NAME}", node_name)
+    .replace("{TAG}", node_tag);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+    assert!(add_response.success, "node_add failed: {add_response:?}");
+    build_staged_node(started, node_name, node_tag).await;
+    source_dir
+}
+
 pub async fn send_node_add_and_wait_with_force<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -1332,31 +1450,38 @@ pub async fn send_node_run_and_wait_with_env(
 /// Creates a fresh test node in a new temp directory.
 /// Each call creates a completely new node with its own peppygen generation
 /// and cargo build, ensuring isolation between tests.
-pub fn create_test_node() -> PathBuf {
+pub fn create_test_node() -> TempDir {
     init_test_node_project("example_node", "v1", true)
 }
 
 /// Creates a fresh test node in a new temp directory.
 /// Each call creates a completely new node with its own peppygen generation
 /// and cargo build, ensuring isolation between tests.
-pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> PathBuf {
+///
+/// The returned [`TempDir`] owns the directory and deletes it — including the
+/// multi-GB cargo `target/` — when it drops, so test runs never accumulate
+/// build artifacts. Bind it for as long as the node is needed (e.g. for the
+/// whole test body) and let it drop at scope end.
+pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> TempDir {
     init_test_node_project(node_name, node_tag, true)
 }
 
-pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bool) -> PathBuf {
+pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bool) -> TempDir {
+    // Build under the shared test-tmp root (see `test_tmp_root`) and keep the
+    // `TempDir` guard rather than `.keep()`-ing it, so the directory and its
+    // ~2 GB cargo build are reclaimed when the returned guard drops.
     let node_dir = tempfile::Builder::new()
         .prefix("peppy_test_node_")
-        .tempdir()
-        .expect("failed to create temp directory for test node")
-        .keep();
+        .tempdir_in(test_tmp_root())
+        .expect("failed to create temp directory for test node");
 
-    init_cargo_project(&node_dir, node_name);
-    write_test_node_files(&node_dir, node_name, node_tag);
+    init_cargo_project(node_dir.path(), node_name);
+    write_test_node_files(node_dir.path(), node_name, node_tag);
 
     let peppy_dirs = PeppyDirs::default();
     generator::generate_peppygen_lib(
         PeppygenLanguage::Rust,
-        &node_dir,
+        node_dir.path(),
         Vec::new(),
         "test-hash",
         &peppy_dirs,
@@ -1366,7 +1491,7 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
     .expect("failed to generate peppygen for test node");
 
     if build_project {
-        build_cargo_project(&node_dir);
+        build_cargo_project(node_dir.path());
     }
 
     node_dir

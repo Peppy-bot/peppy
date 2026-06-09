@@ -106,9 +106,10 @@ pub mod runtime {
 // -- peppy_config --
 pub mod peppy_config {
     pub use crate::internal::peppy_config::{
-        DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
-        DEFAULT_SHUTDOWN_GRACE_SECS, DEFAULT_STANDARD_BUFFER_SIZE, LifecycleConfig,
-        MIN_DAEMON_GRACE_SECS, Mode, PEPPY_CONFIG_FILE, PeerConfig, PeppyConfig, load_or_create,
+        DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_DAEMON_GRACE_SECS,
+        DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE, DEFAULT_SHUTDOWN_GRACE_SECS,
+        DEFAULT_STANDARD_BUFFER_SIZE, LifecycleConfig, MIN_DAEMON_GRACE_SECS, Mode,
+        PEPPY_CONFIG_FILE, PeerConfig, PeppyConfig, load_or_create,
     };
 }
 

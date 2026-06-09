@@ -19,11 +19,10 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::node::QoSProfile;
 use core_node_api::names;
 
 use crate::error::Result;
-use crate::messaging::{ConsumerFilter, SenderTarget, Subscription, TopicMessenger};
+use crate::messaging::Subscription;
 use crate::runtime::{CancellationToken, NodeRunner, TaskHandle, spawn};
 
 /// Abstraction over "wait for the next daemon beat" so the watchdog timing can
@@ -41,34 +40,17 @@ impl BeatSource for Subscription {
 }
 
 /// Subscribe to the daemon heartbeat and spawn the watchdog loop. Returns the
-/// task handle so the caller can hold it for the node's lifetime.
+/// task handle so the caller can hold it for the node's lifetime. The
+/// subscription is keyed the same way as the clock's, so the watchdog observes
+/// the per-core-node key the daemon publishes on.
 pub async fn spawn_daemon_watchdog(
     node_runner: Arc<NodeRunner>,
     grace: Duration,
     cancellation_token: CancellationToken,
 ) -> Result<TaskHandle<Result<()>>> {
-    let subscription = subscribe_heartbeat(&node_runner).await?;
+    let subscription =
+        crate::core_node::subscribe_core_topic(&node_runner, names::DAEMON_HEARTBEAT).await?;
     Ok(spawn(run_watchdog(subscription, grace, cancellation_token)))
-}
-
-/// Subscribe to the core node's `daemon_heartbeat` topic. Mirrors the clock
-/// subscription so the watchdog observes the same per-core-node key the daemon
-/// publishes on.
-async fn subscribe_heartbeat(node_runner: &NodeRunner) -> Result<Subscription> {
-    let processor = node_runner.processor();
-    let core_node = processor.bound_core_node();
-    TopicMessenger::subscribe(
-        node_runner.messenger(),
-        core_node,
-        processor.bound_instance_id(),
-        Some(SenderTarget::node(core_node, names::CORE_NODE_TAG)?),
-        false,
-        names::DAEMON_HEARTBEAT,
-        Some(core_node),
-        &ConsumerFilter::Any,
-        QoSProfile::SensorData,
-    )
-    .await
 }
 
 /// Testable core: wait for the next beat, bounded by `grace`. Each beat resets

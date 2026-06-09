@@ -478,6 +478,10 @@ struct TimeoutTestHarness {
     launcher_path: PathBuf,
     node_b_peppy_json5: PathBuf,
     _serve: ServeCommandEmulation,
+    // Declared last so it drops last: the nodes dir is removed only after `ctx`
+    // and the serve emulation have torn down. Held (not `.keep()`-leaked) so the
+    // directory does not survive between test runs.
+    _nodes_dir: tempfile::TempDir,
 }
 
 async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
@@ -486,10 +490,10 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    // Leak the tempdir so it survives for the duration of the test (the harness holds the
-    // serve emulation, which already owns its own tempdir; we keep this one alive via the
-    // launcher path it contains).
-    let nodes_dir_path = nodes_dir.keep();
+    // Keep an owned copy of the path for building the config below; the `TempDir`
+    // guard itself is moved into the harness (see `_nodes_dir`) so the directory
+    // is reclaimed when the test ends instead of leaking across runs.
+    let nodes_dir_path = nodes_dir.path().to_path_buf();
 
     let ctx = Arc::new(
         AppContext::with_messenger(&nodes_dir_path, Arc::clone(&shared_messenger))
@@ -529,6 +533,7 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
         launcher_path,
         node_b_peppy_json5,
         _serve: serve,
+        _nodes_dir: nodes_dir,
     }
 }
 

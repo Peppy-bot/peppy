@@ -34,6 +34,15 @@ pub const DEFAULT_DAEMON_GRACE_SECS: u64 = 180;
 /// heartbeat interval and the router-watchdog restart window so a brief daemon
 /// blip never trips a node's watchdog.
 pub const MIN_DAEMON_GRACE_SECS: u64 = 30;
+/// Cadence, in seconds, of the daemon-liveness heartbeat each spawned node's
+/// watchdog listens for (published by the daemon; see
+/// `core_node::services::clock::publish_daemon_heartbeat`). Defined next to
+/// [`MIN_DAEMON_GRACE_SECS`] so the invariant between them is enforced where
+/// both values live.
+pub const DAEMON_HEARTBEAT_INTERVAL_SECS: u64 = 5;
+// Compile-time guard on the watchdog's false-trip margin: even several missed
+// beats must fit inside the smallest accepted grace period.
+const _: () = assert!(MIN_DAEMON_GRACE_SECS >= 3 * DAEMON_HEARTBEAT_INTERVAL_SECS);
 
 /// Default cooperative-shutdown grace period, in seconds. How long the daemon
 /// (on a clean ctrl+C / `systemctl stop`) and `peppy node stop` wait for a node

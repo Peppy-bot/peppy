@@ -274,30 +274,15 @@ enum StopOutcome {
     NoProcess,
 }
 
-/// Cooperative-then-force termination of a single instance — the single-instance
-/// sibling of [`teardown_all_instances`] (the SIGINT/ctrl+C path), running the
-/// same phases for one pid so `peppy node stop` behaves identically to a
-/// catchable daemon shutdown ("properly OR improperly stopped"):
-///
-/// 1. Best-effort `SHUTDOWN_SERVICE` send — a failed/timed-out send is logged
-///    and ignored. A non-responsive node must still be force-killed, never
-///    surfaced as an error (this is what makes a stuck node a success, not a
-///    failure-with-the-process-left-alive).
-/// 2. Bounded graceful wait (`graceful_budget`, from
-///    `peppy_config.lifecycle.shutdown_grace_secs`) for the OS process to exit
-///    on its own.
-/// 3. If still alive, `kill_process_group(pid)` (SIGKILL the whole group — nodes
-///    are spawned as group leaders) plus, on macOS for container nodes, the
-///    in-VM guest group kill.
-/// 4. Bounded reap ([`TEARDOWN_REAP_BUDGET`]) so the SIGKILLed group is gone
-///    before we return.
+/// Cooperative-then-force termination of a single instance: the one-element
+/// form of [`force_stop_instances`], used by `peppy node stop` and the
+/// `node add` overwrite path so they behave identically to the SIGINT teardown
+/// ("properly OR improperly stopped").
 ///
 /// Returns a [`StopOutcome`] so the caller can tell the user whether the node
-/// exited gracefully or had to be force-killed. `target.pid == None` means there
-/// is no OS process to terminate (the cooperative send is still attempted
-/// best-effort) and yields [`StopOutcome::NoProcess`]. Takes NO lock — the
-/// caller resolves the [`DoomedInstance`] fields and `graceful_budget` up front,
-/// so nothing is held across an await.
+/// exited gracefully or had to be force-killed. Takes NO lock — the caller
+/// resolves the [`DoomedInstance`] fields and `graceful_budget` up front, so
+/// nothing is held across an await.
 async fn force_stop_instance(
     messenger: &MessengerHandle,
     core_node_node: &str,
@@ -305,84 +290,137 @@ async fn force_stop_instance(
     target: &DoomedInstance,
     graceful_budget: Duration,
 ) -> StopOutcome {
-    let instance_id = &target.instance_id;
+    force_stop_instances(
+        messenger,
+        core_node_node,
+        core_instance_id,
+        std::slice::from_ref(target),
+        graceful_budget,
+    )
+    .await
+    .pop()
+    .expect("one outcome per doomed instance")
+}
 
-    // Phase 1 (graceful, bounded): cooperative shutdown, then wait for exit.
-    // Best-effort send: ignore failure/timeout and fall through to force-kill.
+/// Cooperative-then-force termination of a batch of instances — the single
+/// implementation behind `peppy node stop`, the `node add` overwrite path, and
+/// the SIGINT/ctrl+C teardown:
+///
+/// 1. Best-effort `SHUTDOWN_SERVICE` sends, concurrently — a failed/timed-out
+///    send is logged and ignored. A non-responsive node must still be
+///    force-killed, never surfaced as an error (this is what makes a stuck node
+///    a success, not a failure-with-the-process-left-alive).
+/// 2. Bounded graceful wait (`graceful_budget`, from
+///    `peppy_config.lifecycle.shutdown_grace_secs`, shared across the whole
+///    batch) for the OS processes to exit on their own.
+/// 3. `kill_process_group(pid)` for each instance (SIGKILL the whole group —
+///    nodes are spawned as group leaders) plus, on macOS for container nodes,
+///    the in-VM guest group kill.
+/// 4. Bounded reap ([`TEARDOWN_REAP_BUDGET`]) so the SIGKILLed groups are gone
+///    before we return.
+///
+/// Returns one [`StopOutcome`] per input, in order, so callers can tell the
+/// user whether each node exited gracefully or had to be force-killed. An
+/// instance with `pid == None` has no OS process to terminate (the cooperative
+/// send is still attempted best-effort) and yields [`StopOutcome::NoProcess`].
+async fn force_stop_instances(
+    messenger: &MessengerHandle,
+    core_node_node: &str,
+    core_instance_id: &str,
+    doomed: &[DoomedInstance],
+    graceful_budget: Duration,
+) -> Vec<StopOutcome> {
+    // Phase 1 (graceful, bounded): ask every node to shut down cooperatively,
+    // concurrently, then poll until they're all gone or the budget elapses.
     let _ = tokio::time::timeout(graceful_budget, async {
-        if let Err(e) = send_shutdown_signal(
-            messenger,
-            core_node_node,
-            core_instance_id,
-            &target.node_name,
-            &target.node_tag,
-            instance_id,
-        )
-        .await
-        {
-            debug!(
-                "Cooperative shutdown of node instance '{}' failed; \
-                 falling through to force-kill: {}",
-                instance_id.as_str(),
-                e
-            );
-        }
-        if let Some(pid) = target.pid {
-            wait_for_pid_gone(pid).await;
-        }
+        let sends = doomed.iter().map(|d| async move {
+            if let Err(e) = send_shutdown_signal(
+                messenger,
+                core_node_node,
+                core_instance_id,
+                &d.node_name,
+                &d.node_tag,
+                &d.instance_id,
+            )
+            .await
+            {
+                debug!(
+                    "Cooperative shutdown of node instance '{}' failed; \
+                     falling through to force-kill: {}",
+                    d.instance_id.as_str(),
+                    e
+                );
+            }
+        });
+        futures::future::join_all(sends).await;
+        wait_until_all_gone(doomed).await;
     })
     .await;
 
-    let Some(pid) = target.pid else {
-        return StopOutcome::NoProcess; // No OS process to force-kill or reap.
-    };
-
-    // Decide the outcome by whether the leader is still alive after the grace
-    // window. We still SIGKILL the group unconditionally below (a group can
-    // outlive its leader; the negative-pid kill reaches survivors, and an
-    // already-dead group yields ESRCH, which `kill_process_group` ignores) —
-    // the liveness check here only classifies graceful vs forced for the user.
-    let outcome = if is_process_running(pid) {
-        warn!(
-            "Node instance '{}' did not exit within the {}s shutdown grace period; \
-             force-killing its process group (pid {})",
-            instance_id.as_str(),
-            graceful_budget.as_secs(),
-            pid
-        );
-        StopOutcome::ForceKilled
-    } else {
-        debug!(
-            "Node instance '{}' exited gracefully within the grace period",
-            instance_id.as_str()
-        );
-        StopOutcome::Graceful
-    };
-    kill_process_group(pid);
-
-    // Phase 2b (macOS): the host group kill above only reached the `limactl`
-    // client for container nodes; reach into the Lima VM and SIGKILL the guest
-    // group keyed by instance id (matching the `cancel_pgid` set at spawn). Runs
-    // on a blocking thread because it shells out to `limactl`. Best-effort: a
-    // facade-init failure must not block the stop. Compiled out / no-op on Linux.
-    if cfg!(target_os = "macos") && target.is_container {
-        let key = instance_id.as_str().to_owned();
-        let _ = tokio::task::spawn_blocking(move || match containers::Apptainer::new() {
-            Ok(apptainer) => {
-                let _ = apptainer.kill_guest_process_group(&key);
+    // Phase 2 (force): SIGKILL each recorded process group. We deliberately do
+    // not pre-check whether the leader is still alive before killing: a process
+    // group can outlive its leader (the leader exits but a descendant it spawned
+    // keeps running), and the negative-pid kill reaches the whole group (each
+    // node is spawned as a group leader), so descendants die too. An already-dead
+    // group yields ESRCH, which kill_process_group ignores.
+    //
+    // We do take one snapshot here purely to classify which nodes are still
+    // alive (i.e. ignored the cooperative shutdown) so the user is warned that
+    // they were force-killed rather than having exited gracefully.
+    let mut snapshot = sysinfo::System::new();
+    refresh_pids(&mut snapshot, &doomed_pids(doomed));
+    let mut guest_kill_keys: Vec<String> = Vec::new();
+    let outcomes = doomed
+        .iter()
+        .map(|d| {
+            let Some(pid) = d.pid else {
+                return StopOutcome::NoProcess; // Nothing to force-kill or reap.
+            };
+            let outcome = if pid_running_in(&snapshot, pid) {
+                warn!(
+                    "Node instance '{}' did not exit within the {}s shutdown grace period; \
+                     force-killing its process group (pid {})",
+                    d.instance_id.as_str(),
+                    graceful_budget.as_secs(),
+                    pid
+                );
+                StopOutcome::ForceKilled
+            } else {
+                debug!(
+                    "Node instance '{}' exited gracefully within the grace period",
+                    d.instance_id.as_str()
+                );
+                StopOutcome::Graceful
+            };
+            kill_process_group(pid);
+            if d.is_container {
+                guest_kill_keys.push(d.instance_id.as_str().to_owned());
             }
-            Err(e) => {
-                debug!("Skipping in-VM container kill (apptainer init failed): {e}");
-            }
+            outcome
+        })
+        .collect();
+
+    // Phase 2b (macOS): for container nodes the host group kill above only
+    // reached the `limactl` client; the workload runs inside the Lima VM. Reach
+    // into the VM and SIGKILL each recorded guest process group (keyed by
+    // instance id, matching the `cancel_pgid` set at spawn). The facade owns the
+    // platform gate (no-op on Linux, where the host kill already reached the
+    // shared-namespace container) and never fails — a guest-kill problem must
+    // not block a stop or teardown. Runs on a blocking thread because it shells
+    // out to `limactl`.
+    if !guest_kill_keys.is_empty() {
+        let _ = tokio::task::spawn_blocking(move || {
+            containers::Apptainer::kill_guest_process_groups_best_effort(&guest_kill_keys);
         })
         .await;
     }
 
-    // Phase 3 (bounded reap): let the killed group die before we return so it
-    // doesn't briefly linger as a zombie parented to the still-alive daemon.
-    let _ = tokio::time::timeout(TEARDOWN_REAP_BUDGET, wait_for_pid_gone(pid)).await;
+    // Phase 3 (bounded reap): let the killed groups die while the daemon is
+    // still alive so they don't briefly linger as zombies parented to it; any
+    // straggler reparents to init/launchd and is reaped there.
+    let _ = tokio::time::timeout(TEARDOWN_REAP_BUDGET, wait_until_all_gone(doomed)).await;
 
-    outcome
+    outcomes
 }
 
 /// Removes a `Running` instance from the entity's registry. Called only
@@ -430,8 +468,7 @@ fn remove_instance_from_registry(
 /// SIGINT teardown, so a stuck instance is force-killed (not left alive behind a
 /// timeout error): the cooperative shutdown is attempted first, then the process
 /// group is SIGKILLed if the node ignores it, and the call returns only once the
-/// process is gone. Returns `Result` purely so callers can keep `?`; it is
-/// effectively infallible.
+/// process is gone. Infallible.
 pub(super) async fn stop_instance(
     messenger: &MessengerHandle,
     core_node_node: &str,
@@ -440,7 +477,7 @@ pub(super) async fn stop_instance(
     node_name: &str,
     node_tag: &str,
     instance_id: &Name,
-) -> std::result::Result<(), String> {
+) {
     // Resolve pid + is_container from the live entry under one short read lock,
     // not held across the await below. Reading the pid up front (rather than
     // after shutdown) avoids a race with any concurrent registry mutation.
@@ -455,7 +492,7 @@ pub(super) async fn stop_instance(
                 .and_then(|inst| inst.pid());
             (pid, is_container)
         }
-        None => return Ok(()), // Entity already gone; nothing to stop.
+        None => return, // Entity already gone; nothing to stop.
     };
 
     let target = DoomedInstance {
@@ -478,19 +515,21 @@ pub(super) async fn stop_instance(
     .await;
 
     remove_instance_from_registry(node_stack, node_name, node_tag, instance_id);
-    Ok(())
 }
 
 /// Bounded wait for SIGKILLed groups to be reaped before the daemon exits, so
 /// they don't briefly linger as zombies parented to the still-alive daemon.
 /// (The cooperative-phase grace window is configurable via
 /// `peppy_config.lifecycle.shutdown_grace_secs` and carried on the `NodeStack`;
-/// only this reap budget is a fixed internal constant.)
-const TEARDOWN_REAP_BUDGET: Duration = Duration::from_secs(2);
+/// only this reap budget is a fixed internal constant.) Public so the CLI can
+/// derive its request timeout from the daemon's worst-case stop duration
+/// (configured grace + this reap) instead of guessing at it.
+pub const TEARDOWN_REAP_BUDGET: Duration = Duration::from_secs(2);
 
 /// A non-root node instance to terminate — the routing identity + process info
-/// needed to stop one instance. Used both by the batched [`teardown_all_instances`]
-/// and, one at a time, by [`force_stop_instance`] (`peppy node stop` / overwrite).
+/// needed to stop one instance. Fed to [`force_stop_instances`] in a batch by
+/// [`teardown_all_instances`] and one at a time by [`force_stop_instance`]
+/// (`peppy node stop` / overwrite).
 struct DoomedInstance {
     node_name: String,
     node_tag: String,
@@ -515,10 +554,9 @@ struct DoomedInstance {
 /// its pid is the daemon itself. This does NOT wait the uncatchable-death grace
 /// period; that timer only governs a daemon that died without running cleanup.
 ///
-/// The single-instance sibling is [`force_stop_instance`], which `peppy node
-/// stop` and the `node add` overwrite path use; this batched form is kept
-/// separate because it shares one grace budget across all instances and sends
-/// every shutdown concurrently, which a per-instance loop would not.
+/// Delegates to [`force_stop_instances`] — the same phases as `peppy node
+/// stop`, batched: one grace budget shared across all instances and every
+/// cooperative shutdown sent concurrently.
 pub async fn teardown_all_instances(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -529,95 +567,20 @@ pub async fn teardown_all_instances(
     if doomed.is_empty() {
         return;
     }
-    // Configurable cooperative-shutdown grace (peppy_config.lifecycle
-    // .shutdown_grace_secs), pinned on the stack at daemon startup.
-    let graceful_budget = node_stack.shutdown_grace();
     debug!(
         "Tearing down {} node instance(s) on daemon shutdown",
         doomed.len()
     );
-
-    // Phase 1 (graceful, bounded): ask every node to shut down cooperatively,
-    // concurrently, then poll until they're all gone or the budget elapses.
-    let _ = tokio::time::timeout(graceful_budget, async {
-        let sends = doomed.iter().map(|d| {
-            send_shutdown_signal(
-                messenger,
-                core_node_name,
-                core_instance_id,
-                &d.node_name,
-                &d.node_tag,
-                &d.instance_id,
-            )
-        });
-        let _ = futures::future::join_all(sends).await;
-        wait_until_all_gone(&doomed).await;
-    })
+    force_stop_instances(
+        messenger,
+        core_node_name,
+        core_instance_id,
+        &doomed,
+        // Configurable cooperative-shutdown grace (peppy_config.lifecycle
+        // .shutdown_grace_secs), pinned on the stack at daemon startup.
+        node_stack.shutdown_grace(),
+    )
     .await;
-
-    // Phase 2 (force): SIGKILL each recorded process group. We deliberately do
-    // not pre-check whether the leader is still alive before killing: a process
-    // group can outlive its leader (the leader exits but a descendant it spawned
-    // keeps running), and the negative-pid kill reaches the whole group (each
-    // node is spawned as a group leader), so descendants die too. An already-dead
-    // group yields ESRCH, which kill_process_group ignores. For container nodes,
-    // also record the instance id so the in-VM group can be killed below (macOS).
-    //
-    // We do take one snapshot here purely to classify which nodes are still
-    // alive (i.e. ignored the cooperative shutdown) so the user is warned that
-    // they were force-killed rather than having exited gracefully.
-    let snapshot = process_snapshot();
-    let mut container_kill_keys: Vec<String> = Vec::new();
-    for d in &doomed {
-        if let Some(pid) = d.pid {
-            if pid_running_in(&snapshot, pid) {
-                warn!(
-                    "Node instance '{}' did not exit within the {}s shutdown grace period; \
-                     force-killing its process group (pid {})",
-                    d.instance_id.as_str(),
-                    graceful_budget.as_secs(),
-                    pid
-                );
-            } else {
-                debug!(
-                    "Node instance '{}' exited gracefully on shutdown",
-                    d.instance_id.as_str()
-                );
-            }
-            kill_process_group(pid);
-            if d.is_container {
-                container_kill_keys.push(d.instance_id.as_str().to_owned());
-            }
-        }
-    }
-
-    // Phase 2b (macOS): for container nodes the host group kill above only reached
-    // the `limactl` client; the workload runs inside the Lima VM. Reach into the
-    // VM and SIGKILL each still-running container's recorded guest process group
-    // (keyed by instance id, matching the `cancel_pgid` set at spawn). Skipped on
-    // Linux, where the host kill already reached the shared-namespace container.
-    // Best-effort: a facade-init failure must not block teardown (the host kill
-    // already ran, and a non-responsive node is backstopped by its in-container
-    // daemon-liveness watchdog). Runs on a blocking thread because the guest kill
-    // shells out to `limactl`.
-    if cfg!(target_os = "macos") && !container_kill_keys.is_empty() {
-        let _ = tokio::task::spawn_blocking(move || match containers::Apptainer::new() {
-            Ok(apptainer) => {
-                for key in &container_kill_keys {
-                    let _ = apptainer.kill_guest_process_group(key);
-                }
-            }
-            Err(e) => {
-                debug!("Skipping in-VM container teardown (apptainer init failed): {e}");
-            }
-        })
-        .await;
-    }
-
-    // Phase 3 (bounded reap): let the killed groups die while the daemon is
-    // still alive so they don't show as zombies; any straggler reparents to
-    // init/launchd and is reaped there.
-    let _ = tokio::time::timeout(TEARDOWN_REAP_BUDGET, wait_until_all_gone(&doomed)).await;
 }
 
 /// Snapshot every non-root instance (both `Running` and `Starting` — a
@@ -647,17 +610,22 @@ fn collect_doomed_instances(node_stack: &Arc<NodeStack>) -> Vec<DoomedInstance> 
     doomed
 }
 
-/// Polls until every instance with a known pid has exited. Builds a single
-/// process snapshot per poll and checks all pids against it, rather than one
-/// snapshot per pid (which would rescan every process on the machine N times a
-/// poll for N instances).
+/// Polls until every instance with a known pid has exited (or become a
+/// zombie). Refreshes only the watched pids each tick rather than rescanning
+/// every process on the machine. Unbounded on its own — callers wrap it in
+/// `tokio::time::timeout` so [`force_stop_instances`] can apply different
+/// graceful and reap budgets to the same primitive.
 async fn wait_until_all_gone(doomed: &[DoomedInstance]) {
+    let pids = doomed_pids(doomed);
+    if pids.is_empty() {
+        return;
+    }
+    let mut system = sysinfo::System::new();
     loop {
-        let system = process_snapshot();
-        if doomed
+        refresh_pids(&mut system, &pids);
+        if pids
             .iter()
-            .filter_map(|d| d.pid)
-            .all(|pid| !pid_running_in(&system, pid))
+            .all(|&pid| !pid_running_in(&system, pid.as_u32()))
         {
             return;
         }
@@ -665,15 +633,13 @@ async fn wait_until_all_gone(doomed: &[DoomedInstance]) {
     }
 }
 
-/// Polls until `pid` has exited (or become a zombie). Unbounded on its own —
-/// callers wrap it in `tokio::time::timeout` to apply a budget, matching how
-/// [`wait_until_all_gone`] is used by [`teardown_all_instances`]. Kept distinct
-/// from a self-bounded poll so `force_stop_instance` can apply different graceful
-/// and reap budgets to the same primitive.
-async fn wait_for_pid_gone(pid: u32) {
-    while is_process_running(pid) {
-        tokio::time::sleep(PROCESS_POLL_INTERVAL).await;
-    }
+/// The known pids of `doomed`, in `sysinfo` form, for [`refresh_pids`].
+fn doomed_pids(doomed: &[DoomedInstance]) -> Vec<sysinfo::Pid> {
+    doomed
+        .iter()
+        .filter_map(|d| d.pid)
+        .map(sysinfo::Pid::from_u32)
+        .collect()
 }
 
 /// SIGKILLs the entire process group led by `pid`. Nodes are spawned as group
@@ -693,26 +659,21 @@ fn kill_process_group(pid: u32) {
 #[cfg(not(unix))]
 fn kill_process_group(_pid: u32) {}
 
-/// Snapshots the machine's processes (existence + status only). Building this is
-/// not free (it rescans every process), so poll loops over many pids should take
-/// one snapshot and reuse it via [`pid_running_in`] rather than calling
-/// [`is_process_running`] per pid.
-fn process_snapshot() -> sysinfo::System {
-    sysinfo::System::new_with_specifics(
-        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
-    )
+/// Refreshes only `pids` in `system` (existence + status), reading just those
+/// `/proc` entries instead of rescanning every process on the machine. Dead
+/// pids are dropped from the set so [`pid_running_in`] reports them gone.
+fn refresh_pids(system: &mut sysinfo::System, pids: &[sysinfo::Pid]) {
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(pids),
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
 }
 
-/// Whether `pid` is present and not a zombie in an already-taken `system`
-/// snapshot.
+/// Whether `pid` is present and not a zombie in an already-refreshed `system`.
 fn pid_running_in(system: &sysinfo::System, pid: u32) -> bool {
     match system.process(sysinfo::Pid::from_u32(pid)) {
         Some(process) => process.status() != sysinfo::ProcessStatus::Zombie,
         None => false,
     }
-}
-
-/// Checks if a process with the given PID is still running.
-fn is_process_running(pid: u32) -> bool {
-    pid_running_in(&process_snapshot(), pid)
 }

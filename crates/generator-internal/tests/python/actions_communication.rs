@@ -164,7 +164,7 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -260,7 +260,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
@@ -498,7 +498,7 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -590,7 +590,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
@@ -814,7 +814,7 @@ async fn actions_communication_async_goal_decider(#[case] mode: crate::helpers::
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -912,7 +912,7 @@ if __name__ == "__main__":
     // awaits it); after accepting, the worker publishes feedback through the
     // `GoalContext` and completes. See the test docstring above.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
@@ -1159,7 +1159,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -1259,7 +1259,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
@@ -1515,7 +1515,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -1625,7 +1625,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
@@ -1891,7 +1891,7 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -1997,7 +1997,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);

@@ -10,7 +10,7 @@ mod stack;
 use clock::{ClockSource, SimClockSource, WallClockSource};
 
 pub use node::FORBIDDEN_ENV_KEYS;
-pub use node::teardown_all_instances;
+pub use node::{TEARDOWN_REAP_BUDGET, teardown_all_instances};
 
 use crate::Result;
 use config::{

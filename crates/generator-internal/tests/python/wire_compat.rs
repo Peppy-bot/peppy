@@ -176,7 +176,7 @@ async fn actions_preserve_result_field_order() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Producer (server) project
-    let temp_dir_producer = TempDir::new().unwrap();
+    let temp_dir_producer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let producer_dir = temp_dir_producer.path().join("user_node");
     fs::create_dir_all(&producer_dir).unwrap();
     write_producer_config_via_round_trip(ACTION_PRODUCER_CONFIG, &producer_dir);
@@ -249,7 +249,7 @@ if __name__ == "__main__":
     fs::write(producer_dir.join("main.py"), producer_main).expect("write producer main.py");
 
     // --- Consumer (client) project
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumer_dir = temp_dir_consumer.path().join("user_node");
     fs::create_dir_all(&consumer_dir).unwrap();
     fs::write(consumer_dir.join(NODE_CONFIG_FILE), ACTION_CONSUMER_CONFIG)
@@ -574,7 +574,7 @@ async fn services_preserve_response_field_order() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Producer (server) project
-    let temp_dir_producer = TempDir::new().unwrap();
+    let temp_dir_producer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let producer_dir = temp_dir_producer.path().join("user_node");
     fs::create_dir_all(&producer_dir).unwrap();
     write_producer_config_via_round_trip(SERVICE_PRODUCER_CONFIG, &producer_dir);
@@ -629,7 +629,7 @@ if __name__ == "__main__":
     fs::write(producer_dir.join("main.py"), producer_main).expect("write producer main.py");
 
     // --- Consumer (client) project
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumer_dir = temp_dir_consumer.path().join("user_node");
     fs::create_dir_all(&consumer_dir).unwrap();
     fs::write(consumer_dir.join(NODE_CONFIG_FILE), SERVICE_CONSUMER_CONFIG)
@@ -925,7 +925,7 @@ async fn topics_preserve_message_field_order() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Producer (emitter) project
-    let temp_dir_producer = TempDir::new().unwrap();
+    let temp_dir_producer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let producer_dir = temp_dir_producer.path().join("user_node");
     fs::create_dir_all(&producer_dir).unwrap();
     write_producer_config_via_round_trip(TOPIC_PRODUCER_CONFIG, &producer_dir);
@@ -978,7 +978,7 @@ if __name__ == "__main__":
     fs::write(producer_dir.join("main.py"), producer_main).expect("write producer main.py");
 
     // --- Consumer (receiver) project
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumer_dir = temp_dir_consumer.path().join("user_node");
     fs::create_dir_all(&consumer_dir).unwrap();
     fs::write(consumer_dir.join(NODE_CONFIG_FILE), TOPIC_CONSUMER_CONFIG)

@@ -100,7 +100,7 @@ async fn services_communication_no_target_instance_id(#[case] mode: crate::helpe
 
     // --- Consumer (client) project
     let consumer_instance_id = "the_consumer";
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_service: ConsumedService =
         serde_json5::from_str(CONSUMED_SERVICE_EXAMPLE).unwrap();
     let consumed_request_format: MessageFormat =
@@ -171,7 +171,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = "the_exposer";
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
@@ -421,7 +421,7 @@ async fn services_communication_exposed_service_without_request_body(
 
     // --- Consumer (client) project
     let consumer_instance_id = "the_consumer";
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_service: ConsumedService =
         serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
     let consumed_request_format: MessageFormat =
@@ -490,7 +490,7 @@ if __name__ == "__main__":
 
     // --- Exposer (server) project
     let exposer_instance_id = "the_exposer";
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let exposed_service: ExposedService =
         serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
@@ -723,7 +723,7 @@ async fn services_communication_multiple_exposed_instances_same_service_no_targe
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_service: ConsumedService =
         serde_json5::from_str(CONSUMED_SERVICE_EXAMPLE).unwrap();
     let consumed_request_format: MessageFormat =
@@ -794,7 +794,7 @@ if __name__ == "__main__":
 
     // --- Exposer 1
     let exposer1_instance_id = "exposer1_instance";
-    let temp_dir_exposer1 = TempDir::new().unwrap();
+    let temp_dir_exposer1 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer1, user_node_exposer1, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer1, STUB_PYTHON_NODE_CONFIG);
@@ -859,7 +859,7 @@ if __name__ == "__main__":
 
     // --- Exposer 2
     let exposer2_instance_id = "exposer2_instance";
-    let temp_dir_exposer2 = TempDir::new().unwrap();
+    let temp_dir_exposer2 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer2, user_node_exposer2, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer2, STUB_PYTHON_NODE_CONFIG);

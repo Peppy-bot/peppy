@@ -1147,7 +1147,7 @@ async fn shutdown_existing_instances(
             node_tag,
             &instance_id,
         )
-        .await?;
+        .await;
 
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,

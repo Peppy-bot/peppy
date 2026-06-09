@@ -38,13 +38,15 @@ async fn listen_for_node_run_success() {
     let started_core_node = start_core_node_with_real_messenger().await;
 
     // Use a pre-built test node to avoid compilation delays during the test
+    // Held for the whole test body; the TempDir guard reclaims the node's
+    // ~2 GB build directory when the test ends.
     let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     // Add the node to the core node's node stack
     let add_response = send_node_add_then_build(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        &node_dir,
+        node_dir.path(),
         Duration::from_secs(30),
         // Longer timeout to account for build_cmd execution and copying the test node folder,
         // which may include build artifacts.
