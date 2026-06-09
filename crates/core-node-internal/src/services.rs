@@ -406,9 +406,7 @@ impl CoreNode {
                         health_monitor_timeout: self.health_monitor_timeout,
                     },
                     use_sim_time: self.daemon_use_sim_time,
-                    messaging_mode: self.peppy_config.mode,
-                    peer_buffer: self.peppy_config.peer,
-                    daemon_grace_secs: self.peppy_config.lifecycle.daemon_grace_secs,
+                    daemon_defaults: node::DaemonDefaults::from_peppy_config(&self.peppy_config),
                 },
             )
             .boxed(),
@@ -485,9 +483,7 @@ impl CoreNode {
                     peppy_dirs: self.peppy_dirs.clone(),
                     health_monitor_interval: self.health_monitor_interval,
                     health_monitor_timeout: self.health_monitor_timeout,
-                    messaging_mode: self.peppy_config.mode,
-                    peer_buffer: self.peppy_config.peer,
-                    daemon_grace_secs: self.peppy_config.lifecycle.daemon_grace_secs,
+                    daemon_defaults: node::DaemonDefaults::from_peppy_config(&self.peppy_config),
                 },
             )
             .boxed(),

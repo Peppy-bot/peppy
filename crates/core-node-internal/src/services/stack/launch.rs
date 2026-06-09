@@ -4,14 +4,13 @@ use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_ac
 use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use crate::services::node::{
-    FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
+    DaemonDefaults, FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
     NodeRunActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
     run_node_add, run_node_build_for_entity, run_node_run, write_error_to_log,
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
 use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
-use config::peppy_config::{Mode, PeerConfig};
 use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
@@ -80,12 +79,9 @@ pub struct StackLaunchTimeouts {
 pub struct StackLaunchDefaults {
     pub timeouts: StackLaunchTimeouts,
     pub use_sim_time: bool,
-    /// Daemon-global messaging mode, injected into every launched node.
-    pub messaging_mode: Mode,
-    /// Daemon-global peer buffer sizes, injected into every launched node.
-    pub peer_buffer: PeerConfig,
-    /// Daemon-liveness grace period (seconds), injected into every launched node.
-    pub daemon_grace_secs: u64,
+    /// Daemon-resolved defaults (messaging mode, peer buffers, liveness grace)
+    /// injected into every launched node.
+    pub daemon_defaults: DaemonDefaults,
 }
 
 pub async fn listen_for_stack_launch(
@@ -110,9 +106,7 @@ pub async fn listen_for_stack_launch(
     let StackLaunchDefaults {
         timeouts,
         use_sim_time: daemon_use_sim_time,
-        messaging_mode,
-        peer_buffer,
-        daemon_grace_secs,
+        daemon_defaults,
     } = defaults;
     let handler = LaunchGoalHandler {
         context: LaunchActionContext {
@@ -123,9 +117,7 @@ pub async fn listen_for_stack_launch(
             peppy_dirs,
             timeouts,
             daemon_use_sim_time,
-            messaging_mode,
-            peer_buffer,
-            daemon_grace_secs,
+            daemon_defaults,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -174,12 +166,9 @@ struct ProcessLaunchContext {
     /// Daemon-wide default for `framework.use_sim_time` applied to instances
     /// that omit the per-instance override.
     daemon_use_sim_time: bool,
-    /// Daemon-global messaging mode, injected into every launched node.
-    messaging_mode: Mode,
-    /// Daemon-global peer buffer sizes, injected into every launched node.
-    peer_buffer: PeerConfig,
-    /// Daemon-liveness grace period (seconds), injected into every launched node.
-    daemon_grace_secs: u64,
+    /// Daemon-resolved defaults (messaging mode, peer buffers, liveness grace)
+    /// injected into every launched node.
+    daemon_defaults: DaemonDefaults,
 }
 
 #[derive(Clone)]
@@ -191,9 +180,7 @@ struct LaunchActionContext {
     peppy_dirs: PeppyDirs,
     timeouts: StackLaunchTimeouts,
     daemon_use_sim_time: bool,
-    messaging_mode: Mode,
-    peer_buffer: PeerConfig,
-    daemon_grace_secs: u64,
+    daemon_defaults: DaemonDefaults,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -707,9 +694,7 @@ async fn start_node_directly(
         peppy_dirs: ctx.peppy_dirs.clone(),
         health_monitor_interval: ctx.timeouts.health_monitor_interval,
         health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
-        messaging_mode: ctx.messaging_mode,
-        peer_buffer: ctx.peer_buffer,
-        daemon_grace_secs: ctx.daemon_grace_secs,
+        daemon_defaults: ctx.daemon_defaults,
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -1556,9 +1541,7 @@ async fn handle_goal_request(
             peppy_dirs,
             timeouts,
             daemon_use_sim_time,
-            messaging_mode,
-            peer_buffer,
-            daemon_grace_secs,
+            daemon_defaults,
         } = action_context;
         let env_vars = goal.env_vars.clone();
         // Compute the launch deadline once. `None` => no overall deadline (idle-only).
@@ -1583,9 +1566,7 @@ async fn handle_goal_request(
                 run: Duration::from_secs(goal.node_run_idle_timeout_secs),
             },
             daemon_use_sim_time,
-            messaging_mode,
-            peer_buffer,
-            daemon_grace_secs,
+            daemon_defaults,
         };
         // Catch panics so a panic inside the launch sequence still completes the
         // goal with a failure result, rather than leaving the client to wait out

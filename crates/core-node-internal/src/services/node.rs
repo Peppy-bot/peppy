@@ -27,7 +27,7 @@ pub use builder::listen_for_node_build;
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
 pub use remove::listen_for_node_remove;
-pub use run::{NodeRunServiceConfig, listen_for_node_run};
+pub use run::{DaemonDefaults, NodeRunServiceConfig, listen_for_node_run};
 pub use stop::{TEARDOWN_REAP_BUDGET, listen_for_node_stop, teardown_all_instances};
 pub use sync::listen_for_node_sync;
 
