@@ -98,11 +98,13 @@ The node stack can be visualized in multiple formats:
 
 ## The Core Node
 
-The **Core Node** is a special node that serves as the root of the node stack and is always present. It is responsible for:
+The **Core Node** is a special node that serves as the root of the node stack and is always present. It is the daemon (`peppy service serve`) that the `peppy` CLI talks to. It is responsible for:
 
 - **Dependency Creation**: When a node consumes an interface, the core node creates a dependency on the node that exposes that interface
-- **Stack Management**: Managing the lifecycle of all other nodes in the system
+- **Stack Management**: Managing the lifecycle of all other nodes in the system: spawning them, probing their health, and tearing them down so none is left orphaned when the daemon stops or dies
 - **System Coordination**: Acting as the central coordinator for the local PeppyOS runtime
+
+When the core node shuts down cleanly it stops every spawned node (cooperatively, then force-killing any straggler's process group); if it dies unexpectedly, each node's watchdog notices the missing heartbeat and shuts the node down after a grace period. See [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention) for details.
 
 Each PeppyOS runtime has exactly one core node that manages its local DAG of nodes. 
 In a distributed deployment, multiple runtimes (each with their own core node) can run on separate machines. 

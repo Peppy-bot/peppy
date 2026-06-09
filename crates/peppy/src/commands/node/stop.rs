@@ -1,7 +1,7 @@
 use core_node_api::encoding::NodeStopRequest;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
@@ -46,6 +46,16 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
         ));
     }
 
-    info!("Stopped node instance '{}'", instance_id);
+    // The node was stopped either way; warn the user when it had to be
+    // force-killed (it ignored the cooperative shutdown within the grace
+    // period) so it is not mistaken for a clean graceful exit.
+    if stop_response.force_killed {
+        warn!(
+            "Node instance '{}' did not shut down gracefully within the grace period and was force-killed",
+            instance_id
+        );
+    } else {
+        info!("Stopped node instance '{}'", instance_id);
+    }
     Ok(())
 }

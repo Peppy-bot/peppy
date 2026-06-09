@@ -1299,11 +1299,26 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         );
     }
 }
-/// When a running node instance does not respond to SHUTDOWN_SERVICE (e.g. the process is frozen),
-/// `shutdown_existing_instances` times out and the add must fail with a descriptive error.
-/// The instance and stack must remain untouched.
+/// True if `pid` exists and is not a zombie (sysinfo; matches the daemon's own
+/// `is_process_running` definition). Used to prove a force-killed instance is
+/// gone rather than orphaned.
+fn pid_alive(pid: u32) -> bool {
+    let system = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+    );
+    match system.process(sysinfo::Pid::from_u32(pid)) {
+        Some(p) => p.status() != sysinfo::ProcessStatus::Zombie,
+        None => false,
+    }
+}
+
+/// When a running node instance does not respond to SHUTDOWN_SERVICE (e.g. the
+/// process is frozen), the overwrite path must behave like the SIGINT teardown:
+/// after the cooperative shutdown times out, `stop_instance` force-kills the
+/// instance's process group, waits for it to die, and the add proceeds. The
+/// stuck instance must be removed (not orphaned) and the dependent preserved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stopped_node_stuck() {
+async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stuck_node() {
     use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger};
     use std::sync::Arc;
     use tokio::sync::Notify;
@@ -1401,13 +1416,14 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
     // the production shutdown path observes a stuck process that never
     // responds or terminates.
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
-    let _running = spawn_real_stuck_instance(
+    let running = spawn_real_stuck_instance(
         &started_core_node,
         DEPENDENCY_NODE_NAME,
         DEPENDENCY_NODE_TAG,
         &instance_id,
     )
     .await;
+    let stuck_pid = running.pid;
 
     // Register a SHUTDOWN_SERVICE handler that blocks forever — simulates a frozen/unresponsive node.
     // `notify_one` is never called, so the handler never returns, causing the poll to time out.
@@ -1449,7 +1465,9 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
     )
     .await;
 
-    // Re-add with the same interface. The shutdown poll will time out after SHUTDOWN_TIMEOUT (5 s).
+    // Re-add with the same interface. The cooperative shutdown poll will time
+    // out against the forever-blocking handler; the overwrite path must then
+    // force-kill the stuck instance's process group and proceed.
     write_peppy_json5(dependency_source_dir_v2.path(), &dependency_peppy_json5);
     let add_v2 = send_node_add_and_wait(
         &started_core_node.caller_handle,
@@ -1462,28 +1480,38 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
     .await
     .expect("node_add request should complete");
 
+    // The cooperative shutdown can NEVER succeed here (the handler blocks
+    // forever and no listener kills the process), so a successful overwrite is
+    // proof the stuck instance was force-killed.
     assert!(
-        !add_v2.success,
-        "node_add should fail when the instance does not respond to shutdown"
-    );
-    assert!(
-        add_v2
-            .error_message
-            .as_deref()
-            .map(|msg| msg.contains("failed to shutdown node instance"))
-            .unwrap_or(false),
-        "error should describe the shutdown failure: {:?}",
+        add_v2.success,
+        "node_add should force-kill the stuck instance and succeed: {:?}",
         add_v2.error_message
     );
 
-    // The instance was never removed — shutdown did not complete
+    // The stuck instance must be removed (force-killed, not orphaned).
     assert_eq!(
         entity_instance_count(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG),
-        1,
-        "running instance should still be present when shutdown timed out"
+        0,
+        "stuck instance should be removed after force-kill"
     );
     assert!(
         node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still be in the stack"
+    );
+
+    // The real process must be gone — no orphan. Poll: the reap is bounded and
+    // best-effort, so the OS may finish teardown a beat after the add returns.
+    let mut gone = false;
+    for _ in 0..100 {
+        if !pid_alive(stuck_pid) {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        gone,
+        "stuck instance process {stuck_pid} should be force-killed, not orphaned"
     );
 }

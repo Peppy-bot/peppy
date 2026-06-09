@@ -1766,9 +1766,9 @@ fn make_real_output_sinks(
 /// the node config's run_cmd is spawnable in the test environment (the
 /// listener tests use `["sleep", "10"]`). Also installs a `listen_for_shutdown`
 /// task on the messenger that SIGKILLs the entity-tracked pid when the
-/// production stop/remove flow sends a shutdown signal. This lets production
-/// code paths that wait on `wait_for_process_termination` observe the child
-/// as terminated rather than timing out against a stubborn `sleep 10`.
+/// production stop/remove flow sends a shutdown signal. This lets the
+/// production stop path observe the child as cooperatively terminated within
+/// its graceful window rather than having to force-kill a stubborn `sleep 10`.
 /// Returns a guard that SIGTERMs the child on drop.
 pub async fn spawn_real_running_instance(
     started: &StartedCoreNode,
@@ -1828,10 +1828,9 @@ async fn spawn_real_running_instance_inner(
 
     // Optionally install a messenger-side shutdown listener that kills the
     // child when the production stop/remove flow fires a SHUTDOWN_SERVICE
-    // signal. This replaces the old behavior where tests set fake pids so
-    // the production `wait_for_process_termination` quickly observed "no
-    // such pid". Tests that want the production shutdown path to observe
-    // a stuck process use `spawn_real_stuck_instance` which skips this.
+    // signal, so the cooperative phase succeeds within its graceful window.
+    // Tests that want the production stop path to fall through to force-kill
+    // (a stuck process) use `spawn_real_stuck_instance`, which skips this.
     let shutdown_listener = if install_shutdown_listener {
         let shutdown_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
         let (shutdown_task, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(

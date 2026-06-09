@@ -2,7 +2,8 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, build_staged_node, send_node_add_and_wait,
-    spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
+    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    write_peppy_json5,
 };
 use config::node::Name;
 use core_node_api::encoding::NodeStopRequest;
@@ -10,19 +11,45 @@ use peppylib::core_node::transport::poll_node_stop;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Checks if a process with the given PID is still running.
+/// True if a process exists and is not a zombie — matches the daemon's own
+/// `is_process_running` definition (sysinfo, status != Zombie), so the test
+/// agrees with what `node_stop`/teardown consider "gone". A libc `kill(pid, 0)`
+/// check would report a reaped-but-unwaited zombie as still running.
 fn is_process_running(pid: u32) -> bool {
-    // SAFETY: kill(pid, 0) is safe - it doesn't send any signal,
-    // just checks if the process exists and we have permission to signal it.
-    let result = unsafe { libc::kill(pid as i32, 0) };
-    if result == 0 {
-        true
-    } else {
-        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        errno != libc::ESRCH
+    let system = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+    );
+    match system.process(sysinfo::Pid::from_u32(pid)) {
+        Some(process) => process.status() != sysinfo::ProcessStatus::Zombie,
+        None => false,
     }
+}
+
+/// PIDs of live children of `parent_pid`, via sysinfo's parent links.
+fn children_of(parent_pid: u32) -> Vec<u32> {
+    let system = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::everything()),
+    );
+    let parent = sysinfo::Pid::from_u32(parent_pid);
+    system
+        .processes()
+        .values()
+        .filter(|p| p.parent() == Some(parent))
+        .map(|p| p.pid().as_u32())
+        .collect()
+}
+
+fn poll_until(deadline: Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < deadline {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    cond()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -140,6 +167,12 @@ async fn listen_for_node_stop_success() {
         "success response should not include error_message, got: {:?}",
         response.error_message
     );
+    // The node honored the cooperative shutdown, so it must NOT be reported as
+    // force-killed.
+    assert!(
+        !response.force_killed,
+        "a cooperatively-stopped node should not be reported as force-killed"
+    );
 
     // Verify the process has been killed
     assert!(
@@ -187,5 +220,141 @@ async fn listen_for_node_stop_fails_when_instance_id_not_found() {
         error_message.contains(MISSING_INSTANCE_ID),
         "error should include missing instance id, got: {}",
         error_message
+    );
+}
+
+/// `node_stop` must behave like the daemon's SIGINT teardown: a node that
+/// ignores the cooperative `SHUTDOWN_SERVICE` is force-killed by process group,
+/// and the call returns success only once the whole group is gone — no orphan.
+///
+/// The node forks two grandchildren and waits; all three share the node's
+/// process group (nodes are spawned as group leaders). The instance is spawned
+/// "stuck" (no shutdown listener installed), so the cooperative phase times out
+/// and `node_stop`'s force phase must SIGKILL the whole group. Mirrors
+/// `teardown_all_instances.rs::teardown_force_kills_whole_process_group`, but
+/// drives it through the real `node_stop` service via `poll_node_stop`. Before
+/// the force-kill fix this returned a failure and left the process alive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_stop_force_kills_whole_process_group() {
+    const NODE_NAME: &str = "stuck_stop_node";
+    const NODE_TAG: &str = "v1";
+    const INSTANCE_ID: &str = "stuck_stop_instance";
+
+    let started = start_core_node_with_mock_messenger().await;
+    // Shares the same inner graph as the live core node's stack, so the spawned
+    // instance is visible to the node_stop handler and we can assert removal.
+    let node_stack = started.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("temp source dir");
+    // The node forks two grandchildren and waits; all three share the node's
+    // process group (the node is spawned as group leader).
+    let peppy_json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: { name: "{NAME}", tag: "{TAG}" },
+            execution: {
+                language: "rust",
+                run_cmd: ["sh", "-c", "sleep 1000 & sleep 1000 & wait"]
+            }
+        }"#
+    .replace("{NAME}", NODE_NAME)
+    .replace("{TAG}", NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+    assert!(add_response.success, "node_add failed: {add_response:?}");
+    build_staged_node(&started, NODE_NAME, NODE_TAG).await;
+
+    let instance_id = Name::new(INSTANCE_ID).expect("valid instance id");
+    // "stuck": installs NO shutdown listener, so the node never answers
+    // SHUTDOWN_SERVICE and node_stop must force-kill it.
+    let running = spawn_real_stuck_instance(&started, NODE_NAME, NODE_TAG, &instance_id).await;
+    let node_pid = running.pid;
+    // Drop the guard's stop-on-drop so only node_stop (the SUT) kills it.
+    std::mem::forget(running);
+
+    // Wait for the two grandchildren to appear, then snapshot their pids.
+    assert!(
+        poll_until(Duration::from_secs(5), || children_of(node_pid).len() >= 2),
+        "expected the node to fork two grandchildren"
+    );
+    let grandchildren = children_of(node_pid);
+    assert!(
+        is_process_running(node_pid),
+        "node process {node_pid} should be running before stop"
+    );
+    for &gc in &grandchildren {
+        assert!(
+            is_process_running(gc),
+            "grandchild {gc} should be running before stop"
+        );
+    }
+
+    // System under test: cooperative phase times out (stuck node), then the
+    // force phase SIGKILLs the whole group. The timeout must exceed the
+    // handler's graceful (3s) + reap (2s) budget plus messaging round-trips.
+    let response = poll_node_stop(
+        &NodeStopRequest::new(INSTANCE_ID),
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        common::core_node_target(&started.core_node_name),
+        &started.core_node_name,
+        Duration::from_secs(20),
+    )
+    .await
+    .expect("node_stop request should complete");
+
+    // New behavior: a stuck node is force-killed and reported as success
+    // (it used to fail with "did not terminate within timeout").
+    assert!(
+        response.success,
+        "node_stop must force-kill a stuck node and succeed, got error: {:?}",
+        response.error_message
+    );
+    assert!(
+        response.error_message.is_none(),
+        "success response should not include error_message, got: {:?}",
+        response.error_message
+    );
+    // The user must be told this was a force-kill, not a graceful exit.
+    assert!(
+        response.force_killed,
+        "a stuck node that ignored shutdown should be reported as force-killed"
+    );
+
+    // No orphans: the node and every grandchild must be gone. Poll rather than
+    // assert synchronously — the reap is best-effort under a bounded timeout, so
+    // success may be reported a beat before the kernel finishes the teardown.
+    assert!(
+        poll_until(Duration::from_secs(5), || !is_process_running(node_pid)),
+        "node process {node_pid} should be gone after node_stop"
+    );
+    for &gc in &grandchildren {
+        assert!(
+            poll_until(Duration::from_secs(5), || !is_process_running(gc)),
+            "grandchild {gc} should be gone after node_stop (group kill)"
+        );
+    }
+
+    // The instance must be removed from the registry (find_by_instance_id
+    // returns Some only for Running instances).
+    assert!(
+        node_stack.find_by_instance_id(&instance_id).is_none(),
+        "instance should be removed from the node stack after a successful stop"
+    );
+
+    // The core (root) node — i.e. this test process — must be untouched.
+    assert!(
+        is_process_running(std::process::id()),
+        "node_stop must never kill the root/core node (the daemon itself)"
     );
 }

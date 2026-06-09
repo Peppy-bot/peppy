@@ -231,6 +231,9 @@ struct NodeStopResponse {
     success @0 :Bool;
     # Error message if failed (optional)
     errorMessage @1 :Text;
+    # Whether the node had to be force-killed (it did not exit within the
+    # cooperative shutdown grace period). False when it exited gracefully.
+    forceKilled @2 :Bool;
 }
 
 # Node Remove service

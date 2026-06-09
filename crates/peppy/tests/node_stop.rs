@@ -208,6 +208,35 @@ async fn node_stop_command_succeeds() {
             .collect::<Vec<_>>()
     );
 
+    // Model a node that actually stops when asked: capture the run pid (logged
+    // by the run command) and SIGKILL the process when the cooperative shutdown
+    // signal arrives. node_stop then observes the process exit within the grace
+    // period — a genuine graceful stop, not a force-kill. (The overridden
+    // `run_cmd` is a bare `sleep`, which would otherwise ignore the signal and
+    // be force-killed once the grace period elapsed.)
+    let node_pid = {
+        let logs = log_capture.logs();
+        let marker = format!("Started node instance '{instance_id}' (pid: ");
+        let start = logs
+            .find(&marker)
+            .expect("run logs should record the started pid")
+            + marker.len();
+        let rest = &logs[start..];
+        let end = rest.find(')').expect("pid log line should end with ')'");
+        rest[..end]
+            .trim()
+            .parse::<u32>()
+            .expect("logged pid should parse")
+    };
+    let kill_task = tokio::spawn(async move {
+        if node_shutdown_rx.await.is_ok() {
+            let _ = std::process::Command::new("kill")
+                .arg("-KILL")
+                .arg(node_pid.to_string())
+                .status();
+        }
+    });
+
     // Stop the running instance
     NodeCommand {
         command: NodeCommands::Stop {
@@ -217,11 +246,13 @@ async fn node_stop_command_succeeds() {
     .execute(&node_ctx)
     .expect("node stop command should succeed");
 
-    // Verify the node received the shutdown request
-    tokio::time::timeout(Duration::from_secs(2), node_shutdown_rx)
+    // The kill task fires only when the cooperative shutdown signal arrives and
+    // then terminates the node; awaiting it confirms both the signal delivery
+    // and that the node was stopped.
+    tokio::time::timeout(Duration::from_secs(5), kill_task)
         .await
-        .expect("shutdown request should arrive")
-        .expect("shutdown signal should be delivered");
+        .expect("shutdown should arrive and the node be killed within timeout")
+        .expect("kill task should not panic");
 
     // Verify the node now has 0 instances again
     let response = poll_stack_list(
