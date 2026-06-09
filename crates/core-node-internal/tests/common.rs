@@ -475,6 +475,20 @@ async fn send_node_run_goal(
 
     let goal_response = NodeRunGoalResponse::decode(&action_handle.goal_response().payload())
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
+
+    // A rejected goal never streams feedback or produces a result, so callers
+    // must not proceed to drain — they would just burn the full result budget
+    // and surface a generic timeout instead of the actual rejection reason.
+    if !goal_response.accepted {
+        return Err(format!(
+            "node_run goal rejected: {}",
+            goal_response
+                .rejection_reason
+                .as_deref()
+                .unwrap_or("rejected without reason")
+        ));
+    }
+
     Ok((action_handle, goal_response))
 }
 
