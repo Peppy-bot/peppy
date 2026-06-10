@@ -250,11 +250,27 @@ fn poll_until(timeout: std::time::Duration, mut cond: impl FnMut() -> bool) -> b
 
 /// `true` if any process inside the Lima guest matches `marker` (full-command
 /// `pgrep -f`). `pgrep` exits 0 when at least one process matches, 1 otherwise.
+/// Panics when the `pgrep` invocation itself cannot run, so a broken guest
+/// channel fails the test immediately instead of reading as "not found".
 #[cfg(target_os = "macos")]
 fn guest_has_process(facade: &Apptainer, marker: &str) -> bool {
-    match facade.guest_command(&["pgrep", "-f", marker]) {
-        Ok(out) => out.status.success(),
-        Err(_) => false,
+    facade
+        .guest_command(&["pgrep", "-f", marker])
+        .expect("guest_command (pgrep) should run")
+        .status
+        .success()
+}
+
+/// Kills and reaps the wrapped child on drop so a failing assertion never
+/// leaks the spawned host process.
+#[cfg(target_os = "macos")]
+struct ChildGuard(std::process::Child);
+
+#[cfg(target_os = "macos")]
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -305,7 +321,9 @@ fn cancel_pgid_run_is_killable_in_guest() {
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
-    let mut child = cmd.spawn().expect("run command should spawn");
+    // Guarded so the host `limactl shell` child is reaped even if an assertion
+    // below panics.
+    let _child = ChildGuard(cmd.spawn().expect("run command should spawn"));
 
     // The in-VM workload should come up (first run may pull layers/start slowly).
     assert!(
@@ -330,9 +348,4 @@ fn cancel_pgid_run_is_killable_in_guest() {
         )),
         "kill_guest_process_group must SIGKILL the in-VM workload immediately"
     );
-
-    // Cleanup: the host `limactl shell` child's remote command has exited now
-    // that its guest group is dead; reap the handle so it doesn't linger.
-    let _ = child.kill();
-    let _ = child.wait();
 }

@@ -31,6 +31,10 @@ pub struct CommandOutput {
 /// Each output line is forwarded as `cargo:warning=[{label}] {line}` so the
 /// user sees real-time progress during long-running build script operations.
 /// The full captured stdout and stderr are returned for post-hoc error reporting.
+///
+/// Any stdout/stderr configuration already set on `command` is overridden
+/// with `Stdio::piped()`; stdin is left inherited — pass
+/// `.stdin(Stdio::null())` for tools that might prompt for input.
 pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutput {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -100,6 +104,10 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
 /// reachable over SSH) that must never hang a build. Both pipes are drained on
 /// background threads so the child can never block on a full pipe buffer while
 /// we poll for exit.
+///
+/// Any stdout/stderr configuration already set on `command` is overridden
+/// with `Stdio::piped()`; stdin is left inherited (a stdin-blocked child is
+/// still killed at the deadline).
 pub fn run_command_with_timeout(command: &mut Command, timeout: Duration) -> CommandOutput {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -171,6 +179,31 @@ pub fn run_command_with_timeout(command: &mut Command, timeout: Duration) -> Com
 mod tests {
     use super::*;
 
+    /// An absolute path that is guaranteed not to exist, for spawn-failure tests.
+    /// Absolute so the result does not depend on `PATH` contents.
+    fn missing_binary(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        dir.path().join("no-such-bin")
+    }
+
+    #[test]
+    fn run_command_reports_success() {
+        assert!(run_command(&mut Command::new("true"), "run true"));
+    }
+
+    #[test]
+    fn run_command_reports_failure() {
+        assert!(!run_command(&mut Command::new("false"), "run false"));
+    }
+
+    #[test]
+    fn run_command_reports_spawn_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert!(!run_command(
+            &mut Command::new(missing_binary(&dir)),
+            "run missing binary"
+        ));
+    }
+
     #[test]
     fn streaming_captures_stdout() {
         let output = run_command_streaming(Command::new("echo").arg("hello world"), "test-echo");
@@ -192,6 +225,14 @@ mod tests {
     fn streaming_reports_failure() {
         let output = run_command_streaming(&mut Command::new("false"), "test-fail");
         assert!(!output.success);
+    }
+
+    #[test]
+    fn streaming_reports_spawn_failure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let output = run_command_streaming(&mut Command::new(missing_binary(&dir)), "test-spawn");
+        assert!(!output.success);
+        assert!(!output.stderr.is_empty());
     }
 
     #[test]
@@ -227,12 +268,23 @@ mod tests {
 
     #[test]
     fn timeout_runner_kills_command_that_exceeds_timeout() {
-        let start = Instant::now();
+        // The "timed out" message is emitted only on the kill branch, so it
+        // deterministically proves the child was killed rather than waited
+        // out. The 10s sleep bounds the damage if that branch regresses.
         let output =
             run_command_with_timeout(Command::new("sleep").arg("10"), Duration::from_millis(200));
         assert!(!output.success);
-        // The child must be killed rather than waited out for the full 10s.
-        assert!(start.elapsed() < Duration::from_secs(3));
         assert!(output.stderr.contains("timed out"));
+    }
+
+    #[test]
+    fn timeout_runner_reports_spawn_failure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let output = run_command_with_timeout(
+            &mut Command::new(missing_binary(&dir)),
+            Duration::from_secs(5),
+        );
+        assert!(!output.success);
+        assert!(!output.stderr.is_empty());
     }
 }

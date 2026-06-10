@@ -3,6 +3,8 @@
 //! Functionality is grouped into focused submodules and re-exported flat so
 //! build scripts can keep calling `build_helpers::<fn>`.
 
+#![forbid(unsafe_code)]
+
 mod cargo;
 mod command;
 mod download;

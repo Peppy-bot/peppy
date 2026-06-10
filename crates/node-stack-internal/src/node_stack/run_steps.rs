@@ -382,10 +382,10 @@ pub(super) async fn build_container_command(
         }
         apptainer_cmd = apptainer_cmd.env(key, value);
     }
-    apptainer_cmd = apptainer_cmd.env(
-        RUNTIME_CONFIG_VAR_NAME,
-        runtime_config_path.to_str().unwrap_or_default(),
-    );
+    let runtime_config_str = runtime_config_path
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("runtime config path is not valid UTF-8"))?;
+    apptainer_cmd = apptainer_cmd.env(RUNTIME_CONFIG_VAR_NAME, runtime_config_str);
 
     // Add all bind mounts (runtime config + user-specified).
     // Device passthrough mounts (src under /dev/ with no dest or same dest)
