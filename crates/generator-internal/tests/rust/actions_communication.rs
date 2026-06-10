@@ -128,7 +128,8 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -228,7 +229,8 @@ fn main() -> Result<()> {
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
@@ -459,7 +461,8 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -551,7 +554,8 @@ fn main() -> Result<()> {
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
@@ -797,7 +801,8 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -910,7 +915,8 @@ fn main() -> Result<()> {
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
@@ -1181,7 +1187,8 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -1289,7 +1296,8 @@ fn main() -> Result<()> {
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
@@ -1549,7 +1557,8 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -1669,7 +1678,8 @@ fn main() -> Result<()> {
     // so codegen must NOT publish the end-of-stream sentinel; subsequent
     // publish_feedback calls must continue to reach the client.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);

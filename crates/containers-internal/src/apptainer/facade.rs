@@ -3,6 +3,7 @@ use super::lima;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Serializes Lima VM initialization to prevent concurrent boot/sync races.
 ///
@@ -519,16 +520,39 @@ impl Apptainer {
     /// instance) and
     /// [`kill_guest_process_groups_best_effort`](Self::kill_guest_process_groups_best_effort)
     /// (no facade).
+    ///
+    /// Bounded: `limactl shell` reaches into the VM over SSH, which can hang
+    /// on a wedged VM, and this runs on stop/teardown paths that must not
+    /// block. On deadline expiry the `limactl` child is killed and a
+    /// timeout-specific error returned.
     fn kill_guest_pgid(limactl_path: &Path, lima_home: &Path, key: &str) -> Result<()> {
+        /// Generous upper bound for one in-VM `kill` round trip over `limactl shell`.
+        const KILL_GUEST_PGID_TIMEOUT: Duration = Duration::from_secs(10);
+
         let guest_pgid = lima::guest_pgid_path(key);
-        let status = Command::new(limactl_path)
+        let mut child = Command::new(limactl_path)
             .env("LIMA_HOME", lima_home)
             .arg("shell")
             .arg(lima::LIMA_INSTANCE)
             .arg("--")
             .args(lima::lima_kill_pgid_argv(&guest_pgid))
-            .status()
+            .spawn()
             .map_err(Error::from)?;
+        let deadline = Instant::now() + KILL_GUEST_PGID_TIMEOUT;
+        let status = loop {
+            if let Some(status) = child.try_wait().map_err(Error::from)? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::LimaInstanceError(format!(
+                    "timed out after {KILL_GUEST_PGID_TIMEOUT:?} killing guest process group (pgid file {})",
+                    guest_pgid.display()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
         if !status.success() {
             return Err(Error::LimaInstanceError(format!(
                 "failed to kill guest process group (pgid file {}): limactl exited with {}",

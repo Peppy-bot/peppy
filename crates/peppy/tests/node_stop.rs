@@ -229,12 +229,13 @@ async fn node_stop_command_succeeds() {
             .expect("logged pid should parse")
     };
     let kill_task = tokio::spawn(async move {
-        if node_shutdown_rx.await.is_ok() {
-            let _ = std::process::Command::new("kill")
-                .arg("-KILL")
-                .arg(node_pid.to_string())
-                .status();
-        }
+        node_shutdown_rx
+            .await
+            .expect("cooperative shutdown signal should be delivered to the node");
+        let _ = std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(node_pid.to_string())
+            .status();
     });
 
     // Stop the running instance

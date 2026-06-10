@@ -32,8 +32,9 @@ async fn daemon_publishes_liveness_heartbeats() {
     .await
     .expect("daemon_heartbeat subscription should succeed");
 
-    // The default test heartbeat interval is 5s; allow generous slack for two
-    // beats so this is not timing-fragile.
+    // The shared test heartbeat interval is 200ms (see default_node_arguments
+    // in common.rs; production uses 5s), so 20s gives ample slack for two
+    // beats even on slow CI machines.
     let beat_timeout = Duration::from_secs(20);
     for n in 0..2 {
         let message = tokio::time::timeout(beat_timeout, subscription.on_next_message())
