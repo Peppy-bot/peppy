@@ -270,7 +270,7 @@ fn datastore_get<'py>(
     let timeout = response_timeout_secs
         .map(|s| duration_from_secs_f64("response_timeout_secs", s))
         .transpose()?;
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    crate::py_future::future_into_py(py, async move {
         let value = peppylib::datastore::get(&runner, key, timeout)
             .await
             .map_err(to_py_err)?;
@@ -294,7 +294,7 @@ fn datastore_list<'py>(
     let timeout = response_timeout_secs
         .map(|s| duration_from_secs_f64("response_timeout_secs", s))
         .transpose()?;
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    crate::py_future::future_into_py(py, async move {
         let entries = peppylib::datastore::list(&runner, timeout)
             .await
             .map_err(to_py_err)?;
@@ -321,7 +321,7 @@ fn datastore_remove<'py>(
     let timeout = response_timeout_secs
         .map(|s| duration_from_secs_f64("response_timeout_secs", s))
         .transpose()?;
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    crate::py_future::future_into_py(py, async move {
         let removed = peppylib::datastore::remove(&runner, key, timeout)
             .await
             .map_err(to_py_err)?;

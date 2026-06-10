@@ -1,6 +1,7 @@
 mod builder;
 mod core_node;
 mod messaging_router;
+mod shutdown_signal;
 
 pub mod install;
 pub mod reset;

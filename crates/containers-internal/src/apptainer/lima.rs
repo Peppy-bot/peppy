@@ -6,22 +6,24 @@ pub(crate) const LIMA_INSTANCE: &str = env!("LIMA_INSTANCE");
 pub(crate) const LIMA_TEMPLATE: &str = env!("LIMA_TEMPLATE");
 pub(crate) const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 1, 0);
 
-/// Guest-native directory for build PGID files. Lives under `/tmp/peppy` on the
+/// Guest-native directory for guest PGID files. Lives under `/tmp/peppy` on the
 /// guest's own tmpfs (alongside the synced apptainer install), never the
 /// virtiofs host-home mount, so the wrapper's pgid write cannot lose a
 /// mount-visibility race the way a path under `$HOME` can.
 pub(crate) const GUEST_PGID_DIR: &str = "/tmp/peppy/pgids";
 
-/// Guest-native path of a build's PGID file, keyed by a unique, filesystem-safe
-/// build key (the working-dir basename). The build wrapper and the kill script
-/// both derive the path from this one helper so they can never disagree.
-pub(crate) fn guest_pgid_path(build_key: &str) -> PathBuf {
-    PathBuf::from(GUEST_PGID_DIR).join(format!("{build_key}.pgid"))
+/// Guest-native path of a guest PGID file, keyed by a unique, filesystem-safe
+/// key (the working-dir basename for a build, the instance id for a run). The
+/// guest wrapper and the kill script both derive the path from this one helper
+/// so they can never disagree.
+pub(crate) fn guest_pgid_path(key: &str) -> PathBuf {
+    PathBuf::from(GUEST_PGID_DIR).join(format!("{key}.pgid"))
 }
 
 /// Builds the guest-side argv (after the `limactl shell ... --` separator) that
-/// runs an `apptainer build` as its own session/process-group leader and records
-/// its PGID to `pgid_file` (a guest-native path from [`guest_pgid_path`]).
+/// runs a guest `apptainer` command (build or run) as its own session/process-group
+/// leader and records its PGID to `pgid_file` (a guest-native path from
+/// [`guest_pgid_path`]).
 ///
 /// `setsid -w` makes `sh` the session+group leader (so its PGID equals its PID)
 /// and waits for it, forwarding stdout/stderr and the exit status unchanged. The
@@ -30,11 +32,11 @@ pub(crate) fn guest_pgid_path(build_key: &str) -> PathBuf {
 /// they are never re-tokenized and need no shell escaping. The script `mkdir -p`s
 /// the guest-native pgid dir (derived from `$1`) so the write does not race the
 /// virtiofs host mount, records `$$` to `$1`, then runs apptainer as a child of
-/// the same group (not via `exec`) so apptainer's `%post` children inherit the
-/// group and `sh` survives to remove the pgid file and forward apptainer's exit
-/// status on the normal path. On cancel, [`lima_kill_pgid_argv`] SIGKILLs the
-/// whole group (`sh` + apptainer + `%post` children) from inside the VM.
-pub(crate) fn lima_guest_build_argv(
+/// the same group (not via `exec`) so apptainer's children (a build's `%post`
+/// steps, a run's container workload) inherit the group and `sh` survives to
+/// remove the pgid file and forward apptainer's exit status on the normal path.
+/// On cancel, [`lima_kill_pgid_argv`] SIGKILLs the whole group from inside the VM.
+pub(crate) fn lima_guest_pgid_argv(
     apptainer_bin: &Path,
     apptainer_args: &[&str],
     pgid_file: &Path,
@@ -61,11 +63,11 @@ pub(crate) fn lima_guest_build_argv(
 }
 
 /// Guest-side argv (after the `limactl shell ... --` separator) that SIGKILLs the
-/// build process group recorded at `pgid_file` by [`lima_guest_build_argv`], then
+/// guest process group recorded at `pgid_file` by [`lima_guest_pgid_argv`], then
 /// removes the pgid file. The `sh -c` script is a fixed constant and the pgid file
 /// arrives as `$1`, so it needs no shell escaping. The negative PGID targets the
-/// whole group (`sh` + apptainer + its `%post` children); the `rm -f` cleans up on
-/// the cancel path, where the wrapper is SIGKILLed before it can self-clean.
+/// whole group (`sh` + apptainer + its children); the `rm -f` cleans up on the
+/// cancel path, where the wrapper is SIGKILLed before it can self-clean.
 /// Best-effort: a missing or already-dead group is not an error.
 pub(crate) fn lima_kill_pgid_argv(pgid_file: &Path) -> Vec<String> {
     let script = "kill -KILL -\"$(cat \"$1\")\" 2>/dev/null; \

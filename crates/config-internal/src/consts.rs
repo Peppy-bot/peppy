@@ -127,6 +127,10 @@ impl PeppyDirs {
     ///
     /// On macOS with Lima, temp directories must be under `$HOME` to be
     /// visible inside the guest VM. Use this instead of `std::env::temp_dir()`.
+    ///
+    /// In production this resolves to `~/.peppy/tmp`, which doubles as the
+    /// persistent build cache root used by `build_helpers::cache_dir` — never
+    /// bulk-clean this directory.
     pub fn tmp_dir(&self) -> PathBuf {
         self.root.join("tmp")
     }

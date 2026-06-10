@@ -56,7 +56,7 @@ impl PySubscription {
     /// Wait for and receive the next message.
     fn on_next_message<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let mut subscription = inner.lock().await;
             match subscription.on_next_message().await {
                 Some(message) => Ok(Some(PyTopicMessage::from(message))),
@@ -95,7 +95,7 @@ impl PyTopicMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let from_target = from_target.map(|t| t.into_inner());
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let filter = match from_instance_id {
                 Some(id) => peppylib::messaging::ConsumerFilter::Pin(id),
                 None => peppylib::messaging::ConsumerFilter::Any,

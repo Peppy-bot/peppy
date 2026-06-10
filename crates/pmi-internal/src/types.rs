@@ -68,12 +68,55 @@ pub enum SubscriberQoS {
     HighThroughput,
 }
 
-impl SubscriberQoS {
-    /// Returns the channel buffer size for this QoS setting
-    pub fn channel_size(&self) -> usize {
-        match self {
-            SubscriberQoS::Standard => 128,
-            SubscriberQoS::HighThroughput => 1024,
+/// Per-QoS subscriber channel buffer sizes (flume / mpsc capacities).
+///
+/// `Default` equals the historical hardcoded behavior (`Standard` = 128,
+/// `HighThroughput` = 1024), so a session built without explicit sizes is
+/// unchanged. The daemon overrides these from `peppy_config.json5`, mainly to
+/// tune backpressure in peer mode where there is no router relay to buffer
+/// between a publisher and a subscriber.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubscriberBufferSizes {
+    pub standard: usize,
+    pub high_throughput: usize,
+}
+
+impl Default for SubscriberBufferSizes {
+    fn default() -> Self {
+        Self {
+            standard: 128,
+            high_throughput: 1024,
+        }
+    }
+}
+
+impl SubscriberBufferSizes {
+    /// The channel buffer size for the given subscriber QoS tier.
+    pub fn size_for(&self, qos: SubscriberQoS) -> usize {
+        match qos {
+            SubscriberQoS::Standard => self.standard,
+            SubscriberQoS::HighThroughput => self.high_throughput,
+        }
+    }
+}
+
+// The daemon resolves buffer sizes as config types (config-internal must not
+// depend on pmi), so the field mapping lives here on pmi's side of the boundary
+// instead of being re-inlined at each session-construction call site.
+impl From<config::peppy_config::PeerConfig> for SubscriberBufferSizes {
+    fn from(peer: config::peppy_config::PeerConfig) -> Self {
+        Self {
+            standard: peer.standard_buffer_size,
+            high_throughput: peer.high_throughput_buffer_size,
+        }
+    }
+}
+
+impl From<&config::runtime::DiscoveryConfig> for SubscriberBufferSizes {
+    fn from(discovery: &config::runtime::DiscoveryConfig) -> Self {
+        Self {
+            standard: discovery.standard_buffer_size,
+            high_throughput: discovery.high_throughput_buffer_size,
         }
     }
 }
@@ -912,5 +955,30 @@ impl MessengerBackend for Messenger {
 
     fn get_host(&self) -> SocketAddr {
         dispatch_sync!(&self.adapter, get_host)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SubscriberBufferSizes, SubscriberQoS};
+
+    /// The default buffer sizes must match the historical hardcoded values, so
+    /// that removing `SubscriberQoS::channel_size()` changed no behavior for any
+    /// session built without explicit sizes.
+    #[test]
+    fn default_buffer_sizes_match_legacy_values() {
+        let sizes = SubscriberBufferSizes::default();
+        assert_eq!(sizes.size_for(SubscriberQoS::Standard), 128);
+        assert_eq!(sizes.size_for(SubscriberQoS::HighThroughput), 1024);
+    }
+
+    #[test]
+    fn custom_buffer_sizes_map_per_qos() {
+        let sizes = SubscriberBufferSizes {
+            standard: 64,
+            high_throughput: 4096,
+        };
+        assert_eq!(sizes.size_for(SubscriberQoS::Standard), 64);
+        assert_eq!(sizes.size_for(SubscriberQoS::HighThroughput), 4096);
     }
 }

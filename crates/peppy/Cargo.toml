@@ -31,7 +31,7 @@ derive_more = { version = "2", features = ["from"] }
 rayon = "1.11.0"
 service-manager = "0.11"
 ipnet = "2.11"
-netdev = "0.43"
+netdev = "0.44"
 libc = "0.2"
 dirs = "6"
 names-generator2 = "0.2.1"

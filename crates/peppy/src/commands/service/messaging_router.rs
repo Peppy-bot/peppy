@@ -73,19 +73,24 @@ impl ServeAsyncCommand for MessagingRouter {
                 Some(checker) => {
                     tokio::select! {
                         // The watchdog loops for the daemon's lifetime; in
-                        // practice only ctrl-c resolves this select.
+                        // practice only a shutdown signal resolves this select.
                         _ = run_router_watchdog(&messenger, &checker) => {}
-                        res = tokio::signal::ctrl_c() => {
+                        res = super::shutdown_signal::shutdown_signal() => {
                             res.map_err(|e| {
-                                Error::ExecutionFailed(format!("Failed to listen for ctrl-c: {}", e))
+                                Error::ExecutionFailed(format!("Failed to listen for shutdown signal: {}", e))
                             })?;
                         }
                     }
                 }
                 None => {
-                    tokio::signal::ctrl_c().await.map_err(|e| {
-                        Error::ExecutionFailed(format!("Failed to listen for ctrl-c: {}", e))
-                    })?;
+                    super::shutdown_signal::shutdown_signal()
+                        .await
+                        .map_err(|e| {
+                            Error::ExecutionFailed(format!(
+                                "Failed to listen for shutdown signal: {}",
+                                e
+                            ))
+                        })?;
                 }
             }
 

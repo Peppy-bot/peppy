@@ -23,7 +23,7 @@ impl PyShutdownReceiver {
         let rx = self.inner.lock().take().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("shutdown receiver already consumed")
         })?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             match rx.await {
                 Ok(()) => Ok(true),
                 Err(_) => Ok(false),
@@ -51,7 +51,7 @@ impl PyShutdownService {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_identity = as_identity.into_inner();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let (join_handle, shutdown_rx) =
                 listen_for_shutdown(&handle, &core_node, &instance_id, as_identity)
                     .await

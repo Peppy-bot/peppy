@@ -336,6 +336,16 @@ where
             let pre_setup = start_pre_setup_services(Arc::clone(&node_runner)).await?;
             let mut shutdown_rx = pre_setup.shutdown_rx;
 
+            // Daemon-liveness watchdog: self-terminate if the daemon dies
+            // uncatchably and stays gone past the configured grace period. Held
+            // for the node's lifetime; the runtime aborts it on shutdown.
+            let _daemon_watchdog = crate::services::daemon_watchdog::spawn_daemon_watchdog(
+                Arc::clone(&node_runner),
+                node_runner.processor().daemon_grace(),
+                cancellation_token.clone(),
+            )
+            .await?;
+
             tokio::select! {
                 result = setup_fn(parameters, Arc::clone(&node_runner)) => {
                     result?;
@@ -343,6 +353,12 @@ where
                 _ = &mut shutdown_rx => {
                     info!("Shutdown requested during setup");
                     cancellation_token.cancel();
+                    return Ok(());
+                }
+                // The watchdog fires this when the daemon has been gone past the
+                // grace period, so a node still in `setup_fn` also exits.
+                _ = cancellation_token.cancelled() => {
+                    info!("Daemon liveness lost during setup; shutting down");
                     return Ok(());
                 }
             }
@@ -499,6 +515,13 @@ async fn run_post_setup_services(
         _ = &mut shutdown_rx => {
             info!("Received shutdown request");
             cancellation_token.cancel();
+        }
+        // Fired by the daemon-liveness watchdog when the daemon has been gone
+        // past the grace period. Converges on the same clean-shutdown path as an
+        // explicit `SHUTDOWN_SERVICE`, so the node tears down (and reaps its own
+        // children) instead of lingering as an orphan.
+        _ = cancellation_token.cancelled() => {
+            info!("Daemon liveness lost; shutting down to avoid orphaning");
         }
     }
 

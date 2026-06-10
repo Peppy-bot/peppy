@@ -39,12 +39,13 @@ capnpc = "0.25"
 libc = "0.2"
 tempfile = "3.10"
 askama = "0.16"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 tokio-util = "0.7"
 rand = "0.10"
 regex = "1"
 config = { path = "../config-internal", features = ["test_helpers"] }
 pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
+ctor = "1.0"
 
 [features]
 default = ["zenoh"]

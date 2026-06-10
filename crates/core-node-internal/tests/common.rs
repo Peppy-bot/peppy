@@ -17,8 +17,11 @@ use core_node_api::encoding::{
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
-use peppylib::messaging::{MessengerHandle, ResultStatus, SenderTarget, TopicMessenger};
+use peppylib::messaging::{
+    ActionGoalHandle, MessengerHandle, ResultStatus, SenderTarget, TopicMessenger,
+};
 use peppylib::runtime::{TaskHandle, spawn};
+use peppylib::services::health::listen_for_node_health;
 use peppylib::{ActionMessenger, Message, Payload, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::{Path, PathBuf};
@@ -168,6 +171,34 @@ pub async fn poll_until<T>(
     }
 }
 
+/// True if a process exists and is not a zombie — matches the daemon's own
+/// liveness definition (sysinfo, status != Zombie), so tests agree with what
+/// `node_stop`/teardown consider "gone". A libc `kill(pid, 0)` check would
+/// report a reaped-but-unwaited zombie as still running.
+pub fn is_process_running(pid: u32) -> bool {
+    let system = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+    );
+    match system.process(sysinfo::Pid::from_u32(pid)) {
+        Some(process) => process.status() != sysinfo::ProcessStatus::Zombie,
+        None => false,
+    }
+}
+
+/// PIDs of live children of `parent_pid`, via sysinfo's parent links.
+pub fn children_of(parent_pid: u32) -> Vec<u32> {
+    let system = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+    );
+    let parent = sysinfo::Pid::from_u32(parent_pid);
+    system
+        .processes()
+        .values()
+        .filter(|p| p.parent() == Some(parent))
+        .map(|p| p.pid().as_u32())
+        .collect()
+}
+
 /// Polls `ServiceMessenger::is_reachable` until the named service responds or
 /// `deadline` expires. Replaces fixed sleeps used as broker-propagation
 /// barriers in tests that spawn a `handle_requests` task and then need to
@@ -297,14 +328,67 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
 }
 
 fn init_test_data_dir() -> (TempDir, PeppyDirs) {
-    // Place test data under $HOME so paths are visible inside the Lima VM on macOS.
-    // Lima 2.0+ only mounts ~ into the guest; system temp (/var/folders/...) is inaccessible.
-    let home = std::env::var("HOME").expect("HOME must be set");
-    let test_tmp_root = std::path::PathBuf::from(&home).join(".peppy/test-tmp");
-    std::fs::create_dir_all(&test_tmp_root).expect("create ~/.peppy/test-tmp/");
-    let dir = TempDir::new_in(&test_tmp_root).expect("test data dir");
+    let dir = TempDir::new_in(test_tmp_root()).expect("test data dir");
     let peppy_dirs = PeppyDirs::new(dir.path());
     (dir, peppy_dirs)
+}
+
+/// Root for all test scratch directories, placed under `$HOME` rather than the
+/// system temp dir for two reasons:
+/// 1. On macOS, Lima 2.0+ only mounts `~` into the guest VM, so node paths must
+///    live under `$HOME` to be visible inside the VM (system temp such as
+///    `/var/folders/...` is inaccessible).
+/// 2. On Linux dev/CI machines `/tmp` is frequently a size-quota'd `tmpfs`;
+///    building a node there (the cargo `target/` alone is ~2 GB) trips the
+///    per-user quota. `$HOME` lives on the roomy backing disk instead.
+///
+/// Every scratch dir handed out from here is a [`TempDir`], so it is removed
+/// when its guard drops — normal completion and panics both clean up, and
+/// nothing is carried over to the next run. As a backstop for runs that were
+/// hard-killed before their guards could run, the first call per test binary
+/// reclaims leftovers older than [`STALE_TEST_TMP_AGE`]; that age floor keeps
+/// concurrently-running test binaries from deleting each other's live dirs.
+fn test_tmp_root() -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let root = PathBuf::from(home).join(".peppy/test-tmp");
+    std::fs::create_dir_all(&root).expect("create ~/.peppy/test-tmp/");
+
+    static RECLAIM: std::sync::Once = std::sync::Once::new();
+    RECLAIM.call_once(|| reclaim_stale_test_tmp(&root));
+
+    root
+}
+
+/// Scratch older than this is treated as abandoned by an earlier run and is
+/// safe to delete. Far longer than any real test run (which finishes in
+/// minutes), so an in-flight run is never affected.
+const STALE_TEST_TMP_AGE: Duration = Duration::from_secs(60 * 60);
+
+/// Best-effort removal of stale leftovers directly under `root`. Errors are
+/// ignored on purpose: reclaiming scratch must never fail a test.
+fn reclaim_stale_test_tmp(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let too_old = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= STALE_TEST_TMP_AGE);
+        if !too_old {
+            continue;
+        }
+        if metadata.is_dir() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        } else {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
@@ -424,6 +508,129 @@ pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_r
     encoder.finish().expect("failed to finalize zstd stream");
 }
 
+/// Why [`drain_node_run_feedback`] returned.
+enum FeedbackDrainOutcome {
+    /// `stop_when` became true after a feedback line was collected.
+    Predicate,
+    /// The server closed the feedback stream, i.e. the action completed.
+    Closed,
+    /// The absolute or idle deadline elapsed before either of the above.
+    TimedOut,
+}
+
+/// Sends a `node_run` goal and returns the live action handle plus its decoded
+/// goal response. Split out so tests that interleave work between the goal and
+/// the result (e.g. bringing up a delayed health responder once startup output
+/// has streamed) share one goal-send implementation with the plain wait helper.
+#[allow(clippy::too_many_arguments)]
+async fn send_node_run_goal(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    runtime_config_json5: &str,
+    node_name: &str,
+    tag: &str,
+    goal_timeout: Duration,
+    result_secs: u64,
+    env_vars: Vec<(String, String)>,
+) -> Result<(ActionGoalHandle, NodeRunGoalResponse), String> {
+    let goal =
+        NodeRunGoal::new(runtime_config_json5, node_name, tag, result_secs).with_env_vars(env_vars);
+    let goal_payload = goal
+        .encode()
+        .map_err(|e| format!("Failed to encode goal: {}", e))?;
+
+    let action_handle = ActionMessenger::send_goal(
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_target(core_node_name),
+        names::NODE_RUN_ACTION,
+        Some(core_node_name),
+        None,
+        goal_payload,
+        QoSProfile::default(),
+        goal_timeout,
+    )
+    .await
+    .map_err(|e| format!("Failed to send goal: {}", e))?;
+
+    let goal_response = NodeRunGoalResponse::decode(&action_handle.goal_response().payload())
+        .map_err(|e| format!("Failed to decode goal response: {}", e))?;
+
+    // A rejected goal never streams feedback or produces a result, so callers
+    // must not proceed to drain — they would just burn the full result budget
+    // and surface a generic timeout instead of the actual rejection reason.
+    if !goal_response.accepted {
+        return Err(format!(
+            "node_run goal rejected: {}",
+            goal_response
+                .rejection_reason
+                .as_deref()
+                .unwrap_or("rejected without reason")
+        ));
+    }
+
+    Ok((action_handle, goal_response))
+}
+
+/// Drains feedback from a live `node_run` action handle, appending each decoded
+/// line to `collected` and forwarding it to `feedback_tx` when present. Returns
+/// as soon as `stop_when(&collected)` holds, the server closes the stream, or a
+/// deadline elapses. The plain wait helper passes a never-true predicate to
+/// drain to close; gated tests stop once the output they expect has streamed,
+/// while the start is still blocked waiting on a not-yet-answered health check.
+async fn drain_node_run_feedback(
+    action_handle: &mut ActionGoalHandle,
+    feedback_tx: Option<&UnboundedSender<NodeRunFeedback>>,
+    collected: &mut Vec<NodeRunFeedback>,
+    absolute_deadline: tokio::time::Instant,
+    idle_timeout: Duration,
+    stop_when: impl Fn(&[NodeRunFeedback]) -> bool,
+) -> FeedbackDrainOutcome {
+    let mut last_activity = tokio::time::Instant::now();
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= absolute_deadline || now.duration_since(last_activity) >= idle_timeout {
+            return FeedbackDrainOutcome::TimedOut;
+        }
+        let drain_timeout = Duration::from_millis(50);
+        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            Ok(Ok(msg)) => {
+                last_activity = tokio::time::Instant::now();
+                let feedback = NodeRunFeedback::decode(msg.payload().as_ref())
+                    .expect("failed to decode NodeRunFeedback");
+                if let Some(tx) = feedback_tx {
+                    let _ = tx.send(feedback.clone());
+                }
+                collected.push(feedback);
+                if stop_when(collected) {
+                    return FeedbackDrainOutcome::Predicate;
+                }
+            }
+            Ok(Err(_)) => return FeedbackDrainOutcome::Closed,
+            Err(_) => {}
+        }
+    }
+}
+
+/// Fetches the buffered result of a completed `node_run` action and decodes it.
+async fn fetch_node_run_result(
+    messenger: &MessengerHandle,
+    action_handle: &ActionGoalHandle,
+    fetch_timeout: Duration,
+) -> Result<NodeRunResult, String> {
+    match ActionMessenger::request_result(messenger, action_handle, fetch_timeout).await {
+        Ok(reply) => match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => {
+                NodeRunResult::decode(reply.body.as_ref())
+                    .map_err(|err| format!("Failed to decode result: {}", err))
+            }
+            other => Err(format!("action did not complete with a result: {other:?}")),
+        },
+        Err(err) => Err(format!("Failed to get result: {}", err)),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn send_node_run_and_wait_internal(
     messenger: &MessengerHandle,
@@ -435,82 +642,134 @@ async fn send_node_run_and_wait_internal(
     feedback_tx: Option<UnboundedSender<NodeRunFeedback>>,
     env_vars: Vec<(String, String)>,
 ) -> Result<NodeRunTestResponse, String> {
-    let goal = NodeRunGoal::new(
+    let (mut action_handle, goal_response) = send_node_run_goal(
+        messenger,
+        core_node_name,
         runtime_config_json5,
         node_name,
         tag,
-        timeouts.result.as_secs(),
-    )
-    .with_env_vars(env_vars);
-    let goal_payload = goal
-        .encode()
-        .map_err(|e| format!("Failed to encode goal: {}", e))?;
-
-    let mut action_handle = ActionMessenger::send_goal(
-        messenger,
-        core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(core_node_name),
-        names::NODE_RUN_ACTION,
-        Some(core_node_name),
-        None,
-        goal_payload,
-        QoSProfile::default(),
         timeouts.goal,
+        timeouts.result.as_secs(),
+        env_vars,
     )
-    .await
-    .map_err(|e| format!("Failed to send goal: {}", e))?;
-
-    // Decode the goal response to get log_path
-    let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeRunGoalResponse::decode(&goal_response_payload)
-        .map_err(|e| format!("Failed to decode goal response: {}", e))?;
+    .await?;
 
     let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
-    let mut last_activity = tokio::time::Instant::now();
-    let feedback_tx = feedback_tx.as_ref();
-
+    let mut collected = Vec::new();
     // Drain feedback until the server closes the stream on completion, honoring
     // the idle / max-timeout budgets, then fetch the buffered result once.
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= absolute_deadline {
-            return Err("Timeout waiting for node_run result".to_string());
-        }
-        if now.duration_since(last_activity) >= timeouts.result {
-            return Err("Timeout waiting for node_run result (idle)".to_string());
-        }
-        let drain_timeout = Duration::from_millis(50);
-        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                last_activity = tokio::time::Instant::now();
-                let payload = msg.payload();
-                let feedback = NodeRunFeedback::decode(payload.as_ref())
-                    .expect("failed to decode NodeRunFeedback");
-                if let Some(tx) = feedback_tx {
-                    let _ = tx.send(feedback);
-                }
-            }
-            Ok(Err(_)) => break,
-            Err(_) => {}
-        }
+    if let FeedbackDrainOutcome::TimedOut = drain_node_run_feedback(
+        &mut action_handle,
+        feedback_tx.as_ref(),
+        &mut collected,
+        absolute_deadline,
+        timeouts.result,
+        |_| false,
+    )
+    .await
+    {
+        return Err("Timeout waiting for node_run result".to_string());
     }
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
-    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
-        Ok(reply) => match reply.status {
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                let result = NodeRunResult::decode(reply.body.as_ref())
-                    .map_err(|err| format!("Failed to decode result: {}", err))?;
-                Ok(NodeRunTestResponse {
-                    goal_response,
-                    result,
-                })
-            }
-            other => Err(format!("action did not complete with a result: {other:?}")),
-        },
-        Err(err) => Err(format!("Failed to get result: {}", err)),
+    let result = fetch_node_run_result(messenger, &action_handle, fetch_timeout).await?;
+    Ok(NodeRunTestResponse {
+        goal_response,
+        result,
+    })
+}
+
+/// Drives a `node_run` goal with a deliberately delayed health responder so a
+/// feedback-streaming assertion is deterministic instead of racing the daemon's
+/// start-success stream close.
+///
+/// The node's ready responder must already be live so the start advances past
+/// the ready wait into the health wait. This helper sends the goal, then drains
+/// feedback while the start blocks on the not-yet-answered health check (output
+/// streams live throughout). Once `expected_output(&collected)` holds, it brings
+/// up the health responder, which lets the health check pass and the start
+/// complete; it then drains the remaining feedback, fetches the result, and
+/// returns it alongside every feedback line observed. The health responder is
+/// kept alive until the result is fetched so health stays answered through
+/// commit.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_node_run_with_delayed_health(
+    caller_messenger: &MessengerHandle,
+    node_messenger: &MessengerHandle,
+    core_node_name: &str,
+    runtime_config_json5: &str,
+    node_name: &str,
+    tag: &str,
+    instance_id: &str,
+    timeouts: &NodeRunTestTimeouts,
+    expected_output: impl Fn(&[NodeRunFeedback]) -> bool,
+) -> Result<(NodeRunTestResponse, Vec<NodeRunFeedback>), String> {
+    let (mut action_handle, goal_response) = send_node_run_goal(
+        caller_messenger,
+        core_node_name,
+        runtime_config_json5,
+        node_name,
+        tag,
+        timeouts.goal,
+        timeouts.result.as_secs(),
+        Vec::new(),
+    )
+    .await?;
+
+    let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
+    let mut feedback = Vec::new();
+    match drain_node_run_feedback(
+        &mut action_handle,
+        None,
+        &mut feedback,
+        absolute_deadline,
+        timeouts.result,
+        &expected_output,
+    )
+    .await
+    {
+        FeedbackDrainOutcome::Predicate => {}
+        FeedbackDrainOutcome::Closed => {
+            return Err("feedback stream closed before the expected output streamed".to_string());
+        }
+        FeedbackDrainOutcome::TimedOut => {
+            return Err("timed out waiting for the expected output to stream".to_string());
+        }
     }
+
+    // Release the start: the health check now succeeds, so commit + drain run and
+    // the action completes. The expected output was already published (we waited
+    // for it on the stream), so the daemon's own drain cannot drop it.
+    let _health = AbortOnDrop(
+        listen_for_node_health(
+            node_messenger,
+            core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .map_err(|e| format!("failed to start node health service: {e}"))?,
+    );
+
+    drain_node_run_feedback(
+        &mut action_handle,
+        None,
+        &mut feedback,
+        absolute_deadline,
+        timeouts.result,
+        |_| false,
+    )
+    .await;
+
+    let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
+    let result = fetch_node_run_result(caller_messenger, &action_handle, fetch_timeout).await?;
+    Ok((
+        NodeRunTestResponse {
+            goal_response,
+            result,
+        },
+        feedback,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1082,6 +1341,43 @@ pub async fn send_node_add_then_build<'a>(
     Ok(result)
 }
 
+/// Adds and builds a node whose `run_cmd` forks two grandchild `sleep`s and
+/// waits — all three processes share the node's process group (nodes are
+/// spawned as group leaders). Used by the force-kill tests to prove a group
+/// kill reaps descendants, not just the leader. Returns the source dir guard.
+pub async fn add_and_build_forking_node(
+    started: &StartedCoreNode,
+    node_name: &str,
+    node_tag: &str,
+) -> TempDir {
+    let source_dir = tempfile::tempdir().expect("temp source dir");
+    let peppy_json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: { name: "{NAME}", tag: "{TAG}" },
+            execution: {
+                language: "rust",
+                run_cmd: ["sh", "-c", "sleep 1000 & sleep 1000 & wait"]
+            }
+        }"#
+    .replace("{NAME}", node_name)
+    .replace("{TAG}", node_tag);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+    assert!(add_response.success, "node_add failed: {add_response:?}");
+    build_staged_node(started, node_name, node_tag).await;
+    source_dir
+}
+
 pub async fn send_node_add_and_wait_with_force<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -1154,31 +1450,38 @@ pub async fn send_node_run_and_wait_with_env(
 /// Creates a fresh test node in a new temp directory.
 /// Each call creates a completely new node with its own peppygen generation
 /// and cargo build, ensuring isolation between tests.
-pub fn create_test_node() -> PathBuf {
+pub fn create_test_node() -> TempDir {
     init_test_node_project("example_node", "v1", true)
 }
 
 /// Creates a fresh test node in a new temp directory.
 /// Each call creates a completely new node with its own peppygen generation
 /// and cargo build, ensuring isolation between tests.
-pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> PathBuf {
+///
+/// The returned [`TempDir`] owns the directory and deletes it — including the
+/// multi-GB cargo `target/` — when it drops, so test runs never accumulate
+/// build artifacts. Bind it for as long as the node is needed (e.g. for the
+/// whole test body) and let it drop at scope end.
+pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> TempDir {
     init_test_node_project(node_name, node_tag, true)
 }
 
-pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bool) -> PathBuf {
+pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bool) -> TempDir {
+    // Build under the shared test-tmp root (see `test_tmp_root`) and keep the
+    // `TempDir` guard rather than `.keep()`-ing it, so the directory and its
+    // ~2 GB cargo build are reclaimed when the returned guard drops.
     let node_dir = tempfile::Builder::new()
         .prefix("peppy_test_node_")
-        .tempdir()
-        .expect("failed to create temp directory for test node")
-        .keep();
+        .tempdir_in(test_tmp_root())
+        .expect("failed to create temp directory for test node");
 
-    init_cargo_project(&node_dir, node_name);
-    write_test_node_files(&node_dir, node_name, node_tag);
+    init_cargo_project(node_dir.path(), node_name);
+    write_test_node_files(node_dir.path(), node_name, node_tag);
 
     let peppy_dirs = PeppyDirs::default();
     generator::generate_peppygen_lib(
         PeppygenLanguage::Rust,
-        &node_dir,
+        node_dir.path(),
         Vec::new(),
         "test-hash",
         &peppy_dirs,
@@ -1188,7 +1491,7 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
     .expect("failed to generate peppygen for test node");
 
     if build_project {
-        build_cargo_project(&node_dir);
+        build_cargo_project(node_dir.path());
     }
 
     node_dir
@@ -1341,6 +1644,9 @@ fn default_node_arguments() -> CoreNodeArguments {
         // Faster than the production default (100 ms) so publish_clock tests
         // observe several ticks within a small fixed budget without flaking.
         clock_publish_interval: Duration::from_millis(50),
+        // Faster than production (5 s) so the heartbeat test observes beats
+        // quickly without flaking.
+        heartbeat_interval: Duration::from_millis(200),
         daemon_use_sim_time: false,
     }
 }
@@ -1353,6 +1659,7 @@ pub async fn start_core_node_with_mock_messenger() -> StartedCoreNode {
         default_node_arguments(),
         data_dir,
         peppy_dirs,
+        config::peppy_config::PeppyConfig::default(),
     )
     .await
 }
@@ -1366,7 +1673,14 @@ pub async fn start_core_node_with_sim_clock() -> StartedCoreNode {
     let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
     args.daemon_use_sim_time = true;
-    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
+    start_core_node_with_messenger(
+        shared_messenger,
+        args,
+        data_dir,
+        peppy_dirs,
+        config::peppy_config::PeppyConfig::default(),
+    )
+    .await
 }
 
 pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
@@ -1377,14 +1691,49 @@ pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
     .await
 }
 
+/// Convenience wrapper over [`start_core_node_with_real_messenger_in_mode`] with
+/// the default timeouts, for the dual-mode e2e tests parameterized over the mode.
+pub async fn start_core_node_with_real_messenger_mode(
+    mode: config::peppy_config::Mode,
+) -> StartedCoreNode {
+    start_core_node_with_real_messenger_in_mode(
+        Duration::from_secs(10),
+        Duration::from_secs(30),
+        mode,
+    )
+    .await
+}
+
 pub async fn start_core_node_with_real_messenger_and_timeouts(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> StartedCoreNode {
+    start_core_node_with_real_messenger_in_mode(
+        node_startup_timeout,
+        node_start_health_timeout,
+        config::peppy_config::Mode::Peer,
+    )
+    .await
+}
+
+/// Like [`start_core_node_with_real_messenger_and_timeouts`] but the messaging
+/// `mode` (peer vs router) is explicit. The core node's own session is built in
+/// that mode, and its `PeppyConfig` carries it so spawned nodes are injected with
+/// the same mode (faithful to production). Used by the dual-mode e2e tests.
+pub async fn start_core_node_with_real_messenger_in_mode(
+    node_startup_timeout: Duration,
+    node_start_health_timeout: Duration,
+    mode: config::peppy_config::Mode,
+) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
-    let mut instance = pmi::ZenohAdapter::start_router_ephemeral(DEFAULT_MESSAGING_HOST, None)
-        .await
-        .expect("failed to start zenoh router for test");
+    let mut instance = pmi::ZenohAdapter::start_router_ephemeral_in_mode(
+        DEFAULT_MESSAGING_HOST,
+        None,
+        mode.gossip(),
+        pmi::SubscriberBufferSizes::default(),
+    )
+    .await
+    .expect("failed to start zenoh router for test");
     instance
         .messenger()
         .start_session()
@@ -1394,7 +1743,36 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
     let mut args = default_node_arguments();
     args.node_startup_timeout = node_startup_timeout;
     args.node_start_health_timeout = node_start_health_timeout;
-    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
+    let peppy_config = config::peppy_config::PeppyConfig {
+        mode,
+        ..Default::default()
+    };
+    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs, peppy_config).await
+}
+
+/// Variant of [`start_core_node_with_mock_messenger`] with a custom
+/// cooperative-shutdown grace period (`peppy_config.lifecycle
+/// .shutdown_grace_secs`). For tests that assert timing around the grace
+/// window and need wider margins than the 3s default gives under parallel
+/// test load.
+pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> StartedCoreNode {
+    let (data_dir, peppy_dirs) = init_test_data_dir();
+    let shared_messenger = create_mock_messenger().await;
+    let peppy_config = config::peppy_config::PeppyConfig {
+        lifecycle: config::peppy_config::LifecycleConfig {
+            shutdown_grace_secs,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    start_core_node_with_messenger(
+        shared_messenger,
+        default_node_arguments(),
+        data_dir,
+        peppy_dirs,
+        peppy_config,
+    )
+    .await
 }
 
 pub async fn start_core_node_with_health_timeout(
@@ -1404,7 +1782,14 @@ pub async fn start_core_node_with_health_timeout(
     let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
     args.node_start_health_timeout = node_start_health_timeout;
-    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
+    start_core_node_with_messenger(
+        shared_messenger,
+        args,
+        data_dir,
+        peppy_dirs,
+        config::peppy_config::PeppyConfig::default(),
+    )
+    .await
 }
 
 pub async fn start_core_node_with_health_monitor(
@@ -1416,7 +1801,14 @@ pub async fn start_core_node_with_health_monitor(
     let mut args = default_node_arguments();
     args.health_monitor_interval = health_monitor_interval;
     args.health_monitor_timeout = health_monitor_timeout;
-    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
+    start_core_node_with_messenger(
+        shared_messenger,
+        args,
+        data_dir,
+        peppy_dirs,
+        config::peppy_config::PeppyConfig::default(),
+    )
+    .await
 }
 
 async fn start_core_node_with_messenger(
@@ -1424,6 +1816,7 @@ async fn start_core_node_with_messenger(
     node_arguments: CoreNodeArguments,
     data_dir: TempDir,
     peppy_dirs: PeppyDirs,
+    peppy_config: config::peppy_config::PeppyConfig,
 ) -> StartedCoreNode {
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let root_dir = std::env::current_dir().expect("failed to get current directory");
@@ -1433,6 +1826,7 @@ async fn start_core_node_with_messenger(
         node_arguments,
         root_dir,
         peppy_dirs.clone(),
+        peppy_config,
     );
     let core_node_name = core_node.node_name().to_string();
     let core_node_tag = core_node.node_config().manifest.tag.clone();
@@ -1522,9 +1916,9 @@ fn make_real_output_sinks(
 /// the node config's run_cmd is spawnable in the test environment (the
 /// listener tests use `["sleep", "10"]`). Also installs a `listen_for_shutdown`
 /// task on the messenger that SIGKILLs the entity-tracked pid when the
-/// production stop/remove flow sends a shutdown signal. This lets production
-/// code paths that wait on `wait_for_process_termination` observe the child
-/// as terminated rather than timing out against a stubborn `sleep 10`.
+/// production stop/remove flow sends a shutdown signal. This lets the
+/// production stop path observe the child as cooperatively terminated within
+/// its graceful window rather than having to force-kill a stubborn `sleep 10`.
 /// Returns a guard that SIGTERMs the child on drop.
 pub async fn spawn_real_running_instance(
     started: &StartedCoreNode,
@@ -1584,10 +1978,9 @@ async fn spawn_real_running_instance_inner(
 
     // Optionally install a messenger-side shutdown listener that kills the
     // child when the production stop/remove flow fires a SHUTDOWN_SERVICE
-    // signal. This replaces the old behavior where tests set fake pids so
-    // the production `wait_for_process_termination` quickly observed "no
-    // such pid". Tests that want the production shutdown path to observe
-    // a stuck process use `spawn_real_stuck_instance` which skips this.
+    // signal, so the cooperative phase succeeds within its graceful window.
+    // Tests that want the production stop path to fall through to force-kill
+    // (a stuck process) use `spawn_real_stuck_instance`, which skips this.
     let shutdown_listener = if install_shutdown_listener {
         let shutdown_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
         let (shutdown_task, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
@@ -1619,6 +2012,79 @@ async fn spawn_real_running_instance_inner(
         _working_dir: None,
         _feedback_drain: drain,
         _shutdown_listener: shutdown_listener,
+    }
+}
+
+/// RAII guard for a test-spawned instance deliberately left in `Starting`:
+/// `prepare_and_spawn` was driven but `commit_started` was NOT, so the instance
+/// is registered as `Starting` with a live child, exactly the state a node is in
+/// mid-launch. Holds the `Child` and `StartedInstanceCtx` so the launch is
+/// neither committed nor aborted. On drop it SIGKILLs the child's whole process
+/// group (negative pid) so the held `sleep`s don't leak past the test.
+#[must_use = "guard keeps the half-started child alive; drop it to clean up"]
+pub struct TestStartingInstance {
+    pub pid: u32,
+    pub instance_id: config::node::Name,
+    _child: tokio::process::Child,
+    _started_ctx: node_stack::StartedInstanceCtx,
+    _feedback_drain: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for TestStartingInstance {
+    fn drop(&mut self) {
+        // Best-effort: by the time a test drops this, teardown has usually
+        // already reaped the group, so silence the expected ESRCH/EPERM noise.
+        let _ = std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(format!("-{}", self.pid))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        self._feedback_drain.abort();
+    }
+}
+
+/// Drives a real `prepare_and_spawn` on the entity at `(name, tag)` (which must
+/// already be in `Ready`) but intentionally does NOT call `commit_started`,
+/// leaving the instance in `Starting` with a live child. Used to prove that a
+/// daemon teardown during the start window force-kills the `Starting`-window
+/// child instead of orphaning it. The caller is responsible for ensuring the
+/// node config's `run_cmd` is spawnable in the test environment.
+pub async fn spawn_real_starting_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::node::Name,
+) -> TestStartingInstance {
+    let handle = started
+        .node_stack
+        .find(name, tag)
+        .expect("spawn_real_starting_instance: entity should exist");
+    let (output_sinks, _feedback_tx, drain) =
+        make_real_output_sinks(&started.peppy_dirs, instance_id);
+
+    let (child, started_ctx) = node_stack::NodeEntity::prepare_and_spawn(
+        &handle,
+        node_stack::StartContext {
+            instance_id,
+            runtime_config_json5: "{}",
+            slot_bindings: std::collections::BTreeMap::new(),
+            env_vars: &[],
+            mount_paths_resolved: &[],
+            peppy_dirs: &started.peppy_dirs,
+            output_sinks,
+        },
+    )
+    .await
+    .expect("prepare_and_spawn should succeed on Ready entity");
+    let pid = child.id().expect("child should have pid");
+
+    TestStartingInstance {
+        pid,
+        instance_id: instance_id.clone(),
+        _child: child,
+        _started_ctx: started_ctx,
+        _feedback_drain: drain,
     }
 }
 

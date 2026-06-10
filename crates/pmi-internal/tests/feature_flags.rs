@@ -2,7 +2,10 @@
 #[test]
 fn test_with_zenoh_feature() {
     use bytes::Bytes;
-    use pmi::{Message, PeppyMessagingInterfaceError, SubscriberQoS, ZenohNetProtocol};
+    use pmi::{
+        Message, PeppyMessagingInterfaceError, SubscriberBufferSizes, SubscriberQoS,
+        ZenohNetProtocol,
+    };
 
     const { assert!(cfg!(feature = "zenoh"), "zenoh feature should be enabled") };
 
@@ -11,7 +14,7 @@ fn test_with_zenoh_feature() {
     assert_eq!(&message.payload()[..], b"test payload");
 
     let qos = SubscriberQoS::Standard;
-    assert_eq!(qos.channel_size(), 128);
+    assert_eq!(SubscriberBufferSizes::default().size_for(qos), 128);
 
     assert_eq!(ZenohNetProtocol::default(), ZenohNetProtocol::Tcp);
 
@@ -29,7 +32,7 @@ fn test_with_zenoh_feature() {
 #[test]
 fn test_without_zenoh_feature() {
     use bytes::Bytes;
-    use pmi::{Message, PeppyMessagingInterfaceError, SubscriberQoS};
+    use pmi::{Message, PeppyMessagingInterfaceError, SubscriberBufferSizes, SubscriberQoS};
 
     assert!(
         !cfg!(feature = "zenoh"),
@@ -41,7 +44,7 @@ fn test_without_zenoh_feature() {
     assert_eq!(&message.payload()[..], b"test payload");
 
     let qos = SubscriberQoS::HighThroughput;
-    assert_eq!(qos.channel_size(), 1024);
+    assert_eq!(SubscriberBufferSizes::default().size_for(qos), 1024);
 
     let err = PeppyMessagingInterfaceError::UnsupportedEngine;
     assert_eq!(format!("{err}"), "UnsupportedEngine");

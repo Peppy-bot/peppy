@@ -56,19 +56,19 @@ pub(crate) fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
 
 /// Drive a void async binding and resolve it to Python `None`.
 ///
-/// `pyo3_async_runtimes::tokio::future_into_py` converts the future's `Ok`
-/// value via `IntoPyObject`, and under PyO3 0.28 a bare `()` converts to an
-/// empty tuple rather than `None`. Routing void async methods through this
-/// helper gives them the Pythonic `None` return without repeating the
-/// GIL-reacquire dance at every call site. The `Output = PyResult<()>` bound
-/// also means the compiler rejects any non-void future passed here by mistake.
+/// `future_into_py` converts the future's `Ok` value via `IntoPyObject`, and
+/// under PyO3 0.28 a bare `()` converts to an empty tuple rather than `None`,
+/// while `Option::<()>::None` converts to `None`. Routing void async methods
+/// through this helper gives them the Pythonic `None` return. The
+/// `Output = PyResult<()>` bound also means the compiler rejects any non-void
+/// future passed here by mistake.
 pub(crate) fn future_into_py_unit<'py, F>(py: Python<'py>, fut: F) -> PyResult<Bound<'py, PyAny>>
 where
     F: Future<Output = PyResult<()>> + Send + 'static,
 {
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    crate::py_future::future_into_py(py, async move {
         fut.await?;
-        Ok(Python::attach(|py| py.None()))
+        Ok(None::<()>)
     })
 }
 
@@ -98,7 +98,7 @@ impl PyZenohdInstance {
         host: String,
         port: Option<u16>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let instance = ZenohAdapter::start_router_ephemeral(&host, port)
                 .await
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
@@ -146,7 +146,7 @@ impl PyZenohdInstance {
     /// Async context manager entry - returns self.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
         // Return a coroutine that immediately resolves to self
-        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(slf) })
+        crate::py_future::future_into_py(py, async move { Ok(slf) })
     }
 
     /// Async context manager exit - stops the router.
@@ -181,7 +181,7 @@ impl PyMessengerHandle {
         host: String,
         port: u16,
     ) -> PyResult<Bound<'py, PyAny>> {
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let handle = MessengerHandle::from_host_port(&host, port)
                 .await
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
@@ -192,18 +192,13 @@ impl PyMessengerHandle {
     /// Get the messaging port.
     fn messaging_port<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let handle = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(
-            py,
-            async move { Ok(handle.messaging_port().await) },
-        )
+        crate::py_future::future_into_py(py, async move { Ok(handle.messaging_port().await) })
     }
 
     /// Get the messaging endpoint as (host, port) tuple, or None if unavailable.
     fn messaging_endpoint<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let handle = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            Ok(handle.messaging_endpoint().await)
-        })
+        crate::py_future::future_into_py(py, async move { Ok(handle.messaging_endpoint().await) })
     }
 }
 

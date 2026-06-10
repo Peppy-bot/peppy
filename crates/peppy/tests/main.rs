@@ -1,5 +1,6 @@
 mod common;
 mod container;
+mod daemon_lifecycle_e2e;
 mod info;
 mod node_add;
 mod node_info;

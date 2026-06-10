@@ -266,7 +266,10 @@ fn start_async_setup(
         .name("peppy-asyncio-shutdown".to_string())
         .spawn(move || {
             rt_handle.block_on(cancel_for_shutdown.cancelled());
-            let _ = Python::try_attach(|py| -> PyResult<()> {
+            // Gated attach: if this thread is scheduled so late that the
+            // attach gate has closed, the main thread has already fired the
+            // same idempotent trigger in `quiesce`, so skipping is safe.
+            let _ = crate::py_future::try_attach_gated(|py| -> PyResult<()> {
                 trigger_for_monitor.bind(py).call0()?;
                 Ok(())
             });
@@ -312,6 +315,20 @@ impl PyCancellationToken {
     fn cancel(&self) {
         self.inner.cancel();
     }
+
+    /// Wait until the token is cancelled.
+    ///
+    /// Async counterpart of polling `is_cancelled()`: completes when the node
+    /// is asked to shut down (daemon stop, daemon-liveness loss, or Ctrl+C in
+    /// standalone mode), or immediately if the token is already cancelled.
+    /// Mirrors the Rust `CancellationToken::cancelled()` awaitable.
+    fn cancelled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let token = self.inner.clone();
+        crate::py_future::future_into_py(py, async move {
+            token.cancelled().await;
+            Ok(())
+        })
+    }
 }
 
 /// Python wrapper for NodeRunner.
@@ -349,7 +366,7 @@ impl PyNodeRunner {
         standalone_config: &PyStandaloneConfig,
     ) -> PyResult<Bound<'py, PyAny>> {
         let config = standalone_config.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let processor = Processor::new_standalone(PathBuf::from(peppy_config_path), &config)
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             let runner = NodeRunner::new(processor)

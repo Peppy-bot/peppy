@@ -24,10 +24,21 @@ pub(crate) struct DaemonState {
     /// The git hash of the peppy binary at compile time.
     #[serde(default)]
     pub git_hash: String,
+    /// Cooperative-shutdown grace period the daemon resolved from
+    /// `peppy_config.lifecycle.shutdown_grace_secs`. Surfaced here so a client
+    /// command (`peppy node stop`) can size its request timeout to exceed the
+    /// daemon's grace + reap window. Defaulted on read so a state file written
+    /// by a daemon predating this field still parses.
+    #[serde(default = "default_shutdown_grace_secs")]
+    pub shutdown_grace_secs: u64,
 }
 
 fn default_messaging_port() -> u16 {
     config::consts::DEFAULT_MESSAGING_PORT
+}
+
+fn default_shutdown_grace_secs() -> u64 {
+    config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
 }
 
 impl DaemonState {
@@ -35,12 +46,14 @@ impl DaemonState {
         core_node_name: impl Into<String>,
         messaging_port: u16,
         git_hash: impl Into<String>,
+        shutdown_grace_secs: u64,
     ) -> Self {
         Self {
             core_node_name: core_node_name.into(),
             daemon_pid: Some(std::process::id()),
             messaging_port,
             git_hash: git_hash.into(),
+            shutdown_grace_secs,
         }
     }
 

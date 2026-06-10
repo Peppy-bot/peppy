@@ -116,8 +116,11 @@ const CONSUMED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
 }
 "#;
 
+#[rstest::rstest]
+#[case::peer(crate::helpers::Mode::Peer)]
+#[case::router(crate::helpers::Mode::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn actions_communication() {
+async fn actions_communication(#[case] mode: crate::helpers::Mode) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -125,7 +128,8 @@ async fn actions_communication() {
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -170,6 +174,7 @@ async fn actions_communication() {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -224,7 +229,8 @@ fn main() -> Result<()> {
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
@@ -248,6 +254,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let exposer_runtime_config = crate::helpers::apply_mode(exposer_runtime_config, mode);
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
@@ -442,8 +449,11 @@ fn main() -> Result<()> {
     );
 }
 
+#[rstest::rstest]
+#[case::peer(crate::helpers::Mode::Peer)]
+#[case::router(crate::helpers::Mode::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn actions_communication_cancel_goal() {
+async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -451,7 +461,8 @@ async fn actions_communication_cancel_goal() {
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -496,6 +507,7 @@ async fn actions_communication_cancel_goal() {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -542,7 +554,8 @@ fn main() -> Result<()> {
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
@@ -566,6 +579,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let exposer_runtime_config = crate::helpers::apply_mode(exposer_runtime_config, mode);
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
@@ -775,8 +789,11 @@ fn main() -> Result<()> {
 ///
 /// Python parity is `actions_communication_drain_loop_until_end_signal`
 /// in the python/ test module.
+#[rstest::rstest]
+#[case::peer(crate::helpers::Mode::Peer)]
+#[case::router(crate::helpers::Mode::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn actions_communication_drain_loop_until_end_signal() {
+async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::helpers::Mode) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -784,7 +801,8 @@ async fn actions_communication_drain_loop_until_end_signal() {
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -829,6 +847,7 @@ async fn actions_communication_drain_loop_until_end_signal() {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -896,7 +915,8 @@ fn main() -> Result<()> {
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
@@ -920,6 +940,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let exposer_runtime_config = crate::helpers::apply_mode(exposer_runtime_config, mode);
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
@@ -1152,8 +1173,13 @@ fn main() -> Result<()> {
 /// Python parity is
 /// `actions_communication_cancel_accept_closes_feedback_stream` in the
 /// python/ test module.
+#[rstest::rstest]
+#[case::peer(crate::helpers::Mode::Peer)]
+#[case::router(crate::helpers::Mode::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn actions_communication_cancel_accept_closes_feedback_stream() {
+async fn actions_communication_cancel_accept_closes_feedback_stream(
+    #[case] mode: crate::helpers::Mode,
+) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -1161,7 +1187,8 @@ async fn actions_communication_cancel_accept_closes_feedback_stream() {
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -1206,6 +1233,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream() {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -1268,7 +1296,8 @@ fn main() -> Result<()> {
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
@@ -1292,6 +1321,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let exposer_runtime_config = crate::helpers::apply_mode(exposer_runtime_config, mode);
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
@@ -1513,8 +1543,13 @@ fn main() -> Result<()> {
 /// Python parity is
 /// `actions_communication_cancel_reject_keeps_feedback_open` in the
 /// python/ test module.
+#[rstest::rstest]
+#[case::peer(crate::helpers::Mode::Peer)]
+#[case::router(crate::helpers::Mode::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn actions_communication_cancel_reject_keeps_feedback_open() {
+async fn actions_communication_cancel_reject_keeps_feedback_open(
+    #[case] mode: crate::helpers::Mode,
+) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -1522,7 +1557,8 @@ async fn actions_communication_cancel_reject_keeps_feedback_open() {
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new().unwrap();
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
@@ -1567,6 +1603,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open() {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -1641,7 +1678,8 @@ fn main() -> Result<()> {
     // so codegen must NOT publish the end-of-stream sentinel; subsequent
     // publish_feedback calls must continue to reach the client.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new().unwrap();
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
@@ -1665,6 +1703,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let exposer_runtime_config = crate::helpers::apply_mode(exposer_runtime_config, mode);
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)

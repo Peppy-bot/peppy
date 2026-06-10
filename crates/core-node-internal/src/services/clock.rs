@@ -155,19 +155,40 @@ pub async fn publish_clock(
     interval: Duration,
     source: Arc<dyn ClockSource>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let publisher = TopicMessenger::declare_publisher(
+    let publisher = declare_sensor_publisher(
         &messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        None,
+        node_name,
         names::CLOCK,
-        QoSProfile::SensorData,
     )
     .await?;
     Ok(tokio::spawn(run_clock_publisher(
         publisher, interval, source,
     )))
+}
+
+/// Declares a pre-bound `SensorData` publisher on a core-node topic: the wire
+/// key is formatted once at startup, and per-tick `publish` skips the central
+/// messenger mutex. Shared by the clock and daemon-heartbeat publishers.
+async fn declare_sensor_publisher(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    instance_id: &str,
+    node_name: &str,
+    topic: &str,
+) -> Result<TopicPublisher> {
+    TopicMessenger::declare_publisher(
+        messenger,
+        core_node_name,
+        instance_id,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        None,
+        topic,
+        QoSProfile::SensorData,
+    )
+    .await
+    .map_err(Into::into)
 }
 
 async fn run_clock_publisher(
@@ -198,6 +219,52 @@ async fn run_clock_publisher(
         };
         if let Err(e) = publisher.publish(payload).await {
             warn!("clock tick emit failed: {e}");
+        }
+    }
+}
+
+/// Spawns a task that emits a liveness beat on the `daemon_heartbeat` topic at
+/// every `interval`, in BOTH wall and sim mode (liveness must not depend on the
+/// clock topology — in sim mode the daemon does not publish the clock at all).
+///
+/// Each spawned node runs a watchdog subscribed to this topic; if the beats go
+/// silent past the configured grace period the node shuts itself down, so an
+/// uncatchable daemon death (SIGKILL / OOM / crash) does not leave orphans. The
+/// payload is a constant `ClockTick(0)` reused purely as a cheap carrier — the
+/// node only cares that a message arrived, not its value.
+///
+/// `SensorData` QoS (best-effort, newest-wins, no back-pressure) is correct for
+/// a beacon: a missed beat is harmless as long as the next arrives inside grace.
+pub async fn publish_daemon_heartbeat(
+    messenger: MessengerHandle,
+    core_node_name: &str,
+    instance_id: &str,
+    node_name: &str,
+    interval: Duration,
+) -> Result<JoinHandle<Result<()>>> {
+    let publisher = declare_sensor_publisher(
+        &messenger,
+        core_node_name,
+        instance_id,
+        node_name,
+        names::DAEMON_HEARTBEAT,
+    )
+    .await?;
+    Ok(tokio::spawn(run_heartbeat_publisher(publisher, interval)))
+}
+
+async fn run_heartbeat_publisher(publisher: TopicPublisher, interval: Duration) -> Result<()> {
+    // The value is never read by the node — only the message's arrival matters
+    // — so encode the constant payload once, outside the loop.
+    let payload = ClockTick::new(0).encode()?;
+    let mut ticker = tokio::time::interval(interval);
+    // A late beat is uninteresting; skip catch-up bursts after a stall.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        ticker.tick().await;
+        if let Err(e) = publisher.publish(payload.clone()).await {
+            warn!("daemon heartbeat emit failed: {e}");
         }
     }
 }

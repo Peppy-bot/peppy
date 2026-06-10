@@ -182,3 +182,39 @@ This command will generate the interfaces to use in our source code. If you'd ra
 As you can see, the topic interface has already been generated. We didn't need to implement serialization, encoding, or communication layers; PeppyOS handles all of that automatically.
 
 Additionally, the tag and name assigned to your node provide contract isolation. When the node's interfaces change in a way that breaks consumers, you publish under a new tag (e.g. `v2`); dependent nodes that pin the old tag keep working until they are explicitly migrated.
+
+## Graceful shutdown
+
+A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides/node_stack/#stopping-your-node) stops it on demand, `peppy node add` stops running instances when it replaces a node, and the daemon tears every node down when it shuts down cleanly. In all of these cases the daemon first asks the node to shut down cooperatively, gives it a grace period to exit (`shutdown_grace_secs`, 3 seconds by default), and only then force-kills its process group. See [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention) for the full sequence.
+
+Inside your node, that cooperative ask surfaces through the runtime's **cancellation token**. The same token also fires when the node's watchdog detects that the daemon died uncleanly, and on `Ctrl+C` in standalone mode, so it is the single signal to watch for "time to clean up and exit":
+
+<Tabs>
+  <TabItem label="Python">
+    The background tasks returned from `setup` are cancelled automatically: their pending `await` raises `asyncio.CancelledError`, and the node exits once they finish. Wrap your loop in `try`/`finally` to park actuators, release hardware, or flush state on the way out:
+
+    ```python
+    async def emit_hello_world_loop(node_runner: NodeRunner):
+        try:
+            while True:
+                # ... emit, read sensors, etc.
+                await asyncio.sleep(3)
+        finally:
+            pass  # park actuators, release hardware, flush state
+    ```
+
+    Async code can also wait for the shutdown explicitly with `await node_runner.cancellation_token().cancelled()`, mirroring the Rust pattern. Code that cannot rely on task cancellation (a synchronous helper, a thread you spawned yourself) can poll `node_runner.cancellation_token().is_cancelled()` instead.
+  </TabItem>
+  <TabItem label="Rust">
+    The token returned by `node_runner.cancellation_token()` is cancelled. The hello_world node above already follows the recommended pattern: clone the token in the setup closure and have every spawned task `select!` on `token.cancelled()` next to its work, then run its cleanup when that branch wins:
+
+    ```rust
+    tokio::select! {
+        _ = token.cancelled() => break, // shutdown requested: clean up and exit
+        _ = interval.tick() => { /* do work */ }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+A node that exits within the grace period is reported as a clean stop; one that ignores the ask is force-killed and `peppy node stop` warns about it. If your node legitimately needs more than 3 seconds to wind down, raise `lifecycle.shutdown_grace_secs` in the [daemon configuration](/advanced_guides/daemon_config/).

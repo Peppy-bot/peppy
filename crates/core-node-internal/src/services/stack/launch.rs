@@ -4,7 +4,7 @@ use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_ac
 use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use crate::services::node::{
-    FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
+    DaemonDefaults, FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
     NodeRunActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
     run_node_add, run_node_build_for_entity, run_node_run, write_error_to_log,
 };
@@ -79,6 +79,9 @@ pub struct StackLaunchTimeouts {
 pub struct StackLaunchDefaults {
     pub timeouts: StackLaunchTimeouts,
     pub use_sim_time: bool,
+    /// Daemon-resolved defaults (messaging mode, peer buffers, liveness grace)
+    /// injected into every launched node.
+    pub daemon_defaults: DaemonDefaults,
 }
 
 pub async fn listen_for_stack_launch(
@@ -103,6 +106,7 @@ pub async fn listen_for_stack_launch(
     let StackLaunchDefaults {
         timeouts,
         use_sim_time: daemon_use_sim_time,
+        daemon_defaults,
     } = defaults;
     let handler = LaunchGoalHandler {
         context: LaunchActionContext {
@@ -113,6 +117,7 @@ pub async fn listen_for_stack_launch(
             peppy_dirs,
             timeouts,
             daemon_use_sim_time,
+            daemon_defaults,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -161,6 +166,9 @@ struct ProcessLaunchContext {
     /// Daemon-wide default for `framework.use_sim_time` applied to instances
     /// that omit the per-instance override.
     daemon_use_sim_time: bool,
+    /// Daemon-resolved defaults (messaging mode, peer buffers, liveness grace)
+    /// injected into every launched node.
+    daemon_defaults: DaemonDefaults,
 }
 
 #[derive(Clone)]
@@ -172,6 +180,7 @@ struct LaunchActionContext {
     peppy_dirs: PeppyDirs,
     timeouts: StackLaunchTimeouts,
     daemon_use_sim_time: bool,
+    daemon_defaults: DaemonDefaults,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -685,6 +694,7 @@ async fn start_node_directly(
         peppy_dirs: ctx.peppy_dirs.clone(),
         health_monitor_interval: ctx.timeouts.health_monitor_interval,
         health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
+        daemon_defaults: ctx.daemon_defaults,
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -1531,6 +1541,7 @@ async fn handle_goal_request(
             peppy_dirs,
             timeouts,
             daemon_use_sim_time,
+            daemon_defaults,
         } = action_context;
         let env_vars = goal.env_vars.clone();
         // Compute the launch deadline once. `None` => no overall deadline (idle-only).
@@ -1555,6 +1566,7 @@ async fn handle_goal_request(
                 run: Duration::from_secs(goal.node_run_idle_timeout_secs),
             },
             daemon_use_sim_time,
+            daemon_defaults,
         };
         // Catch panics so a panic inside the launch sequence still completes the
         // goal with a failure result, rather than leaving the client to wait out

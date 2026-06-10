@@ -67,7 +67,8 @@ fn main() {}
 
 #[test]
 fn rust_handles_two_consumed_topics_sharing_topic_name() {
-    let temp_dir = TempDir::new().expect("failed to create temp directory");
+    let temp_dir =
+        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
     let user_node_dir = temp_dir.path().join("user_node");
     fs::create_dir_all(&user_node_dir).expect("failed to create user_node directory");
 

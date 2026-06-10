@@ -21,6 +21,7 @@ fn test_node_arguments() -> CoreNodeArguments {
         health_monitor_interval: Duration::from_secs(5),
         health_monitor_timeout: Duration::from_secs(3),
         clock_publish_interval: Duration::from_millis(100),
+        heartbeat_interval: Duration::from_secs(5),
         daemon_use_sim_time: false,
     }
 }
@@ -38,6 +39,7 @@ async fn core_node_execution_has_no_run_cmd_and_no_container() {
         node_arguments,
         std::env::temp_dir(),
         peppy_dirs,
+        config::peppy_config::PeppyConfig::default(),
     );
 
     let execution = &core_node.node_config().execution;
@@ -64,6 +66,7 @@ async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
         test_node_arguments(),
         std::env::temp_dir(),
         peppy_dirs.clone(),
+        config::peppy_config::PeppyConfig::default(),
     );
     let b = CoreNode::new(
         create_mock_messenger().await,
@@ -71,6 +74,7 @@ async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
         test_node_arguments(),
         std::env::temp_dir(),
         peppy_dirs,
+        config::peppy_config::PeppyConfig::default(),
     );
 
     let name_a = a.node_config().manifest.name.as_str();
@@ -101,6 +105,7 @@ async fn core_node_explicit_name_overrides_machine_uid() {
         node_arguments,
         std::env::temp_dir(),
         peppy_dirs,
+        config::peppy_config::PeppyConfig::default(),
     );
     assert_eq!(
         core_node.node_config().manifest.name.as_str(),

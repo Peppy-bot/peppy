@@ -62,7 +62,7 @@ const NODE_CONFIG: &str = r#"{
 
 #[test]
 fn nests_conformed_services_under_iface_name_and_tag() {
-    let temp_dir = TempDir::new().expect("temp dir");
+    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 

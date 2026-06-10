@@ -69,9 +69,13 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
-/// Creates 2 projects in separate directory and check if they can send/receive topics
+/// Creates 2 projects in separate directory and check if they can send/receive topics.
+/// Runs under both peer (gossip on) and router (gossip off) messaging modes.
+#[rstest::rstest]
+#[case::peer(crate::helpers::Mode::Peer)]
+#[case::router(crate::helpers::Mode::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topics_communication() {
+async fn topics_communication(#[case] mode: crate::helpers::Mode) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -79,7 +83,7 @@ async fn topics_communication() {
 
     // --- Receiver project
     let receiver_instance_id = RECEIVER_INSTANCE_ID;
-    let temp_dir_proj2 = TempDir::new().unwrap();
+    let temp_dir_proj2 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_topic: ConsumedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
@@ -111,6 +115,7 @@ async fn topics_communication() {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let receiver_runtime_config = crate::helpers::apply_mode(receiver_runtime_config, mode);
     let receiver_runtime_config_path = temp_dir_proj2.path().join("peppy_runtime.json5");
     receiver_runtime_config
         .save_json5_launch_config(&receiver_runtime_config_path)
@@ -139,7 +144,7 @@ fn main() -> Result<()> {
 
     // --- Emitter project
     let emitter_instance_id = EMITTER_INSTANCE_ID;
-    let temp_dir_proj1 = TempDir::new().unwrap();
+    let temp_dir_proj1 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let emitted_topic: EmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, emitter_dir, user_node_emitter, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_proj1, STUB_NODE_CONFIG);
@@ -179,6 +184,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let emitter_runtime_config = crate::helpers::apply_mode(emitter_runtime_config, mode);
     let emitter_runtime_config_path = temp_dir_proj1.path().join("peppy_runtime.json5");
     emitter_runtime_config
         .save_json5_launch_config(&emitter_runtime_config_path)

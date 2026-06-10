@@ -57,7 +57,7 @@ macro_rules! service_listener {
             ) -> PyResult<Bound<'py, PyAny>> {
                 let handle = messenger.inner.clone();
                 let as_identity = as_identity.into_inner();
-                pyo3_async_runtimes::tokio::future_into_py(py, async move {
+                crate::py_future::future_into_py(py, async move {
                     let join_handle = $listen_fn(&handle, &core_node, &instance_id, as_identity)
                         .await
                         .map_err(to_py_err)?;

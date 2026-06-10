@@ -5,6 +5,8 @@ mod error;
 mod types;
 mod wire;
 #[cfg(feature = "zenoh")]
+mod zenoh_config;
+#[cfg(feature = "zenoh")]
 mod zenohd;
 
 pub use error::Error as PeppyMessagingInterfaceError;
@@ -13,7 +15,8 @@ pub use types::ZenohResponseToken;
 pub use types::{
     IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
     MockResponseToken, Payload, PayloadSlices, PublisherQoS, ReplyStream, ResponseToken,
-    ServiceQueryable, ServiceReply, SubscriberQoS, Subscription, TopicMessage,
+    ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, Subscription,
+    TopicMessage,
 };
 pub use wire::{
     ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, InterfaceIdentifier, NodeIdentifier,

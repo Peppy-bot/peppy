@@ -103,18 +103,21 @@ impl Write for LogCaptureWriter {
     }
 }
 
-pub fn wait_for_log(log_capture: &LogCapture, needle: &str, timeout: Duration) {
+/// Blocks until `needle` appears in the snapshot returned by `logs`, or panics
+/// after `timeout` with the final snapshot. `logs` abstracts the log source:
+/// pass `|| capture.logs()` for an in-process [`LogCapture`], or a clone of a
+/// buffer drained from a child process's pipes (the daemon-lifecycle e2e test).
+pub fn wait_for_log(logs: impl Fn() -> String, needle: &str, timeout: Duration) {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if log_capture.logs().contains(needle) {
+        if logs().contains(needle) {
             return;
         }
         thread::sleep(Duration::from_millis(50));
     }
     panic!(
-        "Timeout waiting for log entry '{}'. Last logs:\n{}",
-        needle,
-        log_capture.logs()
+        "Timeout ({timeout:?}) waiting for log entry '{needle}'. Last logs:\n{}",
+        logs()
     );
 }
 
@@ -179,10 +182,12 @@ impl ServeCommandEmulation {
                 health_monitor_interval: Duration::from_secs(5),
                 health_monitor_timeout: Duration::from_secs(3),
                 clock_publish_interval: Duration::from_millis(100),
+                heartbeat_interval: Duration::from_secs(5),
                 daemon_use_sim_time: false,
             },
             temp_dir.path().to_path_buf(),
             peppy_dirs,
+            config::peppy_config::PeppyConfig::default(),
         );
         let core_node_name = core_node.node_name().to_string();
 
@@ -200,7 +205,12 @@ impl ServeCommandEmulation {
         std::fs::write(&repos_path, "[]")
             .expect("failed to reset repositories.json5 after daemon startup");
 
-        let daemon_state = DaemonState::new(&core_node_name, port, "test-git-hash");
+        let daemon_state = DaemonState::new(
+            &core_node_name,
+            port,
+            "test-git-hash",
+            config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
+        );
         DaemonState::write_to(&daemon_state_path, &daemon_state)
             .expect("failed to write daemon state");
 

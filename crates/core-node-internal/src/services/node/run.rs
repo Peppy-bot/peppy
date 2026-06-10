@@ -5,6 +5,7 @@ use crate::Result;
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Name;
+use config::peppy_config::{Mode, PeerConfig, PeppyConfig};
 use config::runtime::RuntimeConfig;
 use config::{AnyType, apply_parameter_defaults, resolve_argument_path};
 use core_node_api::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
@@ -53,6 +54,37 @@ fn drain_quiet_window(is_container: bool) -> Duration {
     }
 }
 
+/// Defaults the peppy daemon resolves from its `peppy_config` and ships to
+/// every spawned node's launch config: the messaging topology (mode + peer
+/// buffer sizes) and the daemon-liveness grace period for the node's watchdog.
+/// Threaded as one unit — rather than parallel scalars — from the service
+/// constructors through the run/launch context chains down to
+/// [`apply_daemon_defaults`], so the next daemon-global knob touches this
+/// struct and that function, not every context in between.
+#[derive(Clone, Copy)]
+pub struct DaemonDefaults {
+    /// Daemon-global messaging mode, injected into every spawned node.
+    pub messaging_mode: Mode,
+    /// Daemon-global peer buffer sizes, injected into every spawned node.
+    pub peer_buffer: PeerConfig,
+    /// Daemon-liveness grace period (seconds), injected into every spawned node
+    /// so its watchdog knows how long to tolerate a silent daemon.
+    pub daemon_grace_secs: u64,
+}
+
+impl DaemonDefaults {
+    /// Resolves the per-node defaults from the daemon's loaded `peppy_config`
+    /// — the single place that knows which of its fields are shipped to
+    /// spawned nodes.
+    pub fn from_peppy_config(config: &PeppyConfig) -> Self {
+        Self {
+            messaging_mode: config.mode,
+            peer_buffer: config.peer,
+            daemon_grace_secs: config.lifecycle.daemon_grace_secs,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct NodeRunServiceConfig {
     pub node_startup_timeout: Duration,
@@ -60,6 +92,7 @@ pub struct NodeRunServiceConfig {
     pub peppy_dirs: PeppyDirs,
     pub health_monitor_interval: Duration,
     pub health_monitor_timeout: Duration,
+    pub daemon_defaults: DaemonDefaults,
 }
 
 #[derive(Clone)]
@@ -73,6 +106,25 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) peppy_dirs: PeppyDirs,
     pub(crate) health_monitor_interval: Duration,
     pub(crate) health_monitor_timeout: Duration,
+    pub(crate) daemon_defaults: DaemonDefaults,
+}
+
+/// Applies the [`DaemonDefaults`] to a node's session config before it is
+/// launched: the messaging mode + peer buffer sizes, and the daemon-resolved
+/// liveness grace period (so the spawned node's watchdog self-terminates if
+/// the daemon dies and stays gone). `container_separate_ns` forces the node
+/// onto the router-relay (client) path even in peer mode, because a container
+/// in a separate network namespace cannot form direct loopback peer links. So
+/// the effective gossip is "peer mode AND not separate-namespace".
+fn apply_daemon_defaults(
+    cfg: &mut RuntimeConfig,
+    defaults: DaemonDefaults,
+    container_separate_ns: bool,
+) {
+    cfg.discovery.gossip = defaults.messaging_mode.is_peer() && !container_separate_ns;
+    cfg.discovery.standard_buffer_size = defaults.peer_buffer.standard_buffer_size;
+    cfg.discovery.high_throughput_buffer_size = defaults.peer_buffer.high_throughput_buffer_size;
+    cfg.lifecycle.daemon_grace_secs = defaults.daemon_grace_secs;
 }
 
 struct ProcessNodeRunContext {
@@ -111,6 +163,7 @@ pub async fn listen_for_node_run(
             peppy_dirs: config.peppy_dirs,
             health_monitor_interval: config.health_monitor_interval,
             health_monitor_timeout: config.health_monitor_timeout,
+            daemon_defaults: config.daemon_defaults,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -647,18 +700,6 @@ async fn process_node_run(
         return NodeRunResult::failure(msg);
     }
 
-    // Re-serialize so the spawned process receives the synthesized defaults;
-    // the inbound `runtime_config_json5` from the goal still reflects the
-    // pre-defaulting state.
-    let runtime_config_json5 = match serde_json5::to_string(&runtime_config) {
-        Ok(json) => json,
-        Err(e) => {
-            let msg = format!("Failed to serialize runtime config: {}", e);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeRunResult::failure(msg);
-        }
-    };
-
     let is_container = node_config.execution.container.is_some();
 
     let container_config = node_config.execution.container.as_ref();
@@ -676,9 +717,19 @@ async fn process_node_run(
         }
     };
 
-    // Container nodes need their runtime config rewritten with the apptainer
-    // host_gateway so that requests inside the container can reach the daemon.
-    let runtime_config_json5 = if is_container {
+    // A container's transport depends on whether it shares the host network
+    // namespace, which `host_gateway()` reports:
+    //
+    //  - Lima (macOS): `Some(gateway)` — the container runs in a VM, a separate
+    //    namespace. It reaches the host router only through the Lima gateway,
+    //    and a loopback peer locator advertised inside the guest is unreachable
+    //    from the host (and vice versa), so it cannot form direct peer links.
+    //    Route it through the router as a client (gossip forced off) and rewrite
+    //    `messaging_host` to the gateway, regardless of the daemon's mode.
+    //  - Native (Linux): `None` — Apptainer shares the host network namespace,
+    //    so `127.0.0.1` already reaches the host router and the node follows the
+    //    daemon's messaging mode exactly like a process node.
+    let container_gateway = if is_container {
         let apptainer = match tokio::task::spawn_blocking(containers::Apptainer::new).await {
             Ok(Ok(a)) => a,
             Ok(Err(e)) => {
@@ -692,23 +743,38 @@ async fn process_node_run(
                 return NodeRunResult::failure(msg);
             }
         };
-        match apptainer.host_gateway() {
-            Some(gateway) => {
-                let mut cfg = runtime_config.clone();
-                cfg.messaging_host = gateway.to_string();
-                match serde_json5::to_string(&cfg) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        let msg = format!("Failed to serialize runtime config: {}", e);
-                        write_error_to_log(&ctx.log_file, &msg);
-                        return NodeRunResult::failure(msg);
-                    }
-                }
-            }
-            None => runtime_config_json5,
-        }
+        apptainer.host_gateway()
     } else {
-        runtime_config_json5
+        None
+    };
+
+    // Build the config the spawned process receives: a copy of `runtime_config`
+    // with the daemon-global defaults applied (and, for a separate-namespace
+    // container, the gateway host). Mutate a clone rather than `runtime_config`
+    // because `instance_id_str` still borrows the latter, and the rest of this
+    // function reads it. The container override wins: a separate-namespace
+    // container always routes through the router as a client even in peer mode.
+    let mut launch_config = runtime_config.clone();
+    apply_daemon_defaults(
+        &mut launch_config,
+        ctx.action.daemon_defaults,
+        container_gateway.is_some(),
+    );
+    if let Some(gateway) = &container_gateway {
+        launch_config.messaging_host = gateway.to_string();
+    }
+
+    // Serialize once, after every mutation (synthesized defaults, mode + buffer
+    // sizes, and the gateway rewrite), so the spawned process receives the
+    // fully-resolved runtime config. The inbound `runtime_config_json5` from the
+    // goal still reflects the pre-defaulting state.
+    let runtime_config_json5 = match serde_json5::to_string(&launch_config) {
+        Ok(json) => json,
+        Err(e) => {
+            let msg = format!("Failed to serialize runtime config: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeRunResult::failure(msg);
+        }
     };
 
     // Set up the FeedbackSync + two-channel forwarder. The internal channel
@@ -1304,6 +1370,93 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn runtime_config_for_test() -> RuntimeConfig {
+        let instance_id = config::launcher::Name::new("camera_front").unwrap();
+        RuntimeConfig::new(
+            "127.0.0.1",
+            7448,
+            config::runtime::NodeInstanceConfig::new(instance_id),
+            "camera",
+            "v1",
+            "core_node",
+        )
+        .expect("valid test runtime config")
+    }
+
+    /// `DaemonDefaults` with the given mode/buffers and an arbitrary
+    /// recognizable grace period.
+    fn daemon_defaults(mode: Mode, peer: PeerConfig) -> DaemonDefaults {
+        DaemonDefaults {
+            messaging_mode: mode,
+            peer_buffer: peer,
+            daemon_grace_secs: 123,
+        }
+    }
+
+    /// Peer mode (no container override) keeps gossip on and applies the
+    /// configured buffer sizes.
+    #[test]
+    fn apply_daemon_defaults_peer_mode_enables_gossip() {
+        let mut cfg = runtime_config_for_test();
+        apply_daemon_defaults(
+            &mut cfg,
+            daemon_defaults(Mode::Peer, PeerConfig::default()),
+            false,
+        );
+        assert!(cfg.discovery.gossip);
+        assert_eq!(cfg.discovery.standard_buffer_size, 128);
+        assert_eq!(cfg.discovery.high_throughput_buffer_size, 1024);
+    }
+
+    /// Router mode forces gossip off so all traffic relays through the router.
+    #[test]
+    fn apply_daemon_defaults_router_mode_disables_gossip() {
+        let mut cfg = runtime_config_for_test();
+        apply_daemon_defaults(
+            &mut cfg,
+            daemon_defaults(Mode::Router, PeerConfig::default()),
+            false,
+        );
+        assert!(!cfg.discovery.gossip);
+    }
+
+    /// A separate-namespace container is forced onto the client path even in
+    /// peer mode (the container override wins).
+    #[test]
+    fn apply_daemon_defaults_container_separate_ns_forces_client_even_in_peer_mode() {
+        let mut cfg = runtime_config_for_test();
+        apply_daemon_defaults(
+            &mut cfg,
+            daemon_defaults(Mode::Peer, PeerConfig::default()),
+            true,
+        );
+        assert!(
+            !cfg.discovery.gossip,
+            "separate-namespace container must route through the router"
+        );
+    }
+
+    /// Buffer sizes and the daemon-liveness grace period are applied regardless
+    /// of mode or container placement.
+    #[test]
+    fn apply_daemon_defaults_always_applies_buffers_and_grace() {
+        let peer = PeerConfig {
+            standard_buffer_size: 64,
+            high_throughput_buffer_size: 4096,
+        };
+        for (mode, container_separate_ns) in [
+            (Mode::Peer, false),
+            (Mode::Router, false),
+            (Mode::Peer, true),
+        ] {
+            let mut cfg = runtime_config_for_test();
+            apply_daemon_defaults(&mut cfg, daemon_defaults(mode, peer), container_separate_ns);
+            assert_eq!(cfg.discovery.standard_buffer_size, 64);
+            assert_eq!(cfg.discovery.high_throughput_buffer_size, 4096);
+            assert_eq!(cfg.lifecycle.daemon_grace_secs, 123);
+        }
+    }
 
     #[test]
     fn test_resolve_mount_path_parameters_simple() {

@@ -3,9 +3,11 @@ use super::messaging_router::MessagingRouter;
 use super::serve::{CompositeCommand, Serve};
 use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
+use config::peppy_config::PeppyConfig;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
+use pmi::SubscriberBufferSizes;
 use pmi::{ZenohAdapter, ZenohNetProtocol};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,6 +31,7 @@ pub struct ServeCommandBuilder {
     clock_source: super::ClockSource,
     shutdown_token: Option<CancellationToken>,
     root_dir: PathBuf,
+    peppy_config: PeppyConfig,
 }
 
 impl ServeCommandBuilder {
@@ -42,7 +45,17 @@ impl ServeCommandBuilder {
             clock_source: super::ClockSource::default(),
             shutdown_token: None,
             root_dir: root_dir.into(),
+            peppy_config: PeppyConfig::default(),
         })
+    }
+
+    /// Supplies the daemon-global config (messaging mode + peer buffer sizes)
+    /// read once at startup. Must be called before [`with_messaging_router`]
+    /// (Self::with_messaging_router) so the daemon's own session is built in the
+    /// configured mode.
+    pub fn with_peppy_config(mut self, peppy_config: PeppyConfig) -> Self {
+        self.peppy_config = peppy_config;
+        self
     }
 
     pub fn with_shutdown_token(mut self, token: CancellationToken) -> Self {
@@ -58,10 +71,18 @@ impl ServeCommandBuilder {
             "zenoh" => {
                 // Reconnecting session: if the router watchdog respawns zenohd,
                 // the daemon's own session re-establishes (and re-declares the
-                // core node's services) instead of going silent.
-                let adapter =
-                    ZenohAdapter::with_router(ZenohNetProtocol::Tcp, "0.0.0.0", listening_port)?
-                        .with_session_reconnect();
+                // core node's services) instead of going silent. The session's
+                // mode (peer vs router-relay) and buffer sizes come from the
+                // daemon-global config read at startup.
+                let buffer_sizes = SubscriberBufferSizes::from(self.peppy_config.peer);
+                let adapter = ZenohAdapter::with_router(
+                    ZenohNetProtocol::Tcp,
+                    "0.0.0.0",
+                    listening_port,
+                    self.peppy_config.mode.gossip(),
+                    buffer_sizes,
+                )?
+                .with_session_reconnect();
                 MessengerAdapter::Zenoh(adapter)
             }
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),
@@ -97,6 +118,9 @@ impl ServeCommandBuilder {
     pub fn build(mut self) -> Result<Serve> {
         if self.core_node_requested {
             if let Some(messenger) = &self.messenger {
+                // Capture the shutdown grace before `peppy_config` is moved into
+                // the runner, so the daemon state file can advertise it to clients.
+                let shutdown_grace_secs = self.peppy_config.lifecycle.shutdown_grace_secs;
                 let core_node = CoreNodeRunner::new(
                     Arc::clone(messenger),
                     self.core_node_name.clone(),
@@ -105,6 +129,7 @@ impl ServeCommandBuilder {
                     self.root_dir.clone(),
                     self.messaging_ready.clone(),
                     self.clock_source,
+                    self.peppy_config,
                 );
 
                 // Write the daemon state file with the core node name
@@ -113,6 +138,7 @@ impl ServeCommandBuilder {
                     &core_node_name,
                     messenger.blocking_lock().messaging_port(),
                     GIT_HASH,
+                    shutdown_grace_secs,
                 );
                 let state_path = daemon_state.write().map_err(|e| {
                     Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))

@@ -29,6 +29,11 @@ pub(super) async fn discover_producer(
     probe_sender: &ServiceWireSender,
     discovery_timeout: Duration,
 ) -> Result<(String, String)> {
+    // `poll_service` itself retries on a peer-mode cold-start miss (the probe's
+    // `QueryTarget::All` finalizing with no reply before discovery has settled),
+    // bounded by `discovery_timeout`, so a single probe call here waits for a
+    // producer to appear rather than failing the instant it runs ahead of
+    // discovery.
     let response = messenger
         .poll_service(
             probe_sender,

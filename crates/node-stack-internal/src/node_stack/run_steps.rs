@@ -116,20 +116,52 @@ pub(super) fn extract_node_archive(
     Ok(instance_dir)
 }
 
-/// Runs a process node using its `run_cmd` and passes the
-/// `PEPPY_RUNTIME_CONFIG` as an env var. Returns the spawned child on success.
+/// Make `command` spawn as its own process-group leader (PGID == its PID) so the
+/// daemon can later SIGKILL the whole group, the node and every descendant it
+/// spawns, in one signal on shutdown instead of orphaning them. It also insulates
+/// the node from a terminal's SIGINT to the daemon's group, so the daemon's
+/// explicit teardown is the single authoritative kill path. `setpgid(0,0)`
+/// semantics are identical on Linux and macOS; a no-op off unix.
+#[cfg(unix)]
+fn spawn_as_process_group_leader(command: &mut Command) {
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn spawn_as_process_group_leader(_command: &mut Command) {}
+
+/// An unspawned start command plus the metadata its caller needs after the fork.
+///
+/// `build_process_command` / `build_container_command` return this so the caller
+/// can fork the child under the entity write lock (recording the pid atomically
+/// with the spawn) while still owning the runtime config temp file's cleanup and
+/// having a human-readable command description for spawn-failure errors.
+pub(super) struct SpawnCommand {
+    pub(super) command: Command,
+    pub(super) runtime_config_path: PathBuf,
+    /// What the command runs (the joined `run_cmd`, or the Apptainer invocation),
+    /// surfaced in the spawn-failure error so a bad `run_cmd` is identifiable.
+    pub(super) description: String,
+}
+
+/// Builds the [`Command`] for a process node from its `run_cmd`, with
+/// `PEPPY_RUNTIME_CONFIG` set as an env var and the process-group-leader flag
+/// applied. Returns the unspawned command plus the path of the runtime config
+/// temp file it wrote. The caller forks it under the entity write lock, so the
+/// child's pid is recorded atomically with the spawn, and owns the temp file's
+/// cleanup on spawn failure.
 ///
 /// Used by [`super::entity::NodeEntity::prepare_and_spawn`] for process nodes.
 /// The runtime config is written to a unique temp file under
 /// `peppy_dirs.runtime_config_dir()` (see [`write_runtime_config_temp`]).
-pub(super) fn spawn_process_node(
+pub(super) fn build_process_command(
     config: &NodeConfig,
     working_dir: &Path,
     runtime_config_json5: &str,
     env_vars: &[(String, String)],
     log_file: &Arc<StdMutex<File>>,
     peppy_dirs: &PeppyDirs,
-) -> std::io::Result<(Child, PathBuf)> {
+) -> std::io::Result<SpawnCommand> {
     let manifest = &config.manifest;
     let run_cmd = config
         .execution
@@ -161,6 +193,9 @@ pub(super) fn spawn_process_node(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Process-group leader so the daemon's shutdown can kill the node and any
+    // descendants it spawns (a Python child, a shell wrapper) in one signal.
+    spawn_as_process_group_leader(&mut command);
     for (key, value) in env_vars {
         command.env(key, value);
     }
@@ -177,15 +212,11 @@ pub(super) fn spawn_process_node(
         command.env("PYTHONUNBUFFERED", "1");
     }
 
-    let child = command.spawn().map_err(|e| {
-        // Spawn failed: the temp runtime config file we just wrote will
-        // never be owned by `StartedInstanceCtx`, so clean it up here to
-        // avoid orphaning `runtime_config_*.json5` under the peppy tmp dir.
-        let _ = std::fs::remove_file(&runtime_config_path);
-        let full_cmd = run_cmd.join(" ");
-        std::io::Error::other(format!("failed to execute run_cmd `{}`: {}", full_cmd, e))
-    })?;
-    Ok((child, runtime_config_path))
+    Ok(SpawnCommand {
+        command,
+        runtime_config_path,
+        description: run_cmd.join(" "),
+    })
 }
 
 /// Describes a bind mount for a container node.
@@ -242,6 +273,11 @@ pub(super) fn collect_container_binds(
 pub(super) struct SpawnContainerInputs<'a> {
     pub sif_path: &'a Path,
     pub working_dir: &'a Path,
+    /// Unique, filesystem-safe identity of this instance. Used as the guest
+    /// PGID key (via `cancel_pgid`) so the daemon can SIGKILL the in-VM workload
+    /// on macOS teardown. Must match the key the teardown path passes to
+    /// `kill_guest_process_group`.
+    pub instance_id: &'a str,
     pub runtime_config_json5: &'a str,
     pub env_vars: &'a [(String, String)],
     pub mount_paths: &'a [String],
@@ -252,16 +288,22 @@ pub(super) struct SpawnContainerInputs<'a> {
     pub peppy_dirs: &'a PeppyDirs,
 }
 
-/// Starts a container node using the Apptainer runtime.
+/// Builds the Apptainer-runtime [`Command`] for a container node. Runs all the
+/// async/expensive setup (Apptainer/Lima init, host mounts, command
+/// construction) but NOT the spawn.
 ///
-/// Returns a tokio [`Child`] with piped stdout/stderr for async output
-/// capture plus the path of the written runtime config temp file.
-pub(super) async fn spawn_container_node(
+/// Returns the unspawned tokio [`Command`] (stdout/stderr piped, process-group
+/// leader flag applied) plus the path of the written runtime config temp file.
+/// The caller forks it under the entity write lock, so the child's pid is
+/// recorded atomically with the spawn, and owns the temp file's cleanup on spawn
+/// failure.
+pub(super) async fn build_container_command(
     inputs: SpawnContainerInputs<'_>,
-) -> std::io::Result<(Child, PathBuf)> {
+) -> std::io::Result<SpawnCommand> {
     let SpawnContainerInputs {
         sif_path,
         working_dir,
+        instance_id,
         runtime_config_json5,
         env_vars,
         mount_paths,
@@ -322,7 +364,13 @@ pub(super) async fn spawn_container_node(
     // Build apptainer run command. Environment variables are passed into the
     // container via --env flags (not host-side process env) so they are
     // visible inside the container.
-    let mut apptainer_cmd = apptainer.run(sif_str);
+    //
+    // `cancel_pgid` records the in-VM workload's process group under a guest-native
+    // file keyed by this instance id, so the daemon's teardown can SIGKILL the
+    // whole guest group via `kill_guest_process_group` (same key). A no-op on the
+    // native backend (Linux), where the host group kill already reaches the
+    // shared-namespace container directly.
+    let mut apptainer_cmd = apptainer.run(sif_str).cancel_pgid(instance_id);
     for arg in apptainer_run_extra_args {
         apptainer_cmd = apptainer_cmd.raw_flag(arg);
     }
@@ -334,10 +382,10 @@ pub(super) async fn spawn_container_node(
         }
         apptainer_cmd = apptainer_cmd.env(key, value);
     }
-    apptainer_cmd = apptainer_cmd.env(
-        RUNTIME_CONFIG_VAR_NAME,
-        runtime_config_path.to_str().unwrap_or_default(),
-    );
+    let runtime_config_str = runtime_config_path
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("runtime config path is not valid UTF-8"))?;
+    apptainer_cmd = apptainer_cmd.env(RUNTIME_CONFIG_VAR_NAME, runtime_config_str);
 
     // Add all bind mounts (runtime config + user-specified).
     // Device passthrough mounts (src under /dev/ with no dest or same dest)
@@ -380,16 +428,23 @@ pub(super) async fn spawn_container_node(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Process-group leader, like the process-node path. On Linux (native
+    // apptainer, shared namespace) the host group kill reaches the container's
+    // processes directly. On macOS the workload runs inside the Lima VM, so a
+    // host group kill only reaches the `limactl` client; the in-VM group is
+    // killed separately by the daemon's teardown via `kill_guest_process_group`
+    // (keyed by this instance's `cancel_pgid` above).
+    spawn_as_process_group_leader(&mut command);
 
-    let child = command.spawn().map_err(|e| {
-        std::io::Error::other(format!(
-            "failed to execute apptainer run for `{}`: {}",
-            sif_path.display(),
-            e
-        ))
-    })?;
+    // The runtime config temp file now belongs to the caller, which transfers
+    // it to `StartedInstanceCtx` on a successful spawn or cleans it up if the
+    // fork fails. Defuse so the build-time guard doesn't delete it on return.
     runtime_config_guard.defuse();
-    Ok((child, runtime_config_path))
+    Ok(SpawnCommand {
+        command,
+        runtime_config_path,
+        description: format!("apptainer run {}", sif_path.display()),
+    })
 }
 
 /// Ensures every bind mount source path is usable by the container runtime.
