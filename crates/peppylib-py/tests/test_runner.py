@@ -651,6 +651,140 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_daemon_shutdown_during_setup_exits_after_setup_completes(monkeypatch):
+    """A shutdown received while setup is still running is honored once setup
+    returns, without needing a second shutdown request.
+
+    Python equivalent of the Rust `daemon_shutdown_during_setup_cancels_token_and_exits`
+    test, with one binding-specific difference: the runtime cannot preempt a
+    Python callback that is still on the stack, so the node keeps running until
+    the setup callback returns, then exits from the already-received shutdown.
+    """
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
+            peppy_config_path.write_text(PEPPY_CONFIG)
+            create_codegen_fingerprint(str(peppy_config_path), PEPPYGEN_OUTPUT_PATH)
+
+            runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
+            create_runtime_config(
+                runtime_config_path,
+                router.host,
+                router.port,
+                TEST_NODE_NAME,
+                TEST_CORE_NODE,
+                TEST_INSTANCE_ID,
+                {"frequency_hz": TEST_FREQUENCY_HZ},
+            )
+
+            monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
+            monkeypatch.chdir(temp_dir)
+
+            token_queue: queue.Queue = queue.Queue()
+            setup_continue = threading.Event()
+            error_queue: queue.Queue = queue.Queue()
+
+            def run_node():
+                try:
+
+                    def setup_fn(_params, node_runner):
+                        token_queue.put(node_runner.cancellation_token())
+                        setup_continue.wait(timeout=30.0)
+
+                    NodeBuilder().run(setup_fn)
+                except Exception as e:
+                    error_queue.put(e)
+
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+
+            cancellation_token: CancellationToken = await asyncio.to_thread(
+                token_queue.get, timeout=5.0
+            )
+
+            messenger = await MessengerHandle.from_host_port(router.host, router.port)
+
+            # The shutdown service is registered pre-setup, so it must be
+            # reachable while setup is still blocked
+            await _wait_for_service(
+                messenger,
+                SHUTDOWN_SERVICE,
+                runner_thread,
+                error_queue,
+            )
+
+            # Send shutdown while setup is still blocked
+            await ServiceMessenger.poll(
+                messenger,
+                TEST_CORE_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
+                SHUTDOWN_SERVICE,
+                TEST_CORE_NODE,
+                TEST_INSTANCE_ID,
+                b"shutdown",
+                2.0,)
+
+            # The runner cannot exit while the setup callback is still on the
+            # stack: run() only returns after setup does
+            await asyncio.sleep(0.2)
+            assert runner_thread.is_alive(), (
+                "Runner must keep running while the setup callback is blocked"
+            )
+
+            # Unblock setup: the already-received shutdown must now take effect
+            # without any further shutdown request
+            setup_continue.set()
+            runner_thread.join(timeout=10.0)
+
+    assert not runner_thread.is_alive(), (
+        "Runner should exit after setup returns, honoring the earlier shutdown"
+    )
+    assert cancellation_token.is_cancelled(), (
+        "Cancellation token should be cancelled by a shutdown received during setup"
+    )
+    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_token_cancelled_awaitable(monkeypatch):
+    """token.cancelled() is awaitable: pending until cancel(), resolved after.
+
+    Uses a standalone NodeRunner directly (no NodeBuilder.run) so the await
+    runs on the test's own event loop, with no node shutdown machinery
+    cancelling tasks underneath the assertions.
+    """
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(PEPPY_CONFIG)
+
+            standalone_config = (
+                StandaloneConfig()
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_messaging(router.host, router.port)
+                .with_instance_id(TEST_INSTANCE_ID)
+            )
+            node_runner = await NodeRunner.new_standalone(
+                peppy_config_path, standalone_config
+            )
+            token = node_runner.cancellation_token()
+
+            waiter = asyncio.ensure_future(token.cancelled())
+            await asyncio.sleep(0.1)
+            assert not waiter.done(), (
+                "cancelled() must stay pending while the token is not cancelled"
+            )
+
+            token.cancel()
+            await asyncio.wait_for(waiter, timeout=5.0)
+
+            # An already-cancelled token resolves immediately
+            await asyncio.wait_for(token.cancelled(), timeout=5.0)
+
+
+@pytest.mark.asyncio
 async def test_node_runner_exposes_messenger_and_metadata(monkeypatch):
     """NodeRunner exposes messenger(), bound_core_node(), bound_instance_id(), node_name()."""
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)

@@ -315,6 +315,20 @@ impl PyCancellationToken {
     fn cancel(&self) {
         self.inner.cancel();
     }
+
+    /// Wait until the token is cancelled.
+    ///
+    /// Async counterpart of polling `is_cancelled()`: completes when the node
+    /// is asked to shut down (daemon stop, daemon-liveness loss, or Ctrl+C in
+    /// standalone mode), or immediately if the token is already cancelled.
+    /// Mirrors the Rust `CancellationToken::cancelled()` awaitable.
+    fn cancelled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let token = self.inner.clone();
+        crate::py_future::future_into_py(py, async move {
+            token.cancelled().await;
+            Ok(())
+        })
+    }
 }
 
 /// Python wrapper for NodeRunner.

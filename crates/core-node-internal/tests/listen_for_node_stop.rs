@@ -1,9 +1,11 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, add_and_build_forking_node, build_staged_node, children_of,
-    is_process_running, poll_until, send_node_add_and_wait, spawn_real_running_instance,
-    spawn_real_stuck_instance, start_core_node_with_mock_messenger, write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node,
+    build_staged_node, children_of, create_test_node_with_name, is_process_running, poll_until,
+    send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
+    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::node::Name;
 use core_node_api::encoding::NodeStopRequest;
@@ -297,5 +299,135 @@ async fn node_stop_force_kills_whole_process_group() {
     assert!(
         is_process_running(std::process::id()),
         "node_stop must never kill the root/core node (the daemon itself)"
+    );
+}
+
+/// Full end-to-end graceful stop with a REAL peppylib node: a compiled
+/// `NodeBuilder` binary is started through the real `node_run` action over
+/// real zenoh messaging, then stopped through the real `node_stop` service.
+/// The node's runtime must receive the cooperative `SHUTDOWN_SERVICE`, cancel
+/// its cancellation token, and exit within the grace window, so the stop is
+/// classified graceful (`force_killed == false`) rather than force-killed.
+///
+/// This closes the loop between the daemon-side tests above (which simulate
+/// the node's shutdown listener in-process) and the node-side tests in
+/// `crates/peppylib/tests/runner.rs` (which simulate the daemon's shutdown
+/// send): here both halves are the production code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_stop_reports_graceful_for_real_node_builder_node() {
+    const TARGET_NODE_NAME: &str = "graceful_builder_node";
+    const TARGET_NODE_TAG: &str = "v1";
+    const TARGET_INSTANCE_ID: &str = "graceful_builder_instance";
+
+    let started = start_core_node_with_real_messenger().await;
+    let node_stack = started.node_stack.clone();
+
+    // A real cargo node whose main() is `NodeBuilder::new().run(...)`. Held
+    // for the whole test body; the TempDir guard reclaims the build dir.
+    let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
+
+    let add_response = send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        node_dir.path(),
+        Duration::from_secs(30),
+        // Longer timeout to account for copying the test node folder, which
+        // includes build artifacts.
+        Duration::from_secs(120),
+    )
+    .await
+    .expect("node_add should complete");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    // Point the node's runtime config at the real zenoh endpoint so the
+    // spawned process can join the messaging network.
+    let (messaging_host, messaging_port) = started
+        .caller_handle
+        .messaging_endpoint()
+        .await
+        .expect("zenoh endpoint should be available");
+    let runtime_config_json5 = common::build_runtime_config_json5(
+        messaging_host.as_str(),
+        messaging_port,
+        &started.core_node_name,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        TARGET_INSTANCE_ID,
+        Default::default(),
+    );
+
+    let start_response = send_node_run_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(30),
+            result: Duration::from_secs(60),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete");
+    assert!(
+        start_response.result.success,
+        "node_run should succeed, got error: {:?}",
+        start_response.result.error_message
+    );
+    let pid = start_response
+        .result
+        .pid
+        .expect("node_run should return a pid");
+    assert!(
+        is_process_running(pid),
+        "node process {pid} should be running before stop"
+    );
+
+    // System under test: the real stop handler sends SHUTDOWN_SERVICE, the
+    // node's NodeBuilder runtime cancels its cancellation token and exits.
+    // The timeout must exceed the handler's graceful (3s) + reap (2s) budget
+    // plus messaging round-trips.
+    let response = poll_node_stop(
+        &NodeStopRequest::new(TARGET_INSTANCE_ID),
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        common::core_node_target(&started.core_node_name),
+        &started.core_node_name,
+        Duration::from_secs(20),
+    )
+    .await
+    .expect("node_stop request should complete");
+
+    assert!(
+        response.success,
+        "node_stop should succeed, got error: {:?}",
+        response.error_message
+    );
+    // The whole point: a real NodeBuilder node must honor the cooperative
+    // shutdown within the grace period and never be reported as force-killed.
+    assert!(
+        !response.force_killed,
+        "a real NodeBuilder node should exit cooperatively, not be force-killed"
+    );
+
+    // The process must be gone. Poll rather than assert synchronously: the
+    // reap is best-effort under a bounded timeout.
+    poll_until(
+        Duration::from_secs(5),
+        &format!("node process {pid} should be gone after node_stop"),
+        || (!is_process_running(pid)).then_some(()),
+    )
+    .await;
+
+    let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    assert!(
+        node_stack.find_by_instance_id(&instance_id).is_none(),
+        "instance should be removed from the node stack after a graceful stop"
     );
 }
