@@ -25,12 +25,43 @@ impl<'a> PeppyConfigTemplate<'a> {
 #[derive(Template)]
 #[template(path = "peppygen/python/pyproject.toml.j2", escape = "none")]
 struct PeppyPythonConfigTemplate<'a> {
+    peppylib_version: &'a str,
     python_min_version: &'a str,
     python_max_version: &'a str,
 }
 
 impl PeppyPythonConfigTemplate<'_> {
     pub const TEMPLATE_PATH: &'static str = "peppygen/python/pyproject.toml.j2";
+}
+
+/// Version of the deployed peppylib Python distribution.
+///
+/// A PEP 440 local version: public indexes reject local versions, so
+/// peppygen's exact `peppylib==<this>` requirement can never be satisfied
+/// from PyPI — a node missing the `.peppy/libs/peppylib` path source fails
+/// loudly instead of silently installing an outdated release. Intentionally
+/// differs from `peppylib.__version__` (which is stamped from PEPPY_GIT_TAG).
+pub(crate) const PYTHON_PEPPYLIB_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+peppy");
+
+#[derive(Template)]
+#[template(path = "peppylib/python/pyproject.toml.j2", escape = "none")]
+struct PeppylibPythonProjectTemplate<'a> {
+    peppylib_version: &'a str,
+    python_min_version: &'a str,
+    python_max_version: &'a str,
+}
+
+/// Renders the manifest of the standalone peppylib Python project deployed
+/// at `.peppy/libs/peppylib/pyproject.toml`. Plain setuptools packaging of
+/// the prebuilt wrappers + native extension — never maturin, since end-user
+/// machines have no Rust toolchain.
+pub(crate) fn render_peppylib_python_pyproject() -> Result<String> {
+    let tpl = PeppylibPythonProjectTemplate {
+        peppylib_version: PYTHON_PEPPYLIB_VERSION,
+        python_min_version: config::consts::PYTHON_MIN_VERSION,
+        python_max_version: config::consts::PYTHON_MAX_VERSION,
+    };
+    Ok(tpl.render()?)
 }
 
 pub(crate) fn copy_embedded_templates(prefix: &str, to: &Path, peppylib_path: &str) -> Result<()> {
@@ -95,6 +126,7 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
         }
         PeppyPythonConfigTemplate::TEMPLATE_PATH => {
             let tpl = PeppyPythonConfigTemplate {
+                peppylib_version: PYTHON_PEPPYLIB_VERSION,
                 python_min_version: config::consts::PYTHON_MIN_VERSION,
                 python_max_version: config::consts::PYTHON_MAX_VERSION,
             };

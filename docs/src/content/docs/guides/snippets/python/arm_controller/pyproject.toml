@@ -7,7 +7,7 @@ name = "arm_controller"
 version = "0.1.0"
 description = "arm_controller peppy node"
 requires-python = ">=3.11,<3.14"
-dependencies = ["peppygen"]
+dependencies = ["peppygen", "peppylib"]
 
 [project.scripts]
 arm_controller = "arm_controller.__main__:main"
@@ -20,3 +20,4 @@ dev = []
 
 [tool.uv.sources]
 peppygen = { path = ".peppy/libs/peppygen" }
+peppylib = { path = ".peppy/libs/peppylib" }
