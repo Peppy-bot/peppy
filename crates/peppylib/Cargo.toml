@@ -45,6 +45,7 @@ rand = "0.10"
 regex = "1"
 config = { path = "../config-internal", features = ["test_helpers"] }
 pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
+ctor = "1.0.7"
 
 [features]
 default = ["zenoh"]
