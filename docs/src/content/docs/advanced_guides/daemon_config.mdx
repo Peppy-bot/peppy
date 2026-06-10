@@ -1,0 +1,101 @@
+---
+title: Daemon configuration
+description: Tune the daemon's messaging topology, peer-mode buffer sizes, and node lifecycle grace periods through peppy_config.json5.
+sidebar:
+  order: 9
+---
+
+The peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It controls the messaging topology of the whole stack, the subscriber channel buffer sizes, and the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns.
+
+:::note
+The file is read **once, at daemon startup**. Editing it has no effect on a running stack; restart the daemon (`peppy serve`, or `systemctl restart` your service) to apply changes.
+:::
+
+## How the file is managed
+
+You never need to create or migrate this file by hand:
+
+- **First start.** If the file does not exist, the daemon creates it with every setting at its default value, annotated with explanatory comments.
+- **Missing settings.** If the file exists but omits settings (typically a file written by an older peppy, before a newer knob existed), the daemon appends each missing setting with its default value and comments. Your own values, comments, formatting, and any unrecognized keys are preserved exactly as you wrote them.
+- **Malformed file.** If the file cannot be parsed, or a value is out of range, the daemon refuses to start and reports the error instead of silently falling back to defaults. A file that fails to load is never modified.
+
+A setting you delete from the file therefore comes back with its default on the next daemon start. To change a setting, edit its value instead of removing it.
+
+## The default file
+
+```json5
+// Read once when the peppy daemon starts, so any edit below (mode or buffer
+// sizes) takes effect only after you restart the daemon.
+{
+  //   "peer"   - Zenoh peer sessions with gossip: nodes form direct
+  //              peer-to-peer links and data stops relaying through the router.
+  //   "router" - gossip off: all traffic relays through the central zenohd
+  //              router.
+  // Container nodes in a separate network namespace (Lima on macOS) always use
+  // the router path regardless of this setting.
+  mode: "peer",
+
+  // Subscriber channel buffer sizes (number of in-flight messages) per QoS
+  // tier, used in peer mode where there is no router relay to buffer between a
+  // publisher and a subscriber. Defaults match peppy's built-in behavior; only
+  // edit to tune backpressure.
+  peer: {
+    standard_buffer_size: 128,
+    high_throughput_buffer_size: 1024,
+  },
+
+  lifecycle: {
+    // Node lifecycle knobs. `daemon_grace_secs` is the grace period a spawned node
+    // waits, after the daemon's heartbeat goes silent, before shutting itself down
+    // to avoid orphaning.
+    daemon_grace_secs: 180,
+
+    // How long a clean shutdown (ctrl+C / `systemctl stop`) and `peppy node
+    // stop` wait for a node to exit cooperatively before force-killing its
+    // process group. Seconds; minimum 1. A robot node uses this window to park
+    // actuators and release hardware before it is killed.
+    shutdown_grace_secs: 3,
+  },
+}
+```
+
+## `mode`: messaging topology
+
+`mode` selects how nodes exchange data:
+
+- **`"peer"`** (default): nodes run Zenoh peer sessions with gossip discovery enabled. After discovery, nodes form direct peer-to-peer links and data stops relaying through the central router, which removes a network hop from every message.
+- **`"router"`**: gossip is off and all traffic relays through the central `zenohd` router. Use this when direct node-to-node connectivity is unreliable or undesirable, or to simplify debugging by funneling all traffic through one process.
+
+[Container nodes](/advanced_guides/containers/) that live in a separate network namespace (such as the Lima VM peppy uses on macOS) always take the router path, regardless of this setting: gossip cannot establish direct links across the namespace boundary.
+
+## `peer`: subscriber buffer sizes
+
+Each subscriber buffers in-flight messages in a bounded local channel. The `peer` block sets that channel's capacity (number of messages, not bytes) per QoS tier:
+
+- **`standard_buffer_size`** (default `128`): the buffer for topics on the standard QoS tier, which most topics use. The same capacity also sizes the channels behind service requests and replies.
+- **`high_throughput_buffer_size`** (default `1024`): the buffer for topics on the high-throughput QoS tier, such as sensor-data streams, where short bursts well above the average rate are normal.
+
+The capacities apply in every mode, but they matter most in peer mode, which is why they live under the `peer` block: with nodes peering directly there is no router relay between a publisher and a subscriber, so this buffer is all that absorbs a burst.
+
+When a subscriber falls behind and its buffer fills up, what happens next depends on the topic's QoS: topics published with a reliable profile block delivery so backpressure propagates to the publisher, while best-effort topics (including sensor-data streams on the high-throughput tier) drop messages instead. Raise a buffer size to absorb longer bursts at the cost of memory and worst-case latency; lower it to surface backpressure, or message loss, sooner. The defaults match peppy's built-in behavior, so you only need to touch this block to tune backpressure.
+
+Both values must be greater than `0`; the daemon rejects a zero buffer size at startup.
+
+## `lifecycle`: grace periods
+
+The `lifecycle` block tunes the two windows peppy uses to guarantee that no node outlives the daemon. The full mechanics are described in [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention).
+
+- **`daemon_grace_secs`** (default `180`, minimum `30`): every spawned node runs a watchdog that listens for the daemon's periodic heartbeat (published every 5 seconds). If the heartbeat goes silent for this many seconds, the node shuts itself down rather than lingering as an orphan. This only governs **unclean** daemon death (crash, OOM, `SIGKILL`); a clean shutdown does not wait for it. The minimum exists so a brief daemon blip or a quick restart never trips every node's watchdog.
+- **`shutdown_grace_secs`** (default `3`, minimum `1`): how long a clean daemon shutdown (`Ctrl+C`, `systemctl stop`) and `peppy node stop` wait for a node to exit cooperatively before force-killing its process group. Raise it for nodes that need longer to park actuators or release hardware before dying.
+
+## Reference
+
+| Setting | Default | Constraint | Effect |
+|---|---|---|---|
+| `mode` | `"peer"` | `"peer"` or `"router"` | Messaging topology: direct peer links with gossip, or relay everything through the central router. |
+| `peer.standard_buffer_size` | `128` | `> 0` | Subscriber channel capacity (messages) for standard-QoS topics; also sizes service request/reply channels. |
+| `peer.high_throughput_buffer_size` | `1024` | `> 0` | Subscriber channel capacity (messages) for high-throughput-QoS topics such as sensor-data streams. |
+| `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
+| `lifecycle.shutdown_grace_secs` | `3` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit before force-killing. |
+
+A value outside its constraint, an unknown `mode`, or a syntax error all stop the daemon at startup with an error pointing at the problem (an out-of-range value names the offending field; a parse error reports the bad value or its position), so a typo can never silently revert your stack to defaults.

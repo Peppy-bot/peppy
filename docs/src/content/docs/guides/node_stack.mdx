@@ -184,7 +184,7 @@ Spawned nodes are child processes of the daemon, so peppy takes care to ensure t
 
 **Unclean daemon death (crash, OOM, `SIGKILL`).** When the daemon dies without the chance to run that cleanup, it can't tear its nodes down. Instead, each spawned node runs a watchdog that listens for a periodic heartbeat from the daemon. If it sees no heartbeat for the **daemon grace period**, `daemon_grace_secs` (**180 seconds / 3 minutes** by default), the node shuts itself down rather than lingering as an orphan. The period is deliberately generous so a brief daemon blip or a quick restart doesn't tear your nodes down: a node started in peer mode survives a daemon restart that completes within the window.
 
-Both grace periods are configured in `~/.peppy/conf/peppy_config.json5` and take effect after a daemon restart:
+Both grace periods are configured in `~/.peppy/conf/peppy_config.json5` (see [Daemon configuration](/advanced_guides/daemon_config/) for the full file reference) and take effect after a daemon restart:
 
 ```json5
 // peppy_config.json5
