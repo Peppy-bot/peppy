@@ -770,6 +770,13 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
             InstanceState::Starting,
             "instance should be in Starting state until commit_started runs"
         );
+        assert_eq!(
+            inst.pid(),
+            child.id(),
+            "Starting instance must carry the spawned child's pid before \
+             commit_started so a daemon teardown during the start window can \
+             force-kill it"
+        );
     }
 
     let pid = child.id().expect("child has pid");

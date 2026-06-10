@@ -693,6 +693,147 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     );
 }
 
+/// A shutdown that arrives while `setup_fn` is still running must cancel the
+/// cancellation token and exit the node without waiting for setup to finish.
+/// Exercises the during-setup select arm of `run_with_closure`; the post-setup
+/// arm is covered by `daemon_cancellation_token_cancelled_on_shutdown`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config = r#"{
+      peppy_schema: "node_v1",
+      manifest: {
+        name: "test_node",
+        tag: "v1",
+      },
+      execution: {
+        language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
+        run_cmd: ["./target/debug/test_node"]
+      },
+    }"#;
+    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        NodeInstanceConfig {
+            arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
+                .expect("runtime args should parse"),
+            ..NodeInstanceConfig::new(
+                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
+            )
+        },
+        TEST_NODE_NAME,
+        "v1",
+        TEST_CORE_NODE,
+    )
+    .expect("runtime config should build");
+    let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+    runtime_config
+        .save_json5_launch_config(&runtime_config_path)
+        .expect("failed to write runtime config");
+
+    let _env_guard = EnvAndDirGuard::new(temp_dir.path(), &runtime_config_path);
+
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<CancellationToken>();
+    let mut runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+            let _ = setup_tx.send(node_runner.cancellation_token().clone());
+            // Block setup forever: the shutdown must interrupt it, not wait
+            // for it to complete.
+            std::future::pending::<()>().await;
+            Ok(())
+        })
+    });
+
+    // Wait until the node is inside setup_fn and grab the cancellation token
+    let cancellation_token = tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should start")
+        .expect("runner setup signal should be sent");
+
+    assert!(
+        !cancellation_token.is_cancelled(),
+        "cancellation token should not be cancelled before shutdown request"
+    );
+
+    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+        .await
+        .expect("failed to create messenger");
+
+    // The shutdown service is a pre-setup service, so it must be reachable
+    // while setup_fn is still blocked
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if runner_task.is_finished() {
+            let result = runner_task.await.expect("runner task should not panic");
+            panic!("runner exited early: {result:?}");
+        }
+
+        if peppylib::ServiceMessenger::is_reachable(
+            &messenger,
+            TEST_CORE_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            test_node_target(TEST_NODE_NAME),
+            SHUTDOWN_SERVICE,
+            Some(TEST_CORE_NODE),
+            Some(TEST_INSTANCE_ID),
+        )
+        .await
+        .expect("reachability check should succeed")
+        {
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("shutdown service did not become reachable");
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Send the shutdown request while setup_fn is still blocked
+    let shutdown_payload = Payload::from_static(b"shutdown");
+    peppylib::ServiceMessenger::poll(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        test_node_target(TEST_NODE_NAME),
+        SHUTDOWN_SERVICE,
+        Some(TEST_CORE_NODE),
+        Some(TEST_INSTANCE_ID),
+        shutdown_payload,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("shutdown service should respond");
+
+    // The runner must exit even though setup_fn never completed
+    tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
+        .await
+        .expect("runner should exit while setup is still blocked")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+
+    assert!(
+        cancellation_token.is_cancelled(),
+        "cancellation token should be cancelled by a shutdown received during setup"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_runner_exposes_messenger_and_metadata() {
     let _env_guard = EnvAndDirGuard::new_standalone();

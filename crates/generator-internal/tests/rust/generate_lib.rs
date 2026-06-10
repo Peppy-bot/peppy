@@ -52,7 +52,8 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
 
 #[test]
 fn generate_peppygen_lib_minimal_config() {
-    let temp_dir = TempDir::new().expect("failed to create temp directory");
+    let temp_dir =
+        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
     // Minimal config with no interfaces
@@ -240,7 +241,8 @@ fn generate_peppygen_lib_emits_clock_module() {
 
 #[test]
 fn generate_peppygen_lib_missing_config() {
-    let temp_dir = TempDir::new().expect("failed to create temp directory");
+    let temp_dir =
+        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
     // Try to generate without a peppy.json5 - should fail
@@ -261,7 +263,8 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
     const EXPOSED_NODE_NAME: &str = "topic_exposer";
     const CONSUMER_NODE_NAME: &str = "topic_consumer";
 
-    let exposed_dir = TempDir::new().expect("failed to create temp directory");
+    let exposed_dir =
+        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
@@ -313,7 +316,8 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
         exposed_peppygen_dir.display()
     );
 
-    let consumer_dir = TempDir::new().expect("failed to create temp directory");
+    let consumer_dir =
+        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{
@@ -374,7 +378,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
     const EXPOSED_NODE_NAME: &str = "service_exposer";
     const CONSUMER_NODE_NAME: &str = "service_consumer";
 
-    let exposed_dir = TempDir::new().expect("failed to create temp directory");
+    let exposed_dir =
+        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
@@ -429,7 +434,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         exposed_peppygen_dir.display()
     );
 
-    let consumer_dir = TempDir::new().expect("failed to create temp directory");
+    let consumer_dir =
+        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{
@@ -503,7 +509,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
     const EXPOSED_NODE_NAME: &str = "action_exposer";
     const CONSUMER_NODE_NAME: &str = "action_consumer";
 
-    let exposed_dir = TempDir::new().expect("failed to create temp directory");
+    let exposed_dir =
+        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
@@ -570,7 +577,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         exposed_peppygen_dir.display()
     );
 
-    let consumer_dir = TempDir::new().expect("failed to create temp directory");
+    let consumer_dir =
+        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{

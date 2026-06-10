@@ -15,13 +15,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use config::node::QoSProfile;
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
 use core_node_api::names;
 
 use crate::core_node::transport::poll_clock;
 use crate::error::{Error, Result};
-use crate::messaging::{Subscription, TopicMessenger};
+use crate::messaging::Subscription;
 use crate::runtime::{NodeRunner, TaskHandle, spawn};
 
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -186,23 +185,7 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
 
 /// Subscribe to the periodic `clock` topic on `node_runner`'s bound core node.
 pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
-    let processor = node_runner.processor();
-    let core_node = processor.bound_core_node();
-    let inner = TopicMessenger::subscribe(
-        node_runner.messenger(),
-        processor.bound_core_node(),
-        processor.bound_instance_id(),
-        Some(crate::messaging::SenderTarget::node(
-            core_node,
-            names::CORE_NODE_TAG,
-        )?),
-        false,
-        names::CLOCK,
-        Some(core_node),
-        &crate::messaging::ConsumerFilter::Any,
-        QoSProfile::SensorData,
-    )
-    .await?;
+    let inner = super::subscribe_core_topic(node_runner, names::CLOCK).await?;
     Ok(ClockSubscription { inner })
 }
 

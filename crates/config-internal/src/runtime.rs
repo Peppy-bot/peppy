@@ -86,6 +86,35 @@ fn default_high_throughput_buffer_size() -> usize {
     crate::peppy_config::DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
 }
 
+fn default_daemon_grace_secs() -> u64 {
+    crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS
+}
+
+/// Node lifecycle settings the daemon resolves once (from `peppy_config.json5`)
+/// and ships to each spawned node. `daemon_grace_secs` is the grace period the
+/// node's daemon-liveness watchdog waits, after the daemon's heartbeat goes
+/// silent, before shutting itself down — the uncatchable-death safety net.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LifecycleRuntimeConfig {
+    #[serde(default = "default_daemon_grace_secs")]
+    pub daemon_grace_secs: u64,
+}
+
+impl Default for LifecycleRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            daemon_grace_secs: default_daemon_grace_secs(),
+        }
+    }
+}
+
+impl LifecycleRuntimeConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Messaging-session settings the daemon resolves once and ships to a node.
 ///
 /// Nodes open a `peer` session that connects to a seed (the router) and then
@@ -176,6 +205,11 @@ pub struct RuntimeConfig {
     /// still parse.
     #[serde(default, skip_serializing_if = "DiscoveryConfig::is_default")]
     pub discovery: DiscoveryConfig,
+    /// Node lifecycle settings (daemon-liveness grace period). Defaulted and
+    /// omitted from serialized configs for the common case, so launch configs
+    /// written before this field existed still parse byte-identically.
+    #[serde(default, skip_serializing_if = "LifecycleRuntimeConfig::is_default")]
+    pub lifecycle: LifecycleRuntimeConfig,
 }
 
 impl RuntimeConfig {
@@ -195,6 +229,7 @@ impl RuntimeConfig {
             node_tag: Name::new(node_tag.into())?,
             bound_core_node: Name::new(bound_core_node.into())?,
             discovery: DiscoveryConfig::default(),
+            lifecycle: LifecycleRuntimeConfig::default(),
         })
     }
 
@@ -279,6 +314,45 @@ mod tests {
 
         let legacy = runtime_config_from_json("camera_front").unwrap();
         assert!(!legacy.node_instance.framework.use_sim_time);
+    }
+
+    /// A launch config written before `lifecycle` existed parses with the
+    /// default grace period, an explicit block round-trips, and a default
+    /// lifecycle is omitted from the serialized form so existing configs stay
+    /// byte-identical.
+    #[test]
+    fn lifecycle_config_default_and_round_trip() {
+        let legacy = runtime_config_from_json("camera_front").unwrap();
+        assert_eq!(legacy.lifecycle, LifecycleRuntimeConfig::default());
+        assert_eq!(
+            legacy.lifecycle.daemon_grace_secs,
+            crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS
+        );
+
+        // Default lifecycle is skipped on serialize.
+        let serialized = serde_json5::to_string(&legacy).unwrap();
+        assert!(
+            !serialized.contains("lifecycle"),
+            "default lifecycle should not be serialized: {serialized}"
+        );
+
+        // An explicit lifecycle block round-trips.
+        let custom: RuntimeConfig = serde_json5::from_str(
+            r#"{
+                messaging_host: "127.0.0.1",
+                messaging_port: 7448,
+                node_instance: { instance_id: "camera_front" },
+                node_name: "camera",
+                node_tag: "v1",
+                bound_core_node: "core_node",
+                lifecycle: { daemon_grace_secs: 42 }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(custom.lifecycle.daemon_grace_secs, 42);
+        let reparsed: RuntimeConfig =
+            serde_json5::from_str(&serde_json5::to_string(&custom).unwrap()).unwrap();
+        assert_eq!(reparsed.lifecycle, custom.lifecycle);
     }
 
     /// A launch config written before `discovery` existed (no `discovery` key)

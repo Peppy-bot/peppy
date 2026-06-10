@@ -92,7 +92,7 @@ impl PyServiceEndpoint {
         handler: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             // Phase 1: receive next request (pure Rust, no GIL needed)
             let recv_result = {
                 let mut endpoint = inner.lock().await;
@@ -103,9 +103,11 @@ impl PyServiceEndpoint {
                 return Ok(false);
             };
 
-            // Phase 2: call Python handler (supports sync and async callables)
+            // Phase 2: call Python handler (supports sync and async callables).
+            // Gated attach: during interpreter shutdown the handler can no
+            // longer run, so drop the request and report the listener closed.
             let py_context = PyServiceRequestContext::from(context);
-            let handler_call = Python::attach(|py| -> PyResult<_> {
+            let Some(handler_call) = crate::py_future::try_attach_gated(|py| -> PyResult<_> {
                 let result = handler.call1(py, (py_context,))?;
                 let is_awaitable = result.bind(py).hasattr("__await__")?;
                 if is_awaitable {
@@ -114,7 +116,9 @@ impl PyServiceEndpoint {
                 } else {
                     Ok((None, Some(result.extract::<Vec<u8>>(py)?)))
                 }
-            });
+            }) else {
+                return Ok(false);
+            };
             // Phase 3: send response (pure Rust). Handler errors take the
             // structured `respond_error` path so the caller sees
             // `ServiceError { reason }` without the framework smuggling a
@@ -123,8 +127,12 @@ impl PyServiceEndpoint {
                 Ok((maybe_future, sync_bytes)) => {
                     let response_bytes = if let Some(future) = maybe_future {
                         match future.await {
-                            Ok(py_result) => Python::attach(|py| py_result.extract::<Vec<u8>>(py))
-                                .map_err(|err| err.to_string()),
+                            Ok(py_result) => match crate::py_future::try_attach_gated(|py| {
+                                py_result.extract::<Vec<u8>>(py)
+                            }) {
+                                Some(extracted) => extracted.map_err(|err| err.to_string()),
+                                None => Err("node is shutting down".to_string()),
+                            },
                             Err(err) => Err(err.to_string()),
                         }
                     } else if let Some(sync_bytes) = sync_bytes {
@@ -171,7 +179,7 @@ impl PyServiceMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_identity = as_identity.into_inner();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let endpoint = ServiceMessenger::listen(
                 &handle,
                 &as_core_node,
@@ -203,7 +211,7 @@ impl PyServiceMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
@@ -239,7 +247,7 @@ impl PyServiceMessenger {
             duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let response = ServiceMessenger::poll(
                 &handle,
                 &bound_core_node,

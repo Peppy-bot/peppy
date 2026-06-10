@@ -20,6 +20,15 @@ use tracing::info;
 pub(crate) const HEALTH_MONITOR_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) const HEALTH_MONITOR_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Cadence of the daemon-liveness heartbeat each spawned node's watchdog
+/// listens for. Small and fixed; the configurable grace period
+/// (`peppy_config.lifecycle.daemon_grace_secs`) is many multiples of it, so a
+/// couple of dropped beats never trip a node's watchdog. The seconds value is
+/// defined next to the grace-period floor in `config::peppy_config`, where a
+/// compile-time assert enforces that margin.
+pub(crate) const DAEMON_HEARTBEAT_INTERVAL: Duration =
+    Duration::from_secs(config::peppy_config::DAEMON_HEARTBEAT_INTERVAL_SECS);
+
 pub struct CoreNodeRunner {
     core_node: CoreNode,
     messaging_ready: Option<watch::Receiver<bool>>,
@@ -45,6 +54,7 @@ impl CoreNodeRunner {
             // 10 Hz: high enough to correlate logs across nodes, low enough to
             // avoid flooding the bus.
             clock_publish_interval: Duration::from_millis(100),
+            heartbeat_interval: DAEMON_HEARTBEAT_INTERVAL,
             daemon_use_sim_time: clock_source.use_sim_time(),
         };
         let peppy_dirs = PeppyDirs::default();
@@ -73,7 +83,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
         let core_node = self.core_node;
         let mut messaging_ready = self.messaging_ready;
         let future = Box::pin(async move {
-            let shutdown_signal = tokio::signal::ctrl_c();
+            let shutdown_signal = super::shutdown_signal::shutdown_signal();
             tokio::pin!(shutdown_signal);
 
             if let Some(mut ready_rx) = messaging_ready.take() {
@@ -115,6 +125,14 @@ impl ServeAsyncCommand for CoreNodeRunner {
 
             if shutdown_triggered {
                 info!("Shutting down commands listener...");
+                // Catchable shutdown (ctrl+C / SIGTERM): the daemon is exiting,
+                // so tear down every spawned node now — cooperatively, then
+                // force-kill any straggler's process group — so none is left
+                // orphaned. `&mut core_node_future` still holds a shared borrow
+                // of `core_node`; `teardown_node_stack` also takes `&self`, so
+                // this second shared borrow is fine. Runs before this handler
+                // returns, so the kills complete before the daemon process exits.
+                core_node.teardown_node_stack().await;
             }
 
             result

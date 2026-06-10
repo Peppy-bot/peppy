@@ -5,10 +5,22 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tempfile::TempDir;
 
-/// Build a minimal Alpine container image and return the Apptainer handle, temp dir, and .sif path.
+/// Build a minimal Alpine container image whose `%runscript` echoes
+/// `peppy-test-ok`, returning the Apptainer handle, temp dir, and .sif path.
+///
+/// Thin wrapper over [`build_container_with_runscript`] for tests that just need
+/// a runnable container.
+fn build_alpine_container() -> Option<(Apptainer, TempDir, PathBuf)> {
+    build_container_with_runscript("    echo peppy-test-ok\n")
+}
+
+/// Build a minimal Alpine container image with a custom `%runscript` body and
+/// return the Apptainer handle, temp dir, and .sif path.
 ///
 /// Shared setup for integration tests that need a built container. The temp dir is
-/// placed under `$HOME` (required for Lima path translation on macOS).
+/// placed under `$HOME` (required for Lima path translation on macOS). The
+/// `runscript_body` is spliced verbatim under `%runscript` (callers supply their
+/// own indentation and trailing newline).
 ///
 /// Returns `None` (and prints a diagnostic) when the Apptainer runtime is not
 /// available or not fully operational on this host — for example, when system
@@ -16,7 +28,7 @@ use tempfile::TempDir;
 ///
 /// First run downloads the Alpine base image (~30-60s); subsequent runs use the
 /// Apptainer cache and complete in ~5s.
-fn build_alpine_container() -> Option<(Apptainer, TempDir, PathBuf)> {
+fn build_container_with_runscript(runscript_body: &str) -> Option<(Apptainer, TempDir, PathBuf)> {
     let facade = match Apptainer::new() {
         Ok(f) => f,
         Err(e) => {
@@ -43,13 +55,11 @@ fn build_alpine_container() -> Option<(Apptainer, TempDir, PathBuf)> {
     fs::write(
         &def_path,
         format!(
-            "\
-Bootstrap: docker
-From: {DEFAULT_ALPINE_BASE_IMAGE}
-
-%runscript
-    echo peppy-test-ok
-"
+            "Bootstrap: docker\n\
+             From: {DEFAULT_ALPINE_BASE_IMAGE}\n\
+             \n\
+             %runscript\n\
+             {runscript_body}"
         ),
     )
     .expect("should be able to write .def file");
@@ -222,4 +232,107 @@ fn into_std_command_produces_runnable_command() {
         "peppy-test-ok",
         "into_std_command run should produce the same output as spawn"
     );
+}
+
+/// Polls `cond` until it returns `true` or `timeout` elapses. Returns the final
+/// value of `cond`.
+#[cfg(target_os = "macos")]
+fn poll_until(timeout: std::time::Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    cond()
+}
+
+/// `true` if any process inside the Lima guest matches `marker` (full-command
+/// `pgrep -f`). `pgrep` exits 0 when at least one process matches, 1 otherwise.
+#[cfg(target_os = "macos")]
+fn guest_has_process(facade: &Apptainer, marker: &str) -> bool {
+    match facade.guest_command(&["pgrep", "-f", marker]) {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    }
+}
+
+/// Integration test (macOS + Lima): a container `run` wrapped with `cancel_pgid`
+/// records its in-VM process group, and `kill_guest_process_group` (same key)
+/// SIGKILLs that whole group immediately.
+///
+/// This is the in-VM half of the daemon's deliberate-stop teardown: on macOS a
+/// host process-group kill only reaches the `limactl` client, so a non-responsive
+/// container node's workload lives on inside the Lima VM until this guest-side
+/// kill reaps it — without waiting for the in-container daemon watchdog's grace
+/// period. The runscript `exec sleep`s on a long, distinctive duration so the
+/// only guest process matching that marker is the container workload itself (not
+/// the wrapper, apptainer, or kill argv).
+///
+/// macOS-only: under the native (Linux) backend the wrapper is a no-op and the
+/// shared-namespace container is reaped by the host process-group kill instead,
+/// so the guest-side kill does not apply.
+#[cfg(target_os = "macos")]
+#[test]
+fn cancel_pgid_run_is_killable_in_guest() {
+    use std::time::Duration;
+
+    // Distinctive sleep duration: appears only in the actual in-VM `sleep`
+    // process, never in the wrapper/apptainer/kill command lines.
+    const SLEEP_MARKER: &str = "524287";
+    // Filesystem-safe key, mirroring an instance id. Spawn and teardown must use
+    // the same key; here both sides are this constant.
+    const INSTANCE_KEY: &str = "teardown-killtest-instance";
+
+    let Some((facade, _tmp_dir, sif_path)) =
+        build_container_with_runscript(&format!("    exec sleep {SLEEP_MARKER}\n"))
+    else {
+        return;
+    };
+
+    // Sanity: the workload is not already running under this marker.
+    assert!(
+        !guest_has_process(&facade, SLEEP_MARKER),
+        "no stray '{SLEEP_MARKER}' process should exist in the guest before the run"
+    );
+
+    let mut cmd = facade
+        .run(&sif_path.to_string_lossy())
+        .cancel_pgid(INSTANCE_KEY)
+        .into_std_command()
+        .expect("run().cancel_pgid().into_std_command() should succeed");
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+    let mut child = cmd.spawn().expect("run command should spawn");
+
+    // The in-VM workload should come up (first run may pull layers/start slowly).
+    assert!(
+        poll_until(Duration::from_secs(60), || guest_has_process(
+            &facade,
+            SLEEP_MARKER
+        )),
+        "the in-VM container workload should be running before the kill"
+    );
+
+    // System under test: reach into the VM and SIGKILL the recorded group.
+    facade
+        .kill_guest_process_group(INSTANCE_KEY)
+        .expect("guest kill should not error");
+
+    // It must be gone promptly — proving the deliberate-stop path does not wait
+    // for the in-container watchdog grace period.
+    assert!(
+        poll_until(Duration::from_secs(10), || !guest_has_process(
+            &facade,
+            SLEEP_MARKER
+        )),
+        "kill_guest_process_group must SIGKILL the in-VM workload immediately"
+    );
+
+    // Cleanup: the host `limactl shell` child's remote command has exited now
+    // that its guest group is dead; reap the handle so it doesn't linger.
+    let _ = child.kill();
+    let _ = child.wait();
 }

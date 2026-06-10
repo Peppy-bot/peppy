@@ -80,6 +80,10 @@ pub(crate) struct DaemonConnection<'a> {
     pub messenger: &'a MessengerHandle,
     pub core_node_name: String,
     pub git_hash: String,
+    /// Cooperative-shutdown grace the daemon will wait before force-killing a
+    /// node, from its `peppy_config`. Lets `node stop` size its request timeout
+    /// to outlast the daemon's grace + reap window.
+    pub shutdown_grace_secs: u64,
 }
 
 impl AppContext {
@@ -93,6 +97,7 @@ impl AppContext {
             messenger,
             core_node_name: daemon_state.core_node_name,
             git_hash: daemon_state.git_hash,
+            shutdown_grace_secs: daemon_state.shutdown_grace_secs,
         })
     }
 }

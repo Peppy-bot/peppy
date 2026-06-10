@@ -879,13 +879,14 @@ fn gocryptfs_path_matches_apptainer_search_dir() {
 }
 
 // ---------------------------------------------------------------------------
-// Guest-side cancellation (Lima): build wrapped as a process-group leader so
-// `kill_inflight_build` can SIGKILL the whole guest group on --force cancel.
+// Guest-side cancellation (Lima): the guest command (build or run) is wrapped as
+// a process-group leader so `kill_guest_process_group` can SIGKILL the whole
+// guest group on --force build cancel or on run-node teardown.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn lima_guest_build_argv_wraps_in_setsid_and_records_pgid() {
-    let argv = super::lima::lima_guest_build_argv(
+fn lima_guest_pgid_argv_wraps_in_setsid_and_records_pgid() {
+    let argv = super::lima::lima_guest_pgid_argv(
         Path::new("/opt/apptainer/bin/apptainer"),
         &["build", "/home/u/out.sif", "/home/u/node.def"],
         Path::new("/tmp/peppy/pgids/buildkey.pgid"),
@@ -1029,10 +1030,74 @@ fn lima_build_wraps_in_setsid_with_guest_native_pgid() {
     );
 }
 
+/// Under Lima, a run is wrapped as a process-group leader that records its PGID
+/// to the guest-native path keyed by the instance id, mirroring the build path
+/// so `kill_guest_process_group` can SIGKILL the in-VM workload on teardown. The
+/// guest path is passed through untranslated.
+#[test]
+fn lima_run_wraps_in_setsid_with_guest_native_pgid() {
+    let facade = lima_facade();
+    let home = std::env::var("HOME").expect("HOME must be set");
+    // The SIF lives under $HOME so Lima path translation accepts it.
+    let sif = PathBuf::from(&home).join("peppy_run_test/node.sif");
+
+    let cmd = facade
+        .run(sif.to_str().expect("utf-8 sif path"))
+        .cancel_pgid("inst-key")
+        .into_std_command()
+        .expect("Lima run command should assemble");
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+
+    assert!(
+        args.iter().any(|a| a == "setsid"),
+        "Lima run must be wrapped in setsid, got: {args:?}"
+    );
+    assert!(
+        args.iter().any(|a| a == "/tmp/peppy/pgids/inst-key.pgid"),
+        "wrapper must pass the instance-keyed guest-native PGID path, got: {args:?}"
+    );
+    // The wrapped argv still runs `apptainer run <sif>` as the child command.
+    assert!(
+        args.iter().any(|a| a == "run"),
+        "wrapper must invoke `apptainer run`, got: {args:?}"
+    );
+}
+
+/// Under Native (Linux) a run is a plain `apptainer run ...` with no pgid
+/// wrapper: the host process-group SIGKILL reaches the container directly in the
+/// shared namespace, so `cancel_pgid` is ignored.
+#[test]
+fn native_run_is_plain() {
+    let facade = native_facade();
+
+    let cmd = facade
+        .run("/work/node.sif")
+        .cancel_pgid("inst-key")
+        .into_std_command()
+        .expect("native run command should assemble");
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+
+    assert!(
+        !args.iter().any(|a| a == "setsid"),
+        "native run must not be wrapped, got: {args:?}"
+    );
+    assert_eq!(args[0], "run", "native run invokes apptainer directly");
+    assert!(
+        !args.iter().any(|a| a.contains(".pgid")),
+        "native run must not reference a PGID file, got: {args:?}"
+    );
+}
+
 /// Under Native (Linux) there is no VM: the command is a plain
-/// `apptainer build ...` with no pgid wrapper, `kill_inflight_build` is an Ok
-/// no-op (the host process group already covers the build tree), and
-/// `guest_command` runs directly on the host.
+/// `apptainer build ...` with no pgid wrapper, `kill_guest_process_group` is an Ok
+/// no-op (the host process group already covers the whole tree in the shared
+/// namespace), and `guest_command` runs directly on the host.
 #[test]
 fn native_build_is_plain_and_kill_is_a_noop() {
     let facade = native_facade();
@@ -1060,8 +1125,8 @@ fn native_build_is_plain_and_kill_is_a_noop() {
     );
 
     facade
-        .kill_inflight_build("buildkey")
-        .expect("native kill_inflight_build must be an Ok no-op");
+        .kill_guest_process_group("buildkey")
+        .expect("native kill_guest_process_group must be an Ok no-op");
 
     let output = facade
         .guest_command(&["echo", "peppy-native"])

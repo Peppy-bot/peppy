@@ -46,6 +46,30 @@ impl ActionClientCase {
     }
 }
 
+/// Pre-main: gives zenoh's global Net runtime more worker threads for this
+/// test binary. Stock zenoh 1.9.0 can deadlock its routing layer under the
+/// peer-session churn these tests generate: a thread holding the routing
+/// `ctrl_lock` parks in `block_in_place` waiting on the StartConditions
+/// mutex while the Net runtime's single default worker blocks on that same
+/// `ctrl_lock`, wedging the mutex queue (fix pending upstream in
+/// https://github.com/eclipse-zenoh/zenoh/pull/2637). With more Net workers
+/// a free worker can always drain the mutex queue, which un-parks the lock
+/// holder; 80 runs of the three churn-heaviest tests reproduced no hang with
+/// 4 workers, versus a hang within ~23 runs on the single-worker default.
+///
+/// Runs before `main` so the variable is set before libtest spawns any
+/// thread and before zenoh's lazy global runtimes read it. Spawned zenohd
+/// child processes inherit it, which is harmless. An operator-provided
+/// `ZENOH_RUNTIME` wins. Remove once the upstream fix ships in a release.
+#[ctor::ctor(unsafe)]
+fn ensure_zenoh_net_runtime_workers() {
+    if std::env::var_os("ZENOH_RUNTIME").is_none() {
+        // SAFETY: runs pre-main on the only live thread, so no other thread
+        // can concurrently read or write the process environment.
+        unsafe { std::env::set_var("ZENOH_RUNTIME", "(net: (worker_threads: 4))") };
+    }
+}
+
 /// Raises the process soft `nofile` limit once per test binary. Each test below
 /// spawns an ephemeral zenoh router, and running them in parallel can exhaust
 /// file descriptors under the macOS default soft limit of 256, surfacing as
@@ -85,6 +109,15 @@ fn ensure_test_fd_limit() {
 /// one mesh at a time keeps discovery fast and deterministic. Mirrors pmi's
 /// `ZENOH_SERIAL`. The guard is held for each test's lifetime via the field
 /// below, so acquiring the context is all a test needs to opt in.
+///
+/// KNOWN FLAKE: zenoh 1.9.0 can deadlock its routing layer under the
+/// peer-session churn these tests generate (see
+/// [`ensure_zenoh_net_runtime_workers`], which suppresses the trigger for
+/// this binary). If it ever fires anyway, the running test hangs forever and
+/// every later test queues on this mutex, so the whole binary looks stuck
+/// ("test has been running for over 60 seconds" for several tests at once).
+/// It cannot be contained in-process: session teardown needs the deadlocked
+/// locks. Kill the run and retry; do not debug peppyos for it.
 static ZENOH_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct TestRouterContext {

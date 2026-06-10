@@ -118,6 +118,9 @@ impl ServeCommandBuilder {
     pub fn build(mut self) -> Result<Serve> {
         if self.core_node_requested {
             if let Some(messenger) = &self.messenger {
+                // Capture the shutdown grace before `peppy_config` is moved into
+                // the runner, so the daemon state file can advertise it to clients.
+                let shutdown_grace_secs = self.peppy_config.lifecycle.shutdown_grace_secs;
                 let core_node = CoreNodeRunner::new(
                     Arc::clone(messenger),
                     self.core_node_name.clone(),
@@ -135,6 +138,7 @@ impl ServeCommandBuilder {
                     &core_node_name,
                     messenger.blocking_lock().messaging_port(),
                     GIT_HASH,
+                    shutdown_grace_secs,
                 );
                 let state_path = daemon_state.write().map_err(|e| {
                     Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))

@@ -18,6 +18,7 @@ chrono = "0.4"
 hostname = "0.4"
 machine-uid = "0.6"
 futures = "0.3"
+libc = "0.2"
 names-generator2 = "0.2.1"
 rand = "0.10"
 serde = { version = "1.0", features = ["derive"] }
@@ -53,7 +54,6 @@ ignore = "0.4"
 build-helpers = { path = "../build-helpers-internal" }
 
 [dev-dependencies]
-libc = "0.2"
 node-stack = { path = "../node-stack-internal" }
 config = { path = "../config-internal", features = ["test_helpers"] }
 tempfile = "3.10"

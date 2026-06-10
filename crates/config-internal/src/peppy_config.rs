@@ -6,15 +6,25 @@
 //! core-node session and to every node it spawns. Editing the file takes effect
 //! after a daemon restart.
 //!
+//! A well-formed file that omits settings (typically one written by an older
+//! peppy before a new knob existed) is completed in place: the missing entries
+//! are appended with their default values and explanatory comments, so the file
+//! on disk always lists every available knob. The user's own values, comments,
+//! and unknown keys are preserved byte-for-byte (see [`completion`]).
+//!
 //! Unlike `repositories.json5`, a malformed `peppy_config.json5` fails loud at
 //! startup ([`load_or_create`] returns `Err`) instead of falling back to
 //! defaults: the mode and buffer sizes determine the whole mesh's routing model
 //! and backpressure, so a hand-edited typo must surface immediately rather than
-//! silently reverting to peer mode.
+//! silently reverting to peer mode. A malformed file is never rewritten.
 
+mod completion;
+
+use crate::atomic_write::publish_atomic;
 use crate::consts::PeppyDirs;
 use crate::error::{Error, ParsingError, Result};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// File name of the global daemon config under `~/.peppy/conf`.
 pub const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
@@ -26,42 +36,143 @@ pub const DEFAULT_STANDARD_BUFFER_SIZE: usize = 128;
 /// sensor-data streams). Mirrors the historical hardcoded value.
 pub const DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE: usize = 1024;
 
-/// The bundled default config, written verbatim on first create so its comments
-/// survive. Kept inline (not `include_str!` from an asset file) because
-/// `config-internal` is vendored into every generated node as `src/` only, with
-/// no sibling `assets/` directory, so an external include would fail to compile
-/// inside a node build.
-///
-/// The two buffer-size values are spliced in from [`DEFAULT_STANDARD_BUFFER_SIZE`]
-/// and [`DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE`] at compile time via `concatcp!`, so
-/// the template can never drift from the [`PeerConfig::default`] the parser falls
-/// back to when the `peer` block is absent.
-const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
-    r#"// Read once when the peppy daemon starts, so any edit below (mode or buffer
+/// Default daemon-liveness grace period, in seconds (180 = 3 minutes). A
+/// spawned node that sees no daemon heartbeat for this long shuts itself down
+/// to avoid lingering as an orphan after an uncatchable daemon death.
+pub const DEFAULT_DAEMON_GRACE_SECS: u64 = 180;
+/// Minimum accepted grace period, in seconds. Must comfortably exceed the
+/// heartbeat interval and the router-watchdog restart window so a brief daemon
+/// blip never trips a node's watchdog.
+pub const MIN_DAEMON_GRACE_SECS: u64 = 30;
+/// Cadence, in seconds, of the daemon-liveness heartbeat each spawned node's
+/// watchdog listens for (published by the daemon; see
+/// `core_node::services::clock::publish_daemon_heartbeat`). Defined next to
+/// [`MIN_DAEMON_GRACE_SECS`] so the invariant between them is enforced where
+/// both values live.
+pub const DAEMON_HEARTBEAT_INTERVAL_SECS: u64 = 5;
+// Compile-time guard on the watchdog's false-trip margin: even several missed
+// beats must fit inside the smallest accepted grace period.
+const _: () = assert!(MIN_DAEMON_GRACE_SECS >= 3 * DAEMON_HEARTBEAT_INTERVAL_SECS);
+
+/// Default cooperative-shutdown grace period, in seconds. How long the daemon
+/// (on a clean ctrl+C / `systemctl stop`) and `peppy node stop` wait for a node
+/// to exit on its own before force-killing its process group.
+pub const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 3;
+/// Minimum accepted cooperative-shutdown grace period, in seconds. At least 1 so
+/// the cooperative shutdown signal is actually given a chance to land before the
+/// force-kill (a 0 would cancel the in-flight send and amount to an immediate
+/// SIGKILL).
+pub const MIN_SHUTDOWN_GRACE_SECS: u64 = 1;
+
+// The bundled default config, written verbatim on first create so its comments
+// survive. Kept inline (not `include_str!` from an asset file) because
+// `config-internal` is vendored into every generated node as `src/` only, with
+// no sibling `assets/` directory, so an external include would fail to compile
+// inside a node build.
+//
+// The template is split into one snippet per entry so `completion` can splice a
+// missing section or field (comments included) into a user's existing file. The
+// numeric values are spliced in from the `DEFAULT_*` constants at compile time
+// via `concatcp!`, so neither the template nor a spliced snippet can drift from
+// the serde `Default` impls the parser falls back to when an entry is absent.
+
+/// Comment block at the top of the bundled config file.
+const TEMPLATE_HEADER: &str = r#"// Read once when the peppy daemon starts, so any edit below (mode or buffer
 // sizes) takes effect only after you restart the daemon.
-{
-  //   "peer"   - Zenoh peer sessions with gossip: nodes form direct
+"#;
+
+/// The `mode` entry with its explanatory comment.
+const MODE_SECTION_SNIPPET: &str = r#"  //   "peer"   - Zenoh peer sessions with gossip: nodes form direct
   //              peer-to-peer links and data stops relaying through the router.
   //   "router" - gossip off: all traffic relays through the central zenohd
   //              router.
-  // Container nodes in a separate network namespace (Lima on macOS) always use 
+  // Container nodes in a separate network namespace (Lima on macOS) always use
   // the router path regardless of this setting.
   mode: "peer",
+"#;
 
-  // Subscriber channel buffer sizes (number of in-flight messages) per QoS
+/// The `peer.standard_buffer_size` entry, indented for the `peer` block.
+const STANDARD_BUFFER_FIELD_SNIPPET: &str = const_format::concatcp!(
+    "    standard_buffer_size: ",
+    DEFAULT_STANDARD_BUFFER_SIZE,
+    ",\n"
+);
+
+/// The `peer.high_throughput_buffer_size` entry, indented for the `peer` block.
+const HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET: &str = const_format::concatcp!(
+    "    high_throughput_buffer_size: ",
+    DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
+    ",\n"
+);
+
+/// The whole `peer` block with its explanatory comment.
+const PEER_SECTION_SNIPPET: &str = const_format::concatcp!(
+    r#"  // Subscriber channel buffer sizes (number of in-flight messages) per QoS
   // tier, used in peer mode where there is no router relay to buffer between a
   // publisher and a subscriber. Defaults match peppy's built-in behavior; only
   // edit to tune backpressure.
   peer: {
-    standard_buffer_size: "#,
-    DEFAULT_STANDARD_BUFFER_SIZE,
-    r#",
-    high_throughput_buffer_size: "#,
-    DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
-    r#",
-  },
-}
-"#
+"#,
+    STANDARD_BUFFER_FIELD_SNIPPET,
+    HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET,
+    "  },\n"
+);
+
+/// The `lifecycle.daemon_grace_secs` entry with its comment, indented for the
+/// `lifecycle` block.
+const DAEMON_GRACE_FIELD_SNIPPET: &str = const_format::concatcp!(
+    r#"    // Node lifecycle knobs. `daemon_grace_secs` is the grace period a spawned node
+    // waits, after the daemon's heartbeat goes silent, before shutting itself down
+    // to avoid orphaning.
+    daemon_grace_secs: "#,
+    DEFAULT_DAEMON_GRACE_SECS,
+    ",\n"
+);
+
+/// The `lifecycle.shutdown_grace_secs` entry with its comment, indented for the
+/// `lifecycle` block.
+const SHUTDOWN_GRACE_FIELD_SNIPPET: &str = const_format::concatcp!(
+    r#"    // How long a clean shutdown (ctrl+C / `systemctl stop`) and `peppy node
+    // stop` wait for a node to exit cooperatively before force-killing its
+    // process group. Seconds; minimum 1. A robot node uses this window to park
+    // actuators and release hardware before it is killed.
+    shutdown_grace_secs: "#,
+    DEFAULT_SHUTDOWN_GRACE_SECS,
+    ",\n"
+);
+
+/// The whole `lifecycle` block.
+const LIFECYCLE_SECTION_SNIPPET: &str = const_format::concatcp!(
+    "  lifecycle: {\n",
+    DAEMON_GRACE_FIELD_SNIPPET,
+    "\n",
+    SHUTDOWN_GRACE_FIELD_SNIPPET,
+    "  },\n"
+);
+
+/// The full bundled default config, composed from the snippets above.
+const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
+    TEMPLATE_HEADER,
+    "{\n",
+    MODE_SECTION_SNIPPET,
+    "\n",
+    PEER_SECTION_SNIPPET,
+    "\n",
+    LIFECYCLE_SECTION_SNIPPET,
+    "}\n"
+);
+
+/// The bundled template as it shipped before the `lifecycle` block existed:
+/// the fixture for the upgrade path that completes such a file in place. Used
+/// by both this module's and `completion`'s tests.
+#[cfg(test)]
+const OLD_TEMPLATE_WITHOUT_LIFECYCLE: &str = const_format::concatcp!(
+    TEMPLATE_HEADER,
+    "{\n",
+    MODE_SECTION_SNIPPET,
+    "\n",
+    PEER_SECTION_SNIPPET,
+    "}\n"
 );
 
 /// The messaging topology the daemon runs in.
@@ -112,6 +223,34 @@ impl Default for PeerConfig {
     }
 }
 
+/// Node lifecycle knobs. `daemon_grace_secs` is the grace period a spawned node
+/// waits, after the daemon's heartbeat goes silent, before shutting itself down
+/// to avoid orphaning. A clean ctrl+C / `systemctl stop` is immediate and does
+/// not consult this value; it only governs an uncatchable daemon death.
+///
+/// `#[serde(default)]` fills any field a partial `lifecycle` block omits from
+/// [`LifecycleConfig::default`], matching the `PeerConfig` pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LifecycleConfig {
+    pub daemon_grace_secs: u64,
+    /// Cooperative-shutdown grace period, in seconds: how long a clean daemon
+    /// shutdown and `peppy node stop` wait for a node to exit on its own before
+    /// force-killing its process group. Unlike `daemon_grace_secs` (the
+    /// uncatchable-death watchdog), this governs the catchable/explicit stop
+    /// paths.
+    pub shutdown_grace_secs: u64,
+}
+
+impl Default for LifecycleConfig {
+    fn default() -> Self {
+        Self {
+            daemon_grace_secs: DEFAULT_DAEMON_GRACE_SECS,
+            shutdown_grace_secs: DEFAULT_SHUTDOWN_GRACE_SECS,
+        }
+    }
+}
+
 /// The whole `peppy_config.json5` document. Every field is serde-defaulted so a
 /// partial or older file still parses; extra unknown keys are tolerated (this is
 /// a user-edited file, forward-compat beats strictness here).
@@ -121,6 +260,8 @@ pub struct PeppyConfig {
     pub mode: Mode,
     #[serde(default)]
     pub peer: PeerConfig,
+    #[serde(default)]
+    pub lifecycle: LifecycleConfig,
 }
 
 impl PeppyConfig {
@@ -145,13 +286,28 @@ impl PeppyConfig {
                 ))));
             }
         }
+
+        // The grace period must comfortably exceed the heartbeat interval and a
+        // router restart, or a brief daemon blip would trip every node's
+        // watchdog. Reject a hand-edited too-small value loud at load time.
+        if self.lifecycle.daemon_grace_secs < MIN_DAEMON_GRACE_SECS {
+            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+                "invalid lifecycle.daemon_grace_secs: must be >= {MIN_DAEMON_GRACE_SECS}"
+            ))));
+        }
+        if self.lifecycle.shutdown_grace_secs < MIN_SHUTDOWN_GRACE_SECS {
+            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+                "invalid lifecycle.shutdown_grace_secs: must be >= {MIN_SHUTDOWN_GRACE_SECS}"
+            ))));
+        }
         Ok(())
     }
 }
 
 /// Reads the global config from `~/.peppy/conf/peppy_config.json5`, creating it
 /// from the bundled default template (verbatim, so comments survive) when it
-/// does not exist.
+/// does not exist, and appending defaults for any setting an existing file
+/// omits so the file on disk always lists every available knob.
 ///
 /// Read ONCE by the daemon at startup. A malformed existing file returns `Err`
 /// (fail loud) rather than defaulting, since mode and buffer sizes are
@@ -162,32 +318,105 @@ pub fn load_or_create(peppy_dirs: &PeppyDirs) -> Result<PeppyConfig> {
     std::fs::create_dir_all(&conf_dir)?;
     let path = conf_dir.join(PEPPY_CONFIG_FILE);
 
-    let config: PeppyConfig = if !path.exists() {
+    if !path.exists() {
+        // Plain write: there is no user-authored content to protect yet, and
+        // it leaves the new file with normal umask-derived permissions.
         std::fs::write(&path, DEFAULT_PEPPY_CONFIG_TEMPLATE)?;
         // The bundled template is a compile-time invariant; a parse failure here
         // means the shipped asset is broken, not the user's file.
-        serde_json5::from_str(DEFAULT_PEPPY_CONFIG_TEMPLATE).map_err(|e| {
-            Error::Serialize(format!("bundled default peppy_config is invalid: {e}"))
-        })?
-    } else {
-        let content = std::fs::read_to_string(&path)?;
-        serde_json5::from_str(&content).map_err(|e| {
-            Error::Parsing(ParsingError::CannotParseConfig(format!(
-                "{PEPPY_CONFIG_FILE}: {e}"
-            )))
-        })?
-    };
+        let config: PeppyConfig =
+            serde_json5::from_str(DEFAULT_PEPPY_CONFIG_TEMPLATE).map_err(|e| {
+                Error::Serialize(format!("bundled default peppy_config is invalid: {e}"))
+            })?;
+        config.validate()?;
+        return Ok(config);
+    }
 
+    let content = std::fs::read_to_string(&path)?;
+    let config: PeppyConfig = serde_json5::from_str(&content).map_err(|e| {
+        Error::Parsing(ParsingError::CannotParseConfig(format!(
+            "{PEPPY_CONFIG_FILE}: {e}"
+        )))
+    })?;
     // serde parses any numeric field, so a hand-edited 0 buffer size survives
-    // the steps above; reject it before it reaches a bounded channel downstream.
+    // the parse above; reject it before it reaches a bounded channel downstream.
     config.validate()?;
+    // Only a fully successful load may touch the user's file: a malformed or
+    // invalid config errors out above with the file left byte-for-byte intact.
+    complete_file_with_defaults(&path, &content, &config);
     Ok(config)
+}
+
+/// Appends template defaults for every setting the user's file omits, so the
+/// on-disk file spells out all available knobs.
+///
+/// Best effort by design: `config` (parsed from `content`) is already complete
+/// in memory via the serde defaults, so this only improves the FILE. The result
+/// must pass [`completion::verify_completion`] before anything is written; a
+/// failure means a splicing bug, in which case the user's file is left
+/// untouched and a warning is logged instead of taking the daemon down over a
+/// cosmetic rewrite.
+fn complete_file_with_defaults(path: &Path, content: &str, config: &PeppyConfig) {
+    let Some(completed) = completion::complete_config_content(content) else {
+        return;
+    };
+    if !completion::verify_completion(content, &completed, config) {
+        tracing::warn!(
+            "adding missing defaults to {PEPPY_CONFIG_FILE} produced inconsistent \
+             content, leaving the file untouched"
+        );
+        return;
+    }
+    // Write through a symlink, not over it: a dotfiles-managed config stays a
+    // symlink and its real target receives the completed content. (The atomic
+    // rename below replaces the path entry itself, so it must point at the
+    // resolved file.)
+    let target = match std::fs::canonicalize(path) {
+        Ok(target) => target,
+        Err(e) => {
+            tracing::warn!("could not resolve {PEPPY_CONFIG_FILE} for completion: {e}");
+            return;
+        }
+    };
+    if let Err(e) = write_config_file(&target, &completed) {
+        tracing::warn!(
+            "could not add missing defaults to {PEPPY_CONFIG_FILE}, \
+             continuing with the in-memory defaults: {e}"
+        );
+    }
+}
+
+/// Replaces an existing config through a staged sibling tmp file and an atomic
+/// rename, so a crash mid-write can never truncate a user's hand-edited
+/// `peppy_config.json5`. The destination's permissions are carried onto the
+/// staged file first: `NamedTempFile` creates it as 0600 on unix, and the
+/// rename would otherwise silently tighten the user's file.
+fn write_config_file(path: &Path, content: &str) -> Result<()> {
+    let permissions = std::fs::metadata(path)?.permissions();
+    publish_atomic(path, |tmp| {
+        std::fs::write(tmp, content)?;
+        std::fs::set_permissions(tmp, permissions)
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use tempfile::tempdir;
+
+    /// Writes `content` as the config file in a fresh `~/.peppy`-style tempdir.
+    /// The tempdir guard is returned so callers keep it alive for the test.
+    fn dirs_with_config(content: &str) -> (tempfile::TempDir, PeppyDirs, PathBuf) {
+        let tmp = tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        let path = conf_dir.join(PEPPY_CONFIG_FILE);
+        std::fs::write(&path, content).unwrap();
+        (tmp, peppy_dirs, path)
+    }
 
     #[test]
     fn default_mode_is_peer_and_buffers_match_constants() {
@@ -201,6 +430,55 @@ mod tests {
             cfg.peer.high_throughput_buffer_size,
             DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
         );
+        assert_eq!(cfg.lifecycle.daemon_grace_secs, DEFAULT_DAEMON_GRACE_SECS);
+        assert_eq!(
+            cfg.lifecycle.shutdown_grace_secs,
+            DEFAULT_SHUTDOWN_GRACE_SECS
+        );
+    }
+
+    #[test]
+    fn parses_partial_lifecycle_block() {
+        let (_tmp, peppy_dirs, _) =
+            dirs_with_config(r#"{ lifecycle: { daemon_grace_secs: 600 } }"#);
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.lifecycle.daemon_grace_secs, 600);
+        // A field omitted from a partial lifecycle block falls back to its default.
+        assert_eq!(
+            cfg.lifecycle.shutdown_grace_secs,
+            DEFAULT_SHUTDOWN_GRACE_SECS
+        );
+        // Omitted blocks still fall back to their defaults.
+        assert_eq!(cfg.mode, Mode::Peer);
+        assert_eq!(cfg.peer, PeerConfig::default());
+    }
+
+    #[test]
+    fn sub_minimum_shutdown_grace_fails_loud() {
+        let (_tmp, peppy_dirs, _) =
+            dirs_with_config(r#"{ lifecycle: { shutdown_grace_secs: 0 } }"#);
+
+        let err = load_or_create(&peppy_dirs).unwrap_err();
+        assert!(
+            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("shutdown_grace_secs")),
+            "expected a shutdown-grace validation error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn sub_minimum_grace_fails_loud_and_leaves_file_untouched() {
+        let invalid = r#"{ lifecycle: { daemon_grace_secs: 5 } }"#;
+        let (_tmp, peppy_dirs, path) = dirs_with_config(invalid);
+
+        let err = load_or_create(&peppy_dirs).unwrap_err();
+        assert!(
+            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("daemon_grace_secs")),
+            "expected a grace-period validation error, got: {err:?}"
+        );
+        // Out-of-range values fail BEFORE completion: the file keeps omitting
+        // knobs and is not rewritten, same as the malformed case.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
     }
 
     #[test]
@@ -226,15 +504,64 @@ mod tests {
         let first = load_or_create(&peppy_dirs).unwrap();
         let second = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(first, second);
+        // A file that already spells out every knob is not rewritten.
+        let path = peppy_dirs.conf_dir().join(PEPPY_CONFIG_FILE);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            DEFAULT_PEPPY_CONFIG_TEMPLATE
+        );
+    }
+
+    #[test]
+    fn completes_missing_lifecycle_section_on_disk() {
+        // A file created by an older peppy, before the lifecycle block existed.
+        let (_tmp, peppy_dirs, path) = dirs_with_config(OLD_TEMPLATE_WITHOUT_LIFECYCLE);
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg, PeppyConfig::default());
+        // The missing block was appended, comments included: the upgraded file
+        // is byte-identical to today's bundled template.
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            DEFAULT_PEPPY_CONFIG_TEMPLATE
+        );
+    }
+
+    #[test]
+    fn completes_missing_fields_while_preserving_user_values() {
+        let (_tmp, peppy_dirs, path) =
+            dirs_with_config(r#"{ mode: "router", lifecycle: { daemon_grace_secs: 45 } }"#);
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.mode, Mode::Router);
+        assert_eq!(cfg.lifecycle.daemon_grace_secs, 45);
+        assert_eq!(
+            cfg.lifecycle.shutdown_grace_secs,
+            DEFAULT_SHUTDOWN_GRACE_SECS
+        );
+        assert_eq!(cfg.peer, PeerConfig::default());
+
+        // The user's values survive in the file and the omitted knobs now
+        // appear in it with their defaults.
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert!(completed.contains(r#"mode: "router""#));
+        assert!(completed.contains("daemon_grace_secs: 45"));
+        assert!(completed.contains(&format!(
+            "standard_buffer_size: {DEFAULT_STANDARD_BUFFER_SIZE},"
+        )));
+        assert!(completed.contains(&format!(
+            "shutdown_grace_secs: {DEFAULT_SHUTDOWN_GRACE_SECS},"
+        )));
+
+        // A second load parses the completed file to the same config and no
+        // longer rewrites it.
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
     }
 
     #[test]
     fn parses_partial_file_filling_defaults() {
-        let tmp = tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        std::fs::write(conf_dir.join(PEPPY_CONFIG_FILE), r#"{ mode: "router" }"#).unwrap();
+        let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ mode: "router" }"#);
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.mode, Mode::Router);
@@ -249,11 +576,7 @@ mod tests {
 
     #[test]
     fn parses_empty_object_as_all_defaults() {
-        let tmp = tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        std::fs::write(conf_dir.join(PEPPY_CONFIG_FILE), "{}").unwrap();
+        let (_tmp, peppy_dirs, _) = dirs_with_config("{}");
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg, PeppyConfig::default());
@@ -266,6 +589,10 @@ mod tests {
             peer: PeerConfig {
                 standard_buffer_size: 64,
                 high_throughput_buffer_size: 4096,
+            },
+            lifecycle: LifecycleConfig {
+                daemon_grace_secs: 240,
+                shutdown_grace_secs: 5,
             },
         };
         let serialized = serde_json5::to_string(&custom).unwrap();
@@ -286,35 +613,22 @@ mod tests {
     }
 
     #[test]
-    fn malformed_file_fails_loud() {
-        let tmp = tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        std::fs::write(
-            conf_dir.join(PEPPY_CONFIG_FILE),
-            r#"{ mode: "router", peer: { standard_buffer_size: "not a number" } }"#,
-        )
-        .unwrap();
+    fn malformed_file_fails_loud_and_is_left_untouched() {
+        let malformed = r#"{ mode: "router", peer: { standard_buffer_size: "not a number" } }"#;
+        let (_tmp, peppy_dirs, path) = dirs_with_config(malformed);
 
         let err = load_or_create(&peppy_dirs).unwrap_err();
         assert!(
             matches!(err, Error::Parsing(ParsingError::CannotParseConfig(_))),
             "expected a parse error, got: {err:?}"
         );
+        // A failed load never modifies the file, even though it omits knobs.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), malformed);
     }
 
     #[test]
     fn zero_standard_buffer_size_fails_loud() {
-        let tmp = tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        std::fs::write(
-            conf_dir.join(PEPPY_CONFIG_FILE),
-            r#"{ peer: { standard_buffer_size: 0 } }"#,
-        )
-        .unwrap();
+        let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ peer: { standard_buffer_size: 0 } }"#);
 
         let err = load_or_create(&peppy_dirs).unwrap_err();
         assert!(
@@ -325,15 +639,8 @@ mod tests {
 
     #[test]
     fn zero_high_throughput_buffer_size_fails_loud() {
-        let tmp = tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        std::fs::write(
-            conf_dir.join(PEPPY_CONFIG_FILE),
-            r#"{ peer: { high_throughput_buffer_size: 0 } }"#,
-        )
-        .unwrap();
+        let (_tmp, peppy_dirs, _) =
+            dirs_with_config(r#"{ peer: { high_throughput_buffer_size: 0 } }"#);
 
         let err = load_or_create(&peppy_dirs).unwrap_err();
         assert!(
@@ -344,18 +651,65 @@ mod tests {
 
     #[test]
     fn accepts_minimal_nonzero_buffer_sizes() {
-        let tmp = tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        std::fs::write(
-            conf_dir.join(PEPPY_CONFIG_FILE),
+        let (_tmp, peppy_dirs, _) = dirs_with_config(
             r#"{ peer: { standard_buffer_size: 1, high_throughput_buffer_size: 1 } }"#,
-        )
-        .unwrap();
+        );
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.peer.standard_buffer_size, 1);
         assert_eq!(cfg.peer.high_throughput_buffer_size, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completion_preserves_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ mode: "router" }"#);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        load_or_create(&peppy_dirs).unwrap();
+
+        // The staged tmp file is born 0600; the completed file must come out
+        // with the user's permissions, not the tmp file's.
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("lifecycle"),
+            "completion did not run"
+        );
+        assert_eq!(mode, 0o640);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completion_writes_through_a_symlinked_config() {
+        let tmp = tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        // A dotfiles-style setup: the file under conf/ is a symlink to a
+        // config managed elsewhere.
+        let real = tmp.path().join("dotfiles_peppy_config.json5");
+        std::fs::write(&real, r#"{ mode: "router" }"#).unwrap();
+        let link = conf_dir.join(PEPPY_CONFIG_FILE);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.mode, Mode::Router);
+
+        // The symlink survives and the completed content landed in its target.
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::read_to_string(&real)
+                .unwrap()
+                .contains("lifecycle")
+        );
     }
 }

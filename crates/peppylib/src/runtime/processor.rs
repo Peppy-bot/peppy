@@ -185,6 +185,14 @@ impl Processor {
         &self.runtime_config.discovery
     }
 
+    /// Grace period this node's daemon-liveness watchdog waits, after the
+    /// daemon's heartbeat goes silent, before shutting the node down. Resolved
+    /// by the daemon from `peppy_config.json5` and shipped in the runtime
+    /// config. Read by [`crate::services::daemon_watchdog`].
+    pub fn daemon_grace(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.runtime_config.lifecycle.daemon_grace_secs)
+    }
+
     /// Daemon-resolved framework `use_sim_time` flag for this instance.
     /// Read by [`crate::core_node::clock::clock_for_node`] to pick between
     /// the wall-time and sim-time `PeppyClock` implementations.

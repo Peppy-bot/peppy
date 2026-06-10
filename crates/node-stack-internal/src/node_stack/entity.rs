@@ -23,8 +23,8 @@ use super::build_steps::{
     run_build_cmd,
 };
 use super::run_steps::{
-    SpawnContainerInputs, create_instance_dir, extract_node_archive, kill_and_collect_error,
-    spawn_container_node, spawn_process_node,
+    SpawnCommand, SpawnContainerInputs, build_container_command, build_process_command,
+    create_instance_dir, extract_node_archive, kill_and_collect_error,
 };
 
 impl From<&NodeEntity> for SerializedNode {
@@ -623,6 +623,26 @@ impl NodeEntity {
         }
     }
 
+    /// Records the spawned child's `pid` on the still-`Starting` instance
+    /// `instance_id`. Called by [`prepare_and_spawn`] while the entity write lock
+    /// is already held, in the SAME critical section as the fork, so a daemon
+    /// teardown snapshot can never observe a live child whose pid is not yet
+    /// force-killable. A no-op if the entity is no longer `Ready` or the instance
+    /// is gone, which cannot happen while the `Starting` instance is registered:
+    /// `push_config`/`remove_config` both refuse a non-empty instances list under
+    /// this same entity write lock, so the entity is neither replaced nor
+    /// detached for the lifetime of the start.
+    fn record_starting_pid(&mut self, instance_id: &Name, pid: u32) {
+        let NodeStage::Ready { instances, .. } = &mut self.stage else {
+            return;
+        };
+        if let Some(inst) = instances.iter_mut().find(|inst| {
+            inst.instance_id() == instance_id && inst.state() == InstanceState::Starting
+        }) {
+            inst.set_starting_pid(pid);
+        }
+    }
+
     /// Phase 1 of the start lifecycle: validates the entity is in `Ready`,
     /// atomically registers a new `Starting` instance, prepares the instance
     /// directory, spawns the child process, and wires up output streaming.
@@ -720,52 +740,87 @@ impl NodeEntity {
             }
         })?;
 
-        // ---- Phase 3: spawn the child process ----
-        let (mut child, runtime_config_path) =
-            if let Some(container) = node_config.execution.container.as_ref() {
-                let apptainer_run_extra_args = container
-                    .apptainer_run_extra_args
-                    .as_deref()
-                    .unwrap_or_default();
-                let lima_shell_extra_args = container
-                    .lima_shell_extra_args
-                    .as_deref()
-                    .unwrap_or_default();
-                spawn_container_node(SpawnContainerInputs {
-                    sif_path: &artifact_path,
-                    working_dir: &instance_dir,
-                    runtime_config_json5: ctx.runtime_config_json5,
-                    env_vars: ctx.env_vars,
-                    mount_paths: ctx.mount_paths_resolved,
-                    apptainer_run_extra_args,
-                    lima_shell_extra_args,
-                    log_file: &ctx.output_sinks.log_file,
-                    feedback_tx: &ctx.output_sinks.feedback_tx,
-                    peppy_dirs: ctx.peppy_dirs,
-                })
-                .await
-            } else {
-                spawn_process_node(
-                    &node_config,
-                    &instance_dir,
-                    ctx.runtime_config_json5,
-                    ctx.env_vars,
-                    &ctx.output_sinks.log_file,
-                    ctx.peppy_dirs,
-                )
+        // ---- Phase 3a: build the spawn command (slow, no entity lock) ----
+        // All the expensive setup (Apptainer/Lima init, archive extraction,
+        // mounts, command construction) runs here without holding any lock; the
+        // returned command is forked under the entity write lock in Phase 3b.
+        let SpawnCommand {
+            mut command,
+            runtime_config_path,
+            description: spawn_description,
+        } = if let Some(container) = node_config.execution.container.as_ref() {
+            let apptainer_run_extra_args = container
+                .apptainer_run_extra_args
+                .as_deref()
+                .unwrap_or_default();
+            let lima_shell_extra_args = container
+                .lima_shell_extra_args
+                .as_deref()
+                .unwrap_or_default();
+            build_container_command(SpawnContainerInputs {
+                sif_path: &artifact_path,
+                working_dir: &instance_dir,
+                instance_id: instance_id_str,
+                runtime_config_json5: ctx.runtime_config_json5,
+                env_vars: ctx.env_vars,
+                mount_paths: ctx.mount_paths_resolved,
+                apptainer_run_extra_args,
+                lima_shell_extra_args,
+                log_file: &ctx.output_sinks.log_file,
+                feedback_tx: &ctx.output_sinks.feedback_tx,
+                peppy_dirs: ctx.peppy_dirs,
+            })
+            .await
+        } else {
+            build_process_command(
+                &node_config,
+                &instance_dir,
+                ctx.runtime_config_json5,
+                ctx.env_vars,
+                &ctx.output_sinks.log_file,
+                ctx.peppy_dirs,
+            )
+        }
+        .map_err(|e| {
+            // Best-effort cleanup of the instance dir we just materialized.
+            // The child never spawned, so nothing else references it; the
+            // build helper already cleaned up its own runtime config temp.
+            let _ = std::fs::remove_dir_all(&instance_dir);
+            Self::remove_starting_instance(handle, ctx.instance_id);
+            Error::StartFailed {
+                node_name: node_name.clone(),
+                node_tag: node_tag.clone(),
+                reason: format!("failed to build spawn command: {}", e),
             }
-            .map_err(|e| {
-                // Best-effort cleanup of the instance dir we just materialized.
-                // The container/process spawn never started, so nothing else
-                // references this directory.
-                let _ = std::fs::remove_dir_all(&instance_dir);
-                Self::remove_starting_instance(handle, ctx.instance_id);
-                Error::StartFailed {
-                    node_name: node_name.clone(),
-                    node_tag: node_tag.clone(),
-                    reason: format!("failed to spawn child: {}", e),
+        })?;
+
+        // ---- Phase 3b: fork the child and record its pid atomically ----
+        // Fork and record the pid in a single critical section under the entity
+        // write lock, so a concurrent daemon teardown can never snapshot a live
+        // child whose pid is not yet force-killable. The lock is held across the
+        // synchronous `command.spawn()` only (no `.await`); all slow work ran
+        // lock-free in Phase 3a. The `Starting` instance is guaranteed present:
+        // `push_config`/`remove_config` both refuse a non-empty instances list
+        // under this same lock, so the entity is neither replaced nor detached
+        // for the lifetime of the start.
+        let mut child = {
+            let mut guard = handle.write();
+            command.spawn().inspect(|child| {
+                if let Some(pid) = child.id() {
+                    guard.record_starting_pid(ctx.instance_id, pid);
                 }
-            })?;
+            })
+        }
+        .map_err(|e| {
+            let _ = std::fs::remove_dir_all(&instance_dir);
+            let _ = std::fs::remove_file(&runtime_config_path);
+            Self::remove_starting_instance(handle, ctx.instance_id);
+            Error::StartFailed {
+                node_name: node_name.clone(),
+                node_tag: node_tag.clone(),
+                reason: format!("failed to spawn `{}`: {}", spawn_description, e),
+            }
+        })?;
 
         // ---- Phase 4: wire output streaming ----
         let stderr_buffer = Arc::new(StdMutex::new(VecDeque::with_capacity(
@@ -1197,6 +1252,14 @@ impl TrackedNodeInstance {
         self.pid = pid;
         self.instance_dir = Some(instance_dir);
         self.runtime_config_path = Some(runtime_config_path);
+    }
+
+    /// Same-module mutator that records the spawned child's pid on an instance
+    /// still in `Starting`, ahead of `commit_started` flipping it to `Running`
+    /// via `set_running`. Lets a daemon teardown during the start window reach
+    /// the child's process group. Not exported.
+    fn set_starting_pid(&mut self, pid: u32) {
+        self.pid = Some(pid);
     }
 }
 

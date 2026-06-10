@@ -39,6 +39,10 @@ impl NodeStopRequest {
 pub struct NodeStopResponse {
     pub success: bool,
     pub error_message: Option<String>,
+    /// `true` when the node had to be force-killed because it did not exit
+    /// within the cooperative shutdown grace period. `false` when it exited
+    /// gracefully (or on any failure response).
+    pub force_killed: bool,
 }
 
 impl NodeStopResponse {
@@ -46,11 +50,23 @@ impl NodeStopResponse {
         Self {
             success,
             error_message,
+            force_killed: false,
         }
     }
 
+    /// Success after the node exited gracefully within the grace period.
     pub fn success() -> Self {
         Self::new(true, None)
+    }
+
+    /// Success, but the node ignored the cooperative shutdown and had to be
+    /// force-killed (SIGKILL to its process group).
+    pub fn success_force_killed() -> Self {
+        Self {
+            success: true,
+            error_message: None,
+            force_killed: true,
+        }
     }
 
     pub fn failure(error_message: impl Into<String>) -> Self {
@@ -62,6 +78,7 @@ impl NodeStopResponse {
         {
             let mut response = builder.init_root::<node_capnp::node_stop_response::Builder>();
             response.set_success(self.success);
+            response.set_force_killed(self.force_killed);
             if let Some(ref error_message) = self.error_message {
                 response.set_error_message(error_message);
             }
@@ -75,6 +92,7 @@ impl NodeStopResponse {
         Ok(Self {
             success: response.get_success(),
             error_message: optional_text(response.get_error_message()?.to_str()?),
+            force_killed: response.get_force_killed(),
         })
     }
 }
