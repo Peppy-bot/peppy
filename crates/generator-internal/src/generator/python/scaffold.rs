@@ -159,13 +159,30 @@ pub fn add_peppylib_dependencies(
         drop(lock_file);
     }
 
-    // Always copy peppylib into the output directory so each node gets the
+    // Deploy peppylib as a standalone project at `.peppy/libs/peppylib`
+    // (sibling of peppygen, mirroring the Rust layout) so each node gets the
     // correct platform binary (host or Linux) without shared symlinks.
-    let peppylib_dest = to_path.join("peppylib");
-    if peppylib_dest.exists() {
-        fs::remove_dir_all(&peppylib_dest)?;
+    // The manifest is plain-written on every generation: uv keys
+    // path-dependency rebuilds on pyproject.toml mtime, so a preserved
+    // timestamp would serve a stale cached wheel with an old `.so`.
+    let libs_dir = to_path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "peppygen path has no parent directory",
+        )
+    })?;
+    let project_dir = libs_dir.join("peppylib");
+    if project_dir.exists() {
+        fs::remove_dir_all(&project_dir)?;
     }
-    copy_dir_recursive(&cache_dir, &peppylib_dest)?;
+    fs::create_dir_all(&project_dir)?;
+    fs::write(
+        project_dir.join("pyproject.toml"),
+        crate::generator::common::render_peppylib_python_pyproject()?,
+    )?;
+    let package_dir = project_dir.join("peppylib");
+    copy_dir_recursive(&cache_dir, &package_dir)?;
+    fs::remove_file(package_dir.join(".complete"))?;
 
     Ok(())
 }

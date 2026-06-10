@@ -3,7 +3,7 @@ mod common;
 use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
 use config::consts::{
     DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR,
-    PEPPYGEN_OUTPUT_PATH,
+    PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH,
 };
 use config::node::Toolchain;
 use config::test_helpers::assert_contains_all;
@@ -297,6 +297,16 @@ async fn listen_for_node_init_python_success() {
         "pyproject.toml should reference generated peppygen path, got:\n{}",
         pyproject_toml
     );
+    assert!(
+        pyproject_toml.contains("peppylib"),
+        "pyproject.toml should contain peppylib dependency, got:\n{}",
+        pyproject_toml
+    );
+    assert!(
+        pyproject_toml.contains(PEPPYLIB_OUTPUT_PATH),
+        "pyproject.toml should reference deployed peppylib path, got:\n{}",
+        pyproject_toml
+    );
 
     let init_py_path = node_dir.join(format!("src/{NODE_NAME}/__init__.py"));
     assert!(
@@ -390,6 +400,16 @@ async fn listen_for_node_init_python_container_success() {
     assert!(
         pyproject_toml.contains(PEPPYGEN_OUTPUT_PATH),
         "pyproject.toml should reference generated peppygen path, got:\n{}",
+        pyproject_toml
+    );
+    assert!(
+        pyproject_toml.contains("peppylib"),
+        "pyproject.toml should contain peppylib dependency, got:\n{}",
+        pyproject_toml
+    );
+    assert!(
+        pyproject_toml.contains(PEPPYLIB_OUTPUT_PATH),
+        "pyproject.toml should reference deployed peppylib path, got:\n{}",
         pyproject_toml
     );
 

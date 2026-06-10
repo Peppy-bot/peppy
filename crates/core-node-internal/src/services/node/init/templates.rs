@@ -26,6 +26,7 @@ pub struct RustCargoToml<'a> {
 pub struct PythonPyprojectToml<'a> {
     pub node_name: &'a str,
     pub pepygen_path: &'a str,
+    pub pepylib_path: &'a str,
     pub python_min_version: &'a str,
     pub python_max_version: &'a str,
 }
@@ -138,6 +139,7 @@ pub fn apply_python_templates(
     let pyproject_toml = PythonPyprojectToml {
         node_name,
         pepygen_path: config::consts::PEPPYGEN_OUTPUT_PATH,
+        pepylib_path: config::consts::PEPPYLIB_OUTPUT_PATH,
         python_min_version: config::consts::PYTHON_MIN_VERSION,
         python_max_version: config::consts::PYTHON_MAX_VERSION,
     };

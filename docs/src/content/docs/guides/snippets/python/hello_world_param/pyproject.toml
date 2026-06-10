@@ -7,7 +7,7 @@ name = "hello_world_param"
 version = "0.1.0"
 description = "hello_world_param peppy node"
 requires-python = ">=3.11,<3.14"
-dependencies = ["peppygen"]
+dependencies = ["peppygen", "peppylib"]
 
 [project.scripts]
 hello_world_param = "hello_world_param.__main__:main"
@@ -20,3 +20,4 @@ dev = []
 
 [tool.uv.sources]
 peppygen = { path = ".peppy/libs/peppygen" }
+peppylib = { path = ".peppy/libs/peppylib" }
