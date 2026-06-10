@@ -220,7 +220,7 @@ fn synchronize_clock<'py>(
     let timeout = response_timeout_secs
         .map(|s| duration_from_secs_f64("response_timeout_secs", s))
         .transpose()?;
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    crate::py_future::future_into_py(py, async move {
         let sync = synchronize(&runner, timeout).await.map_err(to_py_err)?;
         Ok(PyClockSync::from(sync))
     })
@@ -241,7 +241,7 @@ impl PyClockSubscription {
     /// Wait for the next tick. Returns `None` if the subscription closes.
     fn on_next_tick<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let mut guard = inner.lock().await;
             match guard.on_next_message().await {
                 Some(message) => {
@@ -266,7 +266,7 @@ fn subscribe_clock_py<'py>(
     node_runner: &PyNodeRunner,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    crate::py_future::future_into_py(py, async move {
         let sub = subscribe(&runner).await.map_err(to_py_err)?.into_inner();
         Ok(PyClockSubscription {
             inner: Arc::new(Mutex::new(sub)),
@@ -305,7 +305,7 @@ fn clock_for_node_py<'py>(
     node_runner: &PyNodeRunner,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    crate::py_future::future_into_py(py, async move {
         let clock = for_node(&runner).await.map_err(to_py_err)?;
         Ok(PyPeppyClock { inner: clock })
     })

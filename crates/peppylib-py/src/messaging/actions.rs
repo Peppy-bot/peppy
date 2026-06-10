@@ -87,7 +87,7 @@ impl PyActionFeedbackPublisherFactory {
         wire: Vec<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let factory = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let declared = factory
                 .declare_from_wire(&link_id, Bytes::from(wire))
                 .await
@@ -213,7 +213,7 @@ impl PyActionGoalHandle {
     /// Wait for the next feedback message from the action server.
     fn on_next_feedback<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let mut handle = inner.lock().await;
             let msg = handle.on_next_feedback().await.map_err(to_py_err)?;
             Ok(PyTopicMessage::from(msg))
@@ -291,7 +291,7 @@ impl PyActionMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_identity = as_identity.into_inner();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let creation = ActionMessenger::expose(
                 &handle,
                 &as_core_node,
@@ -336,7 +336,7 @@ impl PyActionMessenger {
         let goal_timeout = duration_from_secs_f64("goal_timeout_secs", goal_timeout_secs)?;
         let to_target = to_target.into_inner();
         let handle = messenger.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let goal_handle = ActionMessenger::send_goal(
                 &handle,
                 &as_core_node,
@@ -387,7 +387,7 @@ impl PyActionMessenger {
         let handle = messenger.inner.clone();
         let sender = goal_handle.sender.clone();
         let goal_id = goal_handle.goal_id.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let response =
                 ActionMessenger::cancel_with_sender(&handle, &sender, &goal_id, cancel_timeout)
                     .await
@@ -420,7 +420,7 @@ impl PyActionMessenger {
         let handle = messenger.inner.clone();
         let sender = goal_handle.sender.clone();
         let goal_id = goal_handle.goal_id.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let reply = ActionMessenger::request_result_with_sender(
                 &handle,
                 &sender,
@@ -454,7 +454,7 @@ impl PyActionMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
@@ -507,7 +507,7 @@ impl PyConcurrentAction {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_identity = as_identity.into_inner();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let action = ConcurrentAction::expose(
                 &handle,
                 &as_core_node,
@@ -528,7 +528,7 @@ impl PyConcurrentAction {
     /// when the goal service stream has closed.
     fn recv_next_goal<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let mut action = inner.lock().await;
             let pending = action.recv_next_goal().await.map_err(to_py_err)?;
             Ok(pending.map(|pending| {
@@ -590,7 +590,7 @@ impl PyPendingGoal {
     /// return the [`PyGoalContext`] that drives it.
     fn accept<'py>(&self, py: Python<'py>, response: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_future::future_into_py(py, async move {
             let pending =
                 inner.lock().await.take().ok_or_else(|| {
                     PyValueError::new_err("PendingGoal already accepted or rejected")

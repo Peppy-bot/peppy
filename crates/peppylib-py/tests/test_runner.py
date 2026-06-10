@@ -5,7 +5,9 @@ Python equivalent of crates/peppylib/tests/runner.rs.
 """
 
 import faulthandler
+import os
 import queue
+import sys
 import tempfile
 import threading
 import asyncio
@@ -50,6 +52,7 @@ from common import (
     create_codegen_fingerprint,
     create_runtime_config,
     wait_for_service,
+    write_peppygen_stub,
 )
 
 TEST_CORE_NODE = "test_core"
@@ -727,8 +730,8 @@ async def test_shutdown_joins_event_loop_thread(monkeypatch):
     run() returns can be killed mid-native-call during interpreter
     finalization. We assert the thread is gone the instant run() returns, and
     repeat to shake out the race. The finalization crash itself only reproduces
-    across a process exit and is covered by looping the generator's
-    `topics_communication` subprocess test.
+    across a process exit and is covered by
+    `test_process_exit_with_pending_service_await` below.
     """
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
@@ -817,3 +820,110 @@ async def test_shutdown_joins_event_loop_thread(monkeypatch):
                     f"event-loop thread still alive after run() returned "
                     f"(iteration {iteration}): {lingering}"
                 )
+
+
+PENDING_SERVICE_NODE_SCRIPT = '''\
+import asyncio
+import sys
+
+sys.path.insert(0, sys.argv[3])  # peppygen stub package root
+
+from peppylib import SenderTarget, ServiceMessenger
+from peppylib.runtime import NodeBuilder, StandaloneConfig
+
+
+async def setup(parameters, node_runner):
+    token = node_runner.cancellation_token()
+    messenger = node_runner.messenger()
+    endpoint = await ServiceMessenger.listen(
+        messenger,
+        node_runner.bound_core_node(),
+        node_runner.bound_instance_id(),
+        SenderTarget.node(node_runner.node_name(), node_runner.node_tag()),
+        "regression_pending_service",
+    )
+
+    async def await_request_forever():
+        # Never receives a request: at shutdown this task is cancelled while
+        # the native future is still pending, the exact shape that raced
+        # interpreter finalization.
+        await endpoint.handle_next_request(lambda _ctx: b"")
+
+    async def cancel_soon():
+        await asyncio.sleep(0.2)
+        token.cancel()
+
+    return [
+        asyncio.create_task(await_request_forever()),
+        asyncio.create_task(cancel_soon()),
+    ]
+
+
+def main():
+    config = (
+        StandaloneConfig()
+        .with_parameters({"frequency_hz": 10.0})
+        .with_messaging(sys.argv[1], int(sys.argv[2]))
+        .with_instance_id("pending_service_instance")
+        .with_node_name("test_node")
+    )
+    NodeBuilder().with_config_path(sys.argv[4]).standalone(config).run(setup)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+PENDING_AWAIT_EXIT_REPEAT = 5
+
+
+@pytest.mark.asyncio
+async def test_process_exit_with_pending_service_await(tmp_path):
+    """A node must exit cleanly when run() returns with a service await still
+    pending.
+
+    Regression test for a shutdown SIGSEGV (exit 139): the native half of a
+    pending ``handle_next_request`` lives on the pyo3-async-runtimes global
+    tokio runtime, and its result delivery used to attach to the interpreter
+    with no shutdown guard. A delivery scheduled by the shutdown cancellation
+    could attach mid-finalization, and CPython 3.13 and older kill such a
+    thread via pthread_exit, segfaulting the process. The fix gates every
+    delivery attach behind run()'s shutdown (see py_future.rs). The race only
+    exists across a real process exit, so the node runs as a subprocess;
+    repetition shakes out the timing, though a pre-fix failure is
+    probabilistic rather than guaranteed.
+    """
+    script_path = tmp_path / "pending_service_node.py"
+    script_path.write_text(PENDING_SERVICE_NODE_SCRIPT)
+    config_path = tmp_path / NODE_CONFIG_FILE
+    config_path.write_text(PEPPY_CONFIG)
+    peppygen_root = tmp_path / "peppygen_root"
+    write_peppygen_stub(peppygen_root)
+
+    env = dict(os.environ)
+    env.pop(RUNTIME_CONFIG_VAR_NAME, None)  # force standalone mode
+
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        for iteration in range(PENDING_AWAIT_EXIT_REPEAT):
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(script_path),
+                router.host,
+                str(router.port),
+                str(peppygen_root),
+                str(config_path),
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+            except TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                pytest.fail(f"node subprocess hung (iteration {iteration})")
+            assert proc.returncode == 0, (
+                f"node subprocess died with {proc.returncode} (iteration {iteration})\n"
+                f"stdout:\n{stdout.decode(errors='replace')}\n"
+                f"stderr:\n{stderr.decode(errors='replace')}"
+            )

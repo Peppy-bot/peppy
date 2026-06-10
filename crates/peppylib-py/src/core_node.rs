@@ -240,7 +240,7 @@ fn info<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
     let timeout = optional_timeout("response_timeout_secs", response_timeout_secs)?;
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    crate::py_future::future_into_py(py, async move {
         let response = peppylib::info(&runner, timeout).await.map_err(to_py_err)?;
         Ok(PyInfoResponse::from(response))
     })
@@ -259,7 +259,7 @@ fn stack_list<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
     let timeout = optional_timeout("response_timeout_secs", response_timeout_secs)?;
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    crate::py_future::future_into_py(py, async move {
         let result = peppylib::stack::list(&runner, with_dot_graph, timeout)
             .await
             .map_err(to_py_err)?;

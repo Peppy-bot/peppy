@@ -33,6 +33,33 @@ PEPPY_CONFIG = """{
   },
 }"""
 
+# Generated Parameters dataclass matching PEPPY_CONFIG (frequency_hz: f64).
+# The runtime hydrates the parameters dict into this class via
+# ``peppygen.parameters.Parameters.from_dict``, so any interpreter that calls
+# ``NodeBuilder().run(setup_fn)`` needs a peppygen package containing it.
+PARAMETERS_PY = '''\
+from dataclasses import dataclass
+
+
+@dataclass
+class Parameters:
+    frequency_hz: float
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Parameters":
+        return cls(
+            frequency_hz=data["frequency_hz"],
+        )
+'''
+
+
+def write_peppygen_stub(root: Path) -> None:
+    """Create an importable peppygen package with the test Parameters class."""
+    package_dir = root / "peppygen"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("")
+    (package_dir / "parameters.py").write_text(PARAMETERS_PY)
+
 
 def create_codegen_fingerprint(config_path: str, output_path: str) -> None:
     """Create a SHA256 fingerprint of the config file."""

@@ -6,6 +6,7 @@ mod core_node;
 mod datastore;
 mod messaging;
 mod names;
+mod py_future;
 mod runtime;
 mod services;
 
@@ -17,6 +18,7 @@ fn _peppylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "__version__",
         option_env!("PEPPY_GIT_TAG").unwrap_or("0.0.1"),
     )?;
+    py_future::register_interpreter_exit_gate(m.py())?;
     config::register(m)?;
     core_node::register(m)?;
     messaging::register(m)?;
