@@ -1061,3 +1061,155 @@ async def test_process_exit_with_pending_service_await(tmp_path):
                 f"stdout:\n{stdout.decode(errors='replace')}\n"
                 f"stderr:\n{stderr.decode(errors='replace')}"
             )
+
+
+@pytest.mark.asyncio
+async def test_daemon_shutdown_hooks_run_lifo_with_messaging(monkeypatch):
+    """on_shutdown hooks run on an in-band shutdown, in reverse registration
+    order, with one hook's exception contained, the asyncio loop still serving
+    coroutines, and the messenger still connected (the ds_lock_probe pattern:
+    a datastore lock release must be able to use messaging)."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
+            peppy_config_path.write_text(PEPPY_CONFIG)
+            create_codegen_fingerprint(str(peppy_config_path), PEPPYGEN_OUTPUT_PATH)
+
+            runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
+            create_runtime_config(
+                runtime_config_path,
+                router.host,
+                router.port,
+                TEST_NODE_NAME,
+                TEST_CORE_NODE,
+                TEST_INSTANCE_ID,
+                {"frequency_hz": TEST_FREQUENCY_HZ},
+            )
+
+            monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
+            monkeypatch.chdir(temp_dir)
+
+            setup_done_queue: queue.Queue = queue.Queue()
+            error_queue: queue.Queue = queue.Queue()
+            hook_markers: list = []
+
+            def run_node():
+                try:
+
+                    async def setup_fn(params, node_runner):
+                        token = node_runner.cancellation_token()
+                        messenger = node_runner.messenger()
+
+                        def first_hook():
+                            hook_markers.append("first")
+
+                        def second_hook_raises():
+                            raise RuntimeError("intentional hook failure")
+
+                        async def third_hook():
+                            # The token is already cancelled when hooks run;
+                            # awaiting it proves the py_future bridge still
+                            # works during the hook phase.
+                            await token.cancelled()
+                            port = await messenger.messaging_port()
+                            hook_markers.append(f"third:port_{port != 0}")
+
+                        node_runner.on_shutdown(first_hook)
+                        node_runner.on_shutdown(second_hook_raises)
+                        node_runner.on_shutdown(third_hook)
+                        setup_done_queue.put(True)
+
+                    NodeBuilder().run(setup_fn)
+                except Exception as e:
+                    error_queue.put(e)
+
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+
+            await asyncio.to_thread(setup_done_queue.get, timeout=5.0)
+
+            messenger = await MessengerHandle.from_host_port(router.host, router.port)
+            await _wait_for_service(
+                messenger,
+                SHUTDOWN_SERVICE,
+                runner_thread,
+                error_queue,
+            )
+
+            await ServiceMessenger.poll(
+                messenger,
+                TEST_CORE_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
+                SHUTDOWN_SERVICE,
+                TEST_CORE_NODE,
+                TEST_INSTANCE_ID,
+                b"shutdown",
+                2.0,
+            )
+            runner_thread.join(timeout=10.0)
+
+    assert not runner_thread.is_alive(), "Runner should have exited"
+    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
+    # Reverse registration order; the raising hook is contained and skipped.
+    assert hook_markers == ["third:port_True", "first"]
+
+
+@pytest.mark.asyncio
+async def test_sync_setup_shutdown_hooks_run(monkeypatch):
+    """A node with synchronous setup has no persistent asyncio loop; sync
+    hooks run directly and async hooks run on a one-off asyncio.run loop."""
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(PEPPY_CONFIG)
+
+            standalone_config = (
+                StandaloneConfig()
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_messaging(router.host, router.port)
+                .with_instance_id(TEST_INSTANCE_ID)
+            )
+
+            token_queue: queue.Queue = queue.Queue()
+            error_queue: queue.Queue = queue.Queue()
+            hook_markers: list = []
+
+            def run_node():
+                try:
+
+                    def setup_fn(params, node_runner):
+                        def sync_hook():
+                            hook_markers.append("sync")
+
+                        async def async_hook():
+                            await asyncio.sleep(0.05)
+                            hook_markers.append("async")
+
+                        node_runner.on_shutdown(sync_hook)
+                        node_runner.on_shutdown(async_hook)
+                        token_queue.put(node_runner.cancellation_token())
+
+                    (
+                        NodeBuilder()
+                        .with_config_path(peppy_config_path)
+                        .standalone(standalone_config)
+                        .run(setup_fn)
+                    )
+                except Exception as e:
+                    error_queue.put(e)
+
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+
+            cancellation_token: CancellationToken = await asyncio.to_thread(
+                token_queue.get, timeout=5.0
+            )
+            cancellation_token.cancel()
+            runner_thread.join(timeout=10.0)
+
+    assert not runner_thread.is_alive(), "Runner should have exited"
+    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
+    # Reverse registration order: the async hook (registered last) runs first.
+    assert hook_markers == ["async", "sync"]

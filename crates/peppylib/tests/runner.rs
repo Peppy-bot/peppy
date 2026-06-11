@@ -910,3 +910,396 @@ async fn node_runner_exposes_messenger_and_metadata() {
         .expect("runner task should not panic")
         .expect("runner should return Ok");
 }
+
+/// Scaffolding for the shutdown-hook tests below: an ephemeral router, a node
+/// `peppy.json5` + launch config in a temp dir, and the env guard that points
+/// `NodeBuilder` at them in daemon mode. Declaration order matters for drop:
+/// the env guard restores cwd before the temp dir it points into is removed.
+struct DaemonStack {
+    _env_guard: EnvAndDirGuard,
+    _temp_dir: tempfile::TempDir,
+    _router: pmi::ZenohdInstance,
+    router_host: String,
+    router_port: u16,
+}
+
+/// Stands up the daemon-mode scaffolding with an optional
+/// `lifecycle.shutdown_grace_secs` override in the launch config (mirroring
+/// what the daemon ships to spawned nodes).
+async fn start_daemon_stack(shutdown_grace_secs: Option<u64>) -> DaemonStack {
+    let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (router.host.clone(), router.port);
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config = r#"{
+      peppy_schema: "node_v1",
+      manifest: {
+        name: "test_node",
+        tag: "v1",
+      },
+      execution: {
+        language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
+        run_cmd: ["./target/debug/test_node"]
+      },
+    }"#;
+    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let mut runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        NodeInstanceConfig {
+            arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
+                .expect("runtime args should parse"),
+            ..NodeInstanceConfig::new(
+                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
+            )
+        },
+        TEST_NODE_NAME,
+        "v1",
+        TEST_CORE_NODE,
+    )
+    .expect("runtime config should build");
+    if let Some(grace) = shutdown_grace_secs {
+        runtime_config.lifecycle.shutdown_grace_secs = grace;
+    }
+    let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+    runtime_config
+        .save_json5_launch_config(&runtime_config_path)
+        .expect("failed to write runtime config");
+
+    let env_guard = EnvAndDirGuard::new(temp_dir.path(), &runtime_config_path);
+
+    DaemonStack {
+        _env_guard: env_guard,
+        _temp_dir: temp_dir,
+        _router: router,
+        router_host,
+        router_port,
+    }
+}
+
+/// Polls until the node's `SHUTDOWN_SERVICE` is reachable (panicking if the
+/// runner exits first), then sends the shutdown request: the same in-band ask
+/// `peppy node stop` delivers.
+async fn send_shutdown_when_reachable<T: std::fmt::Debug>(
+    router_host: &str,
+    router_port: u16,
+    runner_task: &mut tokio::task::JoinHandle<T>,
+) {
+    let messenger = peppylib::MessengerHandle::from_host_port(router_host, router_port)
+        .await
+        .expect("failed to create messenger");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if runner_task.is_finished() {
+            let result = runner_task.await;
+            panic!("runner exited early: {result:?}");
+        }
+
+        if peppylib::ServiceMessenger::is_reachable(
+            &messenger,
+            TEST_CORE_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            test_node_target(TEST_NODE_NAME),
+            SHUTDOWN_SERVICE,
+            Some(TEST_CORE_NODE),
+            Some(TEST_INSTANCE_ID),
+        )
+        .await
+        .expect("reachability check should succeed")
+        {
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("shutdown service did not become reachable");
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    peppylib::ServiceMessenger::poll(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        test_node_target(TEST_NODE_NAME),
+        SHUTDOWN_SERVICE,
+        Some(TEST_CORE_NODE),
+        Some(TEST_INSTANCE_ID),
+        Payload::from_static(b"shutdown"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("shutdown service should respond");
+}
+
+/// The regression test for the `ds_lock_probe` leak: cleanup registered via
+/// `on_shutdown` must run to completion, in reverse registration order, with
+/// the messenger still usable, before `run()` returns on an in-band shutdown
+/// (`peppy node stop`). Before the fix, `run()` returned as soon as the token
+/// was cancelled and dropped the runtime under the cleanup.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_shutdown_awaits_hooks_lifo_before_exit() {
+    let stack = start_daemon_stack(None).await;
+
+    let order: std::sync::Arc<Mutex<Vec<String>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let order_first = std::sync::Arc::clone(&order);
+    let order_second = std::sync::Arc::clone(&order);
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+            node_runner.on_shutdown(async move {
+                order_first.lock().expect("order lock").push("first".into());
+            });
+            let runner_for_hook = std::sync::Arc::clone(&node_runner);
+            node_runner.on_shutdown(async move {
+                // Prove the hook is awaited (not raced) and that messaging is
+                // still alive while hooks run, as `datastore::remove` needs.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let port = runner_for_hook.messenger().messaging_port().await;
+                order_second
+                    .lock()
+                    .expect("order lock")
+                    .push(format!("second:port_{}", port != 0));
+            });
+            let _ = setup_tx.send(());
+            Ok(())
+        })
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should complete")
+        .expect("runner setup signal should be sent");
+
+    send_shutdown_when_reachable(&stack.router_host, stack.router_port, &mut runner_task).await;
+
+    tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+
+    assert_eq!(
+        *order.lock().expect("order lock"),
+        vec!["second:port_true".to_string(), "first".to_string()],
+        "hooks must all have completed before run() returned, last registered first"
+    );
+}
+
+/// A shutdown that interrupts `setup_fn` must still run the hooks registered
+/// up to that point (e.g. an instance lock stored early in setup).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_shutdown_during_setup_runs_registered_hooks() {
+    let stack = start_daemon_stack(None).await;
+
+    let (hook_tx, hook_rx) = tokio::sync::oneshot::channel::<()>();
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+            node_runner.on_shutdown(async move {
+                let _ = hook_tx.send(());
+            });
+            let _ = setup_tx.send(());
+            // Block setup forever: the shutdown must interrupt it and still
+            // run the hook above.
+            std::future::pending::<()>().await;
+            Ok(())
+        })
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should start")
+        .expect("setup start signal should be sent");
+
+    send_shutdown_when_reachable(&stack.router_host, stack.router_port, &mut runner_task).await;
+
+    tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
+        .await
+        .expect("runner should exit while setup is still blocked")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+
+    hook_rx
+        .await
+        .expect("shutdown hook registered during setup should have run");
+}
+
+/// Hooks share one grace window (`lifecycle.shutdown_grace_secs` from the
+/// launch config): a hook that hangs is abandoned at the deadline and `run()`
+/// still returns, so stuck cleanup can never wedge a stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_shutdown_hooks_are_bounded_by_grace_window() {
+    let stack = start_daemon_stack(Some(1)).await;
+
+    let order: std::sync::Arc<Mutex<Vec<&'static str>>> =
+        std::sync::Arc::new(Mutex::new(Vec::new()));
+    let order_never = std::sync::Arc::clone(&order);
+    let order_stuck = std::sync::Arc::clone(&order);
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+            // LIFO: registered first, so it only runs after the stuck hook
+            // below, which the grace window never lets finish.
+            node_runner.on_shutdown(async move {
+                order_never.lock().expect("order lock").push("never");
+            });
+            node_runner.on_shutdown(async move {
+                order_stuck.lock().expect("order lock").push("stuck-start");
+                tokio::time::sleep(Duration::from_secs(600)).await;
+                order_stuck.lock().expect("order lock").push("stuck-end");
+            });
+            let _ = setup_tx.send(());
+            Ok(())
+        })
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should complete")
+        .expect("runner setup signal should be sent");
+
+    send_shutdown_when_reachable(&stack.router_host, stack.router_port, &mut runner_task).await;
+
+    // Must exit shortly after the 1s grace window, not after the 600s sleep.
+    tokio::time::timeout(Duration::from_secs(15), &mut runner_task)
+        .await
+        .expect("runner should exit once the grace window elapses")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+
+    assert_eq!(
+        *order.lock().expect("order lock"),
+        vec!["stuck-start"],
+        "the stuck hook must be cut off mid-await and later hooks skipped"
+    );
+}
+
+/// SIGINT converges on the same path as `peppy node stop`: token cancelled,
+/// hooks awaited, clean exit, no node-side signal handling required.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_sigint_runs_hooks_and_exits() {
+    // Held for scope: the env guard and router must outlive the runner.
+    let _stack = start_daemon_stack(None).await;
+
+    // Safety net: install a process-wide SIGINT handler in the test runtime
+    // before raising, so the raise below can never kill the test process even
+    // if the node's own bridge has not registered yet.
+    let _sigint_guard = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .expect("test sigint handler should install");
+
+    let (hook_tx, hook_rx) = tokio::sync::oneshot::channel::<()>();
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+            node_runner.on_shutdown(async move {
+                let _ = hook_tx.send(());
+            });
+            let _ = setup_tx.send(());
+            Ok(())
+        })
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should complete")
+        .expect("runner setup signal should be sent");
+
+    // Give the node's signal bridge a moment to register its handler, then
+    // deliver a process-directed SIGINT, as a terminal Ctrl+C would.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // SAFETY: plain kill(2) targeting our own pid with a handled signal.
+    unsafe {
+        libc::kill(std::process::id() as i32, libc::SIGINT);
+    }
+
+    tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
+        .await
+        .expect("runner should exit after SIGINT")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+
+    hook_rx
+        .await
+        .expect("shutdown hook should have run on SIGINT");
+}
+
+/// Standalone mode awaits hooks on cancellation too (it has no daemon, so the
+/// grace window is the built-in default).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_cancel_awaits_hooks_before_exit() {
+    let _env_guard = EnvAndDirGuard::new_standalone();
+
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config = r#"{
+      peppy_schema: "node_v1",
+      manifest: {
+        name: "test_node",
+        tag: "v1",
+      },
+      execution: {
+        language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
+        run_cmd: ["./target/debug/test_node"]
+      },
+    }"#;
+    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+
+    let standalone_config = peppylib::runtime::StandaloneConfig::new()
+        .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
+        .with_messaging(&router_host, router_port)
+        .with_instance_id(TEST_INSTANCE_ID);
+
+    let (hook_tx, hook_rx) = tokio::sync::oneshot::channel::<()>();
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<CancellationToken>();
+    let runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new()
+            .with_config_path(&peppy_config_path)
+            .standalone(standalone_config)
+            .run(|_parameters: Parameters, node_runner| async move {
+                node_runner.on_shutdown(async move {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let _ = hook_tx.send(());
+                });
+                let _ = setup_tx.send(node_runner.cancellation_token().clone());
+                Ok(())
+            })
+    });
+
+    let cancellation_token = tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should complete")
+        .expect("runner setup signal should be sent");
+
+    cancellation_token.cancel();
+
+    tokio::time::timeout(Duration::from_secs(10), runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+
+    hook_rx
+        .await
+        .expect("shutdown hook should have run before standalone exit");
+}

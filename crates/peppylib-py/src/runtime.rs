@@ -9,7 +9,26 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 type SharedPyError = Arc<Mutex<Option<PyErr>>>;
-type AsyncSetupResult = (std::sync::mpsc::Receiver<()>, Py<PyAny>, EventLoopShutdown);
+
+/// The node's persistent asyncio event loop, shared with every
+/// [`PyNodeRunner`] handed to user code. Filled by [`start_async_setup`] when
+/// the setup function is async; stays `None` for synchronous-setup nodes.
+/// Shutdown hooks read it to decide where a hook coroutine should run.
+type SharedEventLoopSlot = Arc<Mutex<Option<Py<PyAny>>>>;
+
+/// Handles produced by [`start_async_setup`] for the async-setup flow.
+struct AsyncSetup {
+    /// Signalled when the setup coroutine completes (any outcome).
+    setup_complete_rx: std::sync::mpsc::Receiver<()>,
+    /// The `concurrent.futures.Future` of the setup coroutine.
+    setup_future: Py<PyAny>,
+    /// Teardown handles for the loop thread, fired after `builder.run()`.
+    event_loop_shutdown: EventLoopShutdown,
+    /// Held by the setup phase; dropping it disarms the shutdown-monitor
+    /// thread, which must not fire the loop drain once the runner's
+    /// shutdown-hook phase owns it (see `start_async_setup`).
+    monitor_disarm: tokio::sync::oneshot::Sender<()>,
+}
 
 /// How long the main thread waits for the asyncio event-loop thread to drain
 /// on shutdown before giving up and letting the process exit anyway.
@@ -75,12 +94,17 @@ fn call_setup_function(
     setup_fn: &Py<PyAny>,
     params: &serde_json::Value,
     node_runner: &Arc<NodeRunner>,
+    event_loop_slot: &SharedEventLoopSlot,
 ) -> PyResult<Py<PyAny>> {
     let py_params = pythonize(py, params)
         .map_err(|e| PyRuntimeError::new_err(format!("failed to convert params to Python: {e}")))?
         .unbind();
     let py_params = hydrate_parameters(py, py_params)?;
-    let py_runner = Py::new(py, PyNodeRunner::new(Arc::clone(node_runner))).map_err(|e| {
+    let py_runner = Py::new(
+        py,
+        PyNodeRunner::with_event_loop_slot(Arc::clone(node_runner), Arc::clone(event_loop_slot)),
+    )
+    .map_err(|e| {
         PyRuntimeError::new_err(format!("failed to create NodeRunner Python wrapper: {e}"))
     })?;
     setup_fn.call1(py, (py_params, py_runner))
@@ -98,6 +122,144 @@ fn hydrate_parameters(py: Python<'_>, params: Py<PyAny>) -> PyResult<Py<PyAny>> 
 
 fn is_awaitable(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     value.hasattr("__await__")
+}
+
+/// Print a Python error raised by a shutdown hook. Hooks are contained: one
+/// failing hook must not stop the remaining ones, so errors are printed (with
+/// traceback) rather than propagated.
+fn print_shutdown_hook_error(py: Python<'_>, err: &PyErr) {
+    eprintln!("peppy: shutdown hook raised:");
+    err.print(py);
+}
+
+/// Bridge a `concurrent.futures.Future`'s completion into a tokio oneshot, so
+/// async Rust can await it without holding the GIL.
+fn notify_on_future_done(
+    py: Python<'_>,
+    future: &Bound<'_, PyAny>,
+) -> PyResult<tokio::sync::oneshot::Receiver<()>> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let tx = Mutex::new(Some(tx));
+    let done_cb = PyCFunction::new_closure(
+        py,
+        Some(c"_peppy_future_done"),
+        None,
+        move |_args, _kwargs| {
+            if let Ok(mut guard) = tx.lock()
+                && let Some(tx) = guard.take()
+            {
+                let _ = tx.send(());
+            }
+            Ok::<(), PyErr>(())
+        },
+    )?;
+    future.call_method1("add_done_callback", (done_cb,))?;
+    Ok(rx)
+}
+
+/// Where (and whether) a hook callback's returned awaitable still needs to be
+/// driven after the initial GIL-attached call.
+enum HookContinuation {
+    /// Synchronous callback (or scheduling failed): nothing left to do.
+    Done,
+    /// Awaitable scheduled on the node's running asyncio loop; wait for the
+    /// returned `concurrent.futures.Future` and then surface its exception.
+    OnNodeLoop(tokio::sync::oneshot::Receiver<()>, Py<PyAny>),
+    /// No running node loop (synchronous-setup node): the awaitable must be
+    /// driven on a dedicated one-off loop via `asyncio.run`.
+    NeedsOwnLoop(Py<PyAny>),
+}
+
+/// Run one registered Python shutdown hook to completion.
+///
+/// Calls the callback under the GIL; if it returns an awaitable, drives it on
+/// the node's asyncio event loop when one is running (async-setup nodes, where
+/// the loop outlives user hooks by design: the loop drain is the final hook),
+/// or on a one-off `asyncio.run` loop otherwise. The GIL is released while
+/// waiting, so the loop thread can execute the coroutine. Errors are printed
+/// and swallowed; the surrounding hook phase is bounded by the runner's grace
+/// window.
+async fn run_python_shutdown_hook(callback: Py<PyAny>, event_loop_slot: SharedEventLoopSlot) {
+    let continuation = crate::py_future::try_attach_gated(|py| {
+        let result = match callback.bind(py).call0() {
+            Ok(result) => result,
+            Err(err) => {
+                print_shutdown_hook_error(py, &err);
+                return HookContinuation::Done;
+            }
+        };
+        match is_awaitable(&result) {
+            Ok(false) => return HookContinuation::Done,
+            Ok(true) => {}
+            Err(err) => {
+                print_shutdown_hook_error(py, &err);
+                return HookContinuation::Done;
+            }
+        }
+
+        let node_loop = event_loop_slot
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|l| l.clone_ref(py)));
+        let Some(node_loop) = node_loop else {
+            return HookContinuation::NeedsOwnLoop(result.unbind());
+        };
+        let node_loop = node_loop.into_bound(py);
+        let loop_is_running = node_loop
+            .call_method0("is_running")
+            .and_then(|v| v.is_truthy())
+            .unwrap_or(false);
+        if !loop_is_running {
+            return HookContinuation::NeedsOwnLoop(result.unbind());
+        }
+
+        let scheduled = (|| -> PyResult<HookContinuation> {
+            let asyncio = py.import("asyncio")?;
+            let future = asyncio.call_method1("run_coroutine_threadsafe", (&result, &node_loop))?;
+            let done_rx = notify_on_future_done(py, &future)?;
+            Ok(HookContinuation::OnNodeLoop(done_rx, future.unbind()))
+        })();
+        scheduled.unwrap_or_else(|err| {
+            print_shutdown_hook_error(py, &err);
+            HookContinuation::Done
+        })
+    });
+
+    match continuation {
+        None | Some(HookContinuation::Done) => {}
+        Some(HookContinuation::OnNodeLoop(done_rx, future)) => {
+            let _ = done_rx.await;
+            let _ = crate::py_future::try_attach_gated(|py| {
+                // `exception()` itself raises if the future was cancelled
+                // (loop torn down mid-hook); both shapes are just printed.
+                match future.bind(py).call_method0("exception") {
+                    Ok(exc) if !exc.is_none() => {
+                        eprintln!("peppy: shutdown hook raised:");
+                        let _ = py
+                            .import("traceback")
+                            .and_then(|tb| tb.call_method1("print_exception", (exc,)));
+                    }
+                    Ok(_) => {}
+                    Err(err) => print_shutdown_hook_error(py, &err),
+                }
+            });
+        }
+        Some(HookContinuation::NeedsOwnLoop(awaitable)) => {
+            // A blocking task keeps the GIL wait off the runtime worker that
+            // is driving the hook phase.
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = crate::py_future::try_attach_gated(|py| {
+                    let outcome = py
+                        .import("asyncio")
+                        .and_then(|asyncio| asyncio.call_method1("run", (awaitable.bind(py),)));
+                    if let Err(err) = outcome {
+                        print_shutdown_hook_error(py, &err);
+                    }
+                });
+            })
+            .await;
+        }
+    }
 }
 
 /// Create a Python module containing pure-Python helpers for the asyncio event
@@ -164,10 +326,12 @@ def make_shutdown_trigger(event_loop, asyncio_mod):
     def _trigger():
         # Cancel pending tasks and stop the loop so its thread can exit before
         # the process tears down. Safe to call from any thread and idempotent:
-        # a no-op once the loop is no longer running.
+        # a no-op (returning None) once the loop is no longer running.
+        # Otherwise returns the drain's concurrent.futures.Future so callers
+        # that need to sequence work after the drain can wait on it.
         if not event_loop.is_running():
-            return
-        asyncio_mod.run_coroutine_threadsafe(_drain(), event_loop)
+            return None
+        return asyncio_mod.run_coroutine_threadsafe(_drain(), event_loop)
 
     return _trigger
 ",
@@ -193,7 +357,8 @@ fn start_async_setup(
     py: Python<'_>,
     setup_awaitable: &Bound<'_, PyAny>,
     node_runner: &Arc<NodeRunner>,
-) -> PyResult<AsyncSetupResult> {
+    event_loop_slot: &SharedEventLoopSlot,
+) -> PyResult<AsyncSetup> {
     let asyncio = py.import("asyncio")?;
     let threading = py.import("threading")?;
 
@@ -229,14 +394,56 @@ fn start_async_setup(
     let thread = threading.call_method("Thread", (), Some(&thread_kwargs))?;
     thread.call_method0("start")?;
 
-    // 5. Build the shutdown trigger: a pure-Python callable that cancels
-    //    pending tasks and stops the loop. Fired by both the shutdown monitor
-    //    (below) and the main thread after builder.run() returns.
+    // 5. Publish the loop to the slot shared with every PyNodeRunner, so
+    //    shutdown hooks registered from user code know where to run their
+    //    coroutines. Done before the setup coroutine is submitted, so any
+    //    hook registered during setup sees the loop.
+    if let Ok(mut slot) = event_loop_slot.lock() {
+        *slot = Some(event_loop.clone().unbind());
+    }
+
+    // 6. Build the shutdown trigger: a pure-Python callable that cancels
+    //    pending tasks and stops the loop, returning the drain's future (or
+    //    None when the loop is already stopped). Fired by the drain hook
+    //    below, by the setup-scoped shutdown monitor, and by the main thread
+    //    in `quiesce` after builder.run() returns.
     let shutdown_trigger = helpers
         .getattr("make_shutdown_trigger")?
         .call1((&event_loop, &asyncio))?;
 
-    // 6. Submit the setup coroutine and register a done callback.
+    // 7. Register the loop drain as a shutdown hook NOW, before the setup
+    //    coroutine can register any user hook. Hooks run in reverse
+    //    registration order, so this one runs last: user hooks execute with
+    //    the loop (and the node's tokio runtime and messenger) still fully
+    //    alive, and only then are the remaining asyncio tasks cancelled,
+    //    gathered, and the loop stopped. Awaiting the drain inside the hook
+    //    phase keeps the tokio runtime alive while cancelled tasks run their
+    //    `finally` cleanup.
+    let trigger_for_hook = shutdown_trigger.clone().unbind();
+    node_runner.on_shutdown(async move {
+        let drain_done = crate::py_future::try_attach_gated(|py| {
+            let drain_future = match trigger_for_hook.bind(py).call0() {
+                Ok(future) => future,
+                Err(err) => {
+                    print_shutdown_hook_error(py, &err);
+                    return None;
+                }
+            };
+            if drain_future.is_none() {
+                // Loop already stopped; nothing to wait for.
+                return None;
+            }
+            notify_on_future_done(py, &drain_future)
+                .inspect_err(|err| print_shutdown_hook_error(py, err))
+                .ok()
+        })
+        .flatten();
+        if let Some(done_rx) = drain_done {
+            let _ = done_rx.await;
+        }
+    });
+
+    // 8. Submit the setup coroutine and register a done callback.
     //    A Rust channel signals completion so the caller can release the GIL
     //    before blocking; the event loop thread needs it to run the coroutine.
     let future =
@@ -254,18 +461,32 @@ fn start_async_setup(
     future.call_method1("add_done_callback", (done_cb,))?;
     let future_ref = future.unbind();
 
-    // 7. Schedule the shutdown monitor: fire the loop teardown as soon as the
-    //    node is cancelled (external shutdown or an uncaught task error), while
-    //    the loop is still alive so pending tasks observe cancellation. The
-    //    main thread fires the same idempotent trigger and joins the loop
-    //    thread after builder.run() returns; see `EventLoopShutdown`.
+    // 9. Schedule the shutdown monitor, scoped to the setup window. While the
+    //    main thread is blocked waiting for the setup coroutine (a synchronous
+    //    recv), the runner's select cannot react to a cancellation, so this
+    //    thread fires the loop teardown to unstick a cancelled setup (uncaught
+    //    task error, daemon-liveness watchdog, process signal). Dropping the
+    //    `monitor_disarm` sender at the end of the setup phase retires the
+    //    monitor: from then on the drain hook registered above owns the
+    //    teardown, and the monitor must not cancel tasks out from under user
+    //    shutdown hooks. The `biased` order makes the disarm win a race.
     let trigger_for_monitor = shutdown_trigger.clone().unbind();
     let cancel_for_shutdown = node_runner.cancellation_token().clone();
+    let (disarm_tx, mut disarm_rx) = tokio::sync::oneshot::channel::<()>();
     let rt_handle = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("peppy-asyncio-shutdown".to_string())
         .spawn(move || {
-            rt_handle.block_on(cancel_for_shutdown.cancelled());
+            let cancelled_during_setup = rt_handle.block_on(async {
+                tokio::select! {
+                    biased;
+                    _ = &mut disarm_rx => false,
+                    _ = cancel_for_shutdown.cancelled() => true,
+                }
+            });
+            if !cancelled_during_setup {
+                return;
+            }
             // Gated attach: if this thread is scheduled so late that the
             // attach gate has closed, the main thread has already fired the
             // same idempotent trigger in `quiesce`, so skipping is safe.
@@ -276,14 +497,15 @@ fn start_async_setup(
         })
         .map_err(|e| PyRuntimeError::new_err(format!("failed to start shutdown monitor: {e}")))?;
 
-    Ok((
-        rx,
-        future_ref,
-        EventLoopShutdown {
+    Ok(AsyncSetup {
+        setup_complete_rx: rx,
+        setup_future: future_ref,
+        event_loop_shutdown: EventLoopShutdown {
             trigger: shutdown_trigger.unbind(),
             thread: thread.unbind(),
         },
-    ))
+        monitor_disarm: disarm_tx,
+    })
 }
 
 fn store_python_error(error_slot: &SharedPyError, err: PyErr) {
@@ -338,16 +560,27 @@ pub struct PyNodeRunner {
     /// Cached messenger handle — cloning `MessengerHandle` is a cheap `Arc`
     /// bump, but we avoid re-wrapping it on every `messenger()` call.
     cached_messenger: PyMessengerHandle,
+    /// The node's persistent asyncio loop, filled once async setup starts.
+    /// Read by shutdown hooks to run hook coroutines on the node's loop.
+    event_loop_slot: SharedEventLoopSlot,
 }
 
 impl PyNodeRunner {
     fn new(node_runner: Arc<NodeRunner>) -> Self {
+        Self::with_event_loop_slot(node_runner, Arc::new(Mutex::new(None)))
+    }
+
+    fn with_event_loop_slot(
+        node_runner: Arc<NodeRunner>,
+        event_loop_slot: SharedEventLoopSlot,
+    ) -> Self {
         let cached_messenger = PyMessengerHandle {
             inner: node_runner.messenger().clone(),
         };
         Self {
             inner: node_runner,
             cached_messenger,
+            event_loop_slot,
         }
     }
 }
@@ -381,6 +614,31 @@ impl PyNodeRunner {
         PyCancellationToken {
             inner: self.inner.cancellation_token().clone(),
         }
+    }
+
+    /// Register a cleanup callback to run when the node shuts down.
+    ///
+    /// The callback is called with no arguments after the node's cancellation
+    /// token fires, on every stop path: `peppy node stop`, daemon teardown,
+    /// SIGINT/SIGTERM (handled by the runtime), daemon-liveness loss, and a
+    /// setup error. It may be a plain function or a coroutine function
+    /// (`async def`); a returned awaitable is run to completion on the node's
+    /// asyncio event loop. Messaging is still connected while hooks run, so
+    /// cleanup can use the datastore and messenger. This is the guaranteed
+    /// place for hardware teardown, lock release, and state flushing.
+    ///
+    /// Hooks run sequentially in reverse registration order, all bounded by
+    /// one grace window (`peppy_config.lifecycle.shutdown_grace_secs`). The
+    /// window is enforced at await points: a callback that blocks without
+    /// awaiting cannot be interrupted, so keep synchronous work brief. The
+    /// node's background tasks are cancelled only after every hook has
+    /// finished. An exception raised by a hook is printed and the remaining
+    /// hooks still run. Register hooks during setup; a hook registered after
+    /// shutdown has begun may never run.
+    fn on_shutdown(&self, callback: Py<PyAny>) {
+        let event_loop_slot = Arc::clone(&self.event_loop_slot);
+        self.inner
+            .on_shutdown(run_python_shutdown_hook(callback, event_loop_slot));
     }
 
     /// Get the messenger handle for pub/sub and service communication.
@@ -560,45 +818,67 @@ impl PyNodeBuilder {
             let event_loop_handle: Arc<Mutex<Option<EventLoopShutdown>>> =
                 Arc::new(Mutex::new(None));
             let event_loop_for_run = Arc::clone(&event_loop_handle);
+            // Shared with every PyNodeRunner (and so with every registered
+            // shutdown hook); filled by start_async_setup when setup is async.
+            let hook_loop_slot: SharedEventLoopSlot = Arc::new(Mutex::new(None));
 
             let run_result = builder.run(
                 move |params: serde_json::Value, node_runner: Arc<NodeRunner>| {
                     let setup_error = Arc::clone(&setup_error_for_run);
                     let setup_return = setup_return_for_run;
                     let event_loop_slot = event_loop_for_run;
+                    let hook_loop_slot = hook_loop_slot;
                     async move {
                         // Phase 1: call setup and start async event loop (holds GIL)
                         let async_handle =
-                            Python::try_attach(|py| -> PyResult<Option<AsyncSetupResult>> {
-                                let setup_result =
-                                    call_setup_function(py, &setup_fn, &params, &node_runner)?;
+                            Python::try_attach(|py| -> PyResult<Option<AsyncSetup>> {
+                                let setup_result = call_setup_function(
+                                    py,
+                                    &setup_fn,
+                                    &params,
+                                    &node_runner,
+                                    &hook_loop_slot,
+                                )?;
                                 let setup_bound = setup_result.bind(py);
 
                                 if is_awaitable(setup_bound)? {
-                                    Ok(Some(start_async_setup(py, setup_bound, &node_runner)?))
+                                    Ok(Some(start_async_setup(
+                                        py,
+                                        setup_bound,
+                                        &node_runner,
+                                        &hook_loop_slot,
+                                    )?))
                                 } else {
                                     Ok(None)
                                 }
                             });
 
                         match async_handle {
-                            Some(Ok(Some((rx, future_ref, shutdown)))) => {
+                            Some(Ok(Some(async_setup))) => {
+                                // Held until this setup phase ends (any path);
+                                // dropping it retires the shutdown monitor,
+                                // handing the loop teardown to the drain hook.
+                                let _monitor_disarm = async_setup.monitor_disarm;
+
                                 // Store the loop teardown handle so the main
                                 // thread can quiesce and join it after
                                 // builder.run() returns.
                                 if let Ok(mut guard) = event_loop_slot.lock() {
-                                    *guard = Some(shutdown);
+                                    *guard = Some(async_setup.event_loop_shutdown);
                                 }
 
                                 // Phase 2: wait without GIL so event loop
                                 // thread can run the setup coroutine
-                                rx.recv()
+                                async_setup
+                                    .setup_complete_rx
+                                    .recv()
                                     .map_err(|_| peppy_io_err("async setup channel closed"))?;
 
                                 // Phase 3: check for exceptions and capture
                                 // the return value (re-acquires GIL)
                                 match Python::try_attach(|py| -> PyResult<()> {
-                                    let result = future_ref.bind(py).call_method0("result")?;
+                                    let result =
+                                        async_setup.setup_future.bind(py).call_method0("result")?;
                                     // Store the return value to prevent GC of
                                     // returned tasks.
                                     if !result.is_none()

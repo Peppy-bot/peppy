@@ -90,21 +90,32 @@ fn default_daemon_grace_secs() -> u64 {
     crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS
 }
 
+fn default_shutdown_grace_secs() -> u64 {
+    crate::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
+}
+
 /// Node lifecycle settings the daemon resolves once (from `peppy_config.json5`)
 /// and ships to each spawned node. `daemon_grace_secs` is the grace period the
 /// node's daemon-liveness watchdog waits, after the daemon's heartbeat goes
 /// silent, before shutting itself down — the uncatchable-death safety net.
+/// `shutdown_grace_secs` is the cooperative-shutdown window: the daemon waits
+/// this long for a stopping node to exit before SIGKILL, and the node runtime
+/// bounds its registered shutdown hooks by the same window so cleanup can never
+/// hang a stop (or outlive a dead daemon) indefinitely.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LifecycleRuntimeConfig {
     #[serde(default = "default_daemon_grace_secs")]
     pub daemon_grace_secs: u64,
+    #[serde(default = "default_shutdown_grace_secs")]
+    pub shutdown_grace_secs: u64,
 }
 
 impl Default for LifecycleRuntimeConfig {
     fn default() -> Self {
         Self {
             daemon_grace_secs: default_daemon_grace_secs(),
+            shutdown_grace_secs: default_shutdown_grace_secs(),
         }
     }
 }
@@ -336,7 +347,8 @@ mod tests {
             "default lifecycle should not be serialized: {serialized}"
         );
 
-        // An explicit lifecycle block round-trips.
+        // A partial lifecycle block fills the missing field from its default
+        // and an explicit block round-trips.
         let custom: RuntimeConfig = serde_json5::from_str(
             r#"{
                 messaging_host: "127.0.0.1",
@@ -350,9 +362,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(custom.lifecycle.daemon_grace_secs, 42);
+        assert_eq!(
+            custom.lifecycle.shutdown_grace_secs,
+            crate::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
+        );
         let reparsed: RuntimeConfig =
             serde_json5::from_str(&serde_json5::to_string(&custom).unwrap()).unwrap();
         assert_eq!(reparsed.lifecycle, custom.lifecycle);
+
+        let custom_shutdown: RuntimeConfig = serde_json5::from_str(
+            r#"{
+                messaging_host: "127.0.0.1",
+                messaging_port: 7448,
+                node_instance: { instance_id: "camera_front" },
+                node_name: "camera",
+                node_tag: "v1",
+                bound_core_node: "core_node",
+                lifecycle: { shutdown_grace_secs: 7 }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(custom_shutdown.lifecycle.shutdown_grace_secs, 7);
+        let reparsed: RuntimeConfig =
+            serde_json5::from_str(&serde_json5::to_string(&custom_shutdown).unwrap()).unwrap();
+        assert_eq!(reparsed.lifecycle, custom_shutdown.lifecycle);
     }
 
     /// A launch config written before `discovery` existed (no `discovery` key)

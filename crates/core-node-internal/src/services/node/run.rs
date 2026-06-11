@@ -70,6 +70,10 @@ pub struct DaemonDefaults {
     /// Daemon-liveness grace period (seconds), injected into every spawned node
     /// so its watchdog knows how long to tolerate a silent daemon.
     pub daemon_grace_secs: u64,
+    /// Cooperative-shutdown grace period (seconds), injected into every spawned
+    /// node so its runtime bounds registered shutdown hooks by the same window
+    /// the daemon waits before force-killing a stopping node.
+    pub shutdown_grace_secs: u64,
 }
 
 impl DaemonDefaults {
@@ -81,6 +85,7 @@ impl DaemonDefaults {
             messaging_mode: config.mode,
             peer_buffer: config.peer,
             daemon_grace_secs: config.lifecycle.daemon_grace_secs,
+            shutdown_grace_secs: config.lifecycle.shutdown_grace_secs,
         }
     }
 }
@@ -125,6 +130,7 @@ fn apply_daemon_defaults(
     cfg.discovery.standard_buffer_size = defaults.peer_buffer.standard_buffer_size;
     cfg.discovery.high_throughput_buffer_size = defaults.peer_buffer.high_throughput_buffer_size;
     cfg.lifecycle.daemon_grace_secs = defaults.daemon_grace_secs;
+    cfg.lifecycle.shutdown_grace_secs = defaults.shutdown_grace_secs;
 }
 
 struct ProcessNodeRunContext {
@@ -1384,13 +1390,14 @@ mod tests {
         .expect("valid test runtime config")
     }
 
-    /// `DaemonDefaults` with the given mode/buffers and an arbitrary
-    /// recognizable grace period.
+    /// `DaemonDefaults` with the given mode/buffers and arbitrary
+    /// recognizable grace periods.
     fn daemon_defaults(mode: Mode, peer: PeerConfig) -> DaemonDefaults {
         DaemonDefaults {
             messaging_mode: mode,
             peer_buffer: peer,
             daemon_grace_secs: 123,
+            shutdown_grace_secs: 17,
         }
     }
 
@@ -1437,8 +1444,8 @@ mod tests {
         );
     }
 
-    /// Buffer sizes and the daemon-liveness grace period are applied regardless
-    /// of mode or container placement.
+    /// Buffer sizes and both grace periods are applied regardless of mode or
+    /// container placement.
     #[test]
     fn apply_daemon_defaults_always_applies_buffers_and_grace() {
         let peer = PeerConfig {
@@ -1455,6 +1462,7 @@ mod tests {
             assert_eq!(cfg.discovery.standard_buffer_size, 64);
             assert_eq!(cfg.discovery.high_throughput_buffer_size, 4096);
             assert_eq!(cfg.lifecycle.daemon_grace_secs, 123);
+            assert_eq!(cfg.lifecycle.shutdown_grace_secs, 17);
         }
     }
 

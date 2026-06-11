@@ -191,7 +191,20 @@ Inside your node, that cooperative ask surfaces through the runtime's **cancella
 
 <Tabs>
   <TabItem label="Python">
-    The background tasks returned from `setup` are cancelled automatically: their pending `await` raises `asyncio.CancelledError`, and the node exits once they finish. Wrap your loop in `try`/`finally` to park actuators, release hardware, or flush state on the way out:
+    **Cleanup** (parking actuators, releasing hardware or locks, flushing state) belongs in a shutdown hook, registered during setup with `node_runner.on_shutdown(...)`. The callback may be a plain function or an `async def`; a returned awaitable runs on the node's event loop, and messaging is still connected while hooks run:
+
+    ```python
+    async def setup(params, node_runner: NodeRunner):
+        async def release_lock():
+            # runs on every stop path, before the node's tasks are torn down
+            await datastore.remove(node_runner, "my_lock", response_timeout_secs=2.0)
+
+        node_runner.on_shutdown(release_lock)
+    ```
+
+    Hooks run on every stop path (`peppy node stop`, daemon teardown, `SIGINT`/`SIGTERM` handled by the runtime for you, daemon-liveness loss, and even a setup error), sequentially in reverse registration order, all bounded by the grace period. The node's background tasks keep running until every hook has finished.
+
+    For **stopping work**, the background tasks returned from `setup` are cancelled automatically after the hooks: their pending `await` raises `asyncio.CancelledError`, and the node exits once they finish. A `try`/`finally` around a loop still runs on the way out, but cleanup that must be guaranteed (or that needs messaging) belongs in `on_shutdown`:
 
     ```python
     async def emit_hello_world_loop(node_runner: NodeRunner):
@@ -200,20 +213,34 @@ Inside your node, that cooperative ask surfaces through the runtime's **cancella
                 # ... emit, read sensors, etc.
                 await asyncio.sleep(3)
         finally:
-            pass  # park actuators, release hardware, flush state
+            pass  # last-moment, best-effort tidy-up only
     ```
 
     Async code can also wait for the shutdown explicitly with `await node_runner.cancellation_token().cancelled()`, mirroring the Rust pattern. Code that cannot rely on task cancellation (a synchronous helper, a thread you spawned yourself) can poll `node_runner.cancellation_token().is_cancelled()` instead.
   </TabItem>
   <TabItem label="Rust">
-    The token returned by `node_runner.cancellation_token()` is cancelled. The hello_world node above already follows the recommended pattern: clone the token in the setup closure and have every spawned task `select!` on `token.cancelled()` next to its work, then run its cleanup when that branch wins:
+    The token returned by `node_runner.cancellation_token()` is cancelled. The hello_world node above already follows the recommended pattern for **stopping work**: clone the token in the setup closure and have every spawned task `select!` on `token.cancelled()` next to its work, then break out when that branch wins:
 
     ```rust
     tokio::select! {
-        _ = token.cancelled() => break, // shutdown requested: clean up and exit
+        _ = token.cancelled() => break, // shutdown requested: stop working
         _ = interval.tick() => { /* do work */ }
     }
     ```
+
+    **Cleanup** (parking actuators, releasing hardware or locks, flushing state) belongs in a shutdown hook, registered during setup with `node_runner.on_shutdown(...)`:
+
+    ```rust
+    let runner = node_runner.clone();
+    node_runner.on_shutdown(async move {
+        // runs on every stop path, after the token fires, before run() returns
+        if let Err(e) = datastore::remove(&runner, "my_lock", TIMEOUT).await {
+            tracing::warn!("failed to release lock: {e}");
+        }
+    });
+    ```
+
+    Hooks run on every stop path (`peppy node stop`, daemon teardown, `SIGINT`/`SIGTERM` handled by the runtime for you, daemon-liveness loss, and even a setup error) sequentially in reverse registration order, and `NodeBuilder::run` waits for them (bounded by the grace period) before it returns. Do **not** put cleanup in a spawned task that watches the token instead: once the token fires the runtime begins tearing down, and a detached task is not guaranteed to run again.
   </TabItem>
 </Tabs>
 

@@ -193,6 +193,16 @@ impl Processor {
         std::time::Duration::from_secs(self.runtime_config.lifecycle.daemon_grace_secs)
     }
 
+    /// Cooperative-shutdown grace window. The daemon waits this long for a
+    /// stopping node to exit before force-killing it, and the node runtime
+    /// bounds its registered shutdown hooks
+    /// ([`crate::runtime::NodeRunner::on_shutdown`]) by the same window.
+    /// Resolved by the daemon from `peppy_config.json5` and shipped in the
+    /// runtime config; standalone nodes use the built-in default.
+    pub fn shutdown_grace(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.runtime_config.lifecycle.shutdown_grace_secs)
+    }
+
     /// Daemon-resolved framework `use_sim_time` flag for this instance.
     /// Read by [`crate::core_node::clock::clock_for_node`] to pick between
     /// the wall-time and sim-time `PeppyClock` implementations.
