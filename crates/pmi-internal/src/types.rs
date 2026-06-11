@@ -218,6 +218,38 @@ pub trait MessengerBackend {
         qos: SubscriberQoS,
     ) -> impl Future<Output = Result<Subscription>> + Send;
 
+    /// Declare the liveliness token advertising that `recv`'s action
+    /// producer instance is alive. The token is removed by the transport
+    /// when the producing session closes — gracefully or by hard process
+    /// death — which is what lets consumers detect a producer that died
+    /// without closing its goals. Dropping the returned
+    /// [`ActionLivelinessToken`] undeclares it explicitly.
+    fn declare_action_liveliness(
+        &self,
+        recv: &ActionWireReceiver,
+    ) -> impl Future<Output = Result<ActionLivelinessToken>> + Send;
+
+    /// Watch the liveliness of the producer instance `sender` targets.
+    /// The returned watch immediately reports
+    /// [`ActionLivelinessEvent::Alive`] for a token that already exists
+    /// (history), then streams `Alive` / `Gone` transitions as the
+    /// producer's token appears and disappears.
+    fn watch_action_producer(
+        &self,
+        sender: &ActionWireSender,
+    ) -> impl Future<Output = Result<ActionLivelinessWatch>> + Send;
+
+    /// One-shot probe: is the liveliness token of the producer instance
+    /// `sender` targets currently present? Issuing the query is fast (the
+    /// returned future only awaits declaration); the answer is awaited via
+    /// [`ActionLivelinessProbe::resolve`], so callers can release any
+    /// shared lock before waiting out the probe `timeout`.
+    fn probe_action_producer(
+        &self,
+        sender: &ActionWireSender,
+        timeout: std::time::Duration,
+    ) -> impl Future<Output = Result<ActionLivelinessProbe>> + Send;
+
     // ─── Router lifecycle ─────────────────────────────────────────────────
 
     /// Starts the router in background and immediately returns for engines
@@ -283,6 +315,71 @@ impl Subscription {
 
     pub async fn on_next_message(&mut self) -> Option<TopicMessage> {
         self.rx.recv_async().await.ok()
+    }
+}
+
+/// Producer-side liveliness token declared by
+/// [`MessengerBackend::declare_action_liveliness`]. Holding it keeps the
+/// token advertised; dropping it (or losing the producing session, however
+/// that happens) removes the token, which consumers observe as
+/// [`ActionLivelinessEvent::Gone`].
+pub struct ActionLivelinessToken {
+    _guard: Guard,
+}
+
+impl ActionLivelinessToken {
+    pub(crate) fn new(guard: Guard) -> Self {
+        Self { _guard: guard }
+    }
+}
+
+/// Liveliness transition observed by an [`ActionLivelinessWatch`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionLivelinessEvent {
+    /// The producer's token is (or became) present.
+    Alive,
+    /// The producer's token disappeared. Raw transport signal — peppylib
+    /// confirms with [`MessengerBackend::probe_action_producer`] before
+    /// declaring the producer dead, since a router bounce can surface a
+    /// transient `Gone` for a still-alive producer.
+    Gone,
+}
+
+/// Consumer-side liveliness watch returned by
+/// [`MessengerBackend::watch_action_producer`]. The channel is unbounded:
+/// liveliness transitions are rare (bounded by producer restarts and router
+/// flaps) and the producing side runs inside the transport's reception
+/// callback, which must never block.
+pub struct ActionLivelinessWatch {
+    pub rx: flume::Receiver<ActionLivelinessEvent>,
+    _guard: Guard,
+}
+
+impl ActionLivelinessWatch {
+    pub(crate) fn new(rx: flume::Receiver<ActionLivelinessEvent>, guard: Guard) -> Self {
+        Self { rx, _guard: guard }
+    }
+}
+
+/// In-flight liveliness probe issued by
+/// [`MessengerBackend::probe_action_producer`]. The transport sends `()`
+/// when a matching token is found and drops its sender when the query
+/// finalizes, so [`resolve`](Self::resolve) maps "channel yielded" to
+/// alive and "channel disconnected" to gone.
+pub struct ActionLivelinessProbe {
+    rx: flume::Receiver<()>,
+}
+
+impl ActionLivelinessProbe {
+    pub(crate) fn new(rx: flume::Receiver<()>) -> Self {
+        Self { rx }
+    }
+
+    /// Waits for the probe's answer: `true` iff the producer's liveliness
+    /// token is currently present. Bounded by the `timeout` the probe was
+    /// issued with (the transport finalizes the query then).
+    pub async fn resolve(self) -> bool {
+        self.rx.recv_async().await.is_ok()
     }
 }
 
@@ -943,6 +1040,28 @@ impl MessengerBackend for Messenger {
             goal_id,
             qos
         )
+    }
+
+    async fn declare_action_liveliness(
+        &self,
+        recv: &ActionWireReceiver,
+    ) -> Result<ActionLivelinessToken> {
+        dispatch!(&self.adapter, declare_action_liveliness, recv)
+    }
+
+    async fn watch_action_producer(
+        &self,
+        sender: &ActionWireSender,
+    ) -> Result<ActionLivelinessWatch> {
+        dispatch!(&self.adapter, watch_action_producer, sender)
+    }
+
+    async fn probe_action_producer(
+        &self,
+        sender: &ActionWireSender,
+        timeout: std::time::Duration,
+    ) -> Result<ActionLivelinessProbe> {
+        dispatch!(&self.adapter, probe_action_producer, sender, timeout)
     }
 
     async fn start_router(&mut self) -> Result<()> {

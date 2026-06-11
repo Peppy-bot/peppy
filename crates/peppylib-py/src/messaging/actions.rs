@@ -51,7 +51,10 @@ impl PyActionFeedbackPublisher {
     }
 
     /// Publish the end-of-stream sentinel. Subscribers' next
-    /// `on_next_feedback` call resolves with `ActionFeedbackChannelClosed`.
+    /// `on_next_feedback` call resolves with `ActionFeedbackChannelClosed`
+    /// (a `RuntimeError` in Python). A producer that dies without sending
+    /// the sentinel is detected via its liveliness token instead, surfacing
+    /// as `ActionFeedbackProducerGone` (a `ConnectionError` in Python).
     fn publish_end<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let publisher = self.inner.clone();
         future_into_py_unit(py, async move {
@@ -211,6 +214,12 @@ impl PyActionGoalHandle {
     }
 
     /// Wait for the next feedback message from the action server.
+    ///
+    /// Raises `RuntimeError` when the stream ends cleanly (the server
+    /// published the end-of-stream sentinel) and `ConnectionError` when the
+    /// pinned producer instance disappeared without closing the stream
+    /// (`ActionFeedbackProducerGone`); `request_result` then resolves with
+    /// status 2 (Abandoned).
     fn on_next_feedback<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         crate::py_future::future_into_py(py, async move {
@@ -232,6 +241,10 @@ pub struct PyActionCreation {
     cancel_service: Arc<Mutex<ServiceEndpoint>>,
     feedback_publisher_factory: ActionFeedbackPublisherFactory,
     result_service: Arc<Mutex<ServiceEndpoint>>,
+    /// Producer-instance liveliness advertisement. Held (not Python-visible)
+    /// so the producer stays observable as alive for exactly as long as this
+    /// creation — and with it the action endpoint — exists.
+    _liveliness_token: peppylib::messaging::ActionLivelinessToken,
 }
 
 #[pymethods]
@@ -307,6 +320,7 @@ impl PyActionMessenger {
                 cancel_service: Arc::new(Mutex::new(creation.cancel_service)),
                 feedback_publisher_factory: creation.feedback_publisher_factory,
                 result_service: Arc::new(Mutex::new(creation.result_service)),
+                _liveliness_token: creation.liveliness_token,
             })
         })
     }

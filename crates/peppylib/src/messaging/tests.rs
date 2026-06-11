@@ -2768,6 +2768,7 @@ async fn single_action_communication_multiple_polls() {
                 cancel_service: _,
                 feedback_publisher_factory,
                 mut result_service,
+                liveliness_token: _liveliness_token,
             } = action;
             let feedback_publisher_factory = Arc::new(feedback_publisher_factory);
 

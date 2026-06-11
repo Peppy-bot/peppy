@@ -763,6 +763,170 @@ async fn concurrent_action_abandoned_goal_yields_typed_abandoned() {
     drop(server_handle);
 }
 
+/// Hard producer death mid-goal: the producer's session is torn down while a
+/// goal is in flight, with its `GoalContext` still alive — so the
+/// end-of-stream sentinel is never published (the exact race a SIGKILL /
+/// OOM / runtime teardown loses). The consumer's feedback drain must fail
+/// over to the producer's liveliness token disappearing:
+/// `on_next_feedback` (and `try_next_feedback`) resolve to a typed
+/// `ActionFeedbackProducerGone` instead of blocking forever, and
+/// `get_result` resolves to `ResultStatus::Abandoned` — both via the goal
+/// handle's confirmed-gone fast path and via the sender-only probe path the
+/// Python binding uses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned() {
+    use pmi::{Messenger, MessengerAdapter, MessengerBackend, ZenohNetProtocol};
+
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let core_node = "test_core";
+    let instance_id = "exposer";
+    let node_name = "brain";
+    let action_name = "move_arm";
+
+    // The producer's messenger is built by hand (instead of
+    // `from_host_port`) so the test retains the `Arc` and can close the
+    // session deterministically mid-goal — `stop_session` is the in-process
+    // stand-in for hard process death: liveliness tokens are removed
+    // identically on session close and on transport loss.
+    let producer_adapter =
+        ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port).expect("producer adapter");
+    let mut producer_messenger = Messenger::new(MessengerAdapter::Zenoh(producer_adapter));
+    producer_messenger
+        .start_session()
+        .await
+        .expect("producer start_session");
+    let producer_messenger = Arc::new(tokio::sync::Mutex::new(producer_messenger));
+    let server_handle = MessengerHandle::from_shared(Arc::clone(&producer_messenger));
+
+    let client_handle = MessengerHandle::from_host_port(&host, port)
+        .await
+        .expect("client handle");
+
+    let mut action = ConcurrentAction::expose(
+        &server_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        true,
+    )
+    .await
+    .expect("expose should succeed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The server accepts the goal, emits one feedback, then hands the live
+    // `GoalContext` out to the test body — it is deliberately NOT dropped
+    // before the session dies, so the graceful abandon-on-drop path can
+    // never publish the sentinel.
+    let (ctx_tx, ctx_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        if let Ok(Some(pending)) = action.recv_next_goal().await
+            && let Ok(ctx) = pending.accept(Payload::from_static(b"accepted")).await
+        {
+            ctx.publish_feedback(
+                NonEmptyPayload::try_new(Payload::from_static(b"working"))
+                    .expect("test feedback payload is non-empty"),
+            )
+            .await
+            .expect("feedback publish should succeed");
+            let _ = ctx_tx.send(ctx);
+        }
+        // Keep `action` — and with it the liveliness token — alive until the
+        // session teardown below removes the token out from under it.
+        std::future::pending::<()>().await;
+    });
+
+    let mut goal = ActionMessenger::send_goal(
+        &client_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        action_name,
+        Some(core_node),
+        Some(instance_id),
+        Payload::from_static(b"X"),
+        QoSProfile::Reliable,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("send goal");
+
+    // The goal is live: first feedback arrives normally.
+    let first = tokio::time::timeout(Duration::from_secs(2), goal.on_next_feedback())
+        .await
+        .expect("live goal must deliver feedback")
+        .expect("feedback should arrive before the producer dies");
+    assert_eq!(first.payload().as_ref(), b"working");
+
+    let ctx = ctx_rx.await.expect("server should hand out the context");
+
+    // Kill the producer. The context is still alive, so no sentinel is ever
+    // published — only the liveliness token disappearing tells the consumer.
+    producer_messenger
+        .lock()
+        .await
+        .stop_session()
+        .await
+        .expect("producer stop_session");
+
+    // The drain must fail over to the typed producer-gone error (Gone event
+    // → confirmation probes), never hang and never report a clean close.
+    let gone = tokio::time::timeout(Duration::from_secs(10), goal.on_next_feedback())
+        .await
+        .expect("producer death must unblock the feedback drain, not hang");
+    match gone {
+        Err(PeppyError::ActionFeedbackProducerGone {
+            instance_id: gone_instance,
+            action_name: gone_action,
+        }) => {
+            assert_eq!(gone_instance.as_deref(), Some(instance_id));
+            assert_eq!(gone_action, action_name);
+        }
+        other => panic!("expected ActionFeedbackProducerGone, got {other:?}"),
+    }
+
+    // The non-blocking variant observes the same latched state.
+    match goal.try_next_feedback() {
+        Err(PeppyError::ActionFeedbackProducerGone { .. }) => {}
+        other => {
+            panic!("expected ActionFeedbackProducerGone from try_next_feedback, got {other:?}")
+        }
+    }
+
+    // get_result resolves to a typed Abandoned outcome via the goal handle's
+    // confirmed-gone fast path (no poll against the dead queryable).
+    let result = ActionMessenger::request_result(&client_handle, &goal, Duration::from_secs(2))
+        .await
+        .expect("dead producer must resolve to a typed outcome, not error");
+    assert_eq!(result.status, ResultStatus::Abandoned);
+    assert!(
+        result.body.as_ref().is_empty(),
+        "abandoned outcome carries no result body"
+    );
+    assert_eq!(result.instance_id, instance_id);
+
+    // The sender-only path (what the Python binding drives) has no goal
+    // handle to consult: the result poll fails against the dead producer and
+    // the follow-up liveliness probe converts it to the same Abandoned reply.
+    let result = ActionMessenger::request_result_with_sender(
+        &client_handle,
+        goal.sender(),
+        goal.goal_id(),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("sender-only path must also resolve to a typed outcome");
+    assert_eq!(result.status, ResultStatus::Abandoned);
+
+    drop(ctx);
+    server.abort();
+    drop(server_handle);
+}
+
 /// A `get_result` issued before the worker completes must PARK and then resolve
 /// to the typed outcome — never error with "no active goal". This is the core
 /// of the fix: a prompt poll on a live goal waits for a definitive answer.
