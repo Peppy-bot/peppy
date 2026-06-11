@@ -7,7 +7,7 @@ name = "hello_receiver"
 version = "0.1.0"
 description = "hello_receiver peppy node"
 requires-python = ">=3.11,<3.14"
-dependencies = ["peppygen"]
+dependencies = ["peppygen", "peppylib"]
 
 [project.scripts]
 hello_receiver = "hello_receiver.__main__:main"
@@ -20,3 +20,4 @@ dev = []
 
 [tool.uv.sources]
 peppygen = { path = ".peppy/libs/peppygen" }
+peppylib = { path = ".peppy/libs/peppylib" }

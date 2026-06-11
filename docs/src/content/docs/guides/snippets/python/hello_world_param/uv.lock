@@ -8,10 +8,14 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "peppygen" },
+    { name = "peppylib" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "peppygen", directory = ".peppy/libs/peppygen" }]
+requires-dist = [
+    { name = "peppygen", directory = ".peppy/libs/peppygen" },
+    { name = "peppylib", directory = ".peppy/libs/peppylib" },
+]
 
 [package.metadata.requires-dev]
 dev = []
@@ -21,11 +25,20 @@ name = "peppygen"
 version = "0.1.0"
 source = { directory = ".peppy/libs/peppygen" }
 dependencies = [
+    { name = "peppylib" },
     { name = "pycapnp" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pycapnp" }]
+requires-dist = [
+    { name = "peppylib", specifier = "==0.0.1+peppy" },
+    { name = "pycapnp" },
+]
+
+[[package]]
+name = "peppylib"
+version = "0.0.1+peppy"
+source = { directory = ".peppy/libs/peppylib" }
 
 [[package]]
 name = "pycapnp"

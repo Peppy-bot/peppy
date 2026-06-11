@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use config::consts::{
-    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION, PeppyDirs,
+    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH, PYTHON_MAX_VERSION,
+    PYTHON_MIN_VERSION, PeppyDirs,
 };
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
@@ -858,7 +859,8 @@ pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
 /// Initialises a Python user-node project at `to_dir`.
 ///
 /// Creates a minimal `pyproject.toml` that depends on the generated `peppygen`
-/// package (located at [`PEPPYGEN_OUTPUT_PATH`] relative to the project root).
+/// and `peppylib` packages (located at [`PEPPYGEN_OUTPUT_PATH`] and
+/// [`PEPPYLIB_OUTPUT_PATH`] relative to the project root).
 pub fn init_python_user_node(to_dir: impl AsRef<Path>) {
     let project_dir = to_dir.as_ref();
     fs::create_dir_all(project_dir).expect("failed to create Python user node directory");
@@ -868,12 +870,12 @@ pub fn init_python_user_node(to_dir: impl AsRef<Path>) {
 name = "user_node"
 version = "0.1.0"
 requires-python = ">={PYTHON_MIN_VERSION},<{PYTHON_MAX_VERSION}"
-dependencies = ["peppygen"]
+dependencies = ["peppygen", "peppylib"]
 
 [tool.uv.sources]
-peppygen = {{ path = "{}" }}
-"#,
-        PEPPYGEN_OUTPUT_PATH
+peppygen = {{ path = "{PEPPYGEN_OUTPUT_PATH}" }}
+peppylib = {{ path = "{PEPPYLIB_OUTPUT_PATH}" }}
+"#
     );
     fs::write(project_dir.join("pyproject.toml"), pyproject)
         .expect("failed to write Python user node pyproject.toml");

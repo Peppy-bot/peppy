@@ -1,0 +1,12 @@
+[project]
+name = "peppylib"
+version = "{{ peppylib_version }}"
+description = "The peppyOS control library (prebuilt, deployed by peppy)"
+requires-python = ">={{ python_min_version }},<{{ python_max_version }}"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["peppylib*"]
+
+[tool.setuptools.package-data]
+peppylib = ["*.so"]

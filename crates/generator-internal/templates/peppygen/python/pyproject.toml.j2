@@ -2,17 +2,13 @@
 name = "peppygen"
 version = "0.1.0"
 requires-python = ">={{ python_min_version }},<{{ python_max_version }}"
-dependencies = ["pycapnp"]
+dependencies = ["pycapnp", "peppylib=={{ peppylib_version }}"]
 
 [tool.setuptools.packages.find]
-include = ["peppygen*", "peppylib*"]
+include = ["peppygen*"]
 
 [tool.setuptools.package-data]
 peppygen = ["capnp/*.capnp"]
-peppylib = ["*.so"]
-
-[tool.ruff]
-exclude = ["peppylib"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]

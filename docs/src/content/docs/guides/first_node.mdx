@@ -42,7 +42,7 @@ Run:
     </Steps>
     :::note
     [`uv`](https://docs.astral.sh/uv/) is the default Python toolchain in PeppyOS, but you can use any toolchain you prefer ([`pixi`](https://prefix.dev/), [`poetry`](https://python-poetry.org/), [`pip`](https://pip.pypa.io/en/stable), etc.). 
-    To do so, first initialize the node with `peppy node init --toolchain uv`, then add `peppygen = { path = ".peppy/libs/peppygen" }` as a dependency in your toolchain's configuration, 
+    To do so, first initialize the node with `peppy node init --toolchain uv`, then add `peppygen = { path = ".peppy/libs/peppygen" }` and `peppylib = { path = ".peppy/libs/peppylib" }` as dependencies in your toolchain's configuration, 
     and update `build_cmd` and `run_cmd` in `peppy.json5` to match your toolchain's commands. PeppyOS is designed to work with whichever tools you prefer.
     :::
   </TabItem>
