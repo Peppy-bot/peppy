@@ -282,6 +282,42 @@ impl ZenohWireFormat {
             s.as_core_node, s.as_instance_id,
         )
     }
+
+    /// Producer-side liveliness-token keyexpr, declared once per exposed
+    /// action:
+    /// `action_liveliness/{bound_core}/{as_inst}/{discriminator}/{name}/{tag}/{action}`.
+    ///
+    /// Liveliness tokens live in Zenoh's liveliness space (a distinct
+    /// interest type — regular subscribers never observe them), but the
+    /// keyexpr still gets its own `action_liveliness` root segment so it
+    /// can never be confused with topic/service shapes, and so the mock
+    /// adapter can route on it with the same string matcher.
+    pub(crate) fn action_liveliness_token(r: &ActionWireReceiver) -> String {
+        let (discriminator, name, tag) = target_segments(Some(&r.as_identity));
+        format!(
+            "action_liveliness/{}/{}/{discriminator}/{name}/{tag}/{}",
+            r.bound_core_node, r.as_instance_id, r.as_action_name,
+        )
+    }
+
+    /// Consumer-side liveliness watch/probe keyexpr. Mirrors
+    /// [`Self::action_liveliness_token`] with the producer-identity slots
+    /// taken from the (typically pinned) sender; unpinned slots wildcard.
+    pub(crate) fn action_liveliness_watch(s: &ActionWireSender) -> String {
+        let (discriminator, name, tag) = target_segments(Some(&s.to_target));
+        let target_core = s
+            .target_core_node
+            .as_deref()
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        let target_inst = s
+            .target_instance_id
+            .as_deref()
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        format!(
+            "action_liveliness/{target_core}/{target_inst}/{discriminator}/{name}/{tag}/{}",
+            s.to_action_name,
+        )
+    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────

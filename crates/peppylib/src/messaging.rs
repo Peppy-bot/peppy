@@ -24,12 +24,14 @@ pub use filter::{ConsumerFilter, resolve_consumer_filter};
 // / `SenderTargetError` / `ServiceKind` describe the shape of messaging calls
 // and surface in user-facing peppylib APIs. `ActionWireSender` is exposed
 // because peppylib-py caches one to drive subsequent cancel / result calls
-// without locking. The other wire structs (TopicWire*, ServiceWire*,
-// ActionWireReceiver) are internal to peppylib's own messaging
-// implementation; each submodule imports them directly from `pmi::`.
+// without locking. `ActionLivelinessToken` is the type of the public
+// `ActionCreation::liveliness_token` field. The other wire structs
+// (TopicWire*, ServiceWire*, ActionWireReceiver) are internal to peppylib's
+// own messaging implementation; each submodule imports them directly from
+// `pmi::`.
 pub use pmi::{
-    ActionWireSender, InterfaceIdentifier, NodeIdentifier, SenderTarget, SenderTargetError,
-    ServiceKind,
+    ActionLivelinessToken, ActionWireSender, InterfaceIdentifier, NodeIdentifier, SenderTarget,
+    SenderTargetError, ServiceKind,
 };
 // The writable loaned publish buffer — surfaced at the crate root too, next
 // to `Payload`, since it is part of the publish API.
@@ -39,10 +41,10 @@ use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{
-    ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    PublisherQoS, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver, ServiceWireSender,
-    SubscriberQoS, Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender,
-    ZenohAdapter, ZenohNetProtocol,
+    ActionLivelinessWatch, ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend,
+    MessengerPublisher, PublisherQoS, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
+    ServiceWireSender, SubscriberQoS, Subscription as PmiSubscription, TopicWireReceiver,
+    TopicWireSender, ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -510,6 +512,13 @@ impl MessengerHandle {
         let cancel_service = self.expose_service(&recv.cancel_service()).await?;
         let result_service = self.expose_service(&recv.result_service()).await?;
 
+        // Advertise this producer instance's liveliness for the lifetime of
+        // the action endpoint. The transport removes the token when the
+        // producing session dies — gracefully or by hard process death — so
+        // consumers can detect a producer that vanished without closing its
+        // goals (see `ActionGoalHandle::on_next_feedback`).
+        let liveliness_token = self.declare_action_liveliness(recv).await?;
+
         // Per-goal feedback uses `Important` (Block on congestion, DataHigh
         // priority) rather than `Standard`. The publisher is declared inside
         // the goal handler — the moment a fast server's first feedback
@@ -530,6 +539,7 @@ impl MessengerHandle {
             cancel_service,
             feedback_publisher_factory,
             result_service,
+            liveliness_token,
         })
     }
 
@@ -544,5 +554,45 @@ impl MessengerHandle {
             .subscribe_action_feedback(sender, goal_id, qos)
             .await
             .map_err(Error::PeppyMessagingInterface)
+    }
+
+    pub(crate) async fn declare_action_liveliness(
+        &self,
+        recv: &ActionWireReceiver,
+    ) -> Result<ActionLivelinessToken> {
+        let messenger = self.messenger.lock().await;
+        messenger
+            .declare_action_liveliness(recv)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
+
+    pub(crate) async fn watch_action_producer(
+        &self,
+        sender: &ActionWireSender,
+    ) -> Result<ActionLivelinessWatch> {
+        let messenger = self.messenger.lock().await;
+        messenger
+            .watch_action_producer(sender)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
+
+    /// One-shot probe of the targeted producer's liveliness token. The
+    /// central messenger lock is held only for query issuance; the wait for
+    /// the answer (bounded by `timeout`) happens after it is released.
+    pub(crate) async fn probe_action_producer(
+        &self,
+        sender: &ActionWireSender,
+        timeout: Duration,
+    ) -> Result<bool> {
+        let probe = {
+            let messenger = self.messenger.lock().await;
+            messenger
+                .probe_action_producer(sender, timeout)
+                .await
+                .map_err(Error::PeppyMessagingInterface)?
+        };
+        Ok(probe.resolve().await)
     }
 }

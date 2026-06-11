@@ -10,13 +10,16 @@ use crate::runtime::{CancellationToken, TaskHandle, spawn};
 use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
-use pmi::{ActionWireReceiver, ActionWireSender, PublisherQoS, SenderTarget, ServiceQueryKind};
+use pmi::{
+    ActionLivelinessEvent, ActionLivelinessToken, ActionLivelinessWatch, ActionWireReceiver,
+    ActionWireSender, PublisherQoS, SenderTarget, ServiceQueryKind,
+};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::{Mutex as TokioMutex, Notify};
 use tokio::time::Duration;
 use tracing::warn;
 
@@ -286,11 +289,170 @@ impl ActionFeedbackPublisherFactory {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Producer-disappearance detection
+// ---------------------------------------------------------------------------
+//
+// The end-of-stream sentinel only reaches the consumer while the producer's
+// session is alive to publish it. A producer that dies hard (SIGKILL, OOM,
+// runtime teardown winning the race against `GoalContext::Drop`'s spawned
+// cleanup) never sends it, and the consumer's feedback subscription — pinned
+// to the dead `instance_id` — would otherwise wait forever. Every exposed
+// action therefore advertises a transport liveliness token
+// (see `MessengerHandle::expose_action`), and every goal handle watches the
+// pinned producer's token so `on_next_feedback` can fail over to
+// [`Error::ActionFeedbackProducerGone`] when the producer disappears.
+
+/// Delay before each confirmation probe after a raw `Gone` liveliness event.
+/// Gives a gracefully-closing producer's final sentinel time to arrive (so
+/// the drain still ends with the typed `ActionFeedbackChannelClosed`) and
+/// lets a router bounce re-announce a still-alive producer's token instead
+/// of misreporting it dead.
+const PRODUCER_GONE_CONFIRM_DELAY: Duration = Duration::from_millis(250);
+
+/// Budget for one liveliness probe (`liveliness get`); the local routing
+/// view answers well within this.
+const LIVELINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How long the watcher waits for the history-replayed `Alive` of a
+/// producer that just answered the goal request, before suspecting it died
+/// in the gap and probing directly.
+const LIVELINESS_RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Consecutive token-absent probes required before the producer is declared
+/// gone. Two spaced probes ride out a transient routing flap without adding
+/// meaningful latency to real-death detection.
+const PRODUCER_GONE_CONFIRM_PROBES: usize = 2;
+
+/// `true` once the producer is confirmed absent: every confirmation probe
+/// found no token. Any probe that sees the token — or errors, e.g. while the
+/// consumer's own session is closing — aborts the confirmation, so a flap
+/// or an inconclusive probe never fabricates a producer death.
+async fn confirm_producer_gone(messenger: &MessengerHandle, sender: &ActionWireSender) -> bool {
+    for _ in 0..PRODUCER_GONE_CONFIRM_PROBES {
+        tokio::time::sleep(PRODUCER_GONE_CONFIRM_DELAY).await;
+        match messenger
+            .probe_action_producer(sender, LIVELINESS_PROBE_TIMEOUT)
+            .await
+        {
+            Ok(false) => continue,
+            Ok(true) | Err(_) => return false,
+        }
+    }
+    true
+}
+
+/// Background policy task behind [`ProducerGoneWatch`]: turns the raw
+/// liveliness event stream into a single confirmed "producer gone" latch.
+async fn run_producer_liveliness_watch(
+    watch: ActionLivelinessWatch,
+    messenger: MessengerHandle,
+    sender: ActionWireSender,
+    gone: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+) {
+    let declare_gone = || {
+        gone.store(true, Ordering::Release);
+        notify.notify_waiters();
+    };
+
+    // Initial resolve: the producer answered the goal request moments ago,
+    // so its token is expected to replay as an immediate `Alive` (the watch
+    // subscribes with history). Seeing nothing inside the window means the
+    // producer died in the gap — confirm by probing rather than trusting
+    // propagation timing.
+    match tokio::time::timeout(LIVELINESS_RESOLVE_TIMEOUT, watch.rx.recv_async()).await {
+        Ok(Ok(ActionLivelinessEvent::Alive)) => {}
+        Ok(Ok(ActionLivelinessEvent::Gone)) | Err(_) => {
+            if confirm_producer_gone(&messenger, &sender).await {
+                return declare_gone();
+            }
+        }
+        // Watch channel closed: the consumer's own session is going away;
+        // the feedback channel reports that as `ActionFeedbackChannelClosed`.
+        Ok(Err(_)) => return,
+    }
+
+    // Steady state: react to `Gone` transitions, tolerating `Alive`/`Gone`
+    // flaps (a router bounce deletes and re-announces tokens).
+    loop {
+        match watch.rx.recv_async().await {
+            Ok(ActionLivelinessEvent::Alive) => {}
+            Ok(ActionLivelinessEvent::Gone) => {
+                if confirm_producer_gone(&messenger, &sender).await {
+                    return declare_gone();
+                }
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+/// Confirmed producer-death latch held by [`ActionGoalHandle`]. A spawned
+/// watcher task owns the liveliness event stream and the confirmation
+/// probes; the handle observes only the latched outcome, synchronously via
+/// [`is_gone`](Self::is_gone) or awaited via [`gone`](Self::gone). Dropping
+/// the latch aborts the watcher.
+struct ProducerGoneWatch {
+    gone: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+    task: TaskHandle<()>,
+}
+
+impl ProducerGoneWatch {
+    fn spawn(
+        watch: ActionLivelinessWatch,
+        messenger: MessengerHandle,
+        sender: ActionWireSender,
+    ) -> Self {
+        let gone = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(Notify::new());
+        let task = spawn(run_producer_liveliness_watch(
+            watch,
+            messenger,
+            sender,
+            Arc::clone(&gone),
+            Arc::clone(&notify),
+        ));
+        Self { gone, notify, task }
+    }
+
+    fn is_gone(&self) -> bool {
+        self.gone.load(Ordering::Acquire)
+    }
+
+    /// Resolves once the producer is confirmed gone; pends forever while it
+    /// stays alive. Cancel-safe: the latch lives in the watcher, not here.
+    async fn gone(&self) {
+        loop {
+            if self.is_gone() {
+                return;
+            }
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            // Register interest before the re-check so a notify between the
+            // check and the await cannot be missed.
+            notified.as_mut().enable();
+            if self.is_gone() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl Drop for ProducerGoneWatch {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 pub struct ActionGoalHandle {
     sender: ActionWireSender,
     goal_id: String,
     goal_response: Message,
     feedback: Subscription,
+    producer_gone: ProducerGoneWatch,
 }
 
 impl std::fmt::Debug for ActionGoalHandle {
@@ -320,18 +482,36 @@ impl ActionGoalHandle {
         &self.goal_id
     }
 
+    /// Whether the producer instance this goal is pinned to has been
+    /// confirmed gone (its liveliness token disappeared and confirmation
+    /// probes found no trace of it).
+    pub fn is_producer_gone(&self) -> bool {
+        self.producer_gone.is_gone()
+    }
+
     /// Receives the next feedback message.
     ///
     /// Returns `Err(Error::ActionFeedbackChannelClosed)` when the server
     /// publishes the end-of-stream sentinel: the framework emits it when
     /// the server begins handling the result request, accepts a cancel,
     /// or the cancel handler errors.
+    ///
+    /// Returns `Err(Error::ActionFeedbackProducerGone)` when the producer
+    /// instance this goal is pinned to disappears without publishing the
+    /// sentinel (process killed, OOM, runtime teardown losing the cleanup
+    /// race). Buffered feedback — including a sentinel that did make it
+    /// out — is always drained before the producer-gone error surfaces, so
+    /// a graceful close keeps reporting `ActionFeedbackChannelClosed`.
     pub async fn on_next_feedback(&mut self) -> Result<Message> {
-        let msg = self
-            .feedback
-            .on_next_message()
-            .await
-            .ok_or(Error::ActionFeedbackChannelClosed)?;
+        let msg = tokio::select! {
+            biased;
+            msg = self.feedback.on_next_message() => {
+                msg.ok_or(Error::ActionFeedbackChannelClosed)?
+            }
+            _ = self.producer_gone.gone() => {
+                return Err(producer_gone_error(&self.sender));
+            }
+        };
         if is_end_sentinel(&msg) {
             return Err(Error::ActionFeedbackChannelClosed);
         }
@@ -343,11 +523,35 @@ impl ActionGoalHandle {
         match self.feedback.try_on_next_message() {
             Ok(message) if is_end_sentinel(&message) => Err(Error::ActionFeedbackChannelClosed),
             Ok(message) => Ok(Some(message)),
+            Err(crate::types::TryRecvError::Empty) if self.producer_gone.is_gone() => {
+                Err(producer_gone_error(&self.sender))
+            }
             Err(crate::types::TryRecvError::Empty) => Ok(None),
             Err(crate::types::TryRecvError::Disconnected) => {
                 Err(Error::ActionFeedbackChannelClosed)
             }
         }
+    }
+}
+
+/// The typed error for a goal whose pinned producer instance disappeared.
+fn producer_gone_error(sender: &ActionWireSender) -> Error {
+    Error::ActionFeedbackProducerGone {
+        instance_id: sender.target_instance_id().map(str::to_string),
+        action_name: sender.to_action_name().to_string(),
+    }
+}
+
+/// Locally synthesized result reply for a goal whose pinned producer
+/// disappeared: the engine's retained outcome died with the process, which
+/// is exactly the [`ResultStatus::Abandoned`] contract (terminal, empty
+/// body).
+fn abandoned_reply(sender: &ActionWireSender) -> ActionResultReply {
+    ActionResultReply {
+        status: ResultStatus::Abandoned,
+        body: Payload::new(),
+        instance_id: sender.target_instance_id().unwrap_or_default().to_string(),
+        core_node: sender.target_core_node().unwrap_or_default().to_string(),
     }
 }
 
@@ -357,6 +561,12 @@ pub struct ActionCreation {
     pub cancel_service: ServiceEndpoint,
     pub feedback_publisher_factory: ActionFeedbackPublisherFactory,
     pub result_service: ServiceEndpoint,
+    /// Liveliness advertisement for this producer instance. Must be held
+    /// for the life of the action endpoint: when it drops (explicitly, or
+    /// with the session on hard process death) consumers observe the
+    /// producer as gone and fail their feedback drains over to
+    /// [`Error::ActionFeedbackProducerGone`].
+    pub liveliness_token: ActionLivelinessToken,
 }
 
 impl ActionMessenger {
@@ -542,6 +752,14 @@ impl ActionMessenger {
             .subscribe_action_feedback(&sender, &goal_id, feedback_qos.into())
             .await?;
 
+        // Watch the pinned producer's liveliness for the life of this goal,
+        // so a producer that dies without publishing the end-of-stream
+        // sentinel surfaces as `ActionFeedbackProducerGone` instead of a
+        // feedback drain that blocks forever.
+        let liveliness_watch = messenger.watch_action_producer(&sender).await?;
+        let producer_gone =
+            ProducerGoneWatch::spawn(liveliness_watch, messenger.clone(), sender.clone());
+
         // Discovery counts against the caller's single end-to-end budget;
         // pass only the remaining slice to `poll_service` so a tight
         // `goal_timeout` can't be silently doubled by a slow probe.
@@ -566,6 +784,7 @@ impl ActionMessenger {
             goal_id,
             goal_response,
             feedback: Subscription::new(feedback_subscription),
+            producer_gone,
         })
     }
 
@@ -613,6 +832,13 @@ impl ActionMessenger {
         action_handle: &ActionGoalHandle,
         result_timeout: Duration,
     ) -> Result<ActionResultReply> {
+        // Fast path: the goal handle's liveliness watcher already confirmed
+        // the producer is gone. Its retained results died with the process,
+        // so the goal resolves to a typed `Abandoned` immediately instead of
+        // paying the result poll timeout against a dead queryable.
+        if action_handle.is_producer_gone() {
+            return Ok(abandoned_reply(&action_handle.sender));
+        }
         Self::request_result_with_sender(
             messenger_handle,
             &action_handle.sender,
@@ -629,6 +855,12 @@ impl ActionMessenger {
     /// Strips the engine's `[status:u8][body]` result-outcome envelope into a
     /// typed [`ActionResultReply`], so callers (Rust generated code, the Python
     /// binding, and direct callers) never re-parse the framing.
+    ///
+    /// A result poll that fails unreachable / timed out is followed by a
+    /// producer-disappearance probe (liveliness keyexpr check): when the
+    /// targeted producer's token is gone, its retained results died with the
+    /// process and the goal resolves to a typed
+    /// [`ResultStatus::Abandoned`] reply instead of the transport error.
     pub async fn request_result_with_sender(
         messenger_handle: &MessengerHandle,
         sender: &ActionWireSender,
@@ -637,7 +869,7 @@ impl ActionMessenger {
     ) -> Result<ActionResultReply> {
         let action_name = sender.to_action_name().to_string();
         let payload = wrap_goal_payload(goal_id, &[])?;
-        let message = messenger_handle
+        let message = match messenger_handle
             .poll_service(
                 &sender.result_service(),
                 payload,
@@ -645,7 +877,27 @@ impl ActionMessenger {
                 result_timeout,
             )
             .await
-            .map_err(|err| Self::map_result_error(err, &action_name))?;
+        {
+            Ok(message) => message,
+            Err(err) => {
+                let err = Self::map_result_error(err, &action_name);
+                if matches!(
+                    err,
+                    Error::ActionResultTimeout { .. } | Error::ActionResultUnreachable { .. }
+                ) {
+                    // An inconclusive probe (`Err`) must not fabricate an
+                    // Abandoned outcome — only a confirmed-absent token does.
+                    let alive = messenger_handle
+                        .probe_action_producer(sender, LIVELINESS_PROBE_TIMEOUT)
+                        .await
+                        .unwrap_or(true);
+                    if !alive {
+                        return Ok(abandoned_reply(sender));
+                    }
+                }
+                return Err(err);
+            }
+        };
         let instance_id = message.instance_id().to_string();
         let core_node = message.core_node().to_string();
         let wire = message.payload().to_owned().into_inner();
@@ -1169,6 +1421,10 @@ pub struct ConcurrentAction {
     cancel_loop: TaskHandle<()>,
     result_loop: TaskHandle<()>,
     sweeper_loop: TaskHandle<()>,
+    /// Producer-instance liveliness advertisement, held so consumers see
+    /// this producer as alive for exactly as long as the engine can route
+    /// goals/cancels/results.
+    _liveliness_token: ActionLivelinessToken,
 }
 
 impl ConcurrentAction {
@@ -1203,6 +1459,7 @@ impl ConcurrentAction {
             cancel_service,
             feedback_publisher_factory,
             result_service,
+            liveliness_token,
         } = creation;
         let registry: GoalRegistry = Arc::new(StdMutex::new(HashMap::new()));
         let pending_waiters: PendingWaiters = Arc::new(StdMutex::new(HashMap::new()));
@@ -1239,6 +1496,7 @@ impl ConcurrentAction {
             cancel_loop,
             result_loop,
             sweeper_loop,
+            _liveliness_token: liveliness_token,
         }
     }
 

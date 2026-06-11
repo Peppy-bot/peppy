@@ -26,6 +26,7 @@
 use crate::error::{Error, Result};
 use crate::shm::{LazyShm, ShmContext};
 use crate::types::{
+    ActionLivelinessEvent, ActionLivelinessProbe, ActionLivelinessToken, ActionLivelinessWatch,
     IncomingRequest, LoanedPayload, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream,
     ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,
     TopicMessage, ZenohResponseToken,
@@ -134,7 +135,7 @@ impl Drop for ZenohdInstance {
 }
 
 use zenoh::qos::{CongestionControl, Priority};
-use zenoh::sample::SampleFields;
+use zenoh::sample::{SampleFields, SampleKind};
 
 /// Resolved config for a node/daemon peer session, plus the inputs needed to
 /// rebuild it (the reconnecting session is re-derived on every
@@ -733,6 +734,85 @@ impl MessengerBackend for ZenohAdapter {
             false,
         )
         .await
+    }
+
+    async fn declare_action_liveliness(
+        &self,
+        recv: &ActionWireReceiver,
+    ) -> Result<ActionLivelinessToken> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let keyexpr = ZenohWireFormat::action_liveliness_token(recv);
+        let token = session
+            .liveliness()
+            .declare_token(keyexpr)
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+        Ok(ActionLivelinessToken::new(Box::new(token)))
+    }
+
+    async fn watch_action_producer(
+        &self,
+        sender: &ActionWireSender,
+    ) -> Result<ActionLivelinessWatch> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        // Unbounded: liveliness transitions are rare (producer restarts,
+        // router flaps) and the callback runs on a zenoh worker thread that
+        // must never block. See the module-level "Why callback handlers,
+        // not FIFO" doc.
+        let (tx, rx) = flume::unbounded::<ActionLivelinessEvent>();
+        let keyexpr = ZenohWireFormat::action_liveliness_watch(sender);
+        // `history(true)` replays a token that was declared before this
+        // watch existed as an initial PUT, so "producer already alive" and
+        // "producer came alive" are observed identically.
+        let subscriber = session
+            .liveliness()
+            .declare_subscriber(&keyexpr)
+            .history(true)
+            .callback(move |sample| {
+                let event = match sample.kind() {
+                    SampleKind::Put => ActionLivelinessEvent::Alive,
+                    SampleKind::Delete => ActionLivelinessEvent::Gone,
+                };
+                let _ = tx.send(event);
+            })
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+        Ok(ActionLivelinessWatch::new(rx, Box::new(subscriber)))
+    }
+
+    async fn probe_action_producer(
+        &self,
+        sender: &ActionWireSender,
+        timeout: std::time::Duration,
+    ) -> Result<ActionLivelinessProbe> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let keyexpr = ZenohWireFormat::action_liveliness_watch(sender);
+        // The callback closure owns `tx`; zenoh drops it when the query
+        // finalizes (at the latest after `timeout`), so the probe's
+        // `resolve` observes `Disconnected` exactly when the query
+        // completed with no matching token. Only issuance is awaited here.
+        let (tx, rx) = flume::bounded::<()>(1);
+        session
+            .liveliness()
+            .get(&keyexpr)
+            .timeout(timeout)
+            .callback(move |reply| {
+                if reply.result().is_ok() {
+                    let _ = tx.try_send(());
+                }
+            })
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+        Ok(ActionLivelinessProbe::new(rx))
     }
 
     async fn start_router(&mut self) -> Result<()> {

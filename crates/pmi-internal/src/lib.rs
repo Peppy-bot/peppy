@@ -17,6 +17,7 @@ pub use shm::{SHM_PUBLISH_THRESHOLD_BYTES, SHM_SEGMENT_BYTES};
 #[cfg(feature = "zenoh")]
 pub use types::ZenohResponseToken;
 pub use types::{
+    ActionLivelinessEvent, ActionLivelinessProbe, ActionLivelinessToken, ActionLivelinessWatch,
     IncomingRequest, LoanedPayload, Message, Messenger, MessengerAdapter, MessengerBackend,
     MessengerPublisher, MockResponseToken, Payload, PayloadSlices, PublisherQoS, ReplyStream,
     ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,

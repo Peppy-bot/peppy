@@ -154,6 +154,14 @@ pub enum Error {
         instance_id: Option<String>,
         action_name: String,
     },
+    #[error(
+        "action '{action_name}'{instance_suffix} producer disappeared before closing the feedback stream",
+        instance_suffix = InstanceSuffix(.instance_id.as_deref())
+    )]
+    ActionFeedbackProducerGone {
+        instance_id: Option<String>,
+        action_name: String,
+    },
 
     // -- system
     #[error("failed to read `{var}` from the environment")]
