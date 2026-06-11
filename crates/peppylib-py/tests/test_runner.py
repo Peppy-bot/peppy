@@ -802,8 +802,12 @@ async def test_daemon_shutdown_interrupts_blocked_async_setup(monkeypatch):
 
                         node_runner.on_shutdown(cleanup_hook)
                         token_queue.put(node_runner.cancellation_token())
-                        # Never completes: only the shutdown can end the node.
+                        # Never completes: only the shutdown can end the node,
+                        # by cancelling this await. The sentinel below must
+                        # stay unreached; it trips the exact-list assertion if
+                        # setup ever resumes instead of being interrupted.
                         await asyncio.Event().wait()
+                        hook_markers.append("resumed")
 
                     NodeBuilder().run(setup_fn)
                 except Exception as e:
