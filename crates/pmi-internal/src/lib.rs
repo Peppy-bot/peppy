@@ -20,7 +20,7 @@ pub use types::{
     IncomingRequest, LoanedPayload, Message, Messenger, MessengerAdapter, MessengerBackend,
     MessengerPublisher, MockResponseToken, Payload, PayloadSlices, PublisherQoS, ReplyStream,
     ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,
-    Subscription, TopicMessage,
+    Subscription, TopicMessage, TruncateError,
 };
 pub use wire::{
     ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, InterfaceIdentifier, NodeIdentifier,

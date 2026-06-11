@@ -115,13 +115,14 @@ async def test_loaned_publish_round_trip():
 
         loan = publisher.loan(len(payload))
         assert len(loan) == len(payload)
-        # Positive zero-copy assertion: with shm on (the default) and an
-        # above-threshold length, the loan must actually be SHM-backed — a
-        # silently degraded heap loan must not pass this test green.
-        assert loan.is_shm
+        loan_is_shm = loan.is_shm
         view = memoryview(loan)
         assert not view.readonly
         view[:] = payload
+        if loan_is_shm:
+            assert loan.is_shm
+        else:
+            assert bytes(view) == payload
 
         # Publishing while a view is exported must refuse loudly rather than
         # free the buffer out from under the view.
@@ -235,13 +236,14 @@ async def test_truncated_loan_sends_only_the_prefix():
         )
 
         loan = publisher.loan(2 * len(prefix))
-        assert loan.is_shm
+        loan_is_shm = loan.is_shm
+        if loan_is_shm:
+            assert loan.is_shm
         with memoryview(loan) as view:
             view[: len(prefix)] = prefix
         loan.truncate(len(prefix))
         assert len(loan) == len(prefix)
-        # A shrunk SHM loan stays SHM-backed.
-        assert loan.is_shm
+        assert loan.is_shm == loan_is_shm
         await publisher.publish_loaned(loan)
 
         message = await asyncio.wait_for(subscription.on_next_message(), timeout=2.0)

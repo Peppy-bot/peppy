@@ -241,14 +241,9 @@ impl PyLoanedPayload {
             .inner
             .as_mut()
             .ok_or_else(|| PyValueError::new_err("loan was already published"))?;
-        if new_len > inner.len() {
-            return Err(PyValueError::new_err(format!(
-                "cannot grow a loan: {new_len} > {}",
-                inner.len()
-            )));
-        }
-        inner.truncate(new_len);
-        Ok(())
+        inner
+            .try_truncate(new_len)
+            .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
     /// Buffer protocol: expose the loan as a writable, contiguous byte

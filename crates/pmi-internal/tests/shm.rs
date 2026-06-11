@@ -104,7 +104,7 @@ mod shm_tests {
     /// on the locked-memory budget.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn four_way_matrix_delivers_and_uses_shm_iff_enabled() {
-        let large = pattern(64 * 1024);
+        let large = pattern(SHM_PUBLISH_THRESHOLD_BYTES + 1);
         let small = pattern(16);
         assert!(small.len() < SHM_PUBLISH_THRESHOLD_BYTES);
         let prefix = pattern(SHM_PUBLISH_THRESHOLD_BYTES + 1234);

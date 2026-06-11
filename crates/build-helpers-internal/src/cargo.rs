@@ -139,10 +139,12 @@ fn cargo_install_binary_with(
     // Featureless builds keep the historical `{name}-{version}-{target}` key;
     // featured builds append `+feature` markers to the name so they never
     // shadow (or get shadowed by) a default-features build.
-    let cache_name = if features.is_empty() {
+    let mut sorted_features = features.to_vec();
+    sorted_features.sort_unstable();
+    let cache_name = if sorted_features.is_empty() {
         name.to_string()
     } else {
-        format!("{name}+{}", features.join("+"))
+        format!("{name}+{}", sorted_features.join("+"))
     };
     let cached_binary = cache_dir.join(format!("{cache_name}-{version}-{target}"));
 
@@ -180,8 +182,8 @@ fn cargo_install_binary_with(
     cmd.args(["install", &crate_spec, "--target", target, "--root"])
         .arg(&install_root)
         .env("CARGO_TARGET_DIR", &cargo_target_dir);
-    if !features.is_empty() {
-        cmd.args(["--features", &features.join(",")]);
+    if !sorted_features.is_empty() {
+        cmd.args(["--features", &sorted_features.join(",")]);
     }
 
     let label = format!("cargo-install-{name}");
@@ -279,6 +281,27 @@ mod tests {
                 "x86_64-unknown-linux-gnu",
                 dir.path(),
                 &[]
+            ),
+            Some(cached)
+        );
+    }
+
+    #[test]
+    fn cargo_install_binary_canonicalizes_feature_order_in_cache_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cached = dir
+            .path()
+            .join("mytool+alpha+beta-1.0.0-x86_64-unknown-linux-gnu");
+        std::fs::write(&cached, b"cached").expect("pre-populate cache");
+
+        assert_eq!(
+            cargo_install_binary_with(
+                &dir.path().join("no-such-cargo"),
+                "mytool",
+                "1.0.0",
+                "x86_64-unknown-linux-gnu",
+                dir.path(),
+                &["beta", "alpha"]
             ),
             Some(cached)
         );

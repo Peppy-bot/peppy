@@ -679,6 +679,42 @@ pub(crate) enum LoanedInner {
     Shm(zenoh::shm::ZShmMut),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TruncateError {
+    WouldGrow {
+        new_len: usize,
+        current_len: usize,
+    },
+    #[cfg(feature = "zenoh")]
+    ShmResize {
+        new_len: usize,
+        current_len: usize,
+        reason: String,
+    },
+}
+
+impl core::fmt::Display for TruncateError {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::WouldGrow {
+                new_len,
+                current_len,
+            } => write!(fmt, "cannot grow a loan: {new_len} > {current_len}"),
+            #[cfg(feature = "zenoh")]
+            Self::ShmResize {
+                new_len,
+                current_len,
+                reason,
+            } => write!(
+                fmt,
+                "failed to resize SHM loan from {current_len} to {new_len} bytes: {reason}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TruncateError {}
+
 impl LoanedPayload {
     /// A zero-initialized heap loan (the fallback tier).
     pub(crate) fn heap(len: usize) -> Self {
@@ -714,37 +750,55 @@ impl LoanedPayload {
         }
     }
 
-    /// Shrinks the loan to its filled prefix; the publish then sends only
+    /// Tries to shrink the loan to its filled prefix; the publish then sends only
     /// these bytes. For writers that over-allocate and fill less (e.g. an
     /// encoder whose output size is only known afterwards).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `new_len` exceeds the current length — a loan can only
-    /// shrink.
-    pub fn truncate(&mut self, new_len: usize) {
-        assert!(
-            new_len <= self.len(),
-            "cannot grow a loan: {new_len} > {}",
-            self.len()
-        );
+    pub fn try_truncate(&mut self, new_len: usize) -> core::result::Result<(), TruncateError> {
+        let current_len = self.len();
+        if new_len > current_len {
+            return Err(TruncateError::WouldGrow {
+                new_len,
+                current_len,
+            });
+        }
         match &mut self.inner {
-            LoanedInner::Heap(vec) => vec.truncate(new_len),
+            LoanedInner::Heap(vec) => {
+                vec.truncate(new_len);
+                Ok(())
+            }
             #[cfg(feature = "zenoh")]
             LoanedInner::Shm(buf) => {
                 use zenoh::shm::OwnedShmBuf;
                 match std::num::NonZeroUsize::new(new_len) {
                     Some(len) => {
                         buf.try_resize(len)
-                            .expect("shrinking an SHM buffer cannot fail");
+                            .ok_or_else(|| TruncateError::ShmResize {
+                                new_len,
+                                current_len,
+                                reason: "zenoh rejected the requested SHM resize".to_string(),
+                            })?;
                     }
                     // An SHM chunk cannot resize to zero; an empty publish has
                     // nothing to zero-copy anyway, so degrade to an empty heap
                     // loan.
                     None => self.inner = LoanedInner::Heap(Vec::new()),
                 }
+                Ok(())
             }
         }
+    }
+
+    /// Shrinks the loan to its filled prefix; the publish then sends only
+    /// these bytes. For writers that over-allocate and fill less (e.g. an
+    /// encoder whose output size is only known afterwards).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `new_len` exceeds the current length. Prefer
+    /// [`Self::try_truncate`] for a non-panicking API.
+    pub fn truncate(&mut self, new_len: usize) {
+        self.try_truncate(new_len)
+            .unwrap_or_else(|err| panic!("{err}"));
     }
 
     fn as_slice(&self) -> &[u8] {
@@ -799,6 +853,38 @@ impl AsRef<[u8]> for LoanedPayload {
 impl AsMut<[u8]> for LoanedPayload {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut *self
+    }
+}
+
+#[cfg(test)]
+mod loaned_payload_tests {
+    use super::*;
+
+    #[test]
+    fn try_truncate_shrinks_heap_loan() {
+        let mut loan = LoanedPayload::heap(8);
+        loan.copy_from_slice(b"abcdefgh");
+
+        loan.try_truncate(3).expect("truncate should succeed");
+
+        assert_eq!(loan.len(), 3);
+        assert_eq!(loan.as_ref(), b"abc");
+    }
+
+    #[test]
+    fn try_truncate_rejects_growing_heap_loan() {
+        let mut loan = LoanedPayload::heap(4);
+
+        let err = loan.try_truncate(5).expect_err("growth should fail");
+
+        assert_eq!(
+            err,
+            TruncateError::WouldGrow {
+                new_len: 5,
+                current_len: 4
+            }
+        );
+        assert_eq!(loan.len(), 4);
     }
 }
 

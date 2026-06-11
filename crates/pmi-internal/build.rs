@@ -139,12 +139,14 @@ mod zenoh_build {
 
     pub fn build_zenoh(release_tag: &str) {
         // Compile the zenoh router from source when the build_zenoh feature is
-        // enabled. The official GitHub release binaries are built WITHOUT the
-        // `shared-memory` cargo feature (verified: the unstripped 1.9.0
-        // release binary contains no zenoh-shm symbols), so a downloaded
-        // zenohd would silently degrade every `router + shm` route to TCP.
-        // zenohd is therefore always `cargo install`ed with `shared-memory`
-        // on, cached per machine/version/target like the other build tools.
+        // enabled. The pinned 1.9.0 Linux standalone asset:
+        // https://github.com/eclipse-zenoh/zenoh/releases/download/1.9.0/zenoh-1.9.0-x86_64-unknown-linux-gnu-standalone.zip
+        // can be checked with:
+        //   unzip -p zenoh-1.9.0-x86_64-unknown-linux-gnu-standalone.zip zenohd | strings | rg -i 'zenoh[-_]shm'
+        // which returns no matches. A downloaded zenohd can therefore silently
+        // degrade every `router + shm` route to TCP, so zenohd is always
+        // `cargo install`ed with `shared-memory` on, cached per
+        // machine/version/target like the other build tools.
         if env::var("CARGO_FEATURE_BUILD_ZENOH").is_ok() {
             println!("cargo:rerun-if-changed=build.rs");
             println!("cargo:rerun-if-changed=Cargo.toml");
@@ -167,9 +169,11 @@ mod zenoh_build {
                 }
                 None => panic!(
                     "Failed to compile zenohd {} for target '{}'. \
-                     Ensure a Rust toolchain with the {} target is installed, \
-                     or install an SHM-enabled zenohd manually and set PEPPY_ZENOHD_PATH.",
-                    release_tag, target, target
+                     Build an SHM-enabled zenohd from source with \
+                     `cargo build --release --features shared-memory --target {}` \
+                     from the zenoh {} source tree, then place the built binary next to peppy \
+                     or point PEPPY_ZENOHD_PATH to it.",
+                    release_tag, target, target, release_tag
                 ),
             }
 

@@ -93,7 +93,15 @@ pub(crate) fn raise_memlock_limit() {
             };
             if libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut lim) == 0 && lim.rlim_cur < lim.rlim_max {
                 lim.rlim_cur = lim.rlim_max;
-                let _ = libc::setrlimit(libc::RLIMIT_MEMLOCK, &lim);
+                if libc::setrlimit(libc::RLIMIT_MEMLOCK, &lim) != 0 {
+                    let err = std::io::Error::last_os_error();
+                    tracing::debug!(
+                        %err,
+                        requested_soft_limit = lim.rlim_cur,
+                        hard_limit = lim.rlim_max,
+                        "failed to raise RLIMIT_MEMLOCK to the hard limit"
+                    );
+                }
             }
         }
     });
@@ -230,6 +238,11 @@ impl ShmContext {
     /// Allocates a writable SHM buffer of exactly `len` bytes, or `None` when
     /// the pool is exhausted even after the policy's garbage-collect pass.
     fn alloc(&self, len: usize) -> Option<ZShmMut> {
+        if len == 0 {
+            tracing::trace!("zero-length SHM loans fall back to the heap path");
+            return None;
+        }
+
         // `MemoryLayout` rejects sizes that aren't a multiple of the
         // alignment, so allocate padded and shrink back to the exact length
         // (resizing within chunk capacity always succeeds).

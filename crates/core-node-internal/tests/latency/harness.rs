@@ -449,17 +449,102 @@ pub fn build_all_nodes(include_python: bool) {
 /// mapped segment and zenoh's metadata segments.
 fn shm_segment_override() -> Option<String> {
     let limits = std::fs::read_to_string("/proc/self/limits").ok()?;
+    shm_segment_override_from_limits(&limits).map(|bytes| bytes.to_string())
+}
+
+fn shm_segment_override_from_limits(limits: &str) -> Option<u64> {
     let line = limits
         .lines()
         .find(|l| l.starts_with("Max locked memory"))?;
-    let hard = line.split_whitespace().rev().nth(1)?;
-    if hard == "unlimited" {
+    let soft = parse_max_locked_memory_soft_limit(line)?;
+    let segment = (soft / 2).saturating_sub(2 * 1024 * 1024);
+    if segment < LARGE_PAYLOAD_BYTES {
         return None;
     }
-    let hard: u64 = hard.parse().ok()?;
-    let segment = (hard / 2).saturating_sub(2 * 1024 * 1024);
-    let segment = segment.clamp(LARGE_PAYLOAD_BYTES * 2, 32 * 1024 * 1024);
-    Some(segment.to_string())
+    Some(segment.min(LARGE_PAYLOAD_BYTES * 2))
+}
+
+fn parse_max_locked_memory_soft_limit(line: &str) -> Option<u64> {
+    let mut parts = line.strip_prefix("Max locked memory")?.split_whitespace();
+    let soft = parts.next()?;
+    let _hard = parts.next()?;
+    let units = parts.next().unwrap_or("bytes");
+    if soft == "unlimited" {
+        return None;
+    }
+    let soft: u64 = soft.parse().ok()?;
+    match units {
+        "bytes" => Some(soft),
+        "kB" | "KB" | "kb" => soft.checked_mul(1024),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PREFIX: &str = "\
+Limit                     Soft Limit           Hard Limit           Units
+Max cpu time              unlimited            unlimited            seconds
+";
+
+    #[test]
+    fn shm_segment_override_uses_soft_memlock_limit_in_bytes() {
+        let limits = format!(
+            "{PREFIX}Max locked memory         {}             {}             bytes\n",
+            8 * 1024 * 1024,
+            64 * 1024 * 1024
+        );
+
+        assert_eq!(
+            shm_segment_override_from_limits(&limits),
+            Some(LARGE_PAYLOAD_BYTES * 2)
+        );
+    }
+
+    #[test]
+    fn shm_segment_override_converts_kb_soft_memlock_limit() {
+        let limits = format!(
+            "{PREFIX}Max locked memory         {}                {}               kB\n",
+            8 * 1024,
+            64 * 1024
+        );
+
+        assert_eq!(
+            shm_segment_override_from_limits(&limits),
+            Some(LARGE_PAYLOAD_BYTES * 2)
+        );
+    }
+
+    #[test]
+    fn shm_segment_override_caps_at_large_payload_double() {
+        let limits = format!(
+            "{PREFIX}Max locked memory         {}            {}            bytes\n",
+            64 * 1024 * 1024,
+            64 * 1024 * 1024
+        );
+
+        assert_eq!(
+            shm_segment_override_from_limits(&limits),
+            Some(LARGE_PAYLOAD_BYTES * 2)
+        );
+    }
+
+    #[test]
+    fn shm_segment_override_skips_unusable_or_unlimited_limits() {
+        let too_small = format!(
+            "{PREFIX}Max locked memory         {}             {}             bytes\n",
+            5 * 1024 * 1024,
+            64 * 1024 * 1024
+        );
+        let unlimited = format!(
+            "{PREFIX}Max locked memory         unlimited            unlimited            bytes\n"
+        );
+
+        assert_eq!(shm_segment_override_from_limits(&too_small), None);
+        assert_eq!(shm_segment_override_from_limits(&unlimited), None);
+    }
 }
 
 fn write_runtime_config(
@@ -902,7 +987,7 @@ async fn run_topic_loaned(
         // The driver's own publish leg is what this scenario varies, so its
         // tier feeds the shm flag too — a driver-side-only degradation must
         // not report as zero-copy just because the pongs still arrive in SHM.
-        let loan_shm = loan.is_shm();
+        let mut loan_shm = loan.is_shm();
         loan[..8].copy_from_slice(&i.to_le_bytes());
         let mut start = Instant::now();
         publisher.publish_loaned(loan).await?;
@@ -920,6 +1005,7 @@ async fn run_topic_loaned(
                     // Lost ping: re-loan, re-publish, reset clock.
                     start = Instant::now();
                     let mut loan = publisher.loan((payload_len as usize).max(8));
+                    loan_shm = loan.is_shm();
                     loan[..8].copy_from_slice(&i.to_le_bytes());
                     publisher.publish_loaned(loan).await?;
                 }
