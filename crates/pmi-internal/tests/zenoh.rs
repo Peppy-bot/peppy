@@ -300,7 +300,7 @@ mod zenoh_tests {
             port,
             Vec::new(),
             false,
-            true,
+            config::peppy_config::ShmConfig::ENABLED,
             SubscriberBufferSizes::default(),
         )
         .expect("subscriber adapter");
@@ -319,7 +319,7 @@ mod zenoh_tests {
             port,
             Vec::new(),
             false,
-            true,
+            config::peppy_config::ShmConfig::ENABLED,
             SubscriberBufferSizes::default(),
         )
         .expect("publisher adapter");
@@ -426,10 +426,10 @@ mod zenoh_tests {
         assert_eq!(msg.payload(), &Bytes::from(body));
         assert_eq!(
             msg.payload().is_shm_backed(),
-            profile.shm,
+            profile.shm.enabled,
             "leg {profile:?}: expected is_shm_backed == {} — a degraded transport must not \
              pass the timestamp guard on the wrong path",
-            profile.shm
+            profile.shm.enabled
         );
         assert!(
             msg.source_timestamp_nanos().is_some(),
@@ -478,7 +478,7 @@ mod zenoh_tests {
             port,
             Vec::new(),
             true,
-            true,
+            config::peppy_config::ShmConfig::ENABLED,
             tiny,
         )
         .expect("subscriber adapter");

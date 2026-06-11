@@ -447,9 +447,10 @@ pub fn build_all_nodes(include_python: bool) {
 /// exactly two single-session node processes — so it can safely hand each
 /// node a bigger slice of the budget: half, minus headroom for the peer's
 /// mapped segment and zenoh's metadata segments.
-fn shm_segment_override() -> Option<String> {
+fn shm_segment_override() -> Option<usize> {
     let limits = std::fs::read_to_string("/proc/self/limits").ok()?;
-    shm_segment_override_from_limits(&limits).map(|bytes| bytes.to_string())
+    let bytes = shm_segment_override_from_limits(&limits)?;
+    usize::try_from(bytes).ok()
 }
 
 fn shm_segment_override_from_limits(limits: &str) -> Option<u64> {
@@ -486,8 +487,9 @@ fn write_runtime_config(
     port: u16,
     node_name: &str,
     instance_id: &str,
+    shm_segment_bytes: Option<usize>,
 ) -> PathBuf {
-    let runtime_config = RuntimeConfig::new(
+    let mut runtime_config = RuntimeConfig::new(
         host,
         port,
         NodeInstanceConfig::new(Name::new(instance_id).expect("instance name")),
@@ -496,6 +498,9 @@ fn write_runtime_config(
         CORE,
     )
     .expect("build runtime config");
+    // The bench-shaped segment override travels the same path a daemon-set
+    // `shm.segment_bytes` would: the node's runtime config discovery block.
+    runtime_config.discovery.shm_segment_bytes = shm_segment_bytes;
     let path = cfg_dir.join(format!("{node_name}_runtime.json5"));
     runtime_config
         .save_json5_launch_config(&path)
@@ -530,31 +535,39 @@ pub async fn start_scenario(lang: Lang) -> Scenario {
     };
 
     let cfg_dir = TempDir::new().expect("cfg temp dir");
-    let driver_cfg = write_runtime_config(cfg_dir.path(), &host, port, DRIVER_NODE, DRIVER_INST);
-    let responder_cfg =
-        write_runtime_config(cfg_dir.path(), &host, port, RESPONDER_NODE, RESPONDER_INST);
+    let shm_segment = shm_segment_override();
+    let driver_cfg = write_runtime_config(
+        cfg_dir.path(),
+        &host,
+        port,
+        DRIVER_NODE,
+        DRIVER_INST,
+        shm_segment,
+    );
+    let responder_cfg = write_runtime_config(
+        cfg_dir.path(),
+        &host,
+        port,
+        RESPONDER_NODE,
+        RESPONDER_INST,
+        shm_segment,
+    );
 
     // Spawn the responder first so its echo service / ping subscription are up
     // before the driver starts probing.
-    let shm_segment = shm_segment_override();
-    let mut responder_env = vec![
+    let responder_env = vec![
         (RUNTIME_CONFIG_VAR_NAME, responder_cfg.to_str().unwrap()),
         ("TOKIO_WORKER_THREADS", NODE_WORKER_THREADS),
     ];
-    let mut driver_env = vec![
+    let driver_env = vec![
         (RUNTIME_CONFIG_VAR_NAME, driver_cfg.to_str().unwrap()),
         ("TOKIO_WORKER_THREADS", NODE_WORKER_THREADS),
     ];
-    if let Some(bytes) = shm_segment.as_deref() {
-        responder_env.push(("PEPPY_SHM_SEGMENT_BYTES", bytes));
-        driver_env.push(("PEPPY_SHM_SEGMENT_BYTES", bytes));
-    }
     let mut responder_child = match lang {
         Lang::Rust => spawn_rust_node_release(&responder_dir, &responder_env),
         Lang::Python => helpers::spawn_python_run(&responder_dir, &responder_env),
     };
     let mut driver_child = spawn_rust_node_release(&driver_dir, &driver_env);
-    drop(shm_segment);
 
     let control = MessengerHandle::from_host_port(&host, port)
         .await

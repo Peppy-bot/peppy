@@ -149,9 +149,10 @@ pub struct ZenohClientConfig {
     seed_peers: Vec<String>,
     /// Whether gossip-based direct peer linking is enabled for this session.
     gossip: bool,
-    /// Whether this session announces shared memory and allocates an SHM
-    /// provider at session open (the `shm` knob from `peppy_config.json5`).
-    shm: bool,
+    /// Whether this session announces shared memory and arms an SHM provider
+    /// at session open, plus the provider's segment sizing (the `shm` section
+    /// from `peppy_config.json5`).
+    shm: config::peppy_config::ShmConfig,
     /// Per-QoS subscriber channel buffer sizes for this session.
     buffer_sizes: SubscriberBufferSizes,
 }
@@ -162,8 +163,9 @@ pub struct ZenohAdapter {
     client_config: ZenohClientConfig,
     session: Option<Arc<zenoh::Session>>,
     /// The session's shared-memory state, armed at
-    /// [`start_session`](MessengerBackend::start_session) when the `shm` knob
-    /// is on; the provider itself is created on the first qualifying publish
+    /// [`start_session`](MessengerBackend::start_session) when `shm.enabled`
+    /// is on (carrying the section's segment sizing into the lazy provider);
+    /// the provider itself is created on the first qualifying publish
     /// or loan (see [`crate::shm`]'s locked-memory notes). `None` means every
     /// publish takes the heap path.
     shm: Option<Arc<LazyShm>>,
@@ -187,13 +189,14 @@ impl ZenohAdapter {
         profile: config::peppy_config::TransportProfile,
         buffer_sizes: SubscriberBufferSizes,
     ) -> Result<Self> {
-        if profile.shm {
+        if profile.shm.enabled {
             // Before the zenohd process exists: the child inherits the raised
             // soft limit, which it needs to map node segments in router+shm
             // mode (zenoh mlocks every mapped segment).
             crate::shm::raise_memlock_limit();
         }
-        let zenohd_config_path = zenohd::router_config_path(protocol, host, port, profile.shm)?;
+        let zenohd_config_path =
+            zenohd::router_config_path(protocol, host, port, profile.shm.enabled)?;
         let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
         let client_config = Self::derive_client_config_from_zenohd(&facade, profile, buffer_sizes);
 
@@ -225,14 +228,14 @@ impl ZenohAdapter {
             port,
             Vec::new(),
             true,
-            true,
+            config::peppy_config::ShmConfig::ENABLED,
             SubscriberBufferSizes::default(),
         )
     }
 
     /// Like [`connect_to`](Self::connect_to) but with an explicit gossip seed
-    /// list, gossip toggle, shared-memory toggle, and subscriber buffer sizes.
-    /// The node runtime passes its `DiscoveryConfig` here. An empty
+    /// list, gossip toggle, shared-memory section, and subscriber buffer
+    /// sizes. The node runtime passes its `DiscoveryConfig` here. An empty
     /// `seed_peers` falls back to the single `host:port` seed.
     #[allow(clippy::too_many_arguments)]
     pub fn connect_to_with_discovery(
@@ -241,7 +244,7 @@ impl ZenohAdapter {
         port: u16,
         seed_peers: Vec<String>,
         gossip: bool,
-        shm: bool,
+        shm: config::peppy_config::ShmConfig,
         buffer_sizes: SubscriberBufferSizes,
     ) -> Result<Self> {
         let client_config = Self::create_client_config(
@@ -399,7 +402,7 @@ impl ZenohAdapter {
         reconnect: bool,
         seed_peers: Vec<String>,
         gossip: bool,
-        shm: bool,
+        shm: config::peppy_config::ShmConfig,
         buffer_sizes: SubscriberBufferSizes,
     ) -> ZenohClientConfig {
         let connect_host = connectable_host(host);
@@ -417,7 +420,7 @@ impl ZenohAdapter {
         // are applied later at the flume/mpsc layer (subscribe / listen / call),
         // so peer-mode buffer tuning from `peppy_config.json5` still takes
         // effect — and it does not affect the adapter-side SHM provider either,
-        // which follows the `shm` knob regardless.
+        // which follows the `shm` section regardless.
         let zenoh_config = match std::env::var("ZENOH_SESSION_CONFIG") {
             Ok(path) if !path.trim().is_empty() => zenoh::config::Config::from_file(path.trim())
                 .unwrap_or_else(|e| {
@@ -442,7 +445,7 @@ impl ZenohAdapter {
                 listen_endpoints: vec![loopback_listen_endpoint(protocol)],
                 reconnect,
                 gossip: true,
-                shared_memory: shm,
+                shared_memory: shm.enabled,
             }),
             _ => render_config(&ZenohConfigSpec {
                 mode: SessionMode::Client,
@@ -450,7 +453,7 @@ impl ZenohAdapter {
                 listen_endpoints: Vec::new(),
                 reconnect,
                 gossip: false,
-                shared_memory: shm,
+                shared_memory: shm.enabled,
             }),
         };
 
@@ -523,8 +526,8 @@ impl MessengerBackend for ZenohAdapter {
         // materializes on the first qualifying publish or loan, so
         // subscriber-only sessions never spend memlock budget on a segment
         // they wouldn't write to.
-        self.shm = if self.client_config.shm {
-            Some(LazyShm::new())
+        self.shm = if self.client_config.shm.enabled {
+            Some(LazyShm::new(self.client_config.shm.segment_bytes))
         } else {
             None
         };
@@ -1224,7 +1227,7 @@ mod tests {
             true,
             Vec::new(),
             true,
-            true,
+            config::peppy_config::ShmConfig::ENABLED,
             SubscriberBufferSizes::default(),
         );
         assert_eq!(reconnecting.host, "127.0.0.1");
@@ -1244,7 +1247,7 @@ mod tests {
             false,
             vec!["tcp/10.0.0.2:7448".to_string()],
             false,
-            false,
+            config::peppy_config::ShmConfig::DISABLED,
             SubscriberBufferSizes {
                 standard: 64,
                 high_throughput: 4096,
@@ -1252,7 +1255,7 @@ mod tests {
         );
         assert_eq!(cfg.seed_peers, vec!["tcp/10.0.0.2:7448".to_string()]);
         assert!(!cfg.gossip);
-        assert!(!cfg.shm);
+        assert!(!cfg.shm.enabled);
         assert_eq!(cfg.buffer_sizes.standard, 64);
         assert_eq!(cfg.buffer_sizes.high_throughput, 4096);
     }

@@ -29,10 +29,16 @@ use std::path::Path;
 /// File name of the global daemon config under `~/.peppy/conf`.
 pub const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
 
-/// Default for the `shm` knob: shared-memory transport is on unless the user
+/// Default for `shm.enabled`: shared-memory transport is on unless the user
 /// opts out. Spliced into the template snippet and used as the serde default so
 /// the two cannot drift.
 pub const DEFAULT_SHM: bool = true;
+
+/// Default for `shm.segment_bytes`: `None` sizes the per-session segment
+/// automatically from the host's locked-memory budget. The template renders
+/// this as a literal `null`; `creates_file_verbatim_on_first_run` pins the two
+/// against each other (the template must parse to `PeppyConfig::default()`).
+pub const DEFAULT_SHM_SEGMENT_BYTES: Option<usize> = None;
 
 /// Default subscriber channel buffer for the `Standard` QoS tier (number of
 /// in-flight messages). Mirrors the historical hardcoded value.
@@ -161,20 +167,45 @@ const LIFECYCLE_SECTION_SNIPPET: &str = const_format::concatcp!(
     "  },\n"
 );
 
-/// The `shm` entry with its explanatory comment. Kept LAST in the template:
-/// completion appends missing sections at the end of a user's file, so only a
-/// trailing section upgrades an older file to something byte-identical to the
-/// bundled template.
-const SHM_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"  // Zero-copy shared memory between co-located nodes (and through zenohd in
-  // "router" mode). Payloads at or above an internal size threshold travel
-  // through a shared-memory segment instead of the kernel network stack; set
-  // to false to force every payload onto the network path. Applies in both
-  // modes. Container nodes in a separate network namespace never use shared
-  // memory regardless of this setting.
-  shm: "#,
+/// The `shm.enabled` entry with its comment, indented for the `shm` block.
+const SHM_ENABLED_FIELD_SNIPPET: &str = const_format::concatcp!(
+    r#"    // Payloads at or above an internal size threshold travel through a
+    // shared-memory segment instead of the kernel network stack; set to false
+    // to force every payload onto the network path. Applies in both modes.
+    // Container nodes in a separate network namespace never use shared memory
+    // regardless of this setting.
+    enabled: "#,
     DEFAULT_SHM,
     ",\n"
+);
+
+/// The `shm.segment_bytes` entry with its comment, indented for the `shm`
+/// block. The default is a literal `null` (auto-size); see
+/// [`DEFAULT_SHM_SEGMENT_BYTES`].
+const SHM_SEGMENT_BYTES_FIELD_SNIPPET: &str = r#"    // Size in bytes of the per-session shared-memory segment, or null to size
+    // it automatically from the host's locked-memory budget (an eighth of the
+    // hard RLIMIT_MEMLOCK, clamped between 1 MiB and the 32 MiB target). Set an
+    // explicit size on hosts where the memlock limit cannot be raised: keep it
+    // at or below hard_limit / (publishing sessions + 1), with a couple of MiB
+    // of headroom for zenoh's metadata segments; e.g. 3145728 (3 MiB) for a
+    // daemon plus one publishing node on the common 8 MiB limit. Out-of-range
+    // values are clamped into the 1-32 MiB window. Payloads larger than the
+    // segment fall back to the network path.
+    segment_bytes: null,
+"#;
+
+/// The whole `shm` block. Kept LAST in the template: completion appends
+/// missing sections at the end of a user's file, so only a trailing section
+/// upgrades an older file to something byte-identical to the bundled template.
+const SHM_SECTION_SNIPPET: &str = const_format::concatcp!(
+    r#"  // Zero-copy shared memory between co-located nodes (and through zenohd in
+  // "router" mode).
+  shm: {
+"#,
+    SHM_ENABLED_FIELD_SNIPPET,
+    "\n",
+    SHM_SEGMENT_BYTES_FIELD_SNIPPET,
+    "  },\n"
 );
 
 /// The full bundled default config, composed from the snippets above.
@@ -205,7 +236,7 @@ const OLD_TEMPLATE_WITHOUT_LIFECYCLE: &str = const_format::concatcp!(
 );
 
 /// The bundled template as it shipped before the `shm` entry existed: the
-/// fixture proving an existing install gains `shm: true` on upgrade.
+/// fixture proving an existing install gains the `shm` section on upgrade.
 #[cfg(test)]
 const OLD_TEMPLATE_WITHOUT_SHM: &str = const_format::concatcp!(
     TEMPLATE_HEADER,
@@ -245,32 +276,32 @@ impl Mode {
 }
 
 /// One leg of the transport matrix: a routing [`Mode`] combined with the `shm`
-/// knob. The two are orthogonal — all four combinations are supported — and
-/// tests parameterized over the transport name the combination through the
-/// constants below instead of passing positional booleans, so no leg can be
-/// silently skipped.
+/// section. The two are orthogonal — all four enabled/mode combinations are
+/// supported — and tests parameterized over the transport name the combination
+/// through the constants below instead of passing positional booleans, so no
+/// leg can be silently skipped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportProfile {
     pub mode: Mode,
-    pub shm: bool,
+    pub shm: ShmConfig,
 }
 
 impl TransportProfile {
     pub const PEER_SHM: Self = Self {
         mode: Mode::Peer,
-        shm: true,
+        shm: ShmConfig::ENABLED,
     };
     pub const ROUTER_SHM: Self = Self {
         mode: Mode::Router,
-        shm: true,
+        shm: ShmConfig::ENABLED,
     };
     pub const PEER_NO_SHM: Self = Self {
         mode: Mode::Peer,
-        shm: false,
+        shm: ShmConfig::DISABLED,
     };
     pub const ROUTER_NO_SHM: Self = Self {
         mode: Mode::Router,
-        shm: false,
+        shm: ShmConfig::DISABLED,
     };
     /// Every supported combination; matrix tests iterate this so adding a leg
     /// here is the single change that widens the whole matrix.
@@ -344,42 +375,58 @@ impl Default for LifecycleConfig {
     }
 }
 
-fn default_shm() -> bool {
-    DEFAULT_SHM
+/// The `shm` section: zero-copy shared memory between co-located sessions.
+///
+/// `enabled` is an opt-out, not an opt-in: users set it to `false` to force
+/// every payload onto the network path. Orthogonal to `mode` — in router mode
+/// the generated zenohd config enables SHM too so the relay hop stays
+/// zero-copy. `segment_bytes` overrides the automatic memlock-budget sizing of
+/// the per-session segment (`None` = auto); the override is clamped into the
+/// supported 1–32 MiB window downstream, never errors.
+///
+/// `#[serde(default)]` fills any field a partial `shm` block omits from
+/// [`ShmConfig::default`], matching the `PeerConfig` pattern. A wrong-typed
+/// `shm` value fails the load loud (a serde type error naming `ShmConfig`)
+/// rather than being silently coerced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShmConfig {
+    pub enabled: bool,
+    pub segment_bytes: Option<usize>,
+}
+
+impl ShmConfig {
+    /// Shared memory on, auto-sized segment — the production default.
+    pub const ENABLED: Self = Self {
+        enabled: DEFAULT_SHM,
+        segment_bytes: DEFAULT_SHM_SEGMENT_BYTES,
+    };
+    /// Shared memory off; the segment size is irrelevant.
+    pub const DISABLED: Self = Self {
+        enabled: false,
+        segment_bytes: None,
+    };
+}
+
+impl Default for ShmConfig {
+    fn default() -> Self {
+        Self::ENABLED
+    }
 }
 
 /// The whole `peppy_config.json5` document. Every field is serde-defaulted so a
 /// partial or older file still parses; extra unknown keys are tolerated (this is
 /// a user-edited file, forward-compat beats strictness here).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PeppyConfig {
     #[serde(default)]
     pub mode: Mode,
-    /// Zero-copy shared memory between co-located sessions (default on). An
-    /// opt-out, not an opt-in: users set `shm: false` to force every payload
-    /// onto the network path. Orthogonal to `mode` — in router mode the
-    /// generated zenohd config enables SHM too so the relay hop stays
-    /// zero-copy.
-    #[serde(default = "default_shm")]
-    pub shm: bool,
+    #[serde(default)]
+    pub shm: ShmConfig,
     #[serde(default)]
     pub peer: PeerConfig,
     #[serde(default)]
     pub lifecycle: LifecycleConfig,
-}
-
-// Manual impl (not derived) because `shm` defaults to `true`; the serde
-// `default_shm` fn above and this impl both read `DEFAULT_SHM` so they cannot
-// disagree.
-impl Default for PeppyConfig {
-    fn default() -> Self {
-        Self {
-            mode: Mode::default(),
-            shm: DEFAULT_SHM,
-            peer: PeerConfig::default(),
-            lifecycle: LifecycleConfig::default(),
-        }
-    }
 }
 
 impl PeppyConfig {
@@ -552,8 +599,9 @@ mod tests {
         assert!(cfg.mode.is_peer());
         assert!(cfg.mode.gossip());
         assert!(!Mode::Router.gossip());
-        // Shared memory is an opt-OUT: the default must be on.
-        assert!(cfg.shm);
+        // Shared memory is an opt-OUT: the default must be on, auto-sized.
+        assert!(cfg.shm.enabled);
+        assert_eq!(cfg.shm.segment_bytes, None);
         assert_eq!(cfg.transport_profile(), TransportProfile::PEER_SHM);
         assert_eq!(cfg.peer.standard_buffer_size, DEFAULT_STANDARD_BUFFER_SIZE);
         assert_eq!(
@@ -716,7 +764,10 @@ mod tests {
     fn round_trips_custom_config() {
         let custom = PeppyConfig {
             mode: Mode::Router,
-            shm: false,
+            shm: ShmConfig {
+                enabled: false,
+                segment_bytes: Some(3 * 1024 * 1024),
+            },
             peer: PeerConfig {
                 standard_buffer_size: 64,
                 high_throughput_buffer_size: 4096,
@@ -733,24 +784,42 @@ mod tests {
 
     #[test]
     fn shm_can_be_disabled_and_is_orthogonal_to_mode() {
-        let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ mode: "router", shm: false }"#);
+        let (_tmp, peppy_dirs, _) =
+            dirs_with_config(r#"{ mode: "router", shm: { enabled: false } }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert!(!cfg.shm);
+        assert!(!cfg.shm.enabled);
         assert_eq!(cfg.mode, Mode::Router);
         assert_eq!(cfg.transport_profile(), TransportProfile::ROUTER_NO_SHM);
 
         let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ mode: "router" }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
         // Omitted `shm` falls back to the on-by-default.
-        assert!(cfg.shm);
+        assert!(cfg.shm.enabled);
         assert_eq!(cfg.transport_profile(), TransportProfile::ROUTER_SHM);
+    }
+
+    #[test]
+    fn shm_segment_bytes_parses_number_null_and_absent() {
+        let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ shm: { segment_bytes: 3145728 } }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.shm.segment_bytes, Some(3 * 1024 * 1024));
+        // A field omitted from a partial shm block falls back to its default.
+        assert!(cfg.shm.enabled);
+
+        let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ shm: { segment_bytes: null } }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.shm.segment_bytes, None);
+
+        let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ shm: { enabled: true } }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.shm.segment_bytes, None);
     }
 
     #[test]
     fn malformed_shm_fails_loud_and_leaves_file_untouched() {
         // Same contract as `mode`: a wrong-typed value must fail the load, not
         // silently revert to the default, and the file is never rewritten.
-        let malformed = r#"{ shm: "yes" }"#;
+        let malformed = r#"{ shm: { enabled: "yes" } }"#;
         let (_tmp, peppy_dirs, path) = dirs_with_config(malformed);
 
         let err = load_or_create(&peppy_dirs).unwrap_err();
@@ -763,18 +832,35 @@ mod tests {
 
     #[test]
     fn completes_missing_shm_entry_on_disk() {
-        // A file created by a peppy from before the shm knob existed gains the
-        // entry (comment included) and becomes byte-identical to the bundled
-        // template — the upgrade path that turns SHM on for existing installs.
+        // A file created by a peppy from before the shm section existed gains
+        // the block (comments included) and becomes byte-identical to the
+        // bundled template — the upgrade path that turns SHM on for existing
+        // installs.
         let (_tmp, peppy_dirs, path) = dirs_with_config(OLD_TEMPLATE_WITHOUT_SHM);
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg, PeppyConfig::default());
-        assert!(cfg.shm);
+        assert!(cfg.shm.enabled);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             DEFAULT_PEPPY_CONFIG_TEMPLATE
         );
+    }
+
+    #[test]
+    fn completes_partial_shm_block_preserving_user_values() {
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ shm: { enabled: false } }"#);
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert!(!cfg.shm.enabled);
+        assert_eq!(cfg.shm.segment_bytes, None);
+
+        // The missing field was spliced into the user's block (comment
+        // included) without touching their value.
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert!(completed.contains("enabled: false"));
+        assert!(completed.contains("segment_bytes: null,"));
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
     }
 
     #[test]

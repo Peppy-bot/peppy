@@ -65,8 +65,10 @@ fn drain_quiet_window(is_container: bool) -> Duration {
 pub struct DaemonDefaults {
     /// Daemon-global messaging mode, injected into every spawned node.
     pub messaging_mode: Mode,
-    /// Daemon-global shared-memory knob, injected into every spawned node.
-    pub shm: bool,
+    /// Daemon-global shared-memory section (toggle + segment sizing), injected
+    /// into every spawned node so all co-located sessions share one sizing
+    /// decision and the memlock-budget arithmetic holds across the stack.
+    pub shm: config::peppy_config::ShmConfig,
     /// Daemon-global peer buffer sizes, injected into every spawned node.
     pub peer_buffer: PeerConfig,
     /// Daemon-liveness grace period (seconds), injected into every spawned node
@@ -113,7 +115,8 @@ pub(crate) struct NodeRunActionContext {
 }
 
 /// Applies the [`DaemonDefaults`] to a node's session config before it is
-/// launched: the messaging mode + shm knob + peer buffer sizes, and the
+/// launched: the messaging mode + shm section (toggle and segment sizing) +
+/// peer buffer sizes, and the
 /// daemon-resolved liveness grace period (so the spawned node's watchdog
 /// self-terminates if the daemon dies and stays gone). `container_separate_ns`
 /// forces the node onto the router-relay (client) path even in peer mode,
@@ -127,7 +130,8 @@ fn apply_daemon_defaults(
     container_separate_ns: bool,
 ) {
     cfg.discovery.gossip = defaults.messaging_mode.is_peer() && !container_separate_ns;
-    cfg.discovery.shm = defaults.shm && !container_separate_ns;
+    cfg.discovery.shm = defaults.shm.enabled && !container_separate_ns;
+    cfg.discovery.shm_segment_bytes = defaults.shm.segment_bytes;
     cfg.discovery.standard_buffer_size = defaults.peer_buffer.standard_buffer_size;
     cfg.discovery.high_throughput_buffer_size = defaults.peer_buffer.high_throughput_buffer_size;
     cfg.lifecycle.daemon_grace_secs = defaults.daemon_grace_secs;
@@ -1395,7 +1399,7 @@ mod tests {
     fn daemon_defaults(mode: Mode, peer: PeerConfig) -> DaemonDefaults {
         DaemonDefaults {
             messaging_mode: mode,
-            shm: true,
+            shm: config::peppy_config::ShmConfig::ENABLED,
             peer_buffer: peer,
             daemon_grace_secs: 123,
         }
@@ -1452,17 +1456,34 @@ mod tests {
         );
     }
 
-    /// The daemon-global `shm: false` knob reaches every spawned node.
+    /// The daemon-global `shm.enabled: false` setting reaches every spawned node.
     #[test]
     fn apply_daemon_defaults_shm_off_disables_shm_for_nodes() {
         let mut cfg = runtime_config_for_test();
         let defaults = DaemonDefaults {
-            shm: false,
+            shm: config::peppy_config::ShmConfig::DISABLED,
             ..daemon_defaults(Mode::Peer, PeerConfig::default())
         };
         apply_daemon_defaults(&mut cfg, defaults, false);
         assert!(cfg.discovery.gossip);
         assert!(!cfg.discovery.shm);
+    }
+
+    /// The daemon-global `shm.segment_bytes` value reaches every spawned node
+    /// verbatim — one sizing decision for all co-located sessions.
+    #[test]
+    fn apply_daemon_defaults_propagates_segment_bytes() {
+        let mut cfg = runtime_config_for_test();
+        let defaults = DaemonDefaults {
+            shm: config::peppy_config::ShmConfig {
+                enabled: true,
+                segment_bytes: Some(3 * 1024 * 1024),
+            },
+            ..daemon_defaults(Mode::Peer, PeerConfig::default())
+        };
+        apply_daemon_defaults(&mut cfg, defaults, false);
+        assert!(cfg.discovery.shm);
+        assert_eq!(cfg.discovery.shm_segment_bytes, Some(3 * 1024 * 1024));
     }
 
     /// Buffer sizes and the daemon-liveness grace period are applied regardless

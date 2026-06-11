@@ -30,8 +30,12 @@
 //!   subscriber-only sessions don't lock a segment they never write to.
 //!
 //! Hosts that want full-size segments set the memlock limit accordingly
-//! (e.g. `LimitMEMLOCK=infinity` in the systemd unit, or `ulimit -l` ≥ 128
-//! MiB); root and `CAP_IPC_LOCK` processes are unlimited.
+//! (e.g. `LimitMEMLOCK=infinity` in the systemd unit, or `ulimit -l` ≥ 256
+//! MiB — eight times the 32 MiB target, per the budget split above). Where
+//! the limit cannot be raised, `shm.segment_bytes` in `peppy_config.json5`
+//! claims an explicit per-session size instead; the setter owns the budget
+//! arithmetic (at most `hard_limit / (publishing sessions + 1)`, with
+//! headroom for zenoh's metadata segments).
 //!
 //! ## Fallbacks (never block, never error)
 //!
@@ -77,7 +81,7 @@ const SHM_ALLOC_ALIGNMENT: AllocAlignment = AllocAlignment::ALIGN_8_BYTES;
 const SHM_ALLOC_ALIGN_BYTES: usize = 8;
 
 /// Raises this process's soft `RLIMIT_MEMLOCK` to the hard limit, once.
-/// Called at adapter construction when the `shm` knob is on — BEFORE zenohd is
+/// Called at adapter construction when `shm.enabled` is on — BEFORE zenohd is
 /// spawned, so the router process inherits the raised limit and can map node
 /// segments in `router+shm` mode — and again (idempotent) before sizing the
 /// provider segment.
@@ -134,37 +138,70 @@ fn memlock_hard_limit() -> Option<u64> {
     None
 }
 
-/// The segment size this host can sustain: the [`SHM_SEGMENT_BYTES`] target,
-/// clamped to an eighth of the memlock budget. A fraction — not the whole —
-/// because the budget is also spent on the receive side: zenoh caches (and
-/// keeps locked) a mapping of every co-located producer's segment this
-/// process ever receives from, plus its own metadata/watchdog segments; an
-/// eighth keeps even a many-sessions process (the integration test shape)
-/// inside the budget. Payloads larger than the clamped segment fall back to
-/// the network path (warned once at provider creation).
+/// Where a segment size came from, so provider creation can log the right
+/// thing: a memlock clamp is a host limitation worth a warning, an explicit
+/// config override is an operator decision worth only a provenance line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SegmentSource {
+    /// The budget (or its absence) allows the full [`SHM_SEGMENT_BYTES`].
+    Target,
+    /// `hard RLIMIT_MEMLOCK / 8` forced the size below the target.
+    MemlockClamped,
+    /// `shm.segment_bytes` was set; `requested` is the pre-clamp,
+    /// pre-alignment value so the log can show what the operator asked for.
+    ConfigOverride { requested: usize },
+}
+
+/// The segment size this host can sustain, and where it came from. Without an
+/// override: the [`SHM_SEGMENT_BYTES`] target, clamped to an eighth of the
+/// memlock budget. A fraction — not the whole — because the budget is also
+/// spent on the receive side: zenoh caches (and keeps locked) a mapping of
+/// every co-located producer's segment this process ever receives from, plus
+/// its own metadata/watchdog segments; an eighth keeps even a many-sessions
+/// process (the integration test shape) inside the budget. Payloads larger
+/// than the segment fall back to the network path (logged once at provider
+/// creation).
 ///
-/// `PEPPY_SHM_SEGMENT_BYTES` overrides the computed size (still clamped to
-/// the floor/target window). It is a diagnostic/bench hook for processes
-/// that know their own segment-mapping shape — NOT a supported config knob;
-/// the supported way to get full-size segments is raising the memlock limit.
-fn effective_segment_bytes() -> usize {
-    raise_memlock_limit();
-    let bytes = match std::env::var("PEPPY_SHM_SEGMENT_BYTES")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-    {
-        Some(parsed) => parsed,
-        None => match memlock_hard_limit() {
-            None => SHM_SEGMENT_BYTES,
-            Some(hard) => usize::try_from(hard / 8).unwrap_or(SHM_SEGMENT_BYTES),
-        },
+/// An explicit `shm.segment_bytes` bypasses the memlock math — the setter
+/// owns the budget arithmetic — but is still clamped to the floor/target
+/// window and alignment-rounded, so an override can never fail provider
+/// creation by construction. It is the escape hatch for hosts that can't
+/// raise the memlock limit and for benches that know their own
+/// segment-mapping shape; production sizing raises the memlock limit, which
+/// scales with the session count where a fixed override does not.
+fn resolve_segment_bytes(
+    override_bytes: Option<usize>,
+    memlock_hard: Option<u64>,
+) -> (usize, SegmentSource) {
+    if let Some(requested) = override_bytes {
+        return (
+            aligned_segment_bytes(requested),
+            SegmentSource::ConfigOverride { requested },
+        );
+    }
+    let bytes = match memlock_hard {
+        None => SHM_SEGMENT_BYTES,
+        Some(hard) => usize::try_from(hard / 8).unwrap_or(SHM_SEGMENT_BYTES),
     };
-    aligned_segment_bytes(bytes)
+    let bytes = aligned_segment_bytes(bytes);
+    let source = if bytes < SHM_SEGMENT_BYTES {
+        SegmentSource::MemlockClamped
+    } else {
+        SegmentSource::Target
+    };
+    (bytes, source)
+}
+
+/// [`resolve_segment_bytes`] against this process's actual memlock limit,
+/// raising the soft limit to the hard limit first.
+fn effective_segment_bytes(override_bytes: Option<usize>) -> (usize, SegmentSource) {
+    raise_memlock_limit();
+    resolve_segment_bytes(override_bytes, memlock_hard_limit())
 }
 
 /// Clamps a candidate segment size into the floor/target window and rounds it
 /// DOWN to the alloc alignment: zenoh's `MemoryLayout` rejects any size that
-/// is not a multiple of its alignment, so an odd memlock limit (or env
+/// is not a multiple of its alignment, so an odd memlock limit (or config
 /// override) must not be able to fail provider creation — that failure is
 /// cached for the whole session.
 fn aligned_segment_bytes(bytes: usize) -> usize {
@@ -178,17 +215,22 @@ fn aligned_segment_bytes(bytes: usize) -> usize {
 /// spend locked memory on a segment they wouldn't write to.
 pub(crate) struct LazyShm {
     cell: OnceLock<Option<Arc<ShmContext>>>,
+    /// `shm.segment_bytes` from the session's config, `None` for auto-sizing.
+    segment_bytes_override: Option<usize>,
 }
 
 impl LazyShm {
-    pub(crate) fn new() -> Arc<Self> {
+    pub(crate) fn new(segment_bytes_override: Option<usize>) -> Arc<Self> {
         Arc::new(Self {
             cell: OnceLock::new(),
+            segment_bytes_override,
         })
     }
 
     fn get(&self) -> Option<&Arc<ShmContext>> {
-        self.cell.get_or_init(ShmContext::create).as_ref()
+        self.cell
+            .get_or_init(|| ShmContext::create(self.segment_bytes_override))
+            .as_ref()
     }
 }
 
@@ -203,17 +245,27 @@ impl ShmContext {
     /// Creates the provider, or `None` (with a warning) when the segment
     /// cannot be created — the session then runs entirely on the heap path,
     /// which is exactly the pre-SHM behavior.
-    fn create() -> Option<Arc<Self>> {
-        let segment_bytes = effective_segment_bytes();
-        if segment_bytes < SHM_SEGMENT_BYTES {
-            tracing::warn!(
+    fn create(segment_bytes_override: Option<usize>) -> Option<Arc<Self>> {
+        let (segment_bytes, source) = effective_segment_bytes(segment_bytes_override);
+        match source {
+            SegmentSource::Target => {}
+            SegmentSource::MemlockClamped => tracing::warn!(
                 segment_bytes,
                 target_bytes = SHM_SEGMENT_BYTES,
                 "RLIMIT_MEMLOCK clamps the shared-memory segment below its target; \
                  payloads larger than the segment fall back to the network path \
                  (raise the memlock limit, e.g. LimitMEMLOCK= in the systemd unit, \
-                 for full-size segments)"
-            );
+                 or set shm.segment_bytes in peppy_config.json5)"
+            ),
+            // Unconditional, even when the override equals the target: the
+            // line answers "who sized this segment"; a clamped or alignment-
+            // rounded override shows as requested_bytes != segment_bytes.
+            SegmentSource::ConfigOverride { requested } => tracing::info!(
+                segment_bytes,
+                target_bytes = SHM_SEGMENT_BYTES,
+                requested_bytes = requested,
+                "shared-memory segment size set by shm.segment_bytes"
+            ),
         }
         // The backend is built with the alloc alignment: a provider only
         // serves allocations whose alignment is compatible with its backend
@@ -323,7 +375,7 @@ mod tests {
     /// with it, so the root cause surfaces here first.
     #[test]
     fn lazy_state_creates_provider_and_loans_shm_buffers() {
-        let shm = LazyShm::new();
+        let shm = LazyShm::new(None);
         let loan = ShmContext::loan(Some(&shm), SHM_PUBLISH_THRESHOLD_BYTES);
         assert!(loan.is_shm(), "threshold-sized loan must be SHM-backed");
         assert_eq!(loan.len(), SHM_PUBLISH_THRESHOLD_BYTES);
@@ -332,15 +384,159 @@ mod tests {
         assert!(!small.is_shm(), "sub-threshold loan stays on the heap");
     }
 
+    /// An overridden session must serve loans bigger than the auto-sized
+    /// segment would on a small-memlock host (2 MiB > the 1 MiB floor the
+    /// common 8 MiB hard limit clamps to) — the end-to-end point of the
+    /// `shm.segment_bytes` knob. Only discriminates a dropped override where
+    /// the auto segment is small; the shrinking test below covers the
+    /// unlimited-memlock hosts.
+    #[test]
+    fn lazy_state_honors_segment_override() {
+        let shm = LazyShm::new(Some(2 * 1024 * 1024));
+        let len = 3 * 1024 * 1024 / 2;
+        let loan = ShmContext::loan(Some(&shm), len);
+        assert!(loan.is_shm(), "loan within the overridden segment is SHM");
+        assert_eq!(loan.len(), len);
+    }
+
+    /// The complement of the test above for hosts whose auto-sized segment is
+    /// large (unlimited memlock — the common CI shape): an override SHRINKS
+    /// the segment, so a loan that exceeds it must fall back to the heap. A
+    /// dropped override would hand out a 32 MiB auto segment here and serve
+    /// the loan from SHM.
+    #[test]
+    fn lazy_state_override_bounds_loans() {
+        let (auto_bytes, _) = effective_segment_bytes(None);
+        if auto_bytes <= 2 * 1024 * 1024 {
+            // Auto sizing is already at or below the loan size on this host;
+            // the test above discriminates here instead.
+            return;
+        }
+        let shm = LazyShm::new(Some(SHM_SEGMENT_MIN_BYTES));
+        let loan = ShmContext::loan(Some(&shm), 2 * 1024 * 1024);
+        assert!(
+            !loan.is_shm(),
+            "loan beyond the overridden segment must fall back to the heap"
+        );
+    }
+
     /// The segment is sized to the host's memlock budget but never leaves the
     /// configured floor/target window.
     #[test]
     fn segment_size_respects_memlock_budget() {
-        let bytes = effective_segment_bytes();
+        let (bytes, _source) = effective_segment_bytes(None);
         assert!((SHM_SEGMENT_MIN_BYTES..=SHM_SEGMENT_BYTES).contains(&bytes));
         if let Some(hard) = memlock_hard_limit() {
             assert!(bytes as u64 <= hard.max(SHM_SEGMENT_MIN_BYTES as u64));
         }
+    }
+
+    /// No override, no limit: the full target, and no clamp reported (a
+    /// spurious `MemlockClamped` here would warn on every unlimited host).
+    #[test]
+    fn no_override_no_limit_yields_target() {
+        assert_eq!(
+            resolve_segment_bytes(None, None),
+            (SHM_SEGMENT_BYTES, SegmentSource::Target)
+        );
+    }
+
+    /// A budget of eight targets or more sustains the full segment: nothing
+    /// was clamped, so nothing may be reported as clamped.
+    #[test]
+    fn no_override_huge_limit_still_reports_target() {
+        assert_eq!(
+            resolve_segment_bytes(None, Some(1024 * 1024 * 1024)),
+            (SHM_SEGMENT_BYTES, SegmentSource::Target)
+        );
+        // The boundary: exactly eight targets.
+        assert_eq!(
+            resolve_segment_bytes(None, Some(8 * SHM_SEGMENT_BYTES as u64)),
+            (SHM_SEGMENT_BYTES, SegmentSource::Target)
+        );
+    }
+
+    /// Small budgets clamp to an eighth (floored at the minimum) and say so.
+    /// 8 MiB is the common systemd default — the shape this knob exists for.
+    #[test]
+    fn no_override_small_limit_clamps() {
+        assert_eq!(
+            resolve_segment_bytes(None, Some(8 * 1024 * 1024)),
+            (SHM_SEGMENT_MIN_BYTES, SegmentSource::MemlockClamped)
+        );
+        assert_eq!(
+            resolve_segment_bytes(None, Some(64 * 1024 * 1024)),
+            (8 * 1024 * 1024, SegmentSource::MemlockClamped)
+        );
+    }
+
+    /// An override bypasses the memlock math entirely — the setter owns the
+    /// budget arithmetic — and carries the requested value for the log.
+    #[test]
+    fn override_respected_within_window_and_bypasses_memlock() {
+        assert_eq!(
+            resolve_segment_bytes(Some(4 * 1024 * 1024), Some(8 * 1024 * 1024)),
+            (
+                4 * 1024 * 1024,
+                SegmentSource::ConfigOverride {
+                    requested: 4 * 1024 * 1024
+                }
+            )
+        );
+    }
+
+    /// Out-of-window overrides are clamped, never honored into a size that
+    /// could fail provider creation; `requested` keeps the original value.
+    #[test]
+    fn override_clamped_into_window() {
+        assert_eq!(
+            resolve_segment_bytes(Some(512 * 1024), None),
+            (
+                SHM_SEGMENT_MIN_BYTES,
+                SegmentSource::ConfigOverride {
+                    requested: 512 * 1024
+                }
+            )
+        );
+        assert_eq!(
+            resolve_segment_bytes(Some(64 * 1024 * 1024), None),
+            (
+                SHM_SEGMENT_BYTES,
+                SegmentSource::ConfigOverride {
+                    requested: 64 * 1024 * 1024
+                }
+            )
+        );
+    }
+
+    /// An unaligned override is rounded down to the alloc alignment.
+    #[test]
+    fn override_rounded_down_to_alignment() {
+        assert_eq!(
+            resolve_segment_bytes(Some(2_000_001), None),
+            (
+                2_000_000,
+                SegmentSource::ConfigOverride {
+                    requested: 2_000_001
+                }
+            )
+        );
+    }
+
+    /// An override equal to the target still reports `ConfigOverride`, so the
+    /// provenance line fires even when the value changes nothing — it answers
+    /// "who sized this segment", not "did the size change".
+    #[test]
+    fn override_equal_to_target_keeps_config_source() {
+        assert_eq!(
+            resolve_segment_bytes(Some(SHM_SEGMENT_BYTES), Some(8 * 1024 * 1024)),
+            (
+                SHM_SEGMENT_BYTES,
+                SegmentSource::ConfigOverride {
+                    requested: SHM_SEGMENT_BYTES
+                }
+            )
+        );
     }
 
     /// An odd candidate (a hand-set override, a byte-precise memlock limit)

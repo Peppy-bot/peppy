@@ -91,7 +91,8 @@ pub const TEST_NODE_TAG: &str = "v1";
 /// for their `#[case]` parameterization without reaching into the internal path.
 pub use config::peppy_config::TransportProfile;
 
-/// Applies a transport profile (routing mode + shm knob) to a node's runtime
+/// Applies a transport profile (routing mode + shm section, segment sizing
+/// included) to a node's runtime
 /// config before it is written and handed to a spawned node. This is the
 /// single seam the transport-matrix communication tests use to run the same
 /// body under all four peer/router × shm legs without duplicating the body.
@@ -100,7 +101,8 @@ pub fn apply_profile(
     profile: TransportProfile,
 ) -> config::runtime::RuntimeConfig {
     config.discovery.gossip = profile.gossip();
-    config.discovery.shm = profile.shm;
+    config.discovery.shm = profile.shm.enabled;
+    config.discovery.shm_segment_bytes = profile.shm.segment_bytes;
     config
 }
 

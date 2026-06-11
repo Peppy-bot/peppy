@@ -273,8 +273,9 @@ impl MessengerHandle {
     /// Like [`from_host_port_reconnecting`](Self::from_host_port_reconnecting)
     /// but applies the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig):
     /// an explicit gossip seed list (falling back to `host:port`), the gossip
-    /// toggle, and the shared-memory toggle. Used by the node runtime so peers
-    /// form direct links per the daemon-supplied discovery settings.
+    /// toggle, and the shared-memory section (toggle plus the daemon-resolved
+    /// segment sizing). Used by the node runtime so peers form direct links
+    /// per the daemon-supplied discovery settings.
     pub async fn from_host_port_reconnecting_with_discovery(
         host: &str,
         port: u16,
@@ -287,7 +288,10 @@ impl MessengerHandle {
             port,
             discovery.seed_peers.clone(),
             discovery.gossip,
-            discovery.shm,
+            config::peppy_config::ShmConfig {
+                enabled: discovery.shm,
+                segment_bytes: discovery.shm_segment_bytes,
+            },
             buffer_sizes,
         )?
         .with_session_reconnect();

@@ -121,10 +121,12 @@ fn main() {
 fn print_environment() {
     let env = CpuEnvironment::detect();
     println!("\nenv: {}", env.summary_line());
-    // The spawned nodes run with the default runtime config, so the line below
-    // reflects exactly what they were configured with (the per-scenario `shm`
-    // table column then reports whether shared memory was actually used on the
-    // wire, as observed by the driver on its received payloads).
+    // The spawned nodes run with the default runtime config except for the
+    // harness's budget-shaped `shm_segment_bytes` override on bounded-memlock
+    // hosts, so the routing/shm line below reflects what they were configured
+    // with (the per-scenario `shm` table column then reports whether shared
+    // memory was actually used on the wire, as observed by the driver on its
+    // received payloads).
     let discovery = config::runtime::DiscoveryConfig::default();
     let routing = if discovery.gossip {
         "peer (gossip discovery)"

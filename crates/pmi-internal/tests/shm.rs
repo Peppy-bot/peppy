@@ -148,9 +148,9 @@ mod shm_tests {
             );
             assert_eq!(
                 msg.payload().is_shm_backed(),
-                profile.shm,
+                profile.shm.enabled,
                 "leg {profile:?}: plain large publish expected is_shm_backed == {}",
-                profile.shm
+                profile.shm.enabled
             );
             drop(msg);
 
@@ -181,15 +181,15 @@ mod shm_tests {
             let mut loan = bound.loan(large.len());
             assert_eq!(
                 loan.is_shm(),
-                profile.shm,
+                profile.shm.enabled,
                 "leg {profile:?}: expected loan.is_shm() == {}",
-                profile.shm
+                profile.shm.enabled
             );
             loan.copy_from_slice(&large);
             bound.publish_loaned(loan).await.expect("publish_loaned");
             let msg = recv_or_timeout(&mut subscription.rx, "loaned").await;
             assert_eq!(msg.payload().as_bytes().as_ref(), large.as_slice());
-            assert_eq!(msg.payload().is_shm_backed(), profile.shm);
+            assert_eq!(msg.payload().is_shm_backed(), profile.shm.enabled);
             drop(msg);
 
             // 4. Over-allocate, fill a prefix, truncate: only the prefix
@@ -198,11 +198,11 @@ mod shm_tests {
             loan[..prefix.len()].copy_from_slice(&prefix);
             loan.truncate(prefix.len());
             assert_eq!(loan.len(), prefix.len());
-            assert_eq!(loan.is_shm(), profile.shm);
+            assert_eq!(loan.is_shm(), profile.shm.enabled);
             bound.publish_loaned(loan).await.expect("publish prefix");
             let msg = recv_or_timeout(&mut subscription.rx, "truncated prefix").await;
             assert_eq!(msg.payload().as_bytes().as_ref(), prefix.as_slice());
-            assert_eq!(msg.payload().is_shm_backed(), profile.shm);
+            assert_eq!(msg.payload().is_shm_backed(), profile.shm.enabled);
         }
     }
 

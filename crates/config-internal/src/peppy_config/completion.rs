@@ -21,8 +21,8 @@ use std::collections::HashMap;
 
 use super::{
     DAEMON_GRACE_FIELD_SNIPPET, HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET,
-    MODE_SECTION_SNIPPET, PEER_SECTION_SNIPPET, SHM_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET,
-    STANDARD_BUFFER_FIELD_SNIPPET,
+    MODE_SECTION_SNIPPET, PEER_SECTION_SNIPPET, SHM_ENABLED_FIELD_SNIPPET, SHM_SECTION_SNIPPET,
+    SHM_SEGMENT_BYTES_FIELD_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET, STANDARD_BUFFER_FIELD_SNIPPET,
 };
 
 /// A nested field of a top-level section, with the template snippet to splice
@@ -81,7 +81,16 @@ const SECTIONS: &[SectionSpec] = &[
     SectionSpec {
         key: "shm",
         snippet: SHM_SECTION_SNIPPET,
-        fields: &[],
+        fields: &[
+            FieldSpec {
+                key: "enabled",
+                snippet: SHM_ENABLED_FIELD_SNIPPET,
+            },
+            FieldSpec {
+                key: "segment_bytes",
+                snippet: SHM_SEGMENT_BYTES_FIELD_SNIPPET,
+            },
+        ],
     },
 ];
 
