@@ -697,6 +697,16 @@ async fn node_add_same_node_shutdown_existing_instances() {
                         // before acknowledging, so the daemon's graceful
                         // wait observes the instance gone instead of
                         // burning the whole grace budget.
+                        //
+                        // The kill result is deliberately ignored. The
+                        // sleep child may have already exited on its own
+                        // under slow CI (ESRCH), and the daemon force-kills
+                        // any survivor after the grace budget, so no
+                        // assertion in this test depends on this kill
+                        // succeeding. Failing here could not fail the test
+                        // anyway: handler errors are swallowed by the stop
+                        // path's best-effort design, and this detached
+                        // task's panics are never joined.
                         let _ = std::process::Command::new("kill")
                             .arg("-KILL")
                             .arg(pid_1.to_string())
