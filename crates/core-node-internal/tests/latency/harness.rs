@@ -76,6 +76,10 @@ impl Lang {
 pub enum Transport {
     Topic,
     Service,
+    /// Topic roundtrip where the driver publishes through a pre-bound
+    /// publisher's loaned buffer (`loan` + `publish_loaned`) — the zero-copy
+    /// path when shared memory is on; identical code over the heap when off.
+    TopicLoaned,
 }
 
 impl Transport {
@@ -83,6 +87,7 @@ impl Transport {
         match self {
             Transport::Topic => "topic",
             Transport::Service => "service",
+            Transport::TopicLoaned => "topic-loaned",
         }
     }
 
@@ -90,9 +95,28 @@ impl Transport {
         match self {
             Transport::Topic => 0,
             Transport::Service => 1,
+            Transport::TopicLoaned => 2,
         }
     }
 }
+
+/// One bench scenario: a responder language, a transport shape, and the
+/// payload size the driver sends each roundtrip. `label` doubles as the
+/// baseline key and the `cargo bench -- <filter>` id, so the historical
+/// 8-byte scenarios keep their stored baselines.
+#[derive(Clone, Copy, Debug)]
+pub struct BenchScenario {
+    pub lang: Lang,
+    pub transport: Transport,
+    pub payload_bytes: u64,
+    pub label: &'static str,
+}
+
+/// The 8-byte legs measure pure transport overhead; the 1 MiB legs measure
+/// the large-payload (camera-frame-sized) path where shared memory matters —
+/// plain publish exercises the transparent copy-into-SHM tier, the loaned
+/// variant the zero-copy tier.
+pub const LARGE_PAYLOAD_BYTES: u64 = 1024 * 1024;
 
 /// Default measurement parameters shared by the bench and the threshold test.
 /// Larger warmup absorbs cold-start (route propagation, CPU ramp); 1000 samples
@@ -109,12 +133,44 @@ pub const DEFAULT_SAMPLES: u64 = 1000;
 /// the physical core count.
 const NODE_WORKER_THREADS: &str = "2";
 
-/// All (lang, transport) scenarios, in display order.
-pub const ALL_SCENARIOS: &[(Lang, Transport)] = &[
-    (Lang::Rust, Transport::Topic),
-    (Lang::Rust, Transport::Service),
-    (Lang::Python, Transport::Topic),
-    (Lang::Python, Transport::Service),
+/// All scenarios, in display order.
+pub const ALL_SCENARIOS: &[BenchScenario] = &[
+    BenchScenario {
+        lang: Lang::Rust,
+        transport: Transport::Topic,
+        payload_bytes: 8,
+        label: "rust/topic",
+    },
+    BenchScenario {
+        lang: Lang::Rust,
+        transport: Transport::Service,
+        payload_bytes: 8,
+        label: "rust/service",
+    },
+    BenchScenario {
+        lang: Lang::Rust,
+        transport: Transport::Topic,
+        payload_bytes: LARGE_PAYLOAD_BYTES,
+        label: "rust/topic-1m",
+    },
+    BenchScenario {
+        lang: Lang::Rust,
+        transport: Transport::TopicLoaned,
+        payload_bytes: LARGE_PAYLOAD_BYTES,
+        label: "rust/topic-loaned-1m",
+    },
+    BenchScenario {
+        lang: Lang::Python,
+        transport: Transport::Topic,
+        payload_bytes: 8,
+        label: "python/topic",
+    },
+    BenchScenario {
+        lang: Lang::Python,
+        transport: Transport::Service,
+        payload_bytes: 8,
+        label: "python/service",
+    },
 ];
 
 /// Per (lang, transport) **median (p50)** ceiling in milliseconds — the
@@ -125,24 +181,34 @@ pub const ALL_SCENARIOS: &[(Lang, Transport)] = &[
 /// threads, one reused scenario per language), so a real regression (an
 /// accidental debug build, a synchronous discovery per call, or a serialization
 /// blowup) trips it while ordinary jitter does not. Overridable via
-/// `PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>` so a slower runner can retune
-/// without a code change.
-pub fn ceiling_ms(lang: Lang, transport: Transport) -> u64 {
+/// `PEPPY_LATENCY_MAX_MS_<LABEL>`, where `<LABEL>` is the scenario label
+/// uppercased with `/` and `-` replaced by `_` (e.g. `rust/topic-loaned-1m` →
+/// `PEPPY_LATENCY_MAX_MS_RUST_TOPIC_LOANED_1M`), so a slower runner can
+/// retune without a code change.
+pub fn ceiling_ms(scenario: &BenchScenario) -> u64 {
+    // Derived from the scenario label so new scenarios automatically get
+    // their own override key: `rust/topic-loaned-1m` →
+    // `PEPPY_LATENCY_MAX_MS_RUST_TOPIC_LOANED_1M`.
     let key = format!(
-        "PEPPY_LATENCY_MAX_MS_{}_{}",
-        lang.as_str().to_uppercase(),
-        transport.as_str().to_uppercase()
+        "PEPPY_LATENCY_MAX_MS_{}",
+        scenario.label.to_uppercase().replace(['/', '-'], "_")
     );
     if let Ok(value) = std::env::var(&key)
         && let Ok(parsed) = value.parse()
     {
         return parsed;
     }
-    match (lang, transport) {
-        (Lang::Rust, Transport::Topic) => 8,
-        (Lang::Rust, Transport::Service) => 8,
-        (Lang::Python, Transport::Topic) => 6,
-        (Lang::Python, Transport::Service) => 10,
+    match scenario.label {
+        "rust/topic" => 8,
+        "rust/service" => 8,
+        // 1 MiB each way; generous so only a real regression (a lost
+        // zero-copy path degrading to multiple large copies, a stalled
+        // fallback) trips it.
+        "rust/topic-1m" => 25,
+        "rust/topic-loaned-1m" => 25,
+        "python/topic" => 6,
+        "python/service" => 10,
+        other => panic!("no default ceiling for scenario {other}"),
     }
 }
 
@@ -156,11 +222,18 @@ pub struct LatencyStats {
     p90_ns: u64,
     mean_ns: u64,
     count: u64,
+    /// Whether shared memory was observed in use on the measured iterations:
+    /// the final RECEIVED payload (echo reply / pong) was SHM-backed — and,
+    /// for the loaned scenario, the driver's own loans were SHM-backed too.
+    /// A degraded leg reports `false` while still delivering; note the plain
+    /// scenarios cannot observe a driver-side-only degradation (the flag
+    /// then reflects the responder→driver leg).
+    shm_used: u64,
 }
 
 impl LatencyStats {
     fn decode(bytes: &[u8]) -> Self {
-        assert_eq!(bytes.len(), 40, "bench_control response must be 40 bytes");
+        assert_eq!(bytes.len(), 48, "bench_control response must be 48 bytes");
         let read = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
         Self {
             total_ns: read(0),
@@ -168,6 +241,7 @@ impl LatencyStats {
             p90_ns: read(2),
             mean_ns: read(3),
             count: read(4),
+            shm_used: read(5),
         }
     }
 
@@ -185,6 +259,9 @@ impl LatencyStats {
     }
     pub fn count(&self) -> u64 {
         self.count
+    }
+    pub fn shm_used(&self) -> bool {
+        self.shm_used != 0
     }
 }
 
@@ -363,6 +440,28 @@ pub fn build_all_nodes(include_python: bool) {
 // Scenario lifecycle: router + two spawned nodes, driven via bench_control.
 // ---------------------------------------------------------------------------
 
+/// On hosts with a small `RLIMIT_MEMLOCK`, the library's safe default segment
+/// sizing (an eighth of the budget, tuned for many-sessions processes) can
+/// fall below [`LARGE_PAYLOAD_BYTES`], silently turning the large-payload
+/// scenarios into network-path measurements. The bench knows its own shape —
+/// exactly two single-session node processes — so it can safely hand each
+/// node a bigger slice of the budget: half, minus headroom for the peer's
+/// mapped segment and zenoh's metadata segments.
+fn shm_segment_override() -> Option<String> {
+    let limits = std::fs::read_to_string("/proc/self/limits").ok()?;
+    let line = limits
+        .lines()
+        .find(|l| l.starts_with("Max locked memory"))?;
+    let hard = line.split_whitespace().rev().nth(1)?;
+    if hard == "unlimited" {
+        return None;
+    }
+    let hard: u64 = hard.parse().ok()?;
+    let segment = (hard / 2).saturating_sub(2 * 1024 * 1024);
+    let segment = segment.clamp(LARGE_PAYLOAD_BYTES * 2, 32 * 1024 * 1024);
+    Some(segment.to_string())
+}
+
 fn write_runtime_config(
     cfg_dir: &Path,
     host: &str,
@@ -419,19 +518,25 @@ pub async fn start_scenario(lang: Lang) -> Scenario {
 
     // Spawn the responder first so its echo service / ping subscription are up
     // before the driver starts probing.
-    let responder_env = [
+    let shm_segment = shm_segment_override();
+    let mut responder_env = vec![
         (RUNTIME_CONFIG_VAR_NAME, responder_cfg.to_str().unwrap()),
         ("TOKIO_WORKER_THREADS", NODE_WORKER_THREADS),
     ];
-    let driver_env = [
+    let mut driver_env = vec![
         (RUNTIME_CONFIG_VAR_NAME, driver_cfg.to_str().unwrap()),
         ("TOKIO_WORKER_THREADS", NODE_WORKER_THREADS),
     ];
+    if let Some(bytes) = shm_segment.as_deref() {
+        responder_env.push(("PEPPY_SHM_SEGMENT_BYTES", bytes));
+        driver_env.push(("PEPPY_SHM_SEGMENT_BYTES", bytes));
+    }
     let mut responder_child = match lang {
         Lang::Rust => spawn_rust_node_release(&responder_dir, &responder_env),
         Lang::Python => helpers::spawn_python_run(&responder_dir, &responder_env),
     };
     let mut driver_child = spawn_rust_node_release(&driver_dir, &driver_env);
+    drop(shm_segment);
 
     let control = MessengerHandle::from_host_port(&host, port)
         .await
@@ -502,12 +607,14 @@ pub async fn start_scenario(lang: Lang) -> Scenario {
 
 impl Scenario {
     /// Ask the driver to run `warmup` (discarded) + `iters` (measured)
-    /// roundtrips of `transport` and return the reported distribution.
-    pub async fn run(&self, transport: Transport, warmup: u64, iters: u64) -> LatencyStats {
-        let mut request = Vec::with_capacity(17);
-        request.push(transport.wire_tag());
+    /// roundtrips of the scenario's transport at its payload size and return
+    /// the reported distribution.
+    pub async fn run(&self, scenario: &BenchScenario, warmup: u64, iters: u64) -> LatencyStats {
+        let mut request = Vec::with_capacity(25);
+        request.push(scenario.transport.wire_tag());
         request.extend_from_slice(&warmup.to_le_bytes());
         request.extend_from_slice(&iters.to_le_bytes());
+        request.extend_from_slice(&scenario.payload_bytes.to_le_bytes());
 
         let response = ServiceMessenger::poll(
             &self.control,
@@ -585,11 +692,11 @@ impl Drop for Scenario {
     }
 }
 
-/// Convenience for the threshold test: full spawn -> measure -> shutdown.
-pub async fn run_once(lang: Lang, transport: Transport, warmup: u64, iters: u64) -> LatencyStats {
-    let scenario = start_scenario(lang).await;
-    let stats = scenario.run(transport, warmup, iters).await;
-    scenario.shutdown().await;
+/// Convenience for one-shot measurements: full spawn -> measure -> shutdown.
+pub async fn run_once(scenario: &BenchScenario, warmup: u64, iters: u64) -> LatencyStats {
+    let running = start_scenario(scenario.lang).await;
+    let stats = running.run(scenario, warmup, iters).await;
+    running.shutdown().await;
     stats
 }
 
@@ -610,6 +717,14 @@ use peppylib::types::Payload;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// A roundtrip payload: `len` bytes (min 8) with the sequence number in the
+/// first 8 so stale pongs are recognizable without comparing whole buffers.
+fn seq_payload(seq: u64, len: u64) -> Vec<u8> {
+    let mut buf = vec![0u8; (len as usize).max(8)];
+    buf[..8].copy_from_slice(&seq.to_le_bytes());
+    buf
+}
+
 const TAG: &str = "v1";
 const CORE: &str = "bench_core";
 const DRIVER_NODE: &str = "driver";
@@ -626,15 +741,15 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     sorted[idx]
 }
 
-fn encode_stats(mut samples: Vec<u64>) -> Payload {
+fn encode_stats(mut samples: Vec<u64>, shm_used: bool) -> Payload {
     samples.sort_unstable();
     let count = samples.len() as u64;
     let total: u64 = samples.iter().sum();
     let p50 = percentile(&samples, 0.50);
     let p90 = percentile(&samples, 0.90);
     let mean = if count == 0 { 0 } else { total / count };
-    let mut out = Vec::with_capacity(40);
-    for value in [total, p50, p90, mean, count] {
+    let mut out = Vec::with_capacity(48);
+    for value in [total, p50, p90, mean, count, shm_used as u64] {
         out.extend_from_slice(&value.to_le_bytes());
     }
     Payload::from(out)
@@ -646,13 +761,15 @@ async fn run_service(
     inst: &str,
     warmup: u64,
     iters: u64,
-) -> Result<Vec<u64>> {
+    payload_len: u64,
+) -> Result<(Vec<u64>, bool)> {
     let messenger = node_runner.messenger();
     let mut samples = Vec::with_capacity(iters as usize);
+    let mut shm_used = false;
     for i in 0..(warmup + iters) {
-        let payload = Payload::from(i.to_le_bytes().to_vec());
+        let payload = Payload::from(seq_payload(i, payload_len));
         let start = Instant::now();
-        let _ = ServiceMessenger::poll(
+        let response = ServiceMessenger::poll(
             messenger,
             core,
             inst,
@@ -666,9 +783,36 @@ async fn run_service(
         .await?;
         if i >= warmup {
             samples.push(start.elapsed().as_nanos() as u64);
+            shm_used = response.payload_is_shm_backed();
         }
     }
-    Ok(samples)
+    Ok((samples, shm_used))
+}
+
+enum Pong {
+    Matched { shm: bool },
+    Closed,
+    TimedOut,
+}
+
+/// Awaits the pong matching `seq` (first 8 payload bytes; whole-buffer
+/// compares would distort 1 MiB roundtrips).
+async fn await_pong(sub: &mut Subscription, seq: u64) -> Pong {
+    loop {
+        match tokio::time::timeout(PONG_TIMEOUT, sub.on_next_message()).await {
+            Ok(Some(msg)) => {
+                let payload = msg.payload();
+                if payload.len() >= 8 && payload[..8] == seq.to_le_bytes() {
+                    return Pong::Matched {
+                        shm: msg.payload_is_shm_backed(),
+                    };
+                }
+                // Stale pong from an earlier seq; keep draining.
+            }
+            Ok(None) => return Pong::Closed,
+            Err(_) => return Pong::TimedOut,
+        }
+    }
 }
 
 async fn run_topic(
@@ -678,11 +822,13 @@ async fn run_topic(
     sub: &mut Subscription,
     warmup: u64,
     iters: u64,
-) -> Result<Vec<u64>> {
+    payload_len: u64,
+) -> Result<(Vec<u64>, bool)> {
     let messenger = node_runner.messenger();
     let mut samples = Vec::with_capacity(iters as usize);
+    let mut shm_used = false;
     for i in 0..(warmup + iters) {
-        let payload = Payload::from(i.to_le_bytes().to_vec());
+        let payload = Payload::from(seq_payload(i, payload_len));
         let mut start = Instant::now();
         TopicMessenger::emit(
             messenger,
@@ -695,15 +841,16 @@ async fn run_topic(
         )
         .await?;
         loop {
-            match tokio::time::timeout(PONG_TIMEOUT, sub.on_next_message()).await {
-                Ok(Some(msg)) => {
-                    if msg.payload().as_ref() == i.to_le_bytes().as_slice() {
-                        break;
+            match await_pong(sub, i).await {
+                Pong::Matched { shm } => {
+                    if i >= warmup {
+                        samples.push(start.elapsed().as_nanos() as u64);
+                        shm_used = shm;
                     }
-                    // Stale pong from an earlier seq; keep draining.
+                    break;
                 }
-                Ok(None) => return Ok(samples),
-                Err(_) => {
+                Pong::Closed => return Ok((samples, shm_used)),
+                Pong::TimedOut => {
                     // Lost ping (warmup-phase propagation): re-emit, reset clock.
                     start = Instant::now();
                     TopicMessenger::emit(
@@ -719,11 +866,67 @@ async fn run_topic(
                 }
             }
         }
-        if i >= warmup {
-            samples.push(start.elapsed().as_nanos() as u64);
+    }
+    Ok((samples, shm_used))
+}
+
+/// The zero-copy variant: a pre-bound publisher hands out loaned buffers the
+/// driver fills in place. With shared memory on, the publish never copies the
+/// payload again; with it off, the identical code runs over heap loans.
+async fn run_topic_loaned(
+    node_runner: &peppygen::NodeRunner,
+    core: &str,
+    inst: &str,
+    sub: &mut Subscription,
+    warmup: u64,
+    iters: u64,
+    payload_len: u64,
+) -> Result<(Vec<u64>, bool)> {
+    let publisher = TopicMessenger::declare_publisher(
+        node_runner.messenger(),
+        core,
+        inst,
+        SenderTarget::node(DRIVER_NODE, TAG)?,
+        None,
+        "ping",
+        QoSProfile::Reliable,
+    )
+    .await?;
+    let mut samples = Vec::with_capacity(iters as usize);
+    let mut shm_used = false;
+    for i in 0..(warmup + iters) {
+        // The loan is taken and filled OUTSIDE the clock, mirroring the plain
+        // variant whose payload is also built before the clock starts: both
+        // scenarios measure publish-to-delivery, not frame production.
+        let mut loan = publisher.loan((payload_len as usize).max(8));
+        // The driver's own publish leg is what this scenario varies, so its
+        // tier feeds the shm flag too — a driver-side-only degradation must
+        // not report as zero-copy just because the pongs still arrive in SHM.
+        let loan_shm = loan.is_shm();
+        loan[..8].copy_from_slice(&i.to_le_bytes());
+        let mut start = Instant::now();
+        publisher.publish_loaned(loan).await?;
+        loop {
+            match await_pong(sub, i).await {
+                Pong::Matched { shm } => {
+                    if i >= warmup {
+                        samples.push(start.elapsed().as_nanos() as u64);
+                        shm_used = shm && loan_shm;
+                    }
+                    break;
+                }
+                Pong::Closed => return Ok((samples, shm_used)),
+                Pong::TimedOut => {
+                    // Lost ping: re-loan, re-publish, reset clock.
+                    start = Instant::now();
+                    let mut loan = publisher.loan((payload_len as usize).max(8));
+                    loan[..8].copy_from_slice(&i.to_le_bytes());
+                    publisher.publish_loaned(loan).await?;
+                }
+            }
         }
     }
-    Ok(samples)
+    Ok((samples, shm_used))
 }
 
 fn main() -> Result<()> {
@@ -773,20 +976,37 @@ fn main() -> Result<()> {
                         let transport = bytes[0];
                         let warmup = u64::from_le_bytes(bytes[1..9].try_into().unwrap());
                         let iters = u64::from_le_bytes(bytes[9..17].try_into().unwrap());
-                        let samples = if transport == 0 {
-                            let mut sub = pong_slot
-                                .lock()
-                                .unwrap()
-                                .take()
-                                .expect("pong subscription present");
-                            let result =
-                                run_topic(&runner, &core, &inst, &mut sub, warmup, iters).await;
-                            *pong_slot.lock().unwrap() = Some(sub);
-                            result?
-                        } else {
-                            run_service(&runner, &core, &inst, warmup, iters).await?
+                        let payload_len = u64::from_le_bytes(bytes[17..25].try_into().unwrap());
+                        let (samples, shm_used) = match transport {
+                            0 | 2 => {
+                                let mut sub = pong_slot
+                                    .lock()
+                                    .unwrap()
+                                    .take()
+                                    .expect("pong subscription present");
+                                let result = if transport == 0 {
+                                    run_topic(
+                                        &runner, &core, &inst, &mut sub, warmup, iters,
+                                        payload_len,
+                                    )
+                                    .await
+                                } else {
+                                    run_topic_loaned(
+                                        &runner, &core, &inst, &mut sub, warmup, iters,
+                                        payload_len,
+                                    )
+                                    .await
+                                };
+                                *pong_slot.lock().unwrap() = Some(sub);
+                                result?
+                            }
+                            1 => {
+                                run_service(&runner, &core, &inst, warmup, iters, payload_len)
+                                    .await?
+                            }
+                            other => panic!("unknown bench transport tag {other}"),
                         };
-                        Ok(encode_stats(samples))
+                        Ok(encode_stats(samples, shm_used))
                     }
                 })
                 .await;
@@ -828,7 +1048,7 @@ fn main() -> Result<()> {
                 .await
                 .expect("listen echo");
                 let _ = endpoint
-                    .handle_requests(|req| async move { Ok(req.message().payload().clone()) })
+                    .handle_requests(|req| async move { Ok(req.message().payload().to_owned()) })
                     .await;
             });
         }
@@ -860,7 +1080,7 @@ fn main() -> Result<()> {
                         SenderTarget::node(RESPONDER_NODE, TAG).expect("responder target"),
                         "pong",
                         QoSProfile::Reliable,
-                        msg.payload().clone(),
+                        msg.payload().to_owned(),
                     )
                     .await;
                 }

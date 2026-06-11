@@ -86,19 +86,20 @@ fn reclaim_stale_test_tmp(root: &Path) {
 
 pub const TEST_NODE_TAG: &str = "v1";
 
-/// Re-exported so the communication test files can name the messaging mode for
-/// their `#[case]` parameterization without reaching into the internal path.
-pub use config::peppy_config::Mode;
+/// Re-exported so the communication test files can name the transport profile
+/// for their `#[case]` parameterization without reaching into the internal path.
+pub use config::peppy_config::TransportProfile;
 
-/// Applies a messaging mode to a node's runtime config before it is written and
-/// handed to a spawned node. This is the single seam the dual-mode communication
-/// tests use to run the same body under both peer (gossip on) and router (gossip
-/// off) mode without duplicating the body.
-pub fn apply_mode(
+/// Applies a transport profile (routing mode + shm knob) to a node's runtime
+/// config before it is written and handed to a spawned node. This is the
+/// single seam the transport-matrix communication tests use to run the same
+/// body under all four peer/router × shm legs without duplicating the body.
+pub fn apply_profile(
     mut config: config::runtime::RuntimeConfig,
-    mode: Mode,
+    profile: TransportProfile,
 ) -> config::runtime::RuntimeConfig {
-    config.discovery.gossip = mode.gossip();
+    config.discovery.gossip = profile.gossip();
+    config.discovery.shm = profile.shm;
     config
 }
 

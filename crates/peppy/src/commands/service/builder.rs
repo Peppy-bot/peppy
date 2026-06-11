@@ -79,7 +79,7 @@ impl ServeCommandBuilder {
                     ZenohNetProtocol::Tcp,
                     "0.0.0.0",
                     listening_port,
-                    self.peppy_config.mode.gossip(),
+                    self.peppy_config.transport_profile(),
                     buffer_sizes,
                 )?
                 .with_session_reconnect();

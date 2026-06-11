@@ -648,7 +648,7 @@ impl ActionMessenger {
             .map_err(|err| Self::map_result_error(err, &action_name))?;
         let instance_id = message.instance_id().to_string();
         let core_node = message.core_node().to_string();
-        let wire = message.payload().into_inner();
+        let wire = message.payload().to_owned().into_inner();
         let (status, _) = unwrap_result_outcome(wire.as_ref())?;
         // `wire` is non-empty (unwrap_result_outcome guarantees it), so slicing
         // off the 1-byte tag is a zero-copy view of the same `Bytes`.
@@ -929,8 +929,8 @@ enum ResultAct {
 
 /// Extract the `goal_id` carried by a cancel/result request payload (the same
 /// length-prefixed envelope goals use, with an empty body).
-fn goal_id_from_request(payload: &Payload) -> Result<String> {
-    let (goal_id, _) = unwrap_goal_payload(payload.as_ref())?;
+fn goal_id_from_request(payload: &[u8]) -> Result<String> {
+    let (goal_id, _) = unwrap_goal_payload(payload)?;
     Ok(goal_id.to_string())
 }
 
@@ -1261,7 +1261,7 @@ impl ConcurrentAction {
         let link_id = context.link_id().to_string();
         let core_node = context.message().core_node().to_string();
         let instance_id = context.message().instance_id().to_string();
-        let wire = context.message().payload().into_inner();
+        let wire = context.message().payload().to_owned().into_inner();
 
         let (goal_id, request_bytes, feedback) = if self.has_feedback {
             // Declares the per-goal feedback publisher and strips the envelope.

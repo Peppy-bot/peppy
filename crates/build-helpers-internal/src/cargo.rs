@@ -97,7 +97,28 @@ pub fn cargo_install_binary(
     target: &str,
     cache_dir: &Path,
 ) -> Option<PathBuf> {
-    cargo_install_binary_with(Path::new("cargo"), name, version, target, cache_dir)
+    cargo_install_binary_with(Path::new("cargo"), name, version, target, cache_dir, &[])
+}
+
+/// Like [`cargo_install_binary`] but with cargo features enabled on the
+/// installed crate. The cache key gains a `+feature` fingerprint so
+/// differently-featured builds of the same tool coexist in one cache dir
+/// (e.g. `zenohd+shared-memory-1.9.0-<target>`).
+pub fn cargo_install_binary_with_features(
+    name: &str,
+    version: &str,
+    target: &str,
+    cache_dir: &Path,
+    features: &[&str],
+) -> Option<PathBuf> {
+    cargo_install_binary_with(
+        Path::new("cargo"),
+        name,
+        version,
+        target,
+        cache_dir,
+        features,
+    )
 }
 
 /// Implementation of [`cargo_install_binary`] with the cargo executable made
@@ -108,13 +129,22 @@ fn cargo_install_binary_with(
     version: &str,
     target: &str,
     cache_dir: &Path,
+    features: &[&str],
 ) -> Option<PathBuf> {
     fn use_cached(name: &str, cached_binary: PathBuf) -> Option<PathBuf> {
         println!("cargo:warning=Using cached {name} binary from {cached_binary:?}");
         Some(cached_binary)
     }
 
-    let cached_binary = cache_dir.join(format!("{name}-{version}-{target}"));
+    // Featureless builds keep the historical `{name}-{version}-{target}` key;
+    // featured builds append `+feature` markers to the name so they never
+    // shadow (or get shadowed by) a default-features build.
+    let cache_name = if features.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}+{}", features.join("+"))
+    };
+    let cached_binary = cache_dir.join(format!("{cache_name}-{version}-{target}"));
 
     if cached_binary.exists() {
         return use_cached(name, cached_binary);
@@ -150,6 +180,9 @@ fn cargo_install_binary_with(
     cmd.args(["install", &crate_spec, "--target", target, "--root"])
         .arg(&install_root)
         .env("CARGO_TARGET_DIR", &cargo_target_dir);
+    if !features.is_empty() {
+        cmd.args(["--features", &features.join(",")]);
+    }
 
     let label = format!("cargo-install-{name}");
     let output = run_command_streaming(&mut cmd, &label);
@@ -170,7 +203,7 @@ fn cargo_install_binary_with(
     // so the lock-free fast path above never observes a torn binary. The
     // fixed staging name cannot collide — staging only happens under the
     // lock — and a leftover from a killed build is truncated by the copy.
-    let staged = cache_dir.join(format!("{name}-{version}-{target}.tmp"));
+    let staged = cache_dir.join(format!("{cache_name}-{version}-{target}.tmp"));
     let published = std::fs::copy(&built_binary, &staged)
         .and_then(|_| std::fs::rename(&staged, &cached_binary));
     if let Err(e) = published {
@@ -244,7 +277,8 @@ mod tests {
                 "mytool",
                 "1.0.0",
                 "x86_64-unknown-linux-gnu",
-                dir.path()
+                dir.path(),
+                &[]
             ),
             Some(cached)
         );
@@ -295,7 +329,8 @@ printf fake-binary > "$root/bin/mytool""#,
         );
         let cache = temp_cache_dir(dir.path());
 
-        let result = cargo_install_binary_with(&script, "mytool", "1.0.0", "test-target", &cache);
+        let result =
+            cargo_install_binary_with(&script, "mytool", "1.0.0", "test-target", &cache, &[]);
 
         let cached = cache.join("mytool-1.0.0-test-target");
         assert_eq!(result, Some(cached.clone()));
@@ -312,7 +347,7 @@ printf fake-binary > "$root/bin/mytool""#,
         let cache = temp_cache_dir(dir.path());
 
         assert_eq!(
-            cargo_install_binary_with(&script, "mytool", "1.0.0", "test-target", &cache),
+            cargo_install_binary_with(&script, "mytool", "1.0.0", "test-target", &cache, &[]),
             None
         );
         assert!(!cache.join("mytool-install-tmp").exists());

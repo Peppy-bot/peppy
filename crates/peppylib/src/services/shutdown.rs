@@ -61,7 +61,8 @@ async fn handle_shutdown_request_inner(
     shutdown_tx: ShutdownSender,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
+    // Owned echo of the request payload: the reply outlives the message.
+    let payload = context.message().payload().to_owned();
 
     debug!("Received `shutdown` request from {sender_instance_id}");
 

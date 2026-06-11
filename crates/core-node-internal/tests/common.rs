@@ -1691,15 +1691,16 @@ pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
     .await
 }
 
-/// Convenience wrapper over [`start_core_node_with_real_messenger_in_mode`] with
-/// the default timeouts, for the dual-mode e2e tests parameterized over the mode.
-pub async fn start_core_node_with_real_messenger_mode(
-    mode: config::peppy_config::Mode,
+/// Convenience wrapper over [`start_core_node_with_real_messenger_in_mode`]
+/// with the default timeouts, for the transport-matrix e2e tests
+/// parameterized over the [`TransportProfile`](config::peppy_config::TransportProfile).
+pub async fn start_core_node_with_real_messenger_profile(
+    profile: config::peppy_config::TransportProfile,
 ) -> StartedCoreNode {
     start_core_node_with_real_messenger_in_mode(
         Duration::from_secs(10),
         Duration::from_secs(30),
-        mode,
+        profile,
     )
     .await
 }
@@ -1711,25 +1712,26 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
     start_core_node_with_real_messenger_in_mode(
         node_startup_timeout,
         node_start_health_timeout,
-        config::peppy_config::Mode::Peer,
+        config::peppy_config::TransportProfile::default(),
     )
     .await
 }
 
-/// Like [`start_core_node_with_real_messenger_and_timeouts`] but the messaging
-/// `mode` (peer vs router) is explicit. The core node's own session is built in
-/// that mode, and its `PeppyConfig` carries it so spawned nodes are injected with
-/// the same mode (faithful to production). Used by the dual-mode e2e tests.
+/// Like [`start_core_node_with_real_messenger_and_timeouts`] but the transport
+/// profile (peer vs router routing, shm on/off) is explicit. The core node's
+/// own session is built with that profile, and its `PeppyConfig` carries it so
+/// spawned nodes are injected with the same settings (faithful to production).
+/// Used by the transport-matrix e2e tests.
 pub async fn start_core_node_with_real_messenger_in_mode(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
-    mode: config::peppy_config::Mode,
+    profile: config::peppy_config::TransportProfile,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let mut instance = pmi::ZenohAdapter::start_router_ephemeral_in_mode(
         DEFAULT_MESSAGING_HOST,
         None,
-        mode.gossip(),
+        profile,
         pmi::SubscriberBufferSizes::default(),
     )
     .await
@@ -1744,7 +1746,8 @@ pub async fn start_core_node_with_real_messenger_in_mode(
     args.node_startup_timeout = node_startup_timeout;
     args.node_start_health_timeout = node_start_health_timeout;
     let peppy_config = config::peppy_config::PeppyConfig {
-        mode,
+        mode: profile.mode,
+        shm: profile.shm,
         ..Default::default()
     };
     start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs, peppy_config).await

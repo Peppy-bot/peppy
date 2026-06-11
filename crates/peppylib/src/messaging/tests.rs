@@ -1783,7 +1783,7 @@ async fn service_handle_request_processes_multiple_messages() {
                     let call_count = Arc::clone(&call_count);
                     async move {
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(request.message().payload())
+                        Ok(request.message().payload().to_owned())
                     }
                 }) => result,
                 _ = shutdown_rx => Ok(()),
@@ -1893,7 +1893,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                     .spawn_next_request_handler(move |request| async move {
                         assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(request.message().payload())
+                        Ok(request.message().payload().to_owned())
                     })
                     .await
                     .expect("service should receive expected number of requests")
@@ -2072,7 +2072,7 @@ async fn action_communication_no_instance_id_target() {
                 let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
                 async move {
                     let declared = factory
-                        .declare_from_wire("_", request.message().payload().into_inner())
+                        .declare_from_wire("_", request.message().payload().to_owned().into_inner())
                         .await
                         .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
@@ -2316,7 +2316,7 @@ async fn action_communication_with_instance_id_target() {
                 let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
                 async move {
                     let declared = factory
-                        .declare_from_wire("_", request.message().payload().into_inner())
+                        .declare_from_wire("_", request.message().payload().to_owned().into_inner())
                         .await
                         .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
@@ -2518,7 +2518,7 @@ async fn action_communication_goal_cancelled() {
                 let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
                 async move {
                     let declared = factory
-                        .declare_from_wire("_", request.message().payload().into_inner())
+                        .declare_from_wire("_", request.message().payload().to_owned().into_inner())
                         .await
                         .expect("declare from wire");
                     assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
@@ -2789,7 +2789,10 @@ async fn single_action_communication_multiple_polls() {
 
                         async move {
                             let declared = factory
-                                .declare_from_wire("_", request.message().payload().into_inner())
+                                .declare_from_wire(
+                                    "_",
+                                    request.message().payload().to_owned().into_inner(),
+                                )
                                 .await
                                 .expect("declare from wire");
                             let payload_str = std::str::from_utf8(&declared.user_payload)

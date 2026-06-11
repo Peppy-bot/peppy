@@ -31,6 +31,9 @@ pub use pmi::{
     ActionWireSender, InterfaceIdentifier, NodeIdentifier, SenderTarget, SenderTargetError,
     ServiceKind,
 };
+// The writable loaned publish buffer — surfaced at the crate root too, next
+// to `Payload`, since it is part of the publish API.
+pub use pmi::LoanedPayload;
 
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
@@ -267,9 +270,9 @@ impl MessengerHandle {
 
     /// Like [`from_host_port_reconnecting`](Self::from_host_port_reconnecting)
     /// but applies the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig):
-    /// an explicit gossip seed list (falling back to `host:port`) and the gossip
-    /// toggle. Used by the node runtime so peers form direct links per the
-    /// daemon-supplied discovery settings.
+    /// an explicit gossip seed list (falling back to `host:port`), the gossip
+    /// toggle, and the shared-memory toggle. Used by the node runtime so peers
+    /// form direct links per the daemon-supplied discovery settings.
     pub async fn from_host_port_reconnecting_with_discovery(
         host: &str,
         port: u16,
@@ -282,6 +285,7 @@ impl MessengerHandle {
             port,
             discovery.seed_peers.clone(),
             discovery.gossip,
+            discovery.shm,
             buffer_sizes,
         )?
         .with_session_reconnect();

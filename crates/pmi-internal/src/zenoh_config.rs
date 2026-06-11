@@ -47,6 +47,13 @@ pub(crate) struct ZenohConfigSpec {
     /// Enable gossip scouting so peers sharing a seed discover each other and
     /// form direct links. Multicast scouting is always off (see module docs).
     pub gossip: bool,
+    /// Announce shared-memory support so co-located sessions exchange payloads
+    /// through `/dev/shm` instead of the network stack. Emitted EXPLICITLY in
+    /// both states: with the `shared-memory` cargo feature compiled in, zenoh's
+    /// own config default is enabled-with-transport-optimization, so omitting
+    /// the block would silently turn SHM on. See [`build_zenoh_config`] for why
+    /// zenoh's `transport_optimization` is always disabled.
+    pub shared_memory: bool,
 }
 
 /// Builds the JSON5-equivalent config value for a session or the router.
@@ -62,6 +69,22 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
         "scouting": {
             "multicast": { "enabled": false },
             "gossip": { "enabled": spec.gossip }
+        },
+        // Shared memory is negotiated per link at session open (an SHM
+        // challenge segment the peer must physically map), so `enabled: true`
+        // only takes effect between genuinely co-located sessions; everything
+        // else transparently stays on the network path. zenoh's own
+        // `transport_optimization` (implicit copy-into-SHM of large messages
+        // at the transport layer, with a second lazy 16 MiB arena per session)
+        // is always off: the adapter owns SHM placement — its explicit
+        // provider, threshold, and loan API — so the memory budget stays one
+        // segment per session and sub-threshold payloads deterministically
+        // take the heap path.
+        "transport": {
+            "shared_memory": {
+                "enabled": spec.shared_memory,
+                "transport_optimization": { "enabled": false }
+            }
         }
     });
 
@@ -145,6 +168,9 @@ pub(crate) fn render_probe_config(
         listen_endpoints: Vec::new(),
         reconnect: false,
         gossip: false,
+        // A liveness probe exchanges no payloads; announcing SHM would only
+        // add the per-link negotiation handshake for nothing.
+        shared_memory: false,
     })
 }
 
@@ -167,7 +193,33 @@ mod tests {
             listen_endpoints: vec![loopback_listen_endpoint(ZenohNetProtocol::Tcp)],
             reconnect,
             gossip,
+            shared_memory: true,
         }
+    }
+
+    /// Both states must be EXPLICIT in the emitted config: with the
+    /// `shared-memory` cargo feature compiled in, zenoh's own default is
+    /// enabled, so an omitted block would silently turn SHM on. And zenoh's
+    /// transport-level optimization (its own implicit copy-into-SHM with a
+    /// second 16 MiB arena) must stay off in both states — the adapter owns
+    /// SHM placement.
+    #[test]
+    fn shared_memory_block_is_explicit_in_both_states() {
+        let on = build_zenoh_config(&peer_spec(false, true));
+        assert_eq!(on["transport"]["shared_memory"]["enabled"], true);
+        assert_eq!(
+            on["transport"]["shared_memory"]["transport_optimization"]["enabled"],
+            false
+        );
+
+        let mut spec = peer_spec(false, true);
+        spec.shared_memory = false;
+        let off = build_zenoh_config(&spec);
+        assert_eq!(off["transport"]["shared_memory"]["enabled"], false);
+        assert_eq!(
+            off["transport"]["shared_memory"]["transport_optimization"]["enabled"],
+            false
+        );
     }
 
     #[test]
@@ -216,10 +268,13 @@ mod tests {
             listen_endpoints: Vec::new(),
             reconnect: false,
             gossip: false,
+            shared_memory: false,
         });
 
         assert_eq!(cfg["mode"], "client");
         assert_eq!(cfg["scouting"]["multicast"]["enabled"], false);
+        // The probe shape announces no SHM.
+        assert_eq!(cfg["transport"]["shared_memory"]["enabled"], false);
         // A client stamps under its own role so its outgoing data carries a
         // source timestamp without depending on the router to add one.
         assert_eq!(cfg["timestamping"]["enabled"]["client"], true);
@@ -239,6 +294,7 @@ mod tests {
             listen_endpoints: vec!["tcp/127.0.0.1:0".to_string()],
             reconnect: false,
             gossip: false,
+            shared_memory: false,
         });
 
         assert_eq!(cfg["mode"], "client");
@@ -254,9 +310,13 @@ mod tests {
             listen_endpoints: vec!["tcp/0.0.0.0:7448".to_string()],
             reconnect: false,
             gossip: true,
+            shared_memory: true,
         });
 
         assert_eq!(cfg["mode"], "router");
+        // router+shm: zenohd sits in the data path, so its config enables SHM
+        // too — without this the relay hop silently degrades to TCP.
+        assert_eq!(cfg["transport"]["shared_memory"]["enabled"], true);
         assert_eq!(cfg["listen"]["endpoints"]["router"][0], "tcp/0.0.0.0:7448");
         assert_eq!(cfg["timestamping"]["enabled"]["router"], true);
         assert_eq!(cfg["timestamping"]["drop_future_timestamp"], false);

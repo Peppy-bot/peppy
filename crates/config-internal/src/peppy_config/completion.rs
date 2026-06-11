@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use super::{
     DAEMON_GRACE_FIELD_SNIPPET, HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET,
-    MODE_SECTION_SNIPPET, PEER_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET,
+    MODE_SECTION_SNIPPET, PEER_SECTION_SNIPPET, SHM_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET,
     STANDARD_BUFFER_FIELD_SNIPPET,
 };
 
@@ -77,6 +77,11 @@ const SECTIONS: &[SectionSpec] = &[
                 snippet: SHUTDOWN_GRACE_FIELD_SNIPPET,
             },
         ],
+    },
+    SectionSpec {
+        key: "shm",
+        snippet: SHM_SECTION_SNIPPET,
+        fields: &[],
     },
 ];
 
@@ -493,7 +498,7 @@ mod tests {
     fn empty_object_gains_every_section() {
         let completed = complete_config_content("{}").expect("everything is missing");
         assert_eq!(parse(&completed), PeppyConfig::default());
-        for key in ["mode:", "peer:", "lifecycle:"] {
+        for key in ["mode:", "peer:", "lifecycle:", "shm:"] {
             assert!(completed.contains(key), "expected {key} in:\n{completed}");
         }
         // A completed file needs no further completion.
@@ -558,7 +563,7 @@ mod tests {
 }
 // trailing remark
 "#;
-        let completed = complete_config_content(content).expect("peer and lifecycle missing");
+        let completed = complete_config_content(content).expect("peer, lifecycle and shm missing");
         parse(&completed);
 
         // Pin the exact splice: the missing sections go in front of the root's
@@ -567,10 +572,11 @@ mod tests {
         // byte of the user's file untouched.
         let close = content.rfind('}').unwrap();
         let expected = format!(
-            "{}\n{}\n{}{}",
+            "{}\n{}\n{}\n{}{}",
             &content[..close],
             super::super::PEER_SECTION_SNIPPET,
             super::super::LIFECYCLE_SECTION_SNIPPET,
+            super::super::SHM_SECTION_SNIPPET,
             &content[close..]
         );
         assert_eq!(completed, expected);

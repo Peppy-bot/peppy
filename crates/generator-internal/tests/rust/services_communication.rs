@@ -89,10 +89,14 @@ const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 "#;
 
 #[rstest::rstest]
-#[case::peer(crate::helpers::Mode::Peer)]
-#[case::router(crate::helpers::Mode::Router)]
+#[case::peer_shm(crate::helpers::TransportProfile::PEER_SHM)]
+#[case::router_shm(crate::helpers::TransportProfile::ROUTER_SHM)]
+#[case::peer_no_shm(crate::helpers::TransportProfile::PEER_NO_SHM)]
+#[case::router_no_shm(crate::helpers::TransportProfile::ROUTER_NO_SHM)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_no_target_instance_id(#[case] mode: crate::helpers::Mode) {
+async fn services_communication_no_target_instance_id(
+    #[case] profile: crate::helpers::TransportProfile,
+) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -137,7 +141,7 @@ async fn services_communication_no_target_instance_id(#[case] mode: crate::helpe
         TEST_CORE_NODE,
     )
     .unwrap();
-    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
+    let consumer_runtime_config = crate::helpers::apply_profile(consumer_runtime_config, profile);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -199,7 +203,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
-    let exposer_runtime_config = crate::helpers::apply_mode(exposer_runtime_config, mode);
+    let exposer_runtime_config = crate::helpers::apply_profile(exposer_runtime_config, profile);
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
@@ -388,11 +392,13 @@ fn main() -> Result<()> {
 }
 
 #[rstest::rstest]
-#[case::peer(crate::helpers::Mode::Peer)]
-#[case::router(crate::helpers::Mode::Router)]
+#[case::peer_shm(crate::helpers::TransportProfile::PEER_SHM)]
+#[case::router_shm(crate::helpers::TransportProfile::ROUTER_SHM)]
+#[case::peer_no_shm(crate::helpers::TransportProfile::PEER_NO_SHM)]
+#[case::router_no_shm(crate::helpers::TransportProfile::ROUTER_NO_SHM)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_exposed_service_without_request_body(
-    #[case] mode: crate::helpers::Mode,
+    #[case] profile: crate::helpers::TransportProfile,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -438,7 +444,7 @@ async fn services_communication_exposed_service_without_request_body(
         TEST_CORE_NODE,
     )
     .unwrap();
-    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
+    let consumer_runtime_config = crate::helpers::apply_profile(consumer_runtime_config, profile);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -497,7 +503,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
-    let exposer_runtime_config = crate::helpers::apply_mode(exposer_runtime_config, mode);
+    let exposer_runtime_config = crate::helpers::apply_profile(exposer_runtime_config, profile);
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
@@ -677,11 +683,13 @@ fn main() -> Result<()> {
 
 /// If there are multiple services of the same name and the consumer does not specify an instance_id, it's the first service that respond that connects with the consumer
 #[rstest::rstest]
-#[case::peer(crate::helpers::Mode::Peer)]
-#[case::router(crate::helpers::Mode::Router)]
+#[case::peer_shm(crate::helpers::TransportProfile::PEER_SHM)]
+#[case::router_shm(crate::helpers::TransportProfile::ROUTER_SHM)]
+#[case::peer_no_shm(crate::helpers::TransportProfile::PEER_NO_SHM)]
+#[case::router_no_shm(crate::helpers::TransportProfile::ROUTER_NO_SHM)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_multiple_exposed_instances_same_service_no_target_instance_id(
-    #[case] mode: crate::helpers::Mode,
+    #[case] profile: crate::helpers::TransportProfile,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -727,7 +735,7 @@ async fn services_communication_multiple_exposed_instances_same_service_no_targe
         TEST_CORE_NODE,
     )
     .unwrap();
-    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
+    let consumer_runtime_config = crate::helpers::apply_profile(consumer_runtime_config, profile);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -788,7 +796,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
-    let exposer1_runtime_config = crate::helpers::apply_mode(exposer1_runtime_config, mode);
+    let exposer1_runtime_config = crate::helpers::apply_profile(exposer1_runtime_config, profile);
     let exposer1_runtime_config_path = temp_dir_exposer1.path().join("peppy_runtime.json5");
     exposer1_runtime_config
         .save_json5_launch_config(&exposer1_runtime_config_path)
@@ -849,7 +857,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
-    let exposer2_runtime_config = crate::helpers::apply_mode(exposer2_runtime_config, mode);
+    let exposer2_runtime_config = crate::helpers::apply_profile(exposer2_runtime_config, profile);
     let exposer2_runtime_config_path = temp_dir_exposer2.path().join("peppy_runtime.json5");
     exposer2_runtime_config
         .save_json5_launch_config(&exposer2_runtime_config_path)

@@ -16,7 +16,8 @@
 //! `latency.yml` workflow. Run locally with:
 //!     cargo test -p core-node --test latency -- --ignored --test-threads 1
 //!
-//! Ceilings are env-overridable (`PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>`) and
+//! Ceilings are env-overridable (`PEPPY_LATENCY_MAX_MS_<LABEL>` with the
+//! scenario label uppercased and `/`/`-` mapped to `_`) and
 //! the Python scenarios can be skipped where `uv` is unavailable
 //! (`PEPPY_LATENCY_SKIP_PYTHON=1`).
 
@@ -32,7 +33,7 @@ mod helpers;
 
 use std::time::Duration;
 
-use harness::{DEFAULT_SAMPLES, DEFAULT_WARMUP, Lang, Transport, ceiling_ms};
+use harness::{ALL_SCENARIOS, DEFAULT_SAMPLES, DEFAULT_WARMUP, Lang, ceiling_ms};
 
 fn python_skipped() -> bool {
     std::env::var("PEPPY_LATENCY_SKIP_PYTHON").is_ok()
@@ -50,27 +51,24 @@ async fn check_lang(lang: Lang) {
     let scenario = harness::start_scenario(lang).await;
     let mut failures: Vec<String> = Vec::new();
 
-    for transport in [Transport::Topic, Transport::Service] {
-        let stats = scenario
-            .run(transport, DEFAULT_WARMUP, DEFAULT_SAMPLES)
-            .await;
+    for bench in ALL_SCENARIOS.iter().filter(|s| s.lang == lang) {
+        let stats = scenario.run(bench, DEFAULT_WARMUP, DEFAULT_SAMPLES).await;
         let median = stats.p50();
-        let ceiling = Duration::from_millis(ceiling_ms(lang, transport));
+        let ceiling = Duration::from_millis(ceiling_ms(bench));
         eprintln!(
-            "{}/{}: p50={:?} p90={:?} mean={:?} n={} (median ceiling {:?})",
-            lang.as_str(),
-            transport.as_str(),
+            "{}: p50={:?} p90={:?} mean={:?} n={} shm={} (median ceiling {:?})",
+            bench.label,
             median,
             stats.p90(),
             stats.mean(),
             stats.count(),
+            stats.shm_used(),
             ceiling,
         );
         if median > ceiling {
             failures.push(format!(
-                "{}/{} median {median:?} exceeded ceiling {ceiling:?} (p90 {:?})",
-                lang.as_str(),
-                transport.as_str(),
+                "{} median {median:?} exceeded ceiling {ceiling:?} (p90 {:?})",
+                bench.label,
                 stats.p90(),
             ));
         }

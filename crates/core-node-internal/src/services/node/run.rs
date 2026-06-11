@@ -65,6 +65,8 @@ fn drain_quiet_window(is_container: bool) -> Duration {
 pub struct DaemonDefaults {
     /// Daemon-global messaging mode, injected into every spawned node.
     pub messaging_mode: Mode,
+    /// Daemon-global shared-memory knob, injected into every spawned node.
+    pub shm: bool,
     /// Daemon-global peer buffer sizes, injected into every spawned node.
     pub peer_buffer: PeerConfig,
     /// Daemon-liveness grace period (seconds), injected into every spawned node
@@ -79,6 +81,7 @@ impl DaemonDefaults {
     pub fn from_peppy_config(config: &PeppyConfig) -> Self {
         Self {
             messaging_mode: config.mode,
+            shm: config.shm,
             peer_buffer: config.peer,
             daemon_grace_secs: config.lifecycle.daemon_grace_secs,
         }
@@ -110,18 +113,21 @@ pub(crate) struct NodeRunActionContext {
 }
 
 /// Applies the [`DaemonDefaults`] to a node's session config before it is
-/// launched: the messaging mode + peer buffer sizes, and the daemon-resolved
-/// liveness grace period (so the spawned node's watchdog self-terminates if
-/// the daemon dies and stays gone). `container_separate_ns` forces the node
-/// onto the router-relay (client) path even in peer mode, because a container
-/// in a separate network namespace cannot form direct loopback peer links. So
-/// the effective gossip is "peer mode AND not separate-namespace".
+/// launched: the messaging mode + shm knob + peer buffer sizes, and the
+/// daemon-resolved liveness grace period (so the spawned node's watchdog
+/// self-terminates if the daemon dies and stays gone). `container_separate_ns`
+/// forces the node onto the router-relay (client) path even in peer mode,
+/// because a container in a separate network namespace cannot form direct
+/// loopback peer links. So the effective gossip is "peer mode AND not
+/// separate-namespace" — and shared memory is forced off the same way, since
+/// such a container cannot share `/dev/shm` with the host either.
 fn apply_daemon_defaults(
     cfg: &mut RuntimeConfig,
     defaults: DaemonDefaults,
     container_separate_ns: bool,
 ) {
     cfg.discovery.gossip = defaults.messaging_mode.is_peer() && !container_separate_ns;
+    cfg.discovery.shm = defaults.shm && !container_separate_ns;
     cfg.discovery.standard_buffer_size = defaults.peer_buffer.standard_buffer_size;
     cfg.discovery.high_throughput_buffer_size = defaults.peer_buffer.high_throughput_buffer_size;
     cfg.lifecycle.daemon_grace_secs = defaults.daemon_grace_secs;
@@ -1384,11 +1390,12 @@ mod tests {
         .expect("valid test runtime config")
     }
 
-    /// `DaemonDefaults` with the given mode/buffers and an arbitrary
+    /// `DaemonDefaults` with the given mode/buffers, shm on, and an arbitrary
     /// recognizable grace period.
     fn daemon_defaults(mode: Mode, peer: PeerConfig) -> DaemonDefaults {
         DaemonDefaults {
             messaging_mode: mode,
+            shm: true,
             peer_buffer: peer,
             daemon_grace_secs: 123,
         }
@@ -1405,6 +1412,7 @@ mod tests {
             false,
         );
         assert!(cfg.discovery.gossip);
+        assert!(cfg.discovery.shm);
         assert_eq!(cfg.discovery.standard_buffer_size, 128);
         assert_eq!(cfg.discovery.high_throughput_buffer_size, 1024);
     }
@@ -1419,6 +1427,9 @@ mod tests {
             false,
         );
         assert!(!cfg.discovery.gossip);
+        // Router mode does NOT disable shared memory: the two are orthogonal,
+        // and the relay hop through an SHM-enabled zenohd stays zero-copy.
+        assert!(cfg.discovery.shm);
     }
 
     /// A separate-namespace container is forced onto the client path even in
@@ -1435,6 +1446,23 @@ mod tests {
             !cfg.discovery.gossip,
             "separate-namespace container must route through the router"
         );
+        assert!(
+            !cfg.discovery.shm,
+            "separate-namespace container cannot share /dev/shm with the host"
+        );
+    }
+
+    /// The daemon-global `shm: false` knob reaches every spawned node.
+    #[test]
+    fn apply_daemon_defaults_shm_off_disables_shm_for_nodes() {
+        let mut cfg = runtime_config_for_test();
+        let defaults = DaemonDefaults {
+            shm: false,
+            ..daemon_defaults(Mode::Peer, PeerConfig::default())
+        };
+        apply_daemon_defaults(&mut cfg, defaults, false);
+        assert!(cfg.discovery.gossip);
+        assert!(!cfg.discovery.shm);
     }
 
     /// Buffer sizes and the daemon-liveness grace period are applied regardless

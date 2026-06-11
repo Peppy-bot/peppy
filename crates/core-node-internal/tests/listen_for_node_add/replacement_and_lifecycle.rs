@@ -680,7 +680,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                     let called_tx_1 = Arc::clone(&called_tx_1);
                     let allow_shutdown_1_clone = Arc::clone(&allow_shutdown_1_clone);
                     async move {
-                        let payload = context.message().payload();
+                        let payload = context.message().payload().to_owned();
                         if let Some(tx) = called_tx_1.lock().await.take() {
                             let _ = tx.send(());
                         }
@@ -713,7 +713,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                     let called_tx_2 = Arc::clone(&called_tx_2);
                     let allow_shutdown_2_clone = Arc::clone(&allow_shutdown_2_clone);
                     async move {
-                        let payload = context.message().payload();
+                        let payload = context.message().payload().to_owned();
                         if let Some(tx) = called_tx_2.lock().await.take() {
                             let _ = tx.send(());
                         }
@@ -991,7 +991,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
                     let called_tx = Arc::clone(&called_tx);
                     let allow_shutdown_clone = Arc::clone(&allow_shutdown_clone);
                     async move {
-                        let payload = context.message().payload();
+                        let payload = context.message().payload().to_owned();
                         if let Some(tx) = called_tx.lock().await.take() {
                             let _ = tx.send(());
                         }
@@ -1198,7 +1198,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     .expect("failed to expose shutdown service");
     let _shutdown_task = AbortOnDrop(peppylib::runtime::spawn(async move {
         shutdown_endpoint
-            .handle_requests(|context| async move { Ok(context.message().payload()) })
+            .handle_requests(|context| async move { Ok(context.message().payload().to_owned()) })
             .await
     }));
 
@@ -1432,7 +1432,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
             .handle_requests(move |context| {
                 let never_unblock_clone = Arc::clone(&never_unblock_clone);
                 async move {
-                    let payload = context.message().payload();
+                    let payload = context.message().payload().to_owned();
                     // Block forever — the node never acknowledges the shutdown
                     never_unblock_clone.notified().await;
                     Ok(payload)

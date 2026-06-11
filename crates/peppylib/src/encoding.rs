@@ -137,3 +137,59 @@ pub fn decode_message(
     serialize::read_message(data, ReaderOptions::default())
         .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
 }
+
+/// Decode bytes into a Cap'n Proto reader that borrows `data` IN PLACE — no
+/// copy into owned segments. Pair it with the borrowed
+/// [`PayloadView`](crate::types::PayloadView) from `Message::payload()` and a
+/// shared-memory delivery, and the consumer parses typed fields directly out
+/// of the producer's buffer.
+///
+/// Requires `data` to be 8-byte aligned (Cap'n Proto words). Loaned publish
+/// buffers are allocated 8-byte aligned for exactly this, and shared-memory
+/// deliveries preserve that alignment end to end; payloads that traveled the
+/// network path may land unaligned, in which case this returns a
+/// deserialization error — fall back to [`decode_message`], which copies into
+/// aligned owned segments. (The check is done eagerly here: capnp itself
+/// would defer the misalignment failure to the first typed access.)
+pub fn decode_message_in_place(
+    mut data: &[u8],
+) -> Result<capnp::message::Reader<capnp::serialize::BufferSegments<&[u8]>>> {
+    if !(data.as_ptr() as usize).is_multiple_of(8) {
+        return Err(crate::error::Error::Deserialization(
+            "payload is not 8-byte aligned; fall back to decode_message".to_string(),
+        ));
+    }
+    serialize::read_message_from_flat_slice(&mut data, ReaderOptions::default())
+        .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
+}
+
+/// Encode a Cap'n Proto builder straight into a loaned publish buffer from
+/// `publisher`, sized exactly (the serialized size of a finished builder is
+/// known up front). With shared memory on and the message at or above the
+/// publish threshold, the serialized bytes are *born* in the shared-memory
+/// segment and are never copied again:
+///
+/// ```ignore
+/// let loan = encode_message_to_loan(&publisher, &builder)?;
+/// publisher.publish_loaned(loan).await?;
+/// ```
+///
+/// With shared memory off (or a sub-threshold message — most typed control
+/// messages), the loan is a plain heap buffer and this is equivalent to
+/// [`encode_message`] + `publish`.
+pub fn encode_message_to_loan<A: capnp::message::Allocator>(
+    publisher: &crate::messaging::TopicPublisher,
+    message: &Builder<A>,
+) -> Result<crate::messaging::LoanedPayload> {
+    let size_bytes = serialize::compute_serialized_size_in_words(message) * 8;
+    let mut loan = publisher.loan(size_bytes);
+    let mut cursor = &mut loan[..];
+    serialize::write_message(&mut cursor, message)
+        .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
+    let remaining = cursor.len();
+    debug_assert_eq!(remaining, 0, "capnp serialized size is exact");
+    // Defensive: if capnp ever writes less than computed, ship the prefix.
+    let written = size_bytes - remaining;
+    loan.truncate(written);
+    Ok(loan)
+}
