@@ -480,73 +480,6 @@ fn parse_max_locked_memory_soft_limit(line: &str) -> Option<u64> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const PREFIX: &str = "\
-Limit                     Soft Limit           Hard Limit           Units
-Max cpu time              unlimited            unlimited            seconds
-";
-
-    #[test]
-    fn shm_segment_override_uses_soft_memlock_limit_in_bytes() {
-        let limits = format!(
-            "{PREFIX}Max locked memory         {}             {}             bytes\n",
-            8 * 1024 * 1024,
-            64 * 1024 * 1024
-        );
-
-        assert_eq!(
-            shm_segment_override_from_limits(&limits),
-            Some(LARGE_PAYLOAD_BYTES * 2)
-        );
-    }
-
-    #[test]
-    fn shm_segment_override_converts_kb_soft_memlock_limit() {
-        let limits = format!(
-            "{PREFIX}Max locked memory         {}                {}               kB\n",
-            8 * 1024,
-            64 * 1024
-        );
-
-        assert_eq!(
-            shm_segment_override_from_limits(&limits),
-            Some(LARGE_PAYLOAD_BYTES * 2)
-        );
-    }
-
-    #[test]
-    fn shm_segment_override_caps_at_large_payload_double() {
-        let limits = format!(
-            "{PREFIX}Max locked memory         {}            {}            bytes\n",
-            64 * 1024 * 1024,
-            64 * 1024 * 1024
-        );
-
-        assert_eq!(
-            shm_segment_override_from_limits(&limits),
-            Some(LARGE_PAYLOAD_BYTES * 2)
-        );
-    }
-
-    #[test]
-    fn shm_segment_override_skips_unusable_or_unlimited_limits() {
-        let too_small = format!(
-            "{PREFIX}Max locked memory         {}             {}             bytes\n",
-            5 * 1024 * 1024,
-            64 * 1024 * 1024
-        );
-        let unlimited = format!(
-            "{PREFIX}Max locked memory         unlimited            unlimited            bytes\n"
-        );
-
-        assert_eq!(shm_segment_override_from_limits(&too_small), None);
-        assert_eq!(shm_segment_override_from_limits(&unlimited), None);
-    }
-}
-
 fn write_runtime_config(
     cfg_dir: &Path,
     host: &str,
@@ -1246,3 +1179,73 @@ def main():
 if __name__ == "__main__":
     main()
 "####;
+
+#[cfg(test)]
+mod tests {
+    // Used by the test target. The `harness = false` bench `#[path]`-includes this
+    // file too and reports the glob as unused there, so silence it for that build.
+    #[allow(unused_imports)]
+    use super::*;
+
+    const PREFIX: &str = "\
+Limit                     Soft Limit           Hard Limit           Units
+Max cpu time              unlimited            unlimited            seconds
+";
+
+    #[test]
+    fn shm_segment_override_uses_soft_memlock_limit_in_bytes() {
+        let limits = format!(
+            "{PREFIX}Max locked memory         {}             {}             bytes\n",
+            8 * 1024 * 1024,
+            64 * 1024 * 1024
+        );
+
+        assert_eq!(
+            shm_segment_override_from_limits(&limits),
+            Some(LARGE_PAYLOAD_BYTES * 2)
+        );
+    }
+
+    #[test]
+    fn shm_segment_override_converts_kb_soft_memlock_limit() {
+        let limits = format!(
+            "{PREFIX}Max locked memory         {}                {}               kB\n",
+            8 * 1024,
+            64 * 1024
+        );
+
+        assert_eq!(
+            shm_segment_override_from_limits(&limits),
+            Some(LARGE_PAYLOAD_BYTES * 2)
+        );
+    }
+
+    #[test]
+    fn shm_segment_override_caps_at_large_payload_double() {
+        let limits = format!(
+            "{PREFIX}Max locked memory         {}            {}            bytes\n",
+            64 * 1024 * 1024,
+            64 * 1024 * 1024
+        );
+
+        assert_eq!(
+            shm_segment_override_from_limits(&limits),
+            Some(LARGE_PAYLOAD_BYTES * 2)
+        );
+    }
+
+    #[test]
+    fn shm_segment_override_skips_unusable_or_unlimited_limits() {
+        let too_small = format!(
+            "{PREFIX}Max locked memory         {}             {}             bytes\n",
+            5 * 1024 * 1024,
+            64 * 1024 * 1024
+        );
+        let unlimited = format!(
+            "{PREFIX}Max locked memory         unlimited            unlimited            bytes\n"
+        );
+
+        assert_eq!(shm_segment_override_from_limits(&too_small), None);
+        assert_eq!(shm_segment_override_from_limits(&unlimited), None);
+    }
+}

@@ -1,15 +1,19 @@
 //! `peppy stack benchmark` — thin client that drives the `stack_benchmark`
-//! action on the daemon and renders the per-interface latency table.
+//! action on the daemon and renders the per-interface latency report as two
+//! tables, so synthetic plumbing numbers are never read side by side with real
+//! payload numbers:
 //!
-//! What the numbers mean (and don't):
-//! - **service / action** rows are messaging-path *round-trips* carrying a
-//!   real-payload-sized request/response, excluding the handler's own execution
-//!   time. Clock-independent.
-//! - **topic (delivery)** rows are the real producer→consumer one-way latency on
-//!   live traffic. Exact on a single host; cross-host needs PTP or NTP (the row's
-//!   `clock` column says how it was treated).
+//! - **Synthetic probes** (svc-probe / act-probe / node-probe): messaging-path
+//!   *round-trips* carrying schema-sized payloads, excluding any handler
+//!   execution. Clock-independent. A topic edge's node-probe targets the
+//!   producer node's framework, not the topic itself.
+//! - **Real traffic** (delivery): the real producer→consumer one-way latency of
+//!   live topic messages, full payload included. Exact on a single host;
+//!   cross-host needs PTP or NTP (the row's `clock` column says how it was
+//!   treated).
 //!
-//! Benchmarking never triggers a real handler or creates a goal.
+//! Benchmarking never triggers a real handler, never publishes onto a real
+//! topic, and never creates a goal.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -28,8 +32,8 @@ use peppylib::messaging::ResultStatus;
 use tracing::info;
 
 use super::colors::{
-    BINDING_COLOR, MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR, MEASURE_SERVICE_COLOR, NODE_COLOR,
-    paint,
+    BINDING_COLOR, MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR, MEASURE_NODE_COLOR,
+    MEASURE_SERVICE_COLOR, NODE_COLOR, paint,
 };
 use super::table::{render_table, wrap_ansi};
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
@@ -182,17 +186,19 @@ fn measurement_label(kind: MeasurementKind) -> &'static str {
         MeasurementKind::ServiceProbe => "svc-probe",
         MeasurementKind::ActionProbe => "act-probe",
         MeasurementKind::TopicDelivery => "delivery",
+        MeasurementKind::NodeProbe => "node-probe",
     }
 }
 
 /// Distinct color per measurement kind so the `measure` column reads at a glance:
-/// blue service-probe, magenta action-probe, green live delivery. The legend
-/// paints the same labels the same way as a key.
+/// blue service-probe, magenta action-probe, cyan node-probe, green live
+/// delivery. The legend paints the same labels the same way as a key.
 fn measurement_color(kind: MeasurementKind) -> &'static str {
     match kind {
         MeasurementKind::ServiceProbe => MEASURE_SERVICE_COLOR,
         MeasurementKind::ActionProbe => MEASURE_ACTION_COLOR,
         MeasurementKind::TopicDelivery => MEASURE_DELIVERY_COLOR,
+        MeasurementKind::NodeProbe => MEASURE_NODE_COLOR,
     }
 }
 
@@ -250,15 +256,36 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
     let baseline_path = baseline::baseline_path(BASELINE_SUBDIR);
     let previous = baseline::load(&baseline_path);
 
-    let rows = display_rows(&result.rows, &previous, colorize);
+    // Synthetic probes and real-traffic measurements answer different
+    // questions with payloads that can differ by orders of magnitude, so they
+    // render as separate tables instead of adjacent rows inviting comparison.
+    let (synthetic, real): (Vec<&InterfaceLatency>, Vec<&InterfaceLatency>) = result
+        .rows
+        .iter()
+        .partition(|r| r.measurement.is_synthetic_probe());
 
-    println!(
-        "\nInterface latency against the running stack ({} samples/interface)",
-        samples
-    );
-    let mut table = String::new();
-    render_table(&mut table, &BENCHMARK_HEADERS, &[rows]);
-    print!("{table}");
+    if !synthetic.is_empty() {
+        println!(
+            "\nSynthetic probes: handler-free round-trips, schema-sized payloads \
+             ({samples} samples/interface)"
+        );
+        let rows = display_rows(&synthetic, &previous, colorize, ReportTable::Synthetic);
+        let mut table = String::new();
+        render_table(&mut table, &SYNTHETIC_HEADERS, &[rows]);
+        print!("{table}");
+    }
+
+    if !real.is_empty() {
+        println!(
+            "\nReal traffic: observe-only one-way delivery of live topic messages \
+             ({samples} samples/interface)"
+        );
+        let rows = display_rows(&real, &previous, colorize, ReportTable::Real);
+        let mut table = String::new();
+        render_table(&mut table, &REAL_HEADERS, &[rows]);
+        print!("{table}");
+    }
+
     println!("{}", benchmark_legend(colorize));
 
     // Persist this run's stats as the same-machine baseline for the next run's
@@ -279,49 +306,76 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
     baseline::save(&baseline_path, &current);
 }
 
-/// Column headers for the benchmark table.
-const BENCHMARK_HEADERS: [&str; 10] = [
-    "edge", "binding", "measure", "clock", "p50", "p90", "mean", "n", "Δp50", "note",
+/// Which report table rows are being rendered for. The synthetic table shows
+/// the `measure` column (its rows are all clock-independent round-trips, so a
+/// `clock` column would be pure noise); the real-traffic table shows the
+/// `clock` column (its rows are all `delivery`, so a `measure` column would be).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportTable {
+    Synthetic,
+    Real,
+}
+
+/// Column headers for the synthetic-probe table.
+const SYNTHETIC_HEADERS: [&str; 9] = [
+    "edge", "binding", "measure", "p50", "p90", "mean", "n", "Δp50", "note",
 ];
 
-/// Footnote legend beneath the table — one category per block, its variants
+/// Column headers for the real-traffic table.
+const REAL_HEADERS: [&str; 9] = [
+    "edge", "binding", "clock", "p50", "p90", "mean", "n", "Δp50", "note",
+];
+
+/// Footnote legend beneath the tables — one category per block, its variants
 /// aligned on their own lines so a reader can scan each meaning instead of
-/// parsing a run-on sentence. The three `measure` labels are painted in the same
+/// parsing a run-on sentence. The `measure` labels are painted in the same
 /// colors as the `measure` column so the legend doubles as a color key. The
 /// leading `\` swallows the newline after the opening quote so the text starts at
 /// `Legend:`.
 fn benchmark_legend(colorize: bool) -> String {
-    let svc = paint(colorize, MEASURE_SERVICE_COLOR, "svc-probe");
-    let act = paint(colorize, MEASURE_ACTION_COLOR, "act-probe");
-    let delivery = paint(colorize, MEASURE_DELIVERY_COLOR, "delivery ");
+    let svc = paint(colorize, MEASURE_SERVICE_COLOR, "svc-probe ");
+    let act = paint(colorize, MEASURE_ACTION_COLOR, "act-probe ");
+    let node = paint(colorize, MEASURE_NODE_COLOR, "node-probe");
+    let delivery = paint(colorize, MEASURE_DELIVERY_COLOR, "delivery");
     format!(
         "\
 Legend:
   edge       →  direct dependency (depends_on.nodes)
              ➔  resolved through interface conformance (the note names the interface)
-  measure    {svc}  round-trip to a service, real-payload-sized (handler NOT run)
-             {act}  round-trip to an action's goal service (no goal is created)
-             {delivery}  real producer→consumer latency on live traffic
+  synthetic  round-trips on a single clock; the producer's framework replies and
+             handlers never run, with payloads sized from the message schema
+             {svc}  round-trip to the service
+             {act}  round-trip to the action's goal service (no goal is created)
+             {node}  topic edge: round-trip to the producer node's framework,
+                         reply sized from the topic schema (the topic itself is
+                         never published; topic QoS does not apply)
+  real       observe-only: {delivery} is the one-way receive−source latency of the
+             topic's own live messages, full payload included
   binding    the dependency binding this edge was measured through; a node can
              consume the same interface from one producer via several bindings
   clock      same-host  exact (producer shares this host's clock)
              corrected  cross-host, adjusted via the producer's measured offset
              flagged    implausible delta, suppressed (deploy PTP/NTP)
-  note       the interface (➔ edges) and, for svc/act-probe, the measured
-             payload sizes (request → response; `≥` = schema lower bound)
+  note       the interface (➔ edges) and, for probe rows, the measured payload
+             sizes (request → response; `≥` = schema lower bound)
   Δp50       median vs the previous run on this machine
 
-Benchmarking never triggers a real handler or creates a goal."
+Benchmarking never triggers a real handler, never publishes onto a real topic,
+and never creates a goal."
     )
 }
 
 /// Build the box-table data rows (one per measured row), tinted with the shared
 /// `stack` palette and with the wide `edge`/`note` cells wrapped. `previous`
-/// supplies the Δp50 baseline. Pure (no IO) so it can be unit-tested.
+/// supplies the Δp50 baseline. The third cell is the `measure` label for the
+/// synthetic table and the `clock` confidence for the real-traffic table,
+/// matching [`SYNTHETIC_HEADERS`] / [`REAL_HEADERS`]. Pure (no IO) so it can be
+/// unit-tested.
 fn display_rows(
-    rows: &[InterfaceLatency],
+    rows: &[&InterfaceLatency],
     previous: &BTreeMap<String, StoredStats>,
     colorize: bool,
+    table: ReportTable,
 ) -> Vec<Vec<String>> {
     rows.iter()
         .map(|row| {
@@ -350,15 +404,18 @@ fn display_rows(
                 (None, Some(n)) => n.clone(),
                 (None, None) => String::new(),
             };
-            vec![
-                edge_cell(row, colorize),
-                paint(colorize, BINDING_COLOR, &row.link_id),
-                paint(
+            let measure_or_clock = match table {
+                ReportTable::Synthetic => paint(
                     colorize,
                     measurement_color(row.measurement),
                     measurement_label(row.measurement),
                 ),
-                row.clock_confidence.as_str().to_string(),
+                ReportTable::Real => row.clock_confidence.as_str().to_string(),
+            };
+            vec![
+                edge_cell(row, colorize),
+                paint(colorize, BINDING_COLOR, &row.link_id),
+                measure_or_clock,
                 dur(row.p50_ns),
                 dur(row.p90_ns),
                 dur(row.mean_ns),
@@ -409,8 +466,9 @@ mod tests {
     }
 
     /// Rows mirroring the real stack: a direct action edge, an interface-
-    /// conformance delivery edge, and an interface-conformance service-probe edge
-    /// whose payload note is long enough to exercise wrapping.
+    /// conformance topic edge measured both ways (node-probe + delivery), and an
+    /// interface-conformance service-probe edge whose payload note is long
+    /// enough to exercise wrapping.
     fn sample_rows() -> Vec<InterfaceLatency> {
         vec![
             row(
@@ -446,7 +504,24 @@ mod tests {
                 ClockConfidence::NotApplicable,
                 Some("payload 64B → 4.0KB (rebuild producer for sized replies)"),
             ),
+            row(
+                "uvc_camera_video_reconstruction",
+                "uvc_camera_python_mock",
+                "video_stream",
+                "camera",
+                Some("uvc_camera:v1"),
+                InterfaceKind::Topic,
+                MeasurementKind::NodeProbe,
+                ClockConfidence::NotApplicable,
+                Some("payload 0B → ≥56B"),
+            ),
         ]
+    }
+
+    /// `sample_rows` split the way `render_report` splits them.
+    fn split_rows(rows: &[InterfaceLatency]) -> (Vec<&InterfaceLatency>, Vec<&InterfaceLatency>) {
+        rows.iter()
+            .partition(|r| r.measurement.is_synthetic_probe())
     }
 
     #[test]
@@ -468,13 +543,31 @@ mod tests {
     }
 
     #[test]
+    fn rows_partition_into_synthetic_and_real_tables() {
+        let rows = sample_rows();
+        let (synthetic, real) = split_rows(&rows);
+        // act-probe + svc-probe + node-probe are synthetic; delivery is real.
+        assert_eq!(synthetic.len(), 3);
+        assert_eq!(real.len(), 1);
+        assert!(
+            synthetic
+                .iter()
+                .all(|r| r.measurement != MeasurementKind::TopicDelivery)
+        );
+        assert_eq!(real[0].measurement, MeasurementKind::TopicDelivery);
+    }
+
+    #[test]
     fn note_names_interface_and_wraps_long_payload_note() {
-        let rows = display_rows(&sample_rows(), &BTreeMap::new(), false);
+        let rows = sample_rows();
+        let (synthetic, real) = split_rows(&rows);
         // Delivery row's note is just the interface name.
-        assert_eq!(rows[1][9], "uvc_camera:v1");
+        let real_rows = display_rows(&real, &BTreeMap::new(), false, ReportTable::Real);
+        assert_eq!(real_rows[0][8], "uvc_camera:v1");
         // The svc-probe row's note leads with the interface, then the wrapped
         // payload summary.
-        let note = &rows[2][9];
+        let synth_rows = display_rows(&synthetic, &BTreeMap::new(), false, ReportTable::Synthetic);
+        let note = &synth_rows[1][8];
         assert!(note.starts_with("uvc_camera:v1;"));
         assert!(note.contains('\n'), "long note should wrap");
         assert!(
@@ -485,22 +578,35 @@ mod tests {
     }
 
     #[test]
-    fn measure_column_is_colored_per_kind() {
+    fn synthetic_table_shows_measure_and_real_table_shows_clock() {
         let rows = sample_rows();
-        // Without color the cell is the plain label.
-        let plain = display_rows(&rows, &BTreeMap::new(), false);
-        assert_eq!(plain[0][2], "act-probe"); // action edge
-        assert_eq!(plain[1][2], "delivery"); // topic delivery edge
-        assert_eq!(plain[2][2], "svc-probe"); // service edge
+        let (synthetic, real) = split_rows(&rows);
+        // Without color the synthetic third cell is the plain measure label.
+        let plain = display_rows(&synthetic, &BTreeMap::new(), false, ReportTable::Synthetic);
+        assert_eq!(plain[0][2], "act-probe");
+        assert_eq!(plain[1][2], "svc-probe");
+        assert_eq!(plain[2][2], "node-probe");
         // With color each kind carries its own distinct code.
-        let colored = display_rows(&rows, &BTreeMap::new(), true);
+        let colored = display_rows(&synthetic, &BTreeMap::new(), true, ReportTable::Synthetic);
         assert!(colored[0][2].starts_with(MEASURE_ACTION_COLOR));
-        assert!(colored[1][2].starts_with(MEASURE_DELIVERY_COLOR));
-        assert!(colored[2][2].starts_with(MEASURE_SERVICE_COLOR));
-        // The three colors are mutually distinct.
-        assert_ne!(MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR);
-        assert_ne!(MEASURE_ACTION_COLOR, MEASURE_SERVICE_COLOR);
-        assert_ne!(MEASURE_DELIVERY_COLOR, MEASURE_SERVICE_COLOR);
+        assert!(colored[1][2].starts_with(MEASURE_SERVICE_COLOR));
+        assert!(colored[2][2].starts_with(MEASURE_NODE_COLOR));
+        // The probe colors are mutually distinct (delivery has its own legend
+        // color, also distinct from all three).
+        let colors = [
+            MEASURE_ACTION_COLOR,
+            MEASURE_SERVICE_COLOR,
+            MEASURE_NODE_COLOR,
+            MEASURE_DELIVERY_COLOR,
+        ];
+        for (i, a) in colors.iter().enumerate() {
+            for b in &colors[i + 1..] {
+                assert_ne!(a, b, "measure colors must be pairwise distinct");
+            }
+        }
+        // The real table's third cell is the clock confidence, uncolored.
+        let real_rows = display_rows(&real, &BTreeMap::new(), true, ReportTable::Real);
+        assert_eq!(real_rows[0][2], "corrected");
     }
 
     #[test]
@@ -517,38 +623,57 @@ mod tests {
         let stripped = benchmark_legend(true)
             .replace(MEASURE_SERVICE_COLOR, "")
             .replace(MEASURE_ACTION_COLOR, "")
+            .replace(MEASURE_NODE_COLOR, "")
             .replace(MEASURE_DELIVERY_COLOR, "")
             .replace(super::super::colors::RESET, "");
         assert_eq!(stripped, plain, "color codes must be width-neutral");
+        // The legend names all four measurement labels and the safety guarantee.
+        for label in ["svc-probe", "act-probe", "node-probe", "delivery"] {
+            assert!(plain.contains(label), "legend missing {label}");
+        }
+        assert!(plain.contains("never publishes onto a real topic"));
     }
 
     #[test]
-    fn table_renders_box_and_stays_narrow() {
-        let rows = display_rows(&sample_rows(), &BTreeMap::new(), false);
-        let mut out = String::new();
-        render_table(&mut out, &BENCHMARK_HEADERS, &[rows]);
+    fn both_tables_render_boxes_and_stay_narrow() {
+        let rows = sample_rows();
+        let (synthetic, real) = split_rows(&rows);
+        let tables = [
+            (
+                display_rows(&synthetic, &BTreeMap::new(), false, ReportTable::Synthetic),
+                &SYNTHETIC_HEADERS,
+            ),
+            (
+                display_rows(&real, &BTreeMap::new(), false, ReportTable::Real),
+                &REAL_HEADERS,
+            ),
+        ];
+        for (rows, headers) in tables {
+            let mut out = String::new();
+            render_table(&mut out, headers.as_slice(), &[rows]);
 
-        // Box-drawing borders like `stack list`.
-        assert!(out.contains('┌') && out.contains('│') && out.contains('└'));
-        // Headers present.
-        for h in BENCHMARK_HEADERS {
-            assert!(out.contains(h), "missing header {h}");
+            // Box-drawing borders like `stack list`.
+            assert!(out.contains('┌') && out.contains('│') && out.contains('└'));
+            // Headers present.
+            for h in *headers {
+                assert!(out.contains(h), "missing header {h}");
+            }
+            // Every rendered line shares one display width (aligned box) and the
+            // wrapped layout keeps the whole table comfortably under a wide column.
+            let widths: Vec<usize> = out
+                .lines()
+                .filter(|l| l.starts_with(['┌', '├', '└', '│']))
+                .map(UnicodeWidthStr::width)
+                .collect();
+            assert!(
+                widths.windows(2).all(|w| w[0] == w[1]),
+                "box lines misaligned: {widths:?}"
+            );
+            let table_width = widths.first().copied().unwrap_or(0);
+            assert!(
+                table_width <= 145,
+                "table too wide ({table_width} cols) for a small terminal"
+            );
         }
-        // Every rendered line shares one display width (aligned box) and the
-        // wrapped layout keeps the whole table comfortably under a wide column.
-        let widths: Vec<usize> = out
-            .lines()
-            .filter(|l| l.starts_with(['┌', '├', '└', '│']))
-            .map(UnicodeWidthStr::width)
-            .collect();
-        assert!(
-            widths.windows(2).all(|w| w[0] == w[1]),
-            "box lines misaligned: {widths:?}"
-        );
-        let table_width = widths.first().copied().unwrap_or(0);
-        assert!(
-            table_width <= 145,
-            "table too wide ({table_width} cols) for a small terminal"
-        );
     }
 }

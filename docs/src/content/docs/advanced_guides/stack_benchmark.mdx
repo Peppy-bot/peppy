@@ -7,8 +7,18 @@ sidebar:
 
 `peppy stack benchmark` reports the **latency** of the topics, services, and
 actions that wire each node to its dependencies, measured against the
-**already-running** stack. It prints a per-interface table of p50 / p90 / mean so
-you can see, edge by edge, how much the messaging layer adds.
+**already-running** stack. It prints p50 / p90 / mean per interface as **two
+separate tables**, because the two kinds of numbers answer different questions
+and must not be read side by side:
+
+- **Synthetic probes**: handler-free round-trips with payloads sized from the
+  message schema. This is the fixed cost of the messaging plumbing, per edge,
+  for every topic, service, and action.
+- **Real traffic**: the observe-only one-way delivery latency of a topic's live
+  messages, full payload included. This is what a consumer actually
+  experiences: a camera topic streaming multi-megabyte frames can legitimately
+  read 30x above its own plumbing cost, and that difference is payload, not
+  overhead.
 
 It covers **both** ways a node can depend on another:
 
@@ -41,27 +51,50 @@ peppy stack benchmark --samples 500 --warmup 50 --per-sample-timeout-ms 1000
 | `--warmup` | `20` | Warmup samples per interface, discarded before measuring. |
 | `--per-sample-timeout-ms` | `2000` | Per-sample probe/observe timeout. |
 
-## Reading the table
+## Reading the tables
 
 One row is emitted **per consumed artifact** (each topic, service, or action a
 consumer is wired to), so a node that consumes the same producer as both a topic
-and a service gets one row for each. The `edge` and `binding` columns together
-keep rows distinct even when several share a producer.
+and a service gets one row for each. A **topic edge appears in both tables**: a
+synthetic `node-probe` row for its plumbing cost and a `delivery` row for its
+real traffic. The `edge` and `binding` columns together keep rows distinct even
+when several share a producer.
+
+The **synthetic table** collects every handler-free round-trip probe. All of its
+rows are timed on a single clock (no `clock` column needed) and carry payloads
+sized from the message schema, so they are comparable with each other:
 
 ```
-┌──────────────────┬──────────┬───────────┬───────────┬────────┬────────┬────────┬─────┬──────┬────────────────────┐
-│ edge             │ binding  │ measure   │ clock     │ p50    │ p90    │ mean   │ n   │ Δp50 │ note               │
-├──────────────────┼──────────┼───────────┼───────────┼────────┼────────┼────────┼─────┼──────┼────────────────────┤
-│ brain:v1         │ left_arm │ act-probe │ —         │ 240µs  │ 310µs  │ 255µs  │ 200 │ —    │ payload 32B → 16B  │
-│ → arm:v1         │          │           │           │        │        │        │     │      │                    │
-│   /move_arm      │          │           │           │        │        │        │     │      │                    │
-│ brain:v1         │ camera   │ delivery  │ same-host │ 1.20ms │ 1.80ms │ 1.31ms │ 200 │ —    │ camera:v1          │
-│ ➔ camera_mock:v1 │          │           │           │        │        │        │     │      │                    │
-│   /frames        │          │           │           │        │        │        │     │      │                    │
-│ brain:v1         │ camera   │ svc-probe │ —         │ 180µs  │ 220µs  │ 191µs  │ 200 │ —    │ camera:v1; payload │
-│ ➔ camera_mock:v1 │          │           │           │        │        │        │     │      │ 0B → ≥32B          │
-│   /frame_info    │          │           │           │        │        │        │     │      │                    │
-└──────────────────┴──────────┴───────────┴───────────┴────────┴────────┴────────┴─────┴──────┴────────────────────┘
+Synthetic probes: handler-free round-trips, schema-sized payloads (200 samples/interface)
+┌──────────────────┬──────────┬────────────┬────────┬────────┬────────┬─────┬──────┬────────────────────┐
+│ edge             │ binding  │ measure    │ p50    │ p90    │ mean   │ n   │ Δp50 │ note               │
+├──────────────────┼──────────┼────────────┼────────┼────────┼────────┼─────┼──────┼────────────────────┤
+│ brain:v1         │ left_arm │ act-probe  │ 240µs  │ 310µs  │ 255µs  │ 200 │ —    │ payload 32B → 16B  │
+│ → arm:v1         │          │            │        │        │        │     │      │                    │
+│   /move_arm      │          │            │        │        │        │     │      │                    │
+│ brain:v1         │ camera   │ node-probe │ 195µs  │ 250µs  │ 207µs  │ 200 │ —    │ camera:v1; payload │
+│ ➔ camera_mock:v1 │          │            │        │        │        │     │      │ 0B → ≥56B          │
+│   /frames        │          │            │        │        │        │     │      │                    │
+│ brain:v1         │ camera   │ svc-probe  │ 180µs  │ 220µs  │ 191µs  │ 200 │ —    │ camera:v1; payload │
+│ ➔ camera_mock:v1 │          │            │        │        │        │     │      │ 0B → ≥32B          │
+│   /frame_info    │          │            │        │        │        │     │      │                    │
+└──────────────────┴──────────┴────────────┴────────┴────────┴────────┴─────┴──────┴────────────────────┘
+```
+
+The **real-traffic table** collects the observe-only measurements of live
+messages, full payload included. All of its rows are one-way `delivery`
+measurements (no `measure` column needed), so it carries the `clock` column
+instead:
+
+```
+Real traffic: observe-only one-way delivery of live topic messages (200 samples/interface)
+┌──────────────────┬──────────┬───────────┬────────┬────────┬────────┬─────┬──────┬────────────┐
+│ edge             │ binding  │ clock     │ p50    │ p90    │ mean   │ n   │ Δp50 │ note       │
+├──────────────────┼──────────┼───────────┼────────┼────────┼────────┼─────┼──────┼────────────┤
+│ brain:v1         │ camera   │ same-host │ 1.20ms │ 1.80ms │ 1.31ms │ 200 │ —    │ camera:v1  │
+│ ➔ camera_mock:v1 │          │           │        │        │        │     │      │            │
+│   /frames        │          │           │        │        │        │     │      │            │
+└──────────────────┴──────────┴───────────┴────────┴────────┴────────┴─────┴──────┴────────────┘
 ```
 
 - **edge**: the dependency, wrapped over three lines: the **consumer**, then the
@@ -71,40 +104,47 @@ keep rows distinct even when several share a producer.
 - **binding**: the dependency binding (`link_id`) this edge was measured through.
   A node can consume the same interface from one producer via several bindings;
   this column tells those rows apart.
-- **measure**: how the row was measured, color-coded in the terminal for a quick
-  scan: **svc-probe** (service round-trip, blue), **act-probe** (action
-  round-trip, magenta), and **delivery** (live topic traffic, green). What each
-  one measures is detailed below.
-- **clock**: clock-alignment confidence for one-way topic delivery (`—` for
-  round-trip probe rows, which need no clock alignment).
+- **measure** (synthetic table): how the row was probed, color-coded in the
+  terminal for a quick scan: **svc-probe** (service round-trip, blue),
+  **act-probe** (action round-trip, magenta), and **node-probe** (topic edge's
+  producer-node round-trip, cyan). What each one measures is detailed below.
+- **clock** (real-traffic table): clock-alignment confidence for the one-way
+  delivery measurement.
 - **p50 / p90 / mean**: the latency distribution, in ns / µs / ms.
 - **n**: how many samples were collected (an unreachable or idle edge shows `0`).
 - **Δp50**: change in the median versus the previous run **on this machine**
   (baselines are machine-local, so numbers are never compared across machines).
 - **note**: for `➔` rows, the interface the edge was resolved through; for
-  `svc/act-probe` rows, the measured payload sizes (see
+  probe rows, the measured payload sizes (see
   [Payload sizing](#payload-sizing)); plus any diagnostic (e.g. a suppressed
   cross-host value, or a topic with no live traffic).
 
-A legend repeating all of this prints beneath the table:
+A legend repeating all of this prints beneath the tables:
 
 ```
 Legend:
   edge       →  direct dependency (depends_on.nodes)
              ➔  resolved through interface conformance (the note names the interface)
-  measure    svc-probe  round-trip to a service, real-payload-sized (handler NOT run)
-             act-probe  round-trip to an action's goal service (no goal is created)
-             delivery   real producer→consumer latency on live traffic
+  synthetic  round-trips on a single clock; the producer's framework replies and
+             handlers never run, with payloads sized from the message schema
+             svc-probe   round-trip to the service
+             act-probe   round-trip to the action's goal service (no goal is created)
+             node-probe  topic edge: round-trip to the producer node's framework,
+                         reply sized from the topic schema (the topic itself is
+                         never published; topic QoS does not apply)
+  real       observe-only: delivery is the one-way receive−source latency of the
+             topic's own live messages, full payload included
   binding    the dependency binding this edge was measured through; a node can
              consume the same interface from one producer via several bindings
   clock      same-host  exact (producer shares this host's clock)
              corrected  cross-host, adjusted via the producer's measured offset
              flagged    implausible delta, suppressed (deploy PTP/NTP)
-  note       the interface (➔ edges) and, for svc/act-probe, the measured
-             payload sizes (request → response; `≥` = schema lower bound)
+  note       the interface (➔ edges) and, for probe rows, the measured payload
+             sizes (request → response; `≥` = schema lower bound)
   Δp50       median vs the previous run on this machine
 
-Benchmarking never triggers a real handler or creates a goal.
+Benchmarking never triggers a real handler, never publishes onto a real topic,
+and never creates a goal.
 ```
 
 ## What each metric means (and what it does not)
@@ -117,24 +157,42 @@ Benchmarking never triggers a real handler or creates a goal.
   handler runs, so it **excludes the handler's own execution time** (and probing
   an action's goal service **does not create a goal**). It is clock-independent (a
   single-clock round-trip), so it is trustworthy regardless of host or clock sync.
-- **`delivery` (topics)**: the **real** producer → consumer one-way delivery
-  latency on live traffic (`receive_time − source_time`). This is observe-only:
-  the benchmark subscribes to the producer's actual stream and times real
-  messages, so for a camera it reflects the cost of moving a full frame, not a
-  token-sized probe. It is **exact when the producer and the core node share a
-  host**. Across hosts it depends on clock synchronization (see below).
+- **`node-probe` (topic edges, synthetic table)**: a topic is fire-and-forget on
+  the wire, so there is nothing on the topic path that can answer a probe
+  without publishing real traffic. Instead, the topic edge's synthetic row
+  probes the **producer node's always-on framework service** (`node_health`)
+  over the same session and links the topic uses, asking for a reply sized from
+  the **topic's message schema**. Like the other probes it is clock-independent
+  and no handler runs. Two honesty caveats: it rides the query path, so the
+  topic's QoS (priority / congestion / express) does not apply; and for a
+  schema with variable-length fields the payload is a lower bound, so a `≥56B`
+  probe says nothing about moving a real 6MB frame. That cost is exactly what
+  the `delivery` row shows.
+- **`delivery` (topics, real-traffic table)**: the **real** producer → consumer
+  one-way delivery latency on live traffic (`receive_time − source_time`). This
+  is observe-only: the benchmark subscribes to the producer's actual stream and
+  times real messages, so for a camera it reflects the cost of moving a full
+  frame, not a token-sized probe. It is **exact when the producer and the core
+  node share a host**. Across hosts it depends on clock synchronization (see
+  below).
 
-Because these measure different things, comparing them directly is apples to
-oranges: a one-way `delivery` row carrying a multi-megabyte frame can easily read
-higher than a round-trip `act-probe` carrying a few bytes, because the probe
-deliberately excludes the handler and carries only a real-payload-*sized* body,
-while delivery carries the real, full message.
+This is why the report is two tables: a one-way `delivery` row carrying a
+multi-megabyte frame can easily read 30× above the same edge's `node-probe`,
+because the probe prices the plumbing while delivery prices the payload.
+Comparing across the tables tells you *where the time goes* (fixed messaging
+cost vs payload transfer); comparing within a table compares like with like.
+
+Services and actions have no real-traffic rows **by design**: passively timing a
+real service call would require real callers, and issuing one ourselves would
+run your handler (see
+[Safety](#safety-benchmarking-never-triggers-your-handlers)).
 
 ### Payload sizing
 
-`svc/act-probe` rows note the payload they measured in a `payload request →
-response` form (for example `payload 32B → 16B`), sized from the interface's
-message schema:
+Probe rows note the payload they measured in a `payload request → response`
+form (for example `payload 32B → 16B`), sized from the interface's message
+schema. A `node-probe` row's response side is sized from the **topic's** message
+schema (a topic has no request leg, so its request side reads `0B`):
 
 - A `≥` prefix (e.g. `≥32B`) marks a **schema lower bound**: the format has a
   variable-length field (a string, bytes, or unbounded array), so the real message
@@ -181,6 +239,10 @@ action, by construction:
   The probe carries a real-payload-sized body purely to size the transport; the
   framework reads only its small size header to shape the reply and never decodes
   the body into a request or passes it to your handler.
+- A topic edge's **node-probe** targets the producer node's built-in
+  `node_health` framework service with the same auto-answered probe queries: it
+  **never publishes onto the topic**, so no subscriber can ever receive a
+  synthetic message, and no user code runs on the producer.
 - Real topic latency is **observe-only**: the benchmark subscribes but never
   publishes onto a real topic.
 

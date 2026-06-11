@@ -1170,14 +1170,11 @@ async fn transition_terminal(slot: &GoalSlot, outcome: GoalOutcome, retention: D
     true
 }
 
-/// What `run_result_loop` does after releasing every `std` lock.
-enum ResultAct {
-    /// Reply to this poll now with the given framed payload.
-    ReplyNow(ServiceResponder, Payload),
-    /// The poll was parked (in a slot or in `PendingWaiters`) or dropped; nothing
-    /// to reply now.
-    Done,
-}
+/// What `run_result_loop` does after releasing every `std` lock:
+/// `Some((responder, payload))` replies to this poll now with the given framed
+/// payload; `None` means the poll was parked (in a slot or in `PendingWaiters`)
+/// or dropped, with nothing to reply now.
+type ResultAct = Option<(ServiceResponder, Payload)>;
 
 /// Extract the `goal_id` carried by a cancel/result request payload (the same
 /// length-prefixed envelope goals use, with an empty body).
@@ -1257,14 +1254,14 @@ async fn act_on_slot(slot: &GoalSlot, responder: ServiceResponder) -> ResultAct 
     let mut guard = slot.state.lock().await;
     match &mut *guard {
         GoalState::Terminal { outcome, evict_at } if *evict_at > Instant::now() => {
-            ResultAct::ReplyNow(responder, encode_result_outcome(outcome))
+            Some((responder, encode_result_outcome(outcome)))
         }
         GoalState::Terminal { .. } => {
-            ResultAct::ReplyNow(responder, wrap_result_outcome(ResultStatus::Expired, &[]))
+            Some((responder, wrap_result_outcome(ResultStatus::Expired, &[])))
         }
         GoalState::Pending { waiters } => {
             waiters.push(responder);
-            ResultAct::Done
+            None
         }
     }
 }
@@ -1325,14 +1322,14 @@ async fn run_result_loop(
                     drop(pending);
                     act_on_slot(&slot, responder).await
                 } else if tombstones.lock().unwrap().contains(&goal_id) {
-                    ResultAct::ReplyNow(responder, wrap_result_outcome(ResultStatus::Expired, &[]))
+                    Some((responder, wrap_result_outcome(ResultStatus::Expired, &[])))
                 } else {
                     let mut pending = pending;
                     let total: usize = pending.values().map(Vec::len).sum();
                     if total >= PENDING_WAITERS_CAP {
                         // Overflow: drop the responder; the client falls back to
                         // its own timeout.
-                        ResultAct::Done
+                        None
                     } else {
                         pending
                             .entry(goal_id.clone())
@@ -1341,13 +1338,13 @@ async fn run_result_loop(
                                 responder,
                                 deadline: Instant::now() + PENDING_WAITER_MAX_PARK,
                             });
-                        ResultAct::Done
+                        None
                     }
                 }
             }
         };
 
-        if let ResultAct::ReplyNow(responder, payload) = act {
+        if let Some((responder, payload)) = act {
             let _ = responder.respond(payload).await;
         }
     }
