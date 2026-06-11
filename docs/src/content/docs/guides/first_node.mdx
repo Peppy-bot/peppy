@@ -185,13 +185,14 @@ Additionally, the tag and name assigned to your node provide contract isolation.
 
 ## Graceful shutdown
 
-A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides/node_stack/#stopping-your-node) stops it on demand, `peppy node add` stops running instances when it replaces a node, and the daemon tears every node down when it shuts down cleanly. In all of these cases the daemon first asks the node to shut down cooperatively, gives it a grace period to exit (`shutdown_grace_secs`, 3 seconds by default), and only then force-kills its process group. See [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention) for the full sequence.
+A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides/node_stack/#stopping-your-node) stops it on demand, `peppy node add` stops running instances when it replaces a node, the daemon tears every node down when it shuts down cleanly, and a plain `SIGINT`/`SIGTERM` works too. Every one of these paths gives your node the same two things:
 
-Inside your node, that cooperative ask surfaces through the runtime's **cancellation token**. The same token also fires when the node's watchdog detects that the daemon died uncleanly, and on `Ctrl+C` in standalone mode, so it is the single signal to watch for "time to clean up and exit":
+- The **cancellation token** (`node_runner.cancellation_token()`) fires. This is the signal to *stop working*: have long-running tasks watch it and break out of their loops.
+- **Shutdown hooks** registered with `node_runner.on_shutdown(...)` then run to completion, with messaging still connected. This is where *cleanup* belongs (parking actuators, releasing hardware or locks, flushing state): unlike a task watching the token, a hook is guaranteed to be awaited before the node exits.
 
 <Tabs>
   <TabItem label="Python">
-    **Cleanup** (parking actuators, releasing hardware or locks, flushing state) belongs in a shutdown hook, registered during setup with `node_runner.on_shutdown(...)`. The callback may be a plain function or an `async def`; a returned awaitable runs on the node's event loop, and messaging is still connected while hooks run:
+    The hook callback may be a plain function or an `async def`:
 
     ```python
     async def setup(params, node_runner: NodeRunner):
@@ -202,33 +203,10 @@ Inside your node, that cooperative ask surfaces through the runtime's **cancella
         node_runner.on_shutdown(release_lock)
     ```
 
-    Hooks run on every stop path (`peppy node stop`, daemon teardown, `SIGINT`/`SIGTERM` handled by the runtime for you, daemon-liveness loss, and even a setup error), sequentially in reverse registration order, all bounded by the grace period. The node's background tasks keep running until every hook has finished.
-
-    For **stopping work**, the background tasks returned from `setup` are cancelled automatically after the hooks: their pending `await` raises `asyncio.CancelledError`, and the node exits once they finish. A `try`/`finally` around a loop still runs on the way out, but cleanup that must be guaranteed (or that needs messaging) belongs in `on_shutdown`:
-
-    ```python
-    async def emit_hello_world_loop(node_runner: NodeRunner):
-        try:
-            while True:
-                # ... emit, read sensors, etc.
-                await asyncio.sleep(3)
-        finally:
-            pass  # last-moment, best-effort tidy-up only
-    ```
-
-    Async code can also wait for the shutdown explicitly with `await node_runner.cancellation_token().cancelled()`, mirroring the Rust pattern. Code that cannot rely on task cancellation (a synchronous helper, a thread you spawned yourself) can poll `node_runner.cancellation_token().is_cancelled()` instead.
+    The background tasks returned from `setup` are cancelled automatically after the hooks: their pending `await` raises `asyncio.CancelledError`, and the node exits once they finish. Keep `try`/`finally` for last-moment tidy-up; cleanup that must be guaranteed belongs in `on_shutdown`.
   </TabItem>
   <TabItem label="Rust">
-    The token returned by `node_runner.cancellation_token()` is cancelled. The hello_world node above already follows the recommended pattern for **stopping work**: clone the token in the setup closure and have every spawned task `select!` on `token.cancelled()` next to its work, then break out when that branch wins:
-
-    ```rust
-    tokio::select! {
-        _ = token.cancelled() => break, // shutdown requested: stop working
-        _ = interval.tick() => { /* do work */ }
-    }
-    ```
-
-    **Cleanup** (parking actuators, releasing hardware or locks, flushing state) belongs in a shutdown hook, registered during setup with `node_runner.on_shutdown(...)`:
+    The hello_world node above already follows the recommended pattern for stopping work: every spawned task `select!`s on `token.cancelled()` next to its work. Cleanup goes in a hook:
 
     ```rust
     let runner = node_runner.clone();
@@ -240,8 +218,8 @@ Inside your node, that cooperative ask surfaces through the runtime's **cancella
     });
     ```
 
-    Hooks run on every stop path (`peppy node stop`, daemon teardown, `SIGINT`/`SIGTERM` handled by the runtime for you, daemon-liveness loss, and even a setup error) sequentially in reverse registration order, and `NodeBuilder::run` waits for them (bounded by the grace period) before it returns. Do **not** put cleanup in a spawned task that watches the token instead: once the token fires the runtime begins tearing down, and a detached task is not guaranteed to run again.
+    Do **not** put cleanup in a spawned task that watches the token instead: once the token fires the runtime begins tearing down, and a detached task is not guaranteed to run again.
   </TabItem>
 </Tabs>
 
-A node that exits within the grace period is reported as a clean stop; one that ignores the ask is force-killed and `peppy node stop` warns about it. If your node legitimately needs more than 3 seconds to wind down, raise `lifecycle.shutdown_grace_secs` in the [daemon configuration](/advanced_guides/daemon_config/).
+The whole shutdown is bounded by a grace period (`shutdown_grace_secs`, 3 seconds by default): a node that exits within it is reported as a clean stop, one that ignores the ask is force-killed, and `peppy node stop` warns about the latter. The [shutdown lifecycle guide](/advanced_guides/shutdown/) covers the full contract: every stop path, hook ordering, the grace windows, and Python's task-teardown mechanics.
