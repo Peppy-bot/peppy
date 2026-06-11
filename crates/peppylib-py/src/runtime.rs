@@ -19,7 +19,7 @@ type SharedEventLoopSlot = Arc<Mutex<Option<Py<PyAny>>>>;
 /// Handles produced by [`start_async_setup`] for the async-setup flow.
 struct AsyncSetup {
     /// Signalled when the setup coroutine completes (any outcome).
-    setup_complete_rx: std::sync::mpsc::Receiver<()>,
+    setup_complete_rx: tokio::sync::oneshot::Receiver<()>,
     /// The `concurrent.futures.Future` of the setup coroutine.
     setup_future: Py<PyAny>,
     /// Teardown handles for the loop thread, fired after `builder.run()`.
@@ -124,6 +124,38 @@ fn is_awaitable(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     value.hasattr("__await__")
 }
 
+/// Coerce an awaitable into a coroutine object.
+///
+/// Both schedulers used for shutdown hooks (`asyncio.run_coroutine_threadsafe`
+/// and `asyncio.run`) reject awaitables that are not coroutine objects, such
+/// as Tasks, Futures, and custom `__await__` classes. Anything that
+/// `asyncio.iscoroutine` does not accept is wrapped in a pure-Python coroutine
+/// that simply awaits it. Pure Python (not a PyCFunction) for the same reason
+/// as `create_event_loop_helpers`: the wrapper body runs on an event loop
+/// thread and must not put `catch_unwind` in the call path.
+fn coerce_to_coroutine<'py>(
+    py: Python<'py>,
+    awaitable: Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let asyncio = py.import("asyncio")?;
+    if asyncio
+        .call_method1("iscoroutine", (&awaitable,))?
+        .is_truthy()?
+    {
+        return Ok(awaitable);
+    }
+    let wrapper = PyModule::from_code(
+        py,
+        c"
+async def wrap_awaitable(awaitable):
+    return await awaitable
+",
+        c"_peppy_awaitable_wrapper.py",
+        c"_peppy_awaitable_wrapper",
+    )?;
+    wrapper.call_method1("wrap_awaitable", (awaitable,))
+}
+
 /// Print a Python error raised by a shutdown hook. Hooks are contained: one
 /// failing hook must not stop the remaining ones, so errors are printed (with
 /// traceback) rather than propagated.
@@ -196,6 +228,15 @@ async fn run_python_shutdown_hook(callback: Py<PyAny>, event_loop_slot: SharedEv
                 return HookContinuation::Done;
             }
         }
+        // Both scheduling branches below require a coroutine object, so wrap
+        // any other awaitable (Task, Future, custom __await__) first.
+        let result = match coerce_to_coroutine(py, result) {
+            Ok(coroutine) => coroutine,
+            Err(err) => {
+                print_shutdown_hook_error(py, &err);
+                return HookContinuation::Done;
+            }
+        };
 
         let node_loop = event_loop_slot
             .lock()
@@ -443,33 +484,27 @@ fn start_async_setup(
         }
     });
 
-    // 8. Submit the setup coroutine and register a done callback.
-    //    A Rust channel signals completion so the caller can release the GIL
-    //    before blocking; the event loop thread needs it to run the coroutine.
+    // 8. Submit the setup coroutine and bridge its completion into a tokio
+    //    oneshot. The caller awaits it with the GIL released (the event loop
+    //    thread needs the GIL to run the coroutine) and without blocking its
+    //    tokio worker, so the runner's select stays responsive to shutdown
+    //    requests and cancellation arriving mid-setup.
     let future =
         asyncio.call_method1("run_coroutine_threadsafe", (setup_awaitable, &event_loop))?;
-    let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let done_cb = PyCFunction::new_closure(
-        py,
-        Some(c"_peppy_setup_done"),
-        None,
-        move |_args, _kwargs| {
-            let _ = tx.send(());
-            Ok::<(), PyErr>(())
-        },
-    )?;
-    future.call_method1("add_done_callback", (done_cb,))?;
+    let setup_complete_rx = notify_on_future_done(py, &future)?;
     let future_ref = future.unbind();
 
-    // 9. Schedule the shutdown monitor, scoped to the setup window. While the
-    //    main thread is blocked waiting for the setup coroutine (a synchronous
-    //    recv), the runner's select cannot react to a cancellation, so this
-    //    thread fires the loop teardown to unstick a cancelled setup (uncaught
-    //    task error, daemon-liveness watchdog, process signal). Dropping the
-    //    `monitor_disarm` sender at the end of the setup phase retires the
-    //    monitor: from then on the drain hook registered above owns the
-    //    teardown, and the monitor must not cancel tasks out from under user
-    //    shutdown hooks. The `biased` order makes the disarm win a race.
+    // 9. Schedule the shutdown monitor, scoped to the setup window. In
+    //    standalone mode the runner awaits the setup future directly, with no
+    //    select against cancellation, so a cancelled setup (uncaught task
+    //    error, process signal, programmatic cancel) would leave the runner
+    //    waiting on a coroutine that nothing else will cancel; this thread
+    //    fires the loop teardown to unstick it. Daemon mode observes
+    //    cancellation in the runner's select and drops the setup future,
+    //    which retires the monitor by dropping the `monitor_disarm` sender:
+    //    from then on the drain hook registered above owns the teardown, and
+    //    the monitor must not cancel tasks out from under user shutdown
+    //    hooks. The `biased` order makes the disarm win a race.
     let trigger_for_monitor = shutdown_trigger.clone().unbind();
     let cancel_for_shutdown = node_runner.cancellation_token().clone();
     let (disarm_tx, mut disarm_rx) = tokio::sync::oneshot::channel::<()>();
@@ -498,7 +533,7 @@ fn start_async_setup(
         .map_err(|e| PyRuntimeError::new_err(format!("failed to start shutdown monitor: {e}")))?;
 
     Ok(AsyncSetup {
-        setup_complete_rx: rx,
+        setup_complete_rx,
         setup_future: future_ref,
         event_loop_shutdown: EventLoopShutdown {
             trigger: shutdown_trigger.unbind(),
@@ -867,11 +902,15 @@ impl PyNodeBuilder {
                                     *guard = Some(async_setup.event_loop_shutdown);
                                 }
 
-                                // Phase 2: wait without GIL so event loop
-                                // thread can run the setup coroutine
+                                // Phase 2: await with the GIL released so the
+                                // event loop thread can run the setup
+                                // coroutine, and without blocking this tokio
+                                // worker so the runner's select still observes
+                                // shutdown requests and cancellation while
+                                // setup is in flight.
                                 async_setup
                                     .setup_complete_rx
-                                    .recv()
+                                    .await
                                     .map_err(|_| peppy_io_err("async setup channel closed"))?;
 
                                 // Phase 3: check for exceptions and capture
