@@ -613,6 +613,13 @@ pub fn build_consumed_action(
     if feedback_format.is_some() {
         builder.line("async def on_next_feedback_message(self) -> FeedbackMessage:");
         builder.indent();
+        builder.line("\"\"\"Receive the next feedback message for this goal.");
+        builder.blank_line();
+        builder.line("Raises RuntimeError when the producer closed the stream cleanly");
+        builder.line("(end-of-stream sentinel) and ConnectionError when the producer");
+        builder.line("instance disappeared without closing it (process killed, crashed);");
+        builder.line("in the latter case get_result resolves to ResultStatus.ABANDONED.");
+        builder.line("\"\"\"");
         builder.line("feedback = await self._inner.on_next_feedback()");
         if schema_info.feedback.is_some() {
             builder.line("payload = feedback.payload");

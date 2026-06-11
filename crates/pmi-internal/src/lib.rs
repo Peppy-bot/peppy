@@ -13,6 +13,7 @@ pub use error::Error as PeppyMessagingInterfaceError;
 #[cfg(feature = "zenoh")]
 pub use types::ZenohResponseToken;
 pub use types::{
+    ActionLivelinessEvent, ActionLivelinessProbe, ActionLivelinessToken, ActionLivelinessWatch,
     IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
     MockResponseToken, Payload, PayloadSlices, PublisherQoS, ReplyStream, ResponseToken,
     ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, Subscription,

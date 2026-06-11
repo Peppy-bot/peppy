@@ -346,7 +346,7 @@ async def drive(ctx):
   </TabItem>
 </Tabs>
 
-Cancellation is **auto-acknowledged** by the framework: the client's `cancel_goal` returns a typed `CancelState`: `Signalled` when a goal with that `goal_id` is in flight (the signal was delivered), `AlreadyTerminal` when it had already finished, or `Unknown`. `Signalled` means *delivered*, not *will stop*; a worker is free to ignore the signal and keep running. The worker decides the goal's fate: calling `complete_cancelled` (or `complete`) is what a subsequent `get_result` returns. Whichever completion runs first wins; the framework closes this goal's feedback stream on completion, so the client's `on_next_feedback_message` loop ends cleanly. A goal's cancel never affects other concurrent goals.
+Cancellation is **auto-acknowledged** by the framework: the client's `cancel_goal` returns a typed `CancelState`: `Signalled` when a goal with that `goal_id` is in flight (the signal was delivered), `AlreadyTerminal` when it had already finished, or `Unknown`. `Signalled` means *delivered*, not *will stop*; a worker is free to ignore the signal and keep running. The worker decides the goal's fate: calling `complete_cancelled` (or `complete`) is what a subsequent `get_result` returns. Whichever completion runs first wins; the framework closes this goal's feedback stream on completion, so the client's `on_next_feedback_message` loop ends cleanly. The clean close is not the only way a stream ends: if the producer instance dies mid-goal, the client's loop ends with a producer-gone error instead (see [Receiving feedback](#receiving-feedback)). A goal's cancel never affects other concurrent goals.
 
 ## Consuming an action
 
@@ -459,14 +459,19 @@ The signature is the same for pinned and `from_any: true` slots: `fire_goal` tak
 
 ### Receiving feedback
 
-Use `on_next_feedback_message` on the handle to receive feedback. The idiomatic pattern is a loop that drains feedback until the server signals end-of-stream:
+Use `on_next_feedback_message` on the handle to receive feedback. The idiomatic pattern is a loop that drains feedback until a terminal error ends the stream:
 
 <Tabs>
   <TabItem label="Rust">
 ```rust
+use peppygen::Error;
+
 loop {
     match action_handle.on_next_feedback_message().await {
         Ok(feedback) => println!("new_position={:?}", feedback.new_position),
+        Err(Error::ActionFeedbackProducerGone { .. }) => {
+            break; // producer instance died; get_result yields Abandoned
+        }
         Err(_) => break, // server has completed (or cancelled) this goal
     }
 }
@@ -478,13 +483,24 @@ while True:
     try:
         feedback = await action_handle.on_next_feedback_message()
         print(f"new_position={feedback.new_position}", flush=True)
+    except ConnectionError:
+        break  # producer instance died; get_result yields ABANDONED
     except Exception:
         break  # server has completed (or cancelled) this goal
 ```
   </TabItem>
 </Tabs>
 
-Each goal has its own feedback stream, addressed by `goal_id`, so feedback for one goal never reaches another handle, even when several goals run concurrently on the same server. The server closes a goal's stream when its worker completes the goal (`complete` or `complete_cancelled`); the in-flight `on_next_feedback_message` then resolves with the closed-channel error, so the loop-until-error pattern drains feedback cleanly before you request the result. The stream also closes if the worker abandons the goal without completing it (an early return or a panic), so a client draining feedback always terminates rather than hanging.
+Each goal has its own feedback stream, addressed by `goal_id`, so feedback for one goal never reaches another handle, even when several goals run concurrently on the same server. Two terminal errors end the drain loop:
+
+- **Clean close** (`ActionFeedbackChannelClosed`; `RuntimeError` in Python): the server closed this goal's stream — its worker completed the goal (`complete` or `complete_cancelled`) or abandoned it without completing it (an early return or a panic). Call `get_result` to learn the outcome.
+- **Producer gone** (`ActionFeedbackProducerGone`; `ConnectionError` in Python): the producer instance this goal is pinned to died without closing the stream (process killed, host lost). Feedback already in flight — including a clean close that did make it out — is drained first, so a graceful shutdown never surfaces as producer-gone. After this error, `get_result` resolves to the `Abandoned` outcome.
+
+Either way, a client draining feedback always terminates rather than hanging. In Python, catch `ConnectionError` before the generic handler when you want to distinguish producer death from a clean close; a bare `except Exception` treats both as end-of-stream.
+
+:::note
+Producer death is confirmed via liveliness probes, so a transport outage (e.g. a router restart) that outlasts the confirmation window can surface as producer-gone even though the process survived. The `Abandoned` outcome remains the correct consumer-side interpretation: the goal's results are unreachable.
+:::
 
 ### Getting the result
 
@@ -537,7 +553,7 @@ elif result.status == brain_move_arm.ResultStatus.EXPIRED:
 A poll on a still-running goal **parks** until the goal reaches a terminal state, then returns a typed outcome, so you can call `get_result` whenever you like; a forwarding/relaying node does not have to time its poll to the worker's lifecycle. The returned outcome (a Rust `ResultOutcome` enum, or `result.status` plus optional `result.data` in Python) tells you exactly what happened:
 
 - **`Completed`** / **`Cancelled`**: the worker delivered a result via `complete` / `complete_cancelled`; the payload is in `data`.
-- **`Abandoned`**: the worker dropped the goal without ever delivering a result (an early return or a panic).
+- **`Abandoned`**: the worker dropped the goal without ever delivering a result (an early return or a panic), or the producer instance itself died mid-goal. A poll on a goal whose producer is confirmed gone resolves to `Abandoned` instead of parking forever.
 - **`Expired`**: the goal finished, but its result was retained only for a bounded window (30&nbsp;s by default) that has since elapsed, or the result was already evicted.
 
 A terminal result stays fetchable for that retention window, and you can fetch it more than once within it, which makes relaying it reliable. If the poll outlives the caller's own `timeout`, you get a normal timeout error like any other request.

@@ -20,12 +20,17 @@ pub(crate) use topics::{PySubscription, PyTopicMessage, PyTopicMessenger};
 ///
 /// Maps timeout and unreachable variants to their natural Python counterparts
 /// so that callers can catch `TimeoutError` or `ConnectionError` by type.
+/// `ActionFeedbackProducerGone` joins the `ConnectionError` family (the peer
+/// vanished), which keeps it type-distinguishable from the clean
+/// end-of-stream close (`ActionFeedbackChannelClosed` → `RuntimeError`).
 pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
     match &err {
         PeppyError::ServiceTimeout { .. } | PeppyError::ActionResultTimeout { .. } => {
             PyErr::new::<pyo3::exceptions::PyTimeoutError, _>(err.to_string())
         }
-        PeppyError::ServiceUnreachable { .. } | PeppyError::ActionResultUnreachable { .. } => {
+        PeppyError::ServiceUnreachable { .. }
+        | PeppyError::ActionResultUnreachable { .. }
+        | PeppyError::ActionFeedbackProducerGone { .. } => {
             PyErr::new::<pyo3::exceptions::PyConnectionError, _>(err.to_string())
         }
         _ => PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(err.to_string()),

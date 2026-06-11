@@ -593,6 +593,15 @@ impl RustGenerator {
 
         let method_ident = Ident::new("on_next_feedback_message", Span::call_site());
         let method_tokens = quote! {
+            /// Receives the next feedback message for this goal.
+            ///
+            /// Terminal errors that end a feedback drain loop:
+            /// `Error::ActionFeedbackChannelClosed` when the producer closed
+            /// the stream cleanly (end-of-stream sentinel), and
+            /// `Error::ActionFeedbackProducerGone` when the producer instance
+            /// disappeared without closing it (process killed, crashed); in
+            /// the latter case `get_result` resolves to
+            /// `ResultOutcome::Abandoned`.
             pub async fn #method_ident(
                 &mut self,
             ) -> crate::Result<#struct_ident> {
