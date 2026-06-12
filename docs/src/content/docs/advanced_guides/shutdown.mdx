@@ -1,0 +1,126 @@
+---
+title: Shutdown lifecycle
+description: "How a node stops: the stop paths, the cancellation token, shutdown hooks, grace windows, and the force-kill backstops."
+sidebar:
+  order: 14
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+A node instance rarely gets to decide when it stops, and a robot node that stops carelessly leaves motors energised, instance locks held, and state unflushed. This guide is the full contract for how a node shuts down: which events trigger it, what the runtime guarantees (and does not guarantee) about your code during it, and how the grace windows bound every step. For the quick-start version, see [Graceful shutdown](/guides/first_node/#graceful-shutdown) in the first node guide; for the daemon-side operations view, see [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention).
+
+The runtime gives your node two shutdown primitives, and they are deliberately not the same thing:
+
+- The **cancellation token** (`node_runner.cancellation_token()`) is a *signal*: it resolves when shutdown begins, so in-flight work can notice and stop. Nothing waits for the code that follows it.
+- **Shutdown hooks** (`node_runner.on_shutdown(...)`) are *awaited obligations*: registered cleanup that the runtime itself runs to completion (bounded by a grace window) before `run()` returns.
+
+Use the token to stop working; use a hook to finish cleaning up.
+
+## The stop paths
+
+Every way a node can be asked to stop converges on the same cancellation token, and therefore on the same sequence below:
+
+- [`peppy node stop <instance>`](/guides/node_stack/#stopping-your-node): the daemon sends an in-band shutdown request over messaging. No unix signal is involved.
+- **Daemon teardown**: a clean daemon shutdown (`Ctrl+C`, `systemctl stop`) sends the same in-band request to every spawned node, as does `peppy node add` when it replaces a node that has running instances.
+- **`SIGINT` / `SIGTERM` delivered to the node process**: the runtime installs its own signal handlers, so a plain `kill` (or `Ctrl+C` on a standalone node) is just another route to the token. Your node needs no signal handling of its own.
+- **Daemon-liveness loss**: the node's watchdog cancels the token after `daemon_grace_secs` without a daemon heartbeat, so an orphaned node tears itself down.
+- **A setup error**: if your setup function returns an error, the runtime still cancels the token and runs the hooks registered up to that point (so a lock acquired early in setup is released even when bringup fails halfway).
+- **Programmatic cancel**: your own code may cancel the token to request shutdown from inside the node.
+
+## The shutdown sequence
+
+Once any of those paths fires, the runtime drives one ordered sequence:
+
+1. **The cancellation token is cancelled.** Every `token.cancelled()` resolves; loops that select on it should stop doing work. Background tasks keep running for now; services (health, your own endpoints) remain reachable.
+2. **Shutdown hooks run**, sequentially, in **reverse registration order** (last registered, first run), all within **one shared grace window** (`lifecycle.shutdown_grace_secs`). The messenger is still connected, so hooks can use the [datastore](/advanced_guides/datastore/), services, and topics.
+3. **Task teardown.** In Python, the runtime now cancels the node's remaining asyncio tasks and waits for them to finish (their `try`/`finally` blocks run, best effort). In Rust, `run()` returns and the tokio runtime is dropped: spawned tasks are simply dropped wherever they last yielded, which is why cleanup must not live in them.
+4. **The process exits.** On the stop paths driven by the daemon, the daemon has been waiting in parallel since step 1: a node still alive when `shutdown_grace_secs` elapses is force-killed (process group `SIGKILL`) and reported as such.
+
+Reverse registration order mirrors how resources are acquired: setup acquires the lock first and brings hardware up second, so teardown disables hardware first and releases the lock last, like destructors.
+
+## Registering hooks
+
+Register hooks during setup, as soon as the resource they release exists. A hook registered after shutdown has begun may never run.
+
+<Tabs>
+  <TabItem label="Python">
+    The callback may be a plain function or an `async def`; a returned awaitable runs on the node's event loop. Exceptions raised by a hook are printed and the remaining hooks still run:
+
+    ```python
+    async def setup(params, node_runner: NodeRunner):
+        await store(node_runner, LOCK_KEY, b"locked", Encoding.TEXT_PLAIN, 3.0)
+
+        async def release_lock():
+            await remove(node_runner, LOCK_KEY, response_timeout_secs=2.0)
+
+        node_runner.on_shutdown(release_lock)
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    The hook is any `Future<Output = ()> + Send + 'static`. Capture an `Arc<NodeRunner>` clone if the cleanup needs messaging; a panicking hook is contained and logged, and the remaining hooks still run:
+
+    ```rust
+    NodeBuilder::new().run(|params: Parameters, node_runner| async move {
+        datastore::store(&node_runner, LOCK_KEY, b"locked".to_vec(), Encoding::TEXT_PLAIN, TIMEOUT).await?;
+
+        let runner = node_runner.clone();
+        node_runner.on_shutdown(async move {
+            if let Err(e) = datastore::remove(&runner, LOCK_KEY, TIMEOUT).await {
+                tracing::warn!("failed to release lock: {e}");
+            }
+        });
+
+        Ok(())
+    })
+    ```
+  </TabItem>
+</Tabs>
+
+Long-running work still belongs in spawned tasks that watch the token:
+
+```rust
+tokio::select! {
+    _ = token.cancelled() => break, // stop working; cleanup happens in hooks
+    _ = interval.tick() => { /* do work */ }
+}
+```
+
+Inside a hook the token is already cancelled, so `token.is_cancelled()` is `true` and awaiting `token.cancelled()` returns immediately.
+
+## Grace windows
+
+Two settings in `~/.peppy/conf/peppy_config.json5` bound the lifecycle (see [Daemon configuration](/advanced_guides/daemon_config/)); the daemon resolves both once and ships them to every node it spawns:
+
+- **`lifecycle.shutdown_grace_secs`** (default **3**, minimum 1) plays a dual role. Daemon-side, it is how long a stop path waits for the node to exit before force-killing it. Node-side, the runtime bounds the *entire hook phase* by the same value, so a stuck hook is abandoned at the deadline and the node still exits on its own. Raise it if your node legitimately needs longer to park actuators; both sides move together.
+- **`lifecycle.daemon_grace_secs`** (default **180**, minimum 30) decides *when* shutdown starts on the daemon-death path (how long a node tolerates a silent daemon before tearing itself down). It does not change how long cleanup gets once shutdown starts.
+
+:::caution
+On the daemon-death path there is no force-kill backstop: the daemon that would have delivered the `SIGKILL` is gone. The node-side bound on the hook phase is the only thing standing between a hung cleanup and an orphaned process, which is why all hooks share one hard window rather than getting one each.
+:::
+
+The window is enforced at await points. A hook that blocks synchronously (a stuck CAN read, a `while True: pass`) cannot be interrupted by the node itself; on daemon-driven stop paths the force-kill covers it, on the daemon-death path it cannot. Keep synchronous work inside hooks short.
+
+## Python specifics
+
+Python nodes get the same sequence with a few extra mechanics:
+
+- Hook coroutines run on the node's own asyncio event loop, which is still serving background tasks at that point. Tasks are cancelled only **after** the last hook finishes, so a hook can still await results produced by the rest of the node.
+- After the hooks, the runtime cancels the remaining tasks and gathers them: `try`/`finally` blocks run, but as cancelled code racing process exit they are best effort. Cleanup that must happen (or that needs messaging) belongs in `on_shutdown`, not in `finally`.
+- A node whose setup function is synchronous has no persistent event loop; its async hooks run on a dedicated one-off loop (`asyncio.run`) instead. Sync hooks are called directly in both cases.
+- The event-loop thread is joined (bounded by an internal 5 second backstop) before `run()` returns, so no Python frame is executing native code when the interpreter finalizes.
+- One limitation: an **in-band stop that arrives while an async setup is still running** takes effect only once setup completes, because the runner is blocked waiting for the setup coroutine. Signals and the daemon watchdog do interrupt a stuck async setup; a stuck setup asked to stop in-band is ended by the daemon's force-kill instead.
+
+## Force backstops
+
+Cooperative shutdown is bounded at every level, so a misbehaving node can always be removed:
+
+- **Daemon force-kill**: any daemon-driven stop path `SIGKILL`s the node's whole process group once `shutdown_grace_secs` elapses. `peppy node stop` reports whether the instance exited gracefully or had to be force-killed.
+- **Second signal**: while a signal-initiated shutdown is in flight, a second `SIGINT`/`SIGTERM` makes the node exit immediately with the conventional `128 + signo` code (130 or 143), skipping the remaining cleanup. Pressing `Ctrl+C` twice always works.
+
+## What a node never needs
+
+The runtime owns the whole lifecycle, so a node should contain none of the following; each one either duplicates the runtime or defeats its guarantees:
+
+- **Signal handlers.** `SIGINT`/`SIGTERM` are routed to the cancellation token for you.
+- **Cleanup in a spawned task.** A task watching the token races the teardown in step 3 of [the sequence](#the-shutdown-sequence) and is not guaranteed to run again after the token fires; only `on_shutdown` hooks are awaited.
+- **`std::process::exit` / `sys.exit` after cleanup.** `run()` returns once the hooks finish and the process exits normally; an explicit exit skips the remaining teardown. To stop the node from inside, cancel the token and return.
