@@ -330,9 +330,9 @@ dependencies = [
 
 [[package]]
 name = "block-buffer"
-version = "0.12.1"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
+checksum = "cdd35008169921d80bc60d3d0ab416eecb028c4cd653352907921d95084790be"
 dependencies = [
  "hybrid-array",
 ]
@@ -425,9 +425,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.64"
+version = "1.2.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dad887fd958be91b5098c0248def011f4523ab786cd411be668777e55063501f"
+checksum = "556e016178bb5662a08681bbe0f00f8e17631781a4dfc8c45e466e4b185ec27f"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -942,6 +942,7 @@ version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
+ "powerfmt",
  "serde_core",
 ]
 
@@ -985,7 +986,7 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
- "block-buffer 0.12.1",
+ "block-buffer 0.12.0",
  "const-oid 0.10.2",
  "crypto-common 0.2.2",
 ]
@@ -2388,9 +2389,9 @@ dependencies = [
 
 [[package]]
 name = "memchr"
-version = "2.8.2"
+version = "2.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
+checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 
 [[package]]
 name = "micromap"
@@ -4430,9 +4431,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
-version = "1.15.2"
+version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "socket2"
@@ -4481,9 +4482,9 @@ dependencies = [
 
 [[package]]
 name = "stabby"
-version = "72.1.8"
+version = "72.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7b834ec7ced12095fea1e4b07dcb7e8cf2b59b18afa3eac52494d835965a5ec"
+checksum = "da596fe515a75300efdc17bea773f7304a7758e187a0a8013fca4364aa5edacd"
 dependencies = [
  "rustversion",
  "stabby-abi",
@@ -4491,9 +4492,9 @@ dependencies = [
 
 [[package]]
 name = "stabby-abi"
-version = "72.1.8"
+version = "72.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff1a4f477858a5bdf927c9fab7f579899de9b13e39f8b3b3b300c89fbab632f4"
+checksum = "080815c68b7e997f113fdbe75b726f4187817196a1b7d7f4c13843f40a8dd79c"
 dependencies = [
  "rustc_version",
  "rustversion",
@@ -4503,13 +4504,14 @@ dependencies = [
 
 [[package]]
 name = "stabby-macros"
-version = "72.1.8"
+version = "72.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b31c4b2434980b67ad83f300a58088ba14d59454dcd79ba3d87419bbd924d31e"
+checksum = "18084b18318cf35f502f70c5157e86840d9d1b0964316f08d0b3ebf405e4127d"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
+ "rand 0.8.6",
  "syn",
 ]
 
@@ -4664,11 +4666,12 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.48"
+version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc1aa89044e7786ffb2ec017acb22cb7de5b0be46d0f21aea2b224b8561e5db2"
+checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
+ "itoa",
  "num-conv",
  "powerfmt",
  "serde_core",
@@ -4678,15 +4681,15 @@ dependencies = [
 
 [[package]]
 name = "time-core"
-version = "0.1.9"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
+checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
 
 [[package]]
 name = "time-macros"
-version = "0.2.28"
+version = "0.2.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d3bfe86347f0cc659f586f01e26303ccd32418f26f30c7b0309b3ca3a07d695"
+checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
 dependencies = [
  "num-conv",
  "time-core",
