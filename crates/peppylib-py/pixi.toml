@@ -27,13 +27,3 @@ cross-linux-aarch64-release = "maturin build --zig --release --target aarch64-un
 cross-linux-x86_64-release = "maturin build --zig --release --target x86_64-unknown-linux-gnu"
 release-pypi = "python release_pypi.py"
 test = "maturin develop && pytest tests/ -v"
-zenoh-simple = "cargo run --manifest-path ../peppylib/examples/zenohd_simple/Cargo.toml"
-
-topic-exposes = "maturin develop && python examples/hello_world_topic_exposes/main.py"
-topic-consumes = "maturin develop && python examples/hello_world_topic_consumes/main.py"
-
-service-exposes = "maturin develop && python examples/hello_world_service_exposes/main.py"
-service-consumes = "maturin develop && python examples/hello_world_service_consumes/main.py"
-
-action-exposes = "maturin develop && python examples/hello_world_action_exposes/main.py"
-action-consumes = "maturin develop && python examples/hello_world_action_consumes/main.py"

@@ -41,8 +41,9 @@ pub use repo::{
     RepoSourceKind,
 };
 pub use stack::benchmark::{
-    BenchmarkFeedbackStep, ClockConfidence, InterfaceKind, InterfaceLatency, MeasurementKind,
-    StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse, StackBenchmarkResult,
+    BenchmarkFeedbackStep, ClockConfidence, DEFAULT_SAMPLES, InterfaceKind, InterfaceLatency,
+    MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse,
+    StackBenchmarkResult,
 };
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
