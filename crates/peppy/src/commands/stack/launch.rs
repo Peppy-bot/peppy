@@ -247,7 +247,6 @@ async fn launch_async(
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
         None,
-        None,
         GOAL_TIMEOUT,
     )
     .await

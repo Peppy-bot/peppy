@@ -844,8 +844,7 @@ async fn measure_probe(
                     &ctx.core_instance_id,
                     target.clone(),
                     service_name,
-                    Some(&ctx.bound_core_node),
-                    None,
+                    None, // wildcard: the edge's producers all live on this daemon
                     timeout,
                     request_size,
                     response_size,
@@ -859,8 +858,7 @@ async fn measure_probe(
                     &ctx.core_instance_id,
                     target.clone(),
                     service_name,
-                    Some(&ctx.bound_core_node),
-                    None,
+                    None, // wildcard: the edge's producers all live on this daemon
                     timeout,
                     request_size,
                     response_size,
@@ -927,8 +925,7 @@ async fn poll_producer_offset(
             &ctx.core_instance_id,
             target.clone(),
             CLOCK_OFFSET_SERVICE,
-            Some(&ctx.bound_core_node),
-            None,
+            None, // wildcard: the node's clock_offset endpoint lives on this daemon
             request,
             timeout,
         )
@@ -1013,7 +1010,6 @@ async fn measure_topic_delivery(
         Some(target),
         false,
         &edge.interface,
-        Some(&ctx.bound_core_node),
         &ConsumerFilter::Any,
         edge.qos.clone(),
     )

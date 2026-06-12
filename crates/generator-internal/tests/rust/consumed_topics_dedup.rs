@@ -58,8 +58,8 @@ use peppygen::consumed_topics::{left_arm_joint_states, right_arm_joint_states};
 
 #[allow(dead_code)]
 fn _references_both_link_keyed_modules() {
-    let _left: fn(_, _) -> _ = left_arm_joint_states::on_next_message_received;
-    let _right: fn(_, _) -> _ = right_arm_joint_states::on_next_message_received;
+    let _left: fn(_) -> _ = left_arm_joint_states::on_next_message_received;
+    let _right: fn(_) -> _ = right_arm_joint_states::on_next_message_received;
 }
 
 fn main() {}

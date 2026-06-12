@@ -177,7 +177,6 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
         Some(&conn.core_node_name),
-        None,
         GOAL_TIMEOUT,
     )
     .await

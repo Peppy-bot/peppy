@@ -44,7 +44,6 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
         CALLER_INSTANCE_ID,
         SenderTarget::node(&conn.core_node_name, CORE_NODE_TAG)
             .map_err(|e| Error::ExecutionFailed(format!("Failed to build sender target: {e}")))?,
-        &conn.core_node_name,
         request_timeout,
     )
     .await

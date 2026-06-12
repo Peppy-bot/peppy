@@ -482,7 +482,10 @@ async fn validate_binds_against_stack(
         conforms_to: &target_conforms_to,
     });
 
-    let mut validated = validate_bindings(&items);
+    // Stamp resolved producer references with the daemon's core_node — the
+    // same daemon that will spawn the instance, so the CLI preflight and the
+    // daemon's own materialization agree on every producer address.
+    let mut validated = validate_bindings(&items, core_node_name);
     if !validated.errors.is_empty() {
         let msg = config::format_bulleted(&validated.errors);
         return Err(Error::ExecutionFailed(msg));
@@ -626,7 +629,6 @@ pub async fn run_instance_async(
         core_node_name,
         CALLER_INSTANCE_ID,
         Some(core_node_name),
-        None,
         GOAL_TIMEOUT,
     )
     .await

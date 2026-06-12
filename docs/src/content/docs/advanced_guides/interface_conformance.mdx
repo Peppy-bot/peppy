@@ -274,10 +274,8 @@ Inside the consumer, every consumed-topic API returns the **producer's `instance
     let mut frames_by_producer: HashMap<String, Frame> = HashMap::new();
 
     loop {
-        let (instance_id, frame) = extras_video_stream::on_next_message_received(
-            &node_runner,
-            None,
-        ).await?;
+        let (instance_id, frame) =
+            extras_video_stream::on_next_message_received(&node_runner).await?;
         // Use the returned id as a runtime key; do not compare against a hard-coded name.
         frames_by_producer.insert(instance_id, frame);
         reconstruct(&frames_by_producer);

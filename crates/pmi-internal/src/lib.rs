@@ -2,6 +2,7 @@
 
 mod adapters;
 mod error;
+mod probe;
 mod types;
 mod wire;
 #[cfg(feature = "zenoh")]
@@ -9,7 +10,12 @@ mod zenoh_config;
 #[cfg(feature = "zenoh")]
 mod zenohd;
 
+/// The full `(core_node, instance_id)` producer wire address taken by the
+/// sender constructors. Defined in `config` (the serialized layer); re-exported
+/// here so pmi's public API is nameable through pmi alone.
+pub use config::runtime::ProducerRef;
 pub use error::Error as PeppyMessagingInterfaceError;
+pub use probe::{MAX_PROBE_REPLY_SIZE, build_sized_probe_request};
 #[cfg(feature = "zenoh")]
 pub use types::ZenohResponseToken;
 pub use types::{

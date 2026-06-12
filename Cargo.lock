@@ -3013,6 +3013,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "zenoh",
 ]
 
 [[package]]
@@ -3198,6 +3199,7 @@ dependencies = [
  "serde_json",
  "serde_json5",
  "tempfile",
+ "time",
  "tokio",
  "tracing",
  "tracing-subscriber",

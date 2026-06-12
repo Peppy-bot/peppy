@@ -442,7 +442,7 @@ pub async fn start_scenario(lang: Lang) -> Scenario {
             messenger: &control,
             bound_core_node: CORE,
             caller_instance_id: HARNESS_INST,
-            target_core_node: Some(CORE),
+            target_core_node: CORE,
         };
 
         helpers::wait_for_health_service_reachable_or_exit(
@@ -515,8 +515,7 @@ impl Scenario {
             HARNESS_INST,
             SenderTarget::node(DRIVER_NODE, TAG).expect("driver target"),
             BENCH_CONTROL_SERVICE,
-            Some(CORE),
-            Some(DRIVER_INST),
+            Some(&peppylib::messaging::ProducerRef::new(CORE, DRIVER_INST)),
             Payload::from(request),
             CONTROL_TIMEOUT,
         )
@@ -542,7 +541,7 @@ impl Scenario {
             CORE,
             HARNESS_INST,
             DRIVER_NODE,
-            Some(CORE),
+            CORE,
             DRIVER_INST,
             Duration::from_secs(5),
         )
@@ -552,7 +551,7 @@ impl Scenario {
             CORE,
             HARNESS_INST,
             RESPONDER_NODE,
-            Some(CORE),
+            CORE,
             RESPONDER_INST,
             Duration::from_secs(5),
         )
@@ -658,8 +657,7 @@ async fn run_service(
             inst,
             SenderTarget::node(RESPONDER_NODE, TAG)?,
             "echo",
-            Some(CORE),
-            Some(RESPONDER_INST),
+            Some(&peppylib::messaging::ProducerRef::new(CORE, RESPONDER_INST)),
             payload,
             RPC_TIMEOUT,
         )
@@ -741,7 +739,6 @@ fn main() -> Result<()> {
             Some(SenderTarget::node(RESPONDER_NODE, TAG)?),
             false,
             "pong",
-            Some(CORE),
             &ConsumerFilter::Any,
             QoSProfile::Reliable,
         )
@@ -846,7 +843,6 @@ fn main() -> Result<()> {
                     Some(SenderTarget::node(DRIVER_NODE, TAG).expect("driver target")),
                     false,
                     "ping",
-                    Some(CORE),
                     &ConsumerFilter::Any,
                     QoSProfile::Reliable,
                 )

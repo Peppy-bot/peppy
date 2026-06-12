@@ -1,6 +1,7 @@
 use super::discovery::discover_producer;
 use super::{DISCOVERY_TIMEOUT, MessengerHandle, PROBE_TIMEOUT, generate_short_id};
 use crate::error::{Error, Result};
+use crate::messaging::ProducerRef;
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
 use pmi::{
@@ -211,28 +212,21 @@ impl ServiceEndpoint {
                 Ok(incoming) => {
                     match incoming.kind {
                         ServiceQueryKind::Probe => {
-                            // Auto-handle probes: reply with `Response` kind,
-                            // never invoking the user handler. A benchmark
-                            // "sized probe" carries a desired response size in
-                            // its body so `stack benchmark` can measure real
-                            // -payload round-trips without running the handler;
-                            // every other probe (liveness, discovery, node
-                            // removal) sends an empty body and still gets an
-                            // empty reply, exactly as before. **Critical**:
-                            // probes do NOT get an ACK — the consumer's poll
-                            // loop pins the responder's identity off the first
-                            // non-Ack reply, so an Ack-kind probe reply would
-                            // deadlock the wildcard discover-then-pin flow.
-                            let probe_body = incoming.payload.as_bytes();
-                            let response =
-                                match super::probe::parse_sized_probe_request(&probe_body) {
-                                    Some(size) => bytes::Bytes::from(vec![0u8; size as usize]),
-                                    None => bytes::Bytes::new(),
-                                };
-                            if let Err(err) = incoming.token.respond_response(response.into()).await
-                            {
-                                warn!(%err, "failed to publish probe response");
-                            }
+                            // Probes are answered by the transport adapter's
+                            // query dispatch (see pmi's zenoh/mock adapters)
+                            // and must never reach this channel: answering
+                            // them here would starve discovery and liveness
+                            // whenever user code holds this recv loop.
+                            // Defensive drop so a misbehaving adapter can't
+                            // wedge the request loop in release builds.
+                            debug_assert!(
+                                false,
+                                "ServiceQueryKind::Probe leaked past the adapter dispatch"
+                            );
+                            warn!(
+                                link_id = %incoming.link_id,
+                                "dropping probe that leaked past the adapter dispatch"
+                            );
                             continue;
                         }
                         ServiceQueryKind::UserRequest => {
@@ -304,8 +298,8 @@ impl fmt::Debug for ServiceRequestContext {
 impl ServiceMessenger {
     /// Listen as a service. The producer declares one queryable under the
     /// reserved default `_` link_id segment; consumers pin a specific
-    /// producer by `target_instance_id` derived from the consumer's
-    /// binding map.
+    /// producer by the `(core_node, instance_id)` target derived from the
+    /// consumer's binding map.
     ///
     /// `as_identity` must match the [`SenderTarget`] callers will use in
     /// [`Self::poll`].
@@ -330,15 +324,16 @@ impl ServiceMessenger {
     /// producers advertise under the reserved `_` segment and Zenoh's
     /// matcher unifies the two.
     ///
-    /// When either `target_core_node` or `target_instance_id` is `None`
-    /// (wildcard / from_any), this performs a discover-then-pin sequence:
-    /// a lightweight probe is sent to identify a single responding
-    /// producer's `(core_node, instance_id)`, then the real request is
-    /// delivered pinned to that producer. The probe is filtered
-    /// server-side before the user handler runs, so non-winning producers
-    /// never see the request. This costs one extra round-trip; fully
-    /// pinned callers (both `target_*` `Some`) skip discovery and pay no
-    /// overhead.
+    /// `target` is the producer's full `(core_node, instance_id)` wire
+    /// address. `Some(target)` — a pinned slot, or a `from_any` slot
+    /// bound to exactly one producer — addresses that producer directly:
+    /// **no discovery probe is issued and no discovery timeout applies**;
+    /// the call has the caller's whole `response_timeout` to itself.
+    /// `None` is a genuine wildcard (`from_any`): a discover-then-pin
+    /// sequence sends a lightweight probe to identify a single responding
+    /// producer, then delivers the real request pinned to it. The probe
+    /// is answered by the transport adapter before the user handler runs,
+    /// so non-winning producers never see the request.
     ///
     /// `to_target` must match the [`SenderTarget`] the responder used in
     /// [`Self::listen`].
@@ -349,21 +344,20 @@ impl ServiceMessenger {
         as_instance_id: &str,
         to_target: SenderTarget,
         to_service_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        target: Option<&ProducerRef>,
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
         let response_timeout: Option<Duration> = response_timeout.into();
 
         let started_at = Instant::now();
-        let (resolved_core, resolved_inst) =
-            if target_instance_id.is_none() || target_core_node.is_none() {
+        let resolved: ProducerRef = match target {
+            Some(producer) => producer.clone(),
+            None => {
                 let probe_sender = ServiceWireSender::new(
                     bound_core_node,
                     as_instance_id,
-                    target_core_node,
-                    target_instance_id,
+                    None,
                     to_target.clone(),
                     to_service_name,
                     ServiceKind::Service,
@@ -376,15 +370,9 @@ impl ServiceMessenger {
                 let discovery_timeout = response_timeout
                     .map(|t| t.min(DISCOVERY_TIMEOUT))
                     .unwrap_or(DISCOVERY_TIMEOUT);
-                let (core, inst) =
-                    discover_producer(messenger, &probe_sender, discovery_timeout).await?;
-                (Some(core), Some(inst))
-            } else {
-                (
-                    target_core_node.map(str::to_string),
-                    target_instance_id.map(str::to_string),
-                )
-            };
+                discover_producer(messenger, &probe_sender, discovery_timeout).await?
+            }
+        };
 
         // Discovery counts against the caller's single end-to-end budget;
         // pass only the remaining slice to `poll_service` so a tight
@@ -395,7 +383,7 @@ impl ServiceMessenger {
                 let remaining = total.saturating_sub(elapsed);
                 if remaining.is_zero() {
                     return Err(Error::ServiceTimeout {
-                        instance_id: resolved_inst.clone(),
+                        instance_id: Some(resolved.instance_id.clone()),
                         service_name: to_service_name.to_string(),
                     });
                 }
@@ -407,8 +395,7 @@ impl ServiceMessenger {
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
-            resolved_core.as_deref(),
-            resolved_inst.as_deref(),
+            Some(&resolved),
             to_target,
             to_service_name,
             ServiceKind::Service,
@@ -424,8 +411,9 @@ impl ServiceMessenger {
     }
 
     /// Sends a lightweight probe to check whether a service is listening at
-    /// the targeted producer. The probe is handled transparently by the
-    /// service's request loop; the user handler is never invoked. Returns
+    /// the targeted producer (`Some` = a full `(core_node, instance_id)`
+    /// pin, `None` = any matching producer). The probe is answered by the
+    /// transport adapter; the user handler is never invoked. Returns
     /// `true` if the service responds within [`PROBE_TIMEOUT`], `false` if
     /// unreachable.
     ///
@@ -439,14 +427,12 @@ impl ServiceMessenger {
         as_instance_id: &str,
         to_target: SenderTarget,
         to_service_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        target: Option<&ProducerRef>,
     ) -> Result<bool> {
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
-            target_core_node,
-            target_instance_id,
+            target,
             to_target,
             to_service_name,
             ServiceKind::Service,
@@ -477,10 +463,8 @@ impl ServiceMessenger {
     /// `request_size`/`response_size` make the probe carry a real-payload-sized
     /// body and ask the producer to reply with `response_size` bytes, so the
     /// round-trip reflects serializing+moving real-sized messages rather than an
-    /// empty sentinel — still without running the handler. A producer built
-    /// before sized probes ignores the request body and replies empty, so the
-    /// returned response size will be 0; pass `0`/`0` to fall back to the old
-    /// empty probe.
+    /// empty sentinel — still without running the handler. Pass `0`/`0` to fall
+    /// back to the old empty probe.
     ///
     /// Returns `(elapsed, response_bytes_received)` on a clean reply, where
     /// `response_bytes_received` is the actual reply payload length (lets the
@@ -495,8 +479,7 @@ impl ServiceMessenger {
         as_instance_id: &str,
         to_target: SenderTarget,
         to_service_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        target: Option<&ProducerRef>,
         response_timeout: Duration,
         request_size: usize,
         response_size: u32,
@@ -504,13 +487,12 @@ impl ServiceMessenger {
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
-            target_core_node,
-            target_instance_id,
+            target,
             to_target,
             to_service_name,
             ServiceKind::Service,
         )?;
-        let request = super::probe::build_sized_probe_request(request_size, response_size);
+        let request = Payload::from(pmi::build_sized_probe_request(request_size, response_size));
         let started = Instant::now();
         let reply = messenger
             .poll_service(&sender, request, ServiceQueryKind::Probe, response_timeout)

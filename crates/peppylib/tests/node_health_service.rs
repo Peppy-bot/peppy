@@ -6,7 +6,7 @@ use common::{
 };
 use peppylib::{
     encoding::health::{NodeHealthRequest, NodeHealthResponse},
-    messaging::{MessengerHandle, ServiceMessenger},
+    messaging::{MessengerHandle, ProducerRef, ServiceMessenger},
     services::health::listen_for_node_health,
 };
 use std::sync::Arc;
@@ -42,8 +42,10 @@ async fn node_health_request_response_roundtrip() {
         CALLER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
         peppylib::messaging::NODE_HEALTH_SERVICE,
-        Some(&client.core_node_name),
-        Some(&client.instance_id),
+        Some(&ProducerRef::new(
+            client.core_node_name.as_str(),
+            client.instance_id.as_str(),
+        )),
         request_payload,
         Duration::from_secs(2),
     )

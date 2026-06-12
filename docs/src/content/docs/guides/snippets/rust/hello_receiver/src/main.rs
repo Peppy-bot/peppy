@@ -12,10 +12,7 @@ fn main() -> Result<()> {
 
 async fn receive_messages(node_runner: Arc<NodeRunner>) {
     loop {
-        let result = hello_world_param_message_stream::on_next_message_received(
-            &node_runner,
-            None,
-        )
+        let result = hello_world_param_message_stream::on_next_message_received(&node_runner)
         .await;
 
         match result {
