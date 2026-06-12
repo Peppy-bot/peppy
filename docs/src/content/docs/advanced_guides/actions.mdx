@@ -493,8 +493,8 @@ while True:
 
 Each goal has its own feedback stream, addressed by `goal_id`, so feedback for one goal never reaches another handle, even when several goals run concurrently on the same server. Two terminal errors end the drain loop:
 
-- **Clean close** (`ActionFeedbackChannelClosed`; `RuntimeError` in Python): the server closed this goal's stream — its worker completed the goal (`complete` or `complete_cancelled`) or abandoned it without completing it (an early return or a panic). Call `get_result` to learn the outcome.
-- **Producer gone** (`ActionFeedbackProducerGone`; `ConnectionError` in Python): the producer instance this goal is pinned to died without closing the stream (process killed, host lost). Feedback already in flight — including a clean close that did make it out — is drained first, so a graceful shutdown never surfaces as producer-gone. After this error, `get_result` resolves to the `Abandoned` outcome.
+- **Clean close** (`ActionFeedbackChannelClosed`; `RuntimeError` in Python): the server closed this goal's stream: its worker completed the goal (`complete` or `complete_cancelled`) or abandoned it without completing it (an early return or a panic). Call `get_result` to learn the outcome.
+- **Producer gone** (`ActionFeedbackProducerGone`; `ConnectionError` in Python): the producer instance this goal is pinned to died without closing the stream (process killed, host lost). Feedback already in flight (including a clean close that did make it out) is drained first, so a graceful shutdown never surfaces as producer-gone. After this error, `get_result` resolves to the `Abandoned` outcome.
 
 Either way, a client draining feedback always terminates rather than hanging. In Python, catch `ConnectionError` before the generic handler when you want to distinguish producer death from a clean close; a bare `except Exception` treats both as end-of-stream.
 
@@ -689,7 +689,7 @@ When `fire_goal` is called on a `from_any` slot with no binding to a single prod
 
 The non-winning producers see only the probe; their goal handler **never runs**. Without this step every matching producer would execute the goal concurrently, which for state-changing actions (motor commands, file writes, payment dispatches) is a real-world hazard.
 
-Pinned slots (and `from_any` slots bound to a single producer) skip discovery entirely — no probe is sent. The binding carries the producer's full `(core_node, instance_id)` wire address, so the generated call addresses exactly one producer and the goal request has the caller's whole `goal_timeout` to itself. Probes for the wildcard calls that do discover are answered by the transport adapter, so a producer busy executing a goal still answers discovery promptly.
+Pinned slots (and `from_any` slots bound to a single producer) skip discovery entirely; no probe is sent. The binding carries the producer's full `(core_node, instance_id)` wire address, so the generated call addresses exactly one producer and the goal request has the caller's whole `goal_timeout` to itself. Probes for the wildcard calls that do discover are answered by the transport adapter, so a producer busy executing a goal still answers discovery promptly.
 
 The cost is one additional round-trip on wildcard `fire_goal` calls (typically a few milliseconds). If the discovered producer dies between the probe and the real goal, `fire_goal` surfaces `ServiceUnreachable` and the caller can retry; the next attempt re-discovers a different producer if one is available. Discovery is capped at the caller's `goal_timeout` if that is tighter than the framework's default probe timeout, so a fast-fail budget still surfaces unreachable producers quickly.
 
