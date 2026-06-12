@@ -89,6 +89,17 @@ pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 /// scope, and must be allowed to coexist.
 type ActiveFromAnyKey = (Option<String>, Option<String>, String, String);
 
+/// What the shared-memory tier would do for payloads published on this host
+/// (see [`MessengerHandle::shm_expectation`]): payloads under
+/// `publish_threshold_bytes` deliberately take the heap path; payloads over
+/// `segment_bytes` cannot be allocated from the segment and fall back to the
+/// network. The stack benchmark uses this to say WHY a row missed shm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShmExpectation {
+    pub publish_threshold_bytes: usize,
+    pub segment_bytes: usize,
+}
+
 #[derive(Clone)]
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
@@ -252,6 +263,28 @@ impl MessengerHandle {
         match &messenger.adapter {
             #[cfg(feature = "zenoh")]
             MessengerAdapter::Zenoh(adapter) => Some(adapter.net_protocol().as_str()),
+            _ => None,
+        }
+    }
+
+    /// What the shared-memory tier would do for payloads published on this
+    /// host, resolved from the session's `shm` section. `None` when shm is
+    /// disabled or there is no zenoh backend (the mock) — callers must then
+    /// not attribute a network path to shm conditions. The segment size is
+    /// resolved against THIS process's memlock limit, so it holds for nodes
+    /// this daemon spawned (they inherit the limit) and is approximate for
+    /// anything else.
+    pub async fn shm_expectation(&self) -> Option<ShmExpectation> {
+        let messenger = self.messenger.lock().await;
+        match &messenger.adapter {
+            #[cfg(feature = "zenoh")]
+            MessengerAdapter::Zenoh(adapter) => {
+                let shm = adapter.shm_config();
+                shm.enabled.then(|| ShmExpectation {
+                    publish_threshold_bytes: pmi::SHM_PUBLISH_THRESHOLD_BYTES,
+                    segment_bytes: pmi::resolved_shm_segment_bytes(shm.segment_bytes),
+                })
+            }
             _ => None,
         }
     }

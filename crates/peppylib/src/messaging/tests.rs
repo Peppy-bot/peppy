@@ -1621,6 +1621,32 @@ async fn sized_probe_reply_at_or_above_threshold_rides_shm() {
     router.shutdown().await;
 }
 
+/// The benchmark attributes why-not-shm with `shm_expectation`: a default
+/// (shm-on) zenoh session reports the publish threshold and a segment inside
+/// the floor/target window the provider sizing guarantees, so the attribution
+/// always compares against the sizes the shm tier actually uses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn shm_expectation_reports_threshold_and_clamped_segment() {
+    let router = TestRouterContext::start().await;
+    {
+        let messenger = router.messenger().await;
+        let exp = messenger
+            .shm_expectation()
+            .await
+            .expect("shm-on session must report an expectation");
+        assert_eq!(
+            exp.publish_threshold_bytes,
+            pmi::SHM_PUBLISH_THRESHOLD_BYTES
+        );
+        assert!(
+            (1024 * 1024..=pmi::SHM_SEGMENT_BYTES).contains(&exp.segment_bytes),
+            "segment must sit in the floor/target window, got {}",
+            exp.segment_bytes
+        );
+    }
+    router.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_fails_service_timeouts() {
     let router = TestRouterContext::start().await;

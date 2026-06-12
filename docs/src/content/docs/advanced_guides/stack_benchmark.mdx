@@ -129,7 +129,15 @@ Real traffic: observe-only one-way delivery of live topic messages (200 samples/
   probe rows, the measured payload sizes (see
   [Payload sizing](#payload-sizing)); for `mixed` rows, the `shm k/n` share of
   samples that rode shared memory; plus any diagnostic (e.g. a suppressed
-  cross-host value, or a topic with no live traffic).
+  cross-host value, or a topic with no live traffic). When shm is enabled and
+  a row still took the network path, the note says why, when the cause is
+  observable from the measured sizes: `too small for shm (<4.1KB)` (under the
+  publish threshold — expected and deliberate), `too large for shm (>…
+  segment)` (the payload cannot be allocated from this host's shm segment;
+  raise the memlock limit or `shm.segment_bytes`), `producer on another host
+  (no shm)`, or `shm-eligible but took the network path` when the cause is
+  producer-side (segment creation failure, pool pressure, an isolated
+  container namespace — the producer node's log has the details).
 
 A legend repeating all of this prints beneath the tables:
 

@@ -424,8 +424,10 @@ Legend:
              {mixed}  both paths within one run (e.g. the shm pool filled
                         mid-run); the note carries the shm share (shm k/n)
              —          not measured (unreachable edge / no live traffic)
-  note       the interface (➔ edges) and, for probe rows, the measured payload
-             sizes (request → response; `≥` = schema lower bound)
+  note       the interface (➔ edges); for probe rows, the measured payload
+             sizes (request → response; `≥` = schema lower bound); and, with
+             shm on, why a network-path row missed shm (too small / too large
+             / another host)
   Δp50       median vs the previous run on this machine
 
 Benchmarking never triggers a real handler, never publishes onto a real topic,
@@ -812,7 +814,8 @@ mod tests {
             assert!(plain.contains(label), "legend missing {label}");
         }
         // The transport block names its labels, the observation point, and
-        // every code-grounded reason a payload takes the network path.
+        // every code-grounded reason a payload takes the network path; the
+        // note block says the per-row why-not-shm attribution lives there.
         for needle in [
             "transport",
             "shm",
@@ -823,6 +826,7 @@ mod tests {
             "another host",
             "namespace",
             "disabled",
+            "why a network-path row missed shm",
         ] {
             assert!(plain.contains(needle), "legend missing {needle}");
         }

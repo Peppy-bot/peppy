@@ -36,7 +36,7 @@ use latency_report::stats::summarize;
 use node_stack::NodeStack;
 use peppylib::messaging::{
     CLOCK_OFFSET_SERVICE, ConcurrentAction, ConsumerFilter, NODE_HEALTH_SERVICE, PendingGoal,
-    SenderTarget,
+    SenderTarget, ShmExpectation,
 };
 use peppylib::types::Payload;
 use peppylib::{
@@ -623,6 +623,65 @@ fn payload_note(edge: &Edge, honored_full: bool) -> String {
     note
 }
 
+/// Why a network-path row missed shm, when shm is enabled and the cause is
+/// attributable from what this process observed; `None` when there is nothing
+/// to explain (shm off / row not pure-network). `observed_min`/`observed_max`
+/// are the measured payload sizes of exactly the samples the row counts, and
+/// `payload_label` names them ("reply" for probe rows — the leg the transport
+/// column observes — "payload" for delivery rows).
+///
+/// Ordering is the attribution logic: a payload under the publish threshold
+/// never rides shm anywhere, so it is the most specific cause; a definitively
+/// cross-host producer has no segment to share regardless of size; the
+/// segment-size check only means something same-host, because the estimate is
+/// this host's. Whatever remains (provider creation failure, pool pressure,
+/// an isolated container namespace) is producer-side state this process
+/// cannot see, so the residual line claims only what was observed.
+fn shm_fallback_reason(
+    shm: Option<&ShmExpectation>,
+    transport: Transport,
+    clock_confidence: ClockConfidence,
+    payload_label: &str,
+    observed_min: usize,
+    observed_max: usize,
+) -> Option<String> {
+    let shm = shm?;
+    if transport != Transport::Network {
+        return None;
+    }
+    if observed_max < shm.publish_threshold_bytes {
+        return Some(format!(
+            "{payload_label} too small for shm (<{})",
+            human_bytes(shm.publish_threshold_bytes)
+        ));
+    }
+    if matches!(
+        clock_confidence,
+        ClockConfidence::CrossHostCorrected | ClockConfidence::CrossHostFlagged
+    ) {
+        return Some("producer on another host (no shm)".to_string());
+    }
+    if observed_min > shm.segment_bytes {
+        return Some(format!(
+            "{payload_label} too large for shm (>{} segment)",
+            human_bytes(shm.segment_bytes)
+        ));
+    }
+    Some(format!(
+        "{payload_label} shm-eligible but took the network path"
+    ))
+}
+
+/// Appends a [`shm_fallback_reason`] to a row's note with the same `"; "`
+/// joint the other note fragments use.
+fn append_note(note: Option<String>, extra: Option<String>) -> Option<String> {
+    match (note, extra) {
+        (Some(n), Some(e)) => Some(format!("{n}; {e}")),
+        (n, None) => n,
+        (None, e) => e,
+    }
+}
+
 /// The benchmark executor. Returns a result even on partial failure; per-edge
 /// problems are encoded as notes on the rows rather than aborting the run.
 async fn run_benchmark(
@@ -667,6 +726,12 @@ async fn run_benchmark(
 
     let mut rows: Vec<InterfaceLatency> = Vec::new();
 
+    // What the shm tier would do for payloads on this host, so network-path
+    // rows can say WHY they missed shm; `None` (shm off / mock) keeps the
+    // notes silent about shm.
+    let shm = ctx.messenger.shm_expectation().await;
+    let shm = shm.as_ref();
+
     for edge in &edges {
         match edge.kind {
             InterfaceKind::Service => {
@@ -683,6 +748,7 @@ async fn run_benchmark(
                         samples,
                         timeout,
                         MeasurementKind::ServiceProbe,
+                        shm,
                     )
                     .await,
                 );
@@ -701,6 +767,7 @@ async fn run_benchmark(
                         samples,
                         timeout,
                         MeasurementKind::ActionProbe,
+                        shm,
                     )
                     .await,
                 );
@@ -722,6 +789,7 @@ async fn run_benchmark(
                         samples,
                         timeout,
                         MeasurementKind::NodeProbe,
+                        shm,
                     )
                     .await,
                 );
@@ -730,7 +798,7 @@ async fn run_benchmark(
                     BenchmarkFeedbackStep::TopicDelivery,
                     format!("Measuring delivery {}", edge_label(edge)),
                 );
-                rows.push(measure_topic_delivery(ctx, edge, warmup, samples, timeout).await);
+                rows.push(measure_topic_delivery(ctx, edge, warmup, samples, timeout, shm).await);
             }
         }
     }
@@ -805,6 +873,7 @@ async fn measure_probe(
     samples: u32,
     timeout: Duration,
     measurement: MeasurementKind,
+    shm: Option<&ShmExpectation>,
 ) -> InterfaceLatency {
     // The node-probe rides the node-keyed wire path regardless of how the topic
     // itself is keyed: `node_health` is a per-node framework service, so an
@@ -840,6 +909,10 @@ async fn measure_probe(
     let total = warmup.saturating_add(samples);
     let mut out = Vec::new();
     let mut shm_samples: u64 = 0;
+    // Observed reply sizes over the same timed samples the row counts, sizing
+    // the shm-fallback attribution (the reply leg is what `transport` sees).
+    let mut reply_min: usize = usize::MAX;
+    let mut reply_max: usize = 0;
     let mut any_success = false;
     let mut consecutive_errors: u32 = 0;
     // Whether the producer EVER returned the full requested response size.
@@ -886,11 +959,13 @@ async fn measure_probe(
                 any_success = true;
                 consecutive_errors = 0;
                 honored_full |= probe.response_bytes >= edge.probe_response_size;
-                // Both under the warmup gate: the SHM tally must describe
-                // exactly the timed samples the row's `count` reports.
+                // All under the warmup gate: the SHM tally and the size range
+                // must describe exactly the timed samples the row counts.
                 if i >= warmup {
                     out.push(probe.elapsed.as_nanos() as u64);
                     shm_samples += u64::from(probe.response_shm);
+                    reply_min = reply_min.min(probe.response_bytes);
+                    reply_max = reply_max.max(probe.response_bytes);
                 }
             }
             Err(_) => {
@@ -913,6 +988,17 @@ async fn measure_probe(
     } else {
         Some(payload_note(edge, honored_full))
     };
+    let note = append_note(
+        note,
+        shm_fallback_reason(
+            shm,
+            Transport::classify(shm_samples, out.len() as u64),
+            ClockConfidence::NotApplicable,
+            "reply",
+            reply_min,
+            reply_max,
+        ),
+    );
     row_from_samples(
         edge,
         measurement,
@@ -1013,6 +1099,7 @@ async fn measure_topic_delivery(
     warmup: u32,
     samples: u32,
     per_sample_timeout: Duration,
+    shm: Option<&ShmExpectation>,
 ) -> InterfaceLatency {
     let offset = poll_producer_offset(ctx, &edge.to_node, &edge.to_tag, per_sample_timeout).await;
 
@@ -1061,6 +1148,10 @@ async fn measure_topic_delivery(
     let mut measured: u32 = 0;
     let mut out = Vec::new();
     let mut shm_samples: u64 = 0;
+    // Observed payload sizes over the same accepted samples the row counts,
+    // sizing the shm-fallback attribution.
+    let mut payload_min: usize = usize::MAX;
+    let mut payload_max: usize = 0;
     let mut had_implausible = false;
 
     loop {
@@ -1085,11 +1176,14 @@ async fn measure_topic_delivery(
                 let corrected = recv as i128 - src as i128 - off;
                 measured += 1;
                 if (0..=IMPLAUSIBLE_DELIVERY_NS).contains(&corrected) {
-                    // Both under the acceptance gate: warmup and implausible
-                    // samples are excluded from the SHM tally exactly as they
-                    // are from the row's `count`.
+                    // All under the acceptance gate: warmup and implausible
+                    // samples are excluded from the SHM tally and the size
+                    // range exactly as they are from the row's `count`.
                     out.push(corrected as u64);
                     shm_samples += u64::from(msg.payload_is_shm_backed());
+                    let len = msg.payload_len();
+                    payload_min = payload_min.min(len);
+                    payload_max = payload_max.max(len);
                 } else {
                     had_implausible = true;
                 }
@@ -1103,6 +1197,17 @@ async fn measure_topic_delivery(
     if out.is_empty() && !had_implausible {
         note = Some("no live traffic observed within the timeout".to_string());
     }
+    let note = append_note(
+        note,
+        shm_fallback_reason(
+            shm,
+            Transport::classify(shm_samples, out.len() as u64),
+            confidence,
+            "payload",
+            payload_min,
+            payload_max,
+        ),
+    );
     row_from_samples(
         edge,
         MeasurementKind::TopicDelivery,
@@ -1438,5 +1543,103 @@ mod tests {
             None,
         );
         assert_eq!(none_shm.transport, Transport::Network);
+    }
+
+    /// One case per attribution rule, in the order the function applies them,
+    /// plus every gate that must keep the note silent.
+    #[test]
+    fn shm_fallback_reason_attributes_observable_causes() {
+        let shm = ShmExpectation {
+            publish_threshold_bytes: 4 * 1024,
+            segment_bytes: 1024 * 1024,
+        };
+        let same_host = ClockConfidence::SameHost;
+        let na = ClockConfidence::NotApplicable;
+
+        // Gates: shm off (None), and any non-pure-network transport.
+        assert_eq!(
+            shm_fallback_reason(None, Transport::Network, na, "payload", 16, 16),
+            None
+        );
+        for t in [Transport::Shm, Transport::Mixed, Transport::NotMeasured] {
+            assert_eq!(
+                shm_fallback_reason(Some(&shm), t, na, "payload", 16, 16),
+                None
+            );
+        }
+
+        // Under the publish threshold — the universal cause, so it wins even
+        // for a cross-host producer.
+        assert_eq!(
+            shm_fallback_reason(Some(&shm), Transport::Network, na, "reply", 16, 56).as_deref(),
+            Some("reply too small for shm (<4.1KB)")
+        );
+        assert_eq!(
+            shm_fallback_reason(
+                Some(&shm),
+                Transport::Network,
+                ClockConfidence::CrossHostCorrected,
+                "payload",
+                16,
+                16
+            )
+            .as_deref(),
+            Some("payload too small for shm (<4.1KB)")
+        );
+
+        // Definitively cross-host with an shm-eligible size: no segment to
+        // share, and this host's segment estimate does not apply.
+        assert_eq!(
+            shm_fallback_reason(
+                Some(&shm),
+                Transport::Network,
+                ClockConfidence::CrossHostFlagged,
+                "payload",
+                6_000_000,
+                6_000_000
+            )
+            .as_deref(),
+            Some("producer on another host (no shm)")
+        );
+
+        // Over the segment, same host: the memlock-clamp case.
+        assert_eq!(
+            shm_fallback_reason(
+                Some(&shm),
+                Transport::Network,
+                same_host,
+                "payload",
+                6_000_000,
+                6_200_000
+            )
+            .as_deref(),
+            Some("payload too large for shm (>1.0MB segment)")
+        );
+
+        // Eligible size, same host, still network: producer-side state this
+        // process cannot see — claim only the observation.
+        assert_eq!(
+            shm_fallback_reason(
+                Some(&shm),
+                Transport::Network,
+                same_host,
+                "payload",
+                8 * 1024,
+                8 * 1024
+            )
+            .as_deref(),
+            Some("payload shm-eligible but took the network path")
+        );
+    }
+
+    #[test]
+    fn append_note_joins_with_semicolon() {
+        assert_eq!(
+            append_note(Some("a".into()), Some("b".into())).as_deref(),
+            Some("a; b")
+        );
+        assert_eq!(append_note(Some("a".into()), None).as_deref(), Some("a"));
+        assert_eq!(append_note(None, Some("b".into())).as_deref(), Some("b"));
+        assert_eq!(append_note(None, None), None);
     }
 }

@@ -384,6 +384,12 @@ impl ZenohAdapter {
         self.client_config.protocol
     }
 
+    /// The session's shared-memory section as configured (the `shm` knobs the
+    /// session was built with, not whether a provider was actually armed).
+    pub fn shm_config(&self) -> config::peppy_config::ShmConfig {
+        self.client_config.shm
+    }
+
     /// Builds a lock-free [`RouterHealthChecker`] bound to this adapter's router
     /// endpoint, for the router watchdog to probe liveness without holding the
     /// central messenger lock.

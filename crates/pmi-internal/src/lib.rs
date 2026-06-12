@@ -13,7 +13,7 @@ mod zenohd;
 
 pub use error::Error as PeppyMessagingInterfaceError;
 #[cfg(feature = "zenoh")]
-pub use shm::{SHM_PUBLISH_THRESHOLD_BYTES, SHM_SEGMENT_BYTES};
+pub use shm::{SHM_PUBLISH_THRESHOLD_BYTES, SHM_SEGMENT_BYTES, resolved_shm_segment_bytes};
 #[cfg(feature = "zenoh")]
 pub use types::ZenohResponseToken;
 pub use types::{

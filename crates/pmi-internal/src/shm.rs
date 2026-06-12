@@ -199,6 +199,15 @@ fn effective_segment_bytes(override_bytes: Option<usize>) -> (usize, SegmentSour
     resolve_segment_bytes(override_bytes, memlock_hard_limit())
 }
 
+/// The segment size a session of THIS process would arm, given the config
+/// override (`shm.segment_bytes`) — the same sizing [`ShmContext::create`]
+/// uses. For introspection (the stack benchmark sizes its "payload too large
+/// for shm" attribution with it); valid for processes this daemon spawned,
+/// which inherit its memlock limit, and approximate for anything else.
+pub fn resolved_shm_segment_bytes(override_bytes: Option<usize>) -> usize {
+    effective_segment_bytes(override_bytes).0
+}
+
 /// Clamps a candidate segment size into the floor/target window and rounds it
 /// DOWN to the alloc alignment: zenoh's `MemoryLayout` rejects any size that
 /// is not a multiple of its alignment, so an odd memlock limit (or config

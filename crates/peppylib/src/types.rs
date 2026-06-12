@@ -128,6 +128,13 @@ impl Message {
         self.0.payload().is_shm_backed()
     }
 
+    /// The payload length in bytes, without materializing a fragmented
+    /// network payload the way [`Self::payload`] would. The stack benchmark
+    /// sizes delivery samples with it on every message.
+    pub fn payload_len(&self) -> usize {
+        self.0.payload().len()
+    }
+
     /// Get the instance ID of the sender.
     pub fn instance_id(&self) -> &str {
         self.0.instance_id()
