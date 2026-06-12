@@ -66,19 +66,19 @@ sized from the message schema, so they are comparable with each other:
 
 ```
 Synthetic probes: handler-free round-trips, schema-sized payloads (200 samples/interface)
-┌──────────────────┬──────────┬────────────┬────────┬────────┬────────┬─────┬──────┬────────────────────┐
-│ edge             │ binding  │ measure    │ p50    │ p90    │ mean   │ n   │ Δp50 │ note               │
-├──────────────────┼──────────┼────────────┼────────┼────────┼────────┼─────┼──────┼────────────────────┤
-│ brain:v1         │ left_arm │ act-probe  │ 240µs  │ 310µs  │ 255µs  │ 200 │ —    │ payload 32B → 16B  │
-│ → arm:v1         │          │            │        │        │        │     │      │                    │
-│   /move_arm      │          │            │        │        │        │     │      │                    │
-│ brain:v1         │ camera   │ node-probe │ 195µs  │ 250µs  │ 207µs  │ 200 │ —    │ camera:v1; payload │
-│ ➔ camera_mock:v1 │          │            │        │        │        │     │      │ 0B → ≥56B          │
-│   /frames        │          │            │        │        │        │     │      │                    │
-│ brain:v1         │ camera   │ svc-probe  │ 180µs  │ 220µs  │ 191µs  │ 200 │ —    │ camera:v1; payload │
-│ ➔ camera_mock:v1 │          │            │        │        │        │     │      │ 0B → ≥32B          │
-│   /frame_info    │          │            │        │        │        │     │      │                    │
-└──────────────────┴──────────┴────────────┴────────┴────────┴────────┴─────┴──────┴────────────────────┘
+┌──────────────────┬──────────┬────────────┬───────────┬────────┬────────┬────────┬─────┬──────┬────────────────────┐
+│ edge             │ binding  │ measure    │ transport │ p50    │ p90    │ mean   │ n   │ Δp50 │ note               │
+├──────────────────┼──────────┼────────────┼───────────┼────────┼────────┼────────┼─────┼──────┼────────────────────┤
+│ brain:v1         │ left_arm │ act-probe  │ tcp       │ 240µs  │ 310µs  │ 255µs  │ 200 │ —    │ payload 32B → 16B  │
+│ → arm:v1         │          │            │           │        │        │        │     │      │                    │
+│   /move_arm      │          │            │           │        │        │        │     │      │                    │
+│ brain:v1         │ camera   │ node-probe │ tcp       │ 195µs  │ 250µs  │ 207µs  │ 200 │ —    │ camera:v1; payload │
+│ ➔ camera_mock:v1 │          │            │           │        │        │        │     │      │ 0B → ≥56B          │
+│   /frames        │          │            │           │        │        │        │     │      │                    │
+│ brain:v1         │ camera   │ svc-probe  │ tcp       │ 180µs  │ 220µs  │ 191µs  │ 200 │ —    │ camera:v1; payload │
+│ ➔ camera_mock:v1 │          │            │           │        │        │        │     │      │ 0B → ≥32B          │
+│   /frame_info    │          │            │           │        │        │        │     │      │                    │
+└──────────────────┴──────────┴────────────┴───────────┴────────┴────────┴────────┴─────┴──────┴────────────────────┘
 ```
 
 The **real-traffic table** collects the observe-only measurements of live
@@ -88,13 +88,13 @@ instead:
 
 ```
 Real traffic: observe-only one-way delivery of live topic messages (200 samples/interface)
-┌──────────────────┬──────────┬───────────┬────────┬────────┬────────┬─────┬──────┬────────────┐
-│ edge             │ binding  │ clock     │ p50    │ p90    │ mean   │ n   │ Δp50 │ note       │
-├──────────────────┼──────────┼───────────┼────────┼────────┼────────┼─────┼──────┼────────────┤
-│ brain:v1         │ camera   │ same-host │ 1.20ms │ 1.80ms │ 1.31ms │ 200 │ —    │ camera:v1  │
-│ ➔ camera_mock:v1 │          │           │        │        │        │     │      │            │
-│   /frames        │          │           │        │        │        │     │      │            │
-└──────────────────┴──────────┴───────────┴────────┴────────┴────────┴─────┴──────┴────────────┘
+┌──────────────────┬──────────┬───────────┬───────────┬────────┬────────┬────────┬─────┬──────┬────────────┐
+│ edge             │ binding  │ clock     │ transport │ p50    │ p90    │ mean   │ n   │ Δp50 │ note       │
+├──────────────────┼──────────┼───────────┼───────────┼────────┼────────┼────────┼─────┼──────┼────────────┤
+│ brain:v1         │ camera   │ same-host │ shm       │ 1.20ms │ 1.80ms │ 1.31ms │ 200 │ —    │ camera:v1  │
+│ ➔ camera_mock:v1 │          │           │           │        │        │        │     │      │            │
+│   /frames        │          │           │           │        │        │        │     │      │            │
+└──────────────────┴──────────┴───────────┴───────────┴────────┴────────┴────────┴─────┴──────┴────────────┘
 ```
 
 - **edge**: the dependency, wrapped over three lines: the **consumer**, then the
@@ -110,13 +110,25 @@ Real traffic: observe-only one-way delivery of live topic messages (200 samples/
   producer-node round-trip, cyan). What each one measures is detailed below.
 - **clock** (real-traffic table): clock-alignment confidence for the one-way
   delivery measurement.
+- **transport** (both tables): which path the measured payloads actually took,
+  observed per sample from the received buffer's shared-memory backing —
+  **shm** (shared-memory segment, green), the network protocol name (e.g.
+  **tcp**), **mixed** (both paths within one run, yellow; the `note` carries
+  the `shm k/n` share), or `—` (nothing measured). Probe rows observe the
+  **reply leg** only; delivery rows observe the path to **this host's
+  observer**, which a consumer on another host may not share. The legend lists
+  every reason a payload takes the network instead of shm.
 - **p50 / p90 / mean**: the latency distribution, in ns / µs / ms.
 - **n**: how many samples were collected (an unreachable or idle edge shows `0`).
 - **Δp50**: change in the median versus the previous run **on this machine**
   (baselines are machine-local, so numbers are never compared across machines).
+  The baseline key does not include the transport, so a path flip between runs
+  (e.g. shm toggled off, or payloads no longer fitting the segment) shows up
+  as a large Δp50 next to the changed `transport` label — that *is* the signal.
 - **note**: for `➔` rows, the interface the edge was resolved through; for
   probe rows, the measured payload sizes (see
-  [Payload sizing](#payload-sizing)); plus any diagnostic (e.g. a suppressed
+  [Payload sizing](#payload-sizing)); for `mixed` rows, the `shm k/n` share of
+  samples that rode shared memory; plus any diagnostic (e.g. a suppressed
   cross-host value, or a topic with no live traffic).
 
 A legend repeating all of this prints beneath the tables:
@@ -139,6 +151,21 @@ Legend:
   clock      same-host  exact (producer shares this host's clock)
              corrected  cross-host, adjusted via the producer's measured offset
              flagged    implausible delta, suppressed (deploy PTP/NTP)
+  transport  how each measured payload physically arrived at this core node,
+             observed per sample: probe rows observe the reply leg (the request
+             leg can differ when the sizes straddle the 4 KiB shm threshold);
+             delivery rows observe this host's subscriber, not each consumer
+             shm        arrived through a shared-memory segment (read in place,
+                        no receive-side copy)
+             tcp        crossed the network stack — expected when the payload is
+                        under the 4 KiB shm publish threshold, the producer runs
+                        on another host or in an isolated container namespace,
+                        shm is disabled in peppy_config, or the shm segment was
+                        unavailable, full, or too small for the payload (the
+                        producer node's log records segment problems)
+             mixed      both paths within one run (e.g. the shm pool filled
+                        mid-run); the note carries the shm share (shm k/n)
+             —          not measured (unreachable edge / no live traffic)
   note       the interface (➔ edges) and, for probe rows, the measured payload
              sizes (request → response; `≥` = schema lower bound)
   Δp50       median vs the previous run on this machine

@@ -1503,7 +1503,7 @@ async fn sized_probe_gets_sized_reply_without_running_the_handler() {
 
     {
         let caller = router.messenger().await;
-        let (_elapsed, response_bytes) = ServiceMessenger::probe_latency(
+        let probe = ServiceMessenger::probe_latency(
             &caller,
             CALLER_CORE_NODE,
             CALLER_INSTANCE_ID,
@@ -1520,14 +1520,100 @@ async fn sized_probe_gets_sized_reply_without_running_the_handler() {
 
         // The producer auto-answered with exactly the requested response size...
         assert_eq!(
-            response_bytes, 256,
+            probe.response_bytes, 256,
             "producer should honor the requested response size"
+        );
+        // ...a 256-byte reply is below the SHM publish threshold, so the reply
+        // leg deterministically takes the heap/network path...
+        assert!(
+            !probe.response_shm,
+            "sub-threshold probe reply must not be SHM-backed"
         );
         // ...and the user handler never ran (it was a probe, not a request).
         assert_eq!(
             call_count.load(Ordering::SeqCst),
             0,
             "sized probe must not invoke the user handler"
+        );
+    }
+
+    let _ = tokio::time::timeout(wait + Duration::from_millis(500), service_task).await;
+    router.shutdown().await;
+}
+
+/// The benchmark's transport column rests on `ProbeSample::response_shm`
+/// observing the SHM tier, not just the heap path: a sized probe whose reply
+/// is at or above the SHM publish threshold, between two co-located
+/// SHM-announcing sessions (the `connect_to` default), must come back
+/// SHM-backed — the framework's auto-reply rides the same copy-into-SHM tier
+/// as topic publishes. The transport-matrix tests in pmi pin the underlying
+/// `as_shm` fidelity; this pins the probe-level surfacing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn sized_probe_reply_at_or_above_threshold_rides_shm() {
+    let router = TestRouterContext::start().await;
+
+    let listener_node_name = "camera";
+    let listener_service_name = "video_stream_info";
+
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let wait = Duration::from_millis(1000);
+
+    let service_task = {
+        let handle = router.messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &handle,
+            "listener_core_node",
+            "listener_instance",
+            test_node_target(listener_node_name),
+            listener_service_name,
+        )
+        .await
+        .expect("service should start");
+
+        tokio::spawn(async move {
+            let handler = service.handle_next_request(|_request| async move {
+                Ok(Payload::from_static(b"real-response"))
+            });
+            ready_tx.send(()).unwrap();
+            // Probes are auto-answered inside the request loop; the handler
+            // parks until the timeout.
+            let _ = tokio::time::timeout(wait, handler).await;
+            Ok::<(), Error>(())
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), ready_rx)
+        .await
+        .expect("service should signal readiness")
+        .expect("service should signal readiness");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    {
+        let caller = router.messenger().await;
+        // 8 KiB is comfortably above SHM_PUBLISH_THRESHOLD_BYTES (4 KiB).
+        let probe = ServiceMessenger::probe_latency(
+            &caller,
+            "caller_core_node",
+            "caller_instance",
+            test_node_target(listener_node_name),
+            listener_service_name,
+            None,
+            None,
+            Duration::from_secs(5),
+            128,   // request_size
+            8_192, // response_size
+        )
+        .await
+        .expect("sized probe should round-trip");
+
+        assert_eq!(
+            probe.response_bytes, 8_192,
+            "producer should honor the requested response size"
+        );
+        assert!(
+            probe.response_shm,
+            "an at-or-above-threshold probe reply between co-located \
+             SHM-enabled sessions must arrive through shared memory"
         );
     }
 

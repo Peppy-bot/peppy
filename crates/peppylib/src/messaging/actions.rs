@@ -1,5 +1,6 @@
 use super::discovery::discover_producer;
 use super::generate_short_id;
+use super::probe::ProbeSample;
 use super::topics::Subscription;
 use super::{
     DISCOVERY_TIMEOUT, MessengerHandle, PROBE_TIMEOUT, ServiceEndpoint, ServiceResponder,
@@ -635,8 +636,9 @@ impl ActionMessenger {
     /// messages — still without creating a goal or running the action. A
     /// producer built before sized probes replies empty (returned size 0).
     ///
-    /// Returns `(elapsed, response_bytes_received)` on a clean reply; propagates
-    /// the error otherwise.
+    /// Returns a [`ProbeSample`] on a clean reply (round-trip, reply length,
+    /// and whether the reply leg rode shared memory); propagates the error
+    /// otherwise.
     #[allow(clippy::too_many_arguments)]
     pub async fn probe_latency(
         messenger: &MessengerHandle,
@@ -649,7 +651,7 @@ impl ActionMessenger {
         response_timeout: Duration,
         request_size: usize,
         response_size: u32,
-    ) -> Result<(Duration, usize)> {
+    ) -> Result<ProbeSample> {
         let sender = ActionWireSender::new(
             bound_core_node,
             as_instance_id,
@@ -668,7 +670,11 @@ impl ActionMessenger {
                 response_timeout,
             )
             .await?;
-        Ok((started.elapsed(), reply.payload().as_ref().len()))
+        Ok(ProbeSample {
+            elapsed: started.elapsed(),
+            response_bytes: reply.payload().as_ref().len(),
+            response_shm: reply.payload_is_shm_backed(),
+        })
     }
 
     /// Send a goal to an action server. Generates a fresh `goal_id`,

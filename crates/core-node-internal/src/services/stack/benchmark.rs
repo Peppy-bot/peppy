@@ -30,7 +30,7 @@ use config::node::{
 use core_node_api::encoding::{
     BenchmarkFeedbackStep, ClockConfidence, ClockOffsetRequest, ClockOffsetResponse, InterfaceKind,
     InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
-    StackBenchmarkGoalResponse, StackBenchmarkResult, wall_now_ns,
+    StackBenchmarkGoalResponse, StackBenchmarkResult, Transport, wall_now_ns,
 };
 use latency_report::stats::summarize;
 use node_stack::NodeStack;
@@ -740,7 +740,10 @@ async fn run_benchmark(
         BenchmarkFeedbackStep::Aggregating,
         format!("Aggregated {} row(s)", rows.len()),
     );
-    StackBenchmarkResult::success(rows)
+    // Names the protocol on the report's network-path rows ("tcp"); empty for
+    // a messenger with no network link to name (the in-process mock).
+    let net_protocol = ctx.messenger.net_protocol().await.unwrap_or_default();
+    StackBenchmarkResult::success(rows, net_protocol)
 }
 
 fn edge_label(edge: &Edge) -> String {
@@ -751,11 +754,17 @@ fn edge_label(edge: &Edge) -> String {
     )
 }
 
+/// `shm_samples` counts how many of `samples_ns` arrived through shared
+/// memory; it must be tallied under exactly the acceptance gate that pushed
+/// the sample, so the transport label describes the same `count` the
+/// statistics summarize (error paths pass 0 with an empty sample set, which
+/// classifies as [`Transport::NotMeasured`]).
 fn row_from_samples(
     edge: &Edge,
     measurement: MeasurementKind,
     clock_confidence: ClockConfidence,
     samples_ns: Vec<u64>,
+    shm_samples: u64,
     note: Option<String>,
 ) -> InterfaceLatency {
     let summary = summarize(&samples_ns);
@@ -770,6 +779,8 @@ fn row_from_samples(
         kind: edge.kind,
         measurement,
         clock_confidence,
+        transport: Transport::classify(shm_samples, summary.count),
+        shm_samples,
         p50_ns: summary.p50_ns,
         p90_ns: summary.p90_ns,
         mean_ns: summary.mean_ns,
@@ -810,6 +821,7 @@ async fn measure_probe(
                 measurement,
                 ClockConfidence::NotApplicable,
                 Vec::new(),
+                0,
                 Some(format!("invalid target: {e}")),
             );
         }
@@ -827,6 +839,7 @@ async fn measure_probe(
 
     let total = warmup.saturating_add(samples);
     let mut out = Vec::new();
+    let mut shm_samples: u64 = 0;
     let mut any_success = false;
     let mut consecutive_errors: u32 = 0;
     // Whether the producer EVER returned the full requested response size.
@@ -869,12 +882,15 @@ async fn measure_probe(
             }
         };
         match result {
-            Ok((d, resp_bytes)) => {
+            Ok(probe) => {
                 any_success = true;
                 consecutive_errors = 0;
-                honored_full |= resp_bytes >= edge.probe_response_size;
+                honored_full |= probe.response_bytes >= edge.probe_response_size;
+                // Both under the warmup gate: the SHM tally must describe
+                // exactly the timed samples the row's `count` reports.
                 if i >= warmup {
-                    out.push(d.as_nanos() as u64);
+                    out.push(probe.elapsed.as_nanos() as u64);
+                    shm_samples += u64::from(probe.response_shm);
                 }
             }
             Err(_) => {
@@ -897,7 +913,14 @@ async fn measure_probe(
     } else {
         Some(payload_note(edge, honored_full))
     };
-    row_from_samples(edge, measurement, ClockConfidence::NotApplicable, out, note)
+    row_from_samples(
+        edge,
+        measurement,
+        ClockConfidence::NotApplicable,
+        out,
+        shm_samples,
+        note,
+    )
 }
 
 /// Poll a producer's `clock_offset` service to get its measured offset to the
@@ -1001,6 +1024,7 @@ async fn measure_topic_delivery(
                 MeasurementKind::TopicDelivery,
                 ClockConfidence::NotApplicable,
                 Vec::new(),
+                0,
                 Some(format!("invalid target: {e}")),
             );
         }
@@ -1026,6 +1050,7 @@ async fn measure_topic_delivery(
                 MeasurementKind::TopicDelivery,
                 ClockConfidence::NotApplicable,
                 Vec::new(),
+                0,
                 Some(format!("subscribe failed: {e}")),
             );
         }
@@ -1035,6 +1060,7 @@ async fn measure_topic_delivery(
     let mut seen: u32 = 0;
     let mut measured: u32 = 0;
     let mut out = Vec::new();
+    let mut shm_samples: u64 = 0;
     let mut had_implausible = false;
 
     loop {
@@ -1059,7 +1085,11 @@ async fn measure_topic_delivery(
                 let corrected = recv as i128 - src as i128 - off;
                 measured += 1;
                 if (0..=IMPLAUSIBLE_DELIVERY_NS).contains(&corrected) {
+                    // Both under the acceptance gate: warmup and implausible
+                    // samples are excluded from the SHM tally exactly as they
+                    // are from the row's `count`.
                     out.push(corrected as u64);
+                    shm_samples += u64::from(msg.payload_is_shm_backed());
                 } else {
                     had_implausible = true;
                 }
@@ -1073,7 +1103,14 @@ async fn measure_topic_delivery(
     if out.is_empty() && !had_implausible {
         note = Some("no live traffic observed within the timeout".to_string());
     }
-    row_from_samples(edge, MeasurementKind::TopicDelivery, confidence, out, note)
+    row_from_samples(
+        edge,
+        MeasurementKind::TopicDelivery,
+        confidence,
+        out,
+        shm_samples,
+        note,
+    )
 }
 
 #[cfg(test)]
@@ -1354,5 +1391,52 @@ mod tests {
         // even if the producer replied empty.
         let edge = probe_edge(64, 0, false, false);
         assert!(!payload_note(&edge, false).contains("rebuild producer"));
+    }
+
+    #[test]
+    fn row_from_samples_classifies_transport_from_the_shm_tally() {
+        let edge = probe_edge(64, 4096, false, false);
+        // A partial SHM tally over real samples reads as mixed, carrying the share.
+        let mixed = row_from_samples(
+            &edge,
+            MeasurementKind::ServiceProbe,
+            ClockConfidence::NotApplicable,
+            vec![100, 200, 300, 400],
+            2,
+            None,
+        );
+        assert_eq!(mixed.transport, Transport::Mixed);
+        assert_eq!(mixed.shm_samples, 2);
+        assert_eq!(mixed.count, 4);
+        // No samples (unreachable / no live traffic) → nothing was observed.
+        let unmeasured = row_from_samples(
+            &edge,
+            MeasurementKind::ServiceProbe,
+            ClockConfidence::NotApplicable,
+            Vec::new(),
+            0,
+            Some("unreachable (no producer instance responded)".to_string()),
+        );
+        assert_eq!(unmeasured.transport, Transport::NotMeasured);
+        assert_eq!(unmeasured.count, 0);
+        // All samples SHM-backed → shm; none → network.
+        let all_shm = row_from_samples(
+            &edge,
+            MeasurementKind::ServiceProbe,
+            ClockConfidence::NotApplicable,
+            vec![100, 200],
+            2,
+            None,
+        );
+        assert_eq!(all_shm.transport, Transport::Shm);
+        let none_shm = row_from_samples(
+            &edge,
+            MeasurementKind::ServiceProbe,
+            ClockConfidence::NotApplicable,
+            vec![100, 200],
+            0,
+            None,
+        );
+        assert_eq!(none_shm.transport, Transport::Network);
     }
 }

@@ -10,7 +10,25 @@
 //! body — every liveness/discovery probe, and any producer built before this —
 //! replies empty, exactly as before.
 
+use std::time::Duration;
+
 use crate::types::Payload;
+
+/// One timed probe round-trip, as observed by the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeSample {
+    /// Round-trip time of the probe query.
+    pub elapsed: Duration,
+    /// Actual reply payload length (lets the caller detect a producer that did
+    /// not honor the requested `response_size`).
+    pub response_bytes: usize,
+    /// Whether the reply payload arrived through a shared-memory segment —
+    /// receive-side ground truth from the received buffer's SHM backing. This
+    /// describes the **reply leg** only: the request leg is observable only on
+    /// the producer's side and can take the other path when the request and
+    /// response sizes straddle the SHM publish threshold.
+    pub response_shm: bool,
+}
 
 /// Marks a probe body as a benchmark sized-probe. Liveness/discovery probes send
 /// empty bodies, so the magic's absence means "reply empty, as before".

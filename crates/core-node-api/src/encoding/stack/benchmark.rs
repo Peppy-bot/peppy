@@ -342,6 +342,70 @@ impl ClockConfidence {
     }
 }
 
+/// How a row's measured payloads physically reached the core node, observed
+/// per sample from the received buffer's SHM backing (probe rows observe the
+/// reply leg; the request leg is only observable producer-side).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// No timed samples (unreachable edge / no live traffic) — nothing observed.
+    NotMeasured,
+    /// Every timed sample's payload arrived through the shared-memory segment.
+    Shm,
+    /// Every timed sample's payload arrived through the network stack.
+    Network,
+    /// Both within one run (e.g. the SHM pool filled mid-run); `shm_samples`
+    /// carries the share.
+    Mixed,
+}
+
+impl Transport {
+    /// Aggregate a row's per-sample SHM observations into its transport label.
+    /// `shm_samples` must count only the timed samples that `count` reports —
+    /// the detection is per-sample (a single SHM slice on the received buffer),
+    /// so the tally and the sample set must share one acceptance gate.
+    pub fn classify(shm_samples: u64, count: u64) -> Self {
+        debug_assert!(
+            shm_samples <= count,
+            "shm_samples ({shm_samples}) must not exceed count ({count})"
+        );
+        match (shm_samples, count) {
+            (_, 0) => Self::NotMeasured,
+            (0, _) => Self::Network,
+            (s, c) if s >= c => Self::Shm,
+            _ => Self::Mixed,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotMeasured => "—",
+            Self::Shm => "shm",
+            Self::Network => "net",
+            Self::Mixed => "mixed",
+        }
+    }
+
+    fn to_capnp(self) -> benchmark_capnp::Transport {
+        use benchmark_capnp::Transport as W;
+        match self {
+            Self::NotMeasured => W::NotMeasured,
+            Self::Shm => W::Shm,
+            Self::Network => W::Network,
+            Self::Mixed => W::Mixed,
+        }
+    }
+
+    fn from_capnp(value: benchmark_capnp::Transport) -> Self {
+        use benchmark_capnp::Transport as W;
+        match value {
+            W::NotMeasured => Self::NotMeasured,
+            W::Shm => Self::Shm,
+            W::Network => Self::Network,
+            W::Mixed => Self::Mixed,
+        }
+    }
+}
+
 /// One measured interface edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InterfaceLatency {
@@ -360,6 +424,10 @@ pub struct InterfaceLatency {
     pub kind: InterfaceKind,
     pub measurement: MeasurementKind,
     pub clock_confidence: ClockConfidence,
+    /// How the timed samples' payloads reached the core node (see [`Transport`]).
+    pub transport: Transport,
+    /// Of `count` timed samples, how many were SHM-backed (the mixed share).
+    pub shm_samples: u64,
     pub p50_ns: u64,
     pub p90_ns: u64,
     pub mean_ns: u64,
@@ -391,14 +459,19 @@ pub struct StackBenchmarkResult {
     pub success: bool,
     pub error_message: Option<String>,
     pub rows: Vec<InterfaceLatency>,
+    /// The session's network connect protocol (`"tcp"`), labeling `Network`
+    /// rows in the report. Empty when the messenger cannot name it (e.g. an
+    /// in-process mock).
+    pub net_protocol: String,
 }
 
 impl StackBenchmarkResult {
-    pub fn success(rows: Vec<InterfaceLatency>) -> Self {
+    pub fn success(rows: Vec<InterfaceLatency>, net_protocol: impl Into<String>) -> Self {
         Self {
             success: true,
             error_message: None,
             rows,
+            net_protocol: net_protocol.into(),
         }
     }
 
@@ -407,6 +480,7 @@ impl StackBenchmarkResult {
             success: false,
             error_message: Some(error_message.into()),
             rows: Vec::new(),
+            net_protocol: String::new(),
         }
     }
 
@@ -419,6 +493,7 @@ impl StackBenchmarkResult {
             if let Some(ref error_message) = self.error_message {
                 result.set_error_message(error_message);
             }
+            result.set_net_protocol(&self.net_protocol);
 
             let row_count = capnp_list_len(self.rows.len(), "StackBenchmarkResult.rows")?;
             let mut rows = result.reborrow().init_rows(row_count);
@@ -436,6 +511,8 @@ impl StackBenchmarkResult {
                 r.set_kind(row.kind.to_capnp());
                 r.set_measurement(row.measurement.to_capnp());
                 r.set_clock_confidence(row.clock_confidence.to_capnp());
+                r.set_transport(row.transport.to_capnp());
+                r.set_shm_samples(row.shm_samples);
                 r.set_p50_ns(row.p50_ns);
                 r.set_p90_ns(row.p90_ns);
                 r.set_mean_ns(row.mean_ns);
@@ -478,6 +555,8 @@ impl StackBenchmarkResult {
                 kind: InterfaceKind::from_capnp(r.get_kind()?),
                 measurement: MeasurementKind::from_capnp(r.get_measurement()?),
                 clock_confidence: ClockConfidence::from_capnp(r.get_clock_confidence()?),
+                transport: Transport::from_capnp(r.get_transport()?),
+                shm_samples: r.get_shm_samples(),
                 p50_ns: r.get_p50_ns(),
                 p90_ns: r.get_p90_ns(),
                 mean_ns: r.get_mean_ns(),
@@ -491,6 +570,7 @@ impl StackBenchmarkResult {
             success: result.get_success(),
             error_message: optional_text(result.get_error_message()?.to_str()?),
             rows,
+            net_protocol: result.get_net_protocol()?.to_str()?.to_owned(),
         })
     }
 }
@@ -564,6 +644,8 @@ mod tests {
             kind: InterfaceKind::Topic,
             measurement: MeasurementKind::TopicDelivery,
             clock_confidence: ClockConfidence::SameHost,
+            transport: Transport::Shm,
+            shm_samples: 3,
             p50_ns: 1_000,
             p90_ns: 2_000,
             mean_ns: 1_200,
@@ -575,28 +657,56 @@ mod tests {
 
     #[test]
     fn result_roundtrips_with_rows_and_samples() {
-        let result = StackBenchmarkResult::success(vec![
-            sample_row(),
-            InterfaceLatency {
-                kind: InterfaceKind::Service,
-                measurement: MeasurementKind::ServiceProbe,
-                clock_confidence: ClockConfidence::NotApplicable,
-                via_interface: None,
-                samples_ns: vec![],
-                note: None,
-                ..sample_row()
-            },
-            InterfaceLatency {
-                measurement: MeasurementKind::NodeProbe,
-                clock_confidence: ClockConfidence::NotApplicable,
-                ..sample_row()
-            },
-        ]);
-        let bytes = result.encode().expect("encode");
-        assert_eq!(
-            StackBenchmarkResult::decode(&bytes).expect("decode"),
-            result
+        // The four rows cover every Transport variant so the roundtrip pins
+        // the whole enum (and the shm_samples share alongside Mixed).
+        let result = StackBenchmarkResult::success(
+            vec![
+                sample_row(),
+                InterfaceLatency {
+                    kind: InterfaceKind::Service,
+                    measurement: MeasurementKind::ServiceProbe,
+                    clock_confidence: ClockConfidence::NotApplicable,
+                    via_interface: None,
+                    transport: Transport::NotMeasured,
+                    shm_samples: 0,
+                    samples_ns: vec![],
+                    note: None,
+                    ..sample_row()
+                },
+                InterfaceLatency {
+                    measurement: MeasurementKind::NodeProbe,
+                    clock_confidence: ClockConfidence::NotApplicable,
+                    transport: Transport::Network,
+                    shm_samples: 0,
+                    ..sample_row()
+                },
+                InterfaceLatency {
+                    transport: Transport::Mixed,
+                    shm_samples: 1,
+                    ..sample_row()
+                },
+            ],
+            "tcp",
         );
+        let bytes = result.encode().expect("encode");
+        let decoded = StackBenchmarkResult::decode(&bytes).expect("decode");
+        assert_eq!(decoded, result);
+        assert_eq!(decoded.net_protocol, "tcp");
+    }
+
+    #[test]
+    fn transport_classify_rules() {
+        assert_eq!(Transport::classify(0, 0), Transport::NotMeasured);
+        assert_eq!(Transport::classify(0, 7), Transport::Network);
+        assert_eq!(Transport::classify(7, 7), Transport::Shm);
+        assert_eq!(Transport::classify(3, 7), Transport::Mixed);
+    }
+
+    #[test]
+    #[should_panic(expected = "must not exceed count")]
+    #[cfg(debug_assertions)]
+    fn transport_classify_rejects_overcount() {
+        let _ = Transport::classify(8, 7);
     }
 
     #[test]
@@ -609,11 +719,12 @@ mod tests {
 
     #[test]
     fn result_empty_roundtrips() {
-        let result = StackBenchmarkResult::success(vec![]);
+        let result = StackBenchmarkResult::success(vec![], "tcp");
         let bytes = result.encode().expect("encode");
         let decoded = StackBenchmarkResult::decode(&bytes).expect("decode");
         assert!(decoded.success);
         assert!(decoded.rows.is_empty());
+        assert_eq!(decoded.net_protocol, "tcp");
     }
 
     #[test]

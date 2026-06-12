@@ -1,4 +1,5 @@
 use super::discovery::discover_producer;
+use super::probe::ProbeSample;
 use super::{DISCOVERY_TIMEOUT, MessengerHandle, PROBE_TIMEOUT, generate_short_id};
 use crate::error::{Error, Result};
 use crate::runtime::{TaskHandle, spawn};
@@ -482,12 +483,13 @@ impl ServiceMessenger {
     /// returned response size will be 0; pass `0`/`0` to fall back to the old
     /// empty probe.
     ///
-    /// Returns `(elapsed, response_bytes_received)` on a clean reply, where
-    /// `response_bytes_received` is the actual reply payload length (lets the
-    /// caller detect a producer that did not honor `response_size`). Propagates
-    /// the error otherwise (an unreachable producer or a probe that did not
-    /// return within `response_timeout` is not a usable latency sample, and the
-    /// caller should drop it rather than record the timeout as latency).
+    /// Returns a [`ProbeSample`] on a clean reply: the elapsed round-trip, the
+    /// actual reply payload length (lets the caller detect a producer that did
+    /// not honor `response_size`), and whether the reply arrived through shared
+    /// memory (the reply leg only — see [`ProbeSample::response_shm`]).
+    /// Propagates the error otherwise (an unreachable producer or a probe that
+    /// did not return within `response_timeout` is not a usable latency sample,
+    /// and the caller should drop it rather than record the timeout as latency).
     #[allow(clippy::too_many_arguments)]
     pub async fn probe_latency(
         messenger: &MessengerHandle,
@@ -500,7 +502,7 @@ impl ServiceMessenger {
         response_timeout: Duration,
         request_size: usize,
         response_size: u32,
-    ) -> Result<(Duration, usize)> {
+    ) -> Result<ProbeSample> {
         let sender = ServiceWireSender::new(
             bound_core_node,
             as_instance_id,
@@ -515,6 +517,10 @@ impl ServiceMessenger {
         let reply = messenger
             .poll_service(&sender, request, ServiceQueryKind::Probe, response_timeout)
             .await?;
-        Ok((started.elapsed(), reply.payload().as_ref().len()))
+        Ok(ProbeSample {
+            elapsed: started.elapsed(),
+            response_bytes: reply.payload().as_ref().len(),
+            response_shm: reply.payload_is_shm_backed(),
+        })
     }
 }

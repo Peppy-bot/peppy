@@ -378,6 +378,12 @@ impl ZenohAdapter {
         (self.client_config.host.as_str(), self.client_config.port)
     }
 
+    /// The network protocol this session's links connect over. Labels the
+    /// network-path rows in the stack benchmark report.
+    pub fn net_protocol(&self) -> ZenohNetProtocol {
+        self.client_config.protocol
+    }
+
     /// Builds a lock-free [`RouterHealthChecker`] bound to this adapter's router
     /// endpoint, for the router watchdog to probe liveness without holding the
     /// central messenger lock.

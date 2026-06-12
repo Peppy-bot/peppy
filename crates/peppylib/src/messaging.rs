@@ -14,6 +14,7 @@ pub use actions::{
     encode_cancel_ack, generate_goal_id, unwrap_goal_payload, unwrap_result_outcome,
     wrap_goal_payload, wrap_result_outcome,
 };
+pub use probe::ProbeSample;
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
@@ -239,6 +240,18 @@ impl MessengerHandle {
                 let (host, port) = adapter.client_endpoint();
                 (!host.is_empty() && port != 0).then(|| (host.to_string(), port))
             }
+            _ => None,
+        }
+    }
+
+    /// The network protocol this messenger's session connects over (`"tcp"`),
+    /// labeling the network-path rows in the stack benchmark report. `None`
+    /// for the in-process mock backend, which has no network link to name.
+    pub async fn net_protocol(&self) -> Option<&'static str> {
+        let messenger = self.messenger.lock().await;
+        match &messenger.adapter {
+            #[cfg(feature = "zenoh")]
+            MessengerAdapter::Zenoh(adapter) => Some(adapter.net_protocol().as_str()),
             _ => None,
         }
     }
