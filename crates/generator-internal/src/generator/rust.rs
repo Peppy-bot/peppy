@@ -284,12 +284,12 @@ impl RustGenerator {
 
         // The `to_target` matches the producer's emission shape: address the
         // dependency as an Interface if it exposes the action via
-        // `conforms_to`, otherwise as its native Node identity.
-        // `target_instance_id` is resolved at runtime from the consumer's
-        // binding map.
+        // `conforms_to`, otherwise as its native Node identity. The `target`
+        // — the producer's full `(core_node, instance_id)` — is resolved at
+        // runtime from the consumer's binding map; pinned slots address it
+        // directly and skip discovery.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let pinned_target_expr =
-            crate::generator::rust::topics::consumed_pinned_target_expression(dependency);
+        let target_expr = crate::generator::rust::topics::consumed_target_expression(dependency);
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
@@ -305,8 +305,7 @@ impl RustGenerator {
                     node_runner.processor().bound_instance_id(),
                     #to_target_expr,
                     TARGET_ACTION_NAME,
-                    None,
-                    #pinned_target_expr,
+                    #target_expr,
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -1262,12 +1261,12 @@ impl LanguageGenerator for RustGenerator {
 
         // The `to_target` matches the producer's emission shape: if the
         // dependency exposes the service via `conforms_to`, address it as the
-        // interface; otherwise as the dependency's node identity.
-        // `target_instance_id` is resolved at runtime from the consumer's
-        // binding map.
+        // interface; otherwise as the dependency's node identity. The
+        // `target` — the producer's full `(core_node, instance_id)` — is
+        // resolved at runtime from the consumer's binding map; pinned slots
+        // address it directly and skip discovery.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let pinned_target_expr =
-            crate::generator::rust::topics::consumed_pinned_target_expression(dependency);
+        let target_expr = crate::generator::rust::topics::consumed_target_expression(dependency);
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
@@ -1275,8 +1274,7 @@ impl LanguageGenerator for RustGenerator {
                 node_runner.processor().bound_instance_id(),
                 #to_target_expr,
                 SERVICE_NAME,
-                None,
-                #pinned_target_expr,
+                #target_expr,
                 request_payload,
                 timeout,
             )

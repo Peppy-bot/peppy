@@ -1,7 +1,7 @@
 mod common;
 
 use common::test_node_target;
-use peppylib::messaging::{MessengerHandle, SenderTarget, ServiceMessenger};
+use peppylib::messaging::{MessengerHandle, ProducerRef, SenderTarget, ServiceMessenger};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::time::Duration;
@@ -58,8 +58,7 @@ async fn service_messenger_communication() {
         instance_id,
         test_node_target(node_name),
         service_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         request_payload,
         Duration::from_secs(2),
     )
@@ -156,8 +155,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         instance_id,
         test_node_target(node_name),
         service_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"ping_native"),
         Duration::from_secs(2),
     )
@@ -176,8 +174,7 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
         service_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"ping_iface"),
         Duration::from_secs(2),
     )
@@ -245,8 +242,7 @@ async fn service_iface_tag_hyphen_normalized() {
         instance_id,
         SenderTarget::interface(iface_name, "v2_stable").expect("test target"),
         service_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"ping"),
         Duration::from_secs(2),
     )
@@ -387,8 +383,7 @@ async fn service_from_any_poll_runs_handler_on_winner_only() {
         "caller_inst",
         test_node_target(producer_node_name),
         service_name,
-        None, // wildcard target_core_node
-        None, // wildcard target_instance_id
+        None, // wildcard target producer
         Payload::from_static(b"go"),
         Duration::from_secs(5),
     )

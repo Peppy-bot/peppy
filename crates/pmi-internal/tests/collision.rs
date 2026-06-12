@@ -284,10 +284,12 @@ async fn service_node_vs_interface_no_collision() {
         .unwrap();
     wait_for_subscriber_discovery().await;
 
+    // Full-wildcard targets: the SenderTarget kind (node vs interface) must
+    // be the only thing routing each call to its matching server, which is
+    // exactly the collision this test guards against.
     let node_caller_sender = ServiceWireSender::new(
         "caller_core",
         "caller_inst",
-        Some("server_core"),
         None,
         test_node_target("widget"),
         "ping",
@@ -297,7 +299,6 @@ async fn service_node_vs_interface_no_collision() {
     let iface_caller_sender = ServiceWireSender::new(
         "caller_core",
         "caller_inst",
-        Some("server_core"),
         None,
         SenderTarget::interface("widget", "v1").unwrap(),
         "ping",

@@ -118,7 +118,6 @@ async fn listen_for_node_stop_success() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started_core_node.core_node_name),
-        &started_core_node.core_node_name,
         Duration::from_secs(10),
     )
     .await
@@ -163,7 +162,6 @@ async fn listen_for_node_stop_fails_when_instance_id_not_found() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started_core_node.core_node_name),
-        &started_core_node.core_node_name,
         Duration::from_secs(5),
     )
     .await
@@ -246,7 +244,6 @@ async fn node_stop_force_kills_whole_process_group() {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
-        &started.core_node_name,
         Duration::from_secs(20),
     )
     .await
@@ -398,7 +395,6 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
-        &started.core_node_name,
         Duration::from_secs(20),
     )
     .await

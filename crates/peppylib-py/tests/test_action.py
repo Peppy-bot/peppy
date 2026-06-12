@@ -75,8 +75,7 @@ async def test_action_messenger_communication():
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
-            CORE_NODE,
-            INSTANCE_ID,
+            (CORE_NODE, INSTANCE_ID),
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,)
@@ -140,8 +139,7 @@ async def test_cancel_goal_concurrent_with_feedback():
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
-            CORE_NODE,
-            INSTANCE_ID,
+            (CORE_NODE, INSTANCE_ID),
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,)
@@ -215,8 +213,7 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
-            CORE_NODE,
-            INSTANCE_ID,
+            (CORE_NODE, INSTANCE_ID),
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,)
@@ -270,30 +267,61 @@ async def test_send_goal_rejects_invalid_timeout():
                 INSTANCE_ID,
                 SenderTarget.node(NODE_NAME, NODE_TAG),
                 ACTION_NAME,
-                CORE_NODE,
-                INSTANCE_ID,
+                (CORE_NODE, INSTANCE_ID),
                 GOAL_PAYLOAD,
                 QoSProfile.Reliable,
                 -1.0,)
 
 
 @pytest.mark.asyncio
-async def test_send_goal_honors_target_core_node():
-    """send_goal should route to the explicit target daemon when provided."""
+async def test_send_goal_honors_target_pair():
+    """send_goal routes by the full pinned (core_node, instance_id) pair.
+
+    A pinned target skips discovery, so the pair must match the producer as a
+    whole: the correct pair reaches it, while a pair whose core_node is wrong
+    must fail unreachable even though the instance_id alone would match
+    (cross-core safety).
+    """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
-        await ActionMessenger.expose(
+        action = await ConcurrentAction.expose(
             server_handle,
             CORE_NODE,
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
+            True,  # has_feedback
         )
 
         await asyncio.sleep(0.05)
 
+        async def server():
+            pending = await action.recv_next_goal()
+            assert pending is not None
+            ctx = await pending.accept(GOAL_RESPONSE_PAYLOAD)
+            await ctx.complete(RESULT_PAYLOAD)
+
+        server_task = asyncio.create_task(server())
+
+        # Pinned to the producer's exact pair: the goal goes through.
+        goal_handle = await ActionMessenger.send_goal(
+            client_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            SenderTarget.node(NODE_NAME, NODE_TAG),
+            ACTION_NAME,
+            (CORE_NODE, INSTANCE_ID),
+            GOAL_PAYLOAD,
+            QoSProfile.Reliable,
+            2.0,)
+        assert goal_handle.goal_response.payload == GOAL_RESPONSE_PAYLOAD
+
+        await server_task
+
+        # Pinned to the wrong core_node with the correct instance_id: the
+        # pair is honored as a unit, so the producer must be unreachable.
         with pytest.raises(ConnectionError):
             await ActionMessenger.send_goal(
                 client_handle,
@@ -301,8 +329,7 @@ async def test_send_goal_honors_target_core_node():
                 INSTANCE_ID,
                 SenderTarget.node(NODE_NAME, NODE_TAG),
                 ACTION_NAME,
-                "wrong_core_node",
-                INSTANCE_ID,
+                ("wrong_core", INSTANCE_ID),
                 GOAL_PAYLOAD,
                 QoSProfile.Reliable,
                 0.5,)
@@ -360,8 +387,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             "move",
-            CORE_NODE,
-            INSTANCE_ID,
+            (CORE_NODE, INSTANCE_ID),
             b"native_goal",
             QoSProfile.Reliable,
             2.0,
@@ -374,8 +400,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             INSTANCE_ID,
             SenderTarget.interface("arm", "v1"),
             "move",
-            CORE_NODE,
-            INSTANCE_ID,
+            (CORE_NODE, INSTANCE_ID),
             b"iface_goal",
             QoSProfile.Reliable,
             2.0,

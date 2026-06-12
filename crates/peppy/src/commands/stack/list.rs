@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::commands::{CALLER_INSTANCE_ID, health_label};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use config::runtime::SlotBinding;
+use config::runtime::{ProducerRef, SlotBinding};
 use core_node_api::encoding::StackListRequest;
 use core_node_api::{
     InstanceState, SerializedEdge, SerializedInstance, SerializedNode, SerializedNodeGraph,
@@ -272,18 +272,19 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
         .collect()
 }
 
-/// Right-hand side of a `link_id -> …` binding line: the producer instance the
-/// slot resolves to. A `from_any` slot with explicit producers lists them
-/// comma-separated; a `from_any` slot left bindless — and the degenerate
-/// "bound to nothing" case — render as `(any)`.
+/// Right-hand side of a `link_id -> …` binding line: the producer the slot
+/// resolves to, rendered as `instance_id@core_node` (the full wire address
+/// every binding now carries). A `from_any` slot with explicit producers
+/// lists them comma-separated; a `from_any` slot left bindless — and the
+/// degenerate "bound to nothing" case — render as `(any)`.
 fn format_slot_binding(binding: &SlotBinding) -> String {
+    let render =
+        |producer: &ProducerRef| format!("{}@{}", producer.instance_id, producer.core_node);
     match binding {
-        SlotBinding::Pinned {
-            producer_instance_id,
-        } => producer_instance_id.clone(),
-        SlotBinding::FromAnyBound {
-            producer_instance_ids,
-        } if !producer_instance_ids.is_empty() => producer_instance_ids.join(", "),
+        SlotBinding::Pinned { producer } => render(producer),
+        SlotBinding::FromAnyBound { producers } if !producers.is_empty() => {
+            producers.iter().map(render).collect::<Vec<_>>().join(", ")
+        }
         // `FromAnyBound` with no producers and `FromAnyUnbound` are both "no
         // pinned producer"; collapse them so the line never trails as
         // `link_id -> ` with an empty right-hand side.
@@ -533,7 +534,7 @@ mod tests {
                 vec![(
                     "arm",
                     SlotBinding::Pinned {
-                        producer_instance_id: "arm-1".to_string(),
+                        producer: ProducerRef::new("core_a", "arm-1"),
                     },
                 )],
             )],
@@ -550,7 +551,7 @@ mod tests {
         );
         assert!(section.contains("bk-1"), "instance id missing:\n{out}");
         assert!(
-            section.contains("arm → arm-1"),
+            section.contains("arm → arm-1@core_a"),
             "binding line missing:\n{out}"
         );
     }
@@ -568,13 +569,13 @@ mod tests {
                         (
                             "camera",
                             SlotBinding::Pinned {
-                                producer_instance_id: "cam-1".to_string(),
+                                producer: ProducerRef::new("core_a", "cam-1"),
                             },
                         ),
                         (
                             "controller",
                             SlotBinding::Pinned {
-                                producer_instance_id: "ctl-1".to_string(),
+                                producer: ProducerRef::new("core_a", "ctl-1"),
                             },
                         ),
                     ],
@@ -661,13 +662,13 @@ mod tests {
                     (
                         "clock",
                         SlotBinding::Pinned {
-                            producer_instance_id: "clk-1".to_string(),
+                            producer: ProducerRef::new("core_a", "clk-1"),
                         },
                     ),
                     (
                         "backbone",
                         SlotBinding::Pinned {
-                            producer_instance_id: "bb-1".to_string(),
+                            producer: ProducerRef::new("core_a", "bb-1"),
                         },
                     ),
                 ],
@@ -679,10 +680,10 @@ mod tests {
         // Both slots render, sorted by link id (BTreeMap order) regardless of
         // insertion order: "backbone" precedes "clock".
         let backbone_at = section
-            .find("backbone → bb-1")
+            .find("backbone → bb-1@core_a")
             .expect("first binding missing");
         let clock_at = section
-            .find("clock → clk-1")
+            .find("clock → clk-1@core_a")
             .expect("second binding missing");
         assert!(
             backbone_at < clock_at,
@@ -724,7 +725,10 @@ mod tests {
                     (
                         "sensors",
                         SlotBinding::FromAnyBound {
-                            producer_instance_ids: vec!["cam-1".to_string(), "cam-2".to_string()],
+                            producers: vec![
+                                ProducerRef::new("core_a", "cam-1"),
+                                ProducerRef::new("core_a", "cam-2"),
+                            ],
                         },
                     ),
                     ("extra", SlotBinding::FromAnyUnbound),
@@ -735,7 +739,7 @@ mod tests {
         let section = bindings_section(&out);
 
         let sensors_at = section
-            .find("sensors → cam-1, cam-2")
+            .find("sensors → cam-1@core_a, cam-2@core_a")
             .expect("from_any bound producers should be comma-joined");
         let extra_at = section
             .find("extra → (any)")
@@ -773,12 +777,7 @@ mod tests {
             vec![(
                 "nav-1",
                 InstanceState::Running,
-                vec![(
-                    "sensors",
-                    SlotBinding::FromAnyBound {
-                        producer_instance_ids: vec![],
-                    },
-                )],
+                vec![("sensors", SlotBinding::FromAnyBound { producers: vec![] })],
             )],
         )];
         let out = format_stack_list(&nodes, &[], false);
@@ -806,7 +805,7 @@ mod tests {
                         vec![(
                             "dep",
                             SlotBinding::Pinned {
-                                producer_instance_id: "beta-1".to_string(),
+                                producer: ProducerRef::new("core_a", "beta-1"),
                             },
                         )],
                     ),
@@ -865,7 +864,7 @@ mod tests {
                 vec![(
                     "传感器",
                     SlotBinding::Pinned {
-                        producer_instance_id: "相机-1".to_string(),
+                        producer: ProducerRef::new("core_a", "相机-1"),
                     },
                 )],
             )],
@@ -939,7 +938,7 @@ mod tests {
                 vec![(
                     "arm",
                     SlotBinding::Pinned {
-                        producer_instance_id: "arm-1".to_string(),
+                        producer: ProducerRef::new("core_a", "arm-1"),
                     },
                 )],
             )],
@@ -972,7 +971,7 @@ mod tests {
         // The two relationships use distinct arrows so they never read alike:
         // `→` for bindings, `➔` for dependencies.
         assert!(
-            bindings_section(&plain).contains("arm → arm-1"),
+            bindings_section(&plain).contains("arm → arm-1@core_a"),
             "bindings should use the light arrow:\n{plain}"
         );
         assert!(

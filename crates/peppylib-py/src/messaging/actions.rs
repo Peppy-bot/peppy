@@ -331,8 +331,12 @@ impl PyActionMessenger {
     ///
     /// Pass `SenderTarget.node(name, tag)` for nodes or
     /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
+    /// `target` is the producer's full `(core_node, instance_id)` pair —
+    /// `Some` pins it (no discovery), `None` is a genuine wildcard
+    /// (discover-then-pin). Generated code splices
+    /// `node_runner.pinned_producer_for(link_id)` here.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, target_core_node=None, target_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, target=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
@@ -341,8 +345,7 @@ impl PyActionMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_action_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        target: Option<(String, String)>,
         user_payload: Vec<u8>,
         feedback_qos: PyQoSProfile,
         goal_timeout_secs: f64,
@@ -351,14 +354,16 @@ impl PyActionMessenger {
         let to_target = to_target.into_inner();
         let handle = messenger.inner.clone();
         crate::py_future::future_into_py(py, async move {
+            let target = target.map(|(core_node, instance_id)| {
+                peppylib::messaging::ProducerRef::new(core_node, instance_id)
+            });
             let goal_handle = ActionMessenger::send_goal(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 to_target,
                 &to_action_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                target.as_ref(),
                 Payload::from(user_payload),
                 feedback_qos.into(),
                 goal_timeout,
@@ -452,10 +457,11 @@ impl PyActionMessenger {
         })
     }
 
-    /// Check whether an action server is reachable.
+    /// Check whether an action server is reachable. `target` is the
+    /// producer's full `(core_node, instance_id)` pair (`None` probes any
+    /// matching producer).
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, target_core_node=None, target_instance_id=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, target=None))]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -463,20 +469,21 @@ impl PyActionMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_action_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        target: Option<(String, String)>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
+            let target = target.map(|(core_node, instance_id)| {
+                peppylib::messaging::ProducerRef::new(core_node, instance_id)
+            });
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 to_target,
                 &to_action_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                target.as_ref(),
             )
             .await
             .map_err(to_py_err)?;

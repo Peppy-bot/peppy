@@ -493,8 +493,8 @@ while True:
 
 Each goal has its own feedback stream, addressed by `goal_id`, so feedback for one goal never reaches another handle, even when several goals run concurrently on the same server. Two terminal errors end the drain loop:
 
-- **Clean close** (`ActionFeedbackChannelClosed`; `RuntimeError` in Python): the server closed this goal's stream — its worker completed the goal (`complete` or `complete_cancelled`) or abandoned it without completing it (an early return or a panic). Call `get_result` to learn the outcome.
-- **Producer gone** (`ActionFeedbackProducerGone`; `ConnectionError` in Python): the producer instance this goal is pinned to died without closing the stream (process killed, host lost). Feedback already in flight — including a clean close that did make it out — is drained first, so a graceful shutdown never surfaces as producer-gone. After this error, `get_result` resolves to the `Abandoned` outcome.
+- **Clean close** (`ActionFeedbackChannelClosed`; `RuntimeError` in Python): the server closed this goal's stream: its worker completed the goal (`complete` or `complete_cancelled`) or abandoned it without completing it (an early return or a panic). Call `get_result` to learn the outcome.
+- **Producer gone** (`ActionFeedbackProducerGone`; `ConnectionError` in Python): the producer instance this goal is pinned to died without closing the stream (process killed, host lost). Feedback already in flight (including a clean close that did make it out) is drained first, so a graceful shutdown never surfaces as producer-gone. After this error, `get_result` resolves to the `Abandoned` outcome.
 
 Either way, a client draining feedback always terminates rather than hanging. In Python, catch `ConnectionError` before the generic handler when you want to distinguish producer death from a clean close; a bare `except Exception` treats both as end-of-stream.
 
@@ -602,8 +602,8 @@ Routing for actions uses the same consumer-side model as topics and services. A 
 
 Each slot in `depends_on` is either:
 
-- **Pinned** (the default, when `from_any` is absent or `false`): the slot must be bound. The generated `fire_goal` resolves the bound producer's `instance_id` from the binding, and the goal, cancel, result, and feedback channels all address that one producer. The validator rejects a pinned-unbound slot before the stack starts.
-- **`from_any: true`**: when the slot is bound, the generated `fire_goal` resolves the binding and addresses the bound producer's `instance_id` directly, exactly like a pinned slot. When the slot is left unbound, the call falls back to wildcard discovery: a probe goes out to every matching producer and the first responder is pinned for the rest of the goal cycle, so the same producer handles the goal, cancel, result, and feedback. Bindings constrain which producers discovery may consider.
+- **Pinned** (the default, when `from_any` is absent or `false`): the slot must be bound. The generated `fire_goal` resolves the bound producer's full `(core_node, instance_id)` wire address from the binding, and the goal, cancel, result, and feedback channels all address that one producer. The validator rejects a pinned-unbound slot before the stack starts.
+- **`from_any: true`**: when the slot is bound to a single producer, the generated `fire_goal` resolves the binding and addresses that producer's `(core_node, instance_id)` directly, exactly like a pinned slot. When the slot is left unbound, the call falls back to wildcard discovery: a probe goes out to every matching producer and the first responder is pinned for the rest of the goal cycle, so the same producer handles the goal, cancel, result, and feedback. Bindings constrain which producers discovery may consider.
 
 In a launcher / stack config:
 
@@ -677,19 +677,19 @@ Four contract statements follow from this manifest:
 1. `wrist_left_camera_<action>::fire_goal(...)` reaches `left_cam` (pinned-bound).
 2. `wrist_right_camera_<action>::fire_goal(...)` reaches `right_cam` (pinned-bound).
 3. `extra_cam_<action>::fire_goal(...)` reaches `ceiling_cam` via the unbound `from_any` wildcard; discovery only finds the producer not already claimed by a pinned binding.
-4. If `extra_cam` had been bound (e.g. `extra_cam: "ceiling_cam"`), discovery would be restricted to that bound set instead of every unclaimed producer.
+4. If `extra_cam` had been bound to a single producer (e.g. `extra_cam: "ceiling_cam"`), the slot would resolve to that producer's full wire address and skip discovery entirely, exactly like a pinned slot.
 
 ### Discover-then-pin (`from_any` slots only)
 
 When `fire_goal` is called on a `from_any` slot with no binding to a single producer, the framework runs a **discover-then-pin** sequence before sending the real goal:
 
 1. A lightweight probe is broadcast to every matching producer. The probe is auto-handled by the framework before any user goal handler runs.
-2. The first producer to respond is captured and the wire sender is pinned to its `instance_id`.
+2. The first producer to respond is captured and the wire sender is pinned to its `(core_node, instance_id)`.
 3. The real goal request is delivered only to that pinned producer. All subsequent `cancel_goal`, `get_result`, and feedback calls also target the same producer.
 
 The non-winning producers see only the probe; their goal handler **never runs**. Without this step every matching producer would execute the goal concurrently, which for state-changing actions (motor commands, file writes, payment dispatches) is a real-world hazard.
 
-Pinned slots (and `from_any` slots bound to a single producer `instance_id`) skip discovery entirely because the codegen already addresses exactly one producer.
+Pinned slots (and `from_any` slots bound to a single producer) skip discovery entirely; no probe is sent. The binding carries the producer's full `(core_node, instance_id)` wire address, so the generated call addresses exactly one producer and the goal request has the caller's whole `goal_timeout` to itself. Probes for the wildcard calls that do discover are answered by the transport adapter, so a producer busy executing a goal still answers discovery promptly.
 
 The cost is one additional round-trip on wildcard `fire_goal` calls (typically a few milliseconds). If the discovered producer dies between the probe and the real goal, `fire_goal` surfaces `ServiceUnreachable` and the caller can retry; the next attempt re-discovers a different producer if one is available. Discovery is capped at the caller's `goal_timeout` if that is tighter than the framework's default probe timeout, so a fast-fail budget still surfaces unreachable producers quickly.
 
@@ -703,7 +703,8 @@ The launcher validator runs these checks before the stack starts:
 4. A `KEY` that matches neither a pinned `link_id` nor a `from_any` slot for `VALUE`'s `(name, tag)` is a dead key and is rejected.
 5. A pinned binding whose target `instance_id` deploys a different node than the slot expects is a target mismatch and is rejected.
 6. `KEY` uniqueness within a single invocation is enforced (no two bindings on the same client may share the same `KEY`).
-7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. Bindings address producers by `instance_id`, so a duplicate would make the binding ambiguous.
+7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
+8. **Bindings are stamped with the daemon's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps the launching daemon's `core_node` into every resolved binding, so generated calls address exactly one producer and never match on `instance_id` alone.
 
 ## Concurrent processing
 

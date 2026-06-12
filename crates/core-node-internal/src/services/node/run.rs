@@ -1148,8 +1148,10 @@ async fn perform_health_check(
             target.caller_instance_id,
             SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             NODE_HEALTH_SERVICE,
-            Some(target.target_core_node),
-            Some(target.target_instance_id),
+            Some(&peppylib::messaging::ProducerRef::new(
+                target.target_core_node,
+                target.target_instance_id,
+            )),
             request_payload.clone(),
             attempt_timeout,
         )
@@ -1214,8 +1216,10 @@ async fn wait_for_ready_signal(
             target.caller_instance_id,
             SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             NODE_READY_SERVICE,
-            Some(target.target_core_node),
-            Some(target.target_instance_id),
+            Some(&peppylib::messaging::ProducerRef::new(
+                target.target_core_node,
+                target.target_instance_id,
+            )),
             request_payload.clone(),
             attempt_timeout,
         )
@@ -1298,8 +1302,10 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 &p.caller_instance_id,
                 SenderTarget::node_from_validated(&p.to_node_name, &p.node_tag),
                 NODE_HEALTH_SERVICE,
-                Some(&p.target_core_node),
-                Some(p.target_instance_id.as_str()),
+                Some(&peppylib::messaging::ProducerRef::new(
+                    p.target_core_node.as_str(),
+                    p.target_instance_id.as_str(),
+                )),
                 request_payload.clone(),
                 p.timeout,
             )

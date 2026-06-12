@@ -226,16 +226,18 @@ impl Processor {
     }
 
     /// Convenience for service / action call sites: returns the single
-    /// producer `instance_id` this slot pins (`ConsumerFilter::Pin`)
-    /// as an owned `String`, or `None` for every other variant. The
-    /// owned form crosses the PyO3 boundary cleanly; native Rust call
-    /// sites can either use this or
+    /// producer this slot pins (`ConsumerFilter::Pin`) as an owned
+    /// [`crate::messaging::ProducerRef`], or `None` for every other
+    /// variant. The owned form crosses the PyO3 boundary cleanly; native
+    /// Rust call sites can either use this or
     /// [`Self::consumer_filter`]`.pinned_target()` (the latter borrows
     /// from the cached filter).
-    pub fn pinned_target_for(&self, link_id: &str) -> Option<String> {
-        self.consumer_filter(link_id)
-            .pinned_target()
-            .map(str::to_owned)
+    ///
+    /// Deliberately renamed from the pre-`ProducerRef` `pinned_target_for`
+    /// so generated Python built against the instance_id-only shape fails
+    /// loudly with `AttributeError` instead of silently misaddressing.
+    pub fn pinned_producer_for(&self, link_id: &str) -> Option<crate::messaging::ProducerRef> {
+        self.consumer_filter(link_id).pinned_target().cloned()
     }
 }
 

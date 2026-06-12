@@ -198,7 +198,6 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
-            from_core_node: Option<&str>,
         ) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let node_name = #node_name_literal;
@@ -212,7 +211,6 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
                     #from_target_expr,
                     #is_from_any_lit,
                     topic_name,
-                    from_core_node,
                     #consumer_filter_expr,
                     qos,
                 );
@@ -274,19 +272,19 @@ pub fn consumed_consumer_filter_expression(
     }
 }
 
-/// Returns the `Option<&str>` expression spliced into a generated
+/// Returns the `Option<&ProducerRef>` expression spliced into a generated
 /// [`peppylib::ServiceMessenger::poll`] /
-/// [`peppylib::ActionMessenger::send_goal`] call at the
-/// `target_instance_id` slot. When `dependency.wire_link_id()` is
-/// `Some(link_id)` — i.e., any real manifest dep, whether pinned or
-/// `from_any` — the emitted expression calls
-/// `consumer_filter(link_id).pinned_target()`, so a `from_any` slot
-/// bound to a single producer still resolves at runtime to that
-/// producer's `instance_id`; other variants (multi-pin, wildcards) give
-/// `None` and the call site falls back to wildcard discovery. Synthetic
-/// test fixtures with no manifest dep skip the lookup and emit
-/// `Option::<&str>::None` directly.
-pub fn consumed_pinned_target_expression(
+/// [`peppylib::ActionMessenger::send_goal`] call at the single `target`
+/// slot. When `dependency.wire_link_id()` is `Some(link_id)` — i.e., any
+/// real manifest dep, whether pinned or `from_any` — the emitted
+/// expression calls `consumer_filter(link_id).pinned_target()`: a pinned
+/// slot (or a `from_any` slot bound to a single producer) resolves at
+/// runtime to that producer's full `(core_node, instance_id)` and the
+/// call addresses it directly with no discovery; other variants
+/// (multi-pin, wildcards) give `None` and the call site falls back to
+/// wildcard discovery. Synthetic test fixtures with no manifest dep skip
+/// the lookup and emit a typed `None` directly.
+pub fn consumed_target_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     match dependency.wire_link_id() {
@@ -294,7 +292,7 @@ pub fn consumed_pinned_target_expression(
             let literal = Literal::string(link_id);
             quote!(node_runner.processor().consumer_filter(#literal).pinned_target())
         }
-        None => quote!(Option::<&str>::None),
+        None => quote!(Option::<&peppylib::messaging::ProducerRef>::None),
     }
 }
 

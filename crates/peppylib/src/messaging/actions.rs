@@ -6,6 +6,7 @@ use super::{
     TopicPublisher,
 };
 use crate::error::{Error, Result};
+use crate::messaging::ProducerRef;
 use crate::runtime::{CancellationToken, TaskHandle, spawn};
 use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -587,22 +588,20 @@ impl ActionMessenger {
         messenger.expose_action(&recv).await
     }
 
-    /// Probe an action service.
-    #[allow(clippy::too_many_arguments)]
+    /// Probe an action service (`target`: `Some` = a full
+    /// `(core_node, instance_id)` pin, `None` = any matching producer).
     pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
         to_target: SenderTarget,
         to_action_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        target: Option<&ProducerRef>,
     ) -> Result<bool> {
         let sender = ActionWireSender::new(
             bound_core_node,
             as_instance_id,
-            target_core_node,
-            target_instance_id,
+            target,
             to_target,
             to_action_name,
         )?;
@@ -632,8 +631,7 @@ impl ActionMessenger {
     /// `request_size`/`response_size` make the probe carry a real-payload-sized
     /// goal body and ask the producer to reply with `response_size` bytes (the
     /// goal request/response sizes), so the round-trip reflects real-sized
-    /// messages — still without creating a goal or running the action. A
-    /// producer built before sized probes replies empty (returned size 0).
+    /// messages — still without creating a goal or running the action.
     ///
     /// Returns `(elapsed, response_bytes_received)` on a clean reply; propagates
     /// the error otherwise.
@@ -644,8 +642,7 @@ impl ActionMessenger {
         as_instance_id: &str,
         to_target: SenderTarget,
         to_action_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        target: Option<&ProducerRef>,
         response_timeout: Duration,
         request_size: usize,
         response_size: u32,
@@ -653,12 +650,11 @@ impl ActionMessenger {
         let sender = ActionWireSender::new(
             bound_core_node,
             as_instance_id,
-            target_core_node,
-            target_instance_id,
+            target,
             to_target,
             to_action_name,
         )?;
-        let request = super::probe::build_sized_probe_request(request_size, response_size);
+        let request = Payload::from(pmi::build_sized_probe_request(request_size, response_size));
         let started = Instant::now();
         let reply = messenger
             .poll_service(
@@ -678,17 +674,19 @@ impl ActionMessenger {
     /// `to_target` must match the [`SenderTarget`] the action server used
     /// in [`Self::expose`].
     ///
-    /// When either `target_core_node` or `target_instance_id` is `None`
-    /// (wildcard / from_any), this performs a discover-then-pin sequence:
-    /// a lightweight probe to the goal sub-service identifies a single
-    /// responding producer, then the real goal is delivered pinned to that
-    /// producer. The probe is filtered server-side before the user handler
-    /// runs (see [`crate::messaging::services::ServiceEndpoint`]), so
-    /// non-winning producers never execute the goal handler. Without this,
-    /// every matching producer would run the handler concurrently; for
-    /// actions with side effects (motor commands, file writes) that is a
-    /// real-world safety hazard. Fully pinned callers (both `target_*`
-    /// `Some`) skip discovery and pay no overhead.
+    /// `target` is the producer's full `(core_node, instance_id)` wire
+    /// address. `Some(target)` — a pinned slot, or a `from_any` slot bound
+    /// to exactly one producer — addresses that producer directly: **no
+    /// discovery probe is issued and no discovery timeout applies**; the
+    /// goal request has the caller's whole `goal_timeout` to itself.
+    /// `None` is a genuine wildcard (`from_any`): a discover-then-pin
+    /// sequence probes the goal sub-service to identify a single
+    /// responding producer, then delivers the real goal pinned to it. The
+    /// probe is answered by the transport adapter before the user handler
+    /// runs, so non-winning producers never execute the goal handler.
+    /// Without that, every matching producer would run the handler
+    /// concurrently; for actions with side effects (motor commands, file
+    /// writes) that is a real-world safety hazard.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
@@ -696,8 +694,7 @@ impl ActionMessenger {
         as_instance_id: &str,
         to_target: SenderTarget,
         to_action_name: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        target: Option<&ProducerRef>,
         user_payload: Payload,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
@@ -705,18 +702,18 @@ impl ActionMessenger {
         let goal_id = generate_goal_id();
         let goal_payload = wrap_goal_payload(&goal_id, user_payload.as_ref())?;
 
-        // Discover a single producer when the caller did not pin either
-        // addressing slot. The probe runs server-side without invoking the
-        // goal handler; only the discovered producer will receive the real
+        // Discover a single producer only when the caller did not pin one.
+        // The probe is answered by the transport adapter without invoking
+        // the goal handler; only the discovered producer receives the real
         // goal request.
         let started_at = Instant::now();
-        let (resolved_core, resolved_inst) =
-            if target_instance_id.is_none() || target_core_node.is_none() {
+        let resolved: ProducerRef = match target {
+            Some(producer) => producer.clone(),
+            None => {
                 let probe_sender = ActionWireSender::new(
                     as_core_node,
                     as_instance_id,
-                    target_core_node,
-                    target_instance_id,
+                    None,
                     to_target.clone(),
                     to_action_name,
                 )?;
@@ -725,22 +722,15 @@ impl ActionMessenger {
                 // against unreachable producers, while a generous one lets
                 // peer-mode gossip discovery settle (see `discover_producer`).
                 let discovery_timeout = goal_timeout.min(DISCOVERY_TIMEOUT);
-                let (core, inst) =
-                    discover_producer(messenger, &probe_sender.goal_service(), discovery_timeout)
-                        .await?;
-                (Some(core), Some(inst))
-            } else {
-                (
-                    target_core_node.map(str::to_string),
-                    target_instance_id.map(str::to_string),
-                )
-            };
+                discover_producer(messenger, &probe_sender.goal_service(), discovery_timeout)
+                    .await?
+            }
+        };
 
         let sender = ActionWireSender::new(
             as_core_node,
             as_instance_id,
-            resolved_core.as_deref(),
-            resolved_inst.as_deref(),
+            Some(&resolved),
             to_target,
             to_action_name,
         )?;
@@ -766,7 +756,7 @@ impl ActionMessenger {
         let remaining_goal_budget = goal_timeout.saturating_sub(started_at.elapsed());
         if remaining_goal_budget.is_zero() {
             return Err(Error::ServiceTimeout {
-                instance_id: resolved_inst.clone(),
+                instance_id: Some(resolved.instance_id.clone()),
                 service_name: to_action_name.to_string(),
             });
         }

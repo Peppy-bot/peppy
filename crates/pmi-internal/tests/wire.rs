@@ -12,8 +12,8 @@ use common::{RECV_TIMEOUT, ZENOH_SERIAL, test_node_target, wait_for_subscriber_d
 
 use bytes::Bytes;
 use pmi::{
-    ActionWireReceiver, ActionWireSender, IncomingRequest, MessengerBackend, Payload, PublisherQoS,
-    ReplyStream, SenderTarget, ServiceKind, ServiceQueryKind, ServiceQueryable,
+    ActionWireReceiver, ActionWireSender, IncomingRequest, MessengerBackend, Payload, ProducerRef,
+    PublisherQoS, ReplyStream, SenderTarget, ServiceKind, ServiceQueryKind, ServiceQueryable,
     ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription, TopicMessage,
     TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
@@ -212,15 +212,11 @@ fn service_receiver() -> ServiceWireReceiver {
     .expect("valid wire fields")
 }
 
-fn service_sender(
-    target_core_node: Option<&str>,
-    target_instance_id: Option<&str>,
-) -> ServiceWireSender {
+fn service_sender(target: Option<&ProducerRef>) -> ServiceWireSender {
     ServiceWireSender::new(
         "client_core",
         "client_inst",
-        target_core_node,
-        target_instance_id,
+        target,
         test_node_target("robot_arm"),
         "ping",
         ServiceKind::Service,
@@ -274,28 +270,23 @@ async fn run_service_roundtrip(sender: ServiceWireSender) {
     assert_eq!(response.payload(), &response_body);
 }
 
+// Only two target shapes exist on the wire now: a full `(core_node,
+// instance_id)` pin and a full wildcard (the discovery probe shape).
+// Half-pinned selectors are unrepresentable at the constructor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_specific_request_response() {
     let _lock = ZENOH_SERIAL.lock().await;
-    run_service_roundtrip(service_sender(Some("server_core"), Some("server_inst"))).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_broadcast_any_instance() {
-    let _lock = ZENOH_SERIAL.lock().await;
-    run_service_roundtrip(service_sender(Some("server_core"), None)).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_broadcast_any_core() {
-    let _lock = ZENOH_SERIAL.lock().await;
-    run_service_roundtrip(service_sender(None, Some("server_inst"))).await;
+    run_service_roundtrip(service_sender(Some(&ProducerRef::new(
+        "server_core",
+        "server_inst",
+    ))))
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_full_broadcast() {
     let _lock = ZENOH_SERIAL.lock().await;
-    run_service_roundtrip(service_sender(None, None)).await;
+    run_service_roundtrip(service_sender(None)).await;
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────
@@ -314,8 +305,7 @@ fn action_sender() -> ActionWireSender {
     ActionWireSender::new(
         "client_core",
         "client_inst",
-        Some("server_core"),
-        Some("server_inst"),
+        Some(&ProducerRef::new("server_core", "server_inst")),
         test_node_target("robot_arm"),
         "pick_place",
     )

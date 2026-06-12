@@ -704,6 +704,20 @@ async fn handle_mock_queryable(
         );
 
         let token = ResponseToken::Mock(MockResponseToken::new(mock_query.reply_tx, reply_keyexpr));
+
+        // Mirrors the zenoh adapter: probes (liveness, discovery, benchmark
+        // sized-probes) are answered in the dispatch path — Response-kind,
+        // never Ack — and never reach the endpoint channel, so a producer
+        // busy in user code still answers them.
+        if parsed.kind == ServiceQueryKind::Probe {
+            let response =
+                crate::probe::probe_response_body(mock_query.payload.as_bytes().as_ref());
+            if let Err(err) = token.respond_response(Payload::from_bytes(response)).await {
+                tracing::warn!(%err, "mock queryable: failed to publish probe response");
+            }
+            continue;
+        }
+
         let request = IncomingRequest {
             payload: mock_query.payload,
             kind: parsed.kind,
@@ -880,8 +894,10 @@ mod tests {
         let sender = ServiceWireSender::new(
             "caller_core",
             "caller_inst",
-            Some("server_core"),
-            Some("server_inst"),
+            Some(&config::runtime::ProducerRef::new(
+                "server_core",
+                "server_inst",
+            )),
             SenderTarget::interface("depth_camera", "v1").expect("iface target"),
             "ping",
             ServiceKind::Service,
@@ -929,6 +945,89 @@ mod tests {
         assert_eq!(reply.message().payload().to_bytes().as_ref(), b"pong");
     }
 
+    /// Probes are answered by the adapter's dispatch path — one
+    /// Response-kind reply — and never reach the producer's endpoint
+    /// channel, so a producer busy in user code (not parked in its recv
+    /// loop) still answers liveness/discovery/benchmark probes. Sized
+    /// probes get a response of the requested size; plain probes get an
+    /// empty one.
+    #[tokio::test]
+    async fn mock_queryable_answers_probes_in_dispatch_without_enqueueing() {
+        use crate::wire::{
+            SenderTarget, ServiceKind, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
+            ServiceWireSender,
+        };
+
+        let mut adapter = MockAdapter::default();
+        adapter.start_session().await.expect("session should start");
+
+        let receiver = ServiceWireReceiver::new(
+            "server_core",
+            "server_inst",
+            SenderTarget::node("camera", "v1").expect("node target"),
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid receiver");
+        let sender = ServiceWireSender::new(
+            "caller_core",
+            "caller_inst",
+            None, // wildcard target: the discovery probe shape
+            SenderTarget::node("camera", "v1").expect("node target"),
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid sender");
+
+        let queryable = adapter
+            .listen_service(&receiver)
+            .await
+            .expect("queryable declare should succeed");
+        // Nobody drains `queryable.rx` — the producer is "busy".
+
+        // Plain (empty-body) probe: empty Response-kind reply.
+        let mut reply_stream = adapter
+            .call_service(
+                &sender,
+                Payload::from_bytes(bytes::Bytes::new()),
+                ServiceQueryKind::Probe,
+                Some(std::time::Duration::from_millis(500)),
+            )
+            .await
+            .expect("probe call should succeed");
+        let reply = reply_stream
+            .rx
+            .recv()
+            .await
+            .expect("probe must be answered without the endpoint loop");
+        assert_eq!(reply.kind(), ServiceReplyKind::Response);
+        assert!(reply.message().payload().is_empty());
+
+        // Benchmark sized probe: response carries the requested size.
+        let mut reply_stream = adapter
+            .call_service(
+                &sender,
+                Payload::from_bytes(crate::probe::build_sized_probe_request(64, 4096)),
+                ServiceQueryKind::Probe,
+                Some(std::time::Duration::from_millis(500)),
+            )
+            .await
+            .expect("sized probe call should succeed");
+        let reply = reply_stream
+            .rx
+            .recv()
+            .await
+            .expect("sized probe must be answered without the endpoint loop");
+        assert_eq!(reply.kind(), ServiceReplyKind::Response);
+        assert_eq!(reply.message().payload().len(), 4096);
+
+        // Neither probe leaked into the endpoint channel.
+        assert!(
+            queryable.rx.try_recv().is_err(),
+            "probes must never reach the endpoint channel"
+        );
+    }
+
     #[tokio::test]
     async fn mock_liveliness_token_lifecycle_drives_watch_and_probe() {
         // The mock must mirror Zenoh's liveliness semantics: a watch created
@@ -946,8 +1045,10 @@ mod tests {
         let sender = ActionWireSender::new(
             "caller_core",
             "caller_inst",
-            Some("server_core"),
-            Some("server_inst"),
+            Some(&config::runtime::ProducerRef::new(
+                "server_core",
+                "server_inst",
+            )),
             target.clone(),
             "move",
         )
@@ -1010,8 +1111,10 @@ mod tests {
         let sender = ActionWireSender::new(
             "caller_core",
             "caller_inst",
-            Some("server_core"),
-            Some("server_inst"),
+            Some(&config::runtime::ProducerRef::new(
+                "server_core",
+                "server_inst",
+            )),
             target,
             "move",
         )

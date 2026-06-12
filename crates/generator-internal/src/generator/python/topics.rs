@@ -2,7 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
-use super::services::{consumed_from_instance_id_python_expr, sender_target_python_expr};
+use super::services::{consumed_target_python_expr, sender_target_python_expr};
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
@@ -145,9 +145,8 @@ pub fn build_consumed_topic(
     // Collect fields from the message format
     let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
 
-    // Always need Optional for the function parameters (from_core_node),
-    // plus any Optional fields in the dataclasses.
-    // Tuple is used for the return type of on_next_message_received.
+    // Optional covers any Optional fields in the dataclasses; Tuple is
+    // used for the return type of on_next_message_received.
     builder.add_import("from typing import Optional, Tuple");
 
     // Add capnp imports and a lazy, cached schema loader.
@@ -177,7 +176,9 @@ pub fn build_consumed_topic(
     // Generate on_next_message_received function
     builder.add_import("import peppylib");
     builder.blank_line();
-    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, from_core_node: Optional[str] = None) -> Tuple[str, Message]:");
+    builder.line(
+        "async def on_next_message_received(node_runner: peppylib.NodeRunner) -> Tuple[str, Message]:",
+    );
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
     builder.line("subscription = await peppylib.TopicMessenger.subscribe(");
@@ -192,9 +193,8 @@ pub fn build_consumed_topic(
     );
     builder.line(&format!("{from_target},"));
     builder.line("topic_name,");
-    builder.line("from_core_node,");
-    let from_instance_id = consumed_from_instance_id_python_expr(dependency);
-    builder.line(&format!("{from_instance_id},"));
+    let from_producer = consumed_target_python_expr(dependency);
+    builder.line(&format!("{from_producer},"));
     builder.line("peppylib.QoSProfile.Standard,");
     // `is_from_any: true` for `from_any: true` slots gates the
     // messenger's per-`(name, tag)` reservation. Pinned slots

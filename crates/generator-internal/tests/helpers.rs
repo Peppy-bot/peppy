@@ -590,12 +590,15 @@ pub fn run_generate_peppygen_lib_test(
     (temp_dir, peppygen_dir)
 }
 
-/// Context for waiting on service reachability in tests.
+/// Context for waiting on service reachability in tests. The harness
+/// always knows the generated project's core node (`target_core_node`),
+/// so reachability probes for a known instance carry the full
+/// `(core_node, instance_id)` wire address.
 pub struct WaitContext<'a> {
     pub messenger: &'a MessengerHandle,
     pub bound_core_node: &'a str,
     pub caller_instance_id: &'a str,
-    pub target_core_node: Option<&'a str>,
+    pub target_core_node: &'a str,
 }
 
 /// Default deadline for the wait-family helpers. Long enough for slow CI
@@ -646,16 +649,16 @@ pub async fn wait_for_service_reachable_or_exit(
             );
         }
 
+        let target = target_instance_id
+            .map(|inst| peppylib::messaging::ProducerRef::new(ctx.target_core_node, inst));
         let reachable = ServiceMessenger::is_reachable(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
             test_node_target(to_node_name),
             to_service_name,
-            ctx.target_core_node,
-            target_instance_id,
+            target.as_ref(),
         )
-
         .await
         .unwrap_or_else(|err| {
             panic!(
@@ -715,16 +718,16 @@ pub async fn wait_for_action_service_reachable_or_exit(
             );
         }
 
+        let target = target_instance_id
+            .map(|inst| peppylib::messaging::ProducerRef::new(ctx.target_core_node, inst));
         let reachable = ActionMessenger::is_reachable(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
             test_node_target(to_node_name),
             to_action_name,
-            ctx.target_core_node,
-            target_instance_id,
+            target.as_ref(),
         )
-
         .await
         .unwrap_or_else(|err| {
             panic!(
@@ -790,7 +793,7 @@ pub async fn send_shutdown(
     bound_core_node: &str,
     sender_instance_id: &str,
     to_node_name: &str,
-    target_core_node: Option<&str>,
+    target_core_node: &str,
     target_instance_id: &str,
     timeout: Duration,
 ) {
@@ -801,8 +804,10 @@ pub async fn send_shutdown(
         sender_instance_id,
         test_node_target(to_node_name),
         SHUTDOWN_SERVICE,
-        target_core_node,
-        Some(target_instance_id),
+        Some(&peppylib::messaging::ProducerRef::new(
+            target_core_node,
+            target_instance_id,
+        )),
         payload,
         timeout,
     )
@@ -822,7 +827,7 @@ pub async fn try_send_shutdown(
     bound_core_node: &str,
     sender_instance_id: &str,
     to_node_name: &str,
-    target_core_node: Option<&str>,
+    target_core_node: &str,
     target_instance_id: &str,
     timeout: Duration,
 ) {
@@ -833,8 +838,10 @@ pub async fn try_send_shutdown(
         sender_instance_id,
         test_node_target(to_node_name),
         SHUTDOWN_SERVICE,
-        target_core_node,
-        Some(target_instance_id),
+        Some(&peppylib::messaging::ProducerRef::new(
+            target_core_node,
+            target_instance_id,
+        )),
         payload,
         timeout,
     )

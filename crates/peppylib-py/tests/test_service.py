@@ -53,8 +53,7 @@ async def test_service_messenger_communication():
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             SERVICE_NAME,
-            CORE_NODE,
-            INSTANCE_ID,
+            (CORE_NODE, INSTANCE_ID),
             REQUEST_PAYLOAD,
             2.0,)
 
@@ -78,8 +77,7 @@ async def test_service_poll_rejects_invalid_timeout():
                 INSTANCE_ID,
                 SenderTarget.node(NODE_NAME, NODE_TAG),
                 SERVICE_NAME,
-                CORE_NODE,
-                INSTANCE_ID,
+                (CORE_NODE, INSTANCE_ID),
                 REQUEST_PAYLOAD,
                 -1.0,)
 
@@ -113,8 +111,7 @@ async def test_service_handler_exception_returns_service_error():
                 INSTANCE_ID,
                 SenderTarget.node(NODE_NAME, NODE_TAG),
                 SERVICE_NAME,
-                CORE_NODE,
-                INSTANCE_ID,
+                (CORE_NODE, INSTANCE_ID),
                 REQUEST_PAYLOAD,
                 2.0,)
 
@@ -165,8 +162,7 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             "control",
-            CORE_NODE,
-            INSTANCE_ID,
+            (CORE_NODE, INSTANCE_ID),
             b"ping_native",
             2.0,
         )
@@ -179,8 +175,7 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
             INSTANCE_ID,
             SenderTarget.interface("camera", "v1"),
             "control",
-            CORE_NODE,
-            INSTANCE_ID,
+            (CORE_NODE, INSTANCE_ID),
             b"ping_iface",
             2.0,
         )

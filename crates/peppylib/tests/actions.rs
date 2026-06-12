@@ -5,7 +5,7 @@ use config::node::QoSProfile;
 use peppylib::PeppyError;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, CancelState, ConcurrentAction,
-    EmptyPayloadError, MessengerHandle, NonEmptyPayload, ResultStatus, SenderTarget,
+    EmptyPayloadError, MessengerHandle, NonEmptyPayload, ProducerRef, ResultStatus, SenderTarget,
     decode_cancel_ack, encode_cancel_ack, wrap_result_outcome,
 };
 use peppylib::types::Payload;
@@ -110,8 +110,7 @@ async fn action_messenger_communication() {
         instance_id,
         test_node_target(node_name),
         action_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         goal_payload,
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -223,8 +222,7 @@ async fn setup_goal_handshake(
         instance_id,
         test_node_target(node_name),
         action_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"goal data"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -436,6 +434,7 @@ async fn concurrent_action_two_goals_independent() {
         }
     });
 
+    let target = ProducerRef::new(core_node, instance_id);
     let send = |payload: &'static [u8]| {
         ActionMessenger::send_goal(
             &client_handle,
@@ -443,8 +442,7 @@ async fn concurrent_action_two_goals_independent() {
             instance_id,
             test_node_target(node_name),
             action_name,
-            Some(core_node),
-            Some(instance_id),
+            Some(&target),
             Payload::from_static(payload),
             QoSProfile::Reliable,
             Duration::from_secs(2),
@@ -545,6 +543,7 @@ async fn concurrent_action_cancel_targets_one_goal() {
         }
     });
 
+    let target = ProducerRef::new(core_node, instance_id);
     let send = |payload: &'static [u8]| {
         ActionMessenger::send_goal(
             &client_handle,
@@ -552,8 +551,7 @@ async fn concurrent_action_cancel_targets_one_goal() {
             instance_id,
             test_node_target(node_name),
             action_name,
-            Some(core_node),
-            Some(instance_id),
+            Some(&target),
             Payload::from_static(payload),
             QoSProfile::Reliable,
             Duration::from_secs(2),
@@ -642,6 +640,7 @@ async fn concurrent_action_reject_then_accept() {
         }
     });
 
+    let target = ProducerRef::new(core_node, instance_id);
     let send = |payload: &'static [u8]| {
         ActionMessenger::send_goal(
             &client_handle,
@@ -649,8 +648,7 @@ async fn concurrent_action_reject_then_accept() {
             instance_id,
             test_node_target(node_name),
             action_name,
-            Some(core_node),
-            Some(instance_id),
+            Some(&target),
             Payload::from_static(payload),
             QoSProfile::Reliable,
             Duration::from_secs(2),
@@ -730,8 +728,7 @@ async fn concurrent_action_abandoned_goal_yields_typed_abandoned() {
         instance_id,
         test_node_target(node_name),
         action_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"X"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -846,8 +843,7 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
         instance_id,
         test_node_target(node_name),
         action_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"X"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -983,8 +979,7 @@ async fn concurrent_action_result_parks_until_complete() {
         instance_id,
         test_node_target(node_name),
         action_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"A"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -1056,8 +1051,7 @@ async fn concurrent_action_multiple_polls_one_goal_all_resolve() {
         instance_id,
         test_node_target(node_name),
         action_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"A"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -1139,6 +1133,7 @@ async fn concurrent_action_completed_result_expires_after_grace() {
         }
     });
 
+    let target = ProducerRef::new(core_node, instance_id);
     let send = |payload: &'static [u8]| {
         ActionMessenger::send_goal(
             &client_handle,
@@ -1146,8 +1141,7 @@ async fn concurrent_action_completed_result_expires_after_grace() {
             instance_id,
             test_node_target(node_name),
             action_name,
-            Some(core_node),
-            Some(instance_id),
+            Some(&target),
             Payload::from_static(payload),
             QoSProfile::Reliable,
             Duration::from_secs(2),
@@ -1233,8 +1227,7 @@ async fn concurrent_action_cancel_after_terminal_is_already_terminal() {
         instance_id,
         test_node_target(node_name),
         action_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"A"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -1360,8 +1353,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         instance_id,
         test_node_target(node_name),
         action_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"native_goal"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -1380,8 +1372,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         instance_id,
         SenderTarget::interface(iface_name, iface_tag).expect("test target"),
         action_name,
-        Some(core_node),
-        Some(instance_id),
+        Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"iface_goal"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -1534,7 +1525,6 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
         "caller_inst",
         action_target,
         action_name,
-        None,
         None,
         Payload::from_static(b"go"),
         QoSProfile::Reliable,

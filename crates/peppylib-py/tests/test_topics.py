@@ -35,8 +35,7 @@ async def test_messenger_communication():
             instance_id,
             SenderTarget.node(node_name, NODE_TAG),
             topic_name,
-            None,  # Accept messages from any core node
-            None,  # Accept messages from any instance
+            None,  # Accept messages from any producer (discover-then-pin)
             qos,
         )
 

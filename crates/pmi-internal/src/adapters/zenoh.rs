@@ -552,11 +552,16 @@ impl MessengerBackend for ZenohAdapter {
         // `*` selector double-deliver via `QueryTarget::All`.
         let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
         let recv_clone = recv.clone();
+        // Probe replies are spawned onto the listener's runtime: the zenoh
+        // callback runs on a zenoh worker thread that must not block, and
+        // `listen_service` always executes inside the consumer's tokio
+        // runtime, so the handle is available to capture here.
+        let rt = tokio::runtime::Handle::current();
         let queryable = session
             .declare_queryable(&declare_keyexpr)
             .complete(true)
             .callback(move |query| {
-                process_inbound_query(query, &recv_clone, &tx);
+                process_inbound_query(query, &recv_clone, &tx, &rt);
             })
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
@@ -1021,6 +1026,7 @@ fn process_inbound_query(
     query: zenoh::query::Query,
     recv: &ServiceWireReceiver,
     tx: &flume::Sender<IncomingRequest>,
+    rt: &tokio::runtime::Handle,
 ) {
     let attachment_bytes = query.attachment().map(|z| z.to_bytes()).unwrap_or_default();
     let parsed = match ZenohWireFormat::parse_inbound_query(
@@ -1064,6 +1070,25 @@ fn process_inbound_query(
     };
 
     let token = ResponseToken::Zenoh(ZenohResponseToken::new(query, reply_keyexpr));
+
+    // Probes (liveness, discovery, benchmark sized-probes) are answered
+    // right here in the dispatch path and never reach the endpoint channel:
+    // the endpoint's recv loop only runs while the producer task is parked
+    // in it, so answering there would starve discovery whenever user code
+    // is executing a handler or goal. The reply MUST be Response-kind
+    // (never Ack) — the consumer's discover-then-pin loop pins identity
+    // off the first non-Ack reply. The reply is spawned (not awaited):
+    // this callback runs on a zenoh worker thread that must not block.
+    if parsed.kind == ServiceQueryKind::Probe {
+        let response = crate::probe::probe_response_body(payload.as_bytes().as_ref());
+        rt.spawn(async move {
+            if let Err(err) = token.respond_response(Payload::from_bytes(response)).await {
+                tracing::warn!(%err, "failed to publish probe response");
+            }
+        });
+        return;
+    }
+
     let request = IncomingRequest {
         payload,
         kind: parsed.kind,
