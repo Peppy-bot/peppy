@@ -24,12 +24,11 @@
 //! service call with a late-replying sibling producer.
 
 use crate::error::{Error, Result};
-use crate::shm::{LazyShm, ShmContext};
 use crate::types::{
     ActionLivelinessEvent, ActionLivelinessProbe, ActionLivelinessToken, ActionLivelinessWatch,
-    IncomingRequest, LoanedPayload, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream,
-    ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,
-    TopicMessage, ZenohResponseToken,
+    IncomingRequest, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
+    ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, TopicMessage,
+    ZenohResponseToken,
 };
 use crate::wire::zenoh_format::{ServiceReplyAttachment, TopicAttachment, ZenohWireFormat};
 use crate::wire::{
@@ -149,10 +148,6 @@ pub struct ZenohClientConfig {
     seed_peers: Vec<String>,
     /// Whether gossip-based direct peer linking is enabled for this session.
     gossip: bool,
-    /// Whether this session announces shared memory and arms an SHM provider
-    /// at session open, plus the provider's segment sizing (the `shm` section
-    /// from `peppy_config.json5`).
-    shm: config::peppy_config::ShmConfig,
     /// Per-QoS subscriber channel buffer sizes for this session.
     buffer_sizes: SubscriberBufferSizes,
 }
@@ -162,13 +157,6 @@ pub struct ZenohAdapter {
     zenohd: Option<zenohd::ZenohdFacade>,
     client_config: ZenohClientConfig,
     session: Option<Arc<zenoh::Session>>,
-    /// The session's shared-memory state, armed at
-    /// [`start_session`](MessengerBackend::start_session) when `shm.enabled`
-    /// is on (carrying the section's segment sizing into the lazy provider);
-    /// the provider itself is created on the first qualifying publish
-    /// or loan (see [`crate::shm`]'s locked-memory notes). `None` means every
-    /// publish takes the heap path.
-    shm: Option<Arc<LazyShm>>,
     /// When true, [`start_session`](MessengerBackend::start_session) opens a
     /// reconnecting session (see [`ZenohReconnectingClientConfigTemplate`]).
     reconnect_session: bool,
@@ -176,51 +164,34 @@ pub struct ZenohAdapter {
 
 impl ZenohAdapter {
     /// Creates a ZenohAdapter that owns and manages its own zenohd router.
-    /// Use this when you need to start a new router instance. `profile` selects
-    /// the daemon session's own routing model (peer vs router-relay) plus the
-    /// shared-memory knob — applied to the router's config too, since in router
-    /// mode zenohd sits in the data path — and `buffer_sizes` its subscriber
-    /// channel capacities, all resolved from `peppy_config.json5`.
+    /// Use this when you need to start a new router instance. `gossip` selects
+    /// the daemon session's own routing model (peer vs router-relay) and
+    /// `buffer_sizes` its subscriber channel capacities, both resolved from
+    /// `peppy_config.json5`.
     #[cfg(feature = "router")]
     pub fn with_router(
         protocol: ZenohNetProtocol,
         host: &str,
         port: u16,
-        profile: config::peppy_config::TransportProfile,
+        gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
     ) -> Result<Self> {
-        if profile.shm.enabled {
-            // Before the zenohd process exists: the child inherits the raised
-            // soft limit, which it needs to map node segments in router+shm
-            // mode (zenoh mlocks every mapped segment).
-            crate::shm::raise_memlock_limit();
-        }
-        let zenohd_config_path =
-            zenohd::router_config_path(protocol, host, port, profile.shm.enabled)?;
+        let zenohd_config_path = zenohd::router_config_path(protocol, host, port)?;
         let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
-        let client_config = Self::derive_client_config_from_zenohd(&facade, profile, buffer_sizes);
+        let client_config = Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes);
 
         Ok(Self {
             zenohd: Some(facade),
             client_config,
             session: None,
-            shm: None,
             reconnect_session: false,
         })
     }
 
     /// Creates a ZenohAdapter that joins the mesh seeded by an existing zenohd
-    /// router, using the default discovery (gossip on, shm on, seed =
-    /// `host:port`) and default subscriber buffers. The session runs in `peer`
-    /// mode so data forms direct links instead of relaying through the router.
-    ///
-    /// Sessions built here (the peppy CLI, `MessengerHandle::from_host_port`)
-    /// do not consult `peppy_config.json5`, so they keep the production
-    /// defaults even when the daemon's knobs differ — the same long-standing
-    /// behavior as `mode` (these sessions are always gossip-on). With `shm:
-    /// false` configured, such a session still announces SHM; zenoh's
-    /// per-link negotiation keeps the data on the network path because every
-    /// node session denies it.
+    /// router, using the default discovery (gossip on, seed = `host:port`) and
+    /// default subscriber buffers. The session runs in `peer` mode so data forms
+    /// direct links instead of relaying through the router.
     pub fn connect_to(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
         Self::connect_to_with_discovery(
             protocol,
@@ -228,23 +199,20 @@ impl ZenohAdapter {
             port,
             Vec::new(),
             true,
-            config::peppy_config::ShmConfig::ENABLED,
             SubscriberBufferSizes::default(),
         )
     }
 
     /// Like [`connect_to`](Self::connect_to) but with an explicit gossip seed
-    /// list, gossip toggle, shared-memory section, and subscriber buffer
-    /// sizes. The node runtime passes its `DiscoveryConfig` here. An empty
-    /// `seed_peers` falls back to the single `host:port` seed.
-    #[allow(clippy::too_many_arguments)]
+    /// list, gossip toggle, and subscriber buffer sizes. The node runtime passes
+    /// its `DiscoveryConfig` here. An empty `seed_peers` falls back to the single
+    /// `host:port` seed.
     pub fn connect_to_with_discovery(
         protocol: ZenohNetProtocol,
         host: &str,
         port: u16,
         seed_peers: Vec<String>,
         gossip: bool,
-        shm: config::peppy_config::ShmConfig,
         buffer_sizes: SubscriberBufferSizes,
     ) -> Result<Self> {
         let client_config = Self::create_client_config(
@@ -254,7 +222,6 @@ impl ZenohAdapter {
             false,
             seed_peers,
             gossip,
-            shm,
             buffer_sizes,
         );
 
@@ -263,7 +230,6 @@ impl ZenohAdapter {
             zenohd: None,
             client_config,
             session: None,
-            shm: None,
             reconnect_session: false,
         })
     }
@@ -280,25 +246,18 @@ impl ZenohAdapter {
     }
 
     /// Starts a zenohd router with an ephemeral port, retrying on bind failures.
-    /// The hosted session uses the default transport profile (peer + shm) with
-    /// default subscriber buffers; use
+    /// The hosted session is a peer with default subscriber buffers; use
     /// [`start_router_ephemeral_in_mode`](Self::start_router_ephemeral_in_mode)
-    /// to pick the session's transport profile and buffer sizes.
+    /// to pick the session's gossip mode and buffer sizes.
     #[cfg(feature = "router")]
     pub async fn start_router_ephemeral(host: &str, port: Option<u16>) -> Result<ZenohdInstance> {
-        Self::start_router_ephemeral_in_mode(
-            host,
-            port,
-            config::peppy_config::TransportProfile::default(),
-            SubscriberBufferSizes::default(),
-        )
-        .await
+        Self::start_router_ephemeral_in_mode(host, port, true, SubscriberBufferSizes::default())
+            .await
     }
 
     /// Like [`start_router_ephemeral`](Self::start_router_ephemeral) but the
-    /// hosted session's transport profile (peer vs router-relay, shm on/off)
-    /// and subscriber buffer sizes are explicit. Used by tests to exercise the
-    /// full transport matrix.
+    /// hosted session's `gossip` (peer vs router-relay) and subscriber buffer
+    /// sizes are explicit. Used by tests to exercise both messaging modes.
     ///
     /// When `port` is `None`, automatically selects an available port and retries
     /// up to 32 times if the port becomes unavailable. When `port` is `Some`,
@@ -309,7 +268,7 @@ impl ZenohAdapter {
     pub async fn start_router_ephemeral_in_mode(
         host: &str,
         port: Option<u16>,
-        profile: config::peppy_config::TransportProfile,
+        gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
     ) -> Result<ZenohdInstance> {
         let max_attempts = if port.is_some() { 1 } else { 32 };
@@ -325,7 +284,7 @@ impl ZenohAdapter {
             };
 
             let adapter =
-                Self::with_router(ZenohNetProtocol::Tcp, host, port, profile, buffer_sizes)?;
+                Self::with_router(ZenohNetProtocol::Tcp, host, port, gossip, buffer_sizes)?;
             // A lightweight client probe (no listener, no peer discovery) is the
             // cheapest reliable "router accepts sessions yet?" check.
             let probe_config = render_probe_config(ZenohNetProtocol::Tcp, host, port);
@@ -378,18 +337,6 @@ impl ZenohAdapter {
         (self.client_config.host.as_str(), self.client_config.port)
     }
 
-    /// The network protocol this session's links connect over. Labels the
-    /// network-path rows in the stack benchmark report.
-    pub fn net_protocol(&self) -> ZenohNetProtocol {
-        self.client_config.protocol
-    }
-
-    /// The session's shared-memory section as configured (the `shm` knobs the
-    /// session was built with, not whether a provider was actually armed).
-    pub fn shm_config(&self) -> config::peppy_config::ShmConfig {
-        self.client_config.shm
-    }
-
     /// Builds a lock-free [`RouterHealthChecker`] bound to this adapter's router
     /// endpoint, for the router watchdog to probe liveness without holding the
     /// central messenger lock.
@@ -406,7 +353,6 @@ impl ZenohAdapter {
     /// Builds a peer-session config seeded by `host:port` (or `seed_peers` when
     /// non-empty). An operator can override the whole session config without a
     /// rebuild via `ZENOH_SESSION_CONFIG` (mirrors the router's `ZENOH_CONFIG`).
-    #[allow(clippy::too_many_arguments)]
     fn create_client_config(
         protocol: ZenohNetProtocol,
         host: &str,
@@ -414,7 +360,6 @@ impl ZenohAdapter {
         reconnect: bool,
         seed_peers: Vec<String>,
         gossip: bool,
-        shm: config::peppy_config::ShmConfig,
         buffer_sizes: SubscriberBufferSizes,
     ) -> ZenohClientConfig {
         let connect_host = connectable_host(host);
@@ -425,14 +370,10 @@ impl ZenohAdapter {
         };
 
         // `ZENOH_SESSION_CONFIG` overrides the generated zenoh session config
-        // wholesale, including the `gossip`/mode rendering and the
-        // `transport.shared_memory` block below, so the operator file wins on
-        // routing model and SHM announcement alike (an override file that wants
-        // SHM must re-add the block). It does NOT affect `buffer_sizes`, which
+        // wholesale, including the `gossip`/mode rendering below, so the operator
+        // file wins on routing model. It does NOT affect `buffer_sizes`, which
         // are applied later at the flume/mpsc layer (subscribe / listen / call),
-        // so peer-mode buffer tuning from `peppy_config.json5` still takes
-        // effect — and it does not affect the adapter-side SHM provider either,
-        // which follows the `shm` section regardless.
+        // so peer-mode buffer tuning from `peppy_config.json5` still takes effect.
         let zenoh_config = match std::env::var("ZENOH_SESSION_CONFIG") {
             Ok(path) if !path.trim().is_empty() => zenoh::config::Config::from_file(path.trim())
                 .unwrap_or_else(|e| {
@@ -449,15 +390,12 @@ impl ZenohAdapter {
             // separate network namespace) use the client path so they reach the
             // rest of the system through the router instead of advertising an
             // unreachable loopback locator and churning on failed autoconnects.
-            // `shm` applies to BOTH shapes: a client session through an
-            // SHM-enabled zenohd still zero-copies over the relay hop.
             _ if gossip => render_config(&ZenohConfigSpec {
                 mode: SessionMode::Peer,
                 connect_endpoints: seeds.clone(),
                 listen_endpoints: vec![loopback_listen_endpoint(protocol)],
                 reconnect,
                 gossip: true,
-                shared_memory: shm.enabled,
             }),
             _ => render_config(&ZenohConfigSpec {
                 mode: SessionMode::Client,
@@ -465,7 +403,6 @@ impl ZenohAdapter {
                 listen_endpoints: Vec::new(),
                 reconnect,
                 gossip: false,
-                shared_memory: shm.enabled,
             }),
         };
 
@@ -476,7 +413,6 @@ impl ZenohAdapter {
             protocol,
             seed_peers: seeds,
             gossip,
-            shm,
             buffer_sizes,
         }
     }
@@ -484,25 +420,24 @@ impl ZenohAdapter {
     #[cfg(feature = "router")]
     fn derive_client_config_from_zenohd(
         zenohd: &zenohd::ZenohdFacade,
-        profile: config::peppy_config::TransportProfile,
+        gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
     ) -> ZenohClientConfig {
         // The daemon joins the mesh it hosts, seeded by its own router, so peers
-        // can reach its core-node/daemon services. The profile (from
+        // can reach its core-node/daemon services. `gossip` (from
         // `peppy_config.json5`) selects whether that session is a peer (direct
-        // links) or a client (router relay) and whether it announces shared
-        // memory; router mode makes the daemon a plain client of its own
-        // loopback router. Its long-lived session is rebuilt as reconnecting in
-        // `start_session` when `reconnect_session` is set; the readiness probe
-        // in `start_router_ephemeral` builds its own client probe config.
+        // links) or a client (router relay); router mode makes the daemon a
+        // plain client of its own loopback router. Its long-lived session is
+        // rebuilt as reconnecting in `start_session` when `reconnect_session` is
+        // set; the readiness probe in `start_router_ephemeral` builds its own
+        // client probe config.
         Self::create_client_config(
             zenohd.zenoh_endpoint.protocol,
             &zenohd.zenoh_endpoint.host,
             zenohd.zenoh_endpoint.port,
             false,
             Vec::new(),
-            profile.gossip(),
-            profile.shm,
+            gossip,
             buffer_sizes,
         )
     }
@@ -522,7 +457,6 @@ impl MessengerBackend for ZenohAdapter {
                 true,
                 self.client_config.seed_peers.clone(),
                 self.client_config.gossip,
-                self.client_config.shm,
                 self.client_config.buffer_sizes,
             )
             .zenoh_config
@@ -534,31 +468,15 @@ impl MessengerBackend for ZenohAdapter {
             .await
             .map_err(|e| Error::BackendError(format!("Failed to create Zenoh session: {}", e)))?;
 
-        // Arm the lazy SHM state; the provider (and its locked segment) only
-        // materializes on the first qualifying publish or loan, so
-        // subscriber-only sessions never spend memlock budget on a segment
-        // they wouldn't write to.
-        self.shm = if self.client_config.shm.enabled {
-            Some(LazyShm::new(self.client_config.shm.segment_bytes))
-        } else {
-            None
-        };
-
         info!(
-            "Zenoh session started on: {}://{}:{} (shm={})",
-            &self.client_config.protocol,
-            &self.client_config.host,
-            &self.client_config.port,
-            self.shm.is_some(),
+            "Zenoh session started on: {}://{}:{}",
+            &self.client_config.protocol, &self.client_config.host, &self.client_config.port
         );
         self.session = Some(Arc::new(session));
         Ok(())
     }
 
     async fn stop_session(&mut self) -> Result<()> {
-        // In-flight SHM buffers keep the segment alive through their own
-        // references; dropping the provider here only stops NEW allocations.
-        self.shm = None;
         if let Some(session) = self.session.take() {
             // Close while zenohd is still alive so the undeclare-face
             // messages reach the router. Drop's later close becomes a
@@ -634,12 +552,11 @@ impl MessengerBackend for ZenohAdapter {
         // `*` selector double-deliver via `QueryTarget::All`.
         let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
         let recv_clone = recv.clone();
-        let shm = self.shm.clone();
         let queryable = session
             .declare_queryable(&declare_keyexpr)
             .complete(true)
             .callback(move |query| {
-                process_inbound_query(query, &recv_clone, &tx, shm.clone());
+                process_inbound_query(query, &recv_clone, &tx);
             })
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
@@ -690,7 +607,7 @@ impl MessengerBackend for ZenohAdapter {
         // See the module-level "Why callback handlers, not FIFO" doc.
         session
             .get(&selector)
-            .payload(ShmContext::payload_into_zbytes(self.shm.as_ref(), payload))
+            .payload(payload.into_zbytes())
             .attachment(attachment.to_vec())
             .target(zenoh::query::QueryTarget::All)
             .consolidation(zenoh::query::ConsolidationMode::None)
@@ -911,7 +828,6 @@ impl ZenohAdapter {
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
         Ok(ZenohPublisher {
             session: Arc::clone(session),
-            shm: self.shm.clone(),
             topic,
             qos: ZenohQoS::from(qos),
         })
@@ -1007,10 +923,7 @@ impl ZenohAdapter {
         // routing interference between successive service polls with different
         // targeting.
         session
-            .put(
-                keyexpr,
-                ShmContext::payload_into_zbytes(self.shm.as_ref(), payload),
-            )
+            .put(keyexpr, payload.as_bytes().as_ref())
             .attachment(TopicAttachment { is_primary }.encode().to_vec())
             .congestion_control(zenoh_qos.congestion_control)
             .priority(zenoh_qos.priority)
@@ -1108,7 +1021,6 @@ fn process_inbound_query(
     query: zenoh::query::Query,
     recv: &ServiceWireReceiver,
     tx: &flume::Sender<IncomingRequest>,
-    shm: Option<Arc<LazyShm>>,
 ) {
     let attachment_bytes = query.attachment().map(|z| z.to_bytes()).unwrap_or_default();
     let parsed = match ZenohWireFormat::parse_inbound_query(
@@ -1151,7 +1063,7 @@ fn process_inbound_query(
         None => Payload::from_bytes(bytes::Bytes::new()),
     };
 
-    let token = ResponseToken::Zenoh(ZenohResponseToken::new(query, reply_keyexpr, shm));
+    let token = ResponseToken::Zenoh(ZenohResponseToken::new(query, reply_keyexpr));
     let request = IncomingRequest {
         payload,
         kind: parsed.kind,
@@ -1173,36 +1085,12 @@ fn process_inbound_query(
 /// `put`.
 pub struct ZenohPublisher {
     session: Arc<zenoh::Session>,
-    /// The owning session's SHM state at declare time, so per-frame publish
-    /// loops get the copy-into-SHM tier and SHM-backed loans without touching
-    /// the adapter.
-    shm: Option<Arc<LazyShm>>,
     topic: String,
     qos: ZenohQoS,
 }
 
 impl ZenohPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
-        self.put(ShmContext::payload_into_zbytes(
-            self.shm.as_ref(),
-            Payload::from_bytes(payload),
-        ))
-        .await
-    }
-
-    /// Borrows a writable publish buffer; see [`crate::MessengerPublisher::loan`].
-    pub fn loan(&self, len: usize) -> LoanedPayload {
-        ShmContext::loan(self.shm.as_ref(), len)
-    }
-
-    /// Publishes a filled loan without copying when it is SHM-backed; see
-    /// [`crate::MessengerPublisher::publish_loaned`].
-    pub async fn publish_loaned(&self, loaned: LoanedPayload) -> Result<()> {
-        self.put(ShmContext::loaned_into_zbytes(self.shm.as_ref(), loaned))
-            .await
-    }
-
-    async fn put(&self, zbytes: zenoh::bytes::ZBytes) -> Result<()> {
         // Pre-bound publishers are single-link (one keyexpr per declare),
         // so from a wildcard subscriber's view this publish is the only
         // one for its emit and must be marked primary. Topic publishers
@@ -1210,7 +1098,7 @@ impl ZenohPublisher {
         // `declare_publisher` — see the rustdoc on
         // `TopicMessenger::declare_publisher`.
         self.session
-            .put(&self.topic, zbytes)
+            .put(&self.topic, payload.as_ref())
             .attachment(TopicAttachment { is_primary: true }.encode().to_vec())
             .congestion_control(self.qos.congestion_control)
             .priority(self.qos.priority)
@@ -1239,7 +1127,6 @@ mod tests {
             true,
             Vec::new(),
             true,
-            config::peppy_config::ShmConfig::ENABLED,
             SubscriberBufferSizes::default(),
         );
         assert_eq!(reconnecting.host, "127.0.0.1");
@@ -1259,7 +1146,6 @@ mod tests {
             false,
             vec!["tcp/10.0.0.2:7448".to_string()],
             false,
-            config::peppy_config::ShmConfig::DISABLED,
             SubscriberBufferSizes {
                 standard: 64,
                 high_throughput: 4096,
@@ -1267,7 +1153,6 @@ mod tests {
         );
         assert_eq!(cfg.seed_peers, vec!["tcp/10.0.0.2:7448".to_string()]);
         assert!(!cfg.gossip);
-        assert!(!cfg.shm.enabled);
         assert_eq!(cfg.buffer_sizes.standard, 64);
         assert_eq!(cfg.buffer_sizes.high_throughput, 4096);
     }

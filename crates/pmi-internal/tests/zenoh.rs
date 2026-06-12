@@ -300,7 +300,6 @@ mod zenoh_tests {
             port,
             Vec::new(),
             false,
-            config::peppy_config::ShmConfig::ENABLED,
             SubscriberBufferSizes::default(),
         )
         .expect("subscriber adapter");
@@ -319,7 +318,6 @@ mod zenoh_tests {
             port,
             Vec::new(),
             false,
-            config::peppy_config::ShmConfig::ENABLED,
             SubscriberBufferSizes::default(),
         )
         .expect("publisher adapter");
@@ -351,26 +349,13 @@ mod zenoh_tests {
     /// stamp its outgoing data silently zeroes those rows. `gossip=true`
     /// exercises the direct peer path (the regression); `gossip=false` the
     /// router relay.
-    /// One matrix leg of the source-timestamp guard: sessions (and the
-    /// router) are built for `profile`, an above-SHM-threshold payload is
-    /// published, and the delivered sample must carry BOTH a source
-    /// timestamp and the transport the leg promises (`is_shm_backed` iff the
-    /// leg has shm on — so a silently degraded SHM leg fails here rather
-    /// than passing on the TCP path).
-    async fn assert_topic_carries_source_timestamp(
-        profile: config::peppy_config::TransportProfile,
-    ) {
+    async fn assert_topic_carries_source_timestamp(gossip: bool) {
         const TOPIC: &str = "source_timestamp_topic";
         let _lock = ZENOH_SERIAL.lock().await;
 
-        let instance = ZenohAdapter::start_router_ephemeral_in_mode(
-            "127.0.0.1",
-            None,
-            profile,
-            SubscriberBufferSizes::default(),
-        )
-        .await
-        .expect("Failed to start zenohd process");
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("Failed to start zenohd process");
         let host = instance.host.clone();
         let port = instance.port;
 
@@ -379,8 +364,7 @@ mod zenoh_tests {
             &host,
             port,
             Vec::new(),
-            profile.gossip(),
-            profile.shm,
+            gossip,
             SubscriberBufferSizes::default(),
         )
         .expect("subscriber adapter");
@@ -398,8 +382,7 @@ mod zenoh_tests {
             &host,
             port,
             Vec::new(),
-            profile.gossip(),
-            profile.shm,
+            gossip,
             SubscriberBufferSizes::default(),
         )
         .expect("publisher adapter");
@@ -409,31 +392,20 @@ mod zenoh_tests {
             .expect("publisher start_session");
 
         wait_for_subscriber_discovery().await;
-        // Above the SHM publish threshold so the +shm legs actually traverse
-        // the shared-memory tier; the recognizable prefix guards content.
-        let mut body = vec![0xABu8; pmi::SHM_PUBLISH_THRESHOLD_BYTES + 64];
-        body[..7].copy_from_slice(b"stamped");
         publisher
             .publish_topic(
                 &sender(TOPIC),
-                Payload::from_bytes(Bytes::from(body.clone())),
+                Payload::from_bytes(Bytes::from_static(b"stamped")),
                 PublisherQoS::Standard,
                 true,
             )
             .await
             .expect("publish");
         let msg = recv_or_timeout(&mut subscription.rx, "stamped").await;
-        assert_eq!(msg.payload(), &Bytes::from(body));
-        assert_eq!(
-            msg.payload().is_shm_backed(),
-            profile.shm.enabled,
-            "leg {profile:?}: expected is_shm_backed == {} — a degraded transport must not \
-             pass the timestamp guard on the wrong path",
-            profile.shm.enabled
-        );
+        assert_eq!(msg.payload(), &Bytes::from_static(b"stamped"));
         assert!(
             msg.source_timestamp_nanos().is_some(),
-            "delivered sample must carry a source timestamp ({profile:?}): the producing \
+            "delivered sample must carry a source timestamp (gossip={gossip}): the producing \
              session did not stamp its outgoing data, so delivery latency can't be measured"
         );
 
@@ -441,16 +413,20 @@ mod zenoh_tests {
         drop(instance);
     }
 
-    /// Every transport leg stamps outgoing samples. Peer mode is the
-    /// regression guard for the peer-mode timestamping fix (before it, the
-    /// peer session enabled timestamping under the wrong role and samples
-    /// arrived unstamped); router mode pins client/relay parity; the shm
-    /// on/off split pins that the shared-memory path carries timestamps too.
+    /// Peer mode (gossip on → direct peer links) stamps outgoing samples. This is
+    /// the regression guard for the peer-mode timestamping fix: before it, the
+    /// peer session enabled timestamping under the wrong role and samples arrived
+    /// unstamped.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn samples_carry_source_timestamp_in_all_transport_legs() {
-        for profile in config::peppy_config::TransportProfile::ALL {
-            assert_topic_carries_source_timestamp(profile).await;
-        }
+    async fn peer_mode_samples_carry_source_timestamp() {
+        assert_topic_carries_source_timestamp(true).await;
+    }
+
+    /// Router mode (gossip off → client sessions relayed through zenohd) stamps
+    /// outgoing samples too. Companion to the peer-mode guard, pinning parity.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn router_mode_samples_carry_source_timestamp() {
+        assert_topic_carries_source_timestamp(false).await;
     }
 
     /// A peer session built with custom (tiny) subscriber buffers still delivers
@@ -478,7 +454,6 @@ mod zenoh_tests {
             port,
             Vec::new(),
             true,
-            config::peppy_config::ShmConfig::ENABLED,
             tiny,
         )
         .expect("subscriber adapter");
@@ -832,7 +807,7 @@ mod zenoh_tests {
             ZenohNetProtocol::Tcp,
             "127.0.0.1",
             port,
-            config::peppy_config::TransportProfile::default(),
+            true,
             SubscriberBufferSizes::default(),
         )
         .unwrap();

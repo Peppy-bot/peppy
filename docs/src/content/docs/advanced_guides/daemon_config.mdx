@@ -1,6 +1,6 @@
 ---
 title: Daemon configuration
-description: Tune the daemon's messaging topology, zero-copy shared memory, peer-mode buffer sizes, and node lifecycle grace periods through peppy_config.json5.
+description: Tune the daemon's messaging topology, peer-mode buffer sizes, and node lifecycle grace periods through peppy_config.json5.
 sidebar:
   order: 9
 ---
@@ -24,8 +24,8 @@ A setting you delete from the file therefore comes back with its default on the 
 ## The default file
 
 ```json5
-// Read once when the peppy daemon starts, so any edit below (mode, buffer
-// sizes, or shm) takes effect only after you restart the daemon.
+// Read once when the peppy daemon starts, so any edit below (mode or buffer
+// sizes) takes effect only after you restart the daemon.
 {
   //   "peer"   - Zenoh peer sessions with gossip: nodes form direct
   //              peer-to-peer links and data stops relaying through the router.
@@ -56,28 +56,6 @@ A setting you delete from the file therefore comes back with its default on the 
     // actuators and release hardware before it is killed.
     shutdown_grace_secs: 3,
   },
-
-  // Zero-copy shared memory between co-located nodes (and through zenohd in
-  // "router" mode).
-  shm: {
-    // Payloads at or above an internal size threshold travel through a
-    // shared-memory segment instead of the kernel network stack; set to false
-    // to force every payload onto the network path. Applies in both modes.
-    // Container nodes in a separate network namespace never use shared memory
-    // regardless of this setting.
-    enabled: true,
-
-    // Size in bytes of the per-session shared-memory segment, or null to size
-    // it automatically from the host's locked-memory budget (an eighth of the
-    // hard RLIMIT_MEMLOCK, clamped between 1 MiB and the 32 MiB target). Set an
-    // explicit size on hosts where the memlock limit cannot be raised: keep it
-    // at or below hard_limit / (publishing sessions + 1), with a couple of MiB
-    // of headroom for zenoh's metadata segments; e.g. 3145728 (3 MiB) for a
-    // daemon plus one publishing node on the common 8 MiB limit. Out-of-range
-    // values are clamped into the 1-32 MiB window. Payloads larger than the
-    // segment fall back to the network path.
-    segment_bytes: null,
-  },
 }
 ```
 
@@ -89,26 +67,6 @@ A setting you delete from the file therefore comes back with its default on the 
 - **`"router"`**: gossip is off and all traffic relays through the central `zenohd` router. Use this when direct node-to-node connectivity is unreliable or undesirable, or to simplify debugging by funneling all traffic through one process.
 
 [Container nodes](/advanced_guides/containers/) that live in a separate network namespace (such as the Lima VM peppy uses on macOS) always take the router path, regardless of this setting: gossip cannot establish direct links across the namespace boundary.
-
-## `shm`: zero-copy shared memory
-
-With `shm.enabled: true` (the default), co-located nodes exchange large payloads through POSIX shared memory: the producer writes the payload once into a shared buffer and the consumer reads the same physical memory, skipping serialization and the kernel network stack entirely. This is primarily a throughput win for large payloads (camera frames and other sensor blobs), with a latency win on top. Small messages (below an internal threshold of 4 KiB) keep using the regular network path, where they are faster.
-
-Things to know:
-
-- **Orthogonal to `mode`.** Shared memory works in both topologies. In `"router"` mode the relay hop through `zenohd` also goes through the shared segment (the bundled `zenohd` is built with shared-memory support).
-- **Negotiated, with transparent fallback.** Shared memory only engages between processes that can actually map each other's segments: same host, shared `/dev/shm`, same user. Everything else (cross-host links, containers in separate namespaces, an exhausted buffer pool) transparently falls back to the network path; worst case is exactly the pre-shared-memory behavior, never an error or a stall.
-- **Locked-memory budget.** The kernel counts every mapped shared-memory segment against `RLIMIT_MEMLOCK`. With `segment_bytes: null` peppy sizes its per-session segment (target 32 MiB) to the host's limit automatically and warns when the limit clamps it; payloads larger than the segment fall back to the network path. For full-size segments raise the limit: on a systemd-managed host set `LimitMEMLOCK=` in the service unit (a full 32 MiB segment needs a limit of 256 MiB, eight times the target, because the budget also pays for mapping co-located producers' segments; `infinity` is the simple choice); processes with `CAP_IPC_LOCK` (including root) are unlimited.
-- **`segment_bytes`: explicit sizing where the limit can't be raised.** On a host where you cannot touch the memlock limit (e.g. a dev machine running the daemon from a plain shell against the common 8 MiB default), set `shm.segment_bytes` to claim a specific per-session segment size within the budget. The value applies to the daemon and is shipped to every node it spawns (process and container nodes alike, via the launch configuration), so one setting sizes the whole stack. Keep it at or below `hard_limit / (publishing sessions + 1)` with a couple of MiB of headroom for zenoh's metadata segments; e.g. `3145728` (3 MiB) for a daemon plus one publishing node under an 8 MiB limit. A single payload can be nearly the segment size, but the segment is a pool: a buffer stays allocated until every subscriber releases it, so sustained throughput needs room for a couple of in-flight payloads. Out-of-range values are clamped into the supported 1-32 MiB window; payloads that don't fit fall back to the network path transparently.
-- **Containers.** Co-located container nodes only use shared memory if they share the host's IPC namespace and an adequately sized `/dev/shm` (budget roughly one segment per co-located publishing session against Docker's default 64 MiB `/dev/shm`). Containers in a separate network namespace (the Lima VM on macOS) are forced off shared memory automatically, like they are forced onto the router path.
-- **Operator config overrides.** A `ZENOH_SESSION_CONFIG` or `ZENOH_CONFIG` override file replaces the generated Zenoh config wholesale, including the shared-memory block: an override that wants shared memory must re-add `transport: { shared_memory: { enabled: true } }`.
-- **Don't hoard received payloads.** A received message's payload view pins its shared-memory buffer until dropped; a subscriber that accumulates messages indefinitely can starve the publisher's pool into the (slower) copying fallback. Consume messages promptly or copy out the bytes you need to keep.
-
-Set `shm.enabled: false` to opt the whole stack out and force every payload onto the network path (the pre-upgrade behavior).
-
-:::caution
-The shared-memory upgrade is a lockstep change: the daemon and node binaries must be upgraded together. A node binary built before this feature rejects the launch configuration a new daemon ships whenever any messaging setting is non-default (router mode, custom buffers, shared memory off), and old binaries cannot exchange shared-memory payloads. Rebuild nodes (`peppy node sync`) after upgrading the daemon.
-:::
 
 ## `peer`: subscriber buffer sizes
 
@@ -135,8 +93,6 @@ The `lifecycle` block tunes the two windows peppy uses to guarantee that no node
 | Setting | Default | Constraint | Effect |
 |---|---|---|---|
 | `mode` | `"peer"` | `"peer"` or `"router"` | Messaging topology: direct peer links with gossip, or relay everything through the central router. |
-| `shm.enabled` | `true` | `true` or `false` | Zero-copy shared memory for large payloads between co-located nodes; `false` forces the network path. |
-| `shm.segment_bytes` | `null` | bytes or `null` | Per-session shared-memory segment size; `null` sizes it from the host's memlock limit. Explicit values are clamped into 1-32 MiB. |
 | `peer.standard_buffer_size` | `128` | `> 0` | Subscriber channel capacity (messages) for standard-QoS topics; also sizes service request/reply channels. |
 | `peer.high_throughput_buffer_size` | `1024` | `> 0` | Subscriber channel capacity (messages) for high-throughput-QoS topics such as sensor-data streams. |
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |

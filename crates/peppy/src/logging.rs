@@ -82,16 +82,7 @@ pub fn init_tracing(style: LogStyle) {
         // daemon's useful messaging logs come from the `pmi`/`peppy` targets, not
         // `zenoh`, and genuine Zenoh warnings/errors still surface. Override with
         // `RUST_LOG=info` to see the full Zenoh output when debugging the router.
-        //
-        // The SHM watchdog threads additionally warn once per process when they
-        // can't get SCHED_FIFO scheduling — expected for any unprivileged
-        // process (it needs CAP_SYS_NICE or RLIMIT_RTPRIO >= 1) and harmless at
-        // normal load (the threads just run at normal priority), so those two
-        // startup warnings are demoted to ERROR. The Compact filter needs no
-        // directive: it only admits `peppy` targets in the first place.
-        LogStyle::Verbose => {
-            default_env_filter("info,zenoh=warn,zenoh_shm::watchdog::periodic_task=error")
-        }
+        LogStyle::Verbose => default_env_filter("info,zenoh=warn"),
         LogStyle::Compact => default_env_filter("peppy=info"),
     };
 

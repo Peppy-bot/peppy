@@ -2,7 +2,7 @@ use super::{ConsumerFilter, FromAnyTopicGuard, MessengerHandle};
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
-use pmi::{LoanedPayload, MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
+use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -270,28 +270,6 @@ impl TopicPublisher {
     pub async fn publish(&self, payload: Payload) -> Result<()> {
         self.inner
             .publish(payload.into_inner())
-            .await
-            .map_err(Error::PeppyMessagingInterface)
-    }
-
-    /// Borrows a writable publish buffer of `len` bytes. With shared memory
-    /// on and `len` at or above the publish threshold, the buffer lives in
-    /// the session's SHM segment: fill it in place (camera read, encoder
-    /// output) and [`publish_loaned`](Self::publish_loaned) sends it without
-    /// ever copying — the bytes are written once, end to end. Otherwise (shm
-    /// off, small payloads, pool exhausted, mock transport) the loan is a
-    /// plain heap buffer and publishing takes the regular path; caller code
-    /// is identical either way.
-    pub fn loan(&self, len: usize) -> LoanedPayload {
-        self.inner.loan(len)
-    }
-
-    /// Publishes a loan obtained from [`loan`](Self::loan). Use
-    /// [`LoanedPayload::truncate`] first when less than the whole buffer was
-    /// filled — only the truncated prefix travels.
-    pub async fn publish_loaned(&self, loaned: LoanedPayload) -> Result<()> {
-        self.inner
-            .publish_loaned(loaned)
             .await
             .map_err(Error::PeppyMessagingInterface)
     }

@@ -14,7 +14,6 @@ pub use actions::{
     encode_cancel_ack, generate_goal_id, unwrap_goal_payload, unwrap_result_outcome,
     wrap_goal_payload, wrap_result_outcome,
 };
-pub use probe::ProbeSample;
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
@@ -34,9 +33,6 @@ pub use pmi::{
     ActionLivelinessToken, ActionWireSender, InterfaceIdentifier, NodeIdentifier, SenderTarget,
     SenderTargetError, ServiceKind,
 };
-// The writable loaned publish buffer — surfaced at the crate root too, next
-// to `Payload`, since it is part of the publish API.
-pub use pmi::LoanedPayload;
 
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
@@ -88,17 +84,6 @@ pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 /// producer instances target disjoint producers, do not share dedupe
 /// scope, and must be allowed to coexist.
 type ActiveFromAnyKey = (Option<String>, Option<String>, String, String);
-
-/// What the shared-memory tier would do for payloads published on this host
-/// (see [`MessengerHandle::shm_expectation`]): payloads under
-/// `publish_threshold_bytes` deliberately take the heap path; payloads over
-/// `segment_bytes` cannot be allocated from the segment and fall back to the
-/// network. The stack benchmark uses this to say WHY a row missed shm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShmExpectation {
-    pub publish_threshold_bytes: usize,
-    pub segment_bytes: usize,
-}
 
 #[derive(Clone)]
 pub struct MessengerHandle {
@@ -255,40 +240,6 @@ impl MessengerHandle {
         }
     }
 
-    /// The network protocol this messenger's session connects over (`"tcp"`),
-    /// labeling the network-path rows in the stack benchmark report. `None`
-    /// for the in-process mock backend, which has no network link to name.
-    pub async fn net_protocol(&self) -> Option<&'static str> {
-        let messenger = self.messenger.lock().await;
-        match &messenger.adapter {
-            #[cfg(feature = "zenoh")]
-            MessengerAdapter::Zenoh(adapter) => Some(adapter.net_protocol().as_str()),
-            _ => None,
-        }
-    }
-
-    /// What the shared-memory tier would do for payloads published on this
-    /// host, resolved from the session's `shm` section. `None` when shm is
-    /// disabled or there is no zenoh backend (the mock) — callers must then
-    /// not attribute a network path to shm conditions. The segment size is
-    /// resolved against THIS process's memlock limit, so it holds for nodes
-    /// this daemon spawned (they inherit the limit) and is approximate for
-    /// anything else.
-    pub async fn shm_expectation(&self) -> Option<ShmExpectation> {
-        let messenger = self.messenger.lock().await;
-        match &messenger.adapter {
-            #[cfg(feature = "zenoh")]
-            MessengerAdapter::Zenoh(adapter) => {
-                let shm = adapter.shm_config();
-                shm.enabled.then(|| ShmExpectation {
-                    publish_threshold_bytes: pmi::SHM_PUBLISH_THRESHOLD_BYTES,
-                    segment_bytes: pmi::resolved_shm_segment_bytes(shm.segment_bytes),
-                })
-            }
-            _ => None,
-        }
-    }
-
     pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
         let adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)?;
         let messenger = Self::new_session(adapter).await?;
@@ -318,10 +269,9 @@ impl MessengerHandle {
 
     /// Like [`from_host_port_reconnecting`](Self::from_host_port_reconnecting)
     /// but applies the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig):
-    /// an explicit gossip seed list (falling back to `host:port`), the gossip
-    /// toggle, and the shared-memory section (toggle plus the daemon-resolved
-    /// segment sizing). Used by the node runtime so peers form direct links
-    /// per the daemon-supplied discovery settings.
+    /// an explicit gossip seed list (falling back to `host:port`) and the gossip
+    /// toggle. Used by the node runtime so peers form direct links per the
+    /// daemon-supplied discovery settings.
     pub async fn from_host_port_reconnecting_with_discovery(
         host: &str,
         port: u16,
@@ -334,10 +284,6 @@ impl MessengerHandle {
             port,
             discovery.seed_peers.clone(),
             discovery.gossip,
-            config::peppy_config::ShmConfig {
-                enabled: discovery.shm,
-                segment_bytes: discovery.shm_segment_bytes,
-            },
             buffer_sizes,
         )?
         .with_session_reconnect();

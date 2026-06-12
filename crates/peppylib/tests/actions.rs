@@ -69,7 +69,7 @@ async fn action_messenger_communication() {
                 let factory = factory.clone();
                 let publisher_tx = publisher_tx.clone();
                 async move {
-                    let wire = req_ctx.message().payload().to_owned().into_inner();
+                    let wire = req_ctx.message().payload().into_inner();
                     let declared = factory
                         .declare_from_wire("_", wire)
                         .await
@@ -198,7 +198,7 @@ async fn setup_goal_handshake(
                 let factory = factory.clone();
                 let publisher_tx = publisher_tx.clone();
                 async move {
-                    let wire = req_ctx.message().payload().to_owned().into_inner();
+                    let wire = req_ctx.message().payload().into_inner();
                     let declared = factory
                         .declare_from_wire("_", wire)
                         .await
@@ -1332,7 +1332,7 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
                     let kept = Arc::clone(&kept);
                     async move {
                         let declared = factory
-                            .declare_from_wire("_", req.message().payload().to_owned().into_inner())
+                            .declare_from_wire("_", req.message().payload().into_inner())
                             .await
                             .expect("declare_from_wire");
                         kept.lock().unwrap().replace(declared.publisher);

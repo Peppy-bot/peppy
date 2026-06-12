@@ -15,7 +15,6 @@ pub(crate) fn router_config_path(
     protocol: ZenohNetProtocol,
     host: &str,
     messaging_port: u16,
-    shm: bool,
 ) -> Result<PathBuf> {
     if let Ok(config_path) = std::env::var("ZENOH_CONFIG") {
         return Ok(PathBuf::from(config_path));
@@ -25,17 +24,13 @@ pub(crate) fn router_config_path(
 
     // The router seeds gossip discovery for the peer mesh, so gossip stays on;
     // multicast is off everywhere (see `crate::zenoh_config`). The router listens
-    // on `host` as given (typically `0.0.0.0`) so nodes can reach it. With the
-    // `shm` knob on, the router announces SHM too: in router mode it sits in
-    // the data path (node→zenohd→node), and a non-SHM hop would silently
-    // degrade the whole route to TCP.
+    // on `host` as given (typically `0.0.0.0`) so nodes can reach it.
     let config_content = render_config_string(&ZenohConfigSpec {
         mode: SessionMode::Router,
         connect_endpoints: Vec::new(),
         listen_endpoints: vec![format!("{protocol}/{host}:{messaging_port}")],
         reconnect: false,
         gossip: true,
-        shared_memory: shm,
     });
 
     std::fs::write(&config_path, config_content)

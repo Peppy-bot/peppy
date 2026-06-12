@@ -1,6 +1,5 @@
 use super::discovery::discover_producer;
 use super::generate_short_id;
-use super::probe::ProbeSample;
 use super::topics::Subscription;
 use super::{
     DISCOVERY_TIMEOUT, MessengerHandle, PROBE_TIMEOUT, ServiceEndpoint, ServiceResponder,
@@ -636,9 +635,8 @@ impl ActionMessenger {
     /// messages — still without creating a goal or running the action. A
     /// producer built before sized probes replies empty (returned size 0).
     ///
-    /// Returns a [`ProbeSample`] on a clean reply (round-trip, reply length,
-    /// and whether the reply leg rode shared memory); propagates the error
-    /// otherwise.
+    /// Returns `(elapsed, response_bytes_received)` on a clean reply; propagates
+    /// the error otherwise.
     #[allow(clippy::too_many_arguments)]
     pub async fn probe_latency(
         messenger: &MessengerHandle,
@@ -651,7 +649,7 @@ impl ActionMessenger {
         response_timeout: Duration,
         request_size: usize,
         response_size: u32,
-    ) -> Result<ProbeSample> {
+    ) -> Result<(Duration, usize)> {
         let sender = ActionWireSender::new(
             bound_core_node,
             as_instance_id,
@@ -670,11 +668,7 @@ impl ActionMessenger {
                 response_timeout,
             )
             .await?;
-        Ok(ProbeSample {
-            elapsed: started.elapsed(),
-            response_bytes: reply.payload().as_ref().len(),
-            response_shm: reply.payload_is_shm_backed(),
-        })
+        Ok((started.elapsed(), reply.payload().as_ref().len()))
     }
 
     /// Send a goal to an action server. Generates a fresh `goal_id`,
@@ -906,7 +900,7 @@ impl ActionMessenger {
         };
         let instance_id = message.instance_id().to_string();
         let core_node = message.core_node().to_string();
-        let wire = message.payload().to_owned().into_inner();
+        let wire = message.payload().into_inner();
         let (status, _) = unwrap_result_outcome(wire.as_ref())?;
         // `wire` is non-empty (unwrap_result_outcome guarantees it), so slicing
         // off the 1-byte tag is a zero-copy view of the same `Bytes`.
@@ -1184,8 +1178,8 @@ type ResultAct = Option<(ServiceResponder, Payload)>;
 
 /// Extract the `goal_id` carried by a cancel/result request payload (the same
 /// length-prefixed envelope goals use, with an empty body).
-fn goal_id_from_request(payload: &[u8]) -> Result<String> {
-    let (goal_id, _) = unwrap_goal_payload(payload)?;
+fn goal_id_from_request(payload: &Payload) -> Result<String> {
+    let (goal_id, _) = unwrap_goal_payload(payload.as_ref())?;
     Ok(goal_id.to_string())
 }
 
@@ -1522,7 +1516,7 @@ impl ConcurrentAction {
         let link_id = context.link_id().to_string();
         let core_node = context.message().core_node().to_string();
         let instance_id = context.message().instance_id().to_string();
-        let wire = context.message().payload().to_owned().into_inner();
+        let wire = context.message().payload().into_inner();
 
         let (goal_id, request_bytes, feedback) = if self.has_feedback {
             // Declares the per-goal feedback publisher and strips the envelope.

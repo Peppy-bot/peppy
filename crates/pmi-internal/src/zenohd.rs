@@ -12,21 +12,14 @@ pub enum ZenohNetProtocol {
     Ws,
 }
 
-impl ZenohNetProtocol {
-    /// The endpoint scheme, as it appears in zenoh locators (`tcp/...`).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ZenohNetProtocol::Tcp => "tcp",
-            ZenohNetProtocol::Udp => "udp",
-            ZenohNetProtocol::Quic => "quic",
-            ZenohNetProtocol::Ws => "ws",
-        }
-    }
-}
-
 impl fmt::Display for ZenohNetProtocol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        match self {
+            ZenohNetProtocol::Tcp => write!(f, "tcp"),
+            ZenohNetProtocol::Udp => write!(f, "udp"),
+            ZenohNetProtocol::Quic => write!(f, "quic"),
+            ZenohNetProtocol::Ws => write!(f, "ws"),
+        }
     }
 }
 

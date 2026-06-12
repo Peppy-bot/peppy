@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use core_node_api::encoding::{
     InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
-    StackBenchmarkGoalResponse, StackBenchmarkResult, Transport,
+    StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
 use latency_report::baseline::{self, StoredStats};
 use latency_report::environment::CpuEnvironment;
@@ -33,7 +33,7 @@ use tracing::info;
 
 use super::colors::{
     BINDING_COLOR, MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR, MEASURE_NODE_COLOR,
-    MEASURE_SERVICE_COLOR, NODE_COLOR, TRANSPORT_MIXED_COLOR, TRANSPORT_SHM_COLOR, paint,
+    MEASURE_SERVICE_COLOR, NODE_COLOR, paint,
 };
 use super::table::{render_table, wrap_ansi};
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
@@ -202,19 +202,6 @@ fn measurement_color(kind: MeasurementKind) -> &'static str {
     }
 }
 
-/// The `transport` cell: green `shm` (the fast path worth spotting at a
-/// glance), yellow `mixed` (worth a look — the note carries the shm share),
-/// and the plain network protocol name (`net_label`, e.g. `tcp`) for the
-/// normal network path. `—` for rows that measured nothing.
-fn transport_cell(row: &InterfaceLatency, net_label: &str, colorize: bool) -> String {
-    match row.transport {
-        Transport::Shm => paint(colorize, TRANSPORT_SHM_COLOR, "shm"),
-        Transport::Mixed => paint(colorize, TRANSPORT_MIXED_COLOR, "mixed"),
-        Transport::Network => net_label.to_string(),
-        Transport::NotMeasured => "—".to_string(),
-    }
-}
-
 /// How wide the `note` column may grow before its text wraps to a new physical
 /// line within the box cell. Keeps a long note (e.g. a probe's payload summary)
 /// from widening the whole table on a narrow terminal.
@@ -269,15 +256,6 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
     let baseline_path = baseline::baseline_path(BASELINE_SUBDIR);
     let previous = baseline::load(&baseline_path);
 
-    // The network-path transport label: the daemon stamps its session's
-    // connect protocol ("tcp"); an empty stamp (a messenger with no network
-    // link to name) falls back to the generic label.
-    let net_label = if result.net_protocol.is_empty() {
-        "net"
-    } else {
-        result.net_protocol.as_str()
-    };
-
     // Synthetic probes and real-traffic measurements answer different
     // questions with payloads that can differ by orders of magnitude, so they
     // render as separate tables instead of adjacent rows inviting comparison.
@@ -291,13 +269,7 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
             "\nSynthetic probes: handler-free round-trips, schema-sized payloads \
              ({samples} samples/interface)"
         );
-        let rows = display_rows(
-            &synthetic,
-            &previous,
-            colorize,
-            ReportTable::Synthetic,
-            net_label,
-        );
+        let rows = display_rows(&synthetic, &previous, colorize, ReportTable::Synthetic);
         let mut table = String::new();
         render_table(&mut table, &SYNTHETIC_HEADERS, &[rows]);
         print!("{table}");
@@ -308,13 +280,13 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
             "\nReal traffic: observe-only one-way delivery of live topic messages \
              ({samples} samples/interface)"
         );
-        let rows = display_rows(&real, &previous, colorize, ReportTable::Real, net_label);
+        let rows = display_rows(&real, &previous, colorize, ReportTable::Real);
         let mut table = String::new();
         render_table(&mut table, &REAL_HEADERS, &[rows]);
         print!("{table}");
     }
 
-    println!("{}", benchmark_legend(colorize, net_label));
+    println!("{}", benchmark_legend(colorize));
 
     // Persist this run's stats as the same-machine baseline for the next run's
     // Δp50 column. Only rows that actually measured (count > 0) update it.
@@ -345,51 +317,26 @@ enum ReportTable {
 }
 
 /// Column headers for the synthetic-probe table.
-const SYNTHETIC_HEADERS: [&str; 10] = [
-    "edge",
-    "binding",
-    "measure",
-    "transport",
-    "p50",
-    "p90",
-    "mean",
-    "n",
-    "Δp50",
-    "note",
+const SYNTHETIC_HEADERS: [&str; 9] = [
+    "edge", "binding", "measure", "p50", "p90", "mean", "n", "Δp50", "note",
 ];
 
 /// Column headers for the real-traffic table.
-const REAL_HEADERS: [&str; 10] = [
-    "edge",
-    "binding",
-    "clock",
-    "transport",
-    "p50",
-    "p90",
-    "mean",
-    "n",
-    "Δp50",
-    "note",
+const REAL_HEADERS: [&str; 9] = [
+    "edge", "binding", "clock", "p50", "p90", "mean", "n", "Δp50", "note",
 ];
 
 /// Footnote legend beneath the tables — one category per block, its variants
 /// aligned on their own lines so a reader can scan each meaning instead of
-/// parsing a run-on sentence. The `measure` and `transport` labels are painted
-/// in the same colors as their columns so the legend doubles as a color key;
-/// `net_label` is the network protocol name the `transport` column shows
-/// (e.g. `tcp`). The leading `\` swallows the newline after the opening quote
-/// so the text starts at `Legend:`.
-fn benchmark_legend(colorize: bool, net_label: &str) -> String {
+/// parsing a run-on sentence. The `measure` labels are painted in the same
+/// colors as the `measure` column so the legend doubles as a color key. The
+/// leading `\` swallows the newline after the opening quote so the text starts at
+/// `Legend:`.
+fn benchmark_legend(colorize: bool) -> String {
     let svc = paint(colorize, MEASURE_SERVICE_COLOR, "svc-probe ");
     let act = paint(colorize, MEASURE_ACTION_COLOR, "act-probe ");
     let node = paint(colorize, MEASURE_NODE_COLOR, "node-probe");
     let delivery = paint(colorize, MEASURE_DELIVERY_COLOR, "delivery");
-    // Variant labels padded to the clock block's 9-column field, padding
-    // inside the painted string like the measure labels, so the escape codes
-    // stay width-neutral.
-    let shm = paint(colorize, TRANSPORT_SHM_COLOR, "shm      ");
-    let mixed = paint(colorize, TRANSPORT_MIXED_COLOR, "mixed    ");
-    let net = format!("{net_label:<9}");
     format!(
         "\
 Legend:
@@ -409,25 +356,8 @@ Legend:
   clock      same-host  exact (producer shares this host's clock)
              corrected  cross-host, adjusted via the producer's measured offset
              flagged    implausible delta, suppressed (deploy PTP/NTP)
-  transport  how each measured payload physically arrived at this core node,
-             observed per sample: probe rows observe the reply leg (the request
-             leg can differ when the sizes straddle the 4 KiB shm threshold);
-             delivery rows observe this host's subscriber, not each consumer
-             {shm}  arrived through a shared-memory segment (read in place,
-                        no receive-side copy)
-             {net}  crossed the network stack — expected when the payload is
-                        under the 4 KiB shm publish threshold, the producer runs
-                        on another host or in an isolated container namespace,
-                        shm is disabled in peppy_config, or the shm segment was
-                        unavailable, full, or too small for the payload (the
-                        producer node's log records segment problems)
-             {mixed}  both paths within one run (e.g. the shm pool filled
-                        mid-run); the note carries the shm share (shm k/n)
-             —          not measured (unreachable edge / no live traffic)
-  note       the interface (➔ edges); for probe rows, the measured payload
-             sizes (request → response; `≥` = schema lower bound); and, with
-             shm on, why a network-path row missed shm (too small / too large
-             / another host)
+  note       the interface (➔ edges) and, for probe rows, the measured payload
+             sizes (request → response; `≥` = schema lower bound)
   Δp50       median vs the previous run on this machine
 
 Benchmarking never triggers a real handler, never publishes onto a real topic,
@@ -439,15 +369,13 @@ and never creates a goal."
 /// `stack` palette and with the wide `edge`/`note` cells wrapped. `previous`
 /// supplies the Δp50 baseline. The third cell is the `measure` label for the
 /// synthetic table and the `clock` confidence for the real-traffic table,
-/// matching [`SYNTHETIC_HEADERS`] / [`REAL_HEADERS`]; `net_label` names the
-/// network protocol in the `transport` cell. Pure (no IO) so it can be
+/// matching [`SYNTHETIC_HEADERS`] / [`REAL_HEADERS`]. Pure (no IO) so it can be
 /// unit-tested.
 fn display_rows(
     rows: &[&InterfaceLatency],
     previous: &BTreeMap<String, StoredStats>,
     colorize: bool,
     table: ReportTable,
-    net_label: &str,
 ) -> Vec<Vec<String>> {
     rows.iter()
         .map(|row| {
@@ -470,22 +398,12 @@ fn display_rows(
                 .via_interface
                 .as_deref()
                 .map(|i| paint(colorize, NODE_COLOR, i));
-            let mut note = match (iface, &row.note) {
+            let note = match (iface, &row.note) {
                 (Some(iface), Some(n)) => format!("{iface}; {n}"),
                 (Some(iface), None) => iface,
                 (None, Some(n)) => n.clone(),
                 (None, None) => String::new(),
             };
-            // A mixed row carries its shm share in the note, so the transport
-            // column itself stays narrow.
-            if row.transport == Transport::Mixed {
-                let share = format!("shm {}/{}", row.shm_samples, row.count);
-                if note.is_empty() {
-                    note = share;
-                } else {
-                    note = format!("{note}; {share}");
-                }
-            }
             let measure_or_clock = match table {
                 ReportTable::Synthetic => paint(
                     colorize,
@@ -498,7 +416,6 @@ fn display_rows(
                 edge_cell(row, colorize),
                 paint(colorize, BINDING_COLOR, &row.link_id),
                 measure_or_clock,
-                transport_cell(row, net_label, colorize),
                 dur(row.p50_ns),
                 dur(row.p90_ns),
                 dur(row.mean_ns),
@@ -526,8 +443,6 @@ mod tests {
         kind: InterfaceKind,
         measurement: MeasurementKind,
         clock: ClockConfidence,
-        transport: Transport,
-        shm_samples: u64,
         note: Option<&str>,
     ) -> InterfaceLatency {
         InterfaceLatency {
@@ -541,8 +456,6 @@ mod tests {
             kind,
             measurement,
             clock_confidence: clock,
-            transport,
-            shm_samples,
             p50_ns: 5_500_000,
             p90_ns: 7_550_000,
             mean_ns: 5_610_000,
@@ -555,8 +468,7 @@ mod tests {
     /// Rows mirroring the real stack: a direct action edge, an interface-
     /// conformance topic edge measured both ways (node-probe + delivery), and an
     /// interface-conformance service-probe edge whose payload note is long
-    /// enough to exercise wrapping. Transports cover network (action probe),
-    /// shm (delivery), and mixed (svc-probe — its note also gains the share).
+    /// enough to exercise wrapping.
     fn sample_rows() -> Vec<InterfaceLatency> {
         vec![
             row(
@@ -568,8 +480,6 @@ mod tests {
                 InterfaceKind::Action,
                 MeasurementKind::ActionProbe,
                 ClockConfidence::NotApplicable,
-                Transport::Network,
-                0,
                 None,
             ),
             row(
@@ -581,8 +491,6 @@ mod tests {
                 InterfaceKind::Topic,
                 MeasurementKind::TopicDelivery,
                 ClockConfidence::CrossHostCorrected,
-                Transport::Shm,
-                200,
                 None,
             ),
             row(
@@ -594,8 +502,6 @@ mod tests {
                 InterfaceKind::Service,
                 MeasurementKind::ServiceProbe,
                 ClockConfidence::NotApplicable,
-                Transport::Mixed,
-                150,
                 Some("payload 64B → 4.0KB (rebuild producer for sized replies)"),
             ),
             row(
@@ -607,8 +513,6 @@ mod tests {
                 InterfaceKind::Topic,
                 MeasurementKind::NodeProbe,
                 ClockConfidence::NotApplicable,
-                Transport::Network,
-                0,
                 Some("payload 0B → ≥56B"),
             ),
         ]
@@ -658,18 +562,12 @@ mod tests {
         let rows = sample_rows();
         let (synthetic, real) = split_rows(&rows);
         // Delivery row's note is just the interface name.
-        let real_rows = display_rows(&real, &BTreeMap::new(), false, ReportTable::Real, "tcp");
-        assert_eq!(real_rows[0][9], "uvc_camera:v1");
+        let real_rows = display_rows(&real, &BTreeMap::new(), false, ReportTable::Real);
+        assert_eq!(real_rows[0][8], "uvc_camera:v1");
         // The svc-probe row's note leads with the interface, then the wrapped
         // payload summary.
-        let synth_rows = display_rows(
-            &synthetic,
-            &BTreeMap::new(),
-            false,
-            ReportTable::Synthetic,
-            "tcp",
-        );
-        let note = &synth_rows[1][9];
+        let synth_rows = display_rows(&synthetic, &BTreeMap::new(), false, ReportTable::Synthetic);
+        let note = &synth_rows[1][8];
         assert!(note.starts_with("uvc_camera:v1;"));
         assert!(note.contains('\n'), "long note should wrap");
         assert!(
@@ -680,92 +578,16 @@ mod tests {
     }
 
     #[test]
-    fn transport_cell_renders_each_value() {
-        let rows = sample_rows();
-        let mut shm = rows[1].clone();
-        shm.transport = Transport::Shm;
-        let mut net = rows[0].clone();
-        net.transport = Transport::Network;
-        let mut mixed = rows[2].clone();
-        mixed.transport = Transport::Mixed;
-        let mut unmeasured = rows[3].clone();
-        unmeasured.transport = Transport::NotMeasured;
-
-        // Plain cells carry the bare labels; the network label is the
-        // daemon-stamped protocol name.
-        assert_eq!(transport_cell(&shm, "tcp", false), "shm");
-        assert_eq!(transport_cell(&net, "tcp", false), "tcp");
-        assert_eq!(transport_cell(&mixed, "tcp", false), "mixed");
-        assert_eq!(transport_cell(&unmeasured, "tcp", false), "—");
-        // An unstamped protocol (e.g. mock messenger) falls back to "net".
-        assert_eq!(transport_cell(&net, "net", false), "net");
-        // Colored: shm green, mixed yellow; the network path is normal, not a
-        // fault, so it stays unpainted (as does the unmeasured dash).
-        assert!(transport_cell(&shm, "tcp", true).starts_with(TRANSPORT_SHM_COLOR));
-        assert!(transport_cell(&mixed, "tcp", true).starts_with(TRANSPORT_MIXED_COLOR));
-        assert!(!transport_cell(&net, "tcp", true).contains('\x1b'));
-        assert!(!transport_cell(&unmeasured, "tcp", true).contains('\x1b'));
-        assert_ne!(
-            TRANSPORT_SHM_COLOR, TRANSPORT_MIXED_COLOR,
-            "shm and mixed must be visually distinct"
-        );
-    }
-
-    #[test]
-    fn mixed_transport_appends_shm_share_to_note() {
-        let rows = sample_rows();
-        let (synthetic, _) = split_rows(&rows);
-        let synth_rows = display_rows(
-            &synthetic,
-            &BTreeMap::new(),
-            false,
-            ReportTable::Synthetic,
-            "tcp",
-        );
-        // The mixed svc-probe row's note ends with its shm share, still
-        // within the wrap width.
-        let note = &synth_rows[1][9];
-        let unwrapped = note.replace('\n', " ");
-        assert!(
-            unwrapped.contains("shm 150/200"),
-            "mixed note should carry the shm share: {note}"
-        );
-        assert!(
-            note.lines()
-                .all(|l| UnicodeWidthStr::width(l) <= NOTE_WRAP_COLS),
-            "every note line within wrap width:\n{note}"
-        );
-        // Non-mixed rows carry no share.
-        assert!(!synth_rows[0][9].contains("shm "), "{}", synth_rows[0][9]);
-    }
-
-    #[test]
     fn synthetic_table_shows_measure_and_real_table_shows_clock() {
         let rows = sample_rows();
         let (synthetic, real) = split_rows(&rows);
-        // Without color the synthetic third cell is the plain measure label,
-        // and the fourth is the transport.
-        let plain = display_rows(
-            &synthetic,
-            &BTreeMap::new(),
-            false,
-            ReportTable::Synthetic,
-            "tcp",
-        );
+        // Without color the synthetic third cell is the plain measure label.
+        let plain = display_rows(&synthetic, &BTreeMap::new(), false, ReportTable::Synthetic);
         assert_eq!(plain[0][2], "act-probe");
         assert_eq!(plain[1][2], "svc-probe");
         assert_eq!(plain[2][2], "node-probe");
-        assert_eq!(plain[0][3], "tcp");
-        assert_eq!(plain[1][3], "mixed");
-        assert_eq!(plain[2][3], "tcp");
         // With color each kind carries its own distinct code.
-        let colored = display_rows(
-            &synthetic,
-            &BTreeMap::new(),
-            true,
-            ReportTable::Synthetic,
-            "tcp",
-        );
+        let colored = display_rows(&synthetic, &BTreeMap::new(), true, ReportTable::Synthetic);
         assert!(colored[0][2].starts_with(MEASURE_ACTION_COLOR));
         assert!(colored[1][2].starts_with(MEASURE_SERVICE_COLOR));
         assert!(colored[2][2].starts_with(MEASURE_NODE_COLOR));
@@ -782,11 +604,9 @@ mod tests {
                 assert_ne!(a, b, "measure colors must be pairwise distinct");
             }
         }
-        // The real table's third cell is the clock confidence, uncolored; its
-        // fourth is the transport (the delivery fixture rode shm, painted).
-        let real_rows = display_rows(&real, &BTreeMap::new(), true, ReportTable::Real, "tcp");
+        // The real table's third cell is the clock confidence, uncolored.
+        let real_rows = display_rows(&real, &BTreeMap::new(), true, ReportTable::Real);
         assert_eq!(real_rows[0][2], "corrected");
-        assert!(real_rows[0][3].starts_with(TRANSPORT_SHM_COLOR));
     }
 
     #[test]
@@ -795,40 +615,21 @@ mod tests {
         // plain legends agree once escape codes are stripped, and the plain legend
         // carries none. (The renderer strips ANSI before measuring, so equal
         // visible width = aligned.)
-        let plain = benchmark_legend(false, "tcp");
+        let plain = benchmark_legend(false);
         assert!(
             !plain.contains('\x1b'),
             "no-color legend must be escape-free"
         );
-        let stripped = benchmark_legend(true, "tcp")
+        let stripped = benchmark_legend(true)
             .replace(MEASURE_SERVICE_COLOR, "")
             .replace(MEASURE_ACTION_COLOR, "")
             .replace(MEASURE_NODE_COLOR, "")
             .replace(MEASURE_DELIVERY_COLOR, "")
-            .replace(TRANSPORT_SHM_COLOR, "")
-            .replace(TRANSPORT_MIXED_COLOR, "")
             .replace(super::super::colors::RESET, "");
         assert_eq!(stripped, plain, "color codes must be width-neutral");
         // The legend names all four measurement labels and the safety guarantee.
         for label in ["svc-probe", "act-probe", "node-probe", "delivery"] {
             assert!(plain.contains(label), "legend missing {label}");
-        }
-        // The transport block names its labels, the observation point, and
-        // every code-grounded reason a payload takes the network path; the
-        // note block says the per-row why-not-shm attribution lives there.
-        for needle in [
-            "transport",
-            "shm",
-            "mixed",
-            "tcp",
-            "reply leg",
-            "4 KiB",
-            "another host",
-            "namespace",
-            "disabled",
-            "why a network-path row missed shm",
-        ] {
-            assert!(plain.contains(needle), "legend missing {needle}");
         }
         assert!(plain.contains("never publishes onto a real topic"));
     }
@@ -839,17 +640,11 @@ mod tests {
         let (synthetic, real) = split_rows(&rows);
         let tables = [
             (
-                display_rows(
-                    &synthetic,
-                    &BTreeMap::new(),
-                    false,
-                    ReportTable::Synthetic,
-                    "tcp",
-                ),
+                display_rows(&synthetic, &BTreeMap::new(), false, ReportTable::Synthetic),
                 &SYNTHETIC_HEADERS,
             ),
             (
-                display_rows(&real, &BTreeMap::new(), false, ReportTable::Real, "tcp"),
+                display_rows(&real, &BTreeMap::new(), false, ReportTable::Real),
                 &REAL_HEADERS,
             ),
         ];

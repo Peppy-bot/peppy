@@ -78,10 +78,6 @@ fn default_true() -> bool {
     true
 }
 
-fn default_shm() -> bool {
-    crate::peppy_config::DEFAULT_SHM
-}
-
 fn default_standard_buffer_size() -> usize {
     crate::peppy_config::DEFAULT_STANDARD_BUFFER_SIZE
 }
@@ -142,17 +138,6 @@ pub struct DiscoveryConfig {
     /// all traffic through the router (a rollback switch without a rebuild).
     #[serde(default = "default_true")]
     pub gossip: bool,
-    /// Enable zero-copy shared memory for this node's session (resolved by the
-    /// daemon from `peppy_config.json5`'s `shm.enabled` knob; forced off for
-    /// container nodes in a separate namespace, which cannot share `/dev/shm`).
-    #[serde(default = "default_shm")]
-    pub shm: bool,
-    /// Size in bytes of the session's shared-memory segment, or `None` to size
-    /// it from the host's locked-memory budget (resolved by the daemon from
-    /// `peppy_config.json5`'s `shm.segment_bytes`; one value for all co-located
-    /// sessions so the budget arithmetic holds across the stack).
-    #[serde(default)]
-    pub shm_segment_bytes: Option<usize>,
     /// Subscriber channel buffer for the `Standard` QoS tier (in-flight messages).
     #[serde(default = "default_standard_buffer_size")]
     pub standard_buffer_size: usize,
@@ -166,8 +151,6 @@ impl Default for DiscoveryConfig {
         Self {
             seed_peers: Vec::new(),
             gossip: true,
-            shm: crate::peppy_config::DEFAULT_SHM,
-            shm_segment_bytes: crate::peppy_config::DEFAULT_SHM_SEGMENT_BYTES,
             standard_buffer_size: crate::peppy_config::DEFAULT_STANDARD_BUFFER_SIZE,
             high_throughput_buffer_size: crate::peppy_config::DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
         }
@@ -381,9 +364,6 @@ mod tests {
         let legacy = runtime_config_from_json("camera_front").unwrap();
         assert_eq!(legacy.discovery, DiscoveryConfig::default());
         assert!(legacy.discovery.gossip);
-        // A launch config written before the shm field existed parses with
-        // shared memory on, matching the peppy_config default.
-        assert!(legacy.discovery.shm);
         assert!(legacy.discovery.seed_peers.is_empty());
         // A launch config written before the buffer fields existed still parses
         // and gets the built-in defaults.
@@ -415,9 +395,6 @@ mod tests {
             vec!["tcp/10.0.0.2:7448".to_string()]
         );
         assert!(!no_buffers.discovery.gossip);
-        // A discovery block that omits `shm` still defaults it on, auto-sized.
-        assert!(no_buffers.discovery.shm);
-        assert_eq!(no_buffers.discovery.shm_segment_bytes, None);
         assert_eq!(no_buffers.discovery.standard_buffer_size, 128);
         assert_eq!(no_buffers.discovery.high_throughput_buffer_size, 1024);
 
@@ -433,8 +410,6 @@ mod tests {
                 discovery: {
                     seed_peers: ["tcp/10.0.0.2:7448"],
                     gossip: false,
-                    shm: false,
-                    shm_segment_bytes: 3145728,
                     standard_buffer_size: 64,
                     high_throughput_buffer_size: 4096
                 }
@@ -443,8 +418,6 @@ mod tests {
         .unwrap();
         assert_eq!(custom.discovery.standard_buffer_size, 64);
         assert_eq!(custom.discovery.high_throughput_buffer_size, 4096);
-        assert!(!custom.discovery.shm);
-        assert_eq!(custom.discovery.shm_segment_bytes, Some(3 * 1024 * 1024));
 
         let reparsed: RuntimeConfig =
             serde_json5::from_str(&serde_json5::to_string(&custom).unwrap()).unwrap();

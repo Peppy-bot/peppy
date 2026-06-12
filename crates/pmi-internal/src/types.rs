@@ -555,30 +555,21 @@ impl ResponseToken {
 pub struct ZenohResponseToken {
     query: zenoh::query::Query,
     reply_keyexpr: String,
-    /// The session's SHM state, so large service replies (e.g. datastore
-    /// reads) get the same copy-into-SHM tier as topic publishes.
-    shm: Option<std::sync::Arc<crate::shm::LazyShm>>,
 }
 
 #[cfg(feature = "zenoh")]
 impl ZenohResponseToken {
-    pub(crate) fn new(
-        query: zenoh::query::Query,
-        reply_keyexpr: String,
-        shm: Option<std::sync::Arc<crate::shm::LazyShm>>,
-    ) -> Self {
+    pub fn new(query: zenoh::query::Query, reply_keyexpr: String) -> Self {
         Self {
             query,
             reply_keyexpr,
-            shm,
         }
     }
 
     async fn respond_with_kind(&self, payload: Payload, kind: ServiceReplyKind) -> Result<()> {
         let attachment = ServiceReplyAttachment { kind }.encode();
-        let zbytes = crate::shm::ShmContext::payload_into_zbytes(self.shm.as_ref(), payload);
         self.query
-            .reply(self.reply_keyexpr.as_str(), zbytes)
+            .reply(self.reply_keyexpr.as_str(), payload.into_zbytes())
             .attachment(attachment.to_vec())
             .await
             .map_err(|e| crate::error::Error::BackendError(e.to_string()))?;
@@ -726,262 +717,11 @@ impl Payload {
             PayloadInner::Zenoh(z) => z,
         }
     }
-
-    /// Whether this payload's bytes live in a shared-memory segment (a
-    /// received SHM-backed sample, or an outgoing loan). Reading such a
-    /// payload through [`Self::as_bytes`] borrows the mapped segment directly
-    /// — no copy. Used by the transport matrix tests and the latency bench to
-    /// assert SHM was actually negotiated rather than silently degraded to
-    /// TCP.
-    pub fn is_shm_backed(&self) -> bool {
-        match &self.inner {
-            PayloadInner::Bytes(_) => false,
-            #[cfg(feature = "zenoh")]
-            PayloadInner::Zenoh(z) => z.as_shm().is_some(),
-        }
-    }
 }
 
 impl From<bytes::Bytes> for Payload {
     fn from(value: bytes::Bytes) -> Self {
         Payload::from_bytes(value)
-    }
-}
-
-/// A writable, pre-allocated publish buffer obtained from
-/// [`MessengerPublisher::loan`]. The caller fills it in place (camera read,
-/// encoder output, in-place serialization) and hands it back to
-/// [`MessengerPublisher::publish_loaned`]; when the buffer is SHM-backed the
-/// bytes are *born* in shared memory and are never copied again — true
-/// end-to-end zero-copy.
-///
-/// Where the bytes land is decided at loan time: SHM when the session has
-/// shared memory on, the length is at or above the publish threshold, and the
-/// pool has room; a plain heap buffer otherwise (including the mock adapter
-/// and pool exhaustion). Caller code is identical either way.
-///
-/// The buffer's CONTENTS are unspecified until written: an SHM loan may
-/// contain recycled bytes of this session's earlier publishes. Fill every
-/// byte you publish (or [`truncate`](Self::truncate) to the filled prefix) —
-/// publishing unwritten regions ships whatever was there.
-pub struct LoanedPayload {
-    inner: LoanedInner,
-}
-
-/// Backing storage of a [`LoanedPayload`]. Crate-private: adapters match on it
-/// to publish without copying.
-pub(crate) enum LoanedInner {
-    Heap(Vec<u8>),
-    #[cfg(feature = "zenoh")]
-    Shm(zenoh::shm::ZShmMut),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TruncateError {
-    WouldGrow {
-        new_len: usize,
-        current_len: usize,
-    },
-    #[cfg(feature = "zenoh")]
-    ShmResize {
-        new_len: usize,
-        current_len: usize,
-        reason: String,
-    },
-}
-
-impl core::fmt::Display for TruncateError {
-    fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::WouldGrow {
-                new_len,
-                current_len,
-            } => write!(fmt, "cannot grow a loan: {new_len} > {current_len}"),
-            #[cfg(feature = "zenoh")]
-            Self::ShmResize {
-                new_len,
-                current_len,
-                reason,
-            } => write!(
-                fmt,
-                "failed to resize SHM loan from {current_len} to {new_len} bytes: {reason}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for TruncateError {}
-
-impl LoanedPayload {
-    /// A zero-initialized heap loan (the fallback tier).
-    pub(crate) fn heap(len: usize) -> Self {
-        Self {
-            inner: LoanedInner::Heap(vec![0; len]),
-        }
-    }
-
-    #[cfg(feature = "zenoh")]
-    pub(crate) fn from_shm(buf: zenoh::shm::ZShmMut) -> Self {
-        Self {
-            inner: LoanedInner::Shm(buf),
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.as_slice().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Whether the bytes were born in shared memory. Introspection for tests
-    /// and benches; aside from where the bytes live (and the unspecified
-    /// initial contents — see the type docs), behavior is identical either
-    /// way.
-    pub fn is_shm(&self) -> bool {
-        match &self.inner {
-            LoanedInner::Heap(_) => false,
-            #[cfg(feature = "zenoh")]
-            LoanedInner::Shm(_) => true,
-        }
-    }
-
-    /// Tries to shrink the loan to its filled prefix; the publish then sends only
-    /// these bytes. For writers that over-allocate and fill less (e.g. an
-    /// encoder whose output size is only known afterwards).
-    pub fn try_truncate(&mut self, new_len: usize) -> core::result::Result<(), TruncateError> {
-        let current_len = self.len();
-        if new_len > current_len {
-            return Err(TruncateError::WouldGrow {
-                new_len,
-                current_len,
-            });
-        }
-        match &mut self.inner {
-            LoanedInner::Heap(vec) => {
-                vec.truncate(new_len);
-                Ok(())
-            }
-            #[cfg(feature = "zenoh")]
-            LoanedInner::Shm(buf) => {
-                use zenoh::shm::OwnedShmBuf;
-                match std::num::NonZeroUsize::new(new_len) {
-                    Some(len) => {
-                        buf.try_resize(len)
-                            .ok_or_else(|| TruncateError::ShmResize {
-                                new_len,
-                                current_len,
-                                reason: "zenoh rejected the requested SHM resize".to_string(),
-                            })?;
-                    }
-                    // An SHM chunk cannot resize to zero; an empty publish has
-                    // nothing to zero-copy anyway, so degrade to an empty heap
-                    // loan.
-                    None => self.inner = LoanedInner::Heap(Vec::new()),
-                }
-                Ok(())
-            }
-        }
-    }
-
-    /// Shrinks the loan to its filled prefix; the publish then sends only
-    /// these bytes. For writers that over-allocate and fill less (e.g. an
-    /// encoder whose output size is only known afterwards).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `new_len` exceeds the current length. Prefer
-    /// [`Self::try_truncate`] for a non-panicking API.
-    pub fn truncate(&mut self, new_len: usize) {
-        self.try_truncate(new_len)
-            .unwrap_or_else(|err| panic!("{err}"));
-    }
-
-    fn as_slice(&self) -> &[u8] {
-        match &self.inner {
-            LoanedInner::Heap(vec) => vec,
-            #[cfg(feature = "zenoh")]
-            LoanedInner::Shm(buf) => buf,
-        }
-    }
-
-    pub(crate) fn into_inner(self) -> LoanedInner {
-        self.inner
-    }
-
-    /// The loan as an owned heap payload — the mock adapter's publish path.
-    /// Copies only in the (unreachable in practice) SHM-loan-on-mock case.
-    pub(crate) fn into_payload(self) -> Payload {
-        match self.inner {
-            LoanedInner::Heap(vec) => Payload::from_bytes(bytes::Bytes::from(vec)),
-            #[cfg(feature = "zenoh")]
-            LoanedInner::Shm(buf) => {
-                Payload::from_bytes(bytes::Bytes::copy_from_slice(buf.as_ref()))
-            }
-        }
-    }
-}
-
-impl std::ops::Deref for LoanedPayload {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
-}
-
-impl std::ops::DerefMut for LoanedPayload {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match &mut self.inner {
-            LoanedInner::Heap(vec) => vec,
-            #[cfg(feature = "zenoh")]
-            LoanedInner::Shm(buf) => buf,
-        }
-    }
-}
-
-impl AsRef<[u8]> for LoanedPayload {
-    fn as_ref(&self) -> &[u8] {
-        self.as_slice()
-    }
-}
-
-impl AsMut<[u8]> for LoanedPayload {
-    fn as_mut(&mut self) -> &mut [u8] {
-        &mut *self
-    }
-}
-
-#[cfg(test)]
-mod loaned_payload_tests {
-    use super::*;
-
-    #[test]
-    fn try_truncate_shrinks_heap_loan() {
-        let mut loan = LoanedPayload::heap(8);
-        loan.copy_from_slice(b"abcdefgh");
-
-        loan.try_truncate(3).expect("truncate should succeed");
-
-        assert_eq!(loan.len(), 3);
-        assert_eq!(loan.as_ref(), b"abc");
-    }
-
-    #[test]
-    fn try_truncate_rejects_growing_heap_loan() {
-        let mut loan = LoanedPayload::heap(4);
-
-        let err = loan.try_truncate(5).expect_err("growth should fail");
-
-        assert_eq!(
-            err,
-            TruncateError::WouldGrow {
-                new_len: 5,
-                current_len: 4
-            }
-        );
-        assert_eq!(loan.len(), 4);
     }
 }
 
@@ -1215,29 +955,6 @@ impl MessengerPublisher {
             #[cfg(feature = "zenoh")]
             MessengerPublisher::Zenoh(p) => p.publish(payload).await,
             MessengerPublisher::Mock(p) => p.publish(payload).await,
-        }
-    }
-
-    /// Borrows a writable publish buffer of `len` bytes — SHM-backed when this
-    /// publisher's session has shared memory on, the length is at or above the
-    /// publish threshold, and the pool has room; heap-backed otherwise (always,
-    /// for the mock). Fill it, then hand it to
-    /// [`publish_loaned`](Self::publish_loaned).
-    pub fn loan(&self, len: usize) -> LoanedPayload {
-        match self {
-            #[cfg(feature = "zenoh")]
-            MessengerPublisher::Zenoh(p) => p.loan(len),
-            MessengerPublisher::Mock(_) => LoanedPayload::heap(len),
-        }
-    }
-
-    /// Publishes a filled loan. An SHM-backed loan is handed to the transport
-    /// without copying; a heap-backed loan publishes via the plain path.
-    pub async fn publish_loaned(&self, loaned: LoanedPayload) -> Result<()> {
-        match self {
-            #[cfg(feature = "zenoh")]
-            MessengerPublisher::Zenoh(p) => p.publish_loaned(loaned).await,
-            MessengerPublisher::Mock(p) => p.publish(loaned.into_payload().into_bytes()).await,
         }
     }
 }

@@ -43,7 +43,6 @@ pub use repo::{
 pub use stack::benchmark::{
     BenchmarkFeedbackStep, ClockConfidence, InterfaceKind, InterfaceLatency, MeasurementKind,
     StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse, StackBenchmarkResult,
-    Transport,
 };
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,

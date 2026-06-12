@@ -14,9 +14,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-pub(crate) use topics::{
-    PyLoanedPayload, PySubscription, PyTopicMessage, PyTopicMessenger, PyTopicPublisher,
-};
+pub(crate) use topics::{PySubscription, PyTopicMessage, PyTopicMessenger};
 
 /// Convert a `peppylib::error::Error` into an appropriate Python exception.
 ///
@@ -217,8 +215,6 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging_module.add_class::<PyTopicMessage>()?;
     messaging_module.add_class::<PySubscription>()?;
     messaging_module.add_class::<PyTopicMessenger>()?;
-    messaging_module.add_class::<PyTopicPublisher>()?;
-    messaging_module.add_class::<PyLoanedPayload>()?;
     messaging_module.add_class::<PySenderTarget>()?;
     services::register(&messaging_module)?;
     actions::register(&messaging_module)?;

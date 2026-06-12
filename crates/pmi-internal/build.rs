@@ -139,14 +139,10 @@ mod zenoh_build {
 
     pub fn build_zenoh(release_tag: &str) {
         // Compile the zenoh router from source when the build_zenoh feature is
-        // enabled. The pinned 1.9.0 Linux standalone asset:
-        // https://github.com/eclipse-zenoh/zenoh/releases/download/1.9.0/zenoh-1.9.0-x86_64-unknown-linux-gnu-standalone.zip
-        // can be checked with:
-        //   unzip -p zenoh-1.9.0-x86_64-unknown-linux-gnu-standalone.zip zenohd | strings | rg -i 'zenoh[-_]shm'
-        // which returns no matches. A downloaded zenohd can therefore silently
-        // degrade every `router + shm` route to TCP, so zenohd is always
-        // `cargo install`ed with `shared-memory` on, cached per
-        // machine/version/target like the other build tools.
+        // enabled. Building the pinned version with `cargo install` keeps the
+        // router in lockstep with the `zenoh` library version resolved for this
+        // workspace, cached per machine/version/target like the other build
+        // tools, instead of fetching a separate prebuilt binary.
         if env::var("CARGO_FEATURE_BUILD_ZENOH").is_ok() {
             println!("cargo:rerun-if-changed=build.rs");
             println!("cargo:rerun-if-changed=Cargo.toml");
@@ -157,20 +153,14 @@ mod zenoh_build {
             let out_dir = env::var("OUT_DIR").unwrap();
             let zenoh_binary_path = format!("{}/zenohd", out_dir);
 
-            match build_helpers::cargo_install_binary_with_features(
-                "zenohd",
-                release_tag,
-                &target,
-                &cache_dir,
-                &["shared-memory"],
-            ) {
+            match build_helpers::cargo_install_binary("zenohd", release_tag, &target, &cache_dir) {
                 Some(compiled) => {
                     build_helpers::copy_if_changed(&compiled, zenoh_binary_path.as_ref());
                 }
                 None => panic!(
                     "Failed to compile zenohd {} for target '{}'. \
-                     Build an SHM-enabled zenohd from source with \
-                     `cargo build --release --features shared-memory --target {}` \
+                     Build zenohd from source with \
+                     `cargo build --release --target {}` \
                      from the zenoh {} source tree, then place the built binary next to peppy \
                      or point PEPPY_ZENOHD_PATH to it.",
                     release_tag, target, target, release_tag

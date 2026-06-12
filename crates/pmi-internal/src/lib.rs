@@ -2,8 +2,6 @@
 
 mod adapters;
 mod error;
-#[cfg(feature = "zenoh")]
-mod shm;
 mod types;
 mod wire;
 #[cfg(feature = "zenoh")]
@@ -13,15 +11,13 @@ mod zenohd;
 
 pub use error::Error as PeppyMessagingInterfaceError;
 #[cfg(feature = "zenoh")]
-pub use shm::{SHM_PUBLISH_THRESHOLD_BYTES, SHM_SEGMENT_BYTES, resolved_shm_segment_bytes};
-#[cfg(feature = "zenoh")]
 pub use types::ZenohResponseToken;
 pub use types::{
     ActionLivelinessEvent, ActionLivelinessProbe, ActionLivelinessToken, ActionLivelinessWatch,
-    IncomingRequest, LoanedPayload, Message, Messenger, MessengerAdapter, MessengerBackend,
-    MessengerPublisher, MockResponseToken, Payload, PayloadSlices, PublisherQoS, ReplyStream,
-    ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,
-    Subscription, TopicMessage, TruncateError,
+    IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
+    MockResponseToken, Payload, PayloadSlices, PublisherQoS, ReplyStream, ResponseToken,
+    ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, Subscription,
+    TopicMessage,
 };
 pub use wire::{
     ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, InterfaceIdentifier, NodeIdentifier,

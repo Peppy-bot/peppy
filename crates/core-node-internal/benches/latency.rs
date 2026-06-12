@@ -30,7 +30,7 @@ mod helpers;
 
 use std::time::Duration;
 
-use harness::{ALL_SCENARIOS, BenchScenario, DEFAULT_SAMPLES, DEFAULT_WARMUP, Lang, ceiling_ms};
+use harness::{ALL_SCENARIOS, DEFAULT_SAMPLES, DEFAULT_WARMUP, Lang, Transport, ceiling_ms};
 use latency_report::baseline::{self, StoredStats};
 use latency_report::environment::CpuEnvironment;
 use latency_report::format;
@@ -46,7 +46,6 @@ struct Row {
     mean: Duration,
     ceiling_ms: u64,
     prev_p50_ns: Option<u64>,
-    shm_used: bool,
 }
 
 fn main() {
@@ -76,19 +75,20 @@ fn main() {
         if lang == Lang::Python && skip_python {
             continue;
         }
-        let selected_scenarios: Vec<&BenchScenario> = ALL_SCENARIOS
+        let transports: Vec<Transport> = ALL_SCENARIOS
             .iter()
-            .filter(|s| s.lang == lang)
-            .filter(|s| selected(&filter, s))
+            .filter(|(l, _)| *l == lang)
+            .map(|(_, t)| *t)
+            .filter(|t| selected(&filter, lang, *t))
             .collect();
-        if selected_scenarios.is_empty() {
+        if transports.is_empty() {
             continue;
         }
 
         let scenario = runtime.block_on(harness::start_scenario(lang));
-        for bench in selected_scenarios {
-            let stats = runtime.block_on(scenario.run(bench, DEFAULT_WARMUP, DEFAULT_SAMPLES));
-            let name = bench.label.to_string();
+        for transport in transports {
+            let stats = runtime.block_on(scenario.run(transport, DEFAULT_WARMUP, DEFAULT_SAMPLES));
+            let name = format!("{}/{}", lang.as_str(), transport.as_str());
             let prev_p50_ns = previous.get(&name).map(|s| s.p50_ns);
             current.insert(
                 name.clone(),
@@ -103,9 +103,8 @@ fn main() {
                 p50: stats.p50(),
                 p90: stats.p90(),
                 mean: stats.mean(),
-                ceiling_ms: ceiling_ms(bench),
+                ceiling_ms: ceiling_ms(lang, transport),
                 prev_p50_ns,
-                shm_used: stats.shm_used(),
             });
         }
         runtime.block_on(scenario.shutdown());
@@ -121,20 +120,10 @@ fn main() {
 fn print_environment() {
     let env = CpuEnvironment::detect();
     println!("\nenv: {}", env.summary_line());
-    // The spawned nodes run with the default runtime config except for the
-    // harness's budget-shaped `shm_segment_bytes` override on bounded-memlock
-    // hosts, so the routing/shm line below reflects what they were configured
-    // with (the per-scenario `shm` table column then reports whether shared
-    // memory was actually used on the wire, as observed by the driver on its
-    // received payloads).
-    let discovery = config::runtime::DiscoveryConfig::default();
-    let routing = if discovery.gossip {
-        "peer (gossip discovery)"
-    } else {
-        "router (relay)"
-    };
-    let shm = if discovery.shm { "on" } else { "off" };
-    println!("transport: {routing}, shm={shm}");
+    // Nodes run as Zenoh peers: after gossip via the seed router they exchange
+    // data over direct peer-to-peer links rather than relaying through the
+    // router. Shared memory is not yet wired into the publish path.
+    println!("transport: peer (gossip discovery, shm=off)");
     if env.is_noisy() {
         println!(
             "note: turbo and/or shared-host load make absolute latency swing run-to-run regardless \
@@ -145,11 +134,14 @@ fn print_environment() {
 }
 
 /// Whether a scenario matches the optional `cargo bench -- <filter>` substring,
-/// tested against the scenario label.
-fn selected(filter: &Option<String>, scenario: &BenchScenario) -> bool {
+/// tested against the `lang/transport` id.
+fn selected(filter: &Option<String>, lang: Lang, transport: Transport) -> bool {
     match filter {
         None => true,
-        Some(needle) => scenario.label.contains(needle.as_str()),
+        Some(needle) => {
+            let id = format!("{}/{}", lang.as_str(), transport.as_str());
+            id.contains(needle.as_str())
+        }
     }
 }
 
@@ -164,7 +156,7 @@ fn print_table(rows: &[Row]) {
     }
 
     let headers = [
-        "scenario", "p50", "p90", "mean", "ceiling", "prev p50", "Δp50", "shm", "status",
+        "scenario", "p50", "p90", "mean", "ceiling", "prev p50", "Δp50", "status",
     ];
     let mut cells: Vec<Vec<String>> = Vec::with_capacity(rows.len());
     for row in rows {
@@ -188,7 +180,6 @@ fn print_table(rows: &[Row]) {
             format!("{}ms", row.ceiling_ms),
             prev,
             delta,
-            if row.shm_used { "yes" } else { "no" }.to_string(),
             status.to_string(),
         ]);
     }
@@ -201,8 +192,6 @@ fn print_table(rows: &[Row]) {
     println!(
         "\nΔp50 = median vs the previous run on this machine (+ = slower, - = faster). \
          status = median within ceiling (the gated metric; p90 is a diagnostic). \
-         shm = the driver observed its received payloads as shared-memory backed \
-         (sub-threshold payloads are always 'no' by design). \
-         Ceilings via PEPPY_LATENCY_MAX_MS_<SCENARIO>."
+         Ceilings via PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>."
     );
 }

@@ -66,20 +66,6 @@ enum ClockConfidence {
     crossHostFlagged @3;
 }
 
-# How the measured payloads physically reached this core node, observed per
-# sample from the received buffer's SHM backing (probe rows observe the reply
-# leg; the request leg is only observable producer-side).
-enum Transport {
-    # No timed samples (unreachable edge / no live traffic) — nothing observed.
-    notMeasured @0;
-    # Every timed sample's payload arrived through the shared-memory segment.
-    shm @1;
-    # Every timed sample's payload arrived through the network stack.
-    network @2;
-    # Both within one run (e.g. the SHM pool filled mid-run); see shmSamples.
-    mixed @3;
-}
-
 struct InterfaceLatency {
     fromNode @0 :Text;
     fromTag @1 :Text;
@@ -105,10 +91,6 @@ struct InterfaceLatency {
     # dependency is an interface-conformance edge (consumer `depends_on.interfaces`,
     # producer `conforms_to`); empty for a direct `depends_on.nodes` edge.
     viaInterface @15 :Text;
-    # How the timed samples' payloads reached this core node (see Transport).
-    transport @16 :Transport;
-    # Of `count` timed samples, how many were SHM-backed (renders the mixed share).
-    shmSamples @17 :UInt64;
 }
 
 struct StackBenchmarkResult {
@@ -118,7 +100,4 @@ struct StackBenchmarkResult {
     errorMessage @1 :Text;
     # One row per measured interface.
     rows @2 :List(InterfaceLatency);
-    # The session's network connect protocol ("tcp"), labeling `network` rows.
-    # Empty when the messenger cannot name it (e.g. an in-process mock).
-    netProtocol @3 :Text;
 }

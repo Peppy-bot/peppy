@@ -19,8 +19,7 @@ pub mod types;
 pub use core_node::info::info;
 pub use core_node::{clock, datastore, stack};
 
-pub use messaging::LoanedPayload;
-pub use types::{Message, Payload, PayloadView};
+pub use types::{Message, Payload};
 
 pub mod serialization;
 

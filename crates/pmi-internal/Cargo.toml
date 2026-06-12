@@ -15,22 +15,11 @@ tokio = { version = "1", features = ["sync", "rt"] }
 # `tokio::sync::mpsc::Sender::blocking_send` would panic.
 flume = "0.12"
 tracing = "0.1"
-# RLIMIT_MEMLOCK handling for the shared-memory provider (src/shm.rs).
-libc = "0.2"
 derive_more = { version = "2", features = ["from"] }
 tempfile = "3"
 
 # Optional deps
-# `shared-memory` is compiled in unconditionally (when the `zenoh` feature is
-# on): whether SHM is *used* is the runtime `shm.enabled` setting in
-# peppy_config.json5,
-# not a build-time decision. `unstable` is required with it — the whole
-# `zenoh::shm` module (provider, ZShmMut) and `ZBytes::as_shm` are gated on
-# `all(feature = "unstable", feature = "shared-memory")` in zenoh 1.9.
-zenoh = { version = "=1.9.0", optional = true, features = [
-    "shared-memory",
-    "unstable",
-] }
+zenoh = { version = "=1.9.0", optional = true }
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }

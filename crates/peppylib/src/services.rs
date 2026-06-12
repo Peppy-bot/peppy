@@ -41,7 +41,7 @@ async fn handle_echo_request(
     debug!("Received `{log_label}` request from {sender_instance_id}");
 
     // Echo service validates connectivity, not message structure.
-    // Health and ready services share this handler for simplicity: the reply
-    // needs an owned payload that outlives the request message.
-    Ok(context.message().payload().to_owned())
+    // Health and ready services share this handler for simplicity.
+    let payload = context.message().payload();
+    Ok(payload)
 }
