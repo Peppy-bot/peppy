@@ -245,8 +245,10 @@ async fn send_shutdown_signal(
         core_instance_id,
         SenderTarget::node(node_name, node_tag).map_err(|e| e.to_string())?,
         SHUTDOWN_SERVICE,
-        Some(core_node_node),
-        Some(instance_id_str),
+        Some(&peppylib::messaging::ProducerRef::new(
+            core_node_node,
+            instance_id_str,
+        )),
         Payload::from_static(b"shutdown"),
         SHUTDOWN_TIMEOUT,
     )

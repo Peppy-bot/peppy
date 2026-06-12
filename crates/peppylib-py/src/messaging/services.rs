@@ -195,10 +195,11 @@ impl PyServiceMessenger {
         })
     }
 
-    /// Check if a service has active subscribers.
+    /// Check if a service has active subscribers. `target` is the
+    /// producer's full `(core_node, instance_id)` pair (`None` probes any
+    /// matching producer).
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, target_core_node=None, target_instance_id=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, target=None))]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -206,20 +207,21 @@ impl PyServiceMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_service_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        target: Option<(String, String)>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
+            let target = target.map(|(core_node, instance_id)| {
+                peppylib::messaging::ProducerRef::new(core_node, instance_id)
+            });
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 to_target,
                 &to_service_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                target.as_ref(),
             )
             .await
             .map_err(to_py_err)?;
@@ -227,9 +229,12 @@ impl PyServiceMessenger {
         })
     }
 
-    /// Send a request to a service and wait for a response.
+    /// Send a request to a service and wait for a response. `target` is the
+    /// producer's full `(core_node, instance_id)` pair — `Some` pins it (no
+    /// discovery), `None` is a genuine wildcard (discover-then-pin).
+    /// Generated code splices `node_runner.pinned_producer_for(link_id)`.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, target_core_node=None, target_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, target=None, request_payload=vec![], response_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn poll<'py>(
         py: Python<'py>,
@@ -238,8 +243,7 @@ impl PyServiceMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_service_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        target: Option<(String, String)>,
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -248,14 +252,16 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
+            let target = target.map(|(core_node, instance_id)| {
+                peppylib::messaging::ProducerRef::new(core_node, instance_id)
+            });
             let response = ServiceMessenger::poll(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 to_target,
                 &to_service_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                target.as_ref(),
                 Payload::from(request_payload),
                 response_timeout,
             )

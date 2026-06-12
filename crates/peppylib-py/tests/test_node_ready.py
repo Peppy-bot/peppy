@@ -20,12 +20,10 @@ CALLER_INSTANCE_ID = "caller_instance"
 
 @pytest.mark.asyncio
 async def test_ready_node():
-    """Ready service accepts all valid targeting modes and echoes back the payload.
-    The test validates four targeting combinations:
-    - specific core node + specific instance
-    - specific core node + broadcast instance
-    - broadcast core node + specific instance
-    - full broadcast (core node + instance)
+    """Ready service accepts both valid targeting modes and echoes back the payload.
+    The test validates the two representable producer targets:
+    - fully pinned producer ((core_node, instance_id) pair)
+    - full broadcast (None: discover-then-pin wildcard)
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         messenger = await MessengerHandle.from_host_port(router.host, router.port)
@@ -43,12 +41,10 @@ async def test_ready_node():
 
         request_payload = b"ready"
 
-        # The ready service should accept all valid targeting modes
+        # The ready service should accept both valid targeting modes
         target_combinations = [
-            ("specific+specific", TEST_CORE_NODE_NAME, TEST_INSTANCE_ID),
-            ("specific+broadcast", TEST_CORE_NODE_NAME, None),
-            ("broadcast+specific", None, TEST_INSTANCE_ID),
-            ("broadcast+broadcast", None, None),
+            ("pinned", (TEST_CORE_NODE_NAME, TEST_INSTANCE_ID)),
+            ("broadcast", None),
         ]
 
         # Each poll uses a fresh MessengerHandle (Zenoh session) because
@@ -56,7 +52,7 @@ async def test_ready_node():
         # rapidly creates/drops wildcard subscribers (the response
         # subscription in poll_service) interleaved with put() calls to
         # varying key prefixes. A fresh session avoids this interference.
-        for label, target_core_node, target_instance_id in target_combinations:
+        for label, target in target_combinations:
             poll_messenger = await MessengerHandle.from_host_port(
                 router.host, router.port
             )
@@ -67,8 +63,7 @@ async def test_ready_node():
                     CALLER_INSTANCE_ID,
                     SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                     NODE_READY_SERVICE,
-                    target_core_node,
-                    target_instance_id,
+                    target,
                     request_payload,
                     2.0,)
             except RuntimeError as exc:

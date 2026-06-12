@@ -12,7 +12,7 @@ fn main() -> Result<()> {
         tokio::spawn(async move {
             loop {
                 let (instance_id, state) =
-                    arm_joint_states::on_next_message_received(&node_runner, None)
+                    arm_joint_states::on_next_message_received(&node_runner)
                         .await
                         .expect("failed to receive joint state");
 

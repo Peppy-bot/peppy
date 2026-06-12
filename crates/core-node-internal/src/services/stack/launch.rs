@@ -1068,7 +1068,11 @@ async fn validate_and_order_dependencies(
             conforms_to: &[],
         });
     }
-    let validated = config::launcher::validate_bindings(&binding_items);
+    // Stamp every resolved producer reference with this daemon's core_node:
+    // stacks are daemon-scoped, so the launching daemon is where every
+    // producer instance in the snapshot lives.
+    let validated =
+        config::launcher::validate_bindings(&binding_items, ctx.bound_core_node.as_str());
     if !validated.errors.is_empty() {
         let msg = config::format_bulleted(&validated.errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;

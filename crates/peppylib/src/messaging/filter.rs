@@ -2,18 +2,25 @@
 //! which producer messages reach which `depends_on` slot. The validator
 //! (in `config-internal::launcher::bindings`) pre-resolves each consumer
 //! instance's launcher / CLI binding map into per-slot
-//! [`config::runtime::SlotBinding`] entries; at startup, the runtime
-//! [`crate::runtime::Processor`] reads each declared `link_id` and
-//! synthesizes a [`ConsumerFilter`] for the subscribe / poll / send_goal
-//! call.
+//! [`config::runtime::SlotBinding`] entries — each stamped with the
+//! producer's full `(core_node, instance_id)` wire address; at startup,
+//! the runtime [`crate::runtime::Processor`] reads each declared
+//! `link_id` and synthesizes a [`ConsumerFilter`] for the subscribe /
+//! poll / send_goal call.
+//!
+//! Every producer reference below the validator is a [`ProducerRef`]: the
+//! wire addresses producers by the pair (instance_id alone is only unique
+//! within one stack), so a half-address is unrepresentable here by
+//! construction.
 //!
 //! The four variants map directly to the spec's invariants:
-//! - [`ConsumerFilter::Pin`] — wire-layer `from_instance_id` pin to a
-//!   single producer. Used for pinned slots and from_any slots bound to
-//!   exactly one producer.
+//! - [`ConsumerFilter::Pin`] — wire-layer pin of both `from_core_node`
+//!   and `from_instance_id` to a single producer. Used for pinned slots
+//!   and from_any slots bound to exactly one producer.
 //! - [`ConsumerFilter::OnlyFrom`] — wire wildcards; an in-process
-//!   acceptance set filters incoming messages by source `instance_id`.
-//!   Used for from_any slots bound to multiple producers.
+//!   acceptance set filters incoming messages by source
+//!   `(core_node, instance_id)`. Used for from_any slots bound to
+//!   multiple producers.
 //! - [`ConsumerFilter::AnyExcept`] — wire wildcards; a reject set drops
 //!   messages from producers claimed by sibling slots. Used for
 //!   from_any slots with no bindings on consumers that *do* have
@@ -26,33 +33,37 @@ use config::node::DependsOn;
 use config::runtime::SlotBinding;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub use config::runtime::ProducerRef;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsumerFilter {
-    /// Wire-layer pin: subscribe with `from_instance_id = Some(id)`. No
-    /// in-process filtering required.
-    Pin(String),
-    /// Wire wildcards; accept only messages whose source `instance_id`
-    /// is in the set. The empty set is legal (and means "this slot
-    /// receives nothing" — e.g. every bound producer was preempted by
-    /// a pinned sibling).
-    OnlyFrom(Vec<String>),
-    /// Wire wildcards; drop messages whose source `instance_id` is in
-    /// the set. The empty set degenerates to [`ConsumerFilter::Any`].
-    AnyExcept(Vec<String>),
+    /// Wire-layer pin: subscribe / poll / send_goal address exactly this
+    /// producer's `(core_node, instance_id)`. No in-process filtering and
+    /// no discovery required.
+    Pin(ProducerRef),
+    /// Wire wildcards; accept only messages whose source
+    /// `(core_node, instance_id)` is in the set. The empty set is legal
+    /// (and means "this slot receives nothing" — e.g. every bound
+    /// producer was preempted by a pinned sibling).
+    OnlyFrom(Vec<ProducerRef>),
+    /// Wire wildcards; drop messages whose source
+    /// `(core_node, instance_id)` is in the set. The empty set
+    /// degenerates to [`ConsumerFilter::Any`].
+    AnyExcept(Vec<ProducerRef>),
     /// Pure wildcard at the wire layer.
     Any,
 }
 
 impl ConsumerFilter {
-    /// Service / action call sites use a single `target_instance_id`
-    /// per call. Returns `Some(id)` when the filter targets exactly one
-    /// producer ([`ConsumerFilter::Pin`]); otherwise `None`, in which
-    /// case the call site falls back to wildcard discovery
-    /// (services' discover-then-pin path) or fails up-front (actions
-    /// require an explicit target).
-    pub fn pinned_target(&self) -> Option<&str> {
+    /// Service / action call sites use a single fully-pinned target per
+    /// call. Returns `Some(producer)` when the filter targets exactly one
+    /// producer ([`ConsumerFilter::Pin`]) — the call site then addresses
+    /// it directly and skips discovery entirely; otherwise `None`, in
+    /// which case the call site falls back to wildcard discovery
+    /// (discover-then-pin).
+    pub fn pinned_target(&self) -> Option<&ProducerRef> {
         match self {
-            ConsumerFilter::Pin(id) => Some(id.as_str()),
+            ConsumerFilter::Pin(producer) => Some(producer),
             _ => None,
         }
     }
@@ -70,6 +81,10 @@ impl ConsumerFilter {
 ///    sibling binding (pinned or from_any-explicit) on the same `(name,
 ///    tag)` — that's the "explicit bindings replace the wildcard
 ///    fallback" rule.
+///
+/// Claims are keyed on the full `(core_node, instance_id)` pair: two
+/// producers sharing an instance_id on different core_nodes are distinct
+/// producers and never preempt each other.
 ///
 /// Slots not present in `slot_bindings` (e.g. consumers with no
 /// `depends_on` at all) resolve to [`ConsumerFilter::Any`]. This is a
@@ -89,22 +104,19 @@ pub fn resolve_consumer_filter(
     let slot_name_tag = lookup_slot_name_tag(link_id, depends_on);
 
     match slot {
-        SlotBinding::Pinned {
-            producer_instance_id,
-        } => ConsumerFilter::Pin(producer_instance_id.clone()),
-        SlotBinding::FromAnyBound {
-            producer_instance_ids,
-        } => {
+        SlotBinding::Pinned { producer } => ConsumerFilter::Pin(producer.clone()),
+        SlotBinding::FromAnyBound { producers } => {
             let pinned_claimed =
                 pinned_claims_for_name_tag(slot_name_tag, slot_bindings, depends_on);
-            let effective: Vec<String> = producer_instance_ids
+            let effective: Vec<ProducerRef> = producers
                 .iter()
-                .filter(|id| !pinned_claimed.contains(id.as_str()))
+                .filter(|producer| !pinned_claimed.contains(producer))
                 .cloned()
                 .collect();
-            // Degenerate `OnlyFrom([single])` → Pin for efficiency; the
-            // wire layer can pin instead of paying the wildcard +
-            // in-process filter cost.
+            // Degenerate `OnlyFrom([single])` → Pin: the slot resolves to
+            // exactly one wire-complete producer, so the call sites can
+            // pin both wire slots and skip discovery, instead of paying
+            // the wildcard + in-process filter cost.
             if effective.len() == 1 {
                 ConsumerFilter::Pin(effective.into_iter().next().unwrap())
             } else {
@@ -163,13 +175,13 @@ fn lookup_slot_name_tag<'a>(
         .map(|(name, tag, _, _)| (name, tag))
 }
 
-/// All producer `instance_id`s claimed by pinned sibling slots on the
-/// same `(name, tag)`.
+/// All producers claimed by pinned sibling slots on the same
+/// `(name, tag)`, keyed on the full `(core_node, instance_id)` pair.
 fn pinned_claims_for_name_tag<'a>(
     name_tag: Option<(&str, &str)>,
     slot_bindings: &'a BTreeMap<String, SlotBinding>,
     depends_on: Option<&DependsOn>,
-) -> BTreeSet<&'a str> {
+) -> BTreeSet<&'a ProducerRef> {
     let mut out = BTreeSet::new();
     let Some((name, tag)) = name_tag else {
         return out;
@@ -178,24 +190,21 @@ fn pinned_claims_for_name_tag<'a>(
         if from_any || dep_name != name || dep_tag != tag {
             continue;
         }
-        if let Some(SlotBinding::Pinned {
-            producer_instance_id,
-        }) = slot_bindings.get(dep_link_id)
-        {
-            out.insert(producer_instance_id.as_str());
+        if let Some(SlotBinding::Pinned { producer }) = slot_bindings.get(dep_link_id) {
+            out.insert(producer);
         }
     }
     out
 }
 
-/// Every producer `instance_id` named by any sibling binding (pinned or
-/// from_any explicit) on the same `(name, tag)`. Used to populate the
-/// reject set for an unbound `from_any` slot.
+/// Every producer named by any sibling binding (pinned or from_any
+/// explicit) on the same `(name, tag)`, keyed on the full pair. Used to
+/// populate the reject set for an unbound `from_any` slot.
 fn all_sibling_claims_for_name_tag(
     name_tag: Option<(&str, &str)>,
     slot_bindings: &BTreeMap<String, SlotBinding>,
     depends_on: Option<&DependsOn>,
-) -> BTreeSet<String> {
+) -> BTreeSet<ProducerRef> {
     let mut out = BTreeSet::new();
     let Some((name, tag)) = name_tag else {
         return out;
@@ -205,16 +214,12 @@ fn all_sibling_claims_for_name_tag(
             continue;
         }
         match slot_bindings.get(dep_link_id) {
-            Some(SlotBinding::Pinned {
-                producer_instance_id,
-            }) => {
-                out.insert(producer_instance_id.clone());
+            Some(SlotBinding::Pinned { producer }) => {
+                out.insert(producer.clone());
             }
-            Some(SlotBinding::FromAnyBound {
-                producer_instance_ids,
-            }) => {
-                for id in producer_instance_ids {
-                    out.insert(id.clone());
+            Some(SlotBinding::FromAnyBound { producers }) => {
+                for producer in producers {
+                    out.insert(producer.clone());
                 }
             }
             Some(SlotBinding::FromAnyUnbound) | None => {}
@@ -227,6 +232,15 @@ fn all_sibling_claims_for_name_tag(
 mod tests {
     use super::*;
     use config::node::{Name, NodeDependency};
+
+    /// Core_node used by these fixtures: bindings are stack-scoped, so
+    /// every producer in one consumer's binding map shares the launching
+    /// daemon's core_node.
+    const CORE: &str = "core_a";
+
+    fn pref(instance_id: &str) -> ProducerRef {
+        ProducerRef::new(CORE, instance_id)
+    }
 
     fn deps(entries: Vec<(&str, &str, &str, bool)>) -> DependsOn {
         DependsOn {
@@ -256,24 +270,29 @@ mod tests {
         let bindings = slot_map(vec![(
             "main",
             SlotBinding::Pinned {
-                producer_instance_id: "cam1".to_string(),
+                producer: pref("cam1"),
             },
         )]);
         let filter = resolve_consumer_filter("main", &bindings, Some(&depends_on));
-        assert_eq!(filter, ConsumerFilter::Pin("cam1".to_string()));
+        assert_eq!(filter, ConsumerFilter::Pin(pref("cam1")));
+        assert_eq!(filter.pinned_target(), Some(&pref("cam1")));
     }
 
+    /// The single-producer collapse yields a full `ProducerRef`, which is
+    /// what lets call sites skip discovery for from_any-bound-to-one
+    /// slots exactly like explicitly pinned ones.
     #[test]
     fn from_any_bound_to_single_producer_collapses_to_pin() {
         let depends_on = deps(vec![("camera", "v1", "extra", true)]);
         let bindings = slot_map(vec![(
             "extra",
             SlotBinding::FromAnyBound {
-                producer_instance_ids: vec!["cam1".to_string()],
+                producers: vec![pref("cam1")],
             },
         )]);
         let filter = resolve_consumer_filter("extra", &bindings, Some(&depends_on));
-        assert_eq!(filter, ConsumerFilter::Pin("cam1".to_string()));
+        assert_eq!(filter, ConsumerFilter::Pin(pref("cam1")));
+        assert_eq!(filter.pinned_target(), Some(&pref("cam1")));
     }
 
     #[test]
@@ -282,14 +301,15 @@ mod tests {
         let bindings = slot_map(vec![(
             "extra",
             SlotBinding::FromAnyBound {
-                producer_instance_ids: vec!["cam1".to_string(), "cam2".to_string()],
+                producers: vec![pref("cam1"), pref("cam2")],
             },
         )]);
         let filter = resolve_consumer_filter("extra", &bindings, Some(&depends_on));
         assert_eq!(
             filter,
-            ConsumerFilter::OnlyFrom(vec!["cam1".to_string(), "cam2".to_string()])
+            ConsumerFilter::OnlyFrom(vec![pref("cam1"), pref("cam2")])
         );
+        assert_eq!(filter.pinned_target(), None);
     }
 
     /// Statement 1 + precedence: pinned slot bound to a producer also
@@ -305,18 +325,49 @@ mod tests {
             (
                 "wrist_left",
                 SlotBinding::Pinned {
-                    producer_instance_id: "cam1".to_string(),
+                    producer: pref("cam1"),
                 },
             ),
             (
                 "extra",
                 SlotBinding::FromAnyBound {
-                    producer_instance_ids: vec!["cam1".to_string()],
+                    producers: vec![pref("cam1")],
                 },
             ),
         ]);
         let filter = resolve_consumer_filter("extra", &bindings, Some(&depends_on));
         assert_eq!(filter, ConsumerFilter::OnlyFrom(vec![]));
+    }
+
+    /// Claims are keyed on the full pair: a pinned sibling claiming
+    /// `(core_a, cam1)` does NOT preempt a producer sharing the
+    /// instance_id on a different core_node — they are distinct
+    /// producers on the wire.
+    #[test]
+    fn sibling_claims_distinguish_same_instance_id_on_different_core_nodes() {
+        let depends_on = deps(vec![
+            ("camera", "v1", "wrist_left", false),
+            ("camera", "v1", "extra", true),
+        ]);
+        let other_core_cam1 = ProducerRef::new("core_b", "cam1");
+        let bindings = slot_map(vec![
+            (
+                "wrist_left",
+                SlotBinding::Pinned {
+                    producer: pref("cam1"),
+                },
+            ),
+            (
+                "extra",
+                SlotBinding::FromAnyBound {
+                    producers: vec![other_core_cam1.clone()],
+                },
+            ),
+        ]);
+        let filter = resolve_consumer_filter("extra", &bindings, Some(&depends_on));
+        // `(core_b, cam1)` survives the pinned `(core_a, cam1)` claim and,
+        // as the single remaining producer, collapses to a full pin.
+        assert_eq!(filter, ConsumerFilter::Pin(other_core_cam1));
     }
 
     /// Statement 3 (from_any-only manifest): unbound from_any with no
@@ -342,13 +393,13 @@ mod tests {
             (
                 "wrist_left",
                 SlotBinding::Pinned {
-                    producer_instance_id: "cam1".to_string(),
+                    producer: pref("cam1"),
                 },
             ),
             ("extra", SlotBinding::FromAnyUnbound),
         ]);
         let filter = resolve_consumer_filter("extra", &bindings, Some(&depends_on));
-        assert_eq!(filter, ConsumerFilter::AnyExcept(vec!["cam1".to_string()]));
+        assert_eq!(filter, ConsumerFilter::AnyExcept(vec![pref("cam1")]));
     }
 
     /// "Explicit bindings replace the wildcard fallback" — a from_any
@@ -365,7 +416,7 @@ mod tests {
             (
                 "specific",
                 SlotBinding::FromAnyBound {
-                    producer_instance_ids: vec!["cam_a".to_string(), "cam_b".to_string()],
+                    producers: vec![pref("cam_a"), pref("cam_b")],
                 },
             ),
             ("extra", SlotBinding::FromAnyUnbound),
@@ -374,7 +425,7 @@ mod tests {
         // BTreeSet → sorted iteration.
         assert_eq!(
             filter,
-            ConsumerFilter::AnyExcept(vec!["cam_a".to_string(), "cam_b".to_string()])
+            ConsumerFilter::AnyExcept(vec![pref("cam_a"), pref("cam_b")])
         );
     }
 
@@ -390,7 +441,7 @@ mod tests {
             (
                 "cam_slot",
                 SlotBinding::Pinned {
-                    producer_instance_id: "cam1".to_string(),
+                    producer: pref("cam1"),
                 },
             ),
             ("lidar_slot", SlotBinding::FromAnyUnbound),

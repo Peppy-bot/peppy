@@ -130,7 +130,7 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        let (instance_id, frame) = on_next_message_received(&node_runner, None).await?;
+        let (instance_id, frame) = on_next_message_received(&node_runner).await?;
         println!(
             "got {}x{} frame encoded as {} from {}",
             frame.width, frame.height, frame.encoding, &instance_id
@@ -262,7 +262,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -288,7 +288,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         RECEIVER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         receiver_instance_id,
         Duration::from_secs(5),
     )
@@ -298,7 +298,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         UVC_CAMERA_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         emitter_instance_id,
         Duration::from_secs(5),
     )

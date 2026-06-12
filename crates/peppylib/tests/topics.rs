@@ -35,7 +35,6 @@ async fn topic_messenger_communication() {
         Some(test_node_target(node_name)),
         true, // from_any pattern
         topic_name,
-        None, // Accept messages from any core node
         &ConsumerFilter::Any,
         QoSProfile::Reliable,
     )
@@ -97,7 +96,6 @@ async fn node_session_recovers_after_router_restart() {
         Some(test_node_target(node_name)),
         true,
         topic_name,
-        None,
         &ConsumerFilter::Any,
         QoSProfile::Reliable,
     )
@@ -221,7 +219,6 @@ async fn bidirectional_from_any_topics_with_late_producer() {
         Some(test_node_target("robot_arm")),
         true, // from_any
         joint_states,
-        None, // from any core node
         &ConsumerFilter::Any,
         QoSProfile::Reliable,
     )
@@ -236,7 +233,6 @@ async fn bidirectional_from_any_topics_with_late_producer() {
         Some(test_node_target("arm_controller")),
         true, // from_any
         joint_commands,
-        None,
         &ConsumerFilter::Any,
         QoSProfile::Reliable,
     )

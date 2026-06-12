@@ -12,7 +12,7 @@ fn main() -> Result<()> {
         tokio::spawn(async move {
             loop {
                 let (instance_id, command) =
-                    controller_joint_commands::on_next_message_received(&node_runner, None)
+                    controller_joint_commands::on_next_message_received(&node_runner)
                         .await
                         .expect("failed to receive joint command");
 

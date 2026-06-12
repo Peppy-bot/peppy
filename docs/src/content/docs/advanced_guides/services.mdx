@@ -310,13 +310,13 @@ Four contract statements follow from this manifest:
 1. `wrist_left_camera_<service>::poll(...)` reaches `left_cam` (pinned-bound).
 2. `wrist_right_camera_<service>::poll(...)` reaches `right_cam` (pinned-bound).
 3. `extra_cam_<service>::poll(...)` reaches `ceiling_cam` via the unbound `from_any` wildcard (the discover-then-pin probe lands there because the pinned slots already claim the other producers).
-4. If `extra_cam` had been bound (e.g. `extra_cam: "ceiling_cam"`), discovery would be restricted to the bound set instead of every unclaimed producer.
+4. If `extra_cam` had been bound to a single producer (e.g. `extra_cam: "ceiling_cam"`), the slot would resolve to that producer's full wire address and skip discovery entirely, exactly like a pinned slot.
 
 ### Why discover-then-pin?
 
-The underlying Zenoh transport broadcasts a wildcard service query to every matching producer (`QueryTarget::All`). Without discovery, every producer's user handler would run, even though the consumer only ever consumes the first reply. For idempotent reads that wastes work; for state-changing services it can cause real-world side effects on producers the consumer never intended to reach. The discover-then-pin step uses a probe payload that is auto-handled by the framework before the user handler is invoked, so non-winning producers stay idle.
+The underlying Zenoh transport broadcasts a wildcard service query to every matching producer (`QueryTarget::All`). Without discovery, every producer's user handler would run, even though the consumer only ever consumes the first reply. For idempotent reads that wastes work; for state-changing services it can cause real-world side effects on producers the consumer never intended to reach. The discover-then-pin step uses a probe payload that is answered by the transport adapter before the user handler is invoked, so non-winning producers stay idle — and because the adapter answers in its dispatch path, a producer busy inside a slow handler still answers probes promptly instead of starving discovery.
 
-The cost is one additional round-trip on wildcard calls (typically a few milliseconds). Consumers whose slot is **pinned by a binding** skip discovery entirely and pay no overhead. If a tighter `response_timeout` is passed, discovery is capped at that budget rather than the framework's default probe timeout, so tight-budget failure modes still surface quickly.
+The cost is one additional round-trip on wildcard calls (typically a few milliseconds). Consumers whose slot is **pinned by a binding** — including `from_any` slots bound to a single producer — skip discovery entirely and pay no overhead: the binding carries the producer's full `(core_node, instance_id)` wire address, so the call addresses exactly one producer with no probe. If a tighter `response_timeout` is passed, discovery is capped at that budget rather than the framework's default probe timeout, so tight-budget failure modes still surface quickly.
 
 If the discovered producer dies between the probe and the real request, the call surfaces `ServiceUnreachable` and the caller can retry; the next attempt will re-discover and pin to a different producer if one is available.
 
@@ -330,7 +330,8 @@ The launcher validator runs these checks before the stack starts:
 4. A `KEY` that matches neither a pinned `link_id` nor a `from_any` slot for `VALUE`'s `(name, tag)` is a dead key and is rejected.
 5. A pinned binding whose target `instance_id` deploys a different node than the slot expects is a target mismatch and is rejected.
 6. `KEY` uniqueness within a single invocation is enforced (no two bindings on the same consumer may share the same `KEY`).
-7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. Bindings address producers by `instance_id`, so a duplicate would make the binding ambiguous.
+7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
+8. **Bindings are stamped with the daemon's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps the launching daemon's `core_node` into every resolved binding, so generated calls address exactly one producer and never match on `instance_id` alone.
 
 ## Error handling
 

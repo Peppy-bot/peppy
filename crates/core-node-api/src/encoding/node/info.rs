@@ -283,17 +283,21 @@ mod tests {
 
     #[test]
     fn node_info_response_roundtrips_instance_slot_bindings() {
+        use config::runtime::ProducerRef;
         let bindings_a: BTreeMap<String, SlotBinding> = [
             (
                 "wrist_left_camera".to_string(),
                 SlotBinding::Pinned {
-                    producer_instance_id: "cam1".to_string(),
+                    producer: ProducerRef::new("core_a", "cam1"),
                 },
             ),
             (
                 "extra_cam".to_string(),
                 SlotBinding::FromAnyBound {
-                    producer_instance_ids: vec!["cam2".to_string(), "cam3".to_string()],
+                    producers: vec![
+                        ProducerRef::new("core_a", "cam2"),
+                        ProducerRef::new("core_a", "cam3"),
+                    ],
                 },
             ),
             ("spare".to_string(), SlotBinding::FromAnyUnbound),

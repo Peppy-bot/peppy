@@ -1,17 +1,21 @@
 use super::MessengerHandle;
 use crate::error::Result;
+use crate::messaging::ProducerRef;
 use crate::types::Payload;
 use pmi::{ServiceQueryKind, ServiceWireSender};
 use tokio::time::Duration;
 
-/// Resolves a wildcard service or action target to a single concrete producer
-/// `(core_node, instance_id)` before the real request is dispatched.
+/// Resolves a wildcard service or action target to a single concrete
+/// producer [`ProducerRef`] before the real request is dispatched. Only
+/// genuine wildcards (`from_any` slots not bound to exactly one producer)
+/// reach this path — pinned targets carry their full
+/// `(core_node, instance_id)` and never discover.
 ///
 /// Sends a probe (empty payload, `ServiceQueryKind::Probe` on the
-/// attachment) to `probe_sender`; producer-side request loops auto-respond
-/// to probes before the user handler runs (see
-/// [`crate::messaging::services::ServiceEndpoint`]), so the discovery is
-/// side-effect-free even when multiple producers match the wildcard.
+/// attachment) to `probe_sender`; the producer-side transport adapter
+/// auto-responds to probes in its query dispatch — even while user code
+/// holds the producer's request loop — so the discovery is side-effect-free
+/// and starvation-free even when multiple producers match the wildcard.
 ///
 /// The first responder wins. Subsequent producer replies are ignored — they
 /// drop on the floor when `poll_service` returns. The Zenoh keyexpr embedded
@@ -28,7 +32,7 @@ pub(super) async fn discover_producer(
     messenger: &MessengerHandle,
     probe_sender: &ServiceWireSender,
     discovery_timeout: Duration,
-) -> Result<(String, String)> {
+) -> Result<ProducerRef> {
     // `poll_service` itself retries on a peer-mode cold-start miss (the probe's
     // `QueryTarget::All` finalizing with no reply before discovery has settled),
     // bounded by `discovery_timeout`, so a single probe call here waits for a
@@ -42,8 +46,8 @@ pub(super) async fn discover_producer(
             discovery_timeout,
         )
         .await?;
-    Ok((
-        response.core_node().to_string(),
-        response.instance_id().to_string(),
+    Ok(ProducerRef::new(
+        response.core_node(),
+        response.instance_id(),
     ))
 }

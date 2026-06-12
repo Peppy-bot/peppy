@@ -451,6 +451,44 @@ fn expose_two_actions() {
     );
 }
 
+/// A real manifest dep (link_id present) splices the runtime binding
+/// lookup as the single `target` argument of the generated `send_goal`:
+/// `node_runner.pinned_producer_for(<link_id>)` resolves at runtime to
+/// the bound producer's full `(core_node, instance_id)` tuple, so a
+/// pinned slot addresses exactly one producer with no discovery probe.
+#[test]
+fn consumed_action_with_link_id_splices_runtime_binding_target() {
+    let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    let goal_request_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
+    let goal_response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
+    let format = ConsumedActionMessage {
+        goal_request: Some(goal_request_format),
+        goal_response: Some(goal_response_format),
+        feedback: None,
+        result_request: None,
+        result_response: None,
+    };
+
+    let mut generator = PythonGenerator::new();
+    generator
+        .add_consumed_action(
+            &action,
+            &format,
+            &crate::DependencyContext::native("brain", "v1")
+                .with_link_id(crate::WireLinkId::from_link_id("left_arm", false)),
+        )
+        .unwrap();
+    let artifacts = render_artifacts(generator.into_artifacts());
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &["node_runner.pinned_producer_for(\"left_arm\"),"],
+    );
+}
+
 #[test]
 fn consumed_action() {
     let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
@@ -585,10 +623,12 @@ fn consumed_action() {
 
     // fire_goal @classmethod with typed signature, serialization, and
     // ActionHandle construction. The fixture defaults to
-    // `WireLinkId::wildcard()` (no manifest link_id), so the binding
-    // lookup splices `None` and the user-facing `target_instance_id`
-    // parameter is gone. `target_core_node` is never exposed in the
-    // generated API.
+    // `WireLinkId::wildcard()` (no manifest link_id), so the send_goal
+    // call splices `None` at the single target slot and the user-facing
+    // `target_instance_id` parameter is gone. `target_core_node` is never
+    // exposed in the generated API, and the renamed `pinned_target_for`
+    // accessor must never be emitted (the runtime helper is
+    // `pinned_producer_for`).
     assert_contains_all(
         &rendered,
         &[
@@ -601,6 +641,7 @@ fn consumed_action() {
             ") -> Self:",
             "user_goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
+            "TARGET_ACTION_NAME,\n            None,\n            user_goal_payload,",
             "feedback_qos,",
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",
@@ -617,6 +658,10 @@ fn consumed_action() {
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("pinned_target_for"),
+        "pinned_target_for should never be emitted; the runtime helper is pinned_producer_for; got:\n{rendered}"
     );
 
     // cancel_goal as self method, mapping the typed cancel reply's state tag.

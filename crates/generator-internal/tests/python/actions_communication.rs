@@ -365,7 +365,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -387,7 +387,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -423,7 +423,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -433,7 +433,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -682,7 +682,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -704,7 +704,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -740,7 +740,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -750,7 +750,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -1011,7 +1011,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1033,7 +1033,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -1069,7 +1069,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -1079,7 +1079,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -1355,7 +1355,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1377,7 +1377,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -1413,7 +1413,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -1423,7 +1423,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -1728,7 +1728,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1750,7 +1750,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -1786,7 +1786,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -1796,7 +1796,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -2099,7 +2099,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -2121,7 +2121,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &health_ctx,
@@ -2157,7 +2157,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -2167,7 +2167,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -2447,7 +2447,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -2499,7 +2499,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )

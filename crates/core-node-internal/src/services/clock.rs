@@ -293,7 +293,6 @@ pub async fn subscribe_external_clock(
         Some(SenderTarget::node(node_name, names::CORE_NODE_TAG)?),
         false,
         names::CLOCK,
-        Some(core_node_name),
         &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )

@@ -1291,7 +1291,7 @@ mod tests {
         bindings.insert(
             "arm".to_string(),
             SlotBinding::Pinned {
-                producer_instance_id: "arm-1".to_string(),
+                producer: config::runtime::ProducerRef::new("core_a", "arm-1"),
             },
         );
         let bound = TrackedNodeInstance::new(

@@ -61,8 +61,7 @@ async fn poll_datastore(started: &StartedCoreNode, service: &str, payload: Paylo
         CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
         service,
-        Some(&started.core_node_name),
-        None,
+        None, // discover the daemon's random per-boot service instance
         payload,
         Duration::from_secs(5),
     )
@@ -221,8 +220,10 @@ pub async fn wait_until_service_reachable(
             "ready_probe",
             test_node_target(to_node_name),
             to_service_name,
-            Some(target_core_node),
-            Some(target_instance_id),
+            Some(&peppylib::messaging::ProducerRef::new(
+                target_core_node,
+                target_instance_id,
+            )),
         )
         .await
         {
@@ -255,8 +256,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
         names::CLOCK,
-        Some(&started.core_node_name),
-        None,
+        None, // discover the daemon's random per-boot service instance
         request_payload,
         Duration::from_secs(5),
     )
@@ -300,7 +300,6 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         Some(core_node_target(&started.core_node_name)),
         false,
         names::CLOCK,
-        Some(&started.core_node_name),
         &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
@@ -545,7 +544,6 @@ async fn send_node_run_goal(
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
         names::NODE_RUN_ACTION,
-        Some(core_node_name),
         None,
         goal_payload,
         QoSProfile::default(),
@@ -847,7 +845,6 @@ async fn send_node_add_and_wait_internal<'a>(
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
         names::NODE_ADD_ACTION,
-        Some(core_node_name),
         None,
         goal_payload,
         QoSProfile::default(),
@@ -992,7 +989,6 @@ async fn send_node_build_and_wait_internal(
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
         names::NODE_BUILD_ACTION,
-        Some(core_node_name),
         None,
         goal_payload,
         QoSProfile::default(),
@@ -1521,6 +1517,12 @@ fn init_cargo_project(node_dir: &Path, crate_name: &str) {
 }
 
 fn write_test_node_files(node_dir: &Path, crate_name: &str, node_tag: &str) {
+    // TEMPORARY upstream-breakage pin (2026-06-12): `time 0.3.48` and
+    // `rcgen 0.14.8` are mutually incompatible (E0119), and this test node
+    // resolves fresh — unlike the workspace, which pins `time 0.3.47` in
+    // Cargo.lock. Constrain the transitive `time` (via peppygen → peppylib
+    // → pmi → zenoh → rcgen) to the known-good version. Remove once
+    // upstream ships a compatible pair.
     std::fs::write(
         node_dir.join("Cargo.toml"),
         format!(
@@ -1531,6 +1533,7 @@ edition = "2024"
 
 [dependencies]
 peppygen = {{ path = "{PEPPYGEN_OUTPUT_PATH}" }}
+time = "=0.3.47"
 "#
         ),
     )

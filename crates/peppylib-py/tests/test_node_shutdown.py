@@ -44,8 +44,7 @@ async def test_shutdown_node():
             CALLER_INSTANCE_ID,
             SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
             SHUTDOWN_SERVICE,
-            TEST_CORE_NODE_NAME,
-            TEST_INSTANCE_ID,
+            (TEST_CORE_NODE_NAME, TEST_INSTANCE_ID),
             request_payload,
             2.0,)
 

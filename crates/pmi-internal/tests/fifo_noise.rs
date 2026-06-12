@@ -78,7 +78,6 @@ fn wildcard_service_sender() -> ServiceWireSender {
         "client_core",
         "client_inst",
         None,
-        None,
         test_node_target("robot_arm"),
         "ping",
         ServiceKind::Service,

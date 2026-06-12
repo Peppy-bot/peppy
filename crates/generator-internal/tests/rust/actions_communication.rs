@@ -116,6 +116,376 @@ const CONSUMED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
 }
 "#;
 
+/// Consumer node config for the bimanual capstone: unlike
+/// [`STUB_NODE_CONFIG`], the manifest declares a pinned `depends_on`
+/// slot (`link_id: "brain"`), which is what makes the runtime processor
+/// resolve `slot_bindings["brain"]` into a `ConsumerFilter::Pin` that
+/// the generated `fire_goal` splices as its target.
+const BIMANUAL_CONSUMER_NODE_CONFIG: &str = r#"{
+  peppy_schema: "node_v1",
+  manifest: {
+    name: "generated_node",
+    tag: "v1",
+    depends_on: {
+      nodes: [{ name: "brain", tag: "v1", link_id: "brain" }]
+    }
+  },
+  execution: {
+    language: "rust",
+    run_cmd: ["./target/release/generated_node"]
+  }
+}
+"#;
+
+/// E2E capstone for the bimanual field scenario: two instances of the SAME
+/// producer node run on one core_node, and a generated consumer whose
+/// manifest slot is pinned (via `NodeInstanceConfig.slot_bindings`) to one
+/// of them fires goals repeatedly. The full chain under test is
+/// runtime-config parse (`SlotBinding::Pinned { producer: ProducerRef }`)
+/// → processor filter resolution → generated `fire_goal` target splice →
+/// pinned wire delivery. Every goal must run on the bound instance and the
+/// sibling instance must never execute a goal handler — pre-`ProducerRef`,
+/// this exact shape ran a discovery probe per call and timed out whenever
+/// the producer was busy (the bimanual `fire_goal` timeout).
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
+    const LEFT_ARM_INSTANCE_ID: &str = "left_arm_instance";
+    const RIGHT_ARM_INSTANCE_ID: &str = "right_arm_instance";
+    const GOAL_ROUNDS: usize = 3;
+    let mode = crate::helpers::Mode::Peer;
+
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    // --- Consumer (client) project: one pinned slot, bound to the left arm.
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
+    let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
+    let action_messages = ConsumedActionMessage {
+        goal_request: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap()),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
+        feedback: Some(serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap()),
+        result_request: None,
+        result_response: Some(serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap()),
+    };
+    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(
+            &temp_dir_consumer,
+            BIMANUAL_CONSUMER_NODE_CONFIG,
+        );
+    generator
+        .add_consumed_action(
+            &consumed_action,
+            &action_messages,
+            // The manifest link_id rides into codegen so the generated
+            // fire_goal resolves `consumer_filter("brain").pinned_target()`
+            // at runtime instead of emitting a wildcard target.
+            &generator::DependencyContext::native("brain", "v1")
+                .with_link_id(generator::WireLinkId::from_link_id("brain", false)),
+        )
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
+    generator
+        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    // Bind the consumer's pinned slot to the LEFT arm with the full
+    // (core_node, instance_id) pair — exactly what the validator stamps
+    // when a stack launches with `--bind brain@left_arm_instance`.
+    let mut consumer_node_instance =
+        NodeInstanceConfig::new(Name::new(CONSUMER_INSTANCE_ID).unwrap());
+    consumer_node_instance.slot_bindings.insert(
+        "brain".to_string(),
+        config::runtime::SlotBinding::Pinned {
+            producer: config::runtime::ProducerRef::new(TEST_CORE_NODE, LEFT_ARM_INSTANCE_ID),
+        },
+    );
+    let consumer_runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        consumer_node_instance,
+        CONSUMER_NODE_NAME,
+        "v1",
+        TEST_CORE_NODE,
+    )
+    .unwrap();
+    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
+    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
+    consumer_runtime_config
+        .save_json5_launch_config(&consumer_runtime_config_path)
+        .unwrap();
+
+    init_cargo_user_node(&user_node_consumer);
+    let consumer_main = r#"
+use peppygen::consumed_actions::brain_move_arm;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+use std::time::Duration;
+
+async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    // Fire repeatedly: the pre-ProducerRef bug only had to be hit once per
+    // call, so a single success could mask a per-call discovery cliff.
+    for round in 0..3u32 {
+        let request = brain_move_arm::GoalRequest {
+            arm_id: 7,
+            desired_position: [10, 20, 30],
+        };
+        let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
+            &node_runner,
+            Duration::from_secs(5),
+            request,
+            peppygen::QoSProfile::SensorData,
+        ).await?;
+        let result = action_handle.get_result(Duration::from_secs(5)).await?;
+        match result.outcome {
+            brain_move_arm::ResultOutcome::Completed(data) => println!(
+                "round {} completed success={} final_position={:?}",
+                round, data.success, data.final_position
+            ),
+            other => panic!("expected Completed outcome, got {other:?}"),
+        }
+    }
+    println!("consumer finished all pinned goals");
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        consume_action(&node_runner).await
+    })
+}
+"#;
+    fs::write(
+        user_node_consumer.join("src").join("main.rs"),
+        consumer_main,
+    )
+    .expect("failed to write consumer main");
+
+    // --- Exposer (server) project: ONE binary, spawned twice below.
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
+    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
+    generator.add_exposed_action(&exposed_action, None).unwrap();
+    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
+    generator
+        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let arm_runtime_config = |instance_id: &str| {
+        let cfg = RuntimeConfig::new(
+            &router_host,
+            router_port,
+            NodeInstanceConfig::new(Name::new(instance_id).unwrap()),
+            BRAIN_NODE_NAME,
+            "v1",
+            TEST_CORE_NODE,
+        )
+        .unwrap();
+        crate::helpers::apply_mode(cfg, mode)
+    };
+    let left_runtime_config_path = temp_dir_exposer.path().join("left_runtime.json5");
+    arm_runtime_config(LEFT_ARM_INSTANCE_ID)
+        .save_json5_launch_config(&left_runtime_config_path)
+        .unwrap();
+    let right_runtime_config_path = temp_dir_exposer.path().join("right_runtime.json5");
+    arm_runtime_config(RIGHT_ARM_INSTANCE_ID)
+        .save_json5_launch_config(&right_runtime_config_path)
+        .unwrap();
+
+    init_cargo_user_node(&user_node_exposer);
+    let exposer_main = r#"
+use peppygen::exposed_actions::move_arm;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+
+async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
+    tokio::spawn(async move {
+        loop {
+            let maybe_ctx = action
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                    println!("server received goal arm_id={}", request.data.arm_id);
+                    Ok(move_arm::GoalResponse::accept())
+                })
+                .await;
+            match maybe_ctx {
+                Ok(Some(ctx)) => {
+                    let _ = ctx.complete(true, None, [98, 4, 26]).await;
+                }
+                _ => break,
+            }
+        }
+    });
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        expose_action(&node_runner).await
+    })
+}
+"#;
+    fs::write(user_node_exposer.join("src").join("main.rs"), exposer_main)
+        .expect("failed to write exposer main");
+
+    compile_project(&user_node_consumer);
+    compile_project(&user_node_exposer);
+
+    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
+
+    // Spawn BOTH arms before the consumer, and wait for each to be
+    // reachable so the "right arm never ran a goal" assertion can't pass
+    // vacuously because the sibling was still booting.
+    let left_runtime_config_str = left_runtime_config_path.to_str().unwrap().to_owned();
+    let right_runtime_config_str = right_runtime_config_path.to_str().unwrap().to_owned();
+    let mut left_child = spawn_cargo_run(
+        &user_node_exposer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &left_runtime_config_str)],
+    );
+    let mut right_child = spawn_cargo_run(
+        &user_node_exposer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &right_runtime_config_str)],
+    );
+
+    let ctx = WaitContext {
+        messenger: &messenger,
+        bound_core_node: TEST_CORE_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_core_node: TEST_CORE_NODE,
+    };
+    wait_for_action_service_reachable_or_exit(
+        &ctx,
+        BRAIN_NODE_NAME,
+        "move_arm",
+        Some(LEFT_ARM_INSTANCE_ID),
+        &mut left_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+    wait_for_action_service_reachable_or_exit(
+        &ctx,
+        BRAIN_NODE_NAME,
+        "move_arm",
+        Some(RIGHT_ARM_INSTANCE_ID),
+        &mut right_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
+    let mut consumer_child = spawn_cargo_run(
+        &user_node_consumer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
+    );
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        CONSUMER_NODE_NAME,
+        CONSUMER_INSTANCE_ID,
+        &mut consumer_child,
+        &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    send_shutdown(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        CONSUMER_NODE_NAME,
+        TEST_CORE_NODE,
+        CONSUMER_INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
+    for arm_instance in [LEFT_ARM_INSTANCE_ID, RIGHT_ARM_INSTANCE_ID] {
+        send_shutdown(
+            &messenger,
+            TEST_CORE_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            BRAIN_NODE_NAME,
+            TEST_CORE_NODE,
+            arm_instance,
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    let consumer_output = wait_for_child(
+        &mut consumer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_consumer,
+    );
+    let left_output = wait_for_child(
+        &mut left_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
+    let right_output = wait_for_child(
+        &mut right_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
+
+    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
+    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
+    assert!(
+        consumer_output.status.success(),
+        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        consumer_output.status.code(),
+        consumer_stdout,
+        consumer_stderr
+    );
+    for round in 0..GOAL_ROUNDS {
+        assert!(
+            consumer_stdout.contains(&format!("round {round} completed success=true")),
+            "pinned goal round {round} did not complete.\nstdout:\n{}\nstderr:\n{}",
+            consumer_stdout,
+            consumer_stderr
+        );
+    }
+    assert!(
+        consumer_stdout.contains("consumer finished all pinned goals"),
+        "consumer did not finish all rounds.\nstdout:\n{}\nstderr:\n{}",
+        consumer_stdout,
+        consumer_stderr
+    );
+
+    let left_stdout = String::from_utf8_lossy(&left_output.stdout).into_owned();
+    let right_stdout = String::from_utf8_lossy(&right_output.stdout).into_owned();
+    assert_eq!(
+        left_stdout.matches("server received goal").count(),
+        GOAL_ROUNDS,
+        "every goal must run on the bound left arm.\nleft stdout:\n{}\nright stdout:\n{}",
+        left_stdout,
+        right_stdout
+    );
+    assert_eq!(
+        right_stdout.matches("server received goal").count(),
+        0,
+        "the unbound right arm must never execute a goal handler.\nleft stdout:\n{}\nright stdout:\n{}",
+        left_stdout,
+        right_stdout
+    );
+}
+
 #[rstest::rstest]
 #[case::peer(crate::helpers::Mode::Peer)]
 #[case::router(crate::helpers::Mode::Router)]
@@ -334,7 +704,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -356,7 +726,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -382,7 +752,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -392,7 +762,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -652,7 +1022,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -674,7 +1044,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -700,7 +1070,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -710,7 +1080,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -1019,7 +1389,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1041,7 +1411,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -1067,7 +1437,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -1077,7 +1447,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -1393,7 +1763,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1415,7 +1785,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -1441,7 +1811,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -1451,7 +1821,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -1778,7 +2148,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -1800,7 +2170,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -1826,7 +2196,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -1836,7 +2206,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -2164,7 +2534,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: None,
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -2210,7 +2580,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -2226,7 +2596,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )

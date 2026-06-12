@@ -5,7 +5,7 @@ use common::{
     test_node_target,
 };
 use peppylib::{
-    messaging::{MessengerHandle, ServiceMessenger},
+    messaging::{MessengerHandle, ProducerRef, ServiceMessenger},
     services::ready::listen_for_node_ready,
     types::Payload,
 };
@@ -32,30 +32,20 @@ async fn ready_node() {
 
     let request_payload = Payload::from_static(b"ready");
 
-    // The ready service should accept all valid targeting modes:
-    // - specific core node + specific instance
-    // - specific core node + broadcast instance
-    // - broadcast core node + specific instance
-    // - full broadcast (core node + instance)
-    let to_combinations = [
-        (
-            Some(client.core_node_name.as_str()),
-            Some(client.instance_id.as_str()),
-        ),
-        (Some(client.core_node_name.as_str()), None),
-        (None, Some(client.instance_id.as_str())),
-        (None, None),
-    ];
+    // The ready service should accept both valid targeting modes:
+    // - fully pinned producer (core_node + instance_id)
+    // - full broadcast (no target producer)
+    let pinned = ProducerRef::new(client.core_node_name.as_str(), client.instance_id.as_str());
+    let to_combinations = [Some(&pinned), None];
 
-    for (target_core_node, target_instance_id) in to_combinations {
+    for target in to_combinations {
         let response = ServiceMessenger::poll(
             &client.caller_handle,
             &client.core_node_name,
             CALLER_INSTANCE_ID,
             test_node_target(TEST_NODE_NAME),
             peppylib::messaging::NODE_READY_SERVICE,
-            target_core_node,
-            target_instance_id,
+            target,
             request_payload.clone(),
             Duration::from_secs(2),
         )

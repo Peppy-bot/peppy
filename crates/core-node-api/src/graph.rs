@@ -403,17 +403,21 @@ mod tests {
 
     #[test]
     fn slot_bindings_round_trip_through_json() {
+        use config::runtime::ProducerRef;
         let mut bindings = BTreeMap::new();
         bindings.insert(
             "arm".to_string(),
             SlotBinding::Pinned {
-                producer_instance_id: "arm-1".to_string(),
+                producer: ProducerRef::new("core_a", "arm-1"),
             },
         );
         bindings.insert(
             "sensors".to_string(),
             SlotBinding::FromAnyBound {
-                producer_instance_ids: vec!["cam-1".to_string(), "cam-2".to_string()],
+                producers: vec![
+                    ProducerRef::new("core_a", "cam-1"),
+                    ProducerRef::new("core_a", "cam-2"),
+                ],
             },
         );
         let instance = SerializedInstance {
