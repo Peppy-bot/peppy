@@ -216,7 +216,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         node_name,
         node_tag,
         &timeouts,
-        false,
+        force,
     )
     .await?;
 
