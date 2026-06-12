@@ -1769,3 +1769,176 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         "new consumer must launch. Logs:\n{logs}"
     );
 }
+
+/// Regression: `peppy node add --build --force` must forward `--force` to the
+/// chained build. With a build already in flight for the node, the chained
+/// build supersedes it (the daemon cancels the old task with "build cancelled
+/// by --force") instead of being rejected with "action already in progress".
+/// Pins the fix for the chained `build_node_async` call hardcoding
+/// `force: false` in `add_node_async`.
+#[test]
+fn node_add_build_force_supersedes_inflight_build() {
+    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let node_name = "test_add_force_build_node";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node init command should succeed");
+
+    let node_path = node_dir.path().join(node_name);
+    let peppy_json5_path = node_path.join("peppy.json5");
+
+    // Blocking build_cmd: records its PID (the "build gate admitted the goal"
+    // signal), then blocks in short sleeps. Self-bounded to ~60s so a
+    // regression can never leave an orphaned infinite loop; short sleeps
+    // (not one long `sleep`) so SIGKILL on the `sh` doesn't orphan a
+    // long-lived grandchild.
+    let control_dir = tempfile::tempdir().expect("failed to create control tempdir");
+    let pid_file = control_dir.path().join("build.pid");
+    peppy::test_support::override_build_cmd(
+        &peppy_json5_path,
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            format!(
+                "echo $$ > '{}'; i=0; while [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); done",
+                pid_file.display()
+            ),
+        ],
+    );
+
+    // Stage only (no chained build): the snapshot taken by this add contains
+    // the blocking build_cmd.
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(node_path.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: false,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            binds: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("first node add (stage only) should succeed");
+
+    // Kick off the in-flight build in the background, on the same code path
+    // `peppy node build` uses.
+    let first_build = {
+        let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+        let core_node_name = core_node_name.clone();
+        let node_name = node_name.to_string();
+        rt.spawn(async move {
+            peppy::commands::node::build_node_async(
+                &messenger,
+                &core_node_name,
+                &node_name,
+                "v1",
+                &TimeoutConfig {
+                    idle_secs: 120,
+                    max_secs: 600,
+                },
+                false,
+            )
+            .await
+        })
+    };
+
+    // Barrier: the PID file appears only after the builder gate admitted the
+    // goal and spawned build_cmd, so polling for it is race-free.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if std::fs::read_to_string(&pid_file)
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "in-flight build was never admitted (pid file missing). Logs:\n{}",
+            log_capture.logs()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // Only affects the snapshot the SECOND add takes: the forced chained
+    // build must finish instantly once it supersedes the blocked one.
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
+
+    // The user's repro: `node add --build --force` while a build is in flight.
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(node_path.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            binds: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: true,
+        },
+    }
+    .execute(&node_ctx)
+    .expect(
+        "node add --build --force must supersede the in-flight build; a \
+         'Goal rejected: action already in progress' error here means --force \
+         was not forwarded to the chained build",
+    );
+
+    // The superseded first build resolves as cancelled-by-force, proving the
+    // chained goal actually carried force=true through the daemon gate.
+    let first_build_err = rt
+        .block_on(first_build)
+        .expect("first build task should not panic")
+        .expect_err("the superseded in-flight build must not report success");
+    assert!(
+        first_build_err
+            .to_string()
+            .contains("build cancelled by --force"),
+        "first build should be cancelled by the forced chained build, got: {first_build_err}"
+    );
+
+    // The chained build ran to completion (CLI success log from build_node_async).
+    let logs = log_capture.logs();
+    assert!(
+        logs.contains(&format!("Built node {node_name}:v1")),
+        "chained build should have completed. Logs:\n{logs}"
+    );
+}

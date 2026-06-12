@@ -202,7 +202,12 @@ pub enum NodeCommands {
         /// Absolute max timeout in seconds (safety net)
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
         max_timeout: u64,
-        /// When set, bypass the confirmation prompt and stop running instances before overwriting
+        /// When set, bypass the confirmation prompt and stop running instances before overwriting.
+        ///
+        /// When chaining a build (`--build` / `--run`), the flag is also forwarded
+        /// to the build step: any in-progress build of this node is cancelled and
+        /// superseded, instead of the chained build being rejected with
+        /// "action already in progress".
         #[arg(short = 'f', long)]
         force: bool,
     },
