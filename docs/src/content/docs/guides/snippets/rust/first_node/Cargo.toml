@@ -4,11 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# TEMPORARY upstream-breakage pin (2026-06-12): `time 0.3.48` and `rcgen 0.14.8`
-# are mutually incompatible (E0119); constrain the transitive `time` (via
-# peppylib -> pmi -> zenoh -> rcgen) to the known-good version. Remove once
-# upstream ships a compatible pair.
-time = "=0.3.47"
 peppygen = { path = ".peppy/libs/peppygen" }
 peppylib = { path = ".peppy/libs/peppylib" }
 tracing = "0.1"

@@ -1517,12 +1517,6 @@ fn init_cargo_project(node_dir: &Path, crate_name: &str) {
 }
 
 fn write_test_node_files(node_dir: &Path, crate_name: &str, node_tag: &str) {
-    // TEMPORARY upstream-breakage pin (2026-06-12): `time 0.3.48` and
-    // `rcgen 0.14.8` are mutually incompatible (E0119), and this test node
-    // resolves fresh — unlike the workspace, which pins `time 0.3.47` in
-    // Cargo.lock. Constrain the transitive `time` (via peppygen → peppylib
-    // → pmi → zenoh → rcgen) to the known-good version. Remove once
-    // upstream ships a compatible pair.
     std::fs::write(
         node_dir.join("Cargo.toml"),
         format!(
@@ -1533,7 +1527,6 @@ edition = "2024"
 
 [dependencies]
 peppygen = {{ path = "{PEPPYGEN_OUTPUT_PATH}" }}
-time = "=0.3.47"
 "#
         ),
     )

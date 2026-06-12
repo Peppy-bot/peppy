@@ -22,6 +22,14 @@ tempfile = "3"
 # Exact-pinned; peppylib pins the same `=1.9.0` in its [dev-dependencies] so
 # its test binaries share this build — bump the two together.
 zenoh = { version = "=1.9.0", optional = true }
+# TEMPORARY upstream-breakage pin (2026-06-12): `time 0.3.48` and `rcgen 0.14.8`
+# (both pulled in via zenoh-link-commons) are mutually incompatible: rcgen's
+# blanket `impl<T: Into<String>> From<T>` overlaps a new impl in time's
+# `format_description::parse` module (E0119). pmi is not a direct user of
+# `time`; this dependency exists only to cap the version for every downstream
+# resolution (generated nodes, docs snippets, this workspace). Remove once
+# upstream ships a compatible pair.
+time = { version = "=0.3.47", optional = true, default-features = false }
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }
@@ -46,7 +54,9 @@ tracing-subscriber = "0.3"
 # supervision) is `default-features = false, features = ["zenoh"]`.
 default = ["zenoh", "router"]
 # Zenoh client transport: publish/subscribe/services against an existing router.
-zenoh = ["dep:zenoh"]
+# `dep:time` is only the upstream-breakage pin declared above, scoped here so
+# zenoh-less builds do not carry it.
+zenoh = ["dep:zenoh", "dep:time"]
 # Router management: spawn and supervise the external zenohd daemon process
 # (ZenohdFacade, ZenohdInstance, RouterHealthChecker, ZenohAdapter::with_router).
 router = ["zenoh"]

@@ -194,22 +194,6 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
         updated_manifest = insert_dependency_line(&updated_manifest, &dependency_line);
     }
 
-    // TEMPORARY upstream-breakage pin (2026-06-12): `time 0.3.48` and
-    // `rcgen 0.14.8` are mutually incompatible (E0119: rcgen's blanket
-    // `impl<T: Into<String>> From<T>` collides with a new `time` impl), and
-    // these generated test projects resolve fresh — unlike the workspace,
-    // which pins `time 0.3.47` in Cargo.lock and is unaffected. Constrain
-    // the transitive `time` (pulled in via peppylib → pmi → zenoh → rcgen)
-    // to the known-good version so the integration suites stay green.
-    // Remove once upstream ships a compatible pair.
-    if !updated_manifest
-        .lines()
-        .any(|line| line.trim_start().starts_with("time"))
-    {
-        let time_pin_line = "time = \"=0.3.47\"\n";
-        updated_manifest = insert_dependency_line(&updated_manifest, time_pin_line);
-    }
-
     if updated_manifest != manifest_contents {
         fs::write(&cargo_toml_path, updated_manifest)
             .expect("failed to write user node Cargo.toml");
