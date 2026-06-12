@@ -18,7 +18,7 @@ use core_node_api::encoding::{
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
 use peppylib::messaging::{
-    ActionGoalHandle, MessengerHandle, ResultStatus, SenderTarget, TopicMessenger,
+    ActionGoalHandle, MessengerHandle, ResultStatus, SenderTarget, ServiceTarget, TopicMessenger,
 };
 use peppylib::runtime::{TaskHandle, spawn};
 use peppylib::services::health::listen_for_node_health;
@@ -61,7 +61,7 @@ async fn poll_datastore(started: &StartedCoreNode, service: &str, payload: Paylo
         CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
         service,
-        None, // discover the daemon's random per-boot service instance
+        ServiceTarget::Any, // discover the daemon's random per-boot service instance
         payload,
         Duration::from_secs(5),
     )
@@ -220,7 +220,7 @@ pub async fn wait_until_service_reachable(
             "ready_probe",
             test_node_target(to_node_name),
             to_service_name,
-            Some(&peppylib::messaging::ProducerRef::new(
+            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
                 target_core_node,
                 target_instance_id,
             )),
@@ -256,7 +256,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
         names::CLOCK,
-        None, // discover the daemon's random per-boot service instance
+        ServiceTarget::Any, // discover the daemon's random per-boot service instance
         request_payload,
         Duration::from_secs(5),
     )

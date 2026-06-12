@@ -5,7 +5,7 @@ use common::{
     test_node_target,
 };
 use peppylib::{
-    messaging::{MessengerHandle, ProducerRef, ServiceMessenger},
+    messaging::{MessengerHandle, ProducerRef, ServiceMessenger, ServiceTarget},
     services::ready::listen_for_node_ready,
     types::Payload,
 };
@@ -36,7 +36,7 @@ async fn ready_node() {
     // - fully pinned producer (core_node + instance_id)
     // - full broadcast (no target producer)
     let pinned = ProducerRef::new(client.core_node_name.as_str(), client.instance_id.as_str());
-    let to_combinations = [Some(&pinned), None];
+    let to_combinations = [ServiceTarget::Producer(&pinned), ServiceTarget::Any];
 
     for target in to_combinations {
         let response = ServiceMessenger::poll(

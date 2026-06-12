@@ -16,7 +16,8 @@ use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, ConcurrentAction, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, PendingGoal,
+    ActionFeedbackPublisher, ConcurrentAction, NODE_HEALTH_SERVICE, NODE_READY_SERVICE,
+    PendingGoal, ServiceTarget,
 };
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -1148,7 +1149,7 @@ async fn perform_health_check(
             target.caller_instance_id,
             SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             NODE_HEALTH_SERVICE,
-            Some(&peppylib::messaging::ProducerRef::new(
+            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
                 target.target_core_node,
                 target.target_instance_id,
             )),
@@ -1216,7 +1217,7 @@ async fn wait_for_ready_signal(
             target.caller_instance_id,
             SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             NODE_READY_SERVICE,
-            Some(&peppylib::messaging::ProducerRef::new(
+            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
                 target.target_core_node,
                 target.target_instance_id,
             )),
@@ -1302,7 +1303,7 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 &p.caller_instance_id,
                 SenderTarget::node_from_validated(&p.to_node_name, &p.node_tag),
                 NODE_HEALTH_SERVICE,
-                Some(&peppylib::messaging::ProducerRef::new(
+                ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
                     p.target_core_node.as_str(),
                     p.target_instance_id.as_str(),
                 )),

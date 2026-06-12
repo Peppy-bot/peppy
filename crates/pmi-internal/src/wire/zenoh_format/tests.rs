@@ -364,6 +364,20 @@ fn service_get_selector_full_broadcast() {
 }
 
 #[test]
+fn service_get_selector_scoped_to_core_node() {
+    // The core-without-instance half-address: `scoped_to_core_node` pins the
+    // target core slot and wildcards the instance slot, regardless of what
+    // the sender carried before.
+    let sender = sample_service_sender(ServiceKind::Service)
+        .scoped_to_core_node("other_core")
+        .expect("valid core node segment");
+    assert_eq!(
+        ZenohWireFormat::service_get_selector(&sender),
+        "other_core/caller_core/*/caller_inst/service/node/robot_arm/v1/*/ping"
+    );
+}
+
+#[test]
 fn service_get_selector_always_wildcards_link_id_slot() {
     // The link_id wire slot is always `*` — producers advertise under `_`
     // and Zenoh's matcher unifies the two. There is no caller-side knob to

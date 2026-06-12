@@ -7,6 +7,7 @@ use config::consts::{
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
 use peppylib::messaging::SenderTarget;
+use peppylib::messaging::ServiceTarget;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::io::Read;
@@ -657,7 +658,9 @@ pub async fn wait_for_service_reachable_or_exit(
             ctx.caller_instance_id,
             test_node_target(to_node_name),
             to_service_name,
-            target.as_ref(),
+            target
+                .as_ref()
+                .map_or(ServiceTarget::Any, ServiceTarget::Producer),
         )
         .await
         .unwrap_or_else(|err| {
@@ -804,7 +807,7 @@ pub async fn send_shutdown(
         sender_instance_id,
         test_node_target(to_node_name),
         SHUTDOWN_SERVICE,
-        Some(&peppylib::messaging::ProducerRef::new(
+        ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
             target_core_node,
             target_instance_id,
         )),
@@ -838,7 +841,7 @@ pub async fn try_send_shutdown(
         sender_instance_id,
         test_node_target(to_node_name),
         SHUTDOWN_SERVICE,
-        Some(&peppylib::messaging::ProducerRef::new(
+        ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
             target_core_node,
             target_instance_id,
         )),

@@ -13,7 +13,9 @@ pub use actions::{
     encode_cancel_ack, generate_goal_id, unwrap_goal_payload, unwrap_result_outcome,
     wrap_goal_payload, wrap_result_outcome,
 };
-pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
+pub use services::{
+    ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder, ServiceTarget,
+};
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
 mod filter;

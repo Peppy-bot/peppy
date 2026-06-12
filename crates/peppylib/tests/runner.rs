@@ -5,7 +5,9 @@ use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
-use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ProducerRef, SHUTDOWN_SERVICE};
+use peppylib::messaging::{
+    NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ProducerRef, SHUTDOWN_SERVICE, ServiceTarget,
+};
 use peppylib::runtime::CancellationToken;
 use peppylib::runtime::NodeBuilder;
 use peppylib::types::Payload;
@@ -179,7 +181,7 @@ async fn daemon_runner_succeed() {
             SHUTDOWN_SENDER_INSTANCE_ID,
             test_node_target(TEST_NODE_NAME),
             SHUTDOWN_SERVICE,
-            Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         )
         .await
         .expect("reachability check should succeed")
@@ -203,7 +205,7 @@ async fn daemon_runner_succeed() {
         SHUTDOWN_SENDER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
-        Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         health_request,
         Duration::from_secs(2),
     )
@@ -218,7 +220,7 @@ async fn daemon_runner_succeed() {
         SHUTDOWN_SENDER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         shutdown_payload.clone(),
         Duration::from_secs(2),
     )
@@ -383,7 +385,7 @@ async fn node_ready_but_not_healthy() {
             SHUTDOWN_SENDER_INSTANCE_ID,
             test_node_target(TEST_NODE_NAME),
             NODE_READY_SERVICE,
-            Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         )
         .await
         .expect("reachability check should succeed")
@@ -405,7 +407,7 @@ async fn node_ready_but_not_healthy() {
         SHUTDOWN_SENDER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
         NODE_READY_SERVICE,
-        Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         ready_payload.clone(),
         Duration::from_secs(2),
     )
@@ -426,7 +428,7 @@ async fn node_ready_but_not_healthy() {
             SHUTDOWN_SENDER_INSTANCE_ID,
             test_node_target(TEST_NODE_NAME),
             SHUTDOWN_SERVICE,
-            Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         )
         .await
         .expect("reachability check should succeed")
@@ -448,7 +450,7 @@ async fn node_ready_but_not_healthy() {
             SHUTDOWN_SENDER_INSTANCE_ID,
             test_node_target(TEST_NODE_NAME),
             NODE_HEALTH_SERVICE,
-            Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         )
         .await
         .expect("reachability check should succeed"),
@@ -464,7 +466,7 @@ async fn node_ready_but_not_healthy() {
         SHUTDOWN_SENDER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
-        Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         health_request.clone(),
         Duration::from_millis(200),
     )
@@ -494,7 +496,7 @@ async fn node_ready_but_not_healthy() {
             SHUTDOWN_SENDER_INSTANCE_ID,
             test_node_target(TEST_NODE_NAME),
             NODE_HEALTH_SERVICE,
-            Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         )
         .await
         .expect("reachability check should succeed")
@@ -515,7 +517,7 @@ async fn node_ready_but_not_healthy() {
         SHUTDOWN_SENDER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
         NODE_HEALTH_SERVICE,
-        Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         health_request,
         Duration::from_secs(2),
     )
@@ -530,7 +532,7 @@ async fn node_ready_but_not_healthy() {
         SHUTDOWN_SENDER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         shutdown_payload.clone(),
         Duration::from_secs(2),
     )
@@ -636,7 +638,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
             SHUTDOWN_SENDER_INSTANCE_ID,
             test_node_target(TEST_NODE_NAME),
             SHUTDOWN_SERVICE,
-            Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         )
         .await
         .expect("reachability check should succeed")
@@ -659,7 +661,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         SHUTDOWN_SENDER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         shutdown_payload,
         Duration::from_secs(2),
     )
@@ -776,7 +778,7 @@ async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
             SHUTDOWN_SENDER_INSTANCE_ID,
             test_node_target(TEST_NODE_NAME),
             SHUTDOWN_SERVICE,
-            Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         )
         .await
         .expect("reachability check should succeed")
@@ -799,7 +801,7 @@ async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
         SHUTDOWN_SENDER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         shutdown_payload,
         Duration::from_secs(2),
     )
@@ -998,7 +1000,7 @@ async fn send_shutdown_when_reachable<T: std::fmt::Debug>(
             SHUTDOWN_SENDER_INSTANCE_ID,
             test_node_target(TEST_NODE_NAME),
             SHUTDOWN_SERVICE,
-            Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         )
         .await
         .expect("reachability check should succeed")
@@ -1019,7 +1021,7 @@ async fn send_shutdown_when_reachable<T: std::fmt::Debug>(
         SHUTDOWN_SENDER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        Some(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         Payload::from_static(b"shutdown"),
         Duration::from_secs(2),
     )

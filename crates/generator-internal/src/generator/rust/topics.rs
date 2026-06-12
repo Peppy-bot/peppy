@@ -273,7 +273,6 @@ pub fn consumed_consumer_filter_expression(
 }
 
 /// Returns the `Option<&ProducerRef>` expression spliced into a generated
-/// [`peppylib::ServiceMessenger::poll`] /
 /// [`peppylib::ActionMessenger::send_goal`] call at the single `target`
 /// slot. When `dependency.wire_link_id()` is `Some(link_id)` — i.e., any
 /// real manifest dep, whether pinned or `from_any` — the emitted
@@ -293,6 +292,36 @@ pub fn consumed_target_expression(
             quote!(node_runner.processor().consumer_filter(#literal).pinned_target())
         }
         None => quote!(Option::<&peppylib::messaging::ProducerRef>::None),
+    }
+}
+
+/// Returns the `peppylib::messaging::ServiceTarget` expression spliced into
+/// a generated [`peppylib::ServiceMessenger::poll`] call at the `target`
+/// slot. Same producer-resolution rules as [`consumed_target_expression`],
+/// mapped onto the service target enum: a pinned slot (or a `from_any` slot
+/// bound to a single producer) resolves to `ServiceTarget::Producer` and
+/// the call addresses it directly with no discovery; other variants
+/// (multi-pin, wildcards) give `ServiceTarget::Any` and the call site falls
+/// back to wildcard discovery. Synthetic test fixtures with no manifest dep
+/// skip the lookup and emit `ServiceTarget::Any` directly.
+pub fn consumed_service_target_expression(
+    dependency: &crate::generator::types::DependencyContext,
+) -> TokenStream {
+    match dependency.wire_link_id() {
+        Some(link_id) => {
+            let literal = Literal::string(link_id);
+            quote! {
+                node_runner
+                    .processor()
+                    .consumer_filter(#literal)
+                    .pinned_target()
+                    .map_or(
+                        peppylib::messaging::ServiceTarget::Any,
+                        peppylib::messaging::ServiceTarget::Producer,
+                    )
+            }
+        }
+        None => quote!(peppylib::messaging::ServiceTarget::Any),
     }
 }
 

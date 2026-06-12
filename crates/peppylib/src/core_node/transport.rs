@@ -17,18 +17,22 @@ use core_node_api::encoding::*;
 use core_node_api::names;
 
 use crate::error::Result;
-use crate::messaging::{ActionGoalHandle, SenderTarget};
+use crate::messaging::{ActionGoalHandle, SenderTarget, ServiceTarget};
 use crate::{ActionMessenger, MessengerHandle, ServiceMessenger};
 
 /// Routing parameters for a single service poll. Bundled into a struct so
 /// [`poll_core_node_service`] doesn't need a `clippy::too_many_arguments`
 /// escape hatch — the helper otherwise reaches 9 positional args.
 ///
-/// Control-plane calls always discover (`target: None` at the messenger):
+/// Control-plane calls always discover (no producer pin at the messenger):
 /// the daemon's services listen under a random per-boot instance_id no
 /// caller can know up front, and the daemon stays addressed through
 /// `to_target` (its identity rides in the service root), so discovery
-/// resolves exactly that daemon's endpoint.
+/// resolves exactly that daemon's endpoint. The exception is `node_stop`,
+/// whose listener may be hosted by a per-instance node: user node names
+/// are not unique across daemons, so its service root cannot pin the
+/// route by itself and the discovery is additionally scoped to the
+/// caller's bound core node (`ServiceTarget::CoreNode`).
 struct ServiceRoute<'a> {
     messenger: &'a MessengerHandle,
     bound_core_node: &'a str,
@@ -38,6 +42,10 @@ struct ServiceRoute<'a> {
     /// services (e.g. `node_stop`) it carries the target node's name+tag.
     to_target: SenderTarget,
     service_name: &'a str,
+    /// Producer scope of the discovery. `ServiceTarget::Any` for daemon
+    /// services (the service root already pins the route); `node_stop`
+    /// narrows it to the bound core node, see the struct doc.
+    target: ServiceTarget<'a>,
 }
 
 /// Routing parameters for a single goal send. Same rationale as
@@ -65,7 +73,7 @@ async fn poll_core_node_service<Response>(
         route.as_instance_id,
         route.to_target,
         route.service_name,
-        None,
+        route.target,
         request_payload,
         response_timeout,
     )
@@ -112,6 +120,7 @@ macro_rules! poll_service {
                     as_instance_id,
                     to_target: SenderTarget::node(to_core_node, names::CORE_NODE_TAG)?,
                     service_name: $service,
+                    target: ServiceTarget::Any,
                 },
                 request.encode()?,
                 <$resp>::decode,
@@ -178,6 +187,15 @@ send_goal!(pub send_stack_benchmark, StackBenchmarkGoal, names::STACK_BENCHMARK_
 /// per-instance node rather than the daemon, so it routes by an explicit
 /// `to_target` (name + tag) instead of defaulting to the daemon's core_node
 /// identity. Hand-written for that reason.
+///
+/// User node names are not unique across daemons, so the `to_target`
+/// service root alone cannot pin the route: on a multi-daemon network a
+/// wildcard discovery could be won by a same-named listener on a foreign
+/// core node, which would answer "unknown instance" while the right reply
+/// is dropped. The discovery is therefore scoped to `bound_core_node` —
+/// the caller stops an instance through the daemon it is bound to, so its
+/// bound core node is the correct scope for both daemon-hosted and
+/// per-instance listeners.
 pub async fn poll_node_stop(
     request: &NodeStopRequest,
     messenger: &MessengerHandle,
@@ -193,6 +211,7 @@ pub async fn poll_node_stop(
             as_instance_id,
             to_target,
             service_name: names::NODE_STOP,
+            target: ServiceTarget::CoreNode(bound_core_node),
         },
         request.encode()?,
         NodeStopResponse::decode,
