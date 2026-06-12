@@ -602,6 +602,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     );
     assert_eq!(node_stack.len(), 3, "root + first + second nodes");
 }
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_add_same_node_shutdown_existing_instances() {
     use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger};
@@ -651,10 +652,16 @@ async fn node_add_same_node_shutdown_existing_instances() {
 
     let instance_id_1 = config::node::Name::new(INSTANCE_1).expect("valid instance id 1");
     let instance_id_2 = config::node::Name::new(INSTANCE_2).expect("valid instance id 2");
-    let _running_1 =
-        spawn_real_running_instance(&started_core_node, NODE_NAME, NODE_TAG, &instance_id_1).await;
-    let _running_2 =
-        spawn_real_running_instance(&started_core_node, NODE_NAME, NODE_TAG, &instance_id_2).await;
+    // Stuck variant: no helper-installed shutdown listener, so the endpoints
+    // below are the ONLY listeners on each instance's SHUTDOWN_SERVICE. With
+    // two listeners the mock delivers the daemon's single request to both;
+    // the helper's listener can answer first, the daemon then closes its
+    // reply stream, and this test's endpoint drops the request on the failed
+    // ACK without ever running the handler, losing the called_tx signal.
+    let running_1 =
+        spawn_real_stuck_instance(&started_core_node, NODE_NAME, NODE_TAG, &instance_id_1).await;
+    let running_2 =
+        spawn_real_stuck_instance(&started_core_node, NODE_NAME, NODE_TAG, &instance_id_2).await;
 
     let instance_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
@@ -672,6 +679,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     )
     .await
     .expect("failed to expose shutdown service for instance 1");
+    let pid_1 = running_1.pid;
     let _shutdown_task_1 = AbortOnDrop(peppylib::runtime::spawn({
         let called_tx_1 = Arc::clone(&called_tx_1);
         async move {
@@ -685,6 +693,24 @@ async fn node_add_same_node_shutdown_existing_instances() {
                             let _ = tx.send(());
                         }
                         allow_shutdown_1_clone.notified().await;
+                        // Behave like a real node: exit the OS process
+                        // before acknowledging, so the daemon's graceful
+                        // wait observes the instance gone instead of
+                        // burning the whole grace budget.
+                        //
+                        // The kill result is deliberately ignored. The
+                        // sleep child may have already exited on its own
+                        // under slow CI (ESRCH), and the daemon force-kills
+                        // any survivor after the grace budget, so no
+                        // assertion in this test depends on this kill
+                        // succeeding. Failing here could not fail the test
+                        // anyway: handler errors are swallowed by the stop
+                        // path's best-effort design, and this detached
+                        // task's panics are never joined.
+                        let _ = std::process::Command::new("kill")
+                            .arg("-KILL")
+                            .arg(pid_1.to_string())
+                            .status();
                         Ok(payload)
                     }
                 })
@@ -705,6 +731,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     )
     .await
     .expect("failed to expose shutdown service for instance 2");
+    let pid_2 = running_2.pid;
     let _shutdown_task_2 = AbortOnDrop(peppylib::runtime::spawn({
         let called_tx_2 = Arc::clone(&called_tx_2);
         async move {
@@ -718,6 +745,11 @@ async fn node_add_same_node_shutdown_existing_instances() {
                             let _ = tx.send(());
                         }
                         allow_shutdown_2_clone.notified().await;
+                        // Same as instance 1: exit before acknowledging.
+                        let _ = std::process::Command::new("kill")
+                            .arg("-KILL")
+                            .arg(pid_2.to_string())
+                            .status();
                         Ok(payload)
                     }
                 })
@@ -783,7 +815,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     let caller_handle = started_core_node.caller_handle.clone();
     let core_node_name = started_core_node.core_node_name.clone();
     let source_path_v2 = source_dir_v2.path().to_path_buf();
-    let add_task = tokio::spawn(async move {
+    let mut add_task = tokio::spawn(async move {
         send_node_add_and_wait(
             &caller_handle,
             &core_node_name,
@@ -795,18 +827,38 @@ async fn node_add_same_node_shutdown_existing_instances() {
         .await
     });
 
-    // Wait for both shutdown requests in parallel — the overwrite shuts
+    // Wait for both shutdown requests in parallel; the overwrite shuts
     // both instances down concurrently, so awaiting them in sequence
     // (with a notify between) makes the assertion order-dependent and
     // racy.
-    let (rx_1, rx_2) = tokio::join!(
-        tokio::time::timeout(Duration::from_secs(5), called_rx_1),
-        tokio::time::timeout(Duration::from_secs(5), called_rx_2),
-    );
-    rx_1.expect("shutdown request for instance 1 should arrive within timeout")
-        .expect("shutdown channel for instance 1 should not be dropped");
-    rx_2.expect("shutdown request for instance 2 should arrive within timeout")
-        .expect("shutdown channel for instance 2 should not be dropped");
+    //
+    // The wait is event-based, not clock-based. The add pipeline resolves
+    // the source and runs codegen before it reaches the shutdown phase,
+    // and that work has no latency bound under parallel test load, so a
+    // fixed window here flakes. The requests can only fail to arrive if
+    // the overwrite finishes without polling the shutdown services, so
+    // race against the add task completing instead of a timer. The add
+    // task always terminates: a non-responding instance is force-killed
+    // after the grace budget, and send_node_add_and_wait enforces its own
+    // goal and result deadlines.
+    let both_shutdown_requests_observed = async {
+        let (rx_1, rx_2) = tokio::join!(called_rx_1, called_rx_2);
+        rx_1.expect("shutdown channel for instance 1 should not be dropped");
+        rx_2.expect("shutdown channel for instance 2 should not be dropped");
+    };
+    tokio::select! {
+        // Biased so that when both arms are ready the observed requests
+        // win; a completed add only signals a regression when the requests
+        // never arrived.
+        biased;
+        _ = both_shutdown_requests_observed => {}
+        add_result = &mut add_task => {
+            panic!(
+                "node_add overwrite completed without sending shutdown \
+                 requests to both running instances: {add_result:?}"
+            );
+        }
+    }
 
     // Release both shutdown handlers so the overwrite can proceed.
     allow_shutdown_1.notify_one();
@@ -957,9 +1009,12 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
     .await;
     build_staged_node(&started_core_node, DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG).await;
 
-    // Add a fake running instance to the dependency node
+    // Add a fake running instance to the dependency node. Stuck variant so
+    // the endpoint below is the only SHUTDOWN_SERVICE listener; see
+    // node_add_same_node_shutdown_existing_instances for the lost-request
+    // race a second listener introduces.
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
-    let _running = spawn_real_running_instance(
+    let running = spawn_real_stuck_instance(
         &started_core_node,
         DEPENDENCY_NODE_NAME,
         DEPENDENCY_NODE_TAG,
@@ -983,6 +1038,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
     )
     .await
     .expect("failed to expose shutdown service");
+    let pid = running.pid;
     let _shutdown_task = AbortOnDrop(peppylib::runtime::spawn({
         let called_tx = Arc::clone(&called_tx);
         async move {
@@ -996,6 +1052,12 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
                             let _ = tx.send(());
                         }
                         allow_shutdown_clone.notified().await;
+                        // Behave like a real node: exit the OS process
+                        // before acknowledging.
+                        let _ = std::process::Command::new("kill")
+                            .arg("-KILL")
+                            .arg(pid.to_string())
+                            .status();
                         Ok(payload)
                     }
                 })
@@ -1020,7 +1082,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
     let caller_handle = started_core_node.caller_handle.clone();
     let core_node_name = started_core_node.core_node_name.clone();
     let source_path_v2 = dependency_source_dir_v2.path().to_path_buf();
-    let add_task = tokio::spawn(async move {
+    let mut add_task = tokio::spawn(async move {
         send_node_add_and_wait(
             &caller_handle,
             &core_node_name,
@@ -1032,11 +1094,23 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         .await
     });
 
-    // Wait for shutdown to be requested, then allow it to complete
-    tokio::time::timeout(Duration::from_secs(5), called_rx)
-        .await
-        .expect("shutdown request should arrive within timeout")
-        .expect("shutdown channel should not be dropped");
+    // Wait for shutdown to be requested, then allow it to complete. The
+    // wait is event-based rather than a fixed window for the same reason
+    // as in node_add_same_node_shutdown_existing_instances above: the add
+    // pipeline runs codegen before the shutdown phase and has no latency
+    // bound under parallel test load.
+    tokio::select! {
+        biased;
+        received = called_rx => {
+            received.expect("shutdown channel should not be dropped");
+        }
+        add_result = &mut add_task => {
+            panic!(
+                "node_add re-add completed without sending a shutdown \
+                 request to the running instance: {add_result:?}"
+            );
+        }
+    }
     allow_shutdown.notify_one();
 
     let add_v2 = add_task
@@ -1173,9 +1247,12 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     .await;
     build_staged_node(&started_core_node, DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG).await;
 
-    // Add a fake running instance to the dependency node
+    // Add a fake running instance to the dependency node. Stuck variant so
+    // the endpoint below is the only SHUTDOWN_SERVICE listener; see
+    // node_add_same_node_shutdown_existing_instances for the lost-request
+    // race a second listener introduces.
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
-    let _running = spawn_real_running_instance(
+    let running = spawn_real_stuck_instance(
         &started_core_node,
         DEPENDENCY_NODE_NAME,
         DEPENDENCY_NODE_TAG,
@@ -1183,7 +1260,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     )
     .await;
 
-    // Register a SHUTDOWN_SERVICE handler that responds immediately.
+    // Register a SHUTDOWN_SERVICE handler that kills the process and responds.
     // Shutdown succeeds; push_config then rejects the overwrite due to the interface change.
     let instance_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
@@ -1196,9 +1273,16 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     )
     .await
     .expect("failed to expose shutdown service");
+    let pid = running.pid;
     let _shutdown_task = AbortOnDrop(peppylib::runtime::spawn(async move {
         shutdown_endpoint
-            .handle_requests(|context| async move { Ok(context.message().payload()) })
+            .handle_requests(move |context| async move {
+                let _ = std::process::Command::new("kill")
+                    .arg("-KILL")
+                    .arg(pid.to_string())
+                    .status();
+                Ok(context.message().payload())
+            })
             .await
     }));
 

@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::CancellationToken;
 use tokio::sync::oneshot;
@@ -346,38 +345,57 @@ where
             )
             .await?;
 
-            tokio::select! {
-                result = setup_fn(parameters, Arc::clone(&node_runner)) => {
-                    result?;
+            // Bridge SIGINT/SIGTERM into the cancellation token so process
+            // signals converge on the same shutdown path as `peppy node stop`
+            // and daemon-liveness loss: cancel, run hooks, exit.
+            let _signal_bridge = spawn_signal_to_cancel_bridge(cancellation_token.clone());
+
+            let run_result = async {
+                tokio::select! {
+                    result = setup_fn(parameters, Arc::clone(&node_runner)) => {
+                        result?;
+                    }
+                    _ = &mut shutdown_rx => {
+                        info!("Shutdown requested during setup");
+                        return Ok(());
+                    }
+                    // Fired during setup by a process signal or by the watchdog
+                    // when the daemon has been gone past the grace period.
+                    _ = cancellation_token.cancelled() => {
+                        info!("Shutdown signal during setup");
+                        return Ok(());
+                    }
                 }
-                _ = &mut shutdown_rx => {
-                    info!("Shutdown requested during setup");
-                    cancellation_token.cancel();
-                    return Ok(());
-                }
-                // The watchdog fires this when the daemon has been gone past the
-                // grace period, so a node still in `setup_fn` also exits.
-                _ = cancellation_token.cancelled() => {
-                    info!("Daemon liveness lost during setup; shutting down");
-                    return Ok(());
-                }
+                run_post_setup_services(
+                    Arc::clone(&node_runner),
+                    pre_setup.ready_handle,
+                    pre_setup.shutdown_handle,
+                    shutdown_rx,
+                    cancellation_token.clone(),
+                )
+                .await
             }
-            run_post_setup_services(
-                node_runner,
-                pre_setup.ready_handle,
-                pre_setup.shutdown_handle,
-                shutdown_rx,
-                cancellation_token,
-            )
-            .await
+            .await;
+
+            // Every exit path converges here: graceful stop, signal, daemon
+            // loss, setup error, service failure. Cancel the token (idempotent)
+            // so user tasks observe shutdown, then await registered cleanup
+            // bounded by the daemon's grace window: the window the daemon waits
+            // before SIGKILL on stop paths, and the only bound at all on the
+            // daemon-death path, where nothing is left to force-kill us.
+            cancellation_token.cancel();
+            node_runner
+                .run_shutdown_hooks(node_runner.processor().shutdown_grace())
+                .await;
+            run_result
         })
     }
 
-    /// Run in standalone mode with Ctrl+C signal handling.
+    /// Run in standalone mode with signal handling.
     ///
     /// Sets up:
-    /// - A cancellation token that is cancelled on Ctrl+C
-    /// - Graceful shutdown waiting for tasks to observe cancellation
+    /// - A cancellation token that is cancelled on SIGINT/SIGTERM
+    /// - Graceful shutdown awaiting registered shutdown hooks
     async fn run_standalone<F, Fut>(mut self, parameters: Params, setup_fn: F) -> Result<()>
     where
         F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
@@ -397,33 +415,87 @@ where
             self.instance_id(),
         );
 
-        // Spawn Ctrl+C signal handler
-        let shutdown_token = cancellation_token.clone();
-        tokio::spawn(async move {
-            match tokio::signal::ctrl_c().await {
-                Ok(()) => {
-                    info!("Received Ctrl+C, initiating graceful shutdown...");
-                    shutdown_token.cancel();
-                }
-                Err(e) => {
-                    tracing::error!("Failed to listen for Ctrl+C signal: {}", e);
-                }
-            }
-        });
+        let _signal_bridge = spawn_signal_to_cancel_bridge(cancellation_token.clone());
 
-        // Run the user's setup function
-        setup_fn(parameters, Arc::clone(&node_runner)).await?;
+        // Run the user's setup function; an error falls through to the
+        // convergence below so hooks registered before the failure still run.
+        let run_result = async {
+            setup_fn(parameters, Arc::clone(&node_runner)).await?;
 
-        // Wait for Ctrl+C (cancellation signal) before exiting
-        info!("Node running. Press Ctrl+C to shutdown.");
-        cancellation_token.cancelled().await;
+            // Wait for a shutdown signal (or programmatic cancel) before exiting
+            info!("Node running. Press Ctrl+C to shutdown.");
+            cancellation_token.cancelled().await;
+            Ok(())
+        }
+        .await;
 
-        // Give spawned tasks time to observe cancellation and clean up
+        // Same convergence as daemon mode: cancel (idempotent), then await
+        // registered cleanup bounded by the grace window (built-in default in
+        // standalone mode, since there is no daemon to resolve it from).
         info!("Shutting down...");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        Ok(())
+        cancellation_token.cancel();
+        node_runner
+            .run_shutdown_hooks(node_runner.processor().shutdown_grace())
+            .await;
+        run_result
     }
+}
+
+/// Bridges process signals into the runtime's cancellation token so every stop
+/// path (SIGINT/SIGTERM, `peppy node stop`, daemon-liveness loss) converges
+/// on the token and the registered shutdown hooks. A second signal while the
+/// shutdown is in flight force-exits immediately with the conventional
+/// `128 + signo` code, so stuck cleanup can always be overridden from the
+/// terminal.
+#[cfg(unix)]
+fn spawn_signal_to_cancel_bridge(token: CancellationToken) -> TaskHandle<()> {
+    crate::runtime::spawn(async move {
+        use tokio::signal::unix::{SignalKind, signal};
+        let (mut sigint, mut sigterm) = match (
+            signal(SignalKind::interrupt()),
+            signal(SignalKind::terminate()),
+        ) {
+            (Ok(sigint), Ok(sigterm)) => (sigint, sigterm),
+            (int_result, term_result) => {
+                tracing::error!(
+                    "Failed to install signal handlers (SIGINT: {:?}, SIGTERM: {:?}); \
+                     signals will use their default disposition",
+                    int_result.err(),
+                    term_result.err(),
+                );
+                return;
+            }
+        };
+        let name = tokio::select! {
+            _ = sigint.recv() => "SIGINT",
+            _ = sigterm.recv() => "SIGTERM",
+        };
+        info!("Received {name}, initiating graceful shutdown...");
+        token.cancel();
+        // If no second signal arrives this select never resolves; the bridge
+        // task is simply dropped when the runtime tears down on exit.
+        let code = tokio::select! {
+            _ = sigint.recv() => 130,
+            _ = sigterm.recv() => 143,
+        };
+        info!("Received a second signal; exiting immediately");
+        std::process::exit(code);
+    })
+}
+
+#[cfg(not(unix))]
+fn spawn_signal_to_cancel_bridge(token: CancellationToken) -> TaskHandle<()> {
+    crate::runtime::spawn(async move {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                info!("Received Ctrl+C, initiating graceful shutdown...");
+                token.cancel();
+            }
+            Err(e) => {
+                tracing::error!("Failed to listen for Ctrl+C signal: {}", e);
+            }
+        }
+    })
 }
 
 struct PreSetupHandles {
@@ -514,14 +586,15 @@ async fn run_post_setup_services(
         }
         _ = &mut shutdown_rx => {
             info!("Received shutdown request");
-            cancellation_token.cancel();
         }
-        // Fired by the daemon-liveness watchdog when the daemon has been gone
-        // past the grace period. Converges on the same clean-shutdown path as an
-        // explicit `SHUTDOWN_SERVICE`, so the node tears down (and reaps its own
-        // children) instead of lingering as an orphan.
+        // Fired by a process signal (via the signal bridge) or by the
+        // daemon-liveness watchdog when the daemon has been gone past the grace
+        // period. Converges on the same clean-shutdown path as an explicit
+        // `SHUTDOWN_SERVICE`: the caller cancels the token (idempotent), runs
+        // the registered shutdown hooks, and exits, so the node tears down
+        // (and reaps its own children) instead of lingering as an orphan.
         _ = cancellation_token.cancelled() => {
-            info!("Daemon liveness lost; shutting down to avoid orphaning");
+            info!("Shutdown signal received; shutting down");
         }
     }
 
