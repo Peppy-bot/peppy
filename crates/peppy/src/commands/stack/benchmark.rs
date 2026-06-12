@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use core_node_api::encoding::{
-    InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
+    DEFAULT_SAMPLES, InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
     StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
 use latency_report::baseline::{self, StoredStats};
@@ -69,9 +69,18 @@ async fn benchmark_async(
 
     let goal = StackBenchmarkGoal::new(samples, warmup, per_sample_timeout_ms);
 
+    // The daemon resolves 0 to DEFAULT_SAMPLES when it decodes the goal, so mirror
+    // that here for every place we show the count to the user. The goal keeps the
+    // raw value as the "use the default" sentinel on the wire.
+    let effective_samples = if samples == 0 {
+        DEFAULT_SAMPLES
+    } else {
+        samples
+    };
+
     info!(
         "Benchmarking stack on daemon '{}' ({} samples, {} warmup per interface)",
-        conn.core_node_name, samples, warmup
+        conn.core_node_name, effective_samples, warmup
     );
 
     let mut action_handle = send_stack_benchmark(
@@ -167,7 +176,7 @@ async fn benchmark_async(
         return Err(Error::ExecutionFailed(format!("Benchmark failed: {}", msg)));
     }
 
-    render_report(&result, samples);
+    render_report(&result, effective_samples);
     Ok(())
 }
 

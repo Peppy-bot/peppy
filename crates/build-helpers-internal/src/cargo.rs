@@ -97,7 +97,12 @@ pub fn cargo_install_binary(
     target: &str,
     cache_dir: &Path,
 ) -> Option<PathBuf> {
-    cargo_install_binary_with(Path::new("cargo"), name, version, target, cache_dir)
+    // Cargo sets $CARGO to the exact cargo that launched this build script. Run
+    // the nested install with that same binary so it matches the outer build's
+    // toolchain instead of whatever cargo happens to come first on PATH.
+    let cargo_program = std::env::var_os("CARGO").map(PathBuf::from);
+    let cargo_program = cargo_program.as_deref().unwrap_or(Path::new("cargo"));
+    cargo_install_binary_with(cargo_program, name, version, target, cache_dir)
 }
 
 /// Implementation of [`cargo_install_binary`] with the cargo executable made

@@ -147,6 +147,14 @@ mod zenoh_build {
             println!("cargo:rerun-if-changed=build.rs");
             println!("cargo:rerun-if-changed=Cargo.toml");
 
+            // The pinned zenoh version is read from the resolved workspace
+            // lockfile, so rebuild zenohd when that lockfile changes too, not only
+            // when build.rs or Cargo.toml change.
+            let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+            if let Some(lockfile_path) = find_cargo_lock(Path::new(&manifest_dir)) {
+                println!("cargo:rerun-if-changed={}", lockfile_path.display());
+            }
+
             let target = env::var("TARGET").expect("TARGET not set");
             let cache_dir = build_helpers::cache_dir("zenoh");
 
