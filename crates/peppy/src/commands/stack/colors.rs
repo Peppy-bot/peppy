@@ -10,6 +10,7 @@ pub(super) const INSTANCE_COLOR: &str = "\x1b[35m"; // magenta — instance ids
 pub(super) const BINDING_COLOR: &str = "\x1b[33m"; // yellow — slot bindings / link ids
 pub(super) const MEASURE_SERVICE_COLOR: &str = "\x1b[34m"; // blue — svc-probe measurement
 pub(super) const MEASURE_ACTION_COLOR: &str = "\x1b[35m"; // magenta — act-probe measurement
+pub(super) const MEASURE_NODE_COLOR: &str = "\x1b[36m"; // cyan — node-probe measurement (topic edges)
 pub(super) const MEASURE_DELIVERY_COLOR: &str = "\x1b[32m"; // green — topic delivery measurement
 pub(super) const STATUS_RUNNING_COLOR: &str = "\x1b[32m"; // green — a running instance
 pub(super) const STATUS_STARTING_COLOR: &str = "\x1b[33m"; // yellow — a starting instance

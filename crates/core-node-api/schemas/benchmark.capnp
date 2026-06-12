@@ -49,6 +49,10 @@ enum MeasurementKind {
     actionProbe @1;
     # Real producer -> consumer one-way delivery latency on live traffic.
     topicDelivery @2;
+    # Synthetic round-trip for a topic edge: a Probe to the producer node's
+    # always-on framework service, reply sized from the topic's message schema.
+    # The real topic is never published and no handler runs.
+    nodeProbe @3;
 }
 
 enum ClockConfidence {
