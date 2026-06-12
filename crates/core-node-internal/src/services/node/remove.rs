@@ -216,7 +216,7 @@ async fn handle_node_remove_request_inner(
             .or_else(|| unreachable_targets.first())
             .expect("one of the lists is non-empty");
         return NodeRemoveResponse::failure(format!(
-            "Node '{}' has running instances (e.g. '{}'); set stop_instances=true to stop them before removing",
+            "Node '{}' has tracked instances (reachable or unreachable, e.g. '{}'); set stop_instances=true to stop them before removing",
             request.node_name,
             example.instance_id.as_str(),
         ))

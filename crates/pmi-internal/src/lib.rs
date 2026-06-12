@@ -15,7 +15,7 @@ mod zenohd;
 /// here so pmi's public API is nameable through pmi alone.
 pub use config::runtime::ProducerRef;
 pub use error::Error as PeppyMessagingInterfaceError;
-pub use probe::build_sized_probe_request;
+pub use probe::{MAX_PROBE_REPLY_SIZE, build_sized_probe_request};
 #[cfg(feature = "zenoh")]
 pub use types::ZenohResponseToken;
 pub use types::{

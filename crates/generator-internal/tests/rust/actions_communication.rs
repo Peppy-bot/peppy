@@ -469,7 +469,23 @@ fn main() -> Result<()> {
     );
 
     let left_stdout = String::from_utf8_lossy(&left_output.stdout).into_owned();
+    let left_stderr = String::from_utf8_lossy(&left_output.stderr).into_owned();
     let right_stdout = String::from_utf8_lossy(&right_output.stdout).into_owned();
+    let right_stderr = String::from_utf8_lossy(&right_output.stderr).into_owned();
+    assert!(
+        left_output.status.success(),
+        "left arm cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        left_output.status.code(),
+        left_stdout,
+        left_stderr
+    );
+    assert!(
+        right_output.status.success(),
+        "right arm cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        right_output.status.code(),
+        right_stdout,
+        right_stderr
+    );
     assert_eq!(
         left_stdout.matches("server received goal").count(),
         GOAL_ROUNDS,

@@ -21,10 +21,17 @@ use bytes::Bytes;
 const SIZED_PROBE_MAGIC: [u8; 4] = *b"PBSZ";
 /// Header = magic (4 bytes) + desired response size (little-endian `u32`).
 const SIZED_PROBE_HEADER_LEN: usize = 8;
+/// Upper bound on the reply size a sized probe may request. The size field
+/// arrives off the network, so without a cap any peer could make a producer
+/// allocate up to `u32::MAX` (4 GiB) per probe. A request above the cap is
+/// treated like any other unrecognized body: not a sized probe, reply empty.
+pub const MAX_PROBE_REPLY_SIZE: u32 = 64 * 1024 * 1024;
 
 /// Build a sized-probe request body: the header followed by zero padding to
 /// `request_size` total bytes (at least the header, so the response size always
-/// survives). The producer replies with `response_size` bytes.
+/// survives). The producer replies with `response_size` bytes; sizes above
+/// [`MAX_PROBE_REPLY_SIZE`] are rejected by the receiving adapter (it replies
+/// empty).
 pub fn build_sized_probe_request(request_size: usize, response_size: u32) -> Bytes {
     let total = request_size.max(SIZED_PROBE_HEADER_LEN);
     let mut buf = vec![0u8; total];
@@ -34,12 +41,15 @@ pub fn build_sized_probe_request(request_size: usize, response_size: u32) -> Byt
 }
 
 /// Parse a probe request body: `Some(response_size)` for a benchmark sized-probe,
-/// `None` for the empty bodies liveness/discovery send (→ reply empty).
+/// `None` for the empty bodies liveness/discovery send (→ reply empty) and for
+/// sizes above [`MAX_PROBE_REPLY_SIZE`]. Both adapters interpret probes through
+/// [`probe_response_body`], so the bound is enforced for every transport here.
 pub(crate) fn parse_sized_probe_request(body: &[u8]) -> Option<u32> {
     if body.len() < SIZED_PROBE_HEADER_LEN || body[..4] != SIZED_PROBE_MAGIC {
         return None;
     }
-    Some(u32::from_le_bytes([body[4], body[5], body[6], body[7]]))
+    let size = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
+    (size <= MAX_PROBE_REPLY_SIZE).then_some(size)
 }
 
 /// Build the body of a probe reply: `response_size` zero bytes for a sized
@@ -77,5 +87,17 @@ mod tests {
         assert_eq!(parse_sized_probe_request(b"hello world"), None);
         assert!(probe_response_body(&[]).is_empty());
         assert!(probe_response_body(b"hello world").is_empty());
+    }
+
+    #[test]
+    fn reply_size_above_the_cap_is_rejected() {
+        let at_cap = build_sized_probe_request(0, MAX_PROBE_REPLY_SIZE);
+        assert_eq!(
+            parse_sized_probe_request(&at_cap),
+            Some(MAX_PROBE_REPLY_SIZE)
+        );
+        let over_cap = build_sized_probe_request(0, MAX_PROBE_REPLY_SIZE + 1);
+        assert_eq!(parse_sized_probe_request(&over_cap), None);
+        assert!(probe_response_body(&over_cap).is_empty());
     }
 }

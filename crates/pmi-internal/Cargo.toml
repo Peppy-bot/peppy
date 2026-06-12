@@ -19,6 +19,8 @@ derive_more = { version = "2", features = ["from"] }
 tempfile = "3"
 
 # Optional deps
+# Exact-pinned; peppylib pins the same `=1.9.0` in its [dev-dependencies] so
+# its test binaries share this build — bump the two together.
 zenoh = { version = "=1.9.0", optional = true }
 
 [build-dependencies]

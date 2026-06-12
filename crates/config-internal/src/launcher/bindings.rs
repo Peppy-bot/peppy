@@ -223,12 +223,19 @@ pub fn validate_bindings(
             for slot_link_id in declared_from_any.keys() {
                 let producers = from_any_explicit.remove(*slot_link_id);
                 let slot = match producers {
-                    Some(ids) => SlotBinding::FromAnyBound {
-                        producers: ids
-                            .into_iter()
-                            .map(|id| ProducerRef::new(producer_core_node, id))
-                            .collect(),
-                    },
+                    Some(ids) => {
+                        // Distinct `--bind KEY@id` entries may name the same
+                        // target; collapse duplicates (preserving first-seen
+                        // order) so the slot doesn't pin one producer twice.
+                        let mut seen = std::collections::BTreeSet::new();
+                        SlotBinding::FromAnyBound {
+                            producers: ids
+                                .into_iter()
+                                .filter(|id| seen.insert(id.clone()))
+                                .map(|id| ProducerRef::new(producer_core_node, id))
+                                .collect(),
+                        }
+                    }
                     None => SlotBinding::FromAnyUnbound,
                 };
                 resolved.insert((*slot_link_id).to_string(), slot);
@@ -638,6 +645,36 @@ mod tests {
                 ProducerRef::new(TEST_CORE, "prod1"),
                 ProducerRef::new(TEST_CORE, "prod2"),
             ]
+        );
+    }
+
+    /// Rule 3: two free-form keys naming the same target collapse to a
+    /// single producer entry on the from_any slot.
+    #[test]
+    fn rule3_duplicate_free_form_targets_dedupe_on_from_any_slot() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "cons1",
+                bindings: { alpha: "prod1", beta: "prod1" }
+            }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{
+                nodes: [{ name: "camera", tag: "v1", link_id: "extra", from_any: true }]
+            }"#,
+        );
+        let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            slot_binding(&out, "cons1", "extra"),
+            Some(SlotBinding::FromAnyBound {
+                producers: vec![ProducerRef::new(TEST_CORE, "prod1")]
+            })
         );
     }
 

@@ -12,9 +12,13 @@ fn main() -> Result<()> {
         tokio::spawn(async move {
             loop {
                 let (instance_id, state) =
-                    arm_joint_states::on_next_message_received(&node_runner)
-                        .await
-                        .expect("failed to receive joint state");
+                    match arm_joint_states::on_next_message_received(&node_runner).await {
+                        Ok(received) => received,
+                        Err(e) => {
+                            eprintln!("Error receiving joint state: {e}");
+                            continue;
+                        }
+                    };
 
                 println!("state from {instance_id}: positions={:?}", state.positions);
 

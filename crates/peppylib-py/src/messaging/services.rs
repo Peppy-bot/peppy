@@ -195,7 +195,7 @@ impl PyServiceMessenger {
         })
     }
 
-    /// Check if a service has active subscribers. `target` is the
+    /// Check whether a service producer is reachable. `target` is the
     /// producer's full `(core_node, instance_id)` pair (`None` probes any
     /// matching producer).
     #[staticmethod]

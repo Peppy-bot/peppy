@@ -833,7 +833,11 @@ fn consumed_two_actions_same_node() {
 /// slot addresses exactly one producer with no discovery probe.
 #[test]
 fn consumed_action_with_link_id_splices_runtime_binding_target() {
-    let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    let mut action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    // Production derives the wire link_id and the manifest link_id from the
+    // same `depends_on` entry (see core-node `sync`); keep them identical
+    // here so the fixture models a reachable input.
+    action.link_id = "left_arm".to_owned();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
     let goal_response_format: MessageFormat =
