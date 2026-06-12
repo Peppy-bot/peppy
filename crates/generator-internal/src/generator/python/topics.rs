@@ -146,7 +146,8 @@ pub fn build_consumed_topic(
     let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
 
     // Optional covers any Optional fields in the dataclasses; Tuple is
-    // used for the return type of on_next_message_received.
+    // used for the producer `(core_node, instance_id)` pair in the
+    // return type of on_next_message_received.
     builder.add_import("from typing import Optional, Tuple");
 
     // Add capnp imports and a lazy, cached schema loader.
@@ -177,7 +178,7 @@ pub fn build_consumed_topic(
     builder.add_import("import peppylib");
     builder.blank_line();
     builder.line(
-        "async def on_next_message_received(node_runner: peppylib.NodeRunner) -> Tuple[str, Message]:",
+        "async def on_next_message_received(node_runner: peppylib.NodeRunner) -> Tuple[Tuple[str, str], Message]:",
     );
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
@@ -212,9 +213,9 @@ pub fn build_consumed_topic(
     builder.line(")");
     builder.line("raw_message = await subscription.on_next_message()");
     builder.line("payload = raw_message.payload");
-    builder.line("instance_id = raw_message.instance_id");
+    builder.line("producer = (raw_message.core_node, raw_message.instance_id)");
     builder.line("message = _deserialize_payload(payload)");
-    builder.line("return instance_id, message");
+    builder.line("return producer, message");
 
     builder.dedent();
 

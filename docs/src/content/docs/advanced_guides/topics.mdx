@@ -186,12 +186,12 @@ use peppygen::{NodeBuilder, Parameters, Result};
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
-        let (instance_id, frame) =
+        let (producer, frame) =
             uvc_camera_video_stream::on_next_message_received(&node_runner).await?;
 
         println!(
-            "got {}x{} frame encoded as {} from {}",
-            frame.width, frame.height, frame.encoding, instance_id
+            "got {}x{} frame encoded as {} from {}/{}",
+            frame.width, frame.height, frame.encoding, producer.core_node, producer.instance_id
         );
 
         Ok(())
@@ -203,10 +203,10 @@ The `on_next_message_received` function takes:
 - `node_runner`: the node runner reference.
 
 It returns a tuple of:
-- `instance_id`: the producer instance that published the message, read straight from the message context.
+- `producer`: a `peppylib::messaging::ProducerRef` carrying the publisher's full `(core_node, instance_id)` wire identity, read straight from the message context.
 - `message`: the deserialized message, with fields matching the topic's `message_format`.
 
-There are no call-site producer-targeting arguments at all. To pin a `from_any` slot to one specific producer, use a launcher binding (see [Bindings and routing](#bindings-and-routing) below); the resolved binding carries the producer's full `(core_node, instance_id)` wire address, so a pinned slot can never receive from a producer that merely shares the instance_id on another core node.
+There are no call-site producer-targeting arguments at all. To pin a `from_any` slot to one specific producer, use a launcher binding (see [Bindings and routing](#bindings-and-routing) below); the resolved binding carries the producer's full `(core_node, instance_id)` wire address, so a pinned slot can never receive from a producer that merely shares the instance_id on another core node. The same full identity is what `on_next_message_received` returns with every message, so a consumer can pass it straight back into any producer-targeting slot.
 
 ### Receiving messages continuously
 
@@ -231,9 +231,12 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
         let result = uvc_camera_video_stream::on_next_message_received(&node_runner).await;
 
         match result {
-            Ok((instance_id, frame)) => {
+            Ok((producer, frame)) => {
                 tokio::spawn(async move {
-                    println!("got {}x{} frame from {}", frame.width, frame.height, instance_id);
+                    println!(
+                        "got {}x{} frame from {}/{}",
+                        frame.width, frame.height, producer.core_node, producer.instance_id
+                    );
                 });
             }
             Err(e) => {

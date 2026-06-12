@@ -13,11 +13,11 @@ def compute_next_target(current: list[float]) -> list[float]:
 
 async def control_loop(node_runner: NodeRunner):
     while True:
-        instance_id, state = await arm_joint_states.on_next_message_received(
+        (core_node, instance_id), state = await arm_joint_states.on_next_message_received(
             node_runner,
         )
 
-        print(f"state from {instance_id}: positions={state.positions}")
+        print(f"state from {core_node}/{instance_id}: positions={state.positions}")
 
         # Compute the next target from the reported state, then command it.
         target = compute_next_target(state.positions)

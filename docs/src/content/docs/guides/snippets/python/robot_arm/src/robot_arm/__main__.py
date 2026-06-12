@@ -9,12 +9,12 @@ from peppygen.emitted_topics.joint_state_source.v1 import joint_states
 
 async def handle_commands(node_runner: NodeRunner):
     while True:
-        instance_id, command = await controller_joint_commands.on_next_message_received(
+        (core_node, instance_id), command = await controller_joint_commands.on_next_message_received(
             node_runner,
         )
 
         print(
-            f"received from {instance_id}: "
+            f"received from {core_node}/{instance_id}: "
             f"target={command.target_positions} max_vel={command.max_velocity}"
         )
 

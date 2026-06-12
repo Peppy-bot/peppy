@@ -155,7 +155,7 @@ On the other side, `arm_controller` consumes `joint_states` and emits `joint_com
   </TabItem>
 </Tabs>
 
-Both directions use the standard linked consumed-topic API. `on_next_message_received` returns the producer's `instance_id` alongside the message, so a `from_any` consumer tells its producers apart by that id: a single arm, several arms, or one that joins late all arrive through the same module, distinguished only by `instance_id`. There is no special call-site API for bidirectional topics: a node that both emits and consumes is simply a node that `conforms_to` one interface and `depends_on` another.
+Both directions use the standard linked consumed-topic API. `on_next_message_received` returns the producer's full identity alongside the message — a `ProducerRef` with `core_node` and `instance_id` in Rust, a `(core_node, instance_id)` pair in Python — so a `from_any` consumer tells its producers apart by that pair: a single arm, several arms, or one that joins late all arrive through the same module, each distinguished by its full identity. There is no special call-site API for bidirectional topics: a node that both emits and consumes is simply a node that `conforms_to` one interface and `depends_on` another.
 
 ## Why topics only?
 

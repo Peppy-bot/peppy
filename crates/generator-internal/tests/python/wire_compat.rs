@@ -1048,10 +1048,10 @@ from peppygen.consumed_topics import producer_telemetry_feed
 
 async def receive_one(node_runner, msg_received):
     try:
-        instance_id, msg = await producer_telemetry_feed.on_next_message_received(node_runner)
+        (core_node, instance_id), msg = await producer_telemetry_feed.on_next_message_received(node_runner)
         print(
             f"received message status={msg.status} readings={list(msg.readings)} "
-            f"sequence={msg.sequence} timestamp={msg.timestamp} from {instance_id}",
+            f"sequence={msg.sequence} timestamp={msg.timestamp} from {core_node}/{instance_id}",
             flush=True,
         )
         msg_received.set()
@@ -1179,9 +1179,9 @@ if __name__ == "__main__":
         consumer_stderr
     );
     assert!(
-        consumer_stdout.contains(
-            "received message status=nominal readings=[1.0, 2.0, 3.0] sequence=1 timestamp=12345.6"
-        ),
+        consumer_stdout.contains(&format!(
+            "received message status=nominal readings=[1.0, 2.0, 3.0] sequence=1 timestamp=12345.6 from {TEST_CORE_NODE}/{PRODUCER_INSTANCE_ID}"
+        )),
         "consumer did not decode the topic message correctly.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr

@@ -416,15 +416,17 @@ fn consumed_topic() {
         ],
     );
 
-    // Subscriber function signature — producer identity travels only as the
-    // full `(core_node, instance_id)` resolved at runtime from the bindings
-    // map; there is no user-facing core_node (or instance_id) parameter.
+    // Subscriber function signature — the producer identity is returned with
+    // every message as the full `peppylib::messaging::ProducerRef`; it never
+    // appears as a user-facing core_node (or instance_id) parameter.
     assert_contains_all(
         &rendered,
         &[
             "pub async fn on_next_message_received(",
             "node_runner: &crate::NodeRunner",
-            "-> crate::Result<(String, Message)>",
+            "-> crate::Result<(peppylib::messaging::ProducerRef, Message)>",
+            "peppylib::messaging::ProducerRef::new(",
+            "Ok((producer, message))",
         ],
     );
     assert!(

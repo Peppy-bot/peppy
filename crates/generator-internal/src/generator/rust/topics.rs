@@ -198,7 +198,7 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
-        ) -> crate::Result<(String, #args_struct_ident)> {
+        ) -> crate::Result<(peppylib::messaging::ProducerRef, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let node_name = #node_name_literal;
             let qos = peppylib::config::QoSProfile::Standard;
@@ -230,9 +230,12 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
             };
 
             let payload = message.payload();
-            let instance_id = message.instance_id().to_string();
+            let producer = peppylib::messaging::ProducerRef::new(
+                message.core_node(),
+                message.instance_id(),
+            );
             let message = #helper_fn_ident(payload.as_ref())?;
-            Ok((instance_id, message))
+            Ok((producer, message))
         }
 
         #helper_fn_tokens

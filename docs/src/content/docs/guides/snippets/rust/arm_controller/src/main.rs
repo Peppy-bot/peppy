@@ -6,12 +6,13 @@ use peppygen::{NodeBuilder, Parameters, Result};
 // `joint_commands` by conforming to `joint_command_source`, and consumes
 // `joint_states` from any conforming arm through a `from_any` interface
 // slot. With no binding required it accepts state from whichever arms are
-// present and tells them apart by the instance_id returned per message.
+// present and tells them apart by the (core_node, instance_id) returned
+// per message.
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
         tokio::spawn(async move {
             loop {
-                let (instance_id, state) =
+                let (producer, state) =
                     match arm_joint_states::on_next_message_received(&node_runner).await {
                         Ok(received) => received,
                         Err(e) => {
@@ -20,7 +21,10 @@ fn main() -> Result<()> {
                         }
                     };
 
-                println!("state from {instance_id}: positions={:?}", state.positions);
+                println!(
+                    "state from {}/{}: positions={:?}",
+                    producer.core_node, producer.instance_id, state.positions
+                );
 
                 // Compute the next target from the reported state, then command it.
                 let target = compute_next_target(&state.positions);
