@@ -45,11 +45,8 @@ fn build_container_with_runscript(runscript_body: &str) -> Option<(Apptainer, Te
         return None;
     }
 
-    let home = std::env::var("HOME").expect("HOME environment variable must be set");
-    let test_tmp_root = PathBuf::from(&home).join(".peppy/test-tmp");
-    fs::create_dir_all(&test_tmp_root).expect("should be able to create ~/.peppy/test-tmp/");
-    let tmp_dir = TempDir::new_in(&test_tmp_root)
-        .expect("should be able to create temp dir under ~/.peppy/test-tmp/");
+    let tmp_dir = TempDir::new_in(config::test_helpers::test_tmp_root())
+        .expect("should be able to create temp dir under the shared test-tmp root");
 
     let def_path = tmp_dir.path().join("test.def");
     fs::write(
