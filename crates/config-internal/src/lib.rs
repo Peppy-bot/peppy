@@ -1,3 +1,49 @@
+#![forbid(unsafe_code)]
+
+//! Parsing, validation, and encoding of Peppy configuration documents.
+//!
+//! # Responsibility
+//!
+//! This crate is the single source of truth for the on-disk Peppy config
+//! formats and the types other workspace crates build on:
+//! - parse and deserialize config documents (`peppy.json5` node configs,
+//!   launcher files, `peppy_config.json5` daemon config) — see [`node`],
+//!   [`launcher`], [`peppy_config`], [`interface`];
+//! - validate parsed configs against Peppy's schema and structural
+//!   constraints (dependency/interface resolution, binding validation,
+//!   parameter typing) — see [`node`], [`launcher`], and the parameter
+//!   helpers re-exported at the crate root ([`validate_node_arguments`],
+//!   [`apply_parameter_defaults`]);
+//! - compile a [`node::MessageFormat`] to a Cap'n Proto schema and the
+//!   matching Rust types — see [`encoding`];
+//! - expose the [`consts::PeppyDirs`] filesystem-layout helper and the shared
+//!   [`consts`] used across the workspace.
+//!
+//! # Boundaries & non-goals
+//!
+//! The crate deliberately keeps a narrow seam with its consumers. It does
+//! **not**:
+//! - perform I/O beyond reading/writing config files, computing/reading
+//!   fingerprints, and extracting the bundled Cap'n Proto binary. The few
+//!   functions that touch the filesystem or environment ([`consts::peppy_root_dir`],
+//!   [`fingerprint`] helpers, [`peppy_config::load_or_create`],
+//!   [`atomic_write::publish_atomic`], [`encoding::compile_capnp`]) document
+//!   that in their own doc comments;
+//! - assume a test framework or test-isolation strategy (filesystem roots are
+//!   threaded explicitly through [`consts::PeppyDirs`] rather than read from a
+//!   global, so consumers' tests stay parallel-safe);
+//! - depend on a running daemon or any other service for initialization.
+//!
+//! # Initialization
+//!
+//! There is no required global init: every type is constructed through an
+//! explicit parser/constructor (e.g. [`node::NodeConfigParser`],
+//! [`launcher::PeppyLauncherParser`], [`consts::PeppyDirs::new`]) and all APIs
+//! are reentrant. The one piece of process-global state is
+//! [`consts::set_app_env`], a `OnceLock` that only shifts the *default*
+//! [`consts::PeppyDirs`] root between dev/prod; it is set-once and optional
+//! (defaults to `Dev`). See its doc comment for the precise contract.
+
 mod common;
 mod error;
 mod parsing;

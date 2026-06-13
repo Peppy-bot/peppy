@@ -1046,6 +1046,44 @@ mod tests {
     }
 
     #[test]
+    fn blocked_mount_source_matches_top_level_and_private_aliases() {
+        // Exact top-level system mounts are blocked.
+        assert!(is_blocked_mount_source("/"));
+        assert!(is_blocked_mount_source("/etc"));
+        assert!(is_blocked_mount_source("/usr"));
+        // macOS `/private/X` aliases map back onto the blocked root.
+        assert!(is_blocked_mount_source("/private/tmp"));
+        assert!(is_blocked_mount_source("/private/var"));
+        // Subdirectories of a blocked root are allowed.
+        assert!(!is_blocked_mount_source("/tmp/my_app"));
+        assert!(!is_blocked_mount_source("/etc/myconf"));
+        assert!(!is_blocked_mount_source("/home/user/project"));
+        // Unrelated roots and non-root `/private` subpaths are fine.
+        assert!(!is_blocked_mount_source("/data"));
+        assert!(!is_blocked_mount_source("/private/tmp/sub"));
+    }
+
+    #[test]
+    fn extract_parameter_refs_pulls_each_dot_path() {
+        // No references -> empty.
+        assert!(extract_parameter_refs("/data/output").is_empty());
+        // A single bare reference.
+        assert_eq!(
+            extract_parameter_refs("${parameters:device_path}"),
+            vec!["device_path"]
+        );
+        // Multiple references (one nested dot-path) embedded between literals.
+        assert_eq!(
+            extract_parameter_refs(
+                "/mnt/${parameters:video.device_path}:/in/${parameters:out_dir}"
+            ),
+            vec!["video.device_path", "out_dir"]
+        );
+        // An unterminated reference (no closing brace) is ignored, not partial.
+        assert!(extract_parameter_refs("${parameters:oops").is_empty());
+    }
+
+    #[test]
     fn consumed_topic_linked_link_id_is_required() {
         let valid = r#"{ link_id: "uvc_camera", name: "video_stream" }"#;
         let topic: ConsumedTopic = serde_json5::from_str(valid).expect("valid topic should parse");

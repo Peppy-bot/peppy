@@ -506,4 +506,25 @@ mod tests {
             panic!("Expected CannotParseConfig, got {:?}", err);
         }
     }
+
+    #[test]
+    fn format_bulleted_empty_input_is_empty_string() {
+        let out = format_bulleted(Vec::<String>::new());
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn format_bulleted_prefixes_each_item_with_a_newline_bullet() {
+        let out = format_bulleted(["first", "second"]);
+        // Each item gets a leading "\n  - "; nothing is emitted around the list,
+        // so it can be spliced straight into a parent diagnostic string.
+        assert_eq!(out, "\n  - first\n  - second");
+    }
+
+    #[test]
+    fn format_bulleted_accepts_any_display_type() {
+        // Exercises the generic `T: Display` bound with a non-string item.
+        let out = format_bulleted(1..=3);
+        assert_eq!(out, "\n  - 1\n  - 2\n  - 3");
+    }
 }

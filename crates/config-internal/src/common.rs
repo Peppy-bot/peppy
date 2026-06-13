@@ -1871,6 +1871,78 @@ mod tests {
         assert!(resolve_parameter_path(&params, "device_path.nested").is_none());
     }
 
+    // ---- resolve_argument_path ----
+
+    #[test]
+    fn resolve_argument_path_descends_into_object_groups() {
+        let args: BTreeMap<String, AnyType> = BTreeMap::from([(
+            "video".to_string(),
+            AnyType::Object(BTreeMap::from([(
+                "device_path".to_string(),
+                AnyType::String("/dev/video0".to_string()),
+            )])),
+        )]);
+        assert_eq!(
+            resolve_argument_path(&args, "video.device_path"),
+            Some(&AnyType::String("/dev/video0".to_string()))
+        );
+        // A top-level leaf resolves without descending.
+        let flat: BTreeMap<String, AnyType> =
+            BTreeMap::from([("fps".to_string(), AnyType::UInt(30))]);
+        assert_eq!(
+            resolve_argument_path(&flat, "fps"),
+            Some(&AnyType::UInt(30))
+        );
+    }
+
+    #[test]
+    fn resolve_argument_path_returns_none_for_missing_or_non_group() {
+        let args: BTreeMap<String, AnyType> = BTreeMap::from([(
+            "video".to_string(),
+            AnyType::String("not-an-object".to_string()),
+        )]);
+        // Missing top-level key.
+        assert!(resolve_argument_path(&args, "missing").is_none());
+        // Descending past a non-Object leaf yields None rather than panicking.
+        assert!(resolve_argument_path(&args, "video.device_path").is_none());
+    }
+
+    // ---- validate_node_arguments (programmatic map entry point) ----
+
+    #[test]
+    fn validate_node_arguments_accepts_well_typed_map() {
+        let s = schema(r#"{ count: "u16" }"#);
+        let args =
+            validate_node_arguments(BTreeMap::from([("count".to_string(), AnyType::Int(5))]), &s)
+                .expect("valid args should resolve");
+        assert!(args.0.contains_key("count"));
+    }
+
+    #[test]
+    fn validate_node_arguments_rejects_type_mismatch() {
+        let s = schema(r#"{ count: "u16" }"#);
+        let err = validate_node_arguments(
+            BTreeMap::from([("count".to_string(), AnyType::String("nope".to_string()))]),
+            &s,
+        )
+        .expect_err("string for u16 should fail");
+        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+    }
+
+    #[test]
+    fn validate_node_arguments_rejects_unknown_key() {
+        let s = schema(r#"{ count: "u16" }"#);
+        let err = validate_node_arguments(
+            BTreeMap::from([
+                ("count".to_string(), AnyType::Int(1)),
+                ("bogus".to_string(), AnyType::Int(2)),
+            ]),
+            &s,
+        )
+        .expect_err("unknown key should fail");
+        assert!(matches!(err, NodeArgumentsError::UnknownParameter { .. }));
+    }
+
     // ---- parse_node_arguments end-to-end ----
 
     #[test]

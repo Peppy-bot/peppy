@@ -4,7 +4,7 @@ use super::templates::{
     WEB_VIDEO_STREAM_NODE_NAME, WebStreamVideoStreamNodeTemplate,
 };
 use askama::Template;
-use git2::{Repository, Signature};
+use git2::{Repository, Signature, Time};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -93,8 +93,13 @@ pub fn create_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
 
     let tree_id = index.write_tree().expect("failed to write tree");
     let tree = repo.find_tree(tree_id).expect("failed to find tree");
-    let signature =
-        Signature::now("Peppy", "peppy@example.com").expect("failed to create signature");
+    // Use a fixed timestamp (2023-11-14T22:13:20Z, UTC) rather than
+    // `Signature::now()` so the fixture is deterministic: identical content
+    // yields identical commit/tag SHAs on every run, independent of the wall
+    // clock. Refs (`v1`, `v1.0`) are what tests resolve against, but pinning
+    // the time keeps the whole repo reproducible.
+    let signature = Signature::new("Peppy", "peppy@example.com", &Time::new(1_700_000_000, 0))
+        .expect("failed to create signature");
     let commit_id = repo
         .commit(
             Some("HEAD"),

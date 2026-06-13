@@ -216,6 +216,48 @@ mod tests {
             .expect("failed to restore permissions");
     }
 
+    #[test]
+    fn verify_codegen_fingerprint_round_trips_and_detects_tampering() {
+        let tmp = TempDir::new().expect("failed to create temp dir");
+        let config_path = tmp.path().join(crate::consts::NODE_CONFIG_FILE);
+        fs::write(&config_path, "original contents").expect("failed to write config");
+
+        // `generate` writes to an absolute output dir, while `read`/`verify`
+        // address that dir *relative to the config's parent*. Generating into
+        // `<config_parent>/<rel_output>` makes the two sides line up.
+        let rel_output = std::path::Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
+        generate_node_config_fingerprint(&config_path, tmp.path().join(rel_output))
+            .expect("failed to generate fingerprint");
+
+        // `read_codegen_fingerprint` returns exactly the digest that was stored.
+        let read = read_codegen_fingerprint(&config_path, rel_output).expect("failed to read");
+        assert_eq!(read, fingerprint_for_bytes(b"original contents"));
+
+        // Verification passes while the config is unchanged.
+        verify_codegen_fingerprint(&config_path, rel_output).expect("verify should pass");
+
+        // Mutating the config makes the stored digest stale -> FingerprintMismatch.
+        fs::write(&config_path, "tampered contents").expect("failed to rewrite config");
+        let err = verify_codegen_fingerprint(&config_path, rel_output)
+            .expect_err("verify should fail after tampering");
+        assert!(
+            matches!(err, crate::error::Error::FingerprintMismatch { .. }),
+            "expected FingerprintMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn read_codegen_fingerprint_errors_when_file_missing() {
+        let tmp = TempDir::new().expect("failed to create temp dir");
+        let config_path = tmp.path().join(crate::consts::NODE_CONFIG_FILE);
+        fs::write(&config_path, "contents").expect("failed to write config");
+
+        // No fingerprint was ever generated, so the read must fail rather than
+        // silently returning an empty/garbage digest.
+        let rel_output = std::path::Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
+        assert!(read_codegen_fingerprint(&config_path, rel_output).is_err());
+    }
+
     fn prepare_generated_crate(tmp: &TempDir) -> std::path::PathBuf {
         let crate_dir = tmp.path().join("generated_crate");
         fs::create_dir_all(crate_dir.join("src")).expect("failed to create src directory");
