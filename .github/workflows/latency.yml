@@ -40,6 +40,15 @@ jobs:
           # runner's git credentials, so don't leave the token in .git/config.
           persist-credentials: false
 
+      # Give this run its own peppy data root (shared_target_dir lives under it)
+      # so the reused self-hosted runner does not accumulate or collide on
+      # /tmp/.peppy across runs. Cleaned up at job end below.
+      - name: Set up isolated peppy data root
+        run: |
+          PEPPY_RUN_HOME="$RUNNER_TEMP/peppy-home"
+          mkdir -p "$PEPPY_RUN_HOME/tmpdir"
+          echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
+
       # The guard asserts the MEDIAN against generous ceilings, so it does not
       # flake on ordinary jitter. The *absolute* numbers, however, swing with CPU
       # turbo frequency and shared-host load — both environmental, not code. To
@@ -52,4 +61,12 @@ jobs:
       # The Python responder scenarios need `uv`; set PEPPY_LATENCY_SKIP_PYTHON=1
       # on the runner (or here) to run only the Rust scenarios if it is absent.
       - name: Roundtrip latency threshold tests (real nodes)
-        run: cargo test -p core-node --test latency -- --ignored --test-threads 1 --nocapture
+        run: |
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test -p core-node --test latency -- --ignored --test-threads 1 --nocapture
+
+      # Reclaim the per-run data root so disk does not grow on every run. Runs
+      # even when the test step failed.
+      - name: Clean up isolated peppy data root
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/peppy-home"

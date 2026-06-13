@@ -27,63 +27,14 @@ pub fn test_peppy_dirs() -> PeppyDirs {
     PeppyDirs::default()
 }
 
-/// Root for per-test scratch directories, placed under `$HOME` rather than the
-/// system temp dir because `/tmp` is frequently a size-quota'd `tmpfs` on Linux
-/// dev/CI machines. Each Python node materialises a venv plus several copies of
-/// the (large) compiled `peppylib` shared object during `uv sync`; at full test
-/// parallelism that transient peak trips the per-user tmpfs quota. `$HOME` lives
-/// on the roomy backing disk instead.
-///
-/// Hand out scratch from here via [`TempDir::new_in`] so it is removed when the
-/// guard drops — normal completion and panics both clean up and nothing is
-/// carried between runs. As a backstop for runs hard-killed before their guards
-/// could run, the first call per test binary reclaims leftovers older than
-/// [`STALE_TEST_TMP_AGE`]; that age floor keeps concurrently-running test
-/// binaries from deleting each other's live dirs.
+/// Root for per-test scratch directories. Thin re-export of the shared
+/// [`config::test_helpers::test_tmp_root`] so the many generator test files can
+/// keep calling `crate::helpers::test_tmp_root()`.
 ///
 /// Note: the shared `peppylib` `.so` cache itself still lives under
 /// [`test_peppy_dirs`] (the global `.peppy`); only the per-test copies move here.
 pub fn test_tmp_root() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME must be set");
-    let root = PathBuf::from(home).join(".peppy/test-tmp");
-    fs::create_dir_all(&root).expect("create ~/.peppy/test-tmp/");
-
-    static RECLAIM: std::sync::Once = std::sync::Once::new();
-    RECLAIM.call_once(|| reclaim_stale_test_tmp(&root));
-
-    root
-}
-
-/// Scratch older than this is treated as abandoned by an earlier run and is
-/// safe to delete. Far longer than any real test run (which finishes in
-/// minutes), so an in-flight run is never affected.
-const STALE_TEST_TMP_AGE: Duration = Duration::from_secs(60 * 60);
-
-/// Best-effort removal of stale leftovers directly under `root`. Errors are
-/// ignored on purpose: reclaiming scratch must never fail a test.
-fn reclaim_stale_test_tmp(root: &Path) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    let now = std::time::SystemTime::now();
-    for entry in entries.flatten() {
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        let too_old = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age >= STALE_TEST_TMP_AGE);
-        if !too_old {
-            continue;
-        }
-        if metadata.is_dir() {
-            let _ = fs::remove_dir_all(entry.path());
-        } else {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
+    config::test_helpers::test_tmp_root()
 }
 
 pub const TEST_NODE_TAG: &str = "v1";
