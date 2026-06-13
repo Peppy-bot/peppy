@@ -454,9 +454,11 @@ impl TopicWireReceiver {
 
 /// Caller-side addressing for a service. `target` is the producer's full
 /// `(core_node, instance_id)` wire address; `None` is a genuine wildcard
-/// on both slots (the discovery probe shape). Half-addresses are
-/// unrepresentable at this boundary — the internal per-slot `Option`s
-/// exist only so the formatter can wildcard each keyexpr chunk.
+/// on both slots (the discovery probe shape). The one representable
+/// half-address is core-without-instance via [`Self::scoped_to_core_node`]
+/// — for callers that know which core node must answer but cannot know
+/// the producer's per-boot instance_id. Instance-without-core stays
+/// unrepresentable at this boundary.
 /// The link_id wire slot is always emitted as `*` — producers advertise under
 /// the reserved `_` segment, and Zenoh's matcher unifies the two.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -492,6 +494,16 @@ impl ServiceWireSender {
             to_service_name: Segment::try_from(to_service_name)?,
             kind,
         })
+    }
+
+    /// Scopes the selector's target core_node slot to `target_core_node`
+    /// while leaving the instance slot wildcarded — the core-without-instance
+    /// half-address. The selector then matches only producers hosted by that
+    /// core node, regardless of their per-boot instance_id.
+    pub fn scoped_to_core_node(mut self, target_core_node: &str) -> crate::error::Result<Self> {
+        self.target_core_node = Some(Segment::try_from(target_core_node)?);
+        self.target_instance_id = None;
+        Ok(self)
     }
 
     pub fn to_service_name(&self) -> &str {

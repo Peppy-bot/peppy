@@ -1,5 +1,5 @@
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext};
+use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, ServiceTarget};
 use peppylib::types::Payload;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -221,7 +221,9 @@ impl PyServiceMessenger {
                 &as_instance_id,
                 to_target,
                 &to_service_name,
-                target.as_ref(),
+                target
+                    .as_ref()
+                    .map_or(ServiceTarget::Any, ServiceTarget::Producer),
             )
             .await
             .map_err(to_py_err)?;
@@ -261,7 +263,9 @@ impl PyServiceMessenger {
                 &as_instance_id,
                 to_target,
                 &to_service_name,
-                target.as_ref(),
+                target
+                    .as_ref()
+                    .map_or(ServiceTarget::Any, ServiceTarget::Producer),
                 Payload::from(request_payload),
                 response_timeout,
             )

@@ -4,7 +4,9 @@ use config::node::Name;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
+use peppylib::messaging::{
+    SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, ServiceTarget,
+};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
 use std::sync::Arc;
@@ -245,7 +247,7 @@ async fn send_shutdown_signal(
         core_instance_id,
         SenderTarget::node(node_name, node_tag).map_err(|e| e.to_string())?,
         SHUTDOWN_SERVICE,
-        Some(&peppylib::messaging::ProducerRef::new(
+        ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
             core_node_node,
             instance_id_str,
         )),

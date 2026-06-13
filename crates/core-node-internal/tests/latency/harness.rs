@@ -31,7 +31,7 @@ use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use generator::LanguageGenerator;
 use peppylib::MessengerHandle;
-use peppylib::messaging::{SenderTarget, ServiceMessenger};
+use peppylib::messaging::{SenderTarget, ServiceMessenger, ServiceTarget};
 use peppylib::types::Payload;
 use tempfile::TempDir;
 
@@ -515,7 +515,7 @@ impl Scenario {
             HARNESS_INST,
             SenderTarget::node(DRIVER_NODE, TAG).expect("driver target"),
             BENCH_CONTROL_SERVICE,
-            Some(&peppylib::messaging::ProducerRef::new(CORE, DRIVER_INST)),
+            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(CORE, DRIVER_INST)),
             Payload::from(request),
             CONTROL_TIMEOUT,
         )
@@ -604,7 +604,7 @@ pub async fn run_once(lang: Lang, transport: Transport, warmup: u64, iters: u64)
 const DRIVER_MAIN_RS: &str = r####"
 use peppygen::{NodeBuilder, Result};
 use peppylib::config::QoSProfile;
-use peppylib::messaging::{ConsumerFilter, SenderTarget, ServiceMessenger, Subscription, TopicMessenger};
+use peppylib::messaging::{ConsumerFilter, SenderTarget, ServiceMessenger, ServiceTarget, Subscription, TopicMessenger};
 use peppylib::types::Payload;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -657,7 +657,7 @@ async fn run_service(
             inst,
             SenderTarget::node(RESPONDER_NODE, TAG)?,
             "echo",
-            Some(&peppylib::messaging::ProducerRef::new(CORE, RESPONDER_INST)),
+            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(CORE, RESPONDER_INST)),
             payload,
             RPC_TIMEOUT,
         )

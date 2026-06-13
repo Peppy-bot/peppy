@@ -272,10 +272,9 @@ fn consumed_service() {
 
     // Poll function signature. The fixture's `DependencyContext::native`
     // defaults to `WireLinkId::wildcard()` (no manifest link_id), so the
-    // poll call splices a typed
-    // `Option::<&peppylib::messaging::ProducerRef>::None` at the single
-    // target slot and the user-facing `target_instance_id` parameter is
-    // gone. `target_core_node` is never exposed in the generated API.
+    // poll call splices `peppylib::messaging::ServiceTarget::Any` at the
+    // single target slot and the user-facing `target_instance_id` parameter
+    // is gone. `target_core_node` is never exposed in the generated API.
     assert_contains_all(
         &rendered,
         &["pub async fn poll(", "-> crate::Result<Response>"],
@@ -289,14 +288,15 @@ fn consumed_service() {
         "target_core_node should not appear in the generated API; got: {rendered}"
     );
 
-    // Request serialization and messenger integration, including the typed
-    // `None` spliced at the poll call's single target slot.
+    // Request serialization and messenger integration, including the
+    // wildcard `ServiceTarget::Any` spliced at the poll call's single
+    // target slot.
     assert_contains_all(
         &rendered,
         &[
             "root.set_enable(enable);",
             "peppylib::ServiceMessenger::poll(",
-            "Option::<&peppylib::messaging::ProducerRef>::None,",
+            "peppylib::messaging::ServiceTarget::Any,",
             "fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>",
         ],
     );

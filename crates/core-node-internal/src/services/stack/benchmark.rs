@@ -36,7 +36,7 @@ use latency_report::stats::summarize;
 use node_stack::NodeStack;
 use peppylib::messaging::{
     CLOCK_OFFSET_SERVICE, ConcurrentAction, ConsumerFilter, NODE_HEALTH_SERVICE, PendingGoal,
-    SenderTarget,
+    SenderTarget, ServiceTarget,
 };
 use peppylib::types::Payload;
 use peppylib::{
@@ -858,7 +858,7 @@ async fn measure_probe(
                     &ctx.core_instance_id,
                     target.clone(),
                     service_name,
-                    None, // wildcard: the edge's producers all live on this daemon
+                    ServiceTarget::Any, // the edge's producers all live on this daemon
                     timeout,
                     request_size,
                     response_size,
@@ -925,7 +925,7 @@ async fn poll_producer_offset(
             &ctx.core_instance_id,
             target.clone(),
             CLOCK_OFFSET_SERVICE,
-            None, // wildcard: the node's clock_offset endpoint lives on this daemon
+            ServiceTarget::Any, // the node's clock_offset endpoint lives on this daemon
             request,
             timeout,
         )
