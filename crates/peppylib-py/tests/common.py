@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from peppylib import SenderTarget, ServiceMessenger
+from peppylib import ProducerRef, SenderTarget, ServiceMessenger
 
 TEST_NODE_NAME = "test_node"
 TEST_NODE_TAG = "v1"
@@ -102,7 +102,7 @@ async def wait_for_service(
     bound_core_node: str,
     as_instance_id: str,
     target_node_name: str,
-    target: "tuple[str, str] | None",
+    target: "ProducerRef | None",
     runner_thread: threading.Thread,
     error_queue: queue.Queue,
     timeout_secs: float = 10.0,

@@ -544,12 +544,13 @@ fn consumed_topic() {
     );
 
     // Subscriber function signature — the producer identity is returned with
-    // every message as the full `(core_node, instance_id)` pair; it never
-    // appears as a user-facing core_node (or instance_id) parameter.
+    // every message as a structured `peppylib.ProducerRef` (its full
+    // `(core_node, instance_id)` pair); it never appears as a user-facing
+    // core_node (or instance_id) parameter.
     assert_contains_all(
         &rendered,
         &[
-            "async def on_next_message_received(node_runner: peppylib.NodeRunner) -> Tuple[Tuple[str, str], Message]:",
+            "async def on_next_message_received(node_runner: peppylib.NodeRunner) -> Tuple[peppylib.ProducerRef, Message]:",
         ],
     );
     assert!(
@@ -581,7 +582,7 @@ fn consumed_topic() {
         &[
             "raw_message = await subscription.on_next_message()",
             "payload = raw_message.payload",
-            "producer = (raw_message.core_node, raw_message.instance_id)",
+            "producer = raw_message.producer",
             "message = _deserialize_payload(payload)",
             "return producer, message",
         ],

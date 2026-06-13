@@ -255,14 +255,15 @@ Inside the consumer, every consumed-topic API returns the **producer's full `(co
 <Tabs>
   <TabItem label="Python">
     ```python
+    from peppylib import ProducerRef
     from peppygen.consumed_topics import extras_video_stream
 
-    frames_by_producer: dict[tuple[str, str], Frame] = {}
+    frames_by_producer: dict[ProducerRef, Frame] = {}
 
     while True:
         producer, frame = await extras_video_stream.on_next_message_received(node_runner)
-        # Key by the returned (core_node, instance_id) pair; do not compare
-        # against a hard-coded name.
+        # Key by the returned ProducerRef (its full core_node/instance_id
+        # identity); do not compare against a hard-coded name.
         frames_by_producer[producer] = frame
         reconstruct(frames_by_producer)
     ```

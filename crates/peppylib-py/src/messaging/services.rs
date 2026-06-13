@@ -6,7 +6,7 @@ use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::iface::PySenderTarget;
+use super::iface::{PyProducerRef, PySenderTarget};
 use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 
 /// Python wrapper for a service request received by a listener.
@@ -207,14 +207,12 @@ impl PyServiceMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_service_name: String,
-        target: Option<(String, String)>,
+        target: Option<PyProducerRef>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
-            let target = target.map(|(core_node, instance_id)| {
-                peppylib::messaging::ProducerRef::new(core_node, instance_id)
-            });
+            let target = target.map(PyProducerRef::into_inner);
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
@@ -243,7 +241,7 @@ impl PyServiceMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_service_name: String,
-        target: Option<(String, String)>,
+        target: Option<PyProducerRef>,
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -252,9 +250,7 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
-            let target = target.map(|(core_node, instance_id)| {
-                peppylib::messaging::ProducerRef::new(core_node, instance_id)
-            });
+            let target = target.map(PyProducerRef::into_inner);
             let response = ServiceMessenger::poll(
                 &handle,
                 &bound_core_node,

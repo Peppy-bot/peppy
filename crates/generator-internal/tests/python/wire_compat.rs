@@ -1048,10 +1048,10 @@ from peppygen.consumed_topics import producer_telemetry_feed
 
 async def receive_one(node_runner, msg_received):
     try:
-        (core_node, instance_id), msg = await producer_telemetry_feed.on_next_message_received(node_runner)
+        producer, msg = await producer_telemetry_feed.on_next_message_received(node_runner)
         print(
             f"received message status={msg.status} readings={list(msg.readings)} "
-            f"sequence={msg.sequence} timestamp={msg.timestamp} from {core_node}/{instance_id}",
+            f"sequence={msg.sequence} timestamp={msg.timestamp} from {producer.core_node}/{producer.instance_id}",
             flush=True,
         )
         msg_received.set()

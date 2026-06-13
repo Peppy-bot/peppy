@@ -11,7 +11,7 @@ use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::iface::PySenderTarget;
+use super::iface::{PyProducerRef, PySenderTarget};
 use super::services::PyServiceEndpoint;
 use super::{
     PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, future_into_py_unit, to_py_err,
@@ -345,7 +345,7 @@ impl PyActionMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_action_name: String,
-        target: Option<(String, String)>,
+        target: Option<PyProducerRef>,
         user_payload: Vec<u8>,
         feedback_qos: PyQoSProfile,
         goal_timeout_secs: f64,
@@ -354,9 +354,7 @@ impl PyActionMessenger {
         let to_target = to_target.into_inner();
         let handle = messenger.inner.clone();
         crate::py_future::future_into_py(py, async move {
-            let target = target.map(|(core_node, instance_id)| {
-                peppylib::messaging::ProducerRef::new(core_node, instance_id)
-            });
+            let target = target.map(PyProducerRef::into_inner);
             let goal_handle = ActionMessenger::send_goal(
                 &handle,
                 &as_core_node,
@@ -469,14 +467,12 @@ impl PyActionMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_action_name: String,
-        target: Option<(String, String)>,
+        target: Option<PyProducerRef>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
-            let target = target.map(|(core_node, instance_id)| {
-                peppylib::messaging::ProducerRef::new(core_node, instance_id)
-            });
+            let target = target.map(PyProducerRef::into_inner);
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_core_node,

@@ -15,14 +15,17 @@ def compute_next_target(current: list[float]) -> list[float]:
 async def control_loop(node_runner: NodeRunner):
     while True:
         try:
-            (core_node, instance_id), state = await arm_joint_states.on_next_message_received(
+            producer, state = await arm_joint_states.on_next_message_received(
                 node_runner,
             )
         except Exception as e:
             print(f"Error receiving joint state: {e}", file=sys.stderr)
             continue
 
-        print(f"state from {core_node}/{instance_id}: positions={state.positions}")
+        print(
+            f"state from {producer.core_node}/{producer.instance_id}: "
+            f"positions={state.positions}"
+        )
 
         # Compute the next target from the reported state, then command it.
         target = compute_next_target(state.positions)
