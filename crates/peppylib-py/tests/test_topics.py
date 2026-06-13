@@ -7,9 +7,40 @@ import uuid
 
 import pytest
 
-from peppylib import MessengerHandle, QoSProfile, SenderTarget, TopicMessenger, ZenohdInstance
+from peppylib import (
+    MessengerHandle,
+    ProducerRef,
+    QoSProfile,
+    SenderTarget,
+    TopicMessenger,
+    ZenohdInstance,
+)
 
 NODE_TAG = "v1"
+
+
+def test_producer_ref_is_structured_and_hashable():
+    """`ProducerRef` exposes named fields and works as a dict key.
+
+    A `from_any` consumer keys per-producer state on the returned identity, so
+    the type must be hashable and compare by value (mirrors the Rust
+    `HashMap<ProducerRef, _>` idiom).
+    """
+    producer = ProducerRef("core_a", "inst_1")
+    assert producer.core_node == "core_a"
+    assert producer.instance_id == "inst_1"
+
+    # Value equality + hashing, so equal identities collapse to one dict key.
+    same = ProducerRef("core_a", "inst_1")
+    other = ProducerRef("core_a", "inst_2")
+    assert producer == same
+    assert producer != other
+    assert hash(producer) == hash(same)
+
+    frames_by_producer = {producer: "frame"}
+    assert frames_by_producer[ProducerRef("core_a", "inst_1")] == "frame"
+
+    assert repr(producer) == 'ProducerRef("core_a", "inst_1")'
 
 
 @pytest.mark.asyncio
@@ -67,3 +98,9 @@ async def test_messenger_communication():
         )
         assert message.instance_id == instance_id
         assert message.core_node == core_node
+
+        # The structured producer identity mirrors the flat accessors and is
+        # what generated consumed-topic callbacks return.
+        assert message.producer == ProducerRef(core_node, instance_id)
+        assert message.producer.core_node == core_node
+        assert message.producer.instance_id == instance_id

@@ -8,7 +8,13 @@ import asyncio
 
 import pytest
 
-from peppylib import MessengerHandle, SenderTarget, ServiceMessenger, ZenohdInstance
+from peppylib import (
+    MessengerHandle,
+    ProducerRef,
+    SenderTarget,
+    ServiceMessenger,
+    ZenohdInstance,
+)
 from peppylib.config import NODE_READY_SERVICE
 from peppylib.services import NodeReadyService
 
@@ -43,7 +49,7 @@ async def test_ready_node():
 
         # The ready service should accept both valid targeting modes
         target_combinations = [
-            ("pinned", (TEST_CORE_NODE_NAME, TEST_INSTANCE_ID)),
+            ("pinned", ProducerRef(TEST_CORE_NODE_NAME, TEST_INSTANCE_ID)),
             ("broadcast", None),
         ]
 

@@ -18,6 +18,7 @@ use crate::launcher::Name;
 /// is unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ProducerRef {
     pub core_node: String,
     pub instance_id: String,
