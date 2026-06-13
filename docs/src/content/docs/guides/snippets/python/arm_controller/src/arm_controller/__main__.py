@@ -19,7 +19,10 @@ async def control_loop(node_runner: NodeRunner):
                 node_runner,
             )
         except Exception as e:
+            # Log the failure, then pause before retrying so a persistent
+            # receive error does not spin the loop at full speed.
             print(f"Error receiving joint state: {e}", file=sys.stderr)
+            await asyncio.sleep(1.0)
             continue
 
         print(
