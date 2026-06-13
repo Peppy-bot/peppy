@@ -116,30 +116,6 @@ pub fn create_wrong_codegen_fingerprint(peppy_config_path: &Path, output_path: &
         .expect("fingerprint should be written");
 }
 
-/// Creates a release fingerprint file with incorrect content to test release mismatch errors.
-///
-/// This function:
-/// 1. Creates a valid config fingerprint
-/// 2. Ensures a stable "current" release fingerprint exists in the peppy data directory
-/// 3. Creates a mismatched release fingerprint in the node's `.peppy` directory
-///
-/// This simulates the scenario where a node was generated with a different peppy version.
-#[cfg(feature = "test_helpers")]
-pub fn create_wrong_release_fingerprint(peppy_config_path: &Path, output_path: &Path) {
-    // First create a valid config fingerprint (without release fingerprint copy)
-    let peppy_config_dir = peppy_config_path.parent().unwrap_or(Path::new("."));
-    let fingerprint_dir = peppy_config_dir.join(output_path);
-    fs::create_dir_all(&fingerprint_dir).expect("fingerprint dir should be created");
-
-    // Create config fingerprint
-    let fingerprint_path = fingerprint_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
-    let fingerprint = fingerprint_for_bytes(
-        &fs::read(peppy_config_path).expect("peppy config should be readable"),
-    );
-    fs::write(&fingerprint_path, format!("{fingerprint}\n"))
-        .expect("fingerprint should be written");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,4 +1,3 @@
-pub const CORE_NODE_TOPIC_NAME: &str = "command";
 pub const NODE_CONFIG_FILE: &str = "peppy.json5";
 pub const RUNTIME_CONFIG_VAR_NAME: &str = "PEPPY_RUNTIME_CONFIG";
 /// The peppy output directory relative to node_dir (contains generated libraries).
@@ -64,8 +63,8 @@ static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
 /// This is the crate's only mutable global state. It is **set-once**: the
 /// first call wins and every later call is silently ignored (so a binary can
 /// pin the environment at startup without callers downstream being able to
-/// flip it). It is also **optional** — if never called, [`app_env`] defaults
-/// to [`AppEnv::Dev`].
+/// flip it). It is also **optional** — if never called, the environment
+/// defaults to [`AppEnv::Dev`].
 ///
 /// The only thing it influences is the *default* peppy data root: it shifts
 /// [`peppy_root_dir`] (and therefore [`PeppyDirs::default`]) between

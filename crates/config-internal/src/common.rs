@@ -994,20 +994,6 @@ impl std::fmt::Display for NodeArgumentsError {
 
 impl std::error::Error for NodeArgumentsError {}
 
-/// Deserializes a JSON5 string into node arguments and validates them against a
-/// [`ParameterSchema`], producing a [`NodeArguments`] value.
-///
-/// This is the public entry point for parsing and validating node arguments from
-/// a raw string. The intermediate [`RawNodeArguments`] type is not exposed.
-pub fn parse_node_arguments(
-    content: &str,
-    schema: &ParameterSchema,
-) -> Result<NodeArguments, NodeArgumentsError> {
-    let raw: RawNodeArguments = serde_json5::from_str(content)
-        .map_err(|e| NodeArgumentsError::Deserialization(e.to_string()))?;
-    raw.into_resolved(schema)
-}
-
 /// Validates a `BTreeMap<String, AnyType>` against a [`ParameterSchema`] and
 /// produces a [`NodeArguments`] value.
 ///
@@ -1082,7 +1068,7 @@ pub fn resolve_parameter_path<'a>(
 /// Resolve a dot-path against a tree of runtime parameter VALUES (a
 /// `BTreeMap<String, AnyType>`), descending into [`AnyType::Object`] groups.
 ///
-/// This is the value-side counterpart to [`resolve_parameter_path`]: that one
+/// This is the value-side counterpart to `resolve_parameter_path`: that one
 /// walks the schema and returns a [`ParameterSpec`]; this one walks resolved
 /// arguments and returns the concrete [`AnyType`] value at the leaf.
 pub fn resolve_argument_path<'a>(
@@ -1941,23 +1927,6 @@ mod tests {
         )
         .expect_err("unknown key should fail");
         assert!(matches!(err, NodeArgumentsError::UnknownParameter { .. }));
-    }
-
-    // ---- parse_node_arguments end-to-end ----
-
-    #[test]
-    fn parse_node_arguments_with_defaults() {
-        let s = schema(
-            r#"{
-                name: { $type: "string", $default: "world" },
-                count: "u16"
-            }"#,
-        );
-        let args = parse_node_arguments(r#"{ count: 5 }"#, &s).unwrap();
-        assert_eq!(
-            args.0.get("name"),
-            Some(&AnyType::String("world".to_string()))
-        );
     }
 
     #[test]

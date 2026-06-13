@@ -10,7 +10,7 @@ use serde::{
 };
 use std::{
     convert::TryFrom,
-    fmt::{self, Display, Formatter},
+    fmt::{self, Formatter},
     str::FromStr,
 };
 
@@ -138,33 +138,6 @@ impl From<Name> for String {
         v.0
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallbackNameError {
-    Empty,
-    InvalidStart(char),
-    InvalidChar(char),
-}
-
-impl Display for CallbackNameError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            CallbackNameError::Empty => write!(f, "callback name cannot be empty"),
-            CallbackNameError::InvalidStart(ch) => write!(
-                f,
-                "callback name must start with an ASCII letter or '_' but found `{}`",
-                ch.escape_default()
-            ),
-            CallbackNameError::InvalidChar(ch) => write!(
-                f,
-                "callback name may only contain ASCII letters, digits, or '_' but found `{}`",
-                ch.escape_default()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CallbackNameError {}
 
 // NodeInfo is not part of the new schema; manifest/config/instances carry this information.
 
